@@ -8,6 +8,7 @@ defineProps<{
 defineEmits<{
   edit: [workspace: Workspace]
   delete: [workspace: Workspace]
+  open: [workspace: Workspace]
 }>()
 
 function statusColor(status: string) {
@@ -49,6 +50,13 @@ function formatDate(dateStr: string) {
     <div class="card-footer">
       <span class="card-date">Created {{ formatDate(workspace.createdAt) }}</span>
       <div class="card-actions">
+        <button class="action-btn action-open" title="Open" @click="$emit('open', workspace)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            <polyline points="15 3 21 3 21 9" />
+            <line x1="10" x2="21" y1="14" y2="3" />
+          </svg>
+        </button>
         <button class="action-btn" title="Edit" @click="$emit('edit', workspace)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
@@ -185,6 +193,10 @@ function formatDate(dateStr: string) {
 .action-btn:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
+}
+
+.action-open:hover {
+  color: var(--accent-blue);
 }
 
 .action-danger:hover {

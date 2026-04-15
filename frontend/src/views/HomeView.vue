@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useWorkspaceStore } from '@/stores/workspaces'
 import WorkspaceCard from '@/components/WorkspaceCard.vue'
 import WorkspaceModal from '@/components/WorkspaceModal.vue'
@@ -7,6 +8,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
 import type { Workspace } from '@/api/workspaces'
 
 const store = useWorkspaceStore()
+const router = useRouter()
 
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
@@ -46,6 +48,10 @@ async function handleEdit(name: string, description: string) {
 function openDelete(workspace: Workspace) {
   deleteTarget.value = workspace
   showDeleteModal.value = true
+}
+
+function openWorkspace(workspace: Workspace) {
+  router.push({ name: 'ide', params: { id: workspace.id } })
 }
 
 async function handleDelete() {
@@ -102,6 +108,7 @@ async function handleDelete() {
         v-for="ws in store.workspaces"
         :key="ws.id"
         :workspace="ws"
+        @open="openWorkspace"
         @edit="openEdit"
         @delete="openDelete"
       />

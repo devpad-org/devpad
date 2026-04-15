@@ -5,6 +5,7 @@ import LoginView from '@/views/LoginView.vue'
 import SetupView from '@/views/SetupView.vue'
 import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
+import IdeView from '@/views/IdeView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -38,6 +39,12 @@ export const router = createRouter({
       name: 'admin',
       component: AdminView,
       meta: { requiresAuth: true, requiresAdmin: true },
+    },
+    {
+      path: '/workspace/:id',
+      name: 'ide',
+      component: IdeView,
+      meta: { requiresAuth: true, hideChrome: true },
     },
   ],
 })

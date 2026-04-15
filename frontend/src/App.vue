@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { RouterView, RouterLink } from 'vue-router'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
+import { computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 const router = useRouter()
+const route = useRoute()
+
+const hideChrome = computed(() => route.meta.hideChrome === true)
 
 async function handleLogout() {
   await auth.logout()
@@ -13,7 +17,7 @@ async function handleLogout() {
 </script>
 
 <template>
-  <header v-if="auth.isAuthenticated" class="app-header">
+  <header v-if="auth.isAuthenticated && !hideChrome" class="app-header">
     <div class="header-left">
       <RouterLink to="/" class="header-brand">Devpad</RouterLink>
       <nav class="header-nav">
