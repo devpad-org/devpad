@@ -1,39 +1,138 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
 
-defineProps<{
-  workspaceName: string
+const props = defineProps<{
+  workspaceId: number
 }>()
 
-const history = ref<string[]>([
-  '\x1b[32mdevpad\x1b[0m:\x1b[34m~/workspace\x1b[0m$ npm install',
-  'added 847 packages in 12s',
-  '',
-  '\x1b[32mdevpad\x1b[0m:\x1b[34m~/workspace\x1b[0m$ npm run dev',
-  '',
-  '  VITE v5.4.0  ready in 312 ms',
-  '',
-  '  ➜  Local:   http://localhost:5173/',
-  '  ➜  Network: http://172.17.0.2:5173/',
-  '',
-])
+const terminalRef = ref<HTMLElement | null>(null)
+const connected = ref(false)
+const error = ref<string | null>(null)
 
-const inputValue = ref('')
+let terminal: Terminal | null = null
+let fitAddon: FitAddon | null = null
+let ws: WebSocket | null = null
+let resizeObserver: ResizeObserver | null = null
 
-function handleInput() {
-  if (!inputValue.value.trim()) return
-  history.value.push(`\x1b[32mdevpad\x1b[0m:\x1b[34m~/workspace\x1b[0m$ ${inputValue.value}`)
-  history.value.push('Command not connected — this is a placeholder terminal.')
-  history.value.push('')
-  inputValue.value = ''
+function connect() {
+  if (!terminalRef.value) return
+
+  error.value = null
+
+  terminal = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+    theme: {
+      background: '#0a0d13',
+      foreground: '#c9d1d9',
+      cursor: '#00d4ff',
+      selectionBackground: 'rgba(0, 212, 255, 0.2)',
+      black: '#0a0d13',
+      red: '#f43f5e',
+      green: '#10b981',
+      yellow: '#f59e0b',
+      blue: '#00d4ff',
+      magenta: '#7c3aed',
+      cyan: '#06b6d4',
+      white: '#c9d1d9',
+      brightBlack: '#6e7681',
+      brightRed: '#fb7185',
+      brightGreen: '#34d399',
+      brightYellow: '#fbbf24',
+      brightBlue: '#38bdf8',
+      brightMagenta: '#a78bfa',
+      brightCyan: '#22d3ee',
+      brightWhite: '#f0f6fc',
+    },
+  })
+
+  fitAddon = new FitAddon()
+  terminal.loadAddon(fitAddon)
+  terminal.open(terminalRef.value)
+  fitAddon.fit()
+
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsUrl = `${proto}//${window.location.host}/api/workspaces/${props.workspaceId}/terminal`
+  ws = new WebSocket(wsUrl)
+  ws.binaryType = 'arraybuffer'
+
+  ws.onopen = () => {
+    connected.value = true
+    // Send initial terminal size
+    sendResize()
+  }
+
+  ws.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      terminal?.write(new Uint8Array(event.data))
+    } else {
+      terminal?.write(event.data)
+    }
+  }
+
+  ws.onerror = () => {
+    error.value = 'Connection error'
+    connected.value = false
+  }
+
+  ws.onclose = () => {
+    connected.value = false
+    terminal?.write('\r\n\x1b[31m[Terminal disconnected]\x1b[0m\r\n')
+  }
+
+  terminal.onData((data) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(new TextEncoder().encode(data))
+    }
+  })
+
+  // Handle resize
+  resizeObserver = new ResizeObserver(() => {
+    fitAddon?.fit()
+    sendResize()
+  })
+  resizeObserver.observe(terminalRef.value)
+
+  terminal.onResize(({ cols, rows }) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', cols, rows }))
+    }
+  })
 }
 
-function renderLine(line: string): string {
-  return line
-    .replace(/\x1b\[32m/g, '<span style="color: var(--accent-green)">')
-    .replace(/\x1b\[34m/g, '<span style="color: var(--accent-blue)">')
-    .replace(/\x1b\[0m/g, '</span>')
+function sendResize() {
+  if (terminal && ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }))
+  }
 }
+
+function disconnect() {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+  ws?.close()
+  ws = null
+  terminal?.dispose()
+  terminal = null
+  fitAddon = null
+  connected.value = false
+}
+
+onMounted(() => {
+  connect()
+})
+
+onBeforeUnmount(() => {
+  disconnect()
+})
+
+watch(() => props.workspaceId, () => {
+  disconnect()
+  connect()
+})
 </script>
 
 <template>
@@ -46,31 +145,16 @@ function renderLine(line: string): string {
         </svg>
         Terminal
       </span>
-      <span class="terminal-shell">bash</span>
-    </div>
-    <div class="terminal-body">
-      <div class="terminal-output">
-        <div
-          v-for="(line, i) in history"
-          :key="i"
-          class="terminal-line"
-          v-html="renderLine(line) || '&nbsp;'"
-        />
-      </div>
-      <div class="terminal-input-row">
-        <span class="terminal-prompt">
-          <span style="color: var(--accent-green)">devpad</span>:<span style="color: var(--accent-blue)">~/workspace</span>$&nbsp;
+      <div class="terminal-indicators">
+        <span class="terminal-status" :class="{ connected }">
+          <span class="status-dot" />
+          {{ connected ? 'Connected' : 'Disconnected' }}
         </span>
-        <input
-          v-model="inputValue"
-          class="terminal-input"
-          type="text"
-          spellcheck="false"
-          autocomplete="off"
-          @keydown.enter="handleInput"
-        />
+        <span class="terminal-shell">bash</span>
       </div>
     </div>
+    <div class="terminal-body" ref="terminalRef" />
+    <div v-if="error" class="terminal-error">{{ error }}</div>
   </div>
 </template>
 
@@ -103,6 +187,31 @@ function renderLine(line: string): string {
   letter-spacing: 0.03em;
 }
 
+.terminal-indicators {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.terminal-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+}
+
+.terminal-status .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-rose);
+}
+
+.terminal-status.connected .status-dot {
+  background: var(--accent-green);
+}
+
 .terminal-shell {
   font-size: 0.7rem;
   color: var(--text-muted);
@@ -113,40 +222,23 @@ function renderLine(line: string): string {
 
 .terminal-body {
   flex: 1;
-  overflow-y: auto;
-  padding: var(--space-2) var(--space-3);
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  line-height: 1.5;
+  overflow: hidden;
+  padding: var(--space-1) var(--space-2);
 }
 
-.terminal-line {
-  white-space: pre;
-  color: var(--text-secondary);
+.terminal-body :deep(.xterm) {
+  height: 100%;
 }
 
-.terminal-input-row {
-  display: flex;
-  align-items: center;
-  margin-top: 2px;
+.terminal-body :deep(.xterm-viewport) {
+  overflow-y: auto !important;
 }
 
-.terminal-prompt {
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  white-space: pre;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-}
-
-.terminal-input {
-  flex: 1;
-  background: none;
-  border: none;
-  outline: none;
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  color: var(--text-primary);
-  caret-color: var(--accent-blue);
+.terminal-error {
+  padding: var(--space-1) var(--space-3);
+  color: var(--accent-rose);
+  font-size: 0.7rem;
+  background: rgba(244, 63, 94, 0.1);
+  border-top: 1px solid rgba(244, 63, 94, 0.2);
 }
 </style>

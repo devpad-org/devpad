@@ -10,8 +10,31 @@ import (
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/container"
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// mockContainerManager is a test double for container.Manager.
+type mockContainerManager struct {
+	lastCreatedID string
+}
+
+func (m *mockContainerManager) Create(_ context.Context, name string) (string, error) {
+	m.lastCreatedID = "mock-container-" + name
+	return m.lastCreatedID, nil
+}
+func (m *mockContainerManager) Start(_ context.Context, _ string) error  { return nil }
+func (m *mockContainerManager) Stop(_ context.Context, _ string) error   { return nil }
+func (m *mockContainerManager) Remove(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) Exec(_ context.Context, _ string, _ []string) (string, error) {
+	return "mock-exec-id", nil
+}
+func (m *mockContainerManager) ExecAttach(_ context.Context, _ string) (container.HijackedResponse, error) {
+	return container.HijackedResponse{}, nil
+}
+func (m *mockContainerManager) ExecResize(_ context.Context, _ string, _, _ uint) error {
+	return nil
+}
 
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -39,6 +62,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		name TEXT NOT NULL,
 		description TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('creating','running','stopped')),
+		container_id TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -54,7 +78,8 @@ func setupTestService(t *testing.T) (Service, *sql.DB) {
 	t.Helper()
 	db := setupTestDB(t)
 	repo := NewRepository(db)
-	svc := NewService(repo)
+	cm := &mockContainerManager{}
+	svc := NewService(repo, cm)
 	return svc, db
 }
 
@@ -81,8 +106,8 @@ func TestService_CreateAndGet(t *testing.T) {
 	if ws.Description != "A test workspace" {
 		t.Errorf("expected description 'A test workspace', got %q", ws.Description)
 	}
-	if ws.Status != StatusStopped {
-		t.Errorf("expected status 'stopped', got %q", ws.Status)
+	if ws.Status != StatusRunning {
+		t.Errorf("expected status 'running', got %q", ws.Status)
 	}
 	if ws.ID == 0 {
 		t.Error("expected non-zero ID")

@@ -8,6 +8,7 @@ import (
 
 	"github.com/devpad-org/devpad/internal/admin"
 	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/container"
 	"github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/settings"
 	"github.com/devpad-org/devpad/internal/workspace"
@@ -47,8 +48,12 @@ func New(cfg Config) (*Server, error) {
 	settingsHandler := settings.NewHandler(settingsService)
 
 	// Workspace layer
+	containerManager, err := container.NewManager()
+	if err != nil {
+		return nil, fmt.Errorf("creating container manager: %w", err)
+	}
 	workspaceRepo := workspace.NewRepository(db.Conn())
-	workspaceService := workspace.NewService(workspaceRepo)
+	workspaceService := workspace.NewService(workspaceRepo, containerManager)
 	workspaceHandler := workspace.NewHandler(workspaceService)
 
 	mux := http.NewServeMux()
@@ -123,6 +128,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("GET /api/workspaces/{id}", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGet)))
 	mux.Handle("PUT /api/workspaces/{id}", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleUpdate)))
 	mux.Handle("DELETE /api/workspaces/{id}", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleDelete)))
+	mux.Handle("GET /api/workspaces/{id}/terminal", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleTerminal)))
 
 	// Serve embedded frontend for all other routes
 	mux.Handle("/", web.Handler())

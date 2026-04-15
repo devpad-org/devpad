@@ -152,6 +152,7 @@ func workspaceResponse(ws *Workspace) map[string]any {
 		"name":        ws.Name,
 		"description": ws.Description,
 		"status":      ws.Status,
+		"containerId": ws.ContainerID,
 		"createdAt":   ws.CreatedAt,
 		"updatedAt":   ws.UpdatedAt,
 	}

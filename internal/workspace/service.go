@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/devpad-org/devpad/internal/container"
 )
 
 var (
@@ -18,25 +20,48 @@ type Service interface {
 	List(ctx context.Context, userID int64) ([]*Workspace, error)
 	Update(ctx context.Context, userID, workspaceID int64, name, description string) (*Workspace, error)
 	Delete(ctx context.Context, userID, workspaceID int64) error
+	ContainerManager() container.Manager
 }
 
 type service struct {
-	repo Repository
+	repo      Repository
+	container container.Manager
 }
 
 // NewService creates a new workspace Service.
-func NewService(repo Repository) Service {
-	return &service{repo: repo}
+func NewService(repo Repository, cm container.Manager) Service {
+	return &service{repo: repo, container: cm}
+}
+
+func (s *service) ContainerManager() container.Manager {
+	return s.container
 }
 
 func (s *service) Create(ctx context.Context, userID int64, name, description string) (*Workspace, error) {
+	// Create the Docker container
+	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d-%s", userID, name))
+	if err != nil {
+		return nil, fmt.Errorf("creating container: %w", err)
+	}
+
+	// Start the container
+	if err := s.container.Start(ctx, containerID); err != nil {
+		// Clean up the created container on failure
+		_ = s.container.Remove(ctx, containerID)
+		return nil, fmt.Errorf("starting container: %w", err)
+	}
+
 	ws := &Workspace{
 		UserID:      userID,
 		Name:        name,
 		Description: description,
-		Status:      StatusStopped,
+		Status:      StatusRunning,
+		ContainerID: containerID,
 	}
 	if err := s.repo.Create(ctx, ws); err != nil {
+		// Clean up container on DB failure
+		_ = s.container.Stop(ctx, containerID)
+		_ = s.container.Remove(ctx, containerID)
 		return nil, fmt.Errorf("creating workspace: %w", err)
 	}
 	return ws, nil
@@ -83,6 +108,14 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 	ws, err := s.Get(ctx, userID, workspaceID)
 	if err != nil {
 		return err
+	}
+
+	// Remove the Docker container
+	if ws.ContainerID != "" {
+		_ = s.container.Stop(ctx, ws.ContainerID)
+		if err := s.container.Remove(ctx, ws.ContainerID); err != nil {
+			return fmt.Errorf("removing container: %w", err)
+		}
 	}
 
 	if err := s.repo.Delete(ctx, ws.ID); err != nil {

@@ -5,6 +5,7 @@ export interface Workspace {
   name: string
   description: string
   status: 'creating' | 'running' | 'stopped'
+  containerId: string
   createdAt: string
   updatedAt: string
 }

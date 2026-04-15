@@ -18,6 +18,7 @@ type Workspace struct {
 	Name        string
 	Description string
 	Status      Status
+	ContainerID string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }

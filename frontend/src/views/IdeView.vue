@@ -109,7 +109,7 @@ function handleBack() {
           <EditorPanel :file-path="activeFile" />
         </div>
         <div v-if="terminalVisible" class="ide-terminal-area">
-          <TerminalPanel :workspace-name="workspace?.name ?? ''" />
+          <TerminalPanel :workspace-id="workspace?.id ?? 0" />
         </div>
       </div>
 
