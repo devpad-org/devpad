@@ -1,0 +1,24 @@
+# Binaries
+bin/
+devpad
+devpad.db
+
+# Dependencies
+node_modules/
+
+# Build artifacts
+web/dist/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
