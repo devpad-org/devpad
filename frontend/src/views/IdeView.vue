@@ -15,7 +15,7 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 
 const activeFile = ref<string | null>(null)
-const terminalVisible = ref(true)
+const terminalMinimized = ref(false)
 const agentVisible = ref(true)
 
 onMounted(async () => {
@@ -68,17 +68,6 @@ function handleBack() {
       <div class="titlebar-actions">
         <button
           class="titlebar-toggle"
-          :class="{ active: terminalVisible }"
-          @click="terminalVisible = !terminalVisible"
-          title="Toggle terminal"
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="4 17 10 11 4 5" />
-            <line x1="12" x2="20" y1="19" y2="19" />
-          </svg>
-        </button>
-        <button
-          class="titlebar-toggle"
           :class="{ active: agentVisible }"
           @click="agentVisible = !agentVisible"
           title="Toggle AI agent"
@@ -108,8 +97,12 @@ function handleBack() {
         <div class="ide-editor-area">
           <EditorPanel :file-path="activeFile" />
         </div>
-        <div v-if="terminalVisible" class="ide-terminal-area">
-          <TerminalPanel :workspace-id="workspace?.id ?? 0" />
+        <div class="ide-terminal-area" :class="{ minimized: terminalMinimized }">
+          <TerminalPanel
+            :workspace-id="workspace?.id ?? 0"
+            :minimized="terminalMinimized"
+            @toggle-minimize="terminalMinimized = !terminalMinimized"
+          />
         </div>
       </div>
 
@@ -298,6 +291,11 @@ function handleBack() {
   height: 220px;
   flex-shrink: 0;
   border-top: 1px solid var(--border-default);
+  transition: height var(--transition-fast);
+}
+
+.ide-terminal-area.minimized {
+  height: auto;
 }
 
 .ide-agent {

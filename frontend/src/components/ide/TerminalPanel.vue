@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 
 const props = defineProps<{
   workspaceId: number
+  minimized: boolean
+}>()
+
+const emit = defineEmits<{
+  'toggle-minimize': []
 }>()
 
 const terminalRef = ref<HTMLElement | null>(null)
@@ -133,6 +138,15 @@ watch(() => props.workspaceId, () => {
   disconnect()
   connect()
 })
+
+watch(() => props.minimized, (isMinimized) => {
+  if (!isMinimized) {
+    nextTick(() => {
+      fitAddon?.fit()
+      sendResize()
+    })
+  }
+})
 </script>
 
 <template>
@@ -150,11 +164,18 @@ watch(() => props.workspaceId, () => {
           <span class="status-dot" />
           {{ connected ? 'Connected' : 'Disconnected' }}
         </span>
-        <span class="terminal-shell">bash</span>
+        <button class="terminal-toggle-btn" @click="emit('toggle-minimize')" :title="minimized ? 'Expand terminal' : 'Minimize terminal'">
+          <svg v-if="minimized" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="18 15 12 9 6 15" />
+          </svg>
+          <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
       </div>
     </div>
-    <div class="terminal-body" ref="terminalRef" />
-    <div v-if="error" class="terminal-error">{{ error }}</div>
+    <div v-show="!minimized" class="terminal-body" ref="terminalRef" />
+    <div v-if="error && !minimized" class="terminal-error">{{ error }}</div>
   </div>
 </template>
 
@@ -212,12 +233,20 @@ watch(() => props.workspaceId, () => {
   background: var(--accent-green);
 }
 
-.terminal-shell {
-  font-size: 0.7rem;
-  color: var(--text-muted);
-  padding: 1px 8px;
-  background: var(--bg-hover);
+.terminal-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  transition: all var(--transition-fast);
+}
+
+.terminal-toggle-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .terminal-body {
