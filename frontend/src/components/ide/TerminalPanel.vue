@@ -79,7 +79,7 @@ function renderLine(line: string): string {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0d0d1a;
+  background: #0a0d13;
 }
 
 .terminal-header {

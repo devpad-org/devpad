@@ -64,8 +64,8 @@ app.mount('#app')`
 
 const cssTemplate = `:root {
   --primary: #00d4ff;
-  --bg: #1a1a2e;
-  --surface: #1e1e2e;
+  --bg: #0e1117;
+  --surface: #141821;
   --text: #e4e4e7;
 }
 

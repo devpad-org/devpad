@@ -1,10 +1,10 @@
 :root {
   /* Background */
-  --bg-primary: #1a1a2e;
-  --bg-secondary: #16213e;
-  --bg-tertiary: #0f3460;
-  --bg-surface: #1e1e2e;
-  --bg-surface-alt: #252540;
+  --bg-primary: #0e1117;
+  --bg-secondary: #121620;
+  --bg-tertiary: #161b28;
+  --bg-surface: #141821;
+  --bg-surface-alt: #1a1f2e;
   --bg-hover: rgba(255, 255, 255, 0.04);
 
   /* Accent */
