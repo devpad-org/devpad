@@ -2,6 +2,13 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { authApi, type User } from '@/api/auth'
 
+export class TOTPRequiredError extends Error {
+  constructor() {
+    super('TOTP code required')
+    this.name = 'TOTPRequiredError'
+  }
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
   const needsSetup = ref(false)
@@ -30,9 +37,12 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function login(username: string, password: string) {
-    const response = await authApi.login(username, password)
-    user.value = response.user
+  async function login(username: string, password: string, totpCode?: string) {
+    const response = await authApi.login(username, password, totpCode)
+    if (response.totpRequired) {
+      throw new TOTPRequiredError()
+    }
+    user.value = response.user!
     needsSetup.value = false
   }
 

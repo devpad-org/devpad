@@ -2,15 +2,27 @@
 bin/
 devpad
 devpad.db
+*.db
+*.db-shm
+*.db-wal
 
 # Dependencies
 node_modules/
+frontend/node_modules/
 
 # Build artifacts
 web/dist/
+frontend/dist/
+dist/
+
+# Go build cache
+*.test
+*.out
+coverage.out
 
 # IDE
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
@@ -22,3 +34,12 @@ Thumbs.db
 # Environment
 .env
 .env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temp files
+tmp/
+temp/

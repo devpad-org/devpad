@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -15,13 +16,15 @@ var (
 	ErrInvalidCredentials = errors.New("invalid username or password")
 	ErrUserExists         = errors.New("username or email already exists")
 	ErrSetupCompleted     = errors.New("setup already completed")
+	ErrTOTPRequired       = errors.New("TOTP code required")
+	ErrInvalidTOTP        = errors.New("invalid TOTP code")
 )
 
 // Service defines authentication business logic.
 type Service interface {
 	Setup(ctx context.Context, username, email, password string) (*User, error)
 	NeedsSetup(ctx context.Context) (bool, error)
-	Login(ctx context.Context, username, password string) (*Session, error)
+	Login(ctx context.Context, username, password, totpCode string) (*Session, error)
 	Logout(ctx context.Context, token string) error
 	ValidateSession(ctx context.Context, token string) (*User, error)
 }
@@ -72,7 +75,7 @@ func (s *service) Setup(ctx context.Context, username, email, password string) (
 	return user, nil
 }
 
-func (s *service) Login(ctx context.Context, username, password string) (*Session, error) {
+func (s *service) Login(ctx context.Context, username, password, totpCode string) (*Session, error) {
 	user, err := s.users.GetByUsername(ctx, username)
 	if err != nil {
 		return nil, fmt.Errorf("looking up user: %w", err)
@@ -83,6 +86,15 @@ func (s *service) Login(ctx context.Context, username, password string) (*Sessio
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
 		return nil, ErrInvalidCredentials
+	}
+
+	if user.TOTPEnabled {
+		if totpCode == "" {
+			return nil, ErrTOTPRequired
+		}
+		if !totp.Validate(totpCode, user.TOTPSecret) {
+			return nil, ErrInvalidTOTP
+		}
 	}
 
 	session := &Session{

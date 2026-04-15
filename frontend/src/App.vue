@@ -1,17 +1,26 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router'
+import { RouterView, RouterLink } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
+const router = useRouter()
 
 async function handleLogout() {
   await auth.logout()
+  router.push({ name: 'login' })
 }
 </script>
 
 <template>
   <header v-if="auth.isAuthenticated" class="app-header">
-    <div class="header-brand">Devpad</div>
+    <div class="header-left">
+      <RouterLink to="/" class="header-brand">Devpad</RouterLink>
+      <nav class="header-nav">
+        <RouterLink to="/settings" class="nav-link">Settings</RouterLink>
+        <RouterLink v-if="auth.isAdmin" to="/admin" class="nav-link">Admin</RouterLink>
+      </nav>
+    </div>
     <div class="header-user">
       <span class="header-username">{{ auth.user?.username }}</span>
       <button class="btn-logout" @click="handleLogout">Sign out</button>
@@ -33,6 +42,12 @@ async function handleLogout() {
   flex-shrink: 0;
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
 .header-brand {
   font-weight: 700;
   font-size: 0.95rem;
@@ -40,6 +55,30 @@ async function handleLogout() {
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
+}
+
+.header-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.nav-link {
+  padding: var(--space-1) var(--space-3);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+}
+
+.nav-link:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.nav-link.router-link-active {
+  color: var(--accent-blue);
+  background: rgba(0, 212, 255, 0.08);
 }
 
 .header-user {

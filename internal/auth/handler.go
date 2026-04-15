@@ -71,6 +71,7 @@ func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		TOTPCode string `json:"totpCode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -82,10 +83,18 @@ func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := h.service.Login(r.Context(), req.Username, req.Password)
+	session, err := h.service.Login(r.Context(), req.Username, req.Password, req.TOTPCode)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCredentials) {
 			writeError(w, http.StatusUnauthorized, "invalid username or password")
+			return
+		}
+		if errors.Is(err, ErrTOTPRequired) {
+			writeJSON(w, http.StatusOK, map[string]any{"totpRequired": true})
+			return
+		}
+		if errors.Is(err, ErrInvalidTOTP) {
+			writeError(w, http.StatusUnauthorized, "invalid TOTP code")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "login failed")
@@ -146,10 +155,11 @@ func userResponse(u *User) map[string]any {
 		return nil
 	}
 	return map[string]any{
-		"id":       u.ID,
-		"username": u.Username,
-		"email":    u.Email,
-		"isAdmin":  u.IsAdmin,
+		"id":          u.ID,
+		"username":    u.Username,
+		"email":       u.Email,
+		"isAdmin":     u.IsAdmin,
+		"totpEnabled": u.TOTPEnabled,
 	}
 }
 

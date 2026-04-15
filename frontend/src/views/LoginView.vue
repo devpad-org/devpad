@@ -1,24 +1,30 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
+import { useAuthStore, TOTPRequiredError } from '@/stores/auth'
 
 const auth = useAuthStore()
 const router = useRouter()
 
 const username = ref('')
 const password = ref('')
+const totpCode = ref('')
 const error = ref('')
 const submitting = ref(false)
+const needsTOTP = ref(false)
 
 async function handleSubmit() {
   error.value = ''
   submitting.value = true
   try {
-    await auth.login(username.value, password.value)
+    await auth.login(username.value, password.value, needsTOTP.value ? totpCode.value : undefined)
     router.push({ name: 'home' })
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Login failed'
+    if (e instanceof TOTPRequiredError) {
+      needsTOTP.value = true
+    } else {
+      error.value = e instanceof Error ? e.message : 'Login failed'
+    }
   } finally {
     submitting.value = false
   }
@@ -35,33 +41,57 @@ async function handleSubmit() {
 
       <div v-if="error" class="form-error">{{ error }}</div>
 
-      <div class="form-field">
-        <label for="username">Username</label>
-        <input
-          id="username"
-          v-model="username"
-          type="text"
-          autocomplete="username"
-          required
-          autofocus
-          placeholder="Enter your username"
-        />
-      </div>
+      <template v-if="!needsTOTP">
+        <div class="form-field">
+          <label for="username">Username</label>
+          <input
+            id="username"
+            v-model="username"
+            type="text"
+            autocomplete="username"
+            required
+            autofocus
+            placeholder="Enter your username"
+          />
+        </div>
 
-      <div class="form-field">
-        <label for="password">Password</label>
-        <input
-          id="password"
-          v-model="password"
-          type="password"
-          autocomplete="current-password"
-          required
-          placeholder="Enter your password"
-        />
-      </div>
+        <div class="form-field">
+          <label for="password">Password</label>
+          <input
+            id="password"
+            v-model="password"
+            type="password"
+            autocomplete="current-password"
+            required
+            placeholder="Enter your password"
+          />
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="form-field">
+          <label for="totp">Authentication Code</label>
+          <input
+            id="totp"
+            v-model="totpCode"
+            type="text"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            required
+            autofocus
+            placeholder="Enter 6-digit code"
+            maxlength="6"
+          />
+          <p class="field-hint">Enter the code from your authenticator app</p>
+        </div>
+      </template>
 
       <button type="submit" class="btn-primary" :disabled="submitting">
         {{ submitting ? 'Signing in...' : 'Sign in' }}
+      </button>
+
+      <button v-if="needsTOTP" type="button" class="btn-back" @click="needsTOTP = false; totpCode = ''; error = ''">
+        Back to login
       </button>
     </form>
   </div>
@@ -167,5 +197,28 @@ async function handleSubmit() {
 .btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.btn-back {
+  width: 100%;
+  padding: var(--space-2) var(--space-4);
+  margin-top: var(--space-2);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+}
+
+.btn-back:hover {
+  color: var(--text-primary);
+  border-color: var(--border-active);
+  background: var(--bg-hover);
+}
+
+.field-hint {
+  margin-top: var(--space-1);
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 </style>

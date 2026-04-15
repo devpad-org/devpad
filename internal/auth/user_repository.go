@@ -13,6 +13,9 @@ type UserRepository interface {
 	GetByUsername(ctx context.Context, username string) (*User, error)
 	GetByID(ctx context.Context, id int64) (*User, error)
 	Count(ctx context.Context) (int, error)
+	List(ctx context.Context) ([]*User, error)
+	Update(ctx context.Context, user *User) error
+	Delete(ctx context.Context, id int64) error
 }
 
 type userRepository struct {
@@ -27,8 +30,8 @@ func NewUserRepository(db *sql.DB) UserRepository {
 func (r *userRepository) Create(ctx context.Context, user *User) error {
 	now := time.Now()
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO users (username, email, password, is_admin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		user.Username, user.Email, user.Password, user.IsAdmin, now, now,
+		`INSERT INTO users (username, email, password, is_admin, totp_secret, totp_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		user.Username, user.Email, user.Password, user.IsAdmin, user.TOTPSecret, user.TOTPEnabled, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting user: %w", err)
@@ -48,9 +51,9 @@ func (r *userRepository) Create(ctx context.Context, user *User) error {
 func (r *userRepository) GetByUsername(ctx context.Context, username string) (*User, error) {
 	user := &User{}
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, username, email, password, is_admin, created_at, updated_at FROM users WHERE username = ?`,
+		`SELECT id, username, email, password, is_admin, totp_secret, totp_enabled, created_at, updated_at FROM users WHERE username = ?`,
 		username,
-	).Scan(&user.ID, &user.Username, &user.Email, &user.Password, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.Email, &user.Password, &user.IsAdmin, &user.TOTPSecret, &user.TOTPEnabled, &user.CreatedAt, &user.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -63,9 +66,9 @@ func (r *userRepository) GetByUsername(ctx context.Context, username string) (*U
 func (r *userRepository) GetByID(ctx context.Context, id int64) (*User, error) {
 	user := &User{}
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, username, email, password, is_admin, created_at, updated_at FROM users WHERE id = ?`,
+		`SELECT id, username, email, password, is_admin, totp_secret, totp_enabled, created_at, updated_at FROM users WHERE id = ?`,
 		id,
-	).Scan(&user.ID, &user.Username, &user.Email, &user.Password, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.Email, &user.Password, &user.IsAdmin, &user.TOTPSecret, &user.TOTPEnabled, &user.CreatedAt, &user.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -82,4 +85,44 @@ func (r *userRepository) Count(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("counting users: %w", err)
 	}
 	return count, nil
+}
+
+func (r *userRepository) List(ctx context.Context) ([]*User, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, username, email, password, is_admin, totp_secret, totp_enabled, created_at, updated_at FROM users ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []*User
+	for rows.Next() {
+		u := &User{}
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Password, &u.IsAdmin, &u.TOTPSecret, &u.TOTPEnabled, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning user row: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+func (r *userRepository) Update(ctx context.Context, user *User) error {
+	now := time.Now()
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE users SET username = ?, email = ?, password = ?, is_admin = ?, totp_secret = ?, totp_enabled = ?, updated_at = ? WHERE id = ?`,
+		user.Username, user.Email, user.Password, user.IsAdmin, user.TOTPSecret, user.TOTPEnabled, now, user.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("updating user: %w", err)
+	}
+	user.UpdatedAt = now
+	return nil
+}
+
+func (r *userRepository) Delete(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("deleting user: %w", err)
+	}
+	return nil
 }

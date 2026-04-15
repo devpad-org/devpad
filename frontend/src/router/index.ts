@@ -3,6 +3,8 @@ import { useAuthStore } from '@/stores/auth'
 import HomeView from '@/views/HomeView.vue'
 import LoginView from '@/views/LoginView.vue'
 import SetupView from '@/views/SetupView.vue'
+import AdminView from '@/views/AdminView.vue'
+import SettingsView from '@/views/SettingsView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -11,6 +13,12 @@ export const router = createRouter({
       path: '/',
       name: 'home',
       component: HomeView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/settings',
+      name: 'settings',
+      component: SettingsView,
       meta: { requiresAuth: true },
     },
     {
@@ -24,6 +32,12 @@ export const router = createRouter({
       name: 'setup',
       component: SetupView,
       meta: { guest: true },
+    },
+    {
+      path: '/admin',
+      name: 'admin',
+      component: AdminView,
+      meta: { requiresAuth: true, requiresAdmin: true },
     },
   ],
 })
@@ -51,6 +65,11 @@ router.beforeEach(async (to) => {
   // Redirect to login if auth required and not logged in
   if (to.meta.requiresAuth && !auth.isAuthenticated) {
     return { name: 'login' }
+  }
+
+  // Redirect non-admins away from admin pages
+  if (to.meta.requiresAdmin && !auth.isAdmin) {
+    return { name: 'home' }
   }
 
   // Redirect to home if logged in and visiting guest page

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -26,6 +27,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 		email TEXT NOT NULL UNIQUE,
 		password TEXT NOT NULL,
 		is_admin BOOLEAN NOT NULL DEFAULT 0,
+		totp_secret TEXT NOT NULL DEFAULT '',
+		totp_enabled BOOLEAN NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -106,7 +109,7 @@ func TestService_LoginLogout(t *testing.T) {
 	}
 
 	// Login with correct credentials
-	session, err := svc.Login(ctx, "admin", "password123")
+	session, err := svc.Login(ctx, "admin", "password123", "")
 	if err != nil {
 		t.Fatalf("login failed: %v", err)
 	}
@@ -162,7 +165,7 @@ func TestService_LoginInvalidCredentials(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := svc.Login(ctx, tt.username, tt.password)
+			_, err := svc.Login(ctx, tt.username, tt.password, "")
 			if err != ErrInvalidCredentials {
 				t.Errorf("expected ErrInvalidCredentials, got: %v", err)
 			}
@@ -296,5 +299,84 @@ func TestMiddleware_RequireAuth_NoSession(t *testing.T) {
 	}
 	if called {
 		t.Error("handler should not have been called")
+	}
+}
+
+func TestMiddleware_RequireAdmin_NonAdmin(t *testing.T) {
+	svc, db := setupTestService(t)
+	ctx := context.Background()
+
+	// Create admin via setup, then create a non-admin user
+	_, err := svc.Setup(ctx, "admin", "admin@test.com", "password123")
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	// Create non-admin user directly
+	userRepo := NewUserRepository(db)
+	nonAdmin := &User{Username: "regular", Email: "regular@test.com", Password: "hash", IsAdmin: false}
+	if err := userRepo.Create(ctx, nonAdmin); err != nil {
+		t.Fatalf("creating user: %v", err)
+	}
+
+	// Login as non-admin
+	sessionRepo := NewSessionRepository(db)
+	session := &Session{UserID: nonAdmin.ID, ExpiresAt: time.Now().Add(sessionDuration)}
+	if err := sessionRepo.Create(ctx, session); err != nil {
+		t.Fatalf("creating session: %v", err)
+	}
+
+	middleware := NewMiddleware(svc)
+	called := false
+	handler := middleware.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/test", nil)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: session.Token})
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected status 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Error("handler should not have been called for non-admin")
+	}
+}
+
+func TestMiddleware_RequireAdmin_Admin(t *testing.T) {
+	svc, _ := setupTestService(t)
+	ctx := context.Background()
+
+	_, err := svc.Setup(ctx, "admin", "admin@test.com", "password123")
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	session, err := svc.Login(ctx, "admin", "password123", "")
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+
+	middleware := NewMiddleware(svc)
+	called := false
+	handler := middleware.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/test", nil)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: session.Token})
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !called {
+		t.Error("handler should have been called for admin")
 	}
 }

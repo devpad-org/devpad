@@ -6,8 +6,10 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/devpad-org/devpad/internal/admin"
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/database"
+	"github.com/devpad-org/devpad/internal/settings"
 	"github.com/devpad-org/devpad/web"
 )
 
@@ -35,8 +37,16 @@ func New(cfg Config) (*Server, error) {
 	authHandler := auth.NewHandler(authService)
 	authMiddleware := auth.NewMiddleware(authService)
 
+	// Admin layer
+	adminService := admin.NewService(userRepo)
+	adminHandler := admin.NewHandler(adminService)
+
+	// Settings layer
+	settingsService := settings.NewService(userRepo)
+	settingsHandler := settings.NewHandler(settingsService)
+
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, authMiddleware)
+	registerRoutes(mux, authHandler, authMiddleware, adminHandler, settingsHandler)
 
 	s := &Server{
 		httpServer: &http.Server{
@@ -76,7 +86,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, adminHandler *admin.Handler, settingsHandler *settings.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
@@ -86,6 +96,20 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 
 	// Protected API routes
 	mux.Handle("GET /api/auth/me", authMiddleware.RequireAuth(http.HandlerFunc(authHandler.HandleMe)))
+
+	// Settings API routes (authenticated users)
+	mux.Handle("POST /api/settings/password", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleChangePassword)))
+	mux.Handle("GET /api/settings/mfa", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGetMFAStatus)))
+	mux.Handle("POST /api/settings/mfa/setup", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleTOTPSetup)))
+	mux.Handle("POST /api/settings/mfa/enable", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleTOTPEnable)))
+	mux.Handle("POST /api/settings/mfa/disable", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleTOTPDisable)))
+
+	// Admin API routes
+	mux.Handle("GET /api/admin/users", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleListUsers)))
+	mux.Handle("POST /api/admin/users", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleCreateUser)))
+	mux.Handle("PUT /api/admin/users/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleUpdateUser)))
+	mux.Handle("POST /api/admin/users/{id}/reset-password", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleResetPassword)))
+	mux.Handle("DELETE /api/admin/users/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleDeleteUser)))
 
 	// Serve embedded frontend for all other routes
 	mux.Handle("/", web.Handler())

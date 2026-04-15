@@ -5,10 +5,16 @@ export interface User {
   username: string
   email: string
   isAdmin: boolean
+  totpEnabled: boolean
 }
 
 interface AuthResponse {
   user: User
+}
+
+interface LoginResponse {
+  user?: User
+  totpRequired?: boolean
 }
 
 interface SetupCheckResponse {
@@ -24,8 +30,8 @@ export const authApi = {
     return apiClient.post<AuthResponse>('/api/auth/setup', { username, email, password })
   },
 
-  login(username: string, password: string): Promise<AuthResponse> {
-    return apiClient.post<AuthResponse>('/api/auth/login', { username, password })
+  login(username: string, password: string, totpCode?: string): Promise<LoginResponse> {
+    return apiClient.post<LoginResponse>('/api/auth/login', { username, password, totpCode })
   },
 
   logout(): Promise<void> {
