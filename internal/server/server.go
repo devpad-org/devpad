@@ -10,6 +10,7 @@ import (
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/settings"
+	"github.com/devpad-org/devpad/internal/workspace"
 	"github.com/devpad-org/devpad/web"
 )
 
@@ -45,8 +46,13 @@ func New(cfg Config) (*Server, error) {
 	settingsService := settings.NewService(userRepo)
 	settingsHandler := settings.NewHandler(settingsService)
 
+	// Workspace layer
+	workspaceRepo := workspace.NewRepository(db.Conn())
+	workspaceService := workspace.NewService(workspaceRepo)
+	workspaceHandler := workspace.NewHandler(workspaceService)
+
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, authMiddleware, adminHandler, settingsHandler)
+	registerRoutes(mux, authHandler, authMiddleware, adminHandler, settingsHandler, workspaceHandler)
 
 	s := &Server{
 		httpServer: &http.Server{
@@ -86,7 +92,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, adminHandler *admin.Handler, settingsHandler *settings.Handler) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
@@ -110,6 +116,13 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("PUT /api/admin/users/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleUpdateUser)))
 	mux.Handle("POST /api/admin/users/{id}/reset-password", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleResetPassword)))
 	mux.Handle("DELETE /api/admin/users/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleDeleteUser)))
+
+	// Workspace API routes
+	mux.Handle("GET /api/workspaces", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleList)))
+	mux.Handle("POST /api/workspaces", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleCreate)))
+	mux.Handle("GET /api/workspaces/{id}", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGet)))
+	mux.Handle("PUT /api/workspaces/{id}", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleUpdate)))
+	mux.Handle("DELETE /api/workspaces/{id}", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleDelete)))
 
 	// Serve embedded frontend for all other routes
 	mux.Handle("/", web.Handler())
