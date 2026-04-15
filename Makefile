@@ -1,4 +1,4 @@
-.PHONY: all build clean dev frontend backend install-frontend
+.PHONY: all build clean dev frontend backend install-frontend test
 
 # Default target
 all: build
@@ -27,6 +27,11 @@ dev-frontend:
 dev-backend:
 	go run .
 
+# Run unit tests with coverage
+test:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
+
 # Clean build artifacts
 clean:
-	rm -rf bin/ web/dist/
+	rm -rf bin/ web/dist/ coverage.out
