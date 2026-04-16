@@ -44,6 +44,9 @@ func main() {
 	// Filesystem watch WebSocket
 	mux.HandleFunc("GET /ws/watch", handleWatch(fsWatcher))
 
+	// Port proxy — allows the Devpad server to reach any port through the agent.
+	mux.HandleFunc("/proxy/", handlePortProxy)
+
 	addr := ":" + port
 	log.Printf("devpad-agent listening on %s (workspace: %s)", addr, workspaceRoot)
 	if err := http.ListenAndServe(addr, mux); err != nil {

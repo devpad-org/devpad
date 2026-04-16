@@ -6,6 +6,7 @@ import FileExplorer from '@/components/ide/FileExplorer.vue'
 import EditorPanel from '@/components/ide/EditorPanel.vue'
 import TerminalPanel from '@/components/ide/TerminalPanel.vue'
 import AiAgentPanel from '@/components/ide/AiAgentPanel.vue'
+import PreviewPanel from '@/components/ide/PreviewPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -17,6 +18,7 @@ const error = ref<string | null>(null)
 const activeFile = ref<string | null>(null)
 const terminalMinimized = ref(false)
 const agentVisible = ref(true)
+const previewVisible = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
 
 onMounted(async () => {
@@ -37,6 +39,19 @@ onMounted(async () => {
 
 function handleFileSelect(path: string) {
   activeFile.value = path
+}
+
+async function openPreviewNewTab() {
+  const portStr = prompt('Enter port to preview:', '3000')
+  if (!portStr) return
+  const port = Number(portStr)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return
+  try {
+    const url = await workspaceApi.getPreviewURL(workspace.value!.id, port)
+    window.open(url, '_blank')
+  } catch {
+    // Silently fail — user can use the panel for error details
+  }
 }
 
 function handleBack() {
@@ -98,6 +113,29 @@ function handleBack() {
         <div class="titlebar-separator" />
         <button
           class="titlebar-toggle"
+          :class="{ active: previewVisible }"
+          @click="previewVisible = !previewVisible"
+          title="Toggle preview panel"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="20" height="14" x="2" y="3" rx="2" />
+            <path d="M8 21h8" />
+            <path d="M12 17v4" />
+          </svg>
+        </button>
+        <button
+          class="titlebar-btn"
+          @click="openPreviewNewTab"
+          title="Open preview in new tab"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 3h6v6" />
+            <path d="M10 14 21 3" />
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+          </svg>
+        </button>
+        <button
+          class="titlebar-toggle"
           :class="{ active: agentVisible }"
           @click="agentVisible = !agentVisible"
           title="Toggle AI agent"
@@ -141,6 +179,14 @@ function handleBack() {
           />
         </div>
       </div>
+
+      <!-- Right panel: Preview -->
+      <aside v-if="previewVisible" class="ide-preview">
+        <PreviewPanel
+          :workspace-id="workspace?.id ?? 0"
+          @close="previewVisible = false"
+        />
+      </aside>
 
       <!-- Right panel: AI Agent -->
       <aside v-if="agentVisible" class="ide-agent">
@@ -376,6 +422,14 @@ function handleBack() {
   flex-shrink: 0;
   border-left: 1px solid var(--border-default);
   overflow-y: auto;
+  background: var(--bg-surface);
+}
+
+.ide-preview {
+  width: 480px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border-default);
+  overflow: hidden;
   background: var(--bg-surface);
 }
 </style>

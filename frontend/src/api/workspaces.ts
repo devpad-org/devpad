@@ -80,4 +80,9 @@ export const workspaceApi = {
   rename(id: number, oldPath: string, newPath: string): Promise<void> {
     return apiClient.post(`/api/workspaces/${id}/file/rename`, { oldPath, newPath })
   },
+
+  async getPreviewURL(id: number, port: number): Promise<string> {
+    const res = await apiClient.post<{ url: string }>(`/api/workspaces/${id}/preview`, { port })
+    return res.url
+  },
 }
