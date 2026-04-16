@@ -19,13 +19,18 @@ type mockContainerManager struct {
 	lastCreatedID string
 }
 
-func (m *mockContainerManager) Create(_ context.Context, name string) (string, error) {
+func (m *mockContainerManager) Create(_ context.Context, name, volumeName string) (string, error) {
 	m.lastCreatedID = "mock-container-" + name
 	return m.lastCreatedID, nil
 }
 func (m *mockContainerManager) Start(_ context.Context, _ string) error  { return nil }
 func (m *mockContainerManager) Stop(_ context.Context, _ string) error   { return nil }
 func (m *mockContainerManager) Remove(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) GetIP(_ context.Context, _ string) (string, error) {
+	return "172.17.0.2", nil
+}
+func (m *mockContainerManager) CreateVolume(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) RemoveVolume(_ context.Context, _ string) error { return nil }
 func (m *mockContainerManager) Exec(_ context.Context, _ string, _ []string) (string, error) {
 	return "mock-exec-id", nil
 }
@@ -63,6 +68,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		description TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('creating','running','stopped')),
 		container_id TEXT NOT NULL DEFAULT '',
+		volume_name TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);

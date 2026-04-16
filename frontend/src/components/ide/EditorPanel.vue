@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { workspaceApi } from '@/api/workspaces'
 
 const props = defineProps<{
+  workspaceId: number
   filePath: string | null
 }>()
 
@@ -10,126 +12,31 @@ const fileName = computed(() => {
   return props.filePath.split('/').pop()
 })
 
-const placeholderContent = computed(() => {
-  if (!props.filePath) return ''
-  if (props.filePath.endsWith('.vue')) return vueTemplate
-  if (props.filePath.endsWith('.ts')) return tsTemplate
-  if (props.filePath.endsWith('.css')) return cssTemplate
-  if (props.filePath.endsWith('.json')) return jsonTemplate
-  if (props.filePath.endsWith('.md')) return mdTemplate
-  if (props.filePath.endsWith('.html')) return htmlTemplate
-  return genericTemplate
-})
+const content = ref('')
+const loading = ref(false)
+const error = ref<string | null>(null)
 
 const lines = computed(() => {
-  if (!placeholderContent.value) return []
-  return placeholderContent.value.split('\n')
+  if (!content.value) return []
+  return content.value.split('\n')
 })
 
-const vueTemplate = `<script setup lang="ts">
-import { ref } from 'vue'
-
-const count = ref(0)
-
-function increment() {
-  count.value++
-}
-<\/script>
-
-<template>
-  <div class="container">
-    <h1>Hello World</h1>
-    <p>Count: {{ count }}</p>
-    <button @click="increment">+1</button>
-  </div>
-</template>
-
-<style scoped>
-.container {
-  padding: 2rem;
-}
-</style>`
-
-const tsTemplate = `import { createApp } from 'vue'
-import { createPinia } from 'pinia'
-import App from './App.vue'
-import router from './router'
-
-const app = createApp(App)
-
-app.use(createPinia())
-app.use(router)
-
-app.mount('#app')`
-
-const cssTemplate = `:root {
-  --primary: #00d4ff;
-  --bg: #0e1117;
-  --surface: #141821;
-  --text: #e4e4e7;
-}
-
-body {
-  margin: 0;
-  font-family: system-ui, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-}
-
-.container {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 1rem;
-}`
-
-const jsonTemplate = `{
-  "name": "my-project",
-  "version": "1.0.0",
-  "private": true,
-  "scripts": {
-    "dev": "vite",
-    "build": "vue-tsc && vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "vue": "^3.4.0",
-    "pinia": "^2.1.0",
-    "vue-router": "^4.2.0"
+watch(() => props.filePath, async (newPath) => {
+  if (!newPath) {
+    content.value = ''
+    return
   }
-}`
-
-const mdTemplate = `# Project
-
-A modern web application built with Vue 3.
-
-## Getting Started
-
-\`\`\`bash
-npm install
-npm run dev
-\`\`\`
-
-## Features
-
-- Fast build with Vite
-- Type-safe with TypeScript
-- State management with Pinia`
-
-const htmlTemplate = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>My App</title>
-</head>
-<body>
-  <div id="app"></div>
-  <script type="module" src="/src/main.ts"><\/script>
-</body>
-</html>`
-
-const genericTemplate = `// File contents will appear here
-// when connected to a workspace`
+  loading.value = true
+  error.value = null
+  try {
+    content.value = await workspaceApi.readFile(props.workspaceId, newPath)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Failed to load file'
+    content.value = ''
+  } finally {
+    loading.value = false
+  }
+}, { immediate: true })
 </script>
 
 <template>
@@ -144,7 +51,7 @@ const genericTemplate = `// File contents will appear here
     </div>
 
     <!-- Editor content -->
-    <div v-if="filePath" class="editor-content">
+    <div v-if="filePath && !loading && !error" class="editor-content">
       <div class="editor-gutter">
         <span
           v-for="(_, i) in lines"
@@ -153,8 +60,18 @@ const genericTemplate = `// File contents will appear here
         >{{ i + 1 }}</span>
       </div>
       <div class="editor-code">
-        <pre><code>{{ placeholderContent }}</code></pre>
+        <pre><code>{{ content }}</code></pre>
       </div>
+    </div>
+
+    <!-- Loading state -->
+    <div v-else-if="loading" class="editor-empty">
+      <span class="loading-text">Loading...</span>
+    </div>
+
+    <!-- Error state -->
+    <div v-else-if="error" class="editor-empty">
+      <span class="error-text">{{ error }}</span>
     </div>
 
     <!-- Empty state -->
@@ -335,5 +252,15 @@ kbd {
   font-family: var(--font-sans);
   font-size: 0.7rem;
   color: var(--text-secondary);
+}
+
+.loading-text {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.error-text {
+  color: var(--accent-rose);
+  font-size: 0.85rem;
 }
 </style>

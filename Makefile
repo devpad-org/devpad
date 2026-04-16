@@ -1,4 +1,4 @@
-.PHONY: all build clean dev frontend backend install-frontend test
+.PHONY: all build clean dev frontend backend install-frontend test agent workspace-image
 
 # Default target
 all: build
@@ -14,6 +14,16 @@ frontend: install-frontend
 # Build Go binary (requires frontend to be built first)
 backend:
 	go build -o bin/devpad .
+
+# Build the workspace agent binary (linux/amd64 for containers)
+agent:
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/devpad-agent ./cmd/agent
+
+# Build the workspace Docker image (requires agent to be built first)
+workspace-image: agent
+	cp bin/devpad-agent docker/workspace/devpad-agent
+	docker build -t devpad-workspace:latest docker/workspace/
+	rm docker/workspace/devpad-agent
 
 # Full build: frontend then backend
 build: frontend backend

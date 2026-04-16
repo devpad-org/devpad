@@ -8,15 +8,24 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 )
 
+// WorkspaceImage is the Docker image used for workspace containers.
+// Build it from docker/workspace/Dockerfile.
+const WorkspaceImage = "devpad-workspace:latest"
+
 // Manager handles Docker container lifecycle operations.
 type Manager interface {
-	Create(ctx context.Context, name string) (containerID string, err error)
+	Create(ctx context.Context, name, volumeName string) (containerID string, err error)
 	Start(ctx context.Context, containerID string) error
 	Stop(ctx context.Context, containerID string) error
 	Remove(ctx context.Context, containerID string) error
+	GetIP(ctx context.Context, containerID string) (string, error)
+	CreateVolume(ctx context.Context, name string) error
+	RemoveVolume(ctx context.Context, name string) error
 	Exec(ctx context.Context, containerID string, cmd []string) (execID string, err error)
 	ExecAttach(ctx context.Context, execID string) (HijackedResponse, error)
 	ExecResize(ctx context.Context, execID string, height, width uint) error
@@ -42,18 +51,21 @@ func NewManager() (Manager, error) {
 	return &manager{cli: cli}, nil
 }
 
-func (m *manager) Create(ctx context.Context, name string) (string, error) {
-	// Ensure the ubuntu:24.04 image is available
-	if err := m.pullImageIfNeeded(ctx, "ubuntu:24.04"); err != nil {
-		return "", fmt.Errorf("pulling image: %w", err)
-	}
-
+func (m *manager) Create(ctx context.Context, name, volumeName string) (string, error) {
 	containerName := fmt.Sprintf("devpad-ws-%s", name)
+
+	var mounts []mount.Mount
+	if volumeName != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeVolume,
+			Source: volumeName,
+			Target: "/workspace",
+		})
+	}
 
 	resp, err := m.cli.ContainerCreate(ctx,
 		&container.Config{
-			Image: "ubuntu:24.04",
-			Cmd:   []string{"sleep", "infinity"},
+			Image: WorkspaceImage,
 			Tty:   true,
 			Labels: map[string]string{
 				"devpad.managed": "true",
@@ -61,6 +73,7 @@ func (m *manager) Create(ctx context.Context, name string) (string, error) {
 		},
 		&container.HostConfig{
 			RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+			Mounts:        mounts,
 		},
 		nil, nil, containerName,
 	)
@@ -126,6 +139,38 @@ func (m *manager) ExecResize(ctx context.Context, execID string, height, width u
 		Width:  width,
 	}); err != nil {
 		return fmt.Errorf("resizing exec: %w", err)
+	}
+	return nil
+}
+
+func (m *manager) GetIP(ctx context.Context, containerID string) (string, error) {
+	info, err := m.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return "", fmt.Errorf("inspecting container: %w", err)
+	}
+	ip := info.NetworkSettings.IPAddress
+	if ip == "" {
+		return "", fmt.Errorf("container has no IP address")
+	}
+	return ip, nil
+}
+
+func (m *manager) CreateVolume(ctx context.Context, name string) error {
+	_, err := m.cli.VolumeCreate(ctx, volume.CreateOptions{
+		Name: name,
+		Labels: map[string]string{
+			"devpad.managed": "true",
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("creating volume: %w", err)
+	}
+	return nil
+}
+
+func (m *manager) RemoveVolume(ctx context.Context, name string) error {
+	if err := m.cli.VolumeRemove(ctx, name, true); err != nil {
+		return fmt.Errorf("removing volume: %w", err)
 	}
 	return nil
 }

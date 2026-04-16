@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { workspaceApi } from '@/api/workspaces'
 
 const props = defineProps<{
+  workspaceId: number
   workspaceName: string
 }>()
 
@@ -15,51 +17,56 @@ interface FileNode {
   type: 'file' | 'directory'
   children?: FileNode[]
   expanded?: boolean
+  loading?: boolean
 }
 
-// Placeholder file tree
-const files = ref<FileNode[]>([
-  {
-    name: 'src',
-    path: '/src',
-    type: 'directory',
-    expanded: true,
-    children: [
-      {
-        name: 'components',
-        path: '/src/components',
-        type: 'directory',
-        expanded: false,
-        children: [
-          { name: 'App.vue', path: '/src/components/App.vue', type: 'file' },
-          { name: 'Header.vue', path: '/src/components/Header.vue', type: 'file' },
-          { name: 'Sidebar.vue', path: '/src/components/Sidebar.vue', type: 'file' },
-        ],
-      },
-      { name: 'main.ts', path: '/src/main.ts', type: 'file' },
-      { name: 'router.ts', path: '/src/router.ts', type: 'file' },
-      { name: 'styles.css', path: '/src/styles.css', type: 'file' },
-    ],
-  },
-  {
-    name: 'public',
-    path: '/public',
-    type: 'directory',
-    expanded: false,
-    children: [
-      { name: 'index.html', path: '/public/index.html', type: 'file' },
-      { name: 'favicon.ico', path: '/public/favicon.ico', type: 'file' },
-    ],
-  },
-  { name: 'package.json', path: '/package.json', type: 'file' },
-  { name: 'tsconfig.json', path: '/tsconfig.json', type: 'file' },
-  { name: 'README.md', path: '/README.md', type: 'file' },
-])
-
+const files = ref<FileNode[]>([])
+const loading = ref(true)
 const selectedPath = ref<string | null>(null)
 
-function toggleDir(node: FileNode) {
-  node.expanded = !node.expanded
+onMounted(async () => {
+  await loadRootDirectory()
+  loading.value = false
+})
+
+async function loadRootDirectory() {
+  try {
+    const res = await workspaceApi.listFiles(props.workspaceId, '/workspace')
+    files.value = mapEntries(res.entries)
+  } catch {
+    files.value = []
+  }
+}
+
+function mapEntries(entries: { name: string; path: string; type: string }[]): FileNode[] {
+  return entries.map(e => ({
+    name: e.name,
+    path: e.path,
+    type: e.type as 'file' | 'directory',
+    children: e.type === 'directory' ? [] : undefined,
+    expanded: false,
+    loading: false,
+  }))
+}
+
+async function toggleDir(node: FileNode) {
+  if (node.expanded) {
+    node.expanded = false
+    return
+  }
+
+  if (node.children && node.children.length === 0) {
+    node.loading = true
+    try {
+      const res = await workspaceApi.listFiles(props.workspaceId, node.path)
+      node.children = mapEntries(res.entries)
+    } catch {
+      node.children = []
+    }
+    node.loading = false
+  }
+
+  node.expanded = true
 }
 
 function selectFile(node: FileNode) {

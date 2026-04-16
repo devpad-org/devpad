@@ -87,6 +87,7 @@ function handleBack() {
       <!-- Sidebar: File Explorer -->
       <aside class="ide-sidebar">
         <FileExplorer
+          :workspace-id="workspace?.id ?? 0"
           :workspace-name="workspace?.name ?? ''"
           @select="handleFileSelect"
         />
@@ -95,7 +96,7 @@ function handleBack() {
       <!-- Center + Bottom -->
       <div class="ide-center">
         <div class="ide-editor-area">
-          <EditorPanel :file-path="activeFile" />
+          <EditorPanel :workspace-id="workspace?.id ?? 0" :file-path="activeFile" />
         </div>
         <div class="ide-terminal-area" :class="{ minimized: terminalMinimized }">
           <TerminalPanel

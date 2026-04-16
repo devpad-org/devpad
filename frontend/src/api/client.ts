@@ -24,6 +24,7 @@ class ApiClient {
     if (!res.ok) {
       throw new Error(`POST ${path} failed: ${res.status}`)
     }
+    if (res.status === 204) return undefined as T
     return res.json() as Promise<T>
   }
 
@@ -36,6 +37,7 @@ class ApiClient {
     if (!res.ok) {
       throw new Error(`PUT ${path} failed: ${res.status}`)
     }
+    if (res.status === 204) return undefined as T
     return res.json() as Promise<T>
   }
 
