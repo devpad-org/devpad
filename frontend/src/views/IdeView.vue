@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { workspaceApi, type Workspace } from '@/api/workspaces'
 import FileExplorer from '@/components/ide/FileExplorer.vue'
@@ -54,7 +54,24 @@ const preview = useResizable({
   maxSize: 800,
 })
 
+function handleGlobalKeydown(e: KeyboardEvent) {
+  const ctrl = e.ctrlKey || e.metaKey
+
+  if (ctrl && !e.shiftKey && !e.altKey && e.key === 's') {
+    e.preventDefault()
+    editorPanel.value?.saveActiveFile()
+  } else if (ctrl && e.shiftKey && !e.altKey && e.key === 'S') {
+    e.preventDefault()
+    editorPanel.value?.saveAllFiles()
+  } else if (ctrl && !e.shiftKey && !e.altKey && e.key === '`') {
+    e.preventDefault()
+    terminalMinimized.value = !terminalMinimized.value
+  }
+}
+
 onMounted(async () => {
+  window.addEventListener('keydown', handleGlobalKeydown)
+
   const id = Number(route.params.id)
   if (isNaN(id)) {
     router.push({ name: 'home' })
@@ -68,6 +85,10 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleGlobalKeydown)
 })
 
 function handleFileSelect(path: string) {

@@ -202,12 +202,8 @@ watch(() => props.filePath, async (newPath) => {
           <span class="shortcut-label">Save File</span>
         </div>
         <div class="shortcut-row">
-          <kbd>Ctrl</kbd> + <kbd>P</kbd>
-          <span class="shortcut-label">Quick Open</span>
-        </div>
-        <div class="shortcut-row">
-          <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd>
-          <span class="shortcut-label">Command Palette</span>
+          <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd>
+          <span class="shortcut-label">Save All Files</span>
         </div>
         <div class="shortcut-row">
           <kbd>Ctrl</kbd> + <kbd>`</kbd>

@@ -46,37 +46,6 @@ function refreshPreview() {
   }
 }
 
-async function openInNewTab() {
-  if (!isValidPort.value) return
-
-  port.value = Number(portInput.value)
-  loading.value = true
-  error.value = null
-
-  try {
-    const url = await workspaceApi.getPreviewURL(props.workspaceId, port.value)
-    window.open(url, '_blank')
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to open preview'
-  } finally {
-    loading.value = false
-  }
-}
-
-function openExternal() {
-  if (previewUrl.value) {
-    // Strip the token query parameter — the preview cookie handles auth
-    // after the initial iframe load, so the token is no longer needed.
-    try {
-      const url = new URL(previewUrl.value)
-      url.searchParams.delete('token')
-      window.open(url.toString(), '_blank')
-    } catch {
-      window.open(previewUrl.value, '_blank')
-    }
-  }
-}
-
 function handlePortKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter') {
     openPreview()
@@ -113,18 +82,6 @@ onBeforeUnmount(() => {
           </svg>
         </button>
         <button
-          class="preview-btn preview-btn-popout"
-          :disabled="!isValidPort || loading"
-          @click="openInNewTab"
-          title="Open in new tab"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M15 3h6v6" />
-            <path d="M10 14 21 3" />
-            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-          </svg>
-        </button>
-        <button
           class="preview-btn"
           :disabled="!previewUrl"
           @click="refreshPreview"
@@ -135,18 +92,6 @@ onBeforeUnmount(() => {
             <path d="M3 3v5h5" />
             <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
             <path d="M16 16h5v5" />
-          </svg>
-        </button>
-        <button
-          class="preview-btn"
-          :disabled="!previewUrl"
-          @click="openExternal"
-          title="Open in new tab"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M15 3h6v6" />
-            <path d="M10 14 21 3" />
-            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
           </svg>
         </button>
         <div class="preview-separator" />
@@ -279,15 +224,6 @@ onBeforeUnmount(() => {
 .preview-btn-primary:hover:not(:disabled) {
   color: var(--accent-green);
   background: rgba(16, 185, 129, 0.1);
-}
-
-.preview-btn-popout {
-  color: var(--accent-blue);
-}
-
-.preview-btn-popout:hover:not(:disabled) {
-  color: var(--accent-blue);
-  background: rgba(0, 212, 255, 0.1);
 }
 
 .preview-separator {
