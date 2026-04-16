@@ -13,6 +13,7 @@ const router = useRouter()
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
 const showDeleteModal = ref(false)
+const deleting = ref(false)
 const editTarget = ref<Workspace | null>(null)
 const deleteTarget = ref<Workspace | null>(null)
 
@@ -56,13 +57,15 @@ function openWorkspace(workspace: Workspace) {
 
 async function handleDelete() {
   if (!deleteTarget.value) return
+  deleting.value = true
   try {
     await store.deleteWorkspace(deleteTarget.value.id)
+    showDeleteModal.value = false
+    deleteTarget.value = null
   } catch {
     // error handled by store
   } finally {
-    showDeleteModal.value = false
-    deleteTarget.value = null
+    deleting.value = false
   }
 }
 </script>
@@ -136,6 +139,7 @@ async function handleDelete() {
       :message="`Are you sure you want to delete &quot;${deleteTarget?.name}&quot;? This action cannot be undone.`"
       confirm-label="Delete"
       variant="danger"
+      :loading="deleting"
       @confirm="handleDelete"
       @cancel="showDeleteModal = false"
     />

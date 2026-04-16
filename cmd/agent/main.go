@@ -15,6 +15,12 @@ func main() {
 		port = defaultPort
 	}
 
+	// Start filesystem watcher
+	fsWatcher, err := newWatcher()
+	if err != nil {
+		log.Fatalf("starting filesystem watcher: %v", err)
+	}
+
 	mux := http.NewServeMux()
 
 	// Health check
@@ -30,6 +36,9 @@ func main() {
 
 	// Terminal WebSocket
 	mux.HandleFunc("GET /ws/terminal", handleTerminal)
+
+	// Filesystem watch WebSocket
+	mux.HandleFunc("GET /ws/watch", handleWatch(fsWatcher))
 
 	addr := ":" + port
 	log.Printf("devpad-agent listening on %s (workspace: %s)", addr, workspaceRoot)

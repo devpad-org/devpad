@@ -11,11 +11,20 @@ defineProps<{
   node: FileNode
   depth: number
   selectedPath: string | null
+  creatingIn: string | null
+  creatingType: 'file' | 'directory' | null
+  creatingName: string
 }>()
 
 const emit = defineEmits<{
   toggle: [node: FileNode]
   select: [node: FileNode]
+  'create-file': [parentPath: string]
+  'create-dir': [parentPath: string]
+  delete: [node: FileNode]
+  'update:creatingName': [value: string]
+  'confirm-create': []
+  'cancel-create': []
 }>()
 
 interface IconInfo {
@@ -34,6 +43,15 @@ function getIconInfo(name: string): IconInfo {
   if (name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.svg') || name.endsWith('.ico')) return { color: '#a78bfa', type: 'image' }
   return { color: '#6b7280', type: 'generic' }
 }
+
+function stopPropagation(e: Event, action: () => void) {
+  e.stopPropagation()
+  action()
+}
+
+function focusInput(e: { el: HTMLElement }) {
+  e.el.focus()
+}
 </script>
 
 <template>
@@ -44,20 +62,6 @@ function getIconInfo(name: string): IconInfo {
       :style="{ paddingLeft: `${depth * 16 + 12}px` }"
       @click="emit('toggle', node)"
     >
-      <svg
-        class="tree-chevron"
-        :class="{ expanded: node.expanded }"
-        width="10"
-        height="10"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      >
-        <polyline points="9 18 15 12 9 6" />
-      </svg>
       <!-- Directory icon -->
       <svg class="dir-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">
         <path
@@ -77,6 +81,23 @@ function getIconInfo(name: string): IconInfo {
         />
       </svg>
       <span class="tree-label">{{ node.name }}</span>
+      <span class="tree-actions">
+        <button class="action-btn" title="New File" @click="stopPropagation($event, () => emit('create-file', node.path))">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" /><path d="M12 18v-6" /><path d="M9 15h6" />
+          </svg>
+        </button>
+        <button class="action-btn" title="New Folder" @click="stopPropagation($event, () => emit('create-dir', node.path))">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 10v6" /><path d="M9 13h6" /><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+          </svg>
+        </button>
+        <button class="action-btn action-btn--danger" title="Delete" @click="stopPropagation($event, () => emit('delete', node))">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+          </svg>
+        </button>
+      </span>
     </div>
     <div
       v-else
@@ -135,16 +156,56 @@ function getIconInfo(name: string): IconInfo {
         </template>
       </svg>
       <span class="tree-label">{{ node.name }}</span>
+      <span class="tree-actions">
+        <button class="action-btn action-btn--danger" title="Delete" @click="stopPropagation($event, () => emit('delete', node))">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+          </svg>
+        </button>
+      </span>
     </div>
     <template v-if="node.type === 'directory' && node.expanded && node.children">
+      <!-- Inline creation input -->
+      <div
+        v-if="creatingIn === node.path && creatingType"
+        class="tree-item tree-create-input"
+        :style="{ paddingLeft: `${(depth + 1) * 16 + 12}px` }"
+      >
+        <svg v-if="creatingType === 'directory'" class="dir-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">
+          <path d="M4 4h5l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" stroke="#e8a87c" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <svg v-else class="file-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">
+          <rect x="2" y="2" width="20" height="20" rx="3" fill="none" stroke="#6b7280" stroke-width="1.5" />
+          <path d="M8 8h8M8 12h8M8 16h5" stroke="#6b7280" stroke-width="1.5" fill="none" stroke-linecap="round" />
+        </svg>
+        <input
+          class="create-input"
+          type="text"
+          :value="creatingName"
+          :placeholder="creatingType === 'directory' ? 'folder name' : 'file name'"
+          @input="emit('update:creatingName', ($event.target as HTMLInputElement).value)"
+          @keydown.enter="emit('confirm-create')"
+          @keydown.escape="emit('cancel-create')"
+          @vue:mounted="focusInput"
+        />
+      </div>
       <FileTreeNode
         v-for="child in node.children"
         :key="child.path"
         :node="child"
         :depth="depth + 1"
         :selected-path="selectedPath"
+        :creating-in="creatingIn"
+        :creating-type="creatingType"
+        :creating-name="creatingName"
         @toggle="emit('toggle', $event)"
         @select="emit('select', $event)"
+        @create-file="emit('create-file', $event)"
+        @create-dir="emit('create-dir', $event)"
+        @delete="emit('delete', $event)"
+        @update:creating-name="emit('update:creatingName', $event)"
+        @confirm-create="emit('confirm-create')"
+        @cancel-create="emit('cancel-create')"
       />
     </template>
   </div>
@@ -168,18 +229,63 @@ function getIconInfo(name: string): IconInfo {
   background: var(--bg-hover);
 }
 
+.tree-item:hover .tree-actions {
+  opacity: 1;
+}
+
+.tree-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease;
+}
+
+.action-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.action-btn--danger:hover {
+  color: var(--accent-rose);
+}
+
+.tree-create-input {
+  cursor: default;
+}
+
+.create-input {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 4px;
+  border: 1px solid var(--accent-blue);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-family: var(--font-sans);
+  outline: none;
+}
+
 .tree-file.selected {
   background: rgba(0, 212, 255, 0.08);
   color: var(--accent-blue);
-}
-
-.tree-chevron {
-  flex-shrink: 0;
-  transition: transform var(--transition-fast);
-}
-
-.tree-chevron.expanded {
-  transform: rotate(90deg);
 }
 
 .dir-icon {

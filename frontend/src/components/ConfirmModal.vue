@@ -6,6 +6,7 @@ defineProps<{
   confirmLabel?: string
   cancelLabel?: string
   variant?: 'danger' | 'default'
+  loading?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -58,15 +59,17 @@ const emit = defineEmits<{
             <p class="modal-message">{{ message }}</p>
           </div>
           <div class="modal-actions">
-            <button class="btn btn-cancel" @click="emit('cancel')">
+            <button class="btn btn-cancel" :disabled="loading" @click="emit('cancel')">
               {{ cancelLabel ?? 'Cancel' }}
             </button>
             <button
               class="btn btn-confirm"
               :class="variant ?? 'default'"
+              :disabled="loading"
               @click="emit('confirm')"
             >
-              {{ confirmLabel ?? 'Confirm' }}
+              <span v-if="loading" class="spinner" />
+              {{ loading ? 'Deleting...' : (confirmLabel ?? 'Confirm') }}
             </button>
           </div>
         </div>
@@ -181,6 +184,32 @@ const emit = defineEmits<{
 
 .btn-confirm.default:hover {
   background: color-mix(in srgb, var(--accent-blue) 85%, white);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Transition */
