@@ -1,4 +1,4 @@
-import { ref, shallowRef, onBeforeUnmount, watch, type Ref } from 'vue'
+import { ref, shallowRef, reactive, onBeforeUnmount, watch, type Ref } from 'vue'
 import * as monaco from 'monaco-editor'
 
 // Register Devpad dark theme once
@@ -120,7 +120,7 @@ export function useMonacoEditor(
   // Per-file models and view states
   const models = new Map<string, monaco.editor.ITextModel>()
   const viewStates = new Map<string, monaco.editor.ICodeEditorViewState | null>()
-  const dirtyFiles = new Set<string>()
+  const dirtyFiles = reactive(new Set<string>())
   let activeFilePath: string | null = null
 
   registerDevpadTheme()

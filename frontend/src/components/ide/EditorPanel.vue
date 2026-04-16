@@ -242,13 +242,13 @@ watch(() => props.filePath, async (newPath) => {
 .tab-icon {
   display: flex;
   align-items: center;
-  width: 8px;
+  width: 6px;
 }
 
 .dot-modified {
   display: block;
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--text-muted);
 }
