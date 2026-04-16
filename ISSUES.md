@@ -105,42 +105,23 @@ Comprehensive review covering security flaws, resource leaks, dead code, and cod
 
 ## Medium
 
-### 9. Expired Sessions Never Cleaned Up
+### 9. ~~Expired Sessions Never Cleaned Up~~ ✅ RESOLVED
 
-**File:** `internal/auth/session_repository.go:82-87`
+**File:** `internal/server/server.go`
 
-```go
-func (r *sessionRepository) DeleteExpired(ctx context.Context) error {
-    _, err := r.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, time.Now())
-    // ...
-}
-```
+**Was:** The `DeleteExpired` method existed in `session_repository.go` but was never called. Expired sessions accumulated in the database indefinitely.
 
-The `DeleteExpired` method exists and is correctly implemented, but it is never called anywhere in the codebase. Expired sessions accumulate in the database indefinitely, growing the `sessions` table without bound.
-
-**Fix:** Add a periodic cleanup goroutine in the server startup:
-
-```go
-go func() {
-    ticker := time.NewTicker(1 * time.Hour)
-    defer ticker.Stop()
-    for range ticker.C {
-        if err := sessionRepo.DeleteExpired(context.Background()); err != nil {
-            log.Printf("session cleanup: %v", err)
-        }
-    }
-}()
-```
+**Fix applied:** Added a periodic cleanup goroutine in `server.New()` that runs every hour, calling `sessionRepo.DeleteExpired()` and `previewRepo.DeleteExpired()`. The goroutine is cancelled gracefully on server shutdown via a `context.WithCancel`.
 
 ---
 
-### 10. Expired Preview Tokens Never Cleaned Up
+### 10. ~~Expired Preview Tokens Never Cleaned Up~~ ✅ RESOLVED
 
-**File:** `internal/preview/repository.go`
+**File:** `internal/server/server.go`
 
-Same issue as sessions. The `DeleteExpired` method exists for preview tokens but is never called. Stale tokens accumulate forever.
+**Was:** The `DeleteExpired` method existed in `preview/repository.go` but was never called. Stale tokens accumulated forever.
 
-**Fix:** Same approach — periodic cleanup goroutine.
+**Fix applied:** Handled in the same cleanup goroutine as issue #9 — expired preview tokens are purged every hour alongside expired sessions.
 
 ---
 

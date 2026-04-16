@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/time/rate"
 
@@ -26,6 +27,7 @@ type Server struct {
 	redirectServer *http.Server
 	db             *database.DB
 	cfg            Config
+	cleanupCancel  context.CancelFunc
 }
 
 // New creates a new Server with the given configuration.
@@ -104,6 +106,26 @@ func New(cfg Config) (*Server, error) {
 	// Apply max body size limit (1MB) to prevent memory exhaustion from oversized requests.
 	handler = maxBodySize(handler, 1<<20)
 
+	// Start periodic cleanup of expired sessions and preview tokens.
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := sessionRepo.DeleteExpired(cleanupCtx); err != nil {
+					log.Printf("session cleanup: %v", err)
+				}
+				if err := previewRepo.DeleteExpired(cleanupCtx); err != nil {
+					log.Printf("preview token cleanup: %v", err)
+				}
+			case <-cleanupCtx.Done():
+				return
+			}
+		}
+	}()
+
 	addr := fmt.Sprintf(":%d", cfg.Port)
 
 	s := &Server{
@@ -111,8 +133,9 @@ func New(cfg Config) (*Server, error) {
 			Addr:    addr,
 			Handler: handler,
 		},
-		db:  db,
-		cfg: cfg,
+		db:            db,
+		cfg:           cfg,
+		cleanupCancel: cleanupCancel,
 	}
 
 	return s, nil
@@ -187,6 +210,10 @@ func (s *Server) startRedirectServer() {
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.cleanupCancel != nil {
+		s.cleanupCancel()
+	}
+
 	if s.redirectServer != nil {
 		if err := s.redirectServer.Shutdown(ctx); err != nil {
 			return fmt.Errorf("redirect server shutdown: %w", err)
