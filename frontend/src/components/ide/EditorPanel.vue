@@ -1,38 +1,121 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, reactive, watch, nextTick } from 'vue'
 import { workspaceApi } from '@/api/workspaces'
+import { useMonacoEditor } from '@/composables/useMonacoEditor'
+
+interface Tab {
+  path: string
+  name: string
+}
 
 const props = defineProps<{
   workspaceId: number
   filePath: string | null
 }>()
 
-const fileName = computed(() => {
-  if (!props.filePath) return null
-  return props.filePath.split('/').pop()
-})
+const emit = defineEmits<{
+  (e: 'save', path: string, content: string): void
+  (e: 'activeChange', path: string | null): void
+}>()
 
-const content = ref('')
+const openTabs = reactive<Tab[]>([])
+const activeTab = ref<string | null>(null)
+
+const editorContainer = ref<HTMLElement | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
+const saving = ref(false)
 
-const lines = computed(() => {
-  if (!content.value) return []
-  return content.value.split('\n')
+const {
+  editor,
+  isDirty,
+  setContent,
+  switchToFile,
+  closeFile,
+  isFileDirty,
+  markClean,
+  getContent,
+} = useMonacoEditor(editorContainer)
+
+function tabName(path: string): string {
+  return path.split('/').pop() ?? path
+}
+
+function selectTab(path: string) {
+  if (activeTab.value === path) return
+  activeTab.value = path
+  switchToFile(path)
+  emit('activeChange', path)
+}
+
+function closeTab(path: string, event?: MouseEvent) {
+  event?.stopPropagation()
+
+  const idx = openTabs.findIndex((t) => t.path === path)
+  if (idx === -1) return
+
+  openTabs.splice(idx, 1)
+  closeFile(path)
+
+  if (activeTab.value === path) {
+    // Switch to an adjacent tab, preferring the one to the left
+    const nextTab = openTabs[Math.min(idx, openTabs.length - 1)] ?? null
+    activeTab.value = nextTab?.path ?? null
+
+    if (nextTab) {
+      switchToFile(nextTab.path)
+    }
+    emit('activeChange', activeTab.value)
+  }
+}
+
+async function saveActiveFile() {
+  if (!activeTab.value || !isDirty.value || saving.value) return
+  saving.value = true
+  try {
+    const content = getContent()
+    await workspaceApi.writeFile(props.workspaceId, activeTab.value, content)
+    markClean(activeTab.value)
+    emit('save', activeTab.value, content)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Failed to save file'
+  } finally {
+    saving.value = false
+  }
+}
+
+// Register Ctrl+S keybinding once editor is available
+watch(editor, (ed) => {
+  if (!ed) return
+  ed.addCommand(
+    2048 | 49, // CtrlCmd + S
+    () => saveActiveFile(),
+  )
 })
 
+// When parent requests a file, open it as a tab
 watch(() => props.filePath, async (newPath) => {
-  if (!newPath) {
-    content.value = ''
+  if (!newPath) return
+
+  // If already open, just switch to it
+  const existing = openTabs.find((t) => t.path === newPath)
+  if (existing) {
+    selectTab(newPath)
     return
   }
+
+  // Open new tab
   loading.value = true
   error.value = null
   try {
-    content.value = await workspaceApi.readFile(props.workspaceId, newPath)
+    const content = await workspaceApi.readFile(props.workspaceId, newPath)
+    openTabs.push({ path: newPath, name: tabName(newPath) })
+    activeTab.value = newPath
+    await nextTick()
+    setContent(content, newPath)
+    emit('activeChange', newPath)
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to load file'
-    content.value = ''
   } finally {
     loading.value = false
   }
@@ -43,29 +126,35 @@ watch(() => props.filePath, async (newPath) => {
   <div class="editor-panel">
     <!-- Tab bar -->
     <div class="editor-tabs">
-      <div v-if="fileName" class="editor-tab active">
-        <span class="tab-name">{{ fileName }}</span>
-        <button class="tab-close" title="Close">×</button>
+      <div
+        v-for="tab in openTabs"
+        :key="tab.path"
+        class="editor-tab"
+        :class="{ active: tab.path === activeTab }"
+        @click="selectTab(tab.path)"
+      >
+        <span class="tab-icon">
+          <span v-if="isFileDirty(tab.path)" class="dot-modified" />
+        </span>
+        <span class="tab-name">{{ tab.name }}</span>
+        <button
+          class="tab-close"
+          title="Close"
+          @click="closeTab(tab.path, $event)"
+        >×</button>
       </div>
-      <div v-else class="editor-tab-empty" />
+      <div v-if="openTabs.length === 0" class="editor-tab-empty" />
     </div>
 
-    <!-- Editor content -->
-    <div v-if="filePath && !loading && !error" class="editor-content">
-      <div class="editor-gutter">
-        <span
-          v-for="(_, i) in lines"
-          :key="i"
-          class="line-number"
-        >{{ i + 1 }}</span>
-      </div>
-      <div class="editor-code">
-        <pre><code>{{ content }}</code></pre>
-      </div>
-    </div>
+    <!-- Monaco editor container -->
+    <div
+      v-show="activeTab && !loading && !error"
+      ref="editorContainer"
+      class="editor-container"
+    />
 
     <!-- Loading state -->
-    <div v-else-if="loading" class="editor-empty">
+    <div v-if="loading" class="editor-empty">
       <span class="loading-text">Loading...</span>
     </div>
 
@@ -74,12 +163,16 @@ watch(() => props.filePath, async (newPath) => {
       <span class="error-text">{{ error }}</span>
     </div>
 
-    <!-- Empty state -->
-    <div v-else class="editor-empty">
+    <!-- Empty state (no tabs open) -->
+    <div v-else-if="openTabs.length === 0" class="editor-empty">
       <div class="empty-logo">
         <span class="logo-text">Devpad</span>
       </div>
       <div class="empty-shortcuts">
+        <div class="shortcut-row">
+          <kbd>Ctrl</kbd> + <kbd>S</kbd>
+          <span class="shortcut-label">Save File</span>
+        </div>
         <div class="shortcut-row">
           <kbd>Ctrl</kbd> + <kbd>P</kbd>
           <span class="shortcut-label">Quick Open</span>
@@ -113,25 +206,51 @@ watch(() => props.filePath, async (newPath) => {
   border-bottom: 1px solid var(--border-default);
   min-height: 34px;
   flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.editor-tabs::-webkit-scrollbar {
+  height: 0;
 }
 
 .editor-tab {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 0 var(--space-3);
   font-size: 0.78rem;
   color: var(--text-secondary);
   border-right: 1px solid var(--border-default);
+  box-shadow: inset 0 -1px 0 transparent;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: color var(--transition-fast), background var(--transition-fast);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.editor-tab:hover {
+  background: var(--bg-hover);
 }
 
 .editor-tab.active {
   color: var(--text-primary);
   background: var(--bg-primary);
-  border-bottom: 1px solid var(--accent-blue);
-  margin-bottom: -1px;
+  box-shadow: inset 0 -1px 0 var(--accent-blue);
+}
+
+.tab-icon {
+  display: flex;
+  align-items: center;
+  width: 8px;
+}
+
+.dot-modified {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
 }
 
 .tab-close {
@@ -152,49 +271,10 @@ watch(() => props.filePath, async (newPath) => {
   color: var(--text-primary);
 }
 
-/* Editor content */
-.editor-content {
-  display: flex;
+/* Monaco container */
+.editor-container {
   flex: 1;
-  overflow: auto;
-  font-family: var(--font-mono);
-  font-size: 0.82rem;
-  line-height: 1.65;
-}
-
-.editor-gutter {
-  display: flex;
-  flex-direction: column;
-  padding: var(--space-3) 0;
-  padding-right: var(--space-3);
-  text-align: right;
-  min-width: 48px;
-  background: var(--bg-primary);
-  border-right: 1px solid var(--border-default);
-  user-select: none;
-  flex-shrink: 0;
-}
-
-.line-number {
-  padding: 0 var(--space-2);
-  color: var(--text-muted);
-  font-size: 0.75rem;
-}
-
-.editor-code {
-  flex: 1;
-  padding: var(--space-3) var(--space-4);
-  overflow-x: auto;
-}
-
-.editor-code pre {
-  margin: 0;
-}
-
-.editor-code code {
-  color: var(--text-secondary);
-  font-size: 0.82rem;
-  line-height: 1.65;
+  overflow: hidden;
 }
 
 /* Empty state */

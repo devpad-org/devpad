@@ -96,7 +96,11 @@ function handleBack() {
       <!-- Center + Bottom -->
       <div class="ide-center">
         <div class="ide-editor-area">
-          <EditorPanel :workspace-id="workspace?.id ?? 0" :file-path="activeFile" />
+          <EditorPanel
+            :workspace-id="workspace?.id ?? 0"
+            :file-path="activeFile"
+            @active-change="(p: string | null) => activeFile = p"
+          />
         </div>
         <div class="ide-terminal-area" :class="{ minimized: terminalMinimized }">
           <TerminalPanel
