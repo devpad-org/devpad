@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useAdminStore } from '@/stores/admin'
 import { useAuthStore } from '@/stores/auth'
 import type { AdminUser } from '@/api/admin'
+import { aiApi, type AIProvider } from '@/api/ai'
 
 const admin = useAdminStore()
 const auth = useAuthStore()
@@ -25,9 +26,56 @@ const editForm = ref({ username: '', email: '', isAdmin: false })
 // Reset password form
 const resetForm = ref({ password: '', confirmPassword: '' })
 
+// AI Providers
+const aiProviders = ref<AIProvider[]>([])
+const aiProviderForms = ref<Record<string, { apiKey: string; enabled: boolean }>>({})
+const aiLoading = ref(false)
+const aiError = ref('')
+const aiSuccess = ref('')
+const aiSubmitting = ref<string | null>(null)
+
 onMounted(() => {
   admin.fetchUsers()
+  loadAIProviders()
 })
+
+async function loadAIProviders() {
+  aiLoading.value = true
+  try {
+    const res = await aiApi.listProviders()
+    aiProviders.value = res.providers
+    for (const p of res.providers) {
+      aiProviderForms.value[p.id] = { apiKey: '', enabled: p.enabled }
+    }
+  } catch {
+    aiError.value = 'Failed to load AI providers'
+  } finally {
+    aiLoading.value = false
+  }
+}
+
+async function saveProvider(providerId: string) {
+  aiError.value = ''
+  aiSuccess.value = ''
+  aiSubmitting.value = providerId
+
+  const form = aiProviderForms.value[providerId]
+  if (!form) return
+
+  try {
+    await aiApi.updateProvider(providerId, form.apiKey, form.enabled)
+    aiSuccess.value = 'Provider updated successfully'
+    const res = await aiApi.listProviders()
+    aiProviders.value = res.providers
+    for (const p of res.providers) {
+      aiProviderForms.value[p.id] = { apiKey: '', enabled: p.enabled }
+    }
+  } catch (e) {
+    aiError.value = e instanceof Error ? e.message : 'Failed to update provider'
+  } finally {
+    aiSubmitting.value = null
+  }
+}
 
 function openCreate() {
   createForm.value = { username: '', email: '', password: '', isAdmin: false }
@@ -317,6 +365,56 @@ function isSelf(user: AdminUser): boolean {
         </div>
       </div>
     </Teleport>
+
+    <!-- AI Providers Section -->
+    <div class="admin-container" style="margin-top: var(--space-6);">
+      <div class="admin-header">
+        <div>
+          <h1 class="admin-title">AI Providers</h1>
+          <p class="admin-subtitle">Configure API keys and enable AI chat providers</p>
+        </div>
+      </div>
+
+      <div v-if="aiError" class="alert alert-error">{{ aiError }}</div>
+      <div v-if="aiSuccess" class="alert alert-success">{{ aiSuccess }}</div>
+
+      <div v-if="aiLoading" class="loading-state">Loading providers...</div>
+
+      <div v-else class="ai-providers-list">
+        <div v-for="provider in aiProviders" :key="provider.id" class="ai-provider-card">
+          <div class="ai-provider-header">
+            <span class="ai-provider-name">{{ provider.name }}</span>
+            <span v-if="provider.enabled && provider.hasApiKey" class="badge-role admin">Active</span>
+            <span v-else class="badge-role user">Inactive</span>
+          </div>
+          <form @submit.prevent="saveProvider(provider.id)">
+            <div class="form-field">
+              <label :for="'apikey-' + provider.id">API Key</label>
+              <input
+                :id="'apikey-' + provider.id"
+                v-model="aiProviderForms[provider.id].apiKey"
+                type="password"
+                :placeholder="provider.hasApiKey ? '••••••••  (leave blank to keep current)' : 'Enter API key'"
+              />
+            </div>
+            <div class="ai-provider-actions">
+              <label class="toggle-label">
+                <input
+                  v-model="aiProviderForms[provider.id].enabled"
+                  type="checkbox"
+                  class="toggle-input"
+                />
+                <span class="toggle-switch"></span>
+                Enabled
+              </label>
+              <button type="submit" class="btn-primary" :disabled="aiSubmitting === provider.id">
+                {{ aiSubmitting === provider.id ? 'Saving...' : 'Save' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -674,5 +772,97 @@ function isSelf(user: AdminUser): boolean {
 .btn-delete:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.alert-success {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: var(--accent-green);
+  padding: var(--space-3);
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+}
+
+/* AI Providers */
+.ai-providers-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.ai-provider-card {
+  padding: var(--space-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+
+.ai-provider-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.ai-provider-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.ai-provider-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  background: var(--bg-surface-alt);
+  border-radius: 10px;
+  border: 1px solid var(--border-default);
+  transition: background var(--transition-fast);
+}
+
+.toggle-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+
+.toggle-input:checked + .toggle-switch {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.toggle-input:checked + .toggle-switch::after {
+  transform: translateX(16px);
+  background: var(--accent-green);
 }
 </style>

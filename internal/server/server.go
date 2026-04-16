@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/devpad-org/devpad/internal/admin"
+	"github.com/devpad-org/devpad/internal/ai"
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/container"
 	"github.com/devpad-org/devpad/internal/database"
@@ -56,8 +57,13 @@ func New(cfg Config) (*Server, error) {
 	workspaceService := workspace.NewService(workspaceRepo, containerManager)
 	workspaceHandler := workspace.NewHandler(workspaceService)
 
+	// AI layer
+	aiRepo := ai.NewRepository(db.Conn())
+	aiService := ai.NewService(aiRepo, ai.NewMistralProvider(), ai.NewMiniMaxProvider())
+	aiHandler := ai.NewHandler(aiService)
+
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, authMiddleware, adminHandler, settingsHandler, workspaceHandler)
+	registerRoutes(mux, authHandler, authMiddleware, adminHandler, settingsHandler, workspaceHandler, aiHandler)
 
 	s := &Server{
 		httpServer: &http.Server{
@@ -97,7 +103,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, aiHandler *ai.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
@@ -138,6 +144,14 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("DELETE /api/workspaces/{id}/file", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleDeleteFile)))
 	mux.Handle("POST /api/workspaces/{id}/file/mkdir", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleMkdir)))
 	mux.Handle("POST /api/workspaces/{id}/file/rename", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleRename)))
+
+	// AI API routes
+	mux.Handle("GET /api/ai/models", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListModels)))
+	mux.Handle("POST /api/ai/chat", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleChat)))
+
+	// AI admin routes
+	mux.Handle("GET /api/ai/providers", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleListProviders)))
+	mux.Handle("PUT /api/ai/providers/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleUpdateProvider)))
 
 	// Serve embedded frontend for all other routes
 	mux.Handle("/", web.Handler())

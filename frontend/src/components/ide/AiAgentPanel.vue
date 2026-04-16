@@ -1,50 +1,126 @@
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, onMounted } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+import { aiApi, type AIModel, type ChatMessage, type StreamEvent } from '@/api/ai'
 
-interface Message {
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+})
+
+function renderMarkdown(content: string): string {
+  const raw = marked.parse(content) as string
+  return DOMPurify.sanitize(raw)
+}
+
+interface DisplayMessage {
   role: 'user' | 'assistant'
   content: string
 }
 
-const messages = ref<Message[]>([
-  {
-    role: 'assistant',
-    content: 'Hello! I\'m your AI coding assistant. I can help you write code, debug issues, explain concepts, and more. What would you like to work on?',
-  },
-])
-
+const messages = ref<DisplayMessage[]>([])
 const inputValue = ref('')
 const chatBody = ref<HTMLElement | null>(null)
+const models = ref<AIModel[]>([])
+const selectedModel = ref('')
+const streaming = ref(false)
+const abortController = ref<AbortController | null>(null)
+const inputFocused = ref(false)
+const inputEl = ref<HTMLTextAreaElement | null>(null)
 
-const placeholderResponses = [
-  'I\'d be happy to help with that! This is a placeholder response — the AI agent isn\'t connected yet, but once it is I\'ll be able to assist with your code.',
-  'Great question! When the agent is fully connected, I\'ll be able to read your files, suggest changes, and run commands. For now, this is a preview of the interface.',
-  'I can see you\'re working on something interesting. Once connected to the workspace, I\'ll have full context of your project and can provide targeted help.',
-  'That\'s a common pattern in modern web development. I\'ll be able to provide detailed explanations and code examples once the agent backend is wired up.',
-]
+function autoResize() {
+  const el = inputEl.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+}
 
-let responseIndex = 0
+onMounted(async () => {
+  try {
+    const res = await aiApi.listModels()
+    models.value = res.models.filter((m) => m.configured)
+    if (models.value.length > 0) {
+      selectedModel.value = models.value[0].id
+    }
+  } catch {
+    // models will remain empty
+  }
+})
 
 async function sendMessage() {
   const text = inputValue.value.trim()
-  if (!text) return
+  if (!text || streaming.value) return
+
+  if (!selectedModel.value) {
+    messages.value.push({
+      role: 'assistant',
+      content: 'No AI model is configured. Ask an admin to set up an AI provider in Settings.',
+    })
+    await nextTick()
+    scrollToBottom()
+    return
+  }
 
   messages.value.push({ role: 'user', content: text })
   inputValue.value = ''
 
+  // Add empty assistant message for streaming
+  messages.value.push({ role: 'assistant', content: '' })
+  const assistantIdx = messages.value.length - 1
+
   await nextTick()
   scrollToBottom()
 
-  // Simulate a brief delay
-  setTimeout(async () => {
-    messages.value.push({
-      role: 'assistant',
-      content: placeholderResponses[responseIndex % placeholderResponses.length],
-    })
-    responseIndex++
+  streaming.value = true
+  const controller = new AbortController()
+  abortController.value = controller
+
+  // Build conversation history
+  const chatMessages: ChatMessage[] = messages.value
+    .slice(0, -1) // exclude the empty assistant message
+    .map((m) => ({ role: m.role, content: m.content }))
+
+  try {
+    await aiApi.chatStream(
+      selectedModel.value,
+      chatMessages,
+      (event: StreamEvent) => {
+        if (event.error) {
+          messages.value[assistantIdx].content += `\n\nError: ${event.error}`
+        } else if (event.content) {
+          messages.value[assistantIdx].content += event.content
+        }
+        scrollToBottom()
+      },
+      controller.signal,
+    )
+  } catch (err: any) {
+    if (err.name !== 'AbortError') {
+      messages.value[assistantIdx].content =
+        messages.value[assistantIdx].content || `Error: ${err.message}`
+    }
+  } finally {
+    streaming.value = false
+    abortController.value = null
     await nextTick()
     scrollToBottom()
-  }, 600)
+  }
+}
+
+function stopStreaming() {
+  abortController.value?.abort()
+}
+
+function newChat() {
+  if (streaming.value) {
+    abortController.value?.abort()
+  }
+  messages.value = []
+  inputValue.value = ''
+  if (inputEl.value) {
+    inputEl.value.style.height = 'auto'
+  }
 }
 
 function scrollToBottom() {
@@ -68,10 +144,32 @@ function scrollToBottom() {
         </span>
         <span class="agent-title">AI Agent</span>
       </div>
-      <span class="agent-badge">Preview</span>
+      <div class="agent-header-actions">
+        <select v-if="models.length > 0" v-model="selectedModel" class="model-selector">
+          <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
+        </select>
+        <span v-else class="agent-badge">No Models</span>
+        <button class="new-chat-btn" title="New Chat" @click="newChat">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
+          </svg>
+        </button>
+      </div>
     </div>
 
     <div ref="chatBody" class="agent-body">
+      <div v-if="messages.length === 0" class="chat-empty">
+        <div class="empty-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 8V4H8" />
+            <rect width="16" height="12" x="4" y="8" rx="2" />
+            <path d="m2 14 6-6 6 6" />
+            <path d="m14 8 4 4 4-4" />
+          </svg>
+        </div>
+        <p class="empty-text">Ask me anything about your code.</p>
+      </div>
       <div
         v-for="(msg, i) in messages"
         :key="i"
@@ -94,24 +192,41 @@ function scrollToBottom() {
             </svg>
           </template>
         </div>
-        <div class="msg-content">{{ msg.content }}</div>
+        <div
+          v-if="msg.role === 'assistant'"
+          class="msg-content markdown-body"
+          v-html="renderMarkdown(msg.content)"
+        />
+        <div v-else class="msg-content">{{ msg.content }}</div>
       </div>
     </div>
 
     <div class="agent-input-area">
-      <textarea
-        v-model="inputValue"
-        class="agent-input"
-        placeholder="Ask the AI agent…"
-        rows="2"
-        @keydown.enter.exact.prevent="sendMessage"
-      />
-      <button class="agent-send" @click="sendMessage" title="Send">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="m22 2-7 20-4-9-9-4Z" />
-          <path d="M22 2 11 13" />
-        </svg>
-      </button>
+        <div class="input-container" :class="{ focused: inputFocused }" @click="inputEl?.focus()">
+        <textarea
+          v-model="inputValue"
+          class="agent-input"
+          placeholder="Ask the AI agent…"
+          rows="1"
+          :disabled="streaming"
+          @keydown.enter.exact.prevent="sendMessage"
+          @focus="inputFocused = true"
+          @blur="inputFocused = false"
+          @input="autoResize"
+          ref="inputEl"
+        />
+        <button v-if="streaming" class="agent-send agent-stop" @click="stopStreaming" title="Stop">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="6" width="12" height="12" rx="2" />
+          </svg>
+        </button>
+        <button v-else class="agent-send" :class="{ active: inputValue.trim() }" @click="sendMessage" title="Send">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m22 2-7 20-4-9-9-4Z" />
+            <path d="M22 2 11 13" />
+          </svg>
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -155,6 +270,12 @@ function scrollToBottom() {
   color: var(--text-primary);
 }
 
+.agent-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+}
+
 .agent-badge {
   font-size: 0.6rem;
   font-weight: 600;
@@ -164,6 +285,68 @@ function scrollToBottom() {
   border-radius: 9999px;
   background: rgba(124, 58, 237, 0.15);
   color: var(--accent-purple);
+}
+
+.new-chat-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.new-chat-btn:hover {
+  background: var(--bg-surface-alt);
+  color: var(--text-primary);
+  border-color: var(--accent-purple);
+}
+
+.model-selector {
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+
+.model-selector:focus {
+  border-color: var(--accent-purple);
+}
+
+.chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: var(--space-2);
+  opacity: 0.5;
+}
+
+.empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+  color: white;
+}
+
+.empty-text {
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 
 .agent-body {
@@ -222,51 +405,191 @@ function scrollToBottom() {
 }
 
 .agent-input-area {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--space-2);
   padding: var(--space-3);
   border-top: 1px solid var(--border-default);
   flex-shrink: 0;
 }
 
-.agent-input {
-  flex: 1;
+.input-container {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
   background: var(--bg-surface-alt);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg, 12px);
+  padding: var(--space-2, 8px);
+  padding-left: var(--space-3, 12px);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  cursor: text;
+}
+
+.input-container.focused {
+  border-color: var(--accent-purple);
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.15);
+}
+
+.agent-input {
+  flex: 1;
+  background: transparent;
+  border: none;
   font-family: var(--font-sans);
   font-size: 0.8rem;
   color: var(--text-primary);
   resize: none;
   outline: none;
-  transition: border-color var(--transition-fast);
   line-height: 1.5;
+  max-height: 120px;
+  min-height: 22px;
+  padding: 4px 0;
 }
 
 .agent-input::placeholder {
   color: var(--text-muted);
 }
 
-.agent-input:focus {
-  border-color: var(--accent-purple);
-}
-
 .agent-send {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-md);
-  background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
-  color: white;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md, 8px);
+  background: rgba(124, 58, 237, 0.2);
+  color: var(--text-muted);
   flex-shrink: 0;
-  transition: opacity var(--transition-fast);
+  transition: all var(--transition-fast);
+  cursor: pointer;
+  border: none;
 }
 
-.agent-send:hover {
+.agent-send.active {
+  background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+  color: white;
+}
+
+.agent-send.active:hover {
   opacity: 0.85;
+  transform: scale(1.05);
+}
+
+.agent-stop {
+  background: var(--color-error, #f43f5e) !important;
+  color: white !important;
+}
+
+.agent-stop:hover {
+  opacity: 0.85;
+}
+
+/* Markdown body styles */
+.markdown-body :deep(p) {
+  margin: 0 0 0.5em;
+}
+
+.markdown-body :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.markdown-body :deep(code) {
+  font-family: var(--font-mono, 'JetBrains Mono', 'Fira Code', monospace);
+  font-size: 0.85em;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.15em 0.4em;
+  border-radius: var(--radius-sm, 4px);
+  color: var(--accent-blue, #00d4ff);
+}
+
+.markdown-body :deep(pre) {
+  margin: 0.5em 0;
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: var(--radius-md, 6px);
+  overflow-x: auto;
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+}
+
+.markdown-body :deep(pre code) {
+  background: none;
+  padding: 0;
+  color: var(--text-primary, #e0e0e0);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4) {
+  color: var(--text-primary, #e0e0e0);
+  margin: 0.6em 0 0.3em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.markdown-body :deep(h1) { font-size: 1.1em; }
+.markdown-body :deep(h2) { font-size: 1em; }
+.markdown-body :deep(h3) { font-size: 0.95em; }
+.markdown-body :deep(h4) { font-size: 0.9em; }
+
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  margin: 0.4em 0;
+  padding-left: 1.5em;
+}
+
+.markdown-body :deep(li) {
+  margin: 0.2em 0;
+}
+
+.markdown-body :deep(blockquote) {
+  margin: 0.5em 0;
+  padding: 0.3em 0.8em;
+  border-left: 3px solid var(--accent-purple, #7c3aed);
+  background: rgba(124, 58, 237, 0.06);
+  color: var(--text-secondary);
+}
+
+.markdown-body :deep(a) {
+  color: var(--accent-blue, #00d4ff);
+  text-decoration: none;
+}
+
+.markdown-body :deep(a:hover) {
+  text-decoration: underline;
+}
+
+.markdown-body :deep(hr) {
+  border: none;
+  border-top: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  margin: 0.6em 0;
+}
+
+.markdown-body :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.85em;
+}
+
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
+  padding: 0.3em 0.6em;
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  text-align: left;
+}
+
+.markdown-body :deep(th) {
+  background: rgba(255, 255, 255, 0.04);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.markdown-body :deep(strong) {
+  color: var(--text-primary, #e0e0e0);
+  font-weight: 600;
+}
+
+.markdown-body :deep(em) {
+  font-style: italic;
 }
 </style>

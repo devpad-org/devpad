@@ -30,6 +30,7 @@ onMounted(async () => {
   } finally {
     mfaLoading.value = false
   }
+
 })
 
 async function handleChangePassword() {
@@ -134,6 +135,7 @@ function cancelSetup() {
   totpCode.value = ''
   mfaError.value = ''
 }
+
 </script>
 
 <template>
@@ -627,4 +629,5 @@ function cancelSetup() {
   word-break: break-all;
   user-select: all;
 }
+
 </style>
