@@ -4,13 +4,25 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { aiApi, type AIModel, type ChatMessage, type StreamEvent } from '@/api/ai'
 
-marked.setOptions({
+marked.use({
   breaks: true,
   gfm: true,
 })
 
+const emojiMap: Record<string, string> = {
+  ':rocket:': '🚀', ':white_check_mark:': '✅', ':x:': '❌', ':warning:': '⚠️',
+  ':bulb:': '💡', ':gear:': '⚙️', ':file_folder:': '📁', ':memo:': '📝',
+  ':sparkles:': '✨', ':tada:': '🎉', ':wrench:': '🔧', ':bug:': '🐛',
+  ':zap:': '⚡', ':fire:': '🔥', ':thumbsup:': '👍', ':thumbsdown:': '👎',
+  ':eyes:': '👀', ':heavy_check_mark:': '✔️', ':arrow_right:': '➡️', ':star:': '⭐',
+  ':package:': '📦', ':lock:': '🔒', ':key:': '🔑', ':hammer:': '🔨',
+  ':link:': '🔗', ':clipboard:': '📋', ':mag:': '🔍', ':pencil:': '✏️',
+  ':green_circle:': '🟢', ':red_circle:': '🔴', ':check:': '✅', ':x_mark:': '❌',
+}
+
 function renderMarkdown(content: string): string {
-  const raw = marked.parse(content) as string
+  const withEmoji = content.replace(/:[a-z_]+:/g, (m) => emojiMap[m] || m)
+  const raw = marked.parse(withEmoji) as string
   return DOMPurify.sanitize(raw)
 }
 
@@ -18,16 +30,24 @@ const props = defineProps<{
   workspaceId: number
 }>()
 
-interface ToolUsage {
+interface TextSegment {
+  type: 'text'
+  content: string
+}
+
+interface ToolSegment {
+  type: 'tool'
   name: string
   args: string
   result?: string
 }
 
+type MessageSegment = TextSegment | ToolSegment
+
 interface DisplayMessage {
   role: 'user' | 'assistant'
   content: string
-  toolUsages?: ToolUsage[]
+  segments: MessageSegment[]
 }
 
 const messages = ref<DisplayMessage[]>([])
@@ -78,17 +98,18 @@ async function sendMessage() {
     messages.value.push({
       role: 'assistant',
       content: 'No AI model is configured. Ask an admin to set up an AI provider in Settings.',
+      segments: [{ type: 'text', content: 'No AI model is configured. Ask an admin to set up an AI provider in Settings.' }],
     })
     await nextTick()
     scrollToBottom()
     return
   }
 
-  messages.value.push({ role: 'user', content: text })
+  messages.value.push({ role: 'user', content: text, segments: [] })
   inputValue.value = ''
 
   // Add empty assistant message for streaming
-  messages.value.push({ role: 'assistant', content: '', toolUsages: [] })
+  messages.value.push({ role: 'assistant', content: '', segments: [] })
   const assistantIdx = messages.value.length - 1
 
   await nextTick()
@@ -111,28 +132,37 @@ async function sendMessage() {
       (event: StreamEvent) => {
         if (event.error) {
           messages.value[assistantIdx].content += `\n\nError: ${event.error}`
+          const segs = messages.value[assistantIdx].segments
+          const last = segs[segs.length - 1]
+          if (last && last.type === 'text') {
+            last.content += `\n\nError: ${event.error}`
+          } else {
+            segs.push({ type: 'text', content: `Error: ${event.error}` })
+          }
         } else if (event.content) {
           messages.value[assistantIdx].content += event.content
+          const segs = messages.value[assistantIdx].segments
+          const last = segs[segs.length - 1]
+          if (last && last.type === 'text') {
+            last.content += event.content
+          } else {
+            segs.push({ type: 'text', content: event.content })
+          }
         } else if (event.toolCalls) {
-          // Tool is being called
           for (const tc of event.toolCalls) {
-            const usage: ToolUsage = {
+            messages.value[assistantIdx].segments.push({
+              type: 'tool',
               name: tc.function.name,
               args: tc.function.arguments,
-            }
-            if (!messages.value[assistantIdx].toolUsages) {
-              messages.value[assistantIdx].toolUsages = []
-            }
-            messages.value[assistantIdx].toolUsages!.push(usage)
+            })
           }
         } else if (event.toolResult) {
-          // Tool result came back
-          const usages = messages.value[assistantIdx].toolUsages
-          if (usages) {
-            const usage = usages.find((u) => u.name === event.toolResult!.name && !u.result)
-            if (usage) {
-              usage.result = event.toolResult.content
-            }
+          const segs = messages.value[assistantIdx].segments
+          const toolSeg = segs.find(
+            (s): s is ToolSegment => s.type === 'tool' && s.name === event.toolResult!.name && !s.result
+          )
+          if (toolSeg) {
+            toolSeg.result = event.toolResult.content
           }
         }
         scrollToBottom()
@@ -171,7 +201,7 @@ const isThinking = computed(() => {
   if (!streaming.value) return false
   const last = messages.value[messages.value.length - 1]
   if (!last || last.role !== 'assistant') return false
-  return !last.content && (!last.toolUsages || last.toolUsages.length === 0)
+  return last.segments.length === 0
 })
 
 function scrollToBottom() {
@@ -247,20 +277,20 @@ function scrollToBottom() {
           v-if="msg.role === 'assistant'"
           class="msg-content markdown-body"
         >
-          <div v-if="msg.toolUsages && msg.toolUsages.length > 0" class="tool-usages">
-            <div v-for="(tool, ti) in msg.toolUsages" :key="ti" class="tool-usage">
+          <template v-for="(seg, si) in msg.segments" :key="si">
+            <div v-if="seg.type === 'tool'" class="tool-usage">
               <div class="tool-header">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
                 </svg>
-                <span class="tool-name">{{ tool.name }}</span>
-                <span v-if="!tool.result && streaming" class="tool-spinner" />
-                <span v-else-if="tool.result" class="tool-done">done</span>
+                <span class="tool-name">{{ seg.name }}</span>
+                <span v-if="!seg.result && streaming && i === messages.length - 1" class="tool-spinner" />
+                <span v-else-if="seg.result" class="tool-done">&#x2714;</span>
               </div>
-              <div class="tool-args">{{ formatToolArgs(tool.args) }}</div>
+              <div class="tool-args">{{ formatToolArgs(seg.args) }}</div>
             </div>
-          </div>
-          <div v-if="msg.content" v-html="renderMarkdown(msg.content)" />
+            <div v-else-if="seg.type === 'text' && seg.content" class="msg-text" v-html="renderMarkdown(seg.content)" />
+          </template>
           <div v-if="i === messages.length - 1 && isThinking" class="thinking-indicator">
             <span class="thinking-dot" />
             <span class="thinking-dot" />
@@ -663,20 +693,26 @@ function scrollToBottom() {
   font-style: italic;
 }
 
-/* Tool usage display */
-.tool-usages {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 8px;
+.msg-text :deep(p:first-child) {
+  margin-top: 0;
 }
 
+.msg-text :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+/* Tool usage display */
 .tool-usage {
   background: rgba(0, 0, 0, 0.25);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   padding: 6px 10px;
   font-size: 0.72rem;
+  margin: 6px 0;
+}
+
+.tool-usage:first-child {
+  margin-top: 0;
 }
 
 .tool-header {
@@ -692,7 +728,7 @@ function scrollToBottom() {
 }
 
 .tool-done {
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   color: var(--accent-green);
   margin-left: auto;
 }
