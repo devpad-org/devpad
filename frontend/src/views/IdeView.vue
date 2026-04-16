@@ -7,6 +7,7 @@ import EditorPanel from '@/components/ide/EditorPanel.vue'
 import TerminalPanel from '@/components/ide/TerminalPanel.vue'
 import AiAgentPanel from '@/components/ide/AiAgentPanel.vue'
 import PreviewPanel from '@/components/ide/PreviewPanel.vue'
+import { useResizable } from '@/composables/useResizable'
 
 const route = useRoute()
 const router = useRouter()
@@ -20,6 +21,38 @@ const terminalMinimized = ref(false)
 const agentVisible = ref(true)
 const previewVisible = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
+
+const sidebar = useResizable({
+  direction: 'horizontal',
+  edge: 'left',
+  initialSize: 240,
+  minSize: 160,
+  maxSize: 480,
+})
+
+const terminal = useResizable({
+  direction: 'vertical',
+  edge: 'bottom',
+  initialSize: 220,
+  minSize: 80,
+  maxSize: 600,
+})
+
+const agent = useResizable({
+  direction: 'horizontal',
+  edge: 'right',
+  initialSize: 320,
+  minSize: 240,
+  maxSize: 600,
+})
+
+const preview = useResizable({
+  direction: 'horizontal',
+  edge: 'right',
+  initialSize: 480,
+  minSize: 240,
+  maxSize: 800,
+})
 
 onMounted(async () => {
   const id = Number(route.params.id)
@@ -153,13 +186,18 @@ function handleBack() {
     <!-- Main IDE area -->
     <div class="ide-body">
       <!-- Sidebar: File Explorer -->
-      <aside class="ide-sidebar">
+      <aside class="ide-sidebar" :style="{ width: sidebar.size.value + 'px' }">
         <FileExplorer
           :workspace-id="workspace?.id ?? 0"
           :workspace-name="workspace?.name ?? ''"
           @select="handleFileSelect"
         />
       </aside>
+      <div
+        class="resize-handle resize-handle--horizontal"
+        :class="{ active: sidebar.isDragging.value }"
+        @pointerdown="sidebar.onPointerDown"
+      />
 
       <!-- Center + Bottom -->
       <div class="ide-center">
@@ -171,7 +209,16 @@ function handleBack() {
             @active-change="(p: string | null) => activeFile = p"
           />
         </div>
-        <div class="ide-terminal-area" :class="{ minimized: terminalMinimized }">
+        <div
+          class="resize-handle resize-handle--vertical"
+          :class="{ active: terminal.isDragging.value, hidden: terminalMinimized }"
+          @pointerdown="terminal.onPointerDown"
+        />
+        <div
+          class="ide-terminal-area"
+          :class="{ minimized: terminalMinimized }"
+          :style="terminalMinimized ? {} : { height: terminal.size.value + 'px' }"
+        >
           <TerminalPanel
             :workspace-id="workspace?.id ?? 0"
             :minimized="terminalMinimized"
@@ -181,17 +228,31 @@ function handleBack() {
       </div>
 
       <!-- Right panel: Preview -->
-      <aside v-if="previewVisible" class="ide-preview">
-        <PreviewPanel
-          :workspace-id="workspace?.id ?? 0"
-          @close="previewVisible = false"
+      <template v-if="previewVisible">
+        <div
+          class="resize-handle resize-handle--horizontal"
+          :class="{ active: preview.isDragging.value }"
+          @pointerdown="preview.onPointerDown"
         />
-      </aside>
+        <aside class="ide-preview" :style="{ width: preview.size.value + 'px' }">
+          <PreviewPanel
+            :workspace-id="workspace?.id ?? 0"
+            @close="previewVisible = false"
+          />
+        </aside>
+      </template>
 
       <!-- Right panel: AI Agent -->
-      <aside v-if="agentVisible" class="ide-agent">
-        <AiAgentPanel :workspace-id="workspace?.id ?? 0" />
-      </aside>
+      <template v-if="agentVisible">
+        <div
+          class="resize-handle resize-handle--horizontal"
+          :class="{ active: agent.isDragging.value }"
+          @pointerdown="agent.onPointerDown"
+        />
+        <aside class="ide-agent" :style="{ width: agent.size.value + 'px' }">
+          <AiAgentPanel :workspace-id="workspace?.id ?? 0" />
+        </aside>
+      </template>
     </div>
   </div>
 </template>
@@ -385,9 +446,7 @@ function handleBack() {
 }
 
 .ide-sidebar {
-  width: 240px;
   flex-shrink: 0;
-  border-right: 1px solid var(--border-default);
   overflow-y: auto;
   background: var(--bg-surface);
 }
@@ -407,10 +466,7 @@ function handleBack() {
 }
 
 .ide-terminal-area {
-  height: 220px;
   flex-shrink: 0;
-  border-top: 1px solid var(--border-default);
-  transition: height var(--transition-fast);
 }
 
 .ide-terminal-area.minimized {
@@ -418,18 +474,67 @@ function handleBack() {
 }
 
 .ide-agent {
-  width: 320px;
   flex-shrink: 0;
-  border-left: 1px solid var(--border-default);
   overflow-y: auto;
   background: var(--bg-surface);
 }
 
 .ide-preview {
-  width: 480px;
   flex-shrink: 0;
-  border-left: 1px solid var(--border-default);
   overflow: hidden;
   background: var(--bg-surface);
+}
+
+/* Resize handles */
+.resize-handle {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+}
+
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  transition: background var(--transition-fast);
+  border-radius: 2px;
+}
+
+.resize-handle--horizontal {
+  width: 1px;
+  background: var(--border-default);
+  cursor: col-resize;
+}
+
+.resize-handle--horizontal::after {
+  top: 0;
+  bottom: 0;
+  left: -2px;
+  width: 5px;
+}
+
+.resize-handle--vertical {
+  height: 1px;
+  background: var(--border-default);
+  cursor: row-resize;
+}
+
+.resize-handle--vertical::after {
+  left: 0;
+  right: 0;
+  top: -2px;
+  height: 5px;
+}
+
+.resize-handle--vertical.hidden {
+  display: none;
+}
+
+.resize-handle:hover::after,
+.resize-handle.active::after {
+  background: var(--accent-blue);
+}
+
+.resize-handle.active {
+  background: var(--accent-blue);
 }
 </style>
