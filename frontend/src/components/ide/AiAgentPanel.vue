@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { aiApi, type AIModel, type ChatMessage, type StreamEvent } from '@/api/ai'
@@ -167,6 +167,13 @@ function newChat() {
   }
 }
 
+const isThinking = computed(() => {
+  if (!streaming.value) return false
+  const last = messages.value[messages.value.length - 1]
+  if (!last || last.role !== 'assistant') return false
+  return !last.content && (!last.toolUsages || last.toolUsages.length === 0)
+})
+
 function scrollToBottom() {
   if (chatBody.value) {
     chatBody.value.scrollTop = chatBody.value.scrollHeight
@@ -254,6 +261,11 @@ function scrollToBottom() {
             </div>
           </div>
           <div v-if="msg.content" v-html="renderMarkdown(msg.content)" />
+          <div v-if="i === messages.length - 1 && isThinking" class="thinking-indicator">
+            <span class="thinking-dot" />
+            <span class="thinking-dot" />
+            <span class="thinking-dot" />
+          </div>
         </div>
         <div v-else class="msg-content">{{ msg.content }}</div>
       </div>
@@ -703,5 +715,42 @@ function scrollToBottom() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Thinking indicator */
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 0;
+}
+
+.thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-purple);
+  opacity: 0.4;
+  animation: thinking-pulse 1.4s ease-in-out infinite;
+}
+
+.thinking-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.thinking-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes thinking-pulse {
+  0%, 80%, 100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+    background: var(--accent-blue);
+  }
 }
 </style>
