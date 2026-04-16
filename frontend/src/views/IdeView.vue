@@ -144,7 +144,7 @@ function handleBack() {
 
       <!-- Right panel: AI Agent -->
       <aside v-if="agentVisible" class="ide-agent">
-        <AiAgentPanel />
+        <AiAgentPanel :workspace-id="workspace?.id ?? 0" />
       </aside>
     </div>
   </div>

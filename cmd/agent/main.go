@@ -34,6 +34,10 @@ func main() {
 	mux.HandleFunc("POST /api/file/mkdir", handleMkdir)
 	mux.HandleFunc("POST /api/file/rename", handleRename)
 
+	// Search and command execution
+	mux.HandleFunc("POST /api/search", handleSearchFiles)
+	mux.HandleFunc("POST /api/command", handleRunCommand)
+
 	// Terminal WebSocket
 	mux.HandleFunc("GET /ws/terminal", handleTerminal)
 

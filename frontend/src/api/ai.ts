@@ -16,12 +16,31 @@ export interface AIProvider {
 }
 
 export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'tool'
+  content: string
+  tool_calls?: ToolCall[]
+  tool_call_id?: string
+}
+
+export interface ToolCall {
+  id: string
+  type: string
+  function: {
+    name: string
+    arguments: string
+  }
+}
+
+export interface ToolResult {
+  toolCallId: string
+  name: string
   content: string
 }
 
 export interface StreamEvent {
   content?: string
+  toolCalls?: ToolCall[]
+  toolResult?: ToolResult
   done?: boolean
   error?: string
 }
@@ -57,32 +76,61 @@ export const aiApi = {
       throw new Error(err.error || `Chat request failed: ${res.status}`)
     }
 
-    const reader = res.body?.getReader()
-    if (!reader) throw new Error('No response body')
+    await readSSEStream(res, onEvent)
+  },
 
-    const decoder = new TextDecoder()
-    let buffer = ''
+  async agentStream(
+    model: string,
+    messages: ChatMessage[],
+    workspaceId: number,
+    onEvent: (event: StreamEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const res = await fetch('/api/ai/agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages, workspaceId }),
+      signal,
+    })
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
+    if (!res.ok) {
+      const err = await res.json()
+      throw new Error(err.error || `Agent request failed: ${res.status}`)
+    }
 
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
+    await readSSEStream(res, onEvent)
+  },
+}
 
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const data = line.slice(6).trim()
-        if (!data) continue
+async function readSSEStream(
+  res: Response,
+  onEvent: (event: StreamEvent) => void,
+): Promise<void> {
+  const reader = res.body?.getReader()
+  if (!reader) throw new Error('No response body')
 
-        try {
-          const event: StreamEvent = JSON.parse(data)
-          onEvent(event)
-        } catch {
-          // skip malformed events
-        }
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const data = line.slice(6).trim()
+      if (!data) continue
+
+      try {
+        const event: StreamEvent = JSON.parse(data)
+        onEvent(event)
+      } catch {
+        // skip malformed events
       }
     }
-  },
+  }
 }

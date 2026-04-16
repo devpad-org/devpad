@@ -60,7 +60,8 @@ func New(cfg Config) (*Server, error) {
 	// AI layer
 	aiRepo := ai.NewRepository(db.Conn())
 	aiService := ai.NewService(aiRepo, ai.NewMistralProvider(), ai.NewMiniMaxProvider())
-	aiHandler := ai.NewHandler(aiService)
+	toolExecutor := ai.NewToolExecutor(workspaceService)
+	aiHandler := ai.NewHandler(aiService, toolExecutor)
 
 	mux := http.NewServeMux()
 	registerRoutes(mux, authHandler, authMiddleware, adminHandler, settingsHandler, workspaceHandler, aiHandler)
@@ -148,6 +149,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	// AI API routes
 	mux.Handle("GET /api/ai/models", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListModels)))
 	mux.Handle("POST /api/ai/chat", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleChat)))
+	mux.Handle("POST /api/ai/agent", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleAgentChat)))
 
 	// AI admin routes
 	mux.Handle("GET /api/ai/providers", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleListProviders)))

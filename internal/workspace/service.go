@@ -31,6 +31,10 @@ type Service interface {
 	CreateDirectory(ctx context.Context, userID, workspaceID int64, path string) error
 	RenameFile(ctx context.Context, userID, workspaceID int64, oldPath, newPath string) error
 
+	// File search and command execution
+	SearchFiles(ctx context.Context, userID, workspaceID int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error)
+	RunCommand(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error)
+
 	// AgentAddr returns the agent's host:port for a running workspace.
 	AgentAddr(ctx context.Context, userID, workspaceID int64) (string, error)
 }
@@ -210,6 +214,22 @@ func (s *service) RenameFile(ctx context.Context, userID, workspaceID int64, old
 		return err
 	}
 	return c.RenameFile(ctx, oldPath, newPath)
+}
+
+func (s *service) SearchFiles(ctx context.Context, userID, workspaceID int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error) {
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.SearchFiles(ctx, pattern, pathFilter, maxResults)
+}
+
+func (s *service) RunCommand(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error) {
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.RunCommand(ctx, command)
 }
 
 func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (string, error) {

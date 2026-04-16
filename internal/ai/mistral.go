@@ -40,6 +40,9 @@ func (p *mistralProvider) ChatCompletionStream(ctx context.Context, apiKey strin
 		"messages": req.Messages,
 		"stream":   true,
 	}
+	if len(req.Tools) > 0 {
+		body["tools"] = req.Tools
+	}
 
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -72,11 +75,17 @@ func (p *mistralProvider) ChatCompletionStream(ctx context.Context, apiKey strin
 
 // readSSEStream reads an OpenAI-compatible SSE stream and sends events to the channel.
 // Shared by all providers that use the OpenAI chat completion format.
+// Handles both content streaming and tool call accumulation.
 func readSSEStream(body io.ReadCloser, ch chan<- StreamEvent) {
 	defer close(ch)
 	defer body.Close()
 
 	scanner := bufio.NewScanner(body)
+
+	// Accumulate tool calls across streaming chunks
+	var toolCalls []ToolCall
+	toolCallArgs := make(map[int]*strings.Builder)
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -84,6 +93,16 @@ func readSSEStream(body io.ReadCloser, ch chan<- StreamEvent) {
 		}
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
+			// Emit accumulated tool calls if any
+			if len(toolCalls) > 0 {
+				for i, tc := range toolCalls {
+					if b, ok := toolCallArgs[i]; ok {
+						tc.Function.Arguments = b.String()
+						toolCalls[i] = tc
+					}
+				}
+				ch <- StreamEvent{ToolCalls: toolCalls}
+			}
 			ch <- StreamEvent{Done: true}
 			return
 		}
@@ -91,20 +110,77 @@ func readSSEStream(body io.ReadCloser, ch chan<- StreamEvent) {
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
 				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
 		}
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-			ch <- StreamEvent{Content: chunk.Choices[0].Delta.Content}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		choice := chunk.Choices[0]
+
+		// Forward content chunks immediately
+		if choice.Delta.Content != "" {
+			ch <- StreamEvent{Content: choice.Delta.Content}
+		}
+
+		// Accumulate tool calls across chunks
+		for _, tc := range choice.Delta.ToolCalls {
+			idx := tc.Index
+			if tc.ID != "" {
+				// New tool call starting
+				for len(toolCalls) <= idx {
+					toolCalls = append(toolCalls, ToolCall{})
+				}
+				tcType := tc.Type
+				if tcType == "" {
+					tcType = "function"
+				}
+				toolCalls[idx] = ToolCall{
+					ID:   tc.ID,
+					Type: tcType,
+					Function: ToolCallFunction{
+						Name: tc.Function.Name,
+					},
+				}
+				toolCallArgs[idx] = &strings.Builder{}
+			}
+			if tc.Function.Arguments != "" {
+				if _, ok := toolCallArgs[idx]; !ok {
+					toolCallArgs[idx] = &strings.Builder{}
+				}
+				toolCallArgs[idx].WriteString(tc.Function.Arguments)
+			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		ch <- StreamEvent{Error: fmt.Sprintf("reading stream: %v", err)}
+	}
+
+	// Emit any accumulated tool calls even if we didn't get [DONE]
+	if len(toolCalls) > 0 {
+		for i, tc := range toolCalls {
+			if b, ok := toolCallArgs[i]; ok {
+				tc.Function.Arguments = b.String()
+				toolCalls[i] = tc
+			}
+		}
+		ch <- StreamEvent{ToolCalls: toolCalls}
 	}
 	ch <- StreamEvent{Done: true}
 }

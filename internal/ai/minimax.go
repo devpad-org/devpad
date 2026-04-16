@@ -37,6 +37,9 @@ func (p *minimaxProvider) ChatCompletionStream(ctx context.Context, apiKey strin
 		"messages": req.Messages,
 		"stream":   true,
 	}
+	if len(req.Tools) > 0 {
+		body["tools"] = req.Tools
+	}
 
 	payload, err := json.Marshal(body)
 	if err != nil {

@@ -1,22 +1,30 @@
 package ai
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/devpad-org/devpad/internal/auth"
 )
 
+// ToolExecutor executes AI agent tools against a workspace.
+type ToolExecutor interface {
+	ExecuteTool(ctx context.Context, userID, workspaceID int64, toolName string, args json.RawMessage) (string, error)
+}
+
 // Handler holds HTTP handlers for AI endpoints.
 type Handler struct {
-	service Service
+	service      Service
+	toolExecutor ToolExecutor
 }
 
 // NewHandler creates a new AI handler.
-func NewHandler(service Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service Service, executor ToolExecutor) *Handler {
+	return &Handler{service: service, toolExecutor: executor}
 }
 
 // HandleListModels returns all available AI models with their configuration status.
@@ -127,6 +135,142 @@ func (h *Handler) HandleChat(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()
 	}
+}
+
+// maxToolIterations limits the number of tool call rounds to prevent infinite loops.
+const maxToolIterations = 25
+
+// HandleAgentChat handles a streaming chat with tool execution via SSE.
+// This implements an agentic loop: the LLM can call tools, results are fed back,
+// and the loop continues until the LLM produces a final response or hits the limit.
+func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var req ChatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Model == "" {
+		writeError(w, http.StatusBadRequest, "model is required")
+		return
+	}
+	if len(req.Messages) == 0 {
+		writeError(w, http.StatusBadRequest, "messages are required")
+		return
+	}
+	if req.WorkspaceID == 0 {
+		writeError(w, http.StatusBadRequest, "workspaceId is required")
+		return
+	}
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return
+	}
+
+	sendEvent := func(event StreamEvent) {
+		data, _ := json.Marshal(event)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	// Prepend system prompt and add tools
+	messages := make([]Message, 0, len(req.Messages)+1)
+	messages = append(messages, Message{Role: "system", Content: agentSystemPrompt})
+	messages = append(messages, req.Messages...)
+	tools := agentTools()
+
+	for i := 0; i < maxToolIterations; i++ {
+		chatReq := ChatRequest{
+			Model:    req.Model,
+			Messages: messages,
+			Tools:    tools,
+		}
+
+		stream, err := h.service.ChatStream(r.Context(), chatReq)
+		if err != nil {
+			sendEvent(StreamEvent{Error: fmt.Sprintf("chat error: %v", err)})
+			sendEvent(StreamEvent{Done: true})
+			return
+		}
+
+		var toolCalls []ToolCall
+		var contentAccum strings.Builder
+
+		for event := range stream {
+			if event.Error != "" {
+				sendEvent(event)
+				sendEvent(StreamEvent{Done: true})
+				return
+			}
+			if event.Content != "" {
+				sendEvent(StreamEvent{Content: event.Content})
+				contentAccum.WriteString(event.Content)
+			}
+			if len(event.ToolCalls) > 0 {
+				toolCalls = event.ToolCalls
+			}
+			// Don't forward Done yet — we may need to loop
+		}
+
+		// No tool calls — the LLM is done
+		if len(toolCalls) == 0 {
+			break
+		}
+
+		// Append assistant message with tool calls to conversation
+		assistantMsg := Message{
+			Role:      "assistant",
+			ToolCalls: toolCalls,
+		}
+		if contentAccum.Len() > 0 {
+			assistantMsg.Content = contentAccum.String()
+		}
+		messages = append(messages, assistantMsg)
+
+		// Execute each tool and feed results back
+		for _, tc := range toolCalls {
+			// Notify frontend that a tool is being called
+			sendEvent(StreamEvent{ToolCalls: []ToolCall{tc}})
+
+			result, err := h.toolExecutor.ExecuteTool(
+				r.Context(), user.ID, req.WorkspaceID,
+				tc.Function.Name, json.RawMessage(tc.Function.Arguments),
+			)
+			if err != nil {
+				result = fmt.Sprintf("Error executing tool: %v", err)
+			}
+
+			// Notify frontend of the result
+			sendEvent(StreamEvent{ToolResult: &ToolResult{
+				ToolCallID: tc.ID,
+				Name:       tc.Function.Name,
+				Content:    result,
+			}})
+
+			// Append tool result message
+			messages = append(messages, Message{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+			})
+		}
+	}
+
+	sendEvent(StreamEvent{Done: true})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

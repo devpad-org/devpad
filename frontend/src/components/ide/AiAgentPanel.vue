@@ -14,9 +14,20 @@ function renderMarkdown(content: string): string {
   return DOMPurify.sanitize(raw)
 }
 
+const props = defineProps<{
+  workspaceId: number
+}>()
+
+interface ToolUsage {
+  name: string
+  args: string
+  result?: string
+}
+
 interface DisplayMessage {
   role: 'user' | 'assistant'
   content: string
+  toolUsages?: ToolUsage[]
 }
 
 const messages = ref<DisplayMessage[]>([])
@@ -48,6 +59,17 @@ onMounted(async () => {
   }
 })
 
+function formatToolArgs(args: string): string {
+  try {
+    const parsed = JSON.parse(args)
+    return Object.entries(parsed)
+      .map(([k, v]) => `${k}: ${typeof v === 'string' && v.length > 80 ? v.slice(0, 80) + '…' : v}`)
+      .join(', ')
+  } catch {
+    return args
+  }
+}
+
 async function sendMessage() {
   const text = inputValue.value.trim()
   if (!text || streaming.value) return
@@ -66,7 +88,7 @@ async function sendMessage() {
   inputValue.value = ''
 
   // Add empty assistant message for streaming
-  messages.value.push({ role: 'assistant', content: '' })
+  messages.value.push({ role: 'assistant', content: '', toolUsages: [] })
   const assistantIdx = messages.value.length - 1
 
   await nextTick()
@@ -76,20 +98,42 @@ async function sendMessage() {
   const controller = new AbortController()
   abortController.value = controller
 
-  // Build conversation history
+  // Build conversation history (exclude tool usages for the API)
   const chatMessages: ChatMessage[] = messages.value
     .slice(0, -1) // exclude the empty assistant message
     .map((m) => ({ role: m.role, content: m.content }))
 
   try {
-    await aiApi.chatStream(
+    await aiApi.agentStream(
       selectedModel.value,
       chatMessages,
+      props.workspaceId,
       (event: StreamEvent) => {
         if (event.error) {
           messages.value[assistantIdx].content += `\n\nError: ${event.error}`
         } else if (event.content) {
           messages.value[assistantIdx].content += event.content
+        } else if (event.toolCalls) {
+          // Tool is being called
+          for (const tc of event.toolCalls) {
+            const usage: ToolUsage = {
+              name: tc.function.name,
+              args: tc.function.arguments,
+            }
+            if (!messages.value[assistantIdx].toolUsages) {
+              messages.value[assistantIdx].toolUsages = []
+            }
+            messages.value[assistantIdx].toolUsages!.push(usage)
+          }
+        } else if (event.toolResult) {
+          // Tool result came back
+          const usages = messages.value[assistantIdx].toolUsages
+          if (usages) {
+            const usage = usages.find((u) => u.name === event.toolResult!.name && !u.result)
+            if (usage) {
+              usage.result = event.toolResult.content
+            }
+          }
         }
         scrollToBottom()
       },
@@ -195,8 +239,22 @@ function scrollToBottom() {
         <div
           v-if="msg.role === 'assistant'"
           class="msg-content markdown-body"
-          v-html="renderMarkdown(msg.content)"
-        />
+        >
+          <div v-if="msg.toolUsages && msg.toolUsages.length > 0" class="tool-usages">
+            <div v-for="(tool, ti) in msg.toolUsages" :key="ti" class="tool-usage">
+              <div class="tool-header">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+                </svg>
+                <span class="tool-name">{{ tool.name }}</span>
+                <span v-if="!tool.result && streaming" class="tool-spinner" />
+                <span v-else-if="tool.result" class="tool-done">done</span>
+              </div>
+              <div class="tool-args">{{ formatToolArgs(tool.args) }}</div>
+            </div>
+          </div>
+          <div v-if="msg.content" v-html="renderMarkdown(msg.content)" />
+        </div>
         <div v-else class="msg-content">{{ msg.content }}</div>
       </div>
     </div>
@@ -591,5 +649,59 @@ function scrollToBottom() {
 
 .markdown-body :deep(em) {
   font-style: italic;
+}
+
+/* Tool usage display */
+.tool-usages {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tool-usage {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  font-size: 0.72rem;
+}
+
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-purple);
+}
+
+.tool-name {
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.tool-done {
+  font-size: 0.65rem;
+  color: var(--accent-green);
+  margin-left: auto;
+}
+
+.tool-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--border-default);
+  border-top-color: var(--accent-purple);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-left: auto;
+}
+
+.tool-args {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

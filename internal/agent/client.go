@@ -200,6 +200,88 @@ func (c *Client) TerminalURL() string {
 	return strings.Replace(c.baseURL, "http://", "ws://", 1) + "/ws/terminal"
 }
 
+// SearchResult represents a single matching line from a search.
+type SearchResult struct {
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Content string `json:"content"`
+}
+
+// SearchFiles searches for a regex pattern across files in the workspace.
+func (c *Client) SearchFiles(ctx context.Context, pattern, pathFilter string, maxResults int) ([]SearchResult, error) {
+	payload, err := json.Marshal(map[string]any{
+		"pattern":     pattern,
+		"path_filter": pathFilter,
+		"max_results": maxResults,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/search", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("searching files: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+
+	var result struct {
+		Results []SearchResult `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return result.Results, nil
+}
+
+// CommandResult holds the output of a command execution.
+type CommandResult struct {
+	Output   string `json:"output"`
+	ExitCode int    `json:"exit_code"`
+	Error    string `json:"error,omitempty"`
+}
+
+// RunCommand executes a shell command in the workspace container.
+func (c *Client) RunCommand(ctx context.Context, command string) (*CommandResult, error) {
+	payload, err := json.Marshal(map[string]string{
+		"command": command,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/command", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("running command: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+
+	var result CommandResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return &result, nil
+}
+
 func parseError(resp *http.Response) error {
 	var errResp struct {
 		Error string `json:"error"`
