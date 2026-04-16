@@ -1,4 +1,4 @@
-import { ref, shallowRef, reactive, onBeforeUnmount, watch, type Ref } from 'vue'
+import { ref, shallowRef, reactive, computed, onBeforeUnmount, watch, type Ref } from 'vue'
 import * as monaco from 'monaco-editor'
 
 // Register Devpad dark theme once
@@ -266,6 +266,17 @@ export function useMonacoEditor(
     return editorInstance.value?.getValue() ?? ''
   }
 
+  function getFileContent(filePath: string): string {
+    const model = models.get(filePath)
+    return model?.getValue() ?? ''
+  }
+
+  function getDirtyFiles(): string[] {
+    return [...dirtyFiles]
+  }
+
+  const hasDirtyFiles = computed(() => dirtyFiles.size > 0)
+
   function dispose() {
     models.forEach((m) => m.dispose())
     models.clear()
@@ -289,6 +300,7 @@ export function useMonacoEditor(
   return {
     editor: editorInstance,
     isDirty,
+    hasDirtyFiles,
     createEditor,
     setContent,
     switchToFile,
@@ -296,6 +308,8 @@ export function useMonacoEditor(
     isFileDirty,
     markClean,
     getContent,
+    getFileContent,
+    getDirtyFiles,
     dispose,
   }
 }

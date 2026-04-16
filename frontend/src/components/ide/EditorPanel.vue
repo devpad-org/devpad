@@ -29,12 +29,15 @@ const saving = ref(false)
 const {
   editor,
   isDirty,
+  hasDirtyFiles,
   setContent,
   switchToFile,
   closeFile,
   isFileDirty,
   markClean,
   getContent,
+  getFileContent,
+  getDirtyFiles,
 } = useMonacoEditor(editorContainer)
 
 function tabName(path: string): string {
@@ -83,6 +86,31 @@ async function saveActiveFile() {
     saving.value = false
   }
 }
+
+async function saveAllFiles() {
+  const dirty = getDirtyFiles()
+  if (dirty.length === 0 || saving.value) return
+  saving.value = true
+  try {
+    for (const filePath of dirty) {
+      const content = getFileContent(filePath)
+      await workspaceApi.writeFile(props.workspaceId, filePath, content)
+      markClean(filePath)
+      emit('save', filePath, content)
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Failed to save files'
+  } finally {
+    saving.value = false
+  }
+}
+
+defineExpose({
+  saveActiveFile,
+  saveAllFiles,
+  isDirty,
+  hasDirtyFiles,
+})
 
 // Register Ctrl+S keybinding once editor is available
 watch(editor, (ed) => {

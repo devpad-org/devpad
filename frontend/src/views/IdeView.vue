@@ -17,6 +17,7 @@ const error = ref<string | null>(null)
 const activeFile = ref<string | null>(null)
 const terminalMinimized = ref(false)
 const agentVisible = ref(true)
+const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
 
 onMounted(async () => {
   const id = Number(route.params.id)
@@ -67,6 +68,35 @@ function handleBack() {
       </span>
       <div class="titlebar-actions">
         <button
+          class="titlebar-btn"
+          :disabled="!editorPanel?.isDirty"
+          @click="editorPanel?.saveActiveFile()"
+          title="Save (Ctrl+S)"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+            <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" />
+            <path d="M7 3v4a1 1 0 0 0 1 1h7" />
+          </svg>
+        </button>
+        <button
+          class="titlebar-btn"
+          :disabled="!editorPanel?.hasDirtyFiles"
+          @click="editorPanel?.saveAllFiles()"
+          title="Save All (Ctrl+Alt+S)"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+            <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" />
+            <path d="M7 3v4a1 1 0 0 0 1 1h7" />
+          </svg>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="save-all-badge">
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
+          </svg>
+        </button>
+        <div class="titlebar-separator" />
+        <button
           class="titlebar-toggle"
           :class="{ active: agentVisible }"
           @click="agentVisible = !agentVisible"
@@ -97,6 +127,7 @@ function handleBack() {
       <div class="ide-center">
         <div class="ide-editor-area">
           <EditorPanel
+            ref="editorPanel"
             :workspace-id="workspace?.id ?? 0"
             :file-path="activeFile"
             @active-change="(p: string | null) => activeFile = p"
@@ -240,7 +271,44 @@ function handleBack() {
 .titlebar-actions {
   margin-left: auto;
   display: flex;
+  align-items: center;
   gap: var(--space-1);
+}
+
+.titlebar-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+}
+
+.titlebar-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.titlebar-btn:disabled {
+  color: var(--text-muted);
+  opacity: 0.4;
+  cursor: default;
+}
+
+.save-all-badge {
+  position: absolute;
+  bottom: 3px;
+  right: 2px;
+}
+
+.titlebar-separator {
+  width: 1px;
+  height: 16px;
+  background: var(--border-default);
+  margin: 0 var(--space-1);
 }
 
 .titlebar-toggle {
