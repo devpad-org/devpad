@@ -175,7 +175,7 @@ func TestService_LoginInvalidCredentials(t *testing.T) {
 
 func TestHandler_SetupCheck(t *testing.T) {
 	svc, _ := setupTestService(t)
-	handler := NewHandler(svc)
+	handler := NewHandler(svc, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/setup", nil)
 	rec := httptest.NewRecorder()
@@ -192,7 +192,7 @@ func TestHandler_SetupCheck(t *testing.T) {
 
 func TestHandler_SetupAndLogin(t *testing.T) {
 	svc, _ := setupTestService(t)
-	handler := NewHandler(svc)
+	handler := NewHandler(svc, false)
 
 	// Setup
 	body := `{"username":"admin","email":"admin@test.com","password":"password123"}`
@@ -256,7 +256,7 @@ func TestHandler_SetupAndLogin(t *testing.T) {
 
 func TestHandler_SetupValidation(t *testing.T) {
 	svc, _ := setupTestService(t)
-	handler := NewHandler(svc)
+	handler := NewHandler(svc, false)
 
 	tests := []struct {
 		name   string

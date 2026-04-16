@@ -238,7 +238,7 @@ func TestService_DeleteForbidden(t *testing.T) {
 
 func TestHandler_CreateAndList(t *testing.T) {
 	svc, _ := setupTestService(t)
-	handler := NewHandler(svc)
+	handler := NewHandler(svc, nil)
 
 	// Create
 	body := `{"name":"Test Project","description":"A test"}`
@@ -278,7 +278,7 @@ func TestHandler_CreateAndList(t *testing.T) {
 
 func TestHandler_CreateValidation(t *testing.T) {
 	svc, _ := setupTestService(t)
-	handler := NewHandler(svc)
+	handler := NewHandler(svc, nil)
 
 	body := `{"name":"","description":"no name"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/workspaces", strings.NewReader(body))
@@ -293,7 +293,7 @@ func TestHandler_CreateValidation(t *testing.T) {
 
 func TestHandler_GetNotFound(t *testing.T) {
 	svc, _ := setupTestService(t)
-	handler := NewHandler(svc)
+	handler := NewHandler(svc, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/999", nil)
 	req.SetPathValue("id", "999")
@@ -308,7 +308,7 @@ func TestHandler_GetNotFound(t *testing.T) {
 
 func TestHandler_Delete(t *testing.T) {
 	svc, _ := setupTestService(t)
-	handler := NewHandler(svc)
+	handler := NewHandler(svc, nil)
 	ctx := context.Background()
 
 	ws, _ := svc.Create(ctx, 1, "ToDelete", "")

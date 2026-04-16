@@ -11,12 +11,15 @@ import (
 
 // Handler holds HTTP handlers for workspace endpoints.
 type Handler struct {
-	service Service
+	service        Service
+	allowedOrigins []string
 }
 
 // NewHandler creates a new workspace Handler.
-func NewHandler(service Service) *Handler {
-	return &Handler{service: service}
+// allowedOrigins is the list of origins permitted for WebSocket upgrades.
+// If empty, only same-origin requests (no Origin header) are allowed.
+func NewHandler(service Service, allowedOrigins []string) *Handler {
+	return &Handler{service: service, allowedOrigins: allowedOrigins}
 }
 
 // HandleList returns all workspaces for the authenticated user.

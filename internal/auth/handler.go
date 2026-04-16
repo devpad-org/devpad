@@ -11,12 +11,14 @@ const cookieName = "devpad_session"
 
 // Handler holds HTTP handlers for authentication endpoints.
 type Handler struct {
-	service Service
+	service      Service
+	secureCookie bool
 }
 
 // NewHandler creates a new auth Handler.
-func NewHandler(service Service) *Handler {
-	return &Handler{service: service}
+// secureCookie should be true when the server is running over HTTPS.
+func NewHandler(service Service, secureCookie bool) *Handler {
+	return &Handler{service: service, secureCookie: secureCookie}
 }
 
 // HandleSetupCheck returns whether initial setup is needed.
@@ -107,10 +109,15 @@ func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		Expires:  session.ExpiresAt,
 		HttpOnly: true,
+		Secure:   h.secureCookie,
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	user, _ := h.service.ValidateSession(r.Context(), session.Token)
+	user, err := h.service.ValidateSession(r.Context(), session.Token)
+	if err != nil || user == nil {
+		writeError(w, http.StatusInternalServerError, "login succeeded but failed to load user")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user": userResponse(user),
 	})
@@ -132,6 +139,7 @@ func (h *Handler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		Expires:  time.Unix(0, 0),
 		HttpOnly: true,
+		Secure:   h.secureCookie,
 		SameSite: http.SameSiteLaxMode,
 	})
 

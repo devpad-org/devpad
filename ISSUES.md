@@ -6,77 +6,45 @@ Comprehensive review covering security flaws, resource leaks, dead code, and cod
 
 ## Critical
 
-### 1. WebSocket CSRF — No Origin Validation
+### 1. ~~WebSocket CSRF — No Origin Validation~~ ✅ RESOLVED
 
-**Files:** `internal/workspace/terminal.go:14-16`, `cmd/agent/terminal.go:25`
+**Files:** `internal/workspace/terminal.go`, `internal/workspace/handler.go`, `internal/server/server.go`
 
-The WebSocket upgrader accepts connections from any origin:
+**Was:** The WebSocket upgrader accepted connections from any origin (`CheckOrigin` always returned `true`), allowing cross-site WebSocket hijacking of terminal sessions.
 
-```go
-var upgrader = websocket.Upgrader{
-    CheckOrigin: func(r *http.Request) bool {
-        return true // Same-origin enforced by auth cookie
-    },
-}
-```
-
-The comment is incorrect. Cookies are sent automatically with WebSocket upgrade requests regardless of origin. A malicious website can open a WebSocket to a logged-in user's workspace terminal and execute arbitrary commands inside their container.
-
-**Fix:** Validate the `Origin` header against the configured server domain. Reject connections where the origin doesn't match.
+**Fix applied:**
+- Replaced the package-level `upgrader` variable with an `upgrader()` method on `Handler` that validates the `Origin` header against a configured allowlist.
+- `Handler` now accepts `allowedOrigins []string` in its constructor.
+- `server.go` builds the origin list from `Config.Domain` (production: `https://domain`) or defaults to `http://localhost:{port}` and `http://127.0.0.1:{port}` (development).
+- Requests with no `Origin` header (same-origin browser requests) are still permitted.
+- Mismatched origins are rejected and logged.
 
 ---
 
-### 2. Session Cookie Missing `Secure` Flag
+### 2. ~~Session Cookie Missing `Secure` Flag~~ ✅ RESOLVED
 
-**File:** `internal/auth/handler.go:104-112`
+**Files:** `internal/auth/handler.go`, `internal/server/server.go`
 
-```go
-http.SetCookie(w, &http.Cookie{
-    Name:     cookieName,
-    Value:    session.Token,
-    Path:     "/",
-    Expires:  session.ExpiresAt,
-    HttpOnly: true,
-    SameSite: http.SameSiteLaxMode,
-    // Secure flag is missing
-})
-```
+**Was:** The session cookie never set the `Secure` flag, allowing it to be transmitted over plaintext HTTP even when the server ran in HTTPS mode.
 
-When the server runs in HTTPS mode (production), the session token is still sent over plaintext HTTP connections. Any network observer (public Wi-Fi, ISP, compromised router) can intercept the token and hijack the session.
-
-**Fix:** Set `Secure: true` when the server is configured with `--domain` (HTTPS mode). This can be passed down from server config to the auth handler.
+**Fix applied:**
+- `auth.Handler` now accepts a `secureCookie bool` parameter, set to `true` when `cfg.Domain != ""` (HTTPS mode).
+- Both the login and logout `Set-Cookie` calls now include `Secure: h.secureCookie`.
+- Also fixed the swallowed error on `ValidateSession` after login (see issue #5) — the error is now checked and a 500 is returned if session validation fails.
 
 ---
 
-### 3. Agent Path Traversal via Symlinks
+### 3. ~~Agent Path Traversal via Symlinks~~ ✅ RESOLVED
 
-**File:** `cmd/agent/filehandler.go:23-38`
+**File:** `cmd/agent/filehandler.go`
 
-```go
-func validatePath(p string) (string, error) {
-    // ...
-    cleaned := filepath.Clean(p)
-    if cleaned != workspaceRoot && !strings.HasPrefix(cleaned, workspaceRoot+"/") {
-        return "", fmt.Errorf("path must be under %s", workspaceRoot)
-    }
-    return cleaned, nil
-}
-```
+**Was:** `validatePath()` used `filepath.Clean` and a prefix check but never resolved symlinks. A symlink inside `/workspace` pointing outside could bypass the path restriction.
 
-The path validation uses `filepath.Clean` and a prefix check, but never resolves symlinks. An attacker who can create a symlink inside `/workspace` (e.g., `ln -s /etc /workspace/escape`) can read and write files anywhere on the container filesystem, including `/etc/shadow`, agent source code, or environment variables containing secrets.
-
-**Fix:** Call `filepath.EvalSymlinks()` on the cleaned path before the prefix check:
-
-```go
-resolved, err := filepath.EvalSymlinks(cleaned)
-if err != nil {
-    return "", fmt.Errorf("resolving path: %w", err)
-}
-if resolved != workspaceRoot && !strings.HasPrefix(resolved, workspaceRoot+"/") {
-    return "", fmt.Errorf("path must be under %s", workspaceRoot)
-}
-return resolved, nil
-```
+**Fix applied:**
+- `validatePath()` now calls `filepath.EvalSymlinks()` after cleaning to resolve the real path.
+- For paths that don't exist yet (new file writes), it resolves the parent directory instead.
+- If `os.Lstat` returns an unexpected error (e.g., permission denied), the request is rejected rather than falling through.
+- The function returns the resolved path so callers operate on the real filesystem location, not the symlink.
 
 ---
 
@@ -105,18 +73,13 @@ http: &http.Client{
 
 ---
 
-### 5. Error Discarded After Login
+### 5. ~~Error Discarded After Login~~ ✅ RESOLVED (fixed alongside issue #2)
 
-**File:** `internal/auth/handler.go:113`
+**File:** `internal/auth/handler.go`
 
-```go
-user, _ := h.service.ValidateSession(r.Context(), session.Token)
-writeJSON(w, http.StatusOK, map[string]any{
-    "user": userResponse(user),
-})
-```
+**Was:** After creating a session, `ValidateSession` was called with the error discarded (`user, _ := ...`). If it failed, a nil user would be serialized.
 
-After successfully creating a session, the code calls `ValidateSession` and discards the error. If the database is under load or the session was somehow not persisted, `user` will be `nil`. Passing a `nil` user to `userResponse()` will either panic (nil pointer dereference) or return a malformed JSON response.
+**Fix applied:** The error is now checked; if `ValidateSession` fails or returns nil, the handler returns a 500 error.
 
 **Fix:** Check the error and handle it:
 
@@ -590,31 +553,31 @@ The `Content` field is a string that could be arbitrarily large. Unlike the agen
 
 ## Summary
 
-| #  | Severity | Category | Issue |
-|----|----------|----------|-------|
-| 1  | Critical | Security | WebSocket CSRF — no origin validation |
-| 2  | Critical | Security | Session cookie missing `Secure` flag |
-| 3  | Critical | Security | Agent path traversal via symlinks |
-| 4  | High     | Security | No HTTP client timeout on agent client |
-| 5  | High     | Security | Error discarded after login → nil panic |
-| 6  | High     | Security | No rate limiting on authentication |
-| 7  | High     | Security | Preview iframe sandbox too permissive |
-| 8  | High     | Security | Unbounded JSON request body parsing |
-| 9  | Medium   | Security | Expired sessions never cleaned up |
-| 10 | Medium   | Security | Expired preview tokens never cleaned up |
-| 11 | Medium   | Dead Code | `pullImageIfNeeded` never called |
-| 12 | Medium   | Security | AI API keys stored in plaintext |
-| 13 | Medium   | Security | Internal error details leaked to clients |
-| 14 | Medium   | Security | SameSite Lax allows GET-based CSRF |
-| 15 | Medium   | Security | Preview cookie secret is ephemeral |
-| 16 | Medium   | Resource Leak | Agent fsnotify watcher never closed |
-| 17 | Medium   | Resource Leak | Frontend timer leak in FileExplorer |
-| 18 | Medium   | Resource Leak | Editor race condition on rapid file switching |
-| 19 | Medium   | Resource Leak | Goroutine leak in terminal WebSocket proxy |
-| 20 | Low      | Code Quality | `json.Marshal` errors swallowed |
-| 21 | Low      | Code Quality | File upload silently truncated at 10MB |
-| 22 | Low      | Code Quality | Terminal resize missing upper bounds |
-| 23 | Low      | Code Quality | No graceful shutdown in agent |
-| 24 | Low      | Code Quality | Watcher event deduplication missing |
-| 25 | Low      | Code Quality | Module-level singleton state in router |
-| 26 | Low      | Code Quality | No request body size limit on file writes |
+| #  | Severity | Category | Issue | Status |
+|----|----------|----------|-------|--------|
+| 1  | Critical | Security | WebSocket CSRF — no origin validation | ✅ Resolved |
+| 2  | Critical | Security | Session cookie missing `Secure` flag | ✅ Resolved |
+| 3  | Critical | Security | Agent path traversal via symlinks | ✅ Resolved |
+| 4  | High     | Security | No HTTP client timeout on agent client | Open |
+| 5  | High     | Security | Error discarded after login → nil panic | ✅ Resolved |
+| 6  | High     | Security | No rate limiting on authentication | Open |
+| 7  | High     | Security | Preview iframe sandbox too permissive | Open |
+| 8  | High     | Security | Unbounded JSON request body parsing | Open |
+| 9  | Medium   | Security | Expired sessions never cleaned up | Open |
+| 10 | Medium   | Security | Expired preview tokens never cleaned up | Open |
+| 11 | Medium   | Dead Code | `pullImageIfNeeded` never called | Open |
+| 12 | Medium   | Security | AI API keys stored in plaintext | Open |
+| 13 | Medium   | Security | Internal error details leaked to clients | Open |
+| 14 | Medium   | Security | SameSite Lax allows GET-based CSRF | Open |
+| 15 | Medium   | Security | Preview cookie secret is ephemeral | Open |
+| 16 | Medium   | Resource Leak | Agent fsnotify watcher never closed | Open |
+| 17 | Medium   | Resource Leak | Frontend timer leak in FileExplorer | Open |
+| 18 | Medium   | Resource Leak | Editor race condition on rapid file switching | Open |
+| 19 | Medium   | Resource Leak | Goroutine leak in terminal WebSocket proxy | Open |
+| 20 | Low      | Code Quality | `json.Marshal` errors swallowed | Open |
+| 21 | Low      | Code Quality | File upload silently truncated at 10MB | Open |
+| 22 | Low      | Code Quality | Terminal resize missing upper bounds | Open |
+| 23 | Low      | Code Quality | No graceful shutdown in agent | Open |
+| 24 | Low      | Code Quality | Watcher event deduplication missing | Open |
+| 25 | Low      | Code Quality | Module-level singleton state in router | Open |
+| 26 | Low      | Code Quality | No request body size limit on file writes | Open |

@@ -10,10 +10,25 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Same-origin enforced by auth cookie
-	},
+// upgrader returns a WebSocket upgrader that validates the Origin header
+// against the handler's allowed origins list.
+func (h *Handler) upgrader() *websocket.Upgrader {
+	return &websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				// Same-origin requests from browsers don't include an Origin header.
+				return true
+			}
+			for _, allowed := range h.allowedOrigins {
+				if origin == allowed {
+					return true
+				}
+			}
+			log.Printf("websocket: rejected origin %q", origin)
+			return false
+		},
+	}
 }
 
 // HandleTerminal upgrades to WebSocket and proxies the connection to the
@@ -33,7 +48,7 @@ func (h *Handler) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Upgrade client connection to WebSocket
-	clientConn, err := upgrader.Upgrade(w, r, nil)
+	clientConn, err := h.upgrader().Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("websocket upgrade: %v", err)
 		return
@@ -102,7 +117,7 @@ func (h *Handler) HandleWatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Upgrade client connection to WebSocket
-	clientConn, err := upgrader.Upgrade(w, r, nil)
+	clientConn, err := h.upgrader().Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("watch websocket upgrade: %v", err)
 		return

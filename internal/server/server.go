@@ -41,7 +41,8 @@ func New(cfg Config) (*Server, error) {
 	userRepo := auth.NewUserRepository(db.Conn())
 	sessionRepo := auth.NewSessionRepository(db.Conn())
 	authService := auth.NewService(userRepo, sessionRepo)
-	authHandler := auth.NewHandler(authService)
+	secureCookie := cfg.Domain != ""
+	authHandler := auth.NewHandler(authService, secureCookie)
 	authMiddleware := auth.NewMiddleware(authService)
 
 	// Admin layer
@@ -59,7 +60,24 @@ func New(cfg Config) (*Server, error) {
 	}
 	workspaceRepo := workspace.NewRepository(db.Conn())
 	workspaceService := workspace.NewService(workspaceRepo, containerManager)
-	workspaceHandler := workspace.NewHandler(workspaceService)
+
+	// Build allowed WebSocket origins from configuration.
+	var wsOrigins []string
+	if cfg.Domain != "" {
+		scheme := "https"
+		origin := scheme + "://" + cfg.Domain
+		if cfg.Port != 443 {
+			origin = fmt.Sprintf("%s://%s:%d", scheme, cfg.Domain, cfg.Port)
+		}
+		wsOrigins = append(wsOrigins, origin)
+	} else {
+		// Development mode: allow localhost on the configured port.
+		wsOrigins = append(wsOrigins,
+			fmt.Sprintf("http://localhost:%d", cfg.Port),
+			fmt.Sprintf("http://127.0.0.1:%d", cfg.Port),
+		)
+	}
+	workspaceHandler := workspace.NewHandler(workspaceService, wsOrigins)
 
 	// AI layer
 	aiRepo := ai.NewRepository(db.Conn())

@@ -19,7 +19,7 @@ type fileEntry struct {
 }
 
 // validatePath ensures the requested path is under the workspace root,
-// preventing path traversal attacks.
+// preventing path traversal attacks (including via symlinks).
 func validatePath(p string) (string, error) {
 	if p == "" {
 		return workspaceRoot, nil
@@ -35,7 +35,29 @@ func validatePath(p string) (string, error) {
 		return "", fmt.Errorf("path must be under %s", workspaceRoot)
 	}
 
-	return cleaned, nil
+	// Resolve symlinks to prevent escaping the workspace root via symlink chains.
+	// If the path doesn't exist yet (e.g. new file write), resolve the parent.
+	resolved := cleaned
+	if _, err := os.Lstat(cleaned); err == nil {
+		resolved, err = filepath.EvalSymlinks(cleaned)
+		if err != nil {
+			return "", fmt.Errorf("resolving path: %w", err)
+		}
+	} else if os.IsNotExist(err) {
+		parentResolved, err := filepath.EvalSymlinks(filepath.Dir(cleaned))
+		if err != nil {
+			return "", fmt.Errorf("resolving parent path: %w", err)
+		}
+		resolved = filepath.Join(parentResolved, filepath.Base(cleaned))
+	} else {
+		return "", fmt.Errorf("checking path: %w", err)
+	}
+
+	if resolved != workspaceRoot && !strings.HasPrefix(resolved, workspaceRoot+"/") {
+		return "", fmt.Errorf("path must be under %s", workspaceRoot)
+	}
+
+	return resolved, nil
 }
 
 func handleListFiles(w http.ResponseWriter, r *http.Request) {
