@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // DefaultPort is the port the agent listens on inside workspace containers.
@@ -33,7 +34,7 @@ type Client struct {
 func NewClient(host string, port int) *Client {
 	return &Client{
 		baseURL: fmt.Sprintf("http://%s:%d", host, port),
-		http:    &http.Client{},
+		http:    &http.Client{Timeout: 3 * time.Minute},
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"golang.org/x/time/rate"
+
 	"github.com/devpad-org/devpad/internal/admin"
 	"github.com/devpad-org/devpad/internal/ai"
 	"github.com/devpad-org/devpad/internal/auth"
@@ -90,11 +92,17 @@ func New(cfg Config) (*Server, error) {
 	previewService := preview.NewService(previewRepo, workspaceRepo, containerManager)
 	previewHandler := preview.NewHandler(previewService, cfg.PreviewDomain, cfg.Port)
 
+	// Auth rate limiter: 5 attempts per second, burst of 10 per IP.
+	authRateLimiter := auth.NewRateLimiter(rate.Limit(5), 10)
+
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, authMiddleware, adminHandler, settingsHandler, workspaceHandler, aiHandler, previewHandler)
+	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, aiHandler, previewHandler)
 
 	// Wrap the mux with host-based routing to intercept preview subdomain requests.
 	handler := hostRouter(mux, previewHandler, cfg.PreviewDomain)
+
+	// Apply max body size limit (1MB) to prevent memory exhaustion from oversized requests.
+	handler = maxBodySize(handler, 1<<20)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 
@@ -197,12 +205,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, aiHandler *ai.Handler, previewHandler *preview.Handler) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, aiHandler *ai.Handler, previewHandler *preview.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
-	mux.HandleFunc("POST /api/auth/setup", authHandler.HandleSetup)
-	mux.HandleFunc("POST /api/auth/login", authHandler.HandleLogin)
+	mux.Handle("POST /api/auth/setup", authRateLimiter.LimitFunc(authHandler.HandleSetup))
+	mux.Handle("POST /api/auth/login", authRateLimiter.LimitFunc(authHandler.HandleLogin))
 	mux.HandleFunc("POST /api/auth/logout", authHandler.HandleLogout)
 
 	// Protected API routes
@@ -212,8 +220,8 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/settings/password", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleChangePassword)))
 	mux.Handle("GET /api/settings/mfa", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGetMFAStatus)))
 	mux.Handle("POST /api/settings/mfa/setup", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleTOTPSetup)))
-	mux.Handle("POST /api/settings/mfa/enable", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleTOTPEnable)))
-	mux.Handle("POST /api/settings/mfa/disable", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleTOTPDisable)))
+	mux.Handle("POST /api/settings/mfa/enable", authMiddleware.RequireAuth(authRateLimiter.LimitFunc(settingsHandler.HandleTOTPEnable)))
+	mux.Handle("POST /api/settings/mfa/disable", authMiddleware.RequireAuth(authRateLimiter.LimitFunc(settingsHandler.HandleTOTPDisable)))
 
 	// Admin API routes
 	mux.Handle("GET /api/admin/users", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleListUsers)))
@@ -278,5 +286,16 @@ func hostRouter(appMux http.Handler, previewHandler *preview.Handler, previewDom
 			return
 		}
 		appMux.ServeHTTP(w, r)
+	})
+}
+
+// maxBodySize wraps a handler to limit request body size, preventing
+// memory exhaustion from oversized payloads.
+func maxBodySize(next http.Handler, maxBytes int64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+		}
+		next.ServeHTTP(w, r)
 	})
 }

@@ -135,7 +135,7 @@ onBeforeUnmount(() => {
         ref="iframeRef"
         :src="previewUrl"
         class="preview-iframe"
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+        sandbox="allow-scripts allow-forms allow-popups allow-modals"
         allow="clipboard-read; clipboard-write"
       />
     </div>

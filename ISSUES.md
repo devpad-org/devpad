@@ -50,26 +50,13 @@ Comprehensive review covering security flaws, resource leaks, dead code, and cod
 
 ## High
 
-### 4. No HTTP Client Timeout on Agent Client
+### 4. ~~No HTTP Client Timeout on Agent Client~~ ✅ RESOLVED
 
-**File:** `internal/agent/client.go:36-38`
+**File:** `internal/agent/client.go`
 
-```go
-return &Client{
-    baseURL: fmt.Sprintf("http://%s:%d", host, port),
-    http:    &http.Client{},
-}
-```
+**Was:** The HTTP client had no timeout configured, allowing a hanging agent to block Devpad server goroutines indefinitely.
 
-The HTTP client has no timeout configured. If a workspace agent hangs, becomes unresponsive, or is deliberately slow, the main Devpad server thread blocks indefinitely waiting for a response. This is a denial-of-service vector — a single malicious workspace can exhaust server goroutines.
-
-**Fix:** Add a timeout:
-
-```go
-http: &http.Client{
-    Timeout: 30 * time.Second,
-},
-```
+**Fix applied:** Added `Timeout: 3 * time.Minute` to the `http.Client` in `NewClient`.
 
 ---
 
@@ -81,82 +68,38 @@ http: &http.Client{
 
 **Fix applied:** The error is now checked; if `ValidateSession` fails or returns nil, the handler returns a 500 error.
 
-**Fix:** Check the error and handle it:
+---
 
-```go
-user, err := h.service.ValidateSession(r.Context(), session.Token)
-if err != nil || user == nil {
-    writeError(w, http.StatusInternalServerError, "login succeeded but failed to load user")
-    return
-}
-```
+### 6. ~~No Rate Limiting on Authentication~~ ✅ RESOLVED
+
+**Files:** `internal/auth/ratelimit.go`, `internal/server/server.go`
+
+**Was:** No rate limiting on authentication endpoints, allowing brute-force attacks on passwords and TOTP codes.
+
+**Fix applied:**
+- Created `RateLimiter` in `internal/auth/ratelimit.go` using `golang.org/x/time/rate` with per-IP token bucket tracking and automatic visitor cleanup.
+- Applied rate limiting middleware to `POST /api/auth/login`, `POST /api/auth/setup`, `POST /api/settings/mfa/enable`, and `POST /api/settings/mfa/disable` in `server.go`.
+- Excess requests receive `429 Too Many Requests`.
 
 ---
 
-### 6. No Rate Limiting on Authentication
-
-**Files:** `internal/auth/handler.go` (HandleLogin, HandleSetup), `internal/settings/handler.go` (TOTP endpoints)
-
-There is no rate limiting on any authentication endpoint. This allows:
-
-- **Password brute-force:** Unlimited login attempts per username.
-- **TOTP brute-force:** 6-digit TOTP codes have only 1,000,000 possible values. At even modest request rates, an attacker can exhaust all codes within the 30-second TOTP window.
-- **Setup endpoint abuse:** If the setup check has a race condition, multiple admin accounts could be created.
-
-**Fix:** Implement rate limiting middleware (per-IP and per-username) on `/api/auth/login`, `/api/auth/setup`, and any MFA endpoints. Consider using a token bucket or sliding window algorithm. Lock accounts after N failed attempts.
-
----
-
-### 7. Preview Iframe Sandbox Too Permissive
+### 7. ~~Preview Iframe Sandbox Too Permissive~~ ✅ RESOLVED
 
 **File:** `frontend/src/components/ide/PreviewPanel.vue`
 
-```html
-sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-```
+**Was:** The iframe sandbox included both `allow-scripts` and `allow-same-origin`, which negates sandbox isolation entirely.
 
-The combination of `allow-scripts` and `allow-same-origin` together **completely negates sandbox isolation**. Scripts inside the iframe can:
-
-- Access the parent page's cookies and DOM
-- Make authenticated API requests as the logged-in user
-- Modify or read workspace files
-
-This is a well-documented browser security pitfall. See [MDN sandbox docs](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/iframe#sandbox).
-
-**Fix:** Remove `allow-same-origin`. The preview feature already uses a separate preview domain, so the iframe shouldn't need same-origin access. If previews break without it, that indicates they're relying on parent-page resources, which should be fixed independently.
+**Fix applied:** Removed `allow-same-origin` from the sandbox attribute. The preview uses a separate domain, so same-origin access is not needed.
 
 ---
 
-### 8. Unbounded JSON Request Body Parsing
+### 8. ~~Unbounded JSON Request Body Parsing~~ ✅ RESOLVED
 
-**Files:** All handlers that decode JSON — `internal/auth/handler.go`, `internal/workspace/handler.go`, `internal/ai/handler.go`, `internal/settings/handler.go`, `internal/preview/handler.go`, `internal/admin/handler.go`
+**Files:** `internal/server/server.go`
 
-Every handler decodes request bodies without size limits:
+**Was:** All handlers decoded JSON request bodies without size limits, allowing memory exhaustion via multi-gigabyte payloads.
 
-```go
-json.NewDecoder(r.Body).Decode(&req)
-```
-
-An attacker can send a multi-gigabyte JSON body to exhaust server memory and cause an out-of-memory crash.
-
-**Fix:** Wrap `r.Body` with `http.MaxBytesReader` at each handler or via middleware:
-
-```go
-r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
-```
-
-Or apply globally in middleware:
-
-```go
-func MaxBodySize(maxBytes int64) func(http.Handler) http.Handler {
-    return func(next http.Handler) http.Handler {
-        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
-            next.ServeHTTP(w, r)
-        })
-    }
-}
-```
+**Fix applied:** Added a global `maxBodySize` middleware in `server.go` that wraps `r.Body` with `http.MaxBytesReader(w, r.Body, 1<<20)` (1 MB limit) for all incoming requests.
 
 ---
 
@@ -558,11 +501,11 @@ The `Content` field is a string that could be arbitrarily large. Unlike the agen
 | 1  | Critical | Security | WebSocket CSRF — no origin validation | ✅ Resolved |
 | 2  | Critical | Security | Session cookie missing `Secure` flag | ✅ Resolved |
 | 3  | Critical | Security | Agent path traversal via symlinks | ✅ Resolved |
-| 4  | High     | Security | No HTTP client timeout on agent client | Open |
+| 4  | High     | Security | No HTTP client timeout on agent client | ✅ Resolved |
 | 5  | High     | Security | Error discarded after login → nil panic | ✅ Resolved |
-| 6  | High     | Security | No rate limiting on authentication | Open |
-| 7  | High     | Security | Preview iframe sandbox too permissive | Open |
-| 8  | High     | Security | Unbounded JSON request body parsing | Open |
+| 6  | High     | Security | No rate limiting on authentication | ✅ Resolved |
+| 7  | High     | Security | Preview iframe sandbox too permissive | ✅ Resolved |
+| 8  | High     | Security | Unbounded JSON request body parsing | ✅ Resolved |
 | 9  | Medium   | Security | Expired sessions never cleaned up | Open |
 | 10 | Medium   | Security | Expired preview tokens never cleaned up | Open |
 | 11 | Medium   | Dead Code | `pullImageIfNeeded` never called | Open |
