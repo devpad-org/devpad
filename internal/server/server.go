@@ -11,10 +11,12 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/devpad-org/devpad/internal/admin"
+	"github.com/devpad-org/devpad/internal/agentbin"
 	"github.com/devpad-org/devpad/internal/ai"
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/container"
 	"github.com/devpad-org/devpad/internal/database"
+	"github.com/devpad-org/devpad/internal/dockerfile"
 	"github.com/devpad-org/devpad/internal/preview"
 	"github.com/devpad-org/devpad/internal/settings"
 	"github.com/devpad-org/devpad/internal/workspace"
@@ -58,6 +60,13 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating container manager: %w", err)
 	}
+
+	// Auto-build the workspace Docker image from the embedded Dockerfile
+	// and agent binary. Skips the build if the image is already up to date.
+	if err := containerManager.BuildImage(context.Background(), dockerfile.Content, agentbin.Binary, agentbin.Version); err != nil {
+		return nil, fmt.Errorf("building workspace image: %w", err)
+	}
+
 	workspaceRepo := workspace.NewRepository(db.Conn())
 	workspaceService := workspace.NewService(workspaceRepo, containerManager)
 

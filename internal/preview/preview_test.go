@@ -53,6 +53,9 @@ func (m *mockContainerManager) ExecResize(_ context.Context, _ string, _, _ uint
 func (m *mockContainerManager) CopyFileToContainer(_ context.Context, _, _ string, _ []byte, _ int64) error {
 	return nil
 }
+func (m *mockContainerManager) BuildImage(_ context.Context, _ []byte, _ []byte, _ string) error {
+	return nil
+}
 
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()

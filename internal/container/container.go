@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
@@ -50,6 +51,7 @@ type Manager interface {
 	ExecAttach(ctx context.Context, execID string) (HijackedResponse, error)
 	ExecResize(ctx context.Context, execID string, height, width uint) error
 	CopyFileToContainer(ctx context.Context, containerID, destPath string, fileContent []byte, mode int64) error
+	BuildImage(ctx context.Context, dockerfileContent []byte, agentBinary []byte, version string) error
 }
 
 // HijackedResponse wraps the Docker hijacked connection for exec.
@@ -343,6 +345,85 @@ func (m *manager) RemoveVolume(ctx context.Context, name string) error {
 	if err := m.cli.VolumeRemove(ctx, name, true); err != nil {
 		return fmt.Errorf("removing volume: %w", err)
 	}
+	return nil
+}
+
+func (m *manager) BuildImage(ctx context.Context, dockerfileContent []byte, agentBinary []byte, version string) error {
+	// Check if image already exists with the correct version label.
+	inspect, _, err := m.cli.ImageInspectWithRaw(ctx, WorkspaceImage)
+	if err == nil {
+		if v, ok := inspect.Config.Labels["devpad.version"]; ok && v == version && version != "dev" {
+			log.Printf("workspace image %s already up to date (version %s)", WorkspaceImage, version)
+			return nil
+		}
+	}
+
+	log.Printf("building workspace image %s (version %s)...", WorkspaceImage, version)
+
+	// Create a tar archive as the build context containing the Dockerfile
+	// and the agent binary.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	// Add Dockerfile
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "Dockerfile",
+		Size: int64(len(dockerfileContent)),
+		Mode: 0644,
+	}); err != nil {
+		return fmt.Errorf("writing Dockerfile tar header: %w", err)
+	}
+	if _, err := tw.Write(dockerfileContent); err != nil {
+		return fmt.Errorf("writing Dockerfile tar content: %w", err)
+	}
+
+	// Add agent binary
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "devpad-agent",
+		Size: int64(len(agentBinary)),
+		Mode: 0755,
+	}); err != nil {
+		return fmt.Errorf("writing agent tar header: %w", err)
+	}
+	if _, err := tw.Write(agentBinary); err != nil {
+		return fmt.Errorf("writing agent tar content: %w", err)
+	}
+
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("closing tar writer: %w", err)
+	}
+
+	resp, err := m.cli.ImageBuild(ctx, &buf, types.ImageBuildOptions{
+		Tags:       []string{WorkspaceImage},
+		Dockerfile: "Dockerfile",
+		Remove:     true,
+		Labels: map[string]string{
+			"devpad.version": version,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("building workspace image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Consume the build output to completion and check for errors.
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var msg struct {
+			Error string `json:"error"`
+		}
+		if err := decoder.Decode(&msg); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("reading build output: %w", err)
+		}
+		if msg.Error != "" {
+			return fmt.Errorf("docker build error: %s", msg.Error)
+		}
+	}
+
+	log.Printf("workspace image %s built successfully", WorkspaceImage)
 	return nil
 }
 

@@ -24,8 +24,12 @@ agent:
 embed-agent: agent
 	cp bin/devpad-agent internal/agentbin/devpad-agent
 
-# Build Go binary (requires frontend and embedded agent)
-backend: embed-agent
+# Copy the workspace Dockerfile into the embed directory
+embed-dockerfile:
+	cp docker/workspace/Dockerfile internal/dockerfile/Dockerfile
+
+# Build Go binary (requires frontend and embedded agent + Dockerfile)
+backend: embed-agent embed-dockerfile
 	go build $(EMBED_LDFLAGS) -o bin/devpad .
 
 # Build the workspace Docker image (requires agent to be built first)
@@ -53,4 +57,4 @@ test:
 
 # Clean build artifacts
 clean:
-	rm -rf bin/ web/dist/ coverage.out internal/agentbin/devpad-agent
+	rm -rf bin/ web/dist/ coverage.out internal/agentbin/devpad-agent internal/dockerfile/Dockerfile
