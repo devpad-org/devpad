@@ -237,7 +237,7 @@ func (m *manager) GetEnv(ctx context.Context, containerID string) ([]string, err
 }
 
 func (m *manager) Stats(ctx context.Context, containerID string) (*ContainerStats, error) {
-	resp, err := m.cli.ContainerStatsOneShot(ctx, containerID)
+	resp, err := m.cli.ContainerStats(ctx, containerID, false)
 	if err != nil {
 		return nil, fmt.Errorf("fetching container stats: %w", err)
 	}

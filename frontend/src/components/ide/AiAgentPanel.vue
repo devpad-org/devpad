@@ -960,4 +960,10 @@ function scrollToBottom() {
     background: var(--accent-blue);
   }
 }
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 </style>
