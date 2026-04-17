@@ -27,15 +27,35 @@ type FileEntry struct {
 // Client communicates with the devpad-agent running inside a workspace container.
 type Client struct {
 	baseURL string
+	token   string
 	http    *http.Client
 }
 
-// NewClient creates a new agent Client for the given host and port.
-func NewClient(host string, port int) *Client {
+// NewClient creates a new agent Client for the given host, port, and auth token.
+func NewClient(host string, port int, token string) *Client {
 	return &Client{
 		baseURL: fmt.Sprintf("http://%s:%d", host, port),
+		token:   token,
 		http:    &http.Client{Timeout: 3 * time.Minute},
 	}
+}
+
+// setAuth adds the authorization header to a request.
+func (c *Client) setAuth(req *http.Request) {
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+}
+
+// Token returns the agent auth token.
+func (c *Client) Token() string {
+	return c.token
+}
+
+// do adds the auth header and performs the request.
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	c.setAuth(req)
+	return c.http.Do(req)
 }
 
 // Healthz checks if the agent is healthy.
@@ -44,7 +64,7 @@ func (c *Client) Healthz(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("agent health check: %w", err)
 	}
@@ -63,7 +83,7 @@ func (c *Client) ListFiles(ctx context.Context, path string) ([]FileEntry, error
 		return nil, err
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("listing files: %w", err)
 	}
@@ -90,7 +110,7 @@ func (c *Client) ReadFile(ctx context.Context, path string) ([]byte, error) {
 		return nil, err
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("reading file: %w", err)
 	}
@@ -116,7 +136,7 @@ func (c *Client) WriteFile(ctx context.Context, path string, content []byte) err
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("writing file: %w", err)
 	}
@@ -136,7 +156,7 @@ func (c *Client) DeleteFile(ctx context.Context, path string) error {
 		return err
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("deleting file: %w", err)
 	}
@@ -156,7 +176,7 @@ func (c *Client) CreateDirectory(ctx context.Context, path string) error {
 		return err
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("creating directory: %w", err)
 	}
@@ -184,7 +204,7 @@ func (c *Client) RenameFile(ctx context.Context, oldPath, newPath string) error 
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("renaming file: %w", err)
 	}
@@ -225,7 +245,7 @@ func (c *Client) SearchFiles(ctx context.Context, pattern, pathFilter string, ma
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("searching files: %w", err)
 	}
@@ -266,7 +286,7 @@ func (c *Client) RunCommand(ctx context.Context, command string) (*CommandResult
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("running command: %w", err)
 	}
@@ -339,7 +359,7 @@ func (c *Client) GitStatus(ctx context.Context) (*GitStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("git status: %w", err)
 	}
@@ -361,7 +381,7 @@ func (c *Client) GitLog(ctx context.Context, count int) ([]GitCommit, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("git log: %w", err)
 	}
@@ -384,7 +404,7 @@ func (c *Client) GitBranches(ctx context.Context) (*GitBranches, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("git branches: %w", err)
 	}
@@ -406,7 +426,7 @@ func (c *Client) GitDiff(ctx context.Context, path string, staged bool) (string,
 	if err != nil {
 		return "", err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return "", fmt.Errorf("git diff: %w", err)
 	}
@@ -444,7 +464,7 @@ func (c *Client) GitAction(ctx context.Context, action string, files []string, m
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("git action: %w", err)
 	}

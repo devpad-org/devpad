@@ -20,6 +20,7 @@ type Workspace struct {
 	Status      Status
 	ContainerID string
 	VolumeName  string
+	AgentToken  string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }

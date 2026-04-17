@@ -389,7 +389,7 @@ The `Content` field is a string that could be arbitrarily large. The global `Max
 |----|----------|----------|-------|--------|
 | 1  | Critical | Security | Git flag injection via unsanitized inputs | Fixed |
 | 2  | High     | Security | No request body size limit on agent git endpoint | Fixed |
-| 3  | Medium   | Security | No authentication on agent HTTP server | Open |
+| 3  | Medium   | Security | No authentication on agent HTTP server | Fixed |
 | 4  | Medium   | Security | Git log `count` param not validated on agent | Open |
 | 5  | Medium   | Security | AI API keys stored in plaintext | Open |
 | 6  | Medium   | Security | SameSite Lax allows GET-based CSRF | Open |

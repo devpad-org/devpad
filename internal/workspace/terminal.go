@@ -41,7 +41,7 @@ func (h *Handler) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	addr, err := h.service.AgentAddr(r.Context(), user.ID, id)
+	addr, agentToken, err := h.service.AgentAddr(r.Context(), user.ID, id)
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -57,7 +57,11 @@ func (h *Handler) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 
 	// Connect to the agent's terminal WebSocket
 	agentURL := fmt.Sprintf("ws://%s/ws/terminal", addr)
-	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, nil)
+	agentHeaders := http.Header{}
+	if agentToken != "" {
+		agentHeaders.Set("Authorization", "Bearer "+agentToken)
+	}
+	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
 	if err != nil {
 		log.Printf("connecting to agent terminal: %v", err)
 		clientConn.WriteMessage(websocket.TextMessage, []byte("Failed to connect to workspace terminal\r\n"))
@@ -115,7 +119,7 @@ func (h *Handler) HandleWatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	addr, err := h.service.AgentAddr(r.Context(), user.ID, id)
+	addr, agentToken, err := h.service.AgentAddr(r.Context(), user.ID, id)
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -131,7 +135,11 @@ func (h *Handler) HandleWatch(w http.ResponseWriter, r *http.Request) {
 
 	// Connect to the agent's watch WebSocket
 	agentURL := fmt.Sprintf("ws://%s/ws/watch", addr)
-	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, nil)
+	agentHeaders := http.Header{}
+	if agentToken != "" {
+		agentHeaders.Set("Authorization", "Bearer "+agentToken)
+	}
+	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
 	if err != nil {
 		log.Printf("connecting to agent watcher: %v", err)
 		clientConn.WriteMessage(websocket.TextMessage, []byte(`{"error":"failed to connect to workspace watcher"}`))

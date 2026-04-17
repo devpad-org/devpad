@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -44,8 +46,8 @@ type Service interface {
 	GitDiff(ctx context.Context, userID, workspaceID int64, path string, staged bool) (string, error)
 	GitAction(ctx context.Context, userID, workspaceID int64, action string, files []string, message, branch, remote, userName, userEmail string) (*agent.GitActionResult, error)
 
-	// AgentAddr returns the agent's host:port for a running workspace.
-	AgentAddr(ctx context.Context, userID, workspaceID int64) (string, error)
+	// AgentAddr returns the agent's host:port and auth token for a running workspace.
+	AgentAddr(ctx context.Context, userID, workspaceID int64) (addr, agentToken string, err error)
 }
 
 type service struct {
@@ -70,10 +72,17 @@ func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*age
 	if err != nil {
 		return nil, fmt.Errorf("getting container IP: %w", err)
 	}
-	return agent.NewClient(ip, agent.DefaultPort), nil
+	return agent.NewClient(ip, agent.DefaultPort, ws.AgentToken), nil
 }
 
 func (s *service) Create(ctx context.Context, userID int64, name, description string) (*Workspace, error) {
+	// Generate a cryptographically random token for agent authentication.
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, fmt.Errorf("generating agent token: %w", err)
+	}
+	agentToken := hex.EncodeToString(tokenBytes)
+
 	// Insert the workspace record first to obtain a stable ID for naming
 	// Docker resources. This decouples container/volume names from the
 	// user-facing workspace name (which may contain spaces or be renamed).
@@ -82,6 +91,7 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 		Name:        name,
 		Description: description,
 		Status:      StatusCreating,
+		AgentToken:  agentToken,
 	}
 	if err := s.repo.Create(ctx, ws); err != nil {
 		return nil, fmt.Errorf("creating workspace: %w", err)
@@ -94,7 +104,10 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 		return nil, fmt.Errorf("creating volume: %w", err)
 	}
 
-	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), volumeName)
+	containerEnv := []string{
+		fmt.Sprintf("AGENT_AUTH_TOKEN=%s", agentToken),
+	}
+	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), volumeName, containerEnv)
 	if err != nil {
 		_ = s.container.RemoveVolume(ctx, volumeName)
 		_ = s.repo.Delete(ctx, ws.ID)
@@ -333,17 +346,17 @@ func (s *service) GitAction(ctx context.Context, userID, workspaceID int64, acti
 	return c.GitAction(ctx, action, files, message, branch, remote, userName, userEmail)
 }
 
-func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (string, error) {
+func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (string, string, error) {
 	ws, err := s.Get(ctx, userID, workspaceID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if ws.ContainerID == "" || ws.Status != StatusRunning {
-		return "", ErrNotRunning
+		return "", "", ErrNotRunning
 	}
 	ip, err := s.container.GetIP(ctx, ws.ContainerID)
 	if err != nil {
-		return "", fmt.Errorf("getting container IP: %w", err)
+		return "", "", fmt.Errorf("getting container IP: %w", err)
 	}
-	return fmt.Sprintf("%s:%d", ip, agent.DefaultPort), nil
+	return fmt.Sprintf("%s:%d", ip, agent.DefaultPort), ws.AgentToken, nil
 }

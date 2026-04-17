@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"log"
 	"net/http"
 	"os"
@@ -16,6 +17,11 @@ func main() {
 	port := os.Getenv("AGENT_PORT")
 	if port == "" {
 		port = defaultPort
+	}
+
+	authToken := os.Getenv("AGENT_AUTH_TOKEN")
+	if authToken == "" {
+		log.Fatalf("AGENT_AUTH_TOKEN environment variable is required")
 	}
 
 	// Start filesystem watcher
@@ -60,7 +66,7 @@ func main() {
 	addr := ":" + port
 	log.Printf("devpad-agent listening on %s (workspace: %s)", addr, workspaceRoot)
 
-	srv := &http.Server{Addr: addr, Handler: mux}
+	srv := &http.Server{Addr: addr, Handler: requireAuth(authToken, mux)}
 
 	// Graceful shutdown: close the filesystem watcher and HTTP server on SIGINT/SIGTERM.
 	sigCh := make(chan os.Signal, 1)
@@ -80,4 +86,23 @@ func main() {
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+// requireAuth is HTTP middleware that validates a Bearer token on every request.
+func requireAuth(token string, next http.Handler) http.Handler {
+	tokenBytes := []byte(token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if len(auth) < len(prefix) || auth[:len(prefix)] != prefix {
+			http.Error(w, `{"error":"missing or invalid authorization header"}`, http.StatusUnauthorized)
+			return
+		}
+		provided := []byte(auth[len(prefix):])
+		if subtle.ConstantTimeCompare(provided, tokenBytes) != 1 {
+			http.Error(w, `{"error":"invalid auth token"}`, http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

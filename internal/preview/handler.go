@@ -166,7 +166,7 @@ func (h *Handler) setPreviewCookie(w http.ResponseWriter, r *http.Request, t *To
 // proxyToContainer reverse-proxies the request to the workspace container
 // via the agent's port proxy endpoint.
 func (h *Handler) proxyToContainer(w http.ResponseWriter, r *http.Request, wsID int64, port int) {
-	agentAddr, err := h.service.ResolveContainerAddr(r.Context(), wsID)
+	agentAddr, agentToken, err := h.service.ResolveContainerAddr(r.Context(), wsID)
 	if err != nil {
 		if errors.Is(err, workspace.ErrNotFound) {
 			http.Error(w, "workspace not found", http.StatusNotFound)
@@ -195,6 +195,10 @@ func (h *Handler) proxyToContainer(w http.ResponseWriter, r *http.Request, wsID 
 			req.URL.Path = fmt.Sprintf("/proxy/%d%s", port, req.URL.Path)
 			// Remove the preview cookie so it doesn't leak into the container.
 			removeCookie(req, PreviewCookieName)
+			// Authenticate with the agent.
+			if agentToken != "" {
+				req.Header.Set("Authorization", "Bearer "+agentToken)
+			}
 		},
 		// Flush immediately for streaming responses (SSE, chunked).
 		FlushInterval: -1,

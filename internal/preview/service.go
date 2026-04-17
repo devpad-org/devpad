@@ -33,8 +33,8 @@ type Service interface {
 	GenerateURL(ctx context.Context, userID, workspaceID int64, port int, previewDomain string, httpsPort int) (string, error)
 	// ValidateToken checks and consumes a single-use preview token, returning its claims.
 	ValidateToken(ctx context.Context, tokenStr string) (*Token, error)
-	// ResolveContainerAddr gets the agent address for proxying a preview request.
-	ResolveContainerAddr(ctx context.Context, workspaceID int64) (string, error)
+	// ResolveContainerAddr gets the agent address and auth token for proxying a preview request.
+	ResolveContainerAddr(ctx context.Context, workspaceID int64) (addr, agentToken string, err error)
 }
 
 type service struct {
@@ -97,22 +97,22 @@ func (s *service) ValidateToken(ctx context.Context, tokenStr string) (*Token, e
 	return t, nil
 }
 
-func (s *service) ResolveContainerAddr(ctx context.Context, workspaceID int64) (string, error) {
+func (s *service) ResolveContainerAddr(ctx context.Context, workspaceID int64) (string, string, error) {
 	ws, err := s.workspaces.GetByID(ctx, workspaceID)
 	if err != nil {
-		return "", fmt.Errorf("getting workspace: %w", err)
+		return "", "", fmt.Errorf("getting workspace: %w", err)
 	}
 	if ws == nil {
-		return "", workspace.ErrNotFound
+		return "", "", workspace.ErrNotFound
 	}
 	if ws.ContainerID == "" || ws.Status != workspace.StatusRunning {
-		return "", ErrWorkspaceDown
+		return "", "", ErrWorkspaceDown
 	}
 
 	ip, err := s.container.GetIP(ctx, ws.ContainerID)
 	if err != nil {
-		return "", fmt.Errorf("getting container IP: %w", err)
+		return "", "", fmt.Errorf("getting container IP: %w", err)
 	}
 
-	return fmt.Sprintf("%s:%d", ip, agent.DefaultPort), nil
+	return fmt.Sprintf("%s:%d", ip, agent.DefaultPort), ws.AgentToken, nil
 }

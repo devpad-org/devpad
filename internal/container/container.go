@@ -19,7 +19,7 @@ const WorkspaceImage = "devpad-workspace:latest"
 
 // Manager handles Docker container lifecycle operations.
 type Manager interface {
-	Create(ctx context.Context, name, volumeName string) (containerID string, err error)
+	Create(ctx context.Context, name, volumeName string, env []string) (containerID string, err error)
 	Start(ctx context.Context, containerID string) error
 	Stop(ctx context.Context, containerID string) error
 	Remove(ctx context.Context, containerID string) error
@@ -51,7 +51,7 @@ func NewManager() (Manager, error) {
 	return &manager{cli: cli}, nil
 }
 
-func (m *manager) Create(ctx context.Context, name, volumeName string) (string, error) {
+func (m *manager) Create(ctx context.Context, name, volumeName string, env []string) (string, error) {
 	containerName := fmt.Sprintf("devpad-ws-%s", name)
 
 	var mounts []mount.Mount
@@ -67,6 +67,7 @@ func (m *manager) Create(ctx context.Context, name, volumeName string) (string, 
 		&container.Config{
 			Image: WorkspaceImage,
 			Tty:   true,
+			Env:   env,
 			Labels: map[string]string{
 				"devpad.managed": "true",
 			},

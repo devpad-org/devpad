@@ -20,7 +20,7 @@ import (
 // mockContainerManager is a test double for container.Manager.
 type mockContainerManager struct{}
 
-func (m *mockContainerManager) Create(_ context.Context, _, _ string) (string, error) {
+func (m *mockContainerManager) Create(_ context.Context, _, _ string, _ []string) (string, error) {
 	return "mock-container", nil
 }
 func (m *mockContainerManager) Start(_ context.Context, _ string) error  { return nil }
@@ -69,6 +69,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('creating','running','stopped')),
 		container_id TEXT NOT NULL DEFAULT '',
 		volume_name TEXT NOT NULL DEFAULT '',
+		agent_token TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -249,7 +250,7 @@ func TestService_ResolveContainerAddr(t *testing.T) {
 
 	wsID := createRunningWorkspace(t, db, 1, "addrtest")
 
-	addr, err := svc.ResolveContainerAddr(ctx, wsID)
+	addr, _, err := svc.ResolveContainerAddr(ctx, wsID)
 	if err != nil {
 		t.Fatalf("ResolveContainerAddr failed: %v", err)
 	}
@@ -264,7 +265,7 @@ func TestService_ResolveContainerAddr_StoppedWorkspace(t *testing.T) {
 
 	wsID := createStoppedWorkspace(t, db, 1, "stopped-addr")
 
-	_, err := svc.ResolveContainerAddr(ctx, wsID)
+	_, _, err := svc.ResolveContainerAddr(ctx, wsID)
 	if err == nil {
 		t.Fatal("expected error for stopped workspace")
 	}
