@@ -2,12 +2,16 @@ package ai
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/auth"
 )
@@ -19,8 +23,9 @@ type ToolExecutor interface {
 
 // Handler holds HTTP handlers for AI endpoints.
 type Handler struct {
-	service      Service
-	toolExecutor ToolExecutor
+	service          Service
+	toolExecutor     ToolExecutor
+	pendingApprovals sync.Map // map[string]chan bool
 }
 
 // NewHandler creates a new AI handler.
@@ -249,6 +254,24 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 			// Notify frontend that a tool is being called
 			sendEvent(StreamEvent{ToolCalls: []ToolCall{tc}})
 
+			// Check if this is a sudo command that needs approval
+			if tc.Function.Name == "run_command" && commandNeedsSudoApproval(tc.Function.Arguments) {
+				result, approved := h.requestApproval(r.Context(), sendEvent, tc.Function.Arguments)
+				if !approved {
+					sendEvent(StreamEvent{ToolResult: &ToolResult{
+						ToolCallID: tc.ID,
+						Name:       tc.Function.Name,
+						Content:    result,
+					}})
+					messages = append(messages, Message{
+						Role:       "tool",
+						Content:    result,
+						ToolCallID: tc.ID,
+					})
+					continue
+				}
+			}
+
 			result, err := h.toolExecutor.ExecuteTool(
 				r.Context(), user.ID, req.WorkspaceID,
 				tc.Function.Name, json.RawMessage(tc.Function.Arguments),
@@ -275,6 +298,99 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sendEvent(StreamEvent{Done: true})
+}
+
+const approvalTimeout = 60 * time.Second
+
+// commandNeedsSudoApproval checks if a run_command argument contains sudo.
+func commandNeedsSudoApproval(args string) bool {
+	var params struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(args), &params); err != nil {
+		return false
+	}
+	// Check for sudo as a standalone command/word
+	fields := strings.Fields(params.Command)
+	for _, f := range fields {
+		if f == "sudo" {
+			return true
+		}
+	}
+	return false
+}
+
+// generateApprovalID creates a random approval ID.
+func generateApprovalID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// requestApproval sends an approval request to the frontend and blocks until
+// the user responds or the timeout/context is exceeded.
+// Returns the result message and whether the command was approved.
+func (h *Handler) requestApproval(ctx context.Context, sendEvent func(StreamEvent), args string) (string, bool) {
+	var params struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal([]byte(args), &params)
+
+	approvalID := generateApprovalID()
+	ch := make(chan bool, 1)
+	h.pendingApprovals.Store(approvalID, ch)
+	defer h.pendingApprovals.Delete(approvalID)
+
+	sendEvent(StreamEvent{ApprovalRequired: &ApprovalRequest{
+		ID:      approvalID,
+		Command: params.Command,
+	}})
+
+	select {
+	case approved := <-ch:
+		if !approved {
+			return "Command denied by user. The user rejected executing this sudo command.", false
+		}
+		return "", true
+	case <-ctx.Done():
+		return "Command approval timed out — the request was cancelled.", false
+	case <-time.After(approvalTimeout):
+		return "Command approval timed out after 60 seconds.", false
+	}
+}
+
+// HandleApproveCommand handles user approval or denial of a sudo command.
+func (h *Handler) HandleApproveCommand(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var req struct {
+		ID       string `json:"id"`
+		Approved bool   `json:"approved"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, "approval ID is required")
+		return
+	}
+
+	val, ok := h.pendingApprovals.LoadAndDelete(req.ID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no pending approval with this ID")
+		return
+	}
+
+	ch := val.(chan bool)
+	ch <- req.Approved
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

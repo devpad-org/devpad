@@ -42,11 +42,18 @@ type ChatRequest struct {
 
 // StreamEvent represents a single SSE chunk from a streaming chat completion.
 type StreamEvent struct {
-	Content    string      `json:"content,omitempty"`
-	ToolCalls  []ToolCall  `json:"toolCalls,omitempty"`
-	ToolResult *ToolResult `json:"toolResult,omitempty"`
-	Done       bool        `json:"done,omitempty"`
-	Error      string      `json:"error,omitempty"`
+	Content          string           `json:"content,omitempty"`
+	ToolCalls        []ToolCall       `json:"toolCalls,omitempty"`
+	ToolResult       *ToolResult      `json:"toolResult,omitempty"`
+	ApprovalRequired *ApprovalRequest `json:"approvalRequired,omitempty"`
+	Done             bool             `json:"done,omitempty"`
+	Error            string           `json:"error,omitempty"`
+}
+
+// ApprovalRequest is sent to the frontend when a command needs user approval before execution.
+type ApprovalRequest struct {
+	ID      string `json:"id"`
+	Command string `json:"command"`
 }
 
 // ToolDefinition describes a tool the AI can call.

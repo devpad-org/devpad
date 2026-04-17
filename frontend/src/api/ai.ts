@@ -37,10 +37,16 @@ export interface ToolResult {
   content: string
 }
 
+export interface ApprovalRequest {
+  id: string
+  command: string
+}
+
 export interface StreamEvent {
   content?: string
   toolCalls?: ToolCall[]
   toolResult?: ToolResult
+  approvalRequired?: ApprovalRequest
   done?: boolean
   error?: string
 }
@@ -77,6 +83,10 @@ export const aiApi = {
     }
 
     await readSSEStream(res, onEvent)
+  },
+
+  approveCommand(id: string, approved: boolean): Promise<void> {
+    return apiClient.post<void>('/api/ai/agent/approve', { id, approved })
   },
 
   async agentStream(

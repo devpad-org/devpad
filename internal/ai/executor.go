@@ -120,8 +120,17 @@ func (e *WorkspaceToolExecutor) runCommand(ctx context.Context, userID, workspac
 	if err != nil {
 		return fmt.Sprintf("Error: %v", err), nil
 	}
-	data, _ := json.Marshal(result)
-	return string(data), nil
+	if result.ExitCode != 0 {
+		msg := fmt.Sprintf("Command failed (exit code %d):\n%s", result.ExitCode, result.Output)
+		if result.Error != "" {
+			msg += "\n" + result.Error
+		}
+		return msg, nil
+	}
+	if result.Error != "" {
+		return fmt.Sprintf("Command timed out:\n%s\n%s", result.Output, result.Error), nil
+	}
+	return result.Output, nil
 }
 
 func (e *WorkspaceToolExecutor) editFile(ctx context.Context, userID, workspaceID int64, params map[string]any) (string, error) {

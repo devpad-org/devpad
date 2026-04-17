@@ -41,7 +41,7 @@ func agentTools() []ToolDefinition {
 			Type: "function",
 			Function: ToolFunction{
 				Name:        "run_command",
-				Description: "Execute a shell command in the project's workspace container. The working directory is /workspace (project root). Has a 30-second timeout. Use for installing packages, running tests, building, etc.",
+				Description: "Execute a shell command in the project's workspace container. The working directory is /workspace (project root). Has a 30-second timeout. Use for installing packages, running tests, building, etc. You have sudo access — use it when commands require elevated privileges (e.g. apt install, systemctl). Commands using sudo require user approval before execution.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"The shell command to run, e.g. npm install express"}},"required":["command"]}`),
 			},
 		},
@@ -80,7 +80,7 @@ When helping the user:
 2. Use edit_file for targeted changes instead of write_file for existing files.
 3. Use search_files to find relevant code across the codebase.
 4. Use list_files to understand project structure.
-5. Use run_command to install packages, run tests, or build.
+5. Use run_command to install packages, run tests, or build. You have sudo access for elevated privileges (e.g. sudo apt install, sudo systemctl). Use sudo when a command requires root permissions. The environment is a Debian 13 container.
 
 Format your responses using Markdown for readability:
 - Use **bold** for emphasis and key terms.

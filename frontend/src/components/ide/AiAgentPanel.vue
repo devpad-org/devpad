@@ -42,7 +42,14 @@ interface ToolSegment {
   result?: string
 }
 
-type MessageSegment = TextSegment | ToolSegment
+interface ApprovalSegment {
+  type: 'approval'
+  id: string
+  command: string
+  status: 'pending' | 'approved' | 'denied'
+}
+
+type MessageSegment = TextSegment | ToolSegment | ApprovalSegment
 
 interface DisplayMessage {
   role: 'user' | 'assistant'
@@ -87,6 +94,20 @@ function formatToolArgs(args: string): string {
       .join(', ')
   } catch {
     return args
+  }
+}
+
+function isToolError(seg: ToolSegment): boolean {
+  if (!seg.result) return false
+  return seg.result.startsWith('Error:') || seg.result.startsWith('Command failed') || seg.result.startsWith('Command timed out')
+}
+
+async function handleApproval(seg: ApprovalSegment, approved: boolean) {
+  seg.status = approved ? 'approved' : 'denied'
+  try {
+    await aiApi.approveCommand(seg.id, approved)
+  } catch {
+    // The stream will handle any errors
   }
 }
 
@@ -164,6 +185,13 @@ async function sendMessage() {
           if (toolSeg) {
             toolSeg.result = event.toolResult.content
           }
+        } else if (event.approvalRequired) {
+          messages.value[assistantIdx].segments.push({
+            type: 'approval',
+            id: event.approvalRequired.id,
+            command: event.approvalRequired.command,
+            status: 'pending',
+          })
         }
         scrollToBottom()
       },
@@ -285,9 +313,49 @@ function scrollToBottom() {
                 </svg>
                 <span class="tool-name">{{ seg.name }}</span>
                 <span v-if="!seg.result && streaming && i === messages.length - 1" class="tool-spinner" />
+                <span v-else-if="seg.result && isToolError(seg as ToolSegment)" class="tool-error">&#x2718;</span>
                 <span v-else-if="seg.result" class="tool-done">&#x2714;</span>
               </div>
               <div class="tool-args">{{ formatToolArgs(seg.args) }}</div>
+            </div>
+            <div v-else-if="seg.type === 'approval'" class="approval-prompt">
+              <div class="approval-header">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" />
+                </svg>
+                <span class="approval-title">sudo command requires approval</span>
+              </div>
+              <code class="approval-command">{{ (seg as ApprovalSegment).command }}</code>
+              <div v-if="(seg as ApprovalSegment).status === 'pending'" class="approval-actions">
+                <button class="approval-btn approve" @click="handleApproval(seg as ApprovalSegment, true)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Approve
+                </button>
+                <button class="approval-btn deny" @click="handleApproval(seg as ApprovalSegment, false)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                  Deny
+                </button>
+              </div>
+              <div v-else class="approval-resolved">
+                <span v-if="(seg as ApprovalSegment).status === 'approved'" class="approval-badge approved">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Approved
+                </span>
+                <span v-else class="approval-badge denied">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                  Denied
+                </span>
+              </div>
             </div>
             <div v-else-if="seg.type === 'text' && seg.content" class="msg-text" v-html="renderMarkdown(seg.content)" />
           </template>
@@ -733,6 +801,12 @@ function scrollToBottom() {
   margin-left: auto;
 }
 
+.tool-error {
+  font-size: 0.7rem;
+  color: var(--accent-rose);
+  margin-left: auto;
+}
+
 .tool-spinner {
   width: 10px;
   height: 10px;
@@ -751,6 +825,103 @@ function scrollToBottom() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Sudo approval prompt */
+.approval-prompt {
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin: 6px 0;
+}
+
+.approval-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-amber);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.approval-title {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.68rem;
+}
+
+.approval-command {
+  display: block;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.approval-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 14px;
+  border-radius: var(--radius-md);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: background 150ms ease, opacity 150ms ease;
+}
+
+.approval-btn.approve {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-green);
+}
+
+.approval-btn.approve:hover {
+  background: rgba(16, 185, 129, 0.25);
+}
+
+.approval-btn.deny {
+  background: rgba(244, 63, 94, 0.15);
+  color: var(--accent-rose);
+}
+
+.approval-btn.deny:hover {
+  background: rgba(244, 63, 94, 0.25);
+}
+
+.approval-resolved {
+  margin-top: 8px;
+}
+
+.approval-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+}
+
+.approval-badge.approved {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-green);
+}
+
+.approval-badge.denied {
+  background: rgba(244, 63, 94, 0.15);
+  color: var(--accent-rose);
 }
 
 /* Thinking indicator */
