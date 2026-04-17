@@ -55,9 +55,9 @@ const hasChanges = computed(() => (status.value?.files?.length ?? 0) > 0)
 const canCommit = computed(() => stagedFiles.value.length > 0 && commitMsg.value.trim() !== '')
 
 // --- Actions ---
-async function refresh() {
+async function refresh(showLoading = true) {
   if (!props.workspaceId) return
-  loading.value = true
+  if (showLoading) loading.value = true
   error.value = ''
   try {
     status.value = await gitApi.status(props.workspaceId)
@@ -277,7 +277,7 @@ watch(activeTab, () => refresh())
 
 onMounted(() => {
   refresh()
-  pollTimer = setInterval(refresh, 5000)
+  pollTimer = setInterval(() => refresh(false), 5000)
 })
 
 onUnmounted(() => {
@@ -306,7 +306,7 @@ onUnmounted(() => {
         </template>
       </span>
       <div class="git-header-actions">
-        <button class="git-icon-btn" @click="refresh" title="Refresh" :disabled="loading">
+        <button class="git-icon-btn" @click="refresh()" title="Refresh" :disabled="loading">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading }">
             <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
             <path d="M21 3v5h-5" />

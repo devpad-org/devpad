@@ -21,8 +21,10 @@ const activeFile = ref<string | null>(null)
 const terminalMinimized = ref(false)
 const agentVisible = ref(true)
 const previewVisible = ref(false)
-const gitVisible = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
+
+type SidebarTab = 'explorer' | 'git'
+const activeSidebarTab = ref<SidebarTab>('explorer')
 
 const sidebar = useResizable({
   direction: 'horizontal',
@@ -56,13 +58,7 @@ const preview = useResizable({
   maxSize: 800,
 })
 
-const git = useResizable({
-  direction: 'horizontal',
-  edge: 'right',
-  initialSize: 300,
-  minSize: 220,
-  maxSize: 500,
-})
+
 
 function handleGlobalKeydown(e: KeyboardEvent) {
   const ctrl = e.ctrlKey || e.metaKey
@@ -200,18 +196,6 @@ function handleBack() {
         </button>
         <button
           class="titlebar-toggle"
-          :class="{ active: gitVisible }"
-          @click="gitVisible = !gitVisible"
-          title="Toggle Git panel"
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="18" cy="18" r="3" />
-            <circle cx="6" cy="6" r="3" />
-            <path d="M6 21V9a9 9 0 0 0 9 9" />
-          </svg>
-        </button>
-        <button
-          class="titlebar-toggle"
           :class="{ active: agentVisible }"
           @click="agentVisible = !agentVisible"
           title="Toggle AI agent"
@@ -228,12 +212,43 @@ function handleBack() {
 
     <!-- Main IDE area -->
     <div class="ide-body">
-      <!-- Sidebar: File Explorer -->
+      <!-- Activity Bar -->
+      <div class="activity-bar">
+        <button
+          class="activity-btn"
+          :class="{ active: activeSidebarTab === 'explorer' }"
+          @click="activeSidebarTab = 'explorer'"
+          title="Explorer"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 4h5l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" />
+          </svg>
+        </button>
+        <button
+          class="activity-btn"
+          :class="{ active: activeSidebarTab === 'git' }"
+          @click="activeSidebarTab = 'git'"
+          title="Source Control"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="18" cy="18" r="3" />
+            <circle cx="6" cy="6" r="3" />
+            <path d="M6 21V9a9 9 0 0 0 9 9" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Sidebar -->
       <aside class="ide-sidebar" :style="{ width: sidebar.size.value + 'px' }">
         <FileExplorer
+          v-show="activeSidebarTab === 'explorer'"
           :workspace-id="workspace?.id ?? 0"
           :workspace-name="workspace?.name ?? ''"
           @select="handleFileSelect"
+        />
+        <GitPanel
+          v-show="activeSidebarTab === 'git'"
+          :workspace-id="workspace?.id ?? 0"
         />
       </aside>
       <div
@@ -282,18 +297,6 @@ function handleBack() {
             :workspace-id="workspace?.id ?? 0"
             @close="previewVisible = false"
           />
-        </aside>
-      </template>
-
-      <!-- Right panel: Git -->
-      <template v-if="gitVisible">
-        <div
-          class="resize-handle resize-handle--horizontal"
-          :class="{ active: git.isDragging.value }"
-          @pointerdown="git.onPointerDown"
-        />
-        <aside class="ide-git" :style="{ width: git.size.value + 'px' }">
-          <GitPanel :workspace-id="workspace?.id ?? 0" />
         </aside>
       </template>
 
@@ -493,6 +496,50 @@ function handleBack() {
   color: var(--accent-blue);
 }
 
+/* Activity bar */
+.activity-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 48px;
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-default);
+  padding-top: var(--space-2);
+  gap: 2px;
+}
+
+.activity-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  transition: all var(--transition-fast);
+  position: relative;
+}
+
+.activity-btn:hover {
+  color: var(--text-primary);
+}
+
+.activity-btn.active {
+  color: var(--text-primary);
+}
+
+.activity-btn.active::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: var(--accent-blue);
+  border-radius: 1px;
+}
+
 /* Body layout */
 .ide-body {
   display: flex;
@@ -502,8 +549,10 @@ function handleBack() {
 
 .ide-sidebar {
   flex-shrink: 0;
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
 }
 
 .ide-center {
@@ -531,12 +580,6 @@ function handleBack() {
 .ide-agent {
   flex-shrink: 0;
   overflow-y: auto;
-  background: var(--bg-surface);
-}
-
-.ide-git {
-  flex-shrink: 0;
-  overflow: hidden;
   background: var(--bg-surface);
 }
 
