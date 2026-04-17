@@ -525,9 +525,6 @@ function isSelf(user: AdminUser): boolean {
 .cell-username {
   color: var(--text-primary);
   font-weight: 500;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
 }
 
 .cell-email {
@@ -542,6 +539,8 @@ function isSelf(user: AdminUser): boolean {
 
 .badge-you {
   display: inline-block;
+  margin-left: var(--space-2);
+  vertical-align: middle;
   padding: 1px 6px;
   font-size: 0.65rem;
   font-weight: 600;
