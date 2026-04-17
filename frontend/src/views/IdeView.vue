@@ -7,6 +7,7 @@ import EditorPanel from '@/components/ide/EditorPanel.vue'
 import TerminalPanel from '@/components/ide/TerminalPanel.vue'
 import AiAgentPanel from '@/components/ide/AiAgentPanel.vue'
 import PreviewPanel from '@/components/ide/PreviewPanel.vue'
+import GitPanel from '@/components/ide/GitPanel.vue'
 import { useResizable } from '@/composables/useResizable'
 
 const route = useRoute()
@@ -20,6 +21,7 @@ const activeFile = ref<string | null>(null)
 const terminalMinimized = ref(false)
 const agentVisible = ref(true)
 const previewVisible = ref(false)
+const gitVisible = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
 
 const sidebar = useResizable({
@@ -52,6 +54,14 @@ const preview = useResizable({
   initialSize: 480,
   minSize: 240,
   maxSize: 800,
+})
+
+const git = useResizable({
+  direction: 'horizontal',
+  edge: 'right',
+  initialSize: 300,
+  minSize: 220,
+  maxSize: 500,
 })
 
 function handleGlobalKeydown(e: KeyboardEvent) {
@@ -190,6 +200,18 @@ function handleBack() {
         </button>
         <button
           class="titlebar-toggle"
+          :class="{ active: gitVisible }"
+          @click="gitVisible = !gitVisible"
+          title="Toggle Git panel"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="18" cy="18" r="3" />
+            <circle cx="6" cy="6" r="3" />
+            <path d="M6 21V9a9 9 0 0 0 9 9" />
+          </svg>
+        </button>
+        <button
+          class="titlebar-toggle"
           :class="{ active: agentVisible }"
           @click="agentVisible = !agentVisible"
           title="Toggle AI agent"
@@ -260,6 +282,18 @@ function handleBack() {
             :workspace-id="workspace?.id ?? 0"
             @close="previewVisible = false"
           />
+        </aside>
+      </template>
+
+      <!-- Right panel: Git -->
+      <template v-if="gitVisible">
+        <div
+          class="resize-handle resize-handle--horizontal"
+          :class="{ active: git.isDragging.value }"
+          @pointerdown="git.onPointerDown"
+        />
+        <aside class="ide-git" :style="{ width: git.size.value + 'px' }">
+          <GitPanel :workspace-id="workspace?.id ?? 0" />
         </aside>
       </template>
 
@@ -497,6 +531,12 @@ function handleBack() {
 .ide-agent {
   flex-shrink: 0;
   overflow-y: auto;
+  background: var(--bg-surface);
+}
+
+.ide-git {
+  flex-shrink: 0;
+  overflow: hidden;
   background: var(--bg-surface);
 }
 

@@ -35,6 +35,13 @@ type Service interface {
 	SearchFiles(ctx context.Context, userID, workspaceID int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error)
 	RunCommand(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error)
 
+	// Git operations
+	GitStatus(ctx context.Context, userID, workspaceID int64) (*agent.GitStatus, error)
+	GitLog(ctx context.Context, userID, workspaceID int64, count int) ([]agent.GitCommit, error)
+	GitBranches(ctx context.Context, userID, workspaceID int64) (*agent.GitBranches, error)
+	GitDiff(ctx context.Context, userID, workspaceID int64, path string, staged bool) (string, error)
+	GitAction(ctx context.Context, userID, workspaceID int64, action string, files []string, message, branch, remote, userName, userEmail string) (*agent.GitActionResult, error)
+
 	// AgentAddr returns the agent's host:port for a running workspace.
 	AgentAddr(ctx context.Context, userID, workspaceID int64) (string, error)
 }
@@ -230,6 +237,46 @@ func (s *service) RunCommand(ctx context.Context, userID, workspaceID int64, com
 		return nil, err
 	}
 	return c.RunCommand(ctx, command)
+}
+
+func (s *service) GitStatus(ctx context.Context, userID, workspaceID int64) (*agent.GitStatus, error) {
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.GitStatus(ctx)
+}
+
+func (s *service) GitLog(ctx context.Context, userID, workspaceID int64, count int) ([]agent.GitCommit, error) {
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.GitLog(ctx, count)
+}
+
+func (s *service) GitBranches(ctx context.Context, userID, workspaceID int64) (*agent.GitBranches, error) {
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.GitBranches(ctx)
+}
+
+func (s *service) GitDiff(ctx context.Context, userID, workspaceID int64, path string, staged bool) (string, error) {
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	return c.GitDiff(ctx, path, staged)
+}
+
+func (s *service) GitAction(ctx context.Context, userID, workspaceID int64, action string, files []string, message, branch, remote, userName, userEmail string) (*agent.GitActionResult, error) {
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.GitAction(ctx, action, files, message, branch, remote, userName, userEmail)
 }
 
 func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (string, error) {

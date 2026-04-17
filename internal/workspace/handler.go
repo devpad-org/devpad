@@ -296,6 +296,125 @@ func (h *Handler) HandleRename(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// HandleGitStatus returns the git status of a workspace.
+func (h *Handler) HandleGitStatus(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	status, err := h.service.GitStatus(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, status)
+}
+
+// HandleGitLog returns the commit log of a workspace.
+func (h *Handler) HandleGitLog(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	count := 50
+	if c := r.URL.Query().Get("count"); c != "" {
+		if n, err := strconv.Atoi(c); err == nil && n > 0 && n <= 200 {
+			count = n
+		}
+	}
+
+	commits, err := h.service.GitLog(r.Context(), user.ID, id, count)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"commits": commits})
+}
+
+// HandleGitBranches returns the branches of a workspace.
+func (h *Handler) HandleGitBranches(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	branches, err := h.service.GitBranches(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, branches)
+}
+
+// HandleGitDiff returns the diff for a workspace or specific file.
+func (h *Handler) HandleGitDiff(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	path := r.URL.Query().Get("path")
+	staged := r.URL.Query().Get("staged") == "true"
+
+	diff, err := h.service.GitDiff(r.Context(), user.ID, id, path, staged)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"diff": diff})
+}
+
+// HandleGitAction performs a git action (stage, commit, push, etc).
+func (h *Handler) HandleGitAction(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	var req struct {
+		Action    string   `json:"action"`
+		Files     []string `json:"files"`
+		Message   string   `json:"message"`
+		Branch    string   `json:"branch"`
+		Remote    string   `json:"remote"`
+		UserName  string   `json:"userName"`
+		UserEmail string   `json:"userEmail"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Action == "" {
+		writeError(w, http.StatusBadRequest, "action is required")
+		return
+	}
+
+	result, err := h.service.GitAction(r.Context(), user.ID, id, req.Action, req.Files, req.Message, req.Branch, req.Remote, req.UserName, req.UserEmail)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
 func parseID(r *http.Request, name string) (int64, error) {
 	return strconv.ParseInt(r.PathValue(name), 10, 64)
 }

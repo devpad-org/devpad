@@ -274,6 +274,13 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/workspaces/{id}/file/mkdir", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleMkdir)))
 	mux.Handle("POST /api/workspaces/{id}/file/rename", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleRename)))
 
+	// Workspace git routes
+	mux.Handle("GET /api/workspaces/{id}/git/status", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitStatus)))
+	mux.Handle("GET /api/workspaces/{id}/git/log", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitLog)))
+	mux.Handle("GET /api/workspaces/{id}/git/branches", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitBranches)))
+	mux.Handle("GET /api/workspaces/{id}/git/diff", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitDiff)))
+	mux.Handle("POST /api/workspaces/{id}/git/action", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitAction)))
+
 	// Workspace preview route
 	mux.Handle("POST /api/workspaces/{id}/preview", authMiddleware.RequireAuth(http.HandlerFunc(previewHandler.HandleGenerateURL)))
 

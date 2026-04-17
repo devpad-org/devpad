@@ -283,6 +283,182 @@ func (c *Client) RunCommand(ctx context.Context, command string) (*CommandResult
 	return &result, nil
 }
 
+// GitStatus represents the status of a git repository.
+type GitStatus struct {
+	IsRepo  bool            `json:"isRepo"`
+	Branch  string          `json:"branch"`
+	Files   []GitFileStatus `json:"files"`
+	Ahead   int             `json:"ahead"`
+	Behind  int             `json:"behind"`
+	Remotes []string        `json:"remotes"`
+}
+
+// GitFileStatus represents a single file in git status.
+type GitFileStatus struct {
+	Path       string `json:"path"`
+	StatusCode string `json:"statusCode"`
+	Status     string `json:"status"`
+	Staged     bool   `json:"staged"`
+}
+
+// GitCommit represents a single commit from git log.
+type GitCommit struct {
+	Hash      string `json:"hash"`
+	ShortHash string `json:"shortHash"`
+	Author    string `json:"author"`
+	Email     string `json:"email"`
+	Timestamp string `json:"timestamp"`
+	Message   string `json:"message"`
+}
+
+// GitBranches represents the branch listing.
+type GitBranches struct {
+	Branches []GitBranch `json:"branches"`
+	Current  string      `json:"current"`
+}
+
+// GitBranch represents a single git branch.
+type GitBranch struct {
+	Name     string `json:"name"`
+	Hash     string `json:"hash"`
+	Upstream string `json:"upstream"`
+	Current  bool   `json:"current"`
+	Remote   bool   `json:"remote"`
+}
+
+// GitActionResult represents the result of a git action.
+type GitActionResult struct {
+	Success bool   `json:"success"`
+	Output  string `json:"output"`
+	Error   string `json:"error,omitempty"`
+}
+
+// GitStatus returns the current git status of the workspace.
+func (c *Client) GitStatus(ctx context.Context) (*GitStatus, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/git/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("git status: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+	var result GitStatus
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding git status: %w", err)
+	}
+	return &result, nil
+}
+
+// GitLog returns the commit log.
+func (c *Client) GitLog(ctx context.Context, count int) ([]GitCommit, error) {
+	u := fmt.Sprintf("%s/api/git/log?count=%d", c.baseURL, count)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("git log: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+	var result struct {
+		Commits []GitCommit `json:"commits"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding git log: %w", err)
+	}
+	return result.Commits, nil
+}
+
+// GitBranches returns the list of branches.
+func (c *Client) GitBranches(ctx context.Context) (*GitBranches, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/git/branches", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("git branches: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+	var result GitBranches
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding git branches: %w", err)
+	}
+	return &result, nil
+}
+
+// GitDiff returns the diff for the workspace or a specific file.
+func (c *Client) GitDiff(ctx context.Context, path string, staged bool) (string, error) {
+	u := fmt.Sprintf("%s/api/git/diff?path=%s&staged=%t", c.baseURL, url.QueryEscape(path), staged)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("git diff: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", parseError(resp)
+	}
+	var result struct {
+		Diff string `json:"diff"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decoding git diff: %w", err)
+	}
+	return result.Diff, nil
+}
+
+// GitAction performs a git action (stage, unstage, commit, push, pull, etc).
+func (c *Client) GitAction(ctx context.Context, action string, files []string, message, branch, remote, userName, userEmail string) (*GitActionResult, error) {
+	payload, err := json.Marshal(map[string]any{
+		"action":    action,
+		"files":     files,
+		"message":   message,
+		"branch":    branch,
+		"remote":    remote,
+		"userName":  userName,
+		"userEmail": userEmail,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/git/action", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("git action: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+	var result GitActionResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding git action result: %w", err)
+	}
+	return &result, nil
+}
+
 func parseError(resp *http.Response) error {
 	var errResp struct {
 		Error string `json:"error"`
