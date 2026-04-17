@@ -173,6 +173,78 @@ func (h *Handler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// HandleListWorkspaces returns all workspaces across all users.
+func (h *Handler) HandleListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	workspaces, err := h.service.ListWorkspaces(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list workspaces")
+		return
+	}
+
+	items := make([]map[string]any, 0, len(workspaces))
+	for _, ws := range workspaces {
+		items = append(items, map[string]any{
+			"id":          ws.ID,
+			"userId":      ws.UserID,
+			"name":        ws.Name,
+			"description": ws.Description,
+			"status":      ws.Status,
+			"memoryLimit": ws.MemoryLimit,
+			"nanoCpus":    ws.NanoCPUs,
+			"createdAt":   ws.CreatedAt,
+			"updatedAt":   ws.UpdatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workspaces": items})
+}
+
+// HandleUpdateWorkspaceLimits updates resource limits for a workspace.
+func (h *Handler) HandleUpdateWorkspaceLimits(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	var req struct {
+		MemoryLimit int64 `json:"memoryLimit"`
+		NanoCPUs    int64 `json:"nanoCpus"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.MemoryLimit < 4*1024*1024 { // minimum 4MB (Docker requirement)
+		writeError(w, http.StatusBadRequest, "memory limit must be at least 4MB")
+		return
+	}
+	if req.NanoCPUs < 0 {
+		writeError(w, http.StatusBadRequest, "nanoCpus must be non-negative")
+		return
+	}
+
+	ws, err := h.service.UpdateWorkspaceLimits(r.Context(), id, req.MemoryLimit, req.NanoCPUs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update workspace limits")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"workspace": map[string]any{
+			"id":          ws.ID,
+			"userId":      ws.UserID,
+			"name":        ws.Name,
+			"description": ws.Description,
+			"status":      ws.Status,
+			"memoryLimit": ws.MemoryLimit,
+			"nanoCpus":    ws.NanoCPUs,
+			"createdAt":   ws.CreatedAt,
+			"updatedAt":   ws.UpdatedAt,
+		},
+	})
+}
+
 func parseIDParam(r *http.Request) (int64, error) {
 	idStr := r.PathValue("id")
 	return strconv.ParseInt(idStr, 10, 64)

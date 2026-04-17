@@ -49,10 +49,6 @@ func New(cfg Config) (*Server, error) {
 	authHandler := auth.NewHandler(authService, secureCookie)
 	authMiddleware := auth.NewMiddleware(authService)
 
-	// Admin layer
-	adminService := admin.NewService(userRepo)
-	adminHandler := admin.NewHandler(adminService)
-
 	// Settings layer
 	settingsService := settings.NewService(userRepo)
 	settingsHandler := settings.NewHandler(settingsService)
@@ -64,6 +60,10 @@ func New(cfg Config) (*Server, error) {
 	}
 	workspaceRepo := workspace.NewRepository(db.Conn())
 	workspaceService := workspace.NewService(workspaceRepo, containerManager)
+
+	// Admin layer (depends on workspace service for resource limit management)
+	adminService := admin.NewService(userRepo, workspaceService)
+	adminHandler := admin.NewHandler(adminService)
 
 	// Build allowed WebSocket origins from configuration.
 	var wsOrigins []string
@@ -256,6 +256,10 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("PUT /api/admin/users/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleUpdateUser)))
 	mux.Handle("POST /api/admin/users/{id}/reset-password", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleResetPassword)))
 	mux.Handle("DELETE /api/admin/users/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleDeleteUser)))
+
+	// Admin workspace routes
+	mux.Handle("GET /api/admin/workspaces", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleListWorkspaces)))
+	mux.Handle("PUT /api/admin/workspaces/{id}/limits", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleUpdateWorkspaceLimits)))
 
 	// Workspace API routes
 	mux.Handle("GET /api/workspaces", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleList)))

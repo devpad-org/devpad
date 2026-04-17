@@ -496,6 +496,8 @@ func workspaceResponse(ws *Workspace) map[string]any {
 		"description": ws.Description,
 		"status":      ws.Status,
 		"containerId": ws.ContainerID,
+		"memoryLimit": ws.MemoryLimit,
+		"nanoCpus":    ws.NanoCPUs,
 		"createdAt":   ws.CreatedAt,
 		"updatedAt":   ws.UpdatedAt,
 	}

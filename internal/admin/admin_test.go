@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/workspace"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -47,11 +49,100 @@ func setupTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// mockWorkspaceService is a minimal mock for workspace.Service used by admin tests.
+type mockWorkspaceService struct {
+	workspaces []*workspace.Workspace
+}
+
+func newMockWorkspaceService() *mockWorkspaceService {
+	return &mockWorkspaceService{}
+}
+
+func (m *mockWorkspaceService) ListAll(_ context.Context) ([]*workspace.Workspace, error) {
+	return m.workspaces, nil
+}
+
+func (m *mockWorkspaceService) UpdateResourceLimits(_ context.Context, id, memoryLimit, nanoCPUs int64) (*workspace.Workspace, error) {
+	for _, ws := range m.workspaces {
+		if ws.ID == id {
+			ws.MemoryLimit = memoryLimit
+			ws.NanoCPUs = nanoCPUs
+			return ws, nil
+		}
+	}
+	return nil, workspace.ErrNotFound
+}
+
+// Unused interface methods.
+func (m *mockWorkspaceService) Create(_ context.Context, _ int64, _, _ string) (*workspace.Workspace, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) Get(_ context.Context, _, _ int64) (*workspace.Workspace, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) List(_ context.Context, _ int64) ([]*workspace.Workspace, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) Update(_ context.Context, _, _ int64, _, _ string) (*workspace.Workspace, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) Delete(_ context.Context, _, _ int64) error { return nil }
+func (m *mockWorkspaceService) Start(_ context.Context, _, _ int64) (*workspace.Workspace, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) Stop(_ context.Context, _, _ int64) (*workspace.Workspace, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) ListFiles(_ context.Context, _, _ int64, _ string) ([]agent.FileEntry, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) ReadFile(_ context.Context, _, _ int64, _ string) ([]byte, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) WriteFile(_ context.Context, _, _ int64, _ string, _ []byte) error {
+	return nil
+}
+func (m *mockWorkspaceService) DeleteFile(_ context.Context, _, _ int64, _ string) error { return nil }
+func (m *mockWorkspaceService) CreateDirectory(_ context.Context, _, _ int64, _ string) error {
+	return nil
+}
+func (m *mockWorkspaceService) RenameFile(_ context.Context, _, _ int64, _, _ string) error {
+	return nil
+}
+func (m *mockWorkspaceService) SearchFiles(_ context.Context, _, _ int64, _, _ string, _ int) ([]agent.SearchResult, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) RunCommand(_ context.Context, _, _ int64, _ string) (*agent.CommandResult, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) GitStatus(_ context.Context, _, _ int64) (*agent.GitStatus, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) GitLog(_ context.Context, _, _ int64, _ int) ([]agent.GitCommit, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) GitBranches(_ context.Context, _, _ int64) (*agent.GitBranches, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) GitDiff(_ context.Context, _, _ int64, _ string, _ bool) (string, error) {
+	return "", nil
+}
+func (m *mockWorkspaceService) GitAction(_ context.Context, _, _ int64, _ string, _ []string, _, _, _, _, _ string) (*agent.GitActionResult, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) AgentAddr(_ context.Context, _, _ int64) (string, string, error) {
+	return "", "", nil
+}
+func (m *mockWorkspaceService) Info(_ context.Context, _, _ int64) (*workspace.WorkspaceInfo, error) {
+	return nil, nil
+}
+
 func setupTestService(t *testing.T) (Service, auth.UserRepository) {
 	t.Helper()
 	db := setupTestDB(t)
 	userRepo := auth.NewUserRepository(db)
-	svc := NewService(userRepo)
+	wsMock := newMockWorkspaceService()
+	svc := NewService(userRepo, wsMock)
 	return svc, userRepo
 }
 
@@ -205,11 +296,14 @@ func TestService_DeleteUser_NotFound(t *testing.T) {
 
 // Handler tests
 
-func setupTestHandler(t *testing.T) (*Handler, Service) {
+func setupTestHandler(t *testing.T) (*Handler, Service, *mockWorkspaceService) {
 	t.Helper()
-	svc, _ := setupTestService(t)
+	db := setupTestDB(t)
+	userRepo := auth.NewUserRepository(db)
+	wsMock := newMockWorkspaceService()
+	svc := NewService(userRepo, wsMock)
 	handler := NewHandler(svc)
-	return handler, svc
+	return handler, svc, wsMock
 }
 
 func withAdminContext(r *http.Request, user *auth.User) *http.Request {
@@ -218,7 +312,7 @@ func withAdminContext(r *http.Request, user *auth.User) *http.Request {
 }
 
 func TestHandler_ListUsers(t *testing.T) {
-	handler, svc := setupTestHandler(t)
+	handler, svc, _ := setupTestHandler(t)
 	ctx := context.Background()
 
 	seedAdmin(t, svc, ctx)
@@ -244,7 +338,7 @@ func TestHandler_ListUsers(t *testing.T) {
 }
 
 func TestHandler_CreateUser(t *testing.T) {
-	handler, _ := setupTestHandler(t)
+	handler, _, _ := setupTestHandler(t)
 
 	body := `{"username":"newuser","email":"new@test.com","password":"password123","isAdmin":false}`
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
@@ -258,7 +352,7 @@ func TestHandler_CreateUser(t *testing.T) {
 }
 
 func TestHandler_CreateUser_Validation(t *testing.T) {
-	handler, _ := setupTestHandler(t)
+	handler, _, _ := setupTestHandler(t)
 
 	tests := []struct {
 		name   string
@@ -283,7 +377,7 @@ func TestHandler_CreateUser_Validation(t *testing.T) {
 }
 
 func TestHandler_DeleteUser_SelfProtection(t *testing.T) {
-	handler, svc := setupTestHandler(t)
+	handler, svc, _ := setupTestHandler(t)
 	ctx := context.Background()
 
 	admin := seedAdmin(t, svc, ctx)
@@ -297,5 +391,81 @@ func TestHandler_DeleteUser_SelfProtection(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_ListWorkspaces(t *testing.T) {
+	handler, _, wsMock := setupTestHandler(t)
+
+	wsMock.workspaces = []*workspace.Workspace{
+		{ID: 1, UserID: 1, Name: "WS1", Status: "running", MemoryLimit: workspace.DefaultMemoryLimit, NanoCPUs: workspace.DefaultNanoCPUs},
+		{ID: 2, UserID: 2, Name: "WS2", Status: "stopped", MemoryLimit: 4 * 1024 * 1024 * 1024, NanoCPUs: 1_000_000_000},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/workspaces", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleListWorkspaces(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Workspaces []map[string]any `json:"workspaces"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(resp.Workspaces) != 2 {
+		t.Errorf("expected 2 workspaces, got %d", len(resp.Workspaces))
+	}
+}
+
+func TestHandler_UpdateWorkspaceLimits(t *testing.T) {
+	handler, _, wsMock := setupTestHandler(t)
+
+	wsMock.workspaces = []*workspace.Workspace{
+		{ID: 1, UserID: 1, Name: "WS1", Status: "running", MemoryLimit: workspace.DefaultMemoryLimit, NanoCPUs: workspace.DefaultNanoCPUs},
+	}
+
+	body := `{"memoryLimit":4294967296,"nanoCpus":4000000000}`
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/workspaces/1/limits", strings.NewReader(body))
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	handler.HandleUpdateWorkspaceLimits(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Workspace struct {
+			MemoryLimit float64 `json:"memoryLimit"`
+			NanoCPUs    float64 `json:"nanoCpus"`
+		} `json:"workspace"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if int64(resp.Workspace.MemoryLimit) != 4294967296 {
+		t.Errorf("expected memoryLimit 4294967296, got %v", resp.Workspace.MemoryLimit)
+	}
+	if int64(resp.Workspace.NanoCPUs) != 4000000000 {
+		t.Errorf("expected nanoCpus 4000000000, got %v", resp.Workspace.NanoCPUs)
+	}
+}
+
+func TestHandler_UpdateWorkspaceLimits_Validation(t *testing.T) {
+	handler, _, _ := setupTestHandler(t)
+
+	// Memory too low
+	body := `{"memoryLimit":1000,"nanoCpus":1000000000}`
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/workspaces/1/limits", strings.NewReader(body))
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	handler.HandleUpdateWorkspaceLimits(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400 for low memory, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

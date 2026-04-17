@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/workspace"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -22,15 +23,19 @@ type Service interface {
 	UpdateUser(ctx context.Context, id int64, username, email string, isAdmin bool) (*auth.User, error)
 	ResetPassword(ctx context.Context, id int64, password string) error
 	DeleteUser(ctx context.Context, callerID, targetID int64) error
+
+	ListWorkspaces(ctx context.Context) ([]*workspace.Workspace, error)
+	UpdateWorkspaceLimits(ctx context.Context, workspaceID, memoryLimit, nanoCPUs int64) (*workspace.Workspace, error)
 }
 
 type service struct {
-	users auth.UserRepository
+	users      auth.UserRepository
+	workspaces workspace.Service
 }
 
 // NewService creates a new admin Service.
-func NewService(users auth.UserRepository) Service {
-	return &service{users: users}
+func NewService(users auth.UserRepository, workspaces workspace.Service) Service {
+	return &service{users: users, workspaces: workspaces}
 }
 
 func (s *service) ListUsers(ctx context.Context) ([]*auth.User, error) {
@@ -121,4 +126,12 @@ func (s *service) DeleteUser(ctx context.Context, callerID, targetID int64) erro
 	}
 
 	return nil
+}
+
+func (s *service) ListWorkspaces(ctx context.Context) ([]*workspace.Workspace, error) {
+	return s.workspaces.ListAll(ctx)
+}
+
+func (s *service) UpdateWorkspaceLimits(ctx context.Context, workspaceID, memoryLimit, nanoCPUs int64) (*workspace.Workspace, error) {
+	return s.workspaces.UpdateResourceLimits(ctx, workspaceID, memoryLimit, nanoCPUs)
 }

@@ -9,12 +9,32 @@ export interface AdminUser {
   updatedAt: string
 }
 
+export interface AdminWorkspace {
+  id: number
+  userId: number
+  name: string
+  description: string
+  status: 'creating' | 'running' | 'stopped'
+  memoryLimit: number
+  nanoCpus: number
+  createdAt: string
+  updatedAt: string
+}
+
 interface UsersResponse {
   users: AdminUser[]
 }
 
 interface UserResponse {
   user: AdminUser
+}
+
+interface WorkspacesResponse {
+  workspaces: AdminWorkspace[]
+}
+
+interface WorkspaceResponse {
+  workspace: AdminWorkspace
 }
 
 export const adminApi = {
@@ -36,5 +56,13 @@ export const adminApi = {
 
   deleteUser(id: number): Promise<void> {
     return apiClient.delete(`/api/admin/users/${id}`)
+  },
+
+  listWorkspaces(): Promise<WorkspacesResponse> {
+    return apiClient.get<WorkspacesResponse>('/api/admin/workspaces')
+  },
+
+  updateWorkspaceLimits(id: number, data: { memoryLimit: number; nanoCpus: number }): Promise<WorkspaceResponse> {
+    return apiClient.put<WorkspaceResponse>(`/api/admin/workspaces/${id}/limits`, data)
   },
 }

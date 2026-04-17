@@ -24,7 +24,9 @@ type Service interface {
 	Create(ctx context.Context, userID int64, name, description string) (*Workspace, error)
 	Get(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
 	List(ctx context.Context, userID int64) ([]*Workspace, error)
+	ListAll(ctx context.Context) ([]*Workspace, error)
 	Update(ctx context.Context, userID, workspaceID int64, name, description string) (*Workspace, error)
+	UpdateResourceLimits(ctx context.Context, workspaceID, memoryLimit, nanoCPUs int64) (*Workspace, error)
 	Delete(ctx context.Context, userID, workspaceID int64) error
 	Start(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
 	Stop(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
@@ -137,6 +139,8 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 		Description: description,
 		Status:      StatusCreating,
 		AgentToken:  agentToken,
+		MemoryLimit: DefaultMemoryLimit,
+		NanoCPUs:    DefaultNanoCPUs,
 	}
 	if err := s.repo.Create(ctx, ws); err != nil {
 		return nil, fmt.Errorf("creating workspace: %w", err)
@@ -152,7 +156,7 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 	containerEnv := []string{
 		fmt.Sprintf("AGENT_AUTH_TOKEN=%s", agentToken),
 	}
-	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), volumeName, containerEnv)
+	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), volumeName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
 	if err != nil {
 		_ = s.container.RemoveVolume(ctx, volumeName)
 		_ = s.repo.Delete(ctx, ws.ID)
@@ -201,6 +205,14 @@ func (s *service) List(ctx context.Context, userID int64) ([]*Workspace, error) 
 	return workspaces, nil
 }
 
+func (s *service) ListAll(ctx context.Context) ([]*Workspace, error) {
+	workspaces, err := s.repo.ListAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing all workspaces: %w", err)
+	}
+	return workspaces, nil
+}
+
 func (s *service) Update(ctx context.Context, userID, workspaceID int64, name, description string) (*Workspace, error) {
 	ws, err := s.Get(ctx, userID, workspaceID)
 	if err != nil {
@@ -213,6 +225,32 @@ func (s *service) Update(ctx context.Context, userID, workspaceID int64, name, d
 	if err := s.repo.Update(ctx, ws); err != nil {
 		return nil, fmt.Errorf("updating workspace: %w", err)
 	}
+	return ws, nil
+}
+
+func (s *service) UpdateResourceLimits(ctx context.Context, workspaceID, memoryLimit, nanoCPUs int64) (*Workspace, error) {
+	ws, err := s.repo.GetByID(ctx, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("getting workspace: %w", err)
+	}
+	if ws == nil {
+		return nil, ErrNotFound
+	}
+
+	ws.MemoryLimit = memoryLimit
+	ws.NanoCPUs = nanoCPUs
+
+	if err := s.repo.Update(ctx, ws); err != nil {
+		return nil, fmt.Errorf("updating workspace limits: %w", err)
+	}
+
+	// Apply limits to running container immediately.
+	if ws.ContainerID != "" && ws.Status == StatusRunning {
+		if err := s.container.UpdateResources(ctx, ws.ContainerID, memoryLimit, nanoCPUs); err != nil {
+			return nil, fmt.Errorf("applying resource limits: %w", err)
+		}
+	}
+
 	return ws, nil
 }
 
@@ -322,7 +360,7 @@ func (s *service) ensureContainerHasToken(ctx context.Context, ws *Workspace) er
 	containerEnv := []string{
 		fmt.Sprintf("AGENT_AUTH_TOKEN=%s", ws.AgentToken),
 	}
-	newID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.VolumeName, containerEnv)
+	newID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.VolumeName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
 	if err != nil {
 		return fmt.Errorf("creating replacement container: %w", err)
 	}

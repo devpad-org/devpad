@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useAdminStore } from '@/stores/admin'
 import { useAuthStore } from '@/stores/auth'
 import type { AdminUser } from '@/api/admin'
+import type { AdminWorkspace } from '@/api/admin'
 import { aiApi, type AIProvider } from '@/api/ai'
 
 const admin = useAdminStore()
@@ -34,8 +35,25 @@ const aiError = ref('')
 const aiSuccess = ref('')
 const aiSubmitting = ref<string | null>(null)
 
+// Workspace limits modal
+const showLimitsModal = ref(false)
+const selectedWorkspace = ref<AdminWorkspace | null>(null)
+const limitsForm = ref({ memoryGB: 2, cpuCores: 2 })
+const limitsError = ref('')
+const limitsSubmitting = ref(false)
+
+// Helper to find username by user ID
+const usernameMap = computed(() => {
+  const map: Record<number, string> = {}
+  for (const u of admin.users) {
+    map[u.id] = u.username
+  }
+  return map
+})
+
 onMounted(() => {
   admin.fetchUsers()
+  admin.fetchWorkspaces()
   loadAIProviders()
 })
 
@@ -183,6 +201,59 @@ async function handleDelete() {
   } finally {
     modalSubmitting.value = false
   }
+}
+
+function openLimitsModal(ws: AdminWorkspace) {
+  selectedWorkspace.value = ws
+  limitsForm.value = {
+    memoryGB: ws.memoryLimit / (1024 * 1024 * 1024),
+    cpuCores: ws.nanoCpus / 1_000_000_000,
+  }
+  limitsError.value = ''
+  showLimitsModal.value = true
+}
+
+function closeLimitsModal() {
+  showLimitsModal.value = false
+  selectedWorkspace.value = null
+  limitsError.value = ''
+}
+
+async function handleUpdateLimits() {
+  if (!selectedWorkspace.value) return
+  limitsError.value = ''
+
+  if (limitsForm.value.memoryGB < 0.25) {
+    limitsError.value = 'Memory must be at least 0.25 GB'
+    return
+  }
+  if (limitsForm.value.cpuCores < 0.1) {
+    limitsError.value = 'CPU must be at least 0.1 cores'
+    return
+  }
+
+  limitsSubmitting.value = true
+  try {
+    await admin.updateWorkspaceLimits(selectedWorkspace.value.id, {
+      memoryLimit: Math.round(limitsForm.value.memoryGB * 1024 * 1024 * 1024),
+      nanoCpus: Math.round(limitsForm.value.cpuCores * 1_000_000_000),
+    })
+    closeLimitsModal()
+  } catch (e) {
+    limitsError.value = e instanceof Error ? e.message : 'Failed to update limits'
+  } finally {
+    limitsSubmitting.value = false
+  }
+}
+
+function formatBytes(bytes: number): string {
+  const gb = bytes / (1024 * 1024 * 1024)
+  return gb % 1 === 0 ? `${gb} GB` : `${gb.toFixed(2)} GB`
+}
+
+function formatCPU(nanoCpus: number): string {
+  const cores = nanoCpus / 1_000_000_000
+  return cores % 1 === 0 ? `${cores} cores` : `${cores.toFixed(1)} cores`
 }
 
 function isSelf(user: AdminUser): boolean {
@@ -362,6 +433,96 @@ function isSelf(user: AdminUser): boolean {
               {{ modalSubmitting ? 'Deleting...' : 'Delete User' }}
             </button>
           </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Workspaces Section -->
+    <div class="admin-container" style="margin-top: var(--space-6);">
+      <div class="admin-header">
+        <div>
+          <h1 class="admin-title">Workspaces</h1>
+          <p class="admin-subtitle">Manage resource limits for all workspaces</p>
+        </div>
+      </div>
+
+      <div v-if="admin.workspacesError" class="alert alert-error">{{ admin.workspacesError }}</div>
+
+      <div v-if="admin.workspacesLoading" class="loading-state">Loading workspaces...</div>
+
+      <div v-else class="users-table-wrap">
+        <table class="users-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Owner</th>
+              <th>Status</th>
+              <th>Memory</th>
+              <th>CPU</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="ws in admin.workspaces" :key="ws.id">
+              <td class="cell-username">{{ ws.name }}</td>
+              <td class="cell-email">{{ usernameMap[ws.userId] || `User #${ws.userId}` }}</td>
+              <td>
+                <span class="badge-status" :class="ws.status">{{ ws.status }}</span>
+              </td>
+              <td class="cell-limit">{{ formatBytes(ws.memoryLimit) }}</td>
+              <td class="cell-limit">{{ formatCPU(ws.nanoCpus) }}</td>
+              <td class="cell-actions">
+                <button class="btn-action" title="Edit resource limits" @click="openLimitsModal(ws)">Limits</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="admin.workspaces.length === 0 && !admin.workspacesLoading" class="empty-state">
+          No workspaces found.
+        </div>
+      </div>
+    </div>
+
+    <!-- Workspace Limits Modal -->
+    <Teleport to="body">
+      <div v-if="showLimitsModal" class="modal-overlay" @click.self="closeLimitsModal">
+        <div class="modal">
+          <h2 class="modal-title">Resource Limits</h2>
+          <p class="modal-subtitle">Configure limits for <strong>{{ selectedWorkspace?.name }}</strong></p>
+          <div v-if="limitsError" class="alert alert-error">{{ limitsError }}</div>
+          <form @submit.prevent="handleUpdateLimits">
+            <div class="form-field">
+              <label for="limit-memory">Memory (GB)</label>
+              <input
+                id="limit-memory"
+                v-model.number="limitsForm.memoryGB"
+                type="number"
+                min="0.25"
+                step="0.25"
+                required
+              />
+            </div>
+            <div class="form-field">
+              <label for="limit-cpu">CPU Cores</label>
+              <input
+                id="limit-cpu"
+                v-model.number="limitsForm.cpuCores"
+                type="number"
+                min="0.1"
+                step="0.1"
+                required
+              />
+            </div>
+            <p class="field-hint" style="margin-bottom: var(--space-4);">
+              Changes apply immediately to running containers.
+            </p>
+            <div class="modal-actions">
+              <button type="button" class="btn-secondary" @click="closeLimitsModal">Cancel</button>
+              <button type="submit" class="btn-primary" :disabled="limitsSubmitting">
+                {{ limitsSubmitting ? 'Saving...' : 'Save Limits' }}
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     </Teleport>
@@ -863,5 +1024,56 @@ function isSelf(user: AdminUser): boolean {
 .toggle-input:checked + .toggle-switch::after {
   transform: translateX(16px);
   background: var(--accent-green);
+}
+
+.badge-status {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  text-transform: capitalize;
+}
+
+.badge-status.running {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-green);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.badge-status.stopped {
+  background: rgba(161, 161, 170, 0.1);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+}
+
+.badge-status.creating {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-amber);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.cell-limit {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.form-field input[type='number'] {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  transition: border-color var(--transition-fast);
+}
+
+.form-field input[type='number']:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.15);
 }
 </style>

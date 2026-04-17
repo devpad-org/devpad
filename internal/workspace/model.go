@@ -11,6 +11,12 @@ const (
 	StatusStopped  Status = "stopped"
 )
 
+// Default resource limits for new workspaces.
+const (
+	DefaultMemoryLimit int64 = 2 * 1024 * 1024 * 1024 // 2 GB
+	DefaultNanoCPUs    int64 = 2_000_000_000          // 2 cores
+)
+
 // Workspace represents a user's development workspace.
 type Workspace struct {
 	ID          int64
@@ -21,6 +27,8 @@ type Workspace struct {
 	ContainerID string
 	VolumeName  string
 	AgentToken  string
+	MemoryLimit int64 // bytes; 0 means use default
+	NanoCPUs    int64 // billionths of a CPU; 0 means use default
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }

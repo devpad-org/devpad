@@ -20,13 +20,16 @@ import (
 // mockContainerManager is a test double for container.Manager.
 type mockContainerManager struct{}
 
-func (m *mockContainerManager) Create(_ context.Context, _, _ string, _ []string) (string, error) {
+func (m *mockContainerManager) Create(_ context.Context, _, _ string, _ []string, _, _ int64) (string, error) {
 	return "mock-container", nil
 }
 func (m *mockContainerManager) Start(_ context.Context, _ string) error   { return nil }
 func (m *mockContainerManager) Stop(_ context.Context, _ string) error    { return nil }
 func (m *mockContainerManager) Restart(_ context.Context, _ string) error { return nil }
 func (m *mockContainerManager) Remove(_ context.Context, _ string) error  { return nil }
+func (m *mockContainerManager) UpdateResources(_ context.Context, _ string, _, _ int64) error {
+	return nil
+}
 func (m *mockContainerManager) GetIP(_ context.Context, _ string) (string, error) {
 	return "172.17.0.2", nil
 }
@@ -80,6 +83,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 		container_id TEXT NOT NULL DEFAULT '',
 		volume_name TEXT NOT NULL DEFAULT '',
 		agent_token TEXT NOT NULL DEFAULT '',
+		memory_limit INTEGER NOT NULL DEFAULT 2147483648,
+		nano_cpus INTEGER NOT NULL DEFAULT 2000000000,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);

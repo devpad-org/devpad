@@ -35,11 +35,12 @@ type ContainerStats struct {
 
 // Manager handles Docker container lifecycle operations.
 type Manager interface {
-	Create(ctx context.Context, name, volumeName string, env []string) (containerID string, err error)
+	Create(ctx context.Context, name, volumeName string, env []string, memoryLimit, nanoCPUs int64) (containerID string, err error)
 	Start(ctx context.Context, containerID string) error
 	Stop(ctx context.Context, containerID string) error
 	Restart(ctx context.Context, containerID string) error
 	Remove(ctx context.Context, containerID string) error
+	UpdateResources(ctx context.Context, containerID string, memoryLimit, nanoCPUs int64) error
 	GetIP(ctx context.Context, containerID string) (string, error)
 	GetEnv(ctx context.Context, containerID string) ([]string, error)
 	Stats(ctx context.Context, containerID string) (*ContainerStats, error)
@@ -71,7 +72,7 @@ func NewManager() (Manager, error) {
 	return &manager{cli: cli}, nil
 }
 
-func (m *manager) Create(ctx context.Context, name, volumeName string, env []string) (string, error) {
+func (m *manager) Create(ctx context.Context, name, volumeName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
 	containerName := fmt.Sprintf("devpad-ws-%s", name)
 
 	var mounts []mount.Mount
@@ -83,6 +84,15 @@ func (m *manager) Create(ctx context.Context, name, volumeName string, env []str
 		})
 	}
 
+	hostConfig := &container.HostConfig{
+		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+		Mounts:        mounts,
+		Resources: container.Resources{
+			Memory:   memoryLimit,
+			NanoCPUs: nanoCPUs,
+		},
+	}
+
 	resp, err := m.cli.ContainerCreate(ctx,
 		&container.Config{
 			Image: WorkspaceImage,
@@ -92,10 +102,7 @@ func (m *manager) Create(ctx context.Context, name, volumeName string, env []str
 				"devpad.managed": "true",
 			},
 		},
-		&container.HostConfig{
-			RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
-			Mounts:        mounts,
-		},
+		hostConfig,
 		nil, nil, containerName,
 	)
 	if err != nil {
@@ -152,6 +159,19 @@ func (m *manager) CopyFileToContainer(ctx context.Context, containerID, destPath
 func (m *manager) Remove(ctx context.Context, containerID string) error {
 	if err := m.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
 		return fmt.Errorf("removing container: %w", err)
+	}
+	return nil
+}
+
+func (m *manager) UpdateResources(ctx context.Context, containerID string, memoryLimit, nanoCPUs int64) error {
+	_, err := m.cli.ContainerUpdate(ctx, containerID, container.UpdateConfig{
+		Resources: container.Resources{
+			Memory:   memoryLimit,
+			NanoCPUs: nanoCPUs,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("updating container resources: %w", err)
 	}
 	return nil
 }

@@ -19,7 +19,7 @@ type mockContainerManager struct {
 	lastCreatedID string
 }
 
-func (m *mockContainerManager) Create(_ context.Context, name, volumeName string, env []string) (string, error) {
+func (m *mockContainerManager) Create(_ context.Context, name, volumeName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
 	m.lastCreatedID = "mock-container-" + name
 	return m.lastCreatedID, nil
 }
@@ -27,6 +27,9 @@ func (m *mockContainerManager) Start(_ context.Context, _ string) error   { retu
 func (m *mockContainerManager) Stop(_ context.Context, _ string) error    { return nil }
 func (m *mockContainerManager) Restart(_ context.Context, _ string) error { return nil }
 func (m *mockContainerManager) Remove(_ context.Context, _ string) error  { return nil }
+func (m *mockContainerManager) UpdateResources(_ context.Context, _ string, _, _ int64) error {
+	return nil
+}
 func (m *mockContainerManager) GetIP(_ context.Context, _ string) (string, error) {
 	return "172.17.0.2", nil
 }
@@ -80,6 +83,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 		container_id TEXT NOT NULL DEFAULT '',
 		volume_name TEXT NOT NULL DEFAULT '',
 		agent_token TEXT NOT NULL DEFAULT '',
+		memory_limit INTEGER NOT NULL DEFAULT 2147483648,
+		nano_cpus INTEGER NOT NULL DEFAULT 2000000000,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -337,5 +342,115 @@ func TestHandler_Delete(t *testing.T) {
 	_, err := svc.Get(ctx, 1, ws.ID)
 	if err != ErrNotFound {
 		t.Errorf("expected workspace to be deleted, got: %v", err)
+	}
+}
+
+func TestService_CreateDefaultLimits(t *testing.T) {
+	svc, _ := setupTestService(t)
+	ctx := context.Background()
+
+	ws, err := svc.Create(ctx, 1, "Limited", "")
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	if ws.MemoryLimit != DefaultMemoryLimit {
+		t.Errorf("expected default memory limit %d, got %d", DefaultMemoryLimit, ws.MemoryLimit)
+	}
+	if ws.NanoCPUs != DefaultNanoCPUs {
+		t.Errorf("expected default nano cpus %d, got %d", DefaultNanoCPUs, ws.NanoCPUs)
+	}
+}
+
+func TestService_UpdateResourceLimits(t *testing.T) {
+	svc, _ := setupTestService(t)
+	ctx := context.Background()
+
+	ws, err := svc.Create(ctx, 1, "Project", "")
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	newMemory := int64(4 * 1024 * 1024 * 1024) // 4 GB
+	newCPU := int64(4_000_000_000)             // 4 cores
+
+	updated, err := svc.UpdateResourceLimits(ctx, ws.ID, newMemory, newCPU)
+	if err != nil {
+		t.Fatalf("update limits failed: %v", err)
+	}
+	if updated.MemoryLimit != newMemory {
+		t.Errorf("expected memory limit %d, got %d", newMemory, updated.MemoryLimit)
+	}
+	if updated.NanoCPUs != newCPU {
+		t.Errorf("expected nano cpus %d, got %d", newCPU, updated.NanoCPUs)
+	}
+
+	// Verify persisted
+	got, err := svc.Get(ctx, 1, ws.ID)
+	if err != nil {
+		t.Fatalf("get failed: %v", err)
+	}
+	if got.MemoryLimit != newMemory {
+		t.Errorf("persisted memory limit: expected %d, got %d", newMemory, got.MemoryLimit)
+	}
+	if got.NanoCPUs != newCPU {
+		t.Errorf("persisted nano cpus: expected %d, got %d", newCPU, got.NanoCPUs)
+	}
+}
+
+func TestService_UpdateResourceLimitsNotFound(t *testing.T) {
+	svc, _ := setupTestService(t)
+	ctx := context.Background()
+
+	_, err := svc.UpdateResourceLimits(ctx, 9999, DefaultMemoryLimit, DefaultNanoCPUs)
+	if err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestService_ListAll(t *testing.T) {
+	svc, _ := setupTestService(t)
+	ctx := context.Background()
+
+	if _, err := svc.Create(ctx, 1, "User1 WS", ""); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	if _, err := svc.Create(ctx, 2, "User2 WS", ""); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	all, err := svc.ListAll(ctx)
+	if err != nil {
+		t.Fatalf("list all failed: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("expected 2 workspaces, got %d", len(all))
+	}
+}
+
+func TestHandler_CreateIncludesLimitsInResponse(t *testing.T) {
+	svc, _ := setupTestService(t)
+	handler := NewHandler(svc, nil)
+
+	body := `{"name":"Test Project","description":"A test"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/workspaces", strings.NewReader(body))
+	req = authedRequest(req, testUser(1))
+	rec := httptest.NewRecorder()
+	handler.HandleCreate(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	json.NewDecoder(rec.Body).Decode(&resp)
+	ws := resp["workspace"].(map[string]any)
+
+	memLimit, ok := ws["memoryLimit"].(float64)
+	if !ok || int64(memLimit) != DefaultMemoryLimit {
+		t.Errorf("expected memoryLimit %d in response, got %v", DefaultMemoryLimit, ws["memoryLimit"])
+	}
+	nanoCpus, ok := ws["nanoCpus"].(float64)
+	if !ok || int64(nanoCpus) != DefaultNanoCPUs {
+		t.Errorf("expected nanoCpus %d in response, got %v", DefaultNanoCPUs, ws["nanoCpus"])
 	}
 }
