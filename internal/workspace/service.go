@@ -22,6 +22,8 @@ type Service interface {
 	List(ctx context.Context, userID int64) ([]*Workspace, error)
 	Update(ctx context.Context, userID, workspaceID int64, name, description string) (*Workspace, error)
 	Delete(ctx context.Context, userID, workspaceID int64) error
+	Start(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
+	Stop(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
 
 	// File operations (delegated to in-container agent)
 	ListFiles(ctx context.Context, userID, workspaceID int64, path string) ([]agent.FileEntry, error)
@@ -171,6 +173,48 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 		return fmt.Errorf("deleting workspace: %w", err)
 	}
 	return nil
+}
+
+func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Workspace, error) {
+	ws, err := s.Get(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if ws.Status == StatusRunning {
+		return ws, nil
+	}
+	if ws.ContainerID == "" {
+		return nil, fmt.Errorf("workspace has no container")
+	}
+	if err := s.container.Start(ctx, ws.ContainerID); err != nil {
+		return nil, fmt.Errorf("starting container: %w", err)
+	}
+	ws.Status = StatusRunning
+	if err := s.repo.Update(ctx, ws); err != nil {
+		return nil, fmt.Errorf("updating workspace status: %w", err)
+	}
+	return ws, nil
+}
+
+func (s *service) Stop(ctx context.Context, userID, workspaceID int64) (*Workspace, error) {
+	ws, err := s.Get(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if ws.Status == StatusStopped {
+		return ws, nil
+	}
+	if ws.ContainerID == "" {
+		return nil, fmt.Errorf("workspace has no container")
+	}
+	if err := s.container.Stop(ctx, ws.ContainerID); err != nil {
+		return nil, fmt.Errorf("stopping container: %w", err)
+	}
+	ws.Status = StatusStopped
+	if err := s.repo.Update(ctx, ws); err != nil {
+		return nil, fmt.Errorf("updating workspace status: %w", err)
+	}
+	return ws, nil
 }
 
 // File operations — delegate to the in-container agent.

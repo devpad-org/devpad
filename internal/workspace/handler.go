@@ -133,6 +133,42 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// HandleStart starts a stopped workspace container.
+func (h *Handler) HandleStart(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	ws, err := h.service.Start(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"workspace": workspaceResponse(ws)})
+}
+
+// HandleStop stops a running workspace container.
+func (h *Handler) HandleStop(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	ws, err := h.service.Stop(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"workspace": workspaceResponse(ws)})
+}
+
 // HandleListFiles lists files in a workspace directory.
 func (h *Handler) HandleListFiles(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())

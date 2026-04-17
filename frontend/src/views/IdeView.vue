@@ -85,7 +85,13 @@ onMounted(async () => {
   }
   try {
     const res = await workspaceApi.get(id)
-    workspace.value = res.workspace
+    let ws = res.workspace
+    // Auto-start the container if it's stopped
+    if (ws.status === 'stopped') {
+      const startRes = await workspaceApi.start(id)
+      ws = startRes.workspace
+    }
+    workspace.value = ws
   } catch {
     error.value = 'Failed to load workspace'
   } finally {

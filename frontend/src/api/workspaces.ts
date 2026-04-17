@@ -51,6 +51,14 @@ export const workspaceApi = {
     return apiClient.delete(`/api/workspaces/${id}`)
   },
 
+  start(id: number): Promise<WorkspaceResponse> {
+    return apiClient.post<WorkspaceResponse>(`/api/workspaces/${id}/start`, {})
+  },
+
+  stop(id: number): Promise<WorkspaceResponse> {
+    return apiClient.post<WorkspaceResponse>(`/api/workspaces/${id}/stop`, {})
+  },
+
   listFiles(id: number, path: string): Promise<FileListResponse> {
     return apiClient.get<FileListResponse>(
       `/api/workspaces/${id}/files?path=${encodeURIComponent(path)}`

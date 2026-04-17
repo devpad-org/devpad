@@ -1,15 +1,34 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import type { Workspace } from '@/api/workspaces'
 
-defineProps<{
+const props = defineProps<{
   workspace: Workspace
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   edit: [workspace: Workspace]
   delete: [workspace: Workspace]
   open: [workspace: Workspace]
+  start: [workspace: Workspace]
+  stop: [workspace: Workspace]
 }>()
+
+const toggling = ref(false)
+
+async function togglePower() {
+  if (toggling.value) return
+  toggling.value = true
+  try {
+    if (props.workspace.status === 'running') {
+      emit('stop', props.workspace)
+    } else {
+      emit('start', props.workspace)
+    }
+  } finally {
+    toggling.value = false
+  }
+}
 
 function statusColor(status: string) {
   switch (status) {
@@ -50,6 +69,18 @@ function formatDate(dateStr: string) {
     <div class="card-footer">
       <span class="card-date">Created {{ formatDate(workspace.createdAt) }}</span>
       <div class="card-actions">
+        <button
+          class="action-btn action-power"
+          :class="{ 'power-on': workspace.status === 'running', 'power-off': workspace.status === 'stopped' }"
+          :title="workspace.status === 'running' ? 'Stop' : 'Start'"
+          :disabled="toggling || workspace.status === 'creating'"
+          @click="togglePower"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+            <line x1="12" x2="12" y1="2" y2="12" />
+          </svg>
+        </button>
         <button class="action-btn action-open" title="Open" @click="$emit('open', workspace)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
@@ -197,6 +228,23 @@ function formatDate(dateStr: string) {
 
 .action-open:hover {
   color: var(--accent-blue);
+}
+
+.action-power {
+  transition: all var(--transition-fast);
+}
+
+.action-power:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.action-power.power-on:hover {
+  color: var(--accent-amber);
+}
+
+.action-power.power-off:hover {
+  color: var(--accent-green);
 }
 
 .action-danger:hover {

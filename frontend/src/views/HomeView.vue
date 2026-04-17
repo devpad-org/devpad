@@ -55,6 +55,22 @@ function openWorkspace(workspace: Workspace) {
   router.push({ name: 'ide', params: { id: workspace.id } })
 }
 
+async function handleStart(workspace: Workspace) {
+  try {
+    await store.startWorkspace(workspace.id)
+  } catch {
+    // error handled by store
+  }
+}
+
+async function handleStop(workspace: Workspace) {
+  try {
+    await store.stopWorkspace(workspace.id)
+  } catch {
+    // error handled by store
+  }
+}
+
 async function handleDelete() {
   if (!deleteTarget.value) return
   deleting.value = true
@@ -114,6 +130,8 @@ async function handleDelete() {
         @open="openWorkspace"
         @edit="openEdit"
         @delete="openDelete"
+        @start="handleStart"
+        @stop="handleStop"
       />
     </div>
 

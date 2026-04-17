@@ -41,6 +41,24 @@ export const useWorkspaceStore = defineStore('workspaces', () => {
     workspaces.value = workspaces.value.filter((w) => w.id !== id)
   }
 
+  async function startWorkspace(id: number) {
+    const response = await workspaceApi.start(id)
+    const index = workspaces.value.findIndex((w) => w.id === id)
+    if (index !== -1) {
+      workspaces.value[index] = response.workspace
+    }
+    return response.workspace
+  }
+
+  async function stopWorkspace(id: number) {
+    const response = await workspaceApi.stop(id)
+    const index = workspaces.value.findIndex((w) => w.id === id)
+    if (index !== -1) {
+      workspaces.value[index] = response.workspace
+    }
+    return response.workspace
+  }
+
   return {
     workspaces,
     loading,
@@ -49,5 +67,7 @@ export const useWorkspaceStore = defineStore('workspaces', () => {
     createWorkspace,
     updateWorkspace,
     deleteWorkspace,
+    startWorkspace,
+    stopWorkspace,
   }
 })
