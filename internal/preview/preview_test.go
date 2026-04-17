@@ -30,6 +30,12 @@ func (m *mockContainerManager) Remove(_ context.Context, _ string) error  { retu
 func (m *mockContainerManager) GetIP(_ context.Context, _ string) (string, error) {
 	return "172.17.0.2", nil
 }
+func (m *mockContainerManager) GetEnv(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+func (m *mockContainerManager) Stats(_ context.Context, _ string) (*container.ContainerStats, error) {
+	return &container.ContainerStats{}, nil
+}
 func (m *mockContainerManager) CreateVolume(_ context.Context, _ string) error { return nil }
 func (m *mockContainerManager) RemoveVolume(_ context.Context, _ string) error { return nil }
 func (m *mockContainerManager) Exec(_ context.Context, _ string, _ []string) (string, error) {
