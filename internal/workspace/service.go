@@ -74,39 +74,49 @@ func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*age
 }
 
 func (s *service) Create(ctx context.Context, userID int64, name, description string) (*Workspace, error) {
-	// Create a named volume for persistent workspace data
-	volumeName := fmt.Sprintf("devpad-vol-%d-%s", userID, name)
-	if err := s.container.CreateVolume(ctx, volumeName); err != nil {
-		return nil, fmt.Errorf("creating volume: %w", err)
-	}
-
-	// Create the Docker container with the volume mounted
-	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d-%s", userID, name), volumeName)
-	if err != nil {
-		_ = s.container.RemoveVolume(ctx, volumeName)
-		return nil, fmt.Errorf("creating container: %w", err)
-	}
-
-	// Start the container
-	if err := s.container.Start(ctx, containerID); err != nil {
-		_ = s.container.Remove(ctx, containerID)
-		_ = s.container.RemoveVolume(ctx, volumeName)
-		return nil, fmt.Errorf("starting container: %w", err)
-	}
-
+	// Insert the workspace record first to obtain a stable ID for naming
+	// Docker resources. This decouples container/volume names from the
+	// user-facing workspace name (which may contain spaces or be renamed).
 	ws := &Workspace{
 		UserID:      userID,
 		Name:        name,
 		Description: description,
-		Status:      StatusRunning,
-		ContainerID: containerID,
-		VolumeName:  volumeName,
+		Status:      StatusCreating,
 	}
 	if err := s.repo.Create(ctx, ws); err != nil {
+		return nil, fmt.Errorf("creating workspace: %w", err)
+	}
+
+	// Use the workspace ID for Docker resource names — stable and unique.
+	volumeName := fmt.Sprintf("devpad-vol-%d", ws.ID)
+	if err := s.container.CreateVolume(ctx, volumeName); err != nil {
+		_ = s.repo.Delete(ctx, ws.ID)
+		return nil, fmt.Errorf("creating volume: %w", err)
+	}
+
+	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), volumeName)
+	if err != nil {
+		_ = s.container.RemoveVolume(ctx, volumeName)
+		_ = s.repo.Delete(ctx, ws.ID)
+		return nil, fmt.Errorf("creating container: %w", err)
+	}
+
+	if err := s.container.Start(ctx, containerID); err != nil {
+		_ = s.container.Remove(ctx, containerID)
+		_ = s.container.RemoveVolume(ctx, volumeName)
+		_ = s.repo.Delete(ctx, ws.ID)
+		return nil, fmt.Errorf("starting container: %w", err)
+	}
+
+	ws.Status = StatusRunning
+	ws.ContainerID = containerID
+	ws.VolumeName = volumeName
+	if err := s.repo.Update(ctx, ws); err != nil {
 		_ = s.container.Stop(ctx, containerID)
 		_ = s.container.Remove(ctx, containerID)
 		_ = s.container.RemoveVolume(ctx, volumeName)
-		return nil, fmt.Errorf("creating workspace: %w", err)
+		_ = s.repo.Delete(ctx, ws.ID)
+		return nil, fmt.Errorf("updating workspace: %w", err)
 	}
 	return ws, nil
 }
