@@ -23,9 +23,10 @@ type mockContainerManager struct{}
 func (m *mockContainerManager) Create(_ context.Context, _, _ string, _ []string) (string, error) {
 	return "mock-container", nil
 }
-func (m *mockContainerManager) Start(_ context.Context, _ string) error  { return nil }
-func (m *mockContainerManager) Stop(_ context.Context, _ string) error   { return nil }
-func (m *mockContainerManager) Remove(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) Start(_ context.Context, _ string) error   { return nil }
+func (m *mockContainerManager) Stop(_ context.Context, _ string) error    { return nil }
+func (m *mockContainerManager) Restart(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) Remove(_ context.Context, _ string) error  { return nil }
 func (m *mockContainerManager) GetIP(_ context.Context, _ string) (string, error) {
 	return "172.17.0.2", nil
 }
@@ -38,6 +39,9 @@ func (m *mockContainerManager) ExecAttach(_ context.Context, _ string) (containe
 	return container.HijackedResponse{}, nil
 }
 func (m *mockContainerManager) ExecResize(_ context.Context, _ string, _, _ uint) error {
+	return nil
+}
+func (m *mockContainerManager) CopyFileToContainer(_ context.Context, _, _ string, _ []byte, _ int64) error {
 	return nil
 }
 

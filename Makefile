@@ -1,5 +1,10 @@
 .PHONY: all build clean dev frontend backend install-frontend test agent workspace-image
 
+# Version derived from git — short commit hash, or "dev" if not in a git repo.
+VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
+AGENT_LDFLAGS := -ldflags "-s -w -X main.Version=$(VERSION)"
+EMBED_LDFLAGS := -ldflags "-s -w -X github.com/devpad-org/devpad/internal/agentbin.Version=$(VERSION)"
+
 # Default target
 all: build
 
@@ -11,13 +16,17 @@ install-frontend:
 frontend: install-frontend
 	cd frontend && npm run build
 
-# Build Go binary (requires frontend to be built first)
-backend:
-	go build -o bin/devpad .
-
 # Build the workspace agent binary (linux/amd64 for containers)
 agent:
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/devpad-agent ./cmd/agent
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build $(AGENT_LDFLAGS) -o bin/devpad-agent ./cmd/agent
+
+# Copy the agent binary into the embed directory so the main binary can embed it
+embed-agent: agent
+	cp bin/devpad-agent internal/agentbin/devpad-agent
+
+# Build Go binary (requires frontend and embedded agent)
+backend: embed-agent
+	go build $(EMBED_LDFLAGS) -o bin/devpad .
 
 # Build the workspace Docker image (requires agent to be built first)
 workspace-image: agent
@@ -25,7 +34,7 @@ workspace-image: agent
 	docker build -t devpad-workspace:latest docker/workspace/
 	rm docker/workspace/devpad-agent
 
-# Full build: frontend then backend
+# Full build: frontend then backend (backend already depends on embed-agent)
 build: frontend backend
 	@echo "Build complete: bin/devpad"
 
@@ -44,4 +53,4 @@ test:
 
 # Clean build artifacts
 clean:
-	rm -rf bin/ web/dist/ coverage.out
+	rm -rf bin/ web/dist/ coverage.out internal/agentbin/devpad-agent

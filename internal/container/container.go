@@ -1,6 +1,8 @@
 package container
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -22,6 +24,7 @@ type Manager interface {
 	Create(ctx context.Context, name, volumeName string, env []string) (containerID string, err error)
 	Start(ctx context.Context, containerID string) error
 	Stop(ctx context.Context, containerID string) error
+	Restart(ctx context.Context, containerID string) error
 	Remove(ctx context.Context, containerID string) error
 	GetIP(ctx context.Context, containerID string) (string, error)
 	CreateVolume(ctx context.Context, name string) error
@@ -29,6 +32,7 @@ type Manager interface {
 	Exec(ctx context.Context, containerID string, cmd []string) (execID string, err error)
 	ExecAttach(ctx context.Context, execID string) (HijackedResponse, error)
 	ExecResize(ctx context.Context, execID string, height, width uint) error
+	CopyFileToContainer(ctx context.Context, containerID, destPath string, fileContent []byte, mode int64) error
 }
 
 // HijackedResponse wraps the Docker hijacked connection for exec.
@@ -95,6 +99,36 @@ func (m *manager) Start(ctx context.Context, containerID string) error {
 func (m *manager) Stop(ctx context.Context, containerID string) error {
 	if err := m.cli.ContainerStop(ctx, containerID, container.StopOptions{}); err != nil {
 		return fmt.Errorf("stopping container: %w", err)
+	}
+	return nil
+}
+
+func (m *manager) Restart(ctx context.Context, containerID string) error {
+	if err := m.cli.ContainerRestart(ctx, containerID, container.StopOptions{}); err != nil {
+		return fmt.Errorf("restarting container: %w", err)
+	}
+	return nil
+}
+
+func (m *manager) CopyFileToContainer(ctx context.Context, containerID, destPath string, fileContent []byte, mode int64) error {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: destPath,
+		Size: int64(len(fileContent)),
+		Mode: mode,
+	}); err != nil {
+		return fmt.Errorf("writing tar header: %w", err)
+	}
+	if _, err := tw.Write(fileContent); err != nil {
+		return fmt.Errorf("writing tar content: %w", err)
+	}
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("closing tar writer: %w", err)
+	}
+
+	if err := m.cli.CopyToContainer(ctx, containerID, "/", &buf, container.CopyToContainerOptions{}); err != nil {
+		return fmt.Errorf("copying file to container: %w", err)
 	}
 	return nil
 }

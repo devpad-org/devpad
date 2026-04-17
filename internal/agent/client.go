@@ -75,6 +75,33 @@ func (c *Client) Healthz(ctx context.Context) error {
 	return nil
 }
 
+// Version returns the version string of the running agent.
+// If the endpoint is not available (old agent), it returns an empty string and no error.
+func (c *Client) Version(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/version", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return "", fmt.Errorf("agent version check: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return "", nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("agent version: unexpected status %d", resp.StatusCode)
+	}
+	var result struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decoding version: %w", err)
+	}
+	return result.Version, nil
+}
+
 // ListFiles lists the contents of a directory inside the workspace.
 func (c *Client) ListFiles(ctx context.Context, path string) ([]FileEntry, error) {
 	u := fmt.Sprintf("%s/api/files?path=%s", c.baseURL, url.QueryEscape(path))

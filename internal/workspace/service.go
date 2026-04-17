@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/agentbin"
 	"github.com/devpad-org/devpad/internal/container"
 )
 
@@ -73,6 +75,46 @@ func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*age
 		return nil, fmt.Errorf("getting container IP: %w", err)
 	}
 	return agent.NewClient(ip, agent.DefaultPort, ws.AgentToken), nil
+}
+
+// ensureAgentUpdated checks whether the in-container agent is running the
+// expected version and, if not, copies the embedded binary into the container
+// and restarts it. An empty or unreachable version response is treated as
+// outdated (the agent predates the /api/version endpoint).
+func (s *service) ensureAgentUpdated(ctx context.Context, ws *Workspace) error {
+	if ws.ContainerID == "" {
+		return nil
+	}
+
+	ip, err := s.container.GetIP(ctx, ws.ContainerID)
+	if err != nil {
+		return fmt.Errorf("getting container IP for update check: %w", err)
+	}
+
+	c := agent.NewClient(ip, agent.DefaultPort, ws.AgentToken)
+	remoteVersion, err := c.Version(ctx)
+	if err != nil {
+		// Agent is unreachable or too old to respond — treat as needing update.
+		log.Printf("workspace %d: agent version check failed (%v), updating agent", ws.ID, err)
+		remoteVersion = ""
+	}
+
+	if remoteVersion == agentbin.Version {
+		return nil
+	}
+
+	log.Printf("workspace %d: updating agent from %q to %q", ws.ID, remoteVersion, agentbin.Version)
+
+	if err := s.container.CopyFileToContainer(ctx, ws.ContainerID, "usr/local/bin/devpad-agent", agentbin.Binary, 0755); err != nil {
+		return fmt.Errorf("copying agent binary to container: %w", err)
+	}
+
+	if err := s.container.Restart(ctx, ws.ContainerID); err != nil {
+		return fmt.Errorf("restarting container after agent update: %w", err)
+	}
+
+	log.Printf("workspace %d: agent updated and container restarted", ws.ID)
+	return nil
 }
 
 func (s *service) Create(ctx context.Context, userID int64, name, description string) (*Workspace, error) {
@@ -216,6 +258,13 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 	if err := s.repo.Update(ctx, ws); err != nil {
 		return nil, fmt.Errorf("updating workspace status: %w", err)
 	}
+
+	// Check and update the in-container agent if needed. This is best-effort:
+	// a failure to update should not prevent the workspace from starting.
+	if err := s.ensureAgentUpdated(ctx, ws); err != nil {
+		log.Printf("workspace %d: agent update failed: %v", ws.ID, err)
+	}
+
 	return ws, nil
 }
 

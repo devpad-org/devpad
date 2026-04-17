@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 )
+
+// Version is set at build time via -ldflags.
+var Version = "dev"
 
 const defaultPort = "9100"
 const workspaceRoot = "/workspace"
@@ -32,8 +36,9 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// Health check
+	// Health check and version
 	mux.HandleFunc("GET /healthz", handleHealthz)
+	mux.HandleFunc("GET /api/version", handleVersion)
 
 	// File operations
 	mux.HandleFunc("GET /api/files", handleListFiles)
@@ -86,6 +91,11 @@ func main() {
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+func handleVersion(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"version": Version})
 }
 
 // requireAuth is HTTP middleware that validates a Bearer token on every request.
