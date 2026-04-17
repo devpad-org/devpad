@@ -1,7 +1,7 @@
 # Binaries
 bin/
 devpad
-agent
+/agent
 devpad.db
 *.db
 *.db-shm
