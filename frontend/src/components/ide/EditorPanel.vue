@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, watch, nextTick } from 'vue'
+import { ref, reactive, watch, nextTick, onUnmounted } from 'vue'
 import { workspaceApi } from '@/api/workspaces'
 import { useMonacoEditor } from '@/composables/useMonacoEditor'
 
@@ -122,6 +122,8 @@ watch(editor, (ed) => {
 })
 
 // When parent requests a file, open it as a tab
+let loadAbortController: AbortController | null = null
+
 watch(() => props.filePath, async (newPath) => {
   if (!newPath) return
 
@@ -132,22 +134,35 @@ watch(() => props.filePath, async (newPath) => {
     return
   }
 
+  // Cancel any in-flight file load to avoid race conditions on rapid switching
+  loadAbortController?.abort()
+  loadAbortController = new AbortController()
+  const signal = loadAbortController.signal
+
   // Open new tab
   loading.value = true
   error.value = null
   try {
-    const content = await workspaceApi.readFile(props.workspaceId, newPath)
+    const content = await workspaceApi.readFile(props.workspaceId, newPath, signal)
+    if (signal.aborted) return
     openTabs.push({ path: newPath, name: tabName(newPath) })
     activeTab.value = newPath
     await nextTick()
     setContent(content, newPath)
     emit('activeChange', newPath)
   } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') return
     error.value = e instanceof Error ? e.message : 'Failed to load file'
   } finally {
-    loading.value = false
+    if (!signal.aborted) {
+      loading.value = false
+    }
   }
 }, { immediate: true })
+
+onUnmounted(() => {
+  loadAbortController?.abort()
+})
 </script>
 
 <template>

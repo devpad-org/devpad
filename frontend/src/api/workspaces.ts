@@ -57,8 +57,8 @@ export const workspaceApi = {
     )
   },
 
-  async readFile(id: number, path: string): Promise<string> {
-    const res = await fetch(`/api/workspaces/${id}/file?path=${encodeURIComponent(path)}`)
+  async readFile(id: number, path: string, signal?: AbortSignal): Promise<string> {
+    const res = await fetch(`/api/workspaces/${id}/file?path=${encodeURIComponent(path)}`, { signal })
     if (!res.ok) {
       throw new Error(`Failed to read file: ${res.status}`)
     }

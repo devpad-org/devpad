@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 const defaultPort = "9100"
@@ -49,7 +52,20 @@ func main() {
 
 	addr := ":" + port
 	log.Printf("devpad-agent listening on %s (workspace: %s)", addr, workspaceRoot)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+
+	srv := &http.Server{Addr: addr, Handler: mux}
+
+	// Graceful shutdown: close the filesystem watcher and HTTP server on SIGINT/SIGTERM.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-sigCh
+		log.Println("shutting down agent...")
+		fsWatcher.Close()
+		srv.Shutdown(context.Background())
+	}()
+
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}
 }

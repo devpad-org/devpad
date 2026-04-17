@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { workspaceApi } from '@/api/workspaces'
 import { useFileWatcher, type FsEvent } from '@/composables/useFileWatcher'
 
@@ -51,6 +51,11 @@ onMounted(async () => {
   await loadRootDirectory()
   loading.value = false
   connectWatcher()
+})
+
+onUnmounted(() => {
+  refreshTimers.forEach((timer) => clearTimeout(timer))
+  refreshTimers.clear()
 })
 
 async function loadRootDirectory() {

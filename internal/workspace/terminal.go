@@ -65,12 +65,14 @@ func (h *Handler) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	defer agentConn.Close()
 
-	var wg sync.WaitGroup
+	// When one goroutine exits, close both connections so the other unblocks.
+	var once sync.Once
+	done := make(chan struct{})
+	closeDone := func() { once.Do(func() { close(done) }) }
 
 	// Agent → Client
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer closeDone()
 		for {
 			msgType, msg, err := agentConn.ReadMessage()
 			if err != nil {
@@ -83,9 +85,8 @@ func (h *Handler) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Client → Agent
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer closeDone()
 		for {
 			msgType, msg, err := clientConn.ReadMessage()
 			if err != nil {
@@ -97,7 +98,11 @@ func (h *Handler) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	wg.Wait()
+	// Wait for either goroutine to finish, then close both connections
+	// so the other goroutine unblocks and exits.
+	<-done
+	clientConn.Close()
+	agentConn.Close()
 }
 
 // HandleWatch upgrades to WebSocket and proxies the connection to the
@@ -134,12 +139,14 @@ func (h *Handler) HandleWatch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer agentConn.Close()
 
-	var wg sync.WaitGroup
+	// When one goroutine exits, close both connections so the other unblocks.
+	var once sync.Once
+	done := make(chan struct{})
+	closeDone := func() { once.Do(func() { close(done) }) }
 
 	// Agent → Client
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer closeDone()
 		for {
 			msgType, msg, err := agentConn.ReadMessage()
 			if err != nil {
@@ -152,9 +159,8 @@ func (h *Handler) HandleWatch(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Client → Agent (for keepalive / disconnect detection)
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer closeDone()
 		for {
 			msgType, msg, err := clientConn.ReadMessage()
 			if err != nil {
@@ -166,5 +172,9 @@ func (h *Handler) HandleWatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	wg.Wait()
+	// Wait for either goroutine to finish, then close both connections
+	// so the other goroutine unblocks and exits.
+	<-done
+	clientConn.Close()
+	agentConn.Close()
 }

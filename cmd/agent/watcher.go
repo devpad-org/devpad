@@ -134,6 +134,11 @@ func (w *watcher) broadcast(event fsEvent) {
 	}
 }
 
+// Close shuts down the fsnotify watcher, releasing inotify file descriptors.
+func (w *watcher) Close() error {
+	return w.fsw.Close()
+}
+
 // addClient registers a new WebSocket client for event notifications.
 func (w *watcher) addClient(conn *websocket.Conn) {
 	w.mu.Lock()

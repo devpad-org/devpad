@@ -215,114 +215,53 @@ The preview cookie signing secret is regenerated on every server restart. This m
 
 ## Resource Leaks
 
-### 16. Agent fsnotify Watcher Never Closed
+### 16. ~~Agent fsnotify Watcher Never Closed~~ ✅ RESOLVED
 
-**File:** `cmd/agent/watcher.go:33`
+**Files:** `cmd/agent/watcher.go`, `cmd/agent/main.go`
 
-The `fsnotify.NewWatcher()` is created when the agent starts but `Close()` is never called. Each agent process leaks inotify file descriptors for the lifetime of the process. On Linux, the default inotify limit (`/proc/sys/fs/inotify/max_user_watches`) can be exhausted if many watchers are created.
+**Was:** The `fsnotify.NewWatcher()` was created when the agent started but `Close()` was never called, leaking inotify file descriptors.
 
-**Fix:** Add a signal handler in `cmd/agent/main.go` to gracefully shut down:
-
-```go
-sigCh := make(chan os.Signal, 1)
-signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-go func() {
-    <-sigCh
-    watcher.Close()
-    os.Exit(0)
-}()
-```
+**Fix applied:**
+- Added a `Close()` method to the `watcher` struct that delegates to `fsw.Close()`.
+- Replaced bare `http.ListenAndServe` with `http.Server` and added a signal handler for `SIGTERM`/`SIGINT` that closes the watcher and gracefully shuts down the HTTP server.
 
 ---
 
-### 17. Frontend Timer Leak in FileExplorer
+### 17. ~~Frontend Timer Leak in FileExplorer~~ ✅ RESOLVED
 
 **File:** `frontend/src/components/ide/FileExplorer.vue`
 
-The `refreshTimers` Map stores debounce `setTimeout` IDs but is never cleaned up in `onUnmounted()`. When the IdeView navigates away and the FileExplorer is destroyed, pending timers continue to fire, making API calls against a destroyed component.
+**Was:** The `refreshTimers` Map was never cleaned up in `onUnmounted()`, so pending timers continued to fire after the component was destroyed.
 
-**Fix:** Add cleanup:
-
-```ts
-onUnmounted(() => {
-    refreshTimers.forEach((timer) => clearTimeout(timer))
-    refreshTimers.clear()
-})
-```
+**Fix applied:** Added an `onUnmounted` hook that clears all pending debounce timers and empties the map.
 
 ---
 
-### 18. Editor Race Condition on Rapid File Switching
+### 18. ~~Editor Race Condition on Rapid File Switching~~ ✅ RESOLVED
 
-**File:** `frontend/src/components/ide/EditorPanel.vue`
+**Files:** `frontend/src/components/ide/EditorPanel.vue`, `frontend/src/api/workspaces.ts`
 
-The watcher on `props.filePath` triggers an async file load (`workspaceApi.readFile(...)`) without cancelling any in-flight request. If the user clicks through files quickly:
+**Was:** The watcher on `props.filePath` triggered an async file load without cancelling in-flight requests, causing a race condition where a slow earlier load could overwrite a faster later load.
 
-1. File A load starts (takes 500ms)
-2. File B load starts (takes 100ms)
-3. File B load completes → editor shows file B
-4. File A load completes → editor shows file A (wrong!)
-
-**Fix:** Use `AbortController` to cancel the previous request when a new file is selected:
-
-```ts
-let abortController: AbortController | null = null
-
-watch(() => props.filePath, async (newPath) => {
-    abortController?.abort()
-    abortController = new AbortController()
-    try {
-        const content = await workspaceApi.readFile(wsId, newPath, abortController.signal)
-        // set editor content
-    } catch (e) {
-        if (e instanceof DOMException && e.name === 'AbortError') return
-        // handle real error
-    }
-})
-```
+**Fix applied:**
+- Added an optional `AbortSignal` parameter to `workspaceApi.readFile()`.
+- The file-loading watcher now creates a new `AbortController` for each load and aborts the previous one.
+- `AbortError` exceptions are silently caught. The `loading` state is only cleared if the request wasn't aborted.
+- The controller is also aborted in `onUnmounted` for cleanup.
 
 ---
 
-### 19. Goroutine Leak in Terminal WebSocket Proxy
+### 19. ~~Goroutine Leak in Terminal WebSocket Proxy~~ ✅ RESOLVED
 
-**File:** `internal/workspace/terminal.go:59-83`
+**File:** `internal/workspace/terminal.go`
 
-Two goroutines bidirectionally proxy WebSocket messages between the client and the agent:
+**Was:** Two goroutines bidirectionally proxied WebSocket messages, but if one exited on error the other continued blocking on `ReadMessage()` indefinitely, leaking the goroutine and handler.
 
-```go
-wg.Add(1)
-go func() {
-    defer wg.Done()
-    for {
-        msgType, msg, err := agentConn.ReadMessage()
-        if err != nil {
-            return
-        }
-        clientConn.WriteMessage(msgType, msg)
-    }
-}()
-```
-
-If one goroutine encounters an error and returns, the other continues blocking on `ReadMessage()` indefinitely. The `wg.Wait()` also blocks, keeping the handler goroutine alive.
-
-**Fix:** Use a shared cancellation mechanism:
-
-```go
-ctx, cancel := context.WithCancel(r.Context())
-defer cancel()
-
-go func() {
-    defer cancel()
-    // read from agent, write to client
-}()
-
-go func() {
-    defer cancel()
-    // read from client, write to agent
-}()
-
-<-ctx.Done()
-```
+**Fix applied:**
+- Replaced `sync.WaitGroup` with a shared `done` channel. Each goroutine defers `close(done)` so the first to exit signals the other.
+- After `<-done`, both connections are explicitly closed, unblocking any pending `ReadMessage()` in the other goroutine.
+- Applied the same fix to `HandleWatch` which had the identical pattern.
+- Removed the unused `sync` import.
 
 ---
 
@@ -394,33 +333,13 @@ if resize.Cols > 0 && resize.Rows > 0 && resize.Cols <= 500 && resize.Rows <= 50
 
 ---
 
-### 23. No Graceful Shutdown in Agent
+### 23. ~~No Graceful Shutdown in Agent~~ ✅ RESOLVED
 
 **File:** `cmd/agent/main.go`
 
-The agent's `main()` calls `http.ListenAndServe` and has no signal handling. When the container receives `SIGTERM` (e.g., during `docker stop`):
+**Was:** The agent's `main()` called `http.ListenAndServe` with no signal handling, so `SIGTERM` would abruptly sever connections and skip cleanup.
 
-- Active WebSocket connections are abruptly severed
-- The fsnotify watcher is never closed (see issue #16)
-- Pending file writes may be interrupted
-- No cleanup of PTY processes
-
-**Fix:** Use `http.Server` with `Shutdown()` and a signal handler:
-
-```go
-srv := &http.Server{Addr: ":9100", Handler: mux}
-
-go func() {
-    sigCh := make(chan os.Signal, 1)
-    signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-    <-sigCh
-    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
-    srv.Shutdown(ctx)
-}()
-
-srv.ListenAndServe()
-```
+**Fix applied:** Resolved as part of issue #16 — the agent now uses `http.Server` with `Shutdown()` and a `SIGINT`/`SIGTERM` signal handler that closes the fsnotify watcher and gracefully drains connections.
 
 ---
 
@@ -487,21 +406,21 @@ The `Content` field is a string that could be arbitrarily large. Unlike the agen
 | 6  | High     | Security | No rate limiting on authentication | ✅ Resolved |
 | 7  | High     | Security | Preview iframe sandbox too permissive | ✅ Resolved |
 | 8  | High     | Security | Unbounded JSON request body parsing | ✅ Resolved |
-| 9  | Medium   | Security | Expired sessions never cleaned up | Open |
-| 10 | Medium   | Security | Expired preview tokens never cleaned up | Open |
+| 9  | Medium   | Security | Expired sessions never cleaned up | ✅ Resolved |
+| 10 | Medium   | Security | Expired preview tokens never cleaned up | ✅ Resolved |
 | 11 | Medium   | Dead Code | `pullImageIfNeeded` never called | Open |
 | 12 | Medium   | Security | AI API keys stored in plaintext | Open |
 | 13 | Medium   | Security | Internal error details leaked to clients | Open |
 | 14 | Medium   | Security | SameSite Lax allows GET-based CSRF | Open |
 | 15 | Medium   | Security | Preview cookie secret is ephemeral | Open |
-| 16 | Medium   | Resource Leak | Agent fsnotify watcher never closed | Open |
-| 17 | Medium   | Resource Leak | Frontend timer leak in FileExplorer | Open |
-| 18 | Medium   | Resource Leak | Editor race condition on rapid file switching | Open |
-| 19 | Medium   | Resource Leak | Goroutine leak in terminal WebSocket proxy | Open |
+| 16 | Medium   | Resource Leak | Agent fsnotify watcher never closed | ✅ Resolved |
+| 17 | Medium   | Resource Leak | Frontend timer leak in FileExplorer | ✅ Resolved |
+| 18 | Medium   | Resource Leak | Editor race condition on rapid file switching | ✅ Resolved |
+| 19 | Medium   | Resource Leak | Goroutine leak in terminal WebSocket proxy | ✅ Resolved |
 | 20 | Low      | Code Quality | `json.Marshal` errors swallowed | Open |
 | 21 | Low      | Code Quality | File upload silently truncated at 10MB | Open |
 | 22 | Low      | Code Quality | Terminal resize missing upper bounds | Open |
-| 23 | Low      | Code Quality | No graceful shutdown in agent | Open |
+| 23 | Low      | Code Quality | No graceful shutdown in agent | ✅ Resolved |
 | 24 | Low      | Code Quality | Watcher event deduplication missing | Open |
 | 25 | Low      | Code Quality | Module-level singleton state in router | Open |
 | 26 | Low      | Code Quality | No request body size limit on file writes | Open |
