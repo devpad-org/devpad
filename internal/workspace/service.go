@@ -50,6 +50,9 @@ type Service interface {
 
 	// AgentAddr returns the agent's host:port and auth token for a running workspace.
 	AgentAddr(ctx context.Context, userID, workspaceID int64) (addr, agentToken string, err error)
+
+	// Info returns workspace info including agent version and container stats.
+	Info(ctx context.Context, userID, workspaceID int64) (*WorkspaceInfo, error)
 }
 
 type service struct {
@@ -251,6 +254,14 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 	if ws.ContainerID == "" {
 		return nil, fmt.Errorf("workspace has no container")
 	}
+
+	// Detect legacy containers missing the AGENT_AUTH_TOKEN env var.
+	// These were created before agent auth was introduced and must be
+	// recreated so the token is baked into the container config.
+	if err := s.ensureContainerHasToken(ctx, ws); err != nil {
+		return nil, fmt.Errorf("migrating container config: %w", err)
+	}
+
 	if err := s.container.Start(ctx, ws.ContainerID); err != nil {
 		return nil, fmt.Errorf("starting container: %w", err)
 	}
@@ -266,6 +277,63 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 	}
 
 	return ws, nil
+}
+
+// ensureContainerHasToken checks whether the container's env includes
+// AGENT_AUTH_TOKEN. Legacy containers created before agent auth was
+// introduced will be missing it. In that case we stop and remove the old
+// container and create a new one with the proper env, reusing the existing
+// volume. We also backfill the token in the DB if it was empty.
+func (s *service) ensureContainerHasToken(ctx context.Context, ws *Workspace) error {
+	envVars, err := s.container.GetEnv(ctx, ws.ContainerID)
+	if err != nil {
+		return fmt.Errorf("inspecting container env: %w", err)
+	}
+
+	hasToken := false
+	for _, e := range envVars {
+		if len(e) > len("AGENT_AUTH_TOKEN=") && e[:len("AGENT_AUTH_TOKEN=")] == "AGENT_AUTH_TOKEN=" {
+			hasToken = true
+			break
+		}
+	}
+	if hasToken {
+		return nil
+	}
+
+	log.Printf("workspace %d: legacy container missing AGENT_AUTH_TOKEN, recreating", ws.ID)
+
+	// Generate a token if the workspace record doesn't have one yet.
+	if ws.AgentToken == "" {
+		tokenBytes := make([]byte, 32)
+		if _, err := rand.Read(tokenBytes); err != nil {
+			return fmt.Errorf("generating agent token: %w", err)
+		}
+		ws.AgentToken = hex.EncodeToString(tokenBytes)
+	}
+
+	// Remove the old container (stop first in case it's in a restart loop).
+	_ = s.container.Stop(ctx, ws.ContainerID)
+	if err := s.container.Remove(ctx, ws.ContainerID); err != nil {
+		return fmt.Errorf("removing legacy container: %w", err)
+	}
+
+	// Create a new container with the token env var, reusing the volume.
+	containerEnv := []string{
+		fmt.Sprintf("AGENT_AUTH_TOKEN=%s", ws.AgentToken),
+	}
+	newID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.VolumeName, containerEnv)
+	if err != nil {
+		return fmt.Errorf("creating replacement container: %w", err)
+	}
+
+	ws.ContainerID = newID
+	if err := s.repo.Update(ctx, ws); err != nil {
+		return fmt.Errorf("updating workspace with new container: %w", err)
+	}
+
+	log.Printf("workspace %d: container recreated with auth token", ws.ID)
+	return nil
 }
 
 func (s *service) Stop(ctx context.Context, userID, workspaceID int64) (*Workspace, error) {
@@ -408,4 +476,42 @@ func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (str
 		return "", "", fmt.Errorf("getting container IP: %w", err)
 	}
 	return fmt.Sprintf("%s:%d", ip, agent.DefaultPort), ws.AgentToken, nil
+}
+
+// WorkspaceInfo holds combined info about a workspace's agent and container.
+type WorkspaceInfo struct {
+	AgentVersion         string                    `json:"agentVersion"`
+	ExpectedAgentVersion string                    `json:"expectedAgentVersion"`
+	Stats                *container.ContainerStats `json:"stats"`
+}
+
+func (s *service) Info(ctx context.Context, userID, workspaceID int64) (*WorkspaceInfo, error) {
+	ws, err := s.Get(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if ws.ContainerID == "" || ws.Status != StatusRunning {
+		return nil, ErrNotRunning
+	}
+
+	info := &WorkspaceInfo{
+		ExpectedAgentVersion: agentbin.Version,
+	}
+
+	// Fetch agent version
+	ip, err := s.container.GetIP(ctx, ws.ContainerID)
+	if err == nil {
+		c := agent.NewClient(ip, agent.DefaultPort, ws.AgentToken)
+		if v, verr := c.Version(ctx); verr == nil {
+			info.AgentVersion = v
+		}
+	}
+
+	// Fetch container stats
+	stats, err := s.container.Stats(ctx, ws.ContainerID)
+	if err == nil {
+		info.Stats = stats
+	}
+
+	return info, nil
 }

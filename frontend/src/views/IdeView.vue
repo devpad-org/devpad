@@ -8,6 +8,7 @@ import TerminalPanel from '@/components/ide/TerminalPanel.vue'
 import AiAgentPanel from '@/components/ide/AiAgentPanel.vue'
 import PreviewPanel from '@/components/ide/PreviewPanel.vue'
 import GitPanel from '@/components/ide/GitPanel.vue'
+import WorkspaceInfoPanel from '@/components/ide/WorkspaceInfoPanel.vue'
 import { useResizable } from '@/composables/useResizable'
 
 const route = useRoute()
@@ -23,7 +24,7 @@ const agentVisible = ref(true)
 const previewVisible = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
 
-type SidebarTab = 'explorer' | 'git'
+type SidebarTab = 'explorer' | 'git' | 'info'
 const activeSidebarTab = ref<SidebarTab>('explorer')
 
 const sidebar = useResizable({
@@ -242,6 +243,18 @@ function handleBack() {
             <path d="M6 21V9a9 9 0 0 0 9 9" />
           </svg>
         </button>
+        <button
+          class="activity-btn"
+          :class="{ active: activeSidebarTab === 'info' }"
+          @click="activeSidebarTab = 'info'"
+          title="Workspace Info"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 16v-4" />
+            <path d="M12 8h.01" />
+          </svg>
+        </button>
       </div>
 
       <!-- Sidebar -->
@@ -254,6 +267,10 @@ function handleBack() {
         />
         <GitPanel
           v-show="activeSidebarTab === 'git'"
+          :workspace-id="workspace?.id ?? 0"
+        />
+        <WorkspaceInfoPanel
+          v-show="activeSidebarTab === 'info'"
           :workspace-id="workspace?.id ?? 0"
         />
       </aside>

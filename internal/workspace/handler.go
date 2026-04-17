@@ -455,6 +455,24 @@ func parseID(r *http.Request, name string) (int64, error) {
 	return strconv.ParseInt(r.PathValue(name), 10, 64)
 }
 
+// HandleInfo returns agent version and container stats for a workspace.
+func (h *Handler) HandleInfo(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	info, err := h.service.Info(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, info)
+}
+
 func handleServiceError(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusNotFound, "workspace not found")

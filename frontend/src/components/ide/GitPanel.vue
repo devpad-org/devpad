@@ -289,7 +289,7 @@ onUnmounted(() => {
   <div class="git-panel">
     <div class="git-header">
       <span class="git-title">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg class="panel-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="18" cy="18" r="3" />
           <circle cx="6" cy="6" r="3" />
           <path d="M6 21V9a9 9 0 0 0 9 9" />
@@ -307,7 +307,7 @@ onUnmounted(() => {
       </span>
       <div class="git-header-actions">
         <button class="git-icon-btn" @click="refresh()" title="Refresh" :disabled="loading">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading }">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading }">
             <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
             <path d="M21 3v5h-5" />
           </svg>
@@ -595,9 +595,17 @@ function diffLineClass(line: string): string {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 600;
-  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.panel-icon {
+  color: var(--accent-purple);
+  opacity: 0.7;
+  flex-shrink: 0;
 }
 
 .git-branch-badge {

@@ -270,7 +270,12 @@ function focusInput(e: { el: HTMLElement }) {
 <template>
   <div class="file-explorer">
     <div class="explorer-header">
-      <span class="explorer-title">Explorer</span>
+      <span class="explorer-title">
+        <svg class="panel-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+        </svg>
+        Explorer
+      </span>
       <div class="header-actions">
         <button
           class="header-btn"
@@ -327,6 +332,28 @@ function focusInput(e: { el: HTMLElement }) {
           @vue:mounted="focusInput"
         />
       </div>
+      <!-- Empty state -->
+      <div v-if="!loading && files.length === 0 && !creatingIn" class="explorer-empty">
+        <svg class="explorer-empty-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+        </svg>
+        <span class="explorer-empty-title">No files yet</span>
+        <span class="explorer-empty-hint">Create a file or folder to get started</span>
+        <div class="explorer-empty-actions">
+          <button class="explorer-empty-btn" @click="startCreate('/workspace', 'file')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" /><path d="M12 18v-6" /><path d="M9 15h6" />
+            </svg>
+            New File
+          </button>
+          <button class="explorer-empty-btn" @click="startCreate('/workspace', 'directory')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 10v6" /><path d="M9 13h6" /><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+            </svg>
+            New Folder
+          </button>
+        </div>
+      </div>
       <template v-for="node in files" :key="node.path">
         <component
           :is="'div'"
@@ -382,15 +409,25 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
   align-items: center;
   justify-content: space-between;
   padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-default);
   flex-shrink: 0;
 }
 
 .explorer-title {
-  font-size: 0.7rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-secondary);
+}
+
+.panel-icon {
+  color: var(--accent-blue);
+  opacity: 0.7;
+  flex-shrink: 0;
 }
 
 .header-actions {
@@ -460,5 +497,61 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
   flex: 1;
   overflow-y: auto;
   padding: var(--space-1) 0;
+}
+
+/* Empty state */
+.explorer-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+}
+
+.explorer-empty-icon {
+  color: var(--text-muted);
+  opacity: 0.4;
+  margin-bottom: var(--space-1);
+}
+
+.explorer-empty-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.explorer-empty-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.explorer-empty-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.explorer-empty-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: var(--space-1) var(--space-3);
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.explorer-empty-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border-color: var(--accent-blue);
 }
 </style>

@@ -18,6 +18,24 @@ export interface FileEntry {
   modTime: string
 }
 
+export interface ContainerStats {
+  cpuPercent: number
+  memoryUsage: number
+  memoryLimit: number
+  memoryPercent: number
+  networkRx: number
+  networkTx: number
+  blockRead: number
+  blockWrite: number
+  pids: number
+}
+
+export interface WorkspaceInfo {
+  agentVersion: string
+  expectedAgentVersion: string
+  stats: ContainerStats | null
+}
+
 interface WorkspaceResponse {
   workspace: Workspace
 }
@@ -92,5 +110,9 @@ export const workspaceApi = {
   async getPreviewURL(id: number, port: number): Promise<string> {
     const res = await apiClient.post<{ url: string }>(`/api/workspaces/${id}/preview`, { port })
     return res.url
+  },
+
+  getInfo(id: number): Promise<WorkspaceInfo> {
+    return apiClient.get<WorkspaceInfo>(`/api/workspaces/${id}/info`)
   },
 }

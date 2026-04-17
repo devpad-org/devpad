@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -19,6 +20,19 @@ import (
 // Build it from docker/workspace/Dockerfile.
 const WorkspaceImage = "devpad-workspace:latest"
 
+// ContainerStats holds resource usage metrics for a container.
+type ContainerStats struct {
+	CPUPercent    float64 `json:"cpuPercent"`
+	MemoryUsage   uint64  `json:"memoryUsage"`
+	MemoryLimit   uint64  `json:"memoryLimit"`
+	MemoryPercent float64 `json:"memoryPercent"`
+	NetworkRx     uint64  `json:"networkRx"`
+	NetworkTx     uint64  `json:"networkTx"`
+	BlockRead     uint64  `json:"blockRead"`
+	BlockWrite    uint64  `json:"blockWrite"`
+	PIDs          uint64  `json:"pids"`
+}
+
 // Manager handles Docker container lifecycle operations.
 type Manager interface {
 	Create(ctx context.Context, name, volumeName string, env []string) (containerID string, err error)
@@ -27,6 +41,8 @@ type Manager interface {
 	Restart(ctx context.Context, containerID string) error
 	Remove(ctx context.Context, containerID string) error
 	GetIP(ctx context.Context, containerID string) (string, error)
+	GetEnv(ctx context.Context, containerID string) ([]string, error)
+	Stats(ctx context.Context, containerID string) (*ContainerStats, error)
 	CreateVolume(ctx context.Context, name string) error
 	RemoveVolume(ctx context.Context, name string) error
 	Exec(ctx context.Context, containerID string, cmd []string) (execID string, err error)
@@ -188,6 +204,106 @@ func (m *manager) GetIP(ctx context.Context, containerID string) (string, error)
 		return "", fmt.Errorf("container has no IP address")
 	}
 	return ip, nil
+}
+
+func (m *manager) GetEnv(ctx context.Context, containerID string) ([]string, error) {
+	info, err := m.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return nil, fmt.Errorf("inspecting container: %w", err)
+	}
+	return info.Config.Env, nil
+}
+
+func (m *manager) Stats(ctx context.Context, containerID string) (*ContainerStats, error) {
+	resp, err := m.cli.ContainerStatsOneShot(ctx, containerID)
+	if err != nil {
+		return nil, fmt.Errorf("fetching container stats: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var raw struct {
+		CPUStats struct {
+			CPUUsage struct {
+				TotalUsage uint64 `json:"total_usage"`
+			} `json:"cpu_usage"`
+			SystemCPUUsage uint64 `json:"system_cpu_usage"`
+			OnlineCPUs     uint32 `json:"online_cpus"`
+		} `json:"cpu_stats"`
+		PreCPUStats struct {
+			CPUUsage struct {
+				TotalUsage uint64 `json:"total_usage"`
+			} `json:"cpu_usage"`
+			SystemCPUUsage uint64 `json:"system_cpu_usage"`
+		} `json:"precpu_stats"`
+		MemoryStats struct {
+			Usage uint64 `json:"usage"`
+			Limit uint64 `json:"limit"`
+			Stats struct {
+				InactiveFile uint64 `json:"inactive_file"`
+			} `json:"stats"`
+		} `json:"memory_stats"`
+		Networks map[string]struct {
+			RxBytes uint64 `json:"rx_bytes"`
+			TxBytes uint64 `json:"tx_bytes"`
+		} `json:"networks"`
+		BlkioStats struct {
+			IoServiceBytesRecursive []struct {
+				Op    string `json:"op"`
+				Value uint64 `json:"value"`
+			} `json:"io_service_bytes_recursive"`
+		} `json:"blkio_stats"`
+		PidsStats struct {
+			Current uint64 `json:"current"`
+		} `json:"pids_stats"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("decoding container stats: %w", err)
+	}
+
+	// Calculate CPU percentage
+	cpuDelta := float64(raw.CPUStats.CPUUsage.TotalUsage - raw.PreCPUStats.CPUUsage.TotalUsage)
+	sysDelta := float64(raw.CPUStats.SystemCPUUsage - raw.PreCPUStats.SystemCPUUsage)
+	var cpuPercent float64
+	if sysDelta > 0 && cpuDelta > 0 {
+		cpuPercent = (cpuDelta / sysDelta) * float64(raw.CPUStats.OnlineCPUs) * 100.0
+	}
+
+	// Memory usage minus cache
+	memUsage := raw.MemoryStats.Usage - raw.MemoryStats.Stats.InactiveFile
+	var memPercent float64
+	if raw.MemoryStats.Limit > 0 {
+		memPercent = float64(memUsage) / float64(raw.MemoryStats.Limit) * 100.0
+	}
+
+	// Network totals
+	var netRx, netTx uint64
+	for _, iface := range raw.Networks {
+		netRx += iface.RxBytes
+		netTx += iface.TxBytes
+	}
+
+	// Block I/O totals
+	var blockRead, blockWrite uint64
+	for _, entry := range raw.BlkioStats.IoServiceBytesRecursive {
+		switch entry.Op {
+		case "read", "Read":
+			blockRead += entry.Value
+		case "write", "Write":
+			blockWrite += entry.Value
+		}
+	}
+
+	return &ContainerStats{
+		CPUPercent:    cpuPercent,
+		MemoryUsage:   memUsage,
+		MemoryLimit:   raw.MemoryStats.Limit,
+		MemoryPercent: memPercent,
+		NetworkRx:     netRx,
+		NetworkTx:     netTx,
+		BlockRead:     blockRead,
+		BlockWrite:    blockWrite,
+		PIDs:          raw.PidsStats.Current,
+	}, nil
 }
 
 func (m *manager) CreateVolume(ctx context.Context, name string) error {
