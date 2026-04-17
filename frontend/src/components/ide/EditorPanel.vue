@@ -243,7 +243,7 @@ onUnmounted(() => {
   align-items: stretch;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border-default);
-  min-height: 34px;
+  height: 38px;
   flex-shrink: 0;
   overflow-x: auto;
   overflow-y: hidden;

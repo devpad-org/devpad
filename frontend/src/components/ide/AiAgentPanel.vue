@@ -410,8 +410,9 @@ function scrollToBottom() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-2) var(--space-3);
+  padding: 0 var(--space-3);
   border-bottom: 1px solid var(--border-default);
+  height: 38px;
   flex-shrink: 0;
 }
 
@@ -425,8 +426,8 @@ function scrollToBottom() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: var(--radius-md);
   background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
   color: white;
@@ -459,8 +460,8 @@ function scrollToBottom() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 22px;
+  height: 22px;
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-secondary);
