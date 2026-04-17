@@ -378,7 +378,31 @@ func parseGitStatus(ctx context.Context) []gitStatusEntry {
 	if err != nil {
 		return []gitStatusEntry{}
 	}
+	return parseGitStatusOutput(out)
+}
 
+// statusLabel maps a single porcelain status byte to a human-readable string.
+func statusLabel(b byte) string {
+	switch b {
+	case 'A':
+		return "added"
+	case 'D':
+		return "deleted"
+	case 'M':
+		return "modified"
+	case 'R':
+		return "renamed"
+	case 'C':
+		return "copied"
+	default:
+		return "modified"
+	}
+}
+
+// parseGitStatusOutput parses the output of `git status --porcelain=v1` into
+// structured entries. When a file has changes in both the index and the
+// work-tree (e.g. "MM"), two entries are emitted: one staged and one unstaged.
+func parseGitStatusOutput(out string) []gitStatusEntry {
 	entries := []gitStatusEntry{}
 	for _, line := range strings.Split(out, "\n") {
 		if len(line) < 4 {
@@ -392,40 +416,51 @@ func parseGitStatus(ctx context.Context) []gitStatusEntry {
 			path = path[idx+4:]
 		}
 
-		entry := gitStatusEntry{
-			Path:       path,
-			StatusCode: xy,
-		}
-
 		indexStatus := xy[0]
 		workTreeStatus := xy[1]
 
-		// Determine if staged
-		if indexStatus != ' ' && indexStatus != '?' {
-			entry.Staged = true
+		// Special cases: untracked and ignored
+		if xy == "??" {
+			entries = append(entries, gitStatusEntry{
+				Path:       path,
+				StatusCode: xy,
+				Status:     "untracked",
+				Staged:     false,
+			})
+			continue
+		}
+		if xy == "!!" {
+			entries = append(entries, gitStatusEntry{
+				Path:       path,
+				StatusCode: xy,
+				Status:     "ignored",
+				Staged:     false,
+			})
+			continue
 		}
 
-		// Human-readable status
-		switch {
-		case xy == "??":
-			entry.Status = "untracked"
-		case xy == "!!":
-			entry.Status = "ignored"
-		case indexStatus == 'A' || workTreeStatus == 'A':
-			entry.Status = "added"
-		case indexStatus == 'D' || workTreeStatus == 'D':
-			entry.Status = "deleted"
-		case indexStatus == 'M' || workTreeStatus == 'M':
-			entry.Status = "modified"
-		case indexStatus == 'R' || workTreeStatus == 'R':
-			entry.Status = "renamed"
-		case indexStatus == 'C' || workTreeStatus == 'C':
-			entry.Status = "copied"
-		default:
-			entry.Status = "modified"
+		hasIndexChange := indexStatus != ' ' && indexStatus != '?'
+		hasWorkTreeChange := workTreeStatus != ' ' && workTreeStatus != '?'
+
+		// Emit a staged entry for the index change
+		if hasIndexChange {
+			entries = append(entries, gitStatusEntry{
+				Path:       path,
+				StatusCode: xy,
+				Status:     statusLabel(indexStatus),
+				Staged:     true,
+			})
 		}
 
-		entries = append(entries, entry)
+		// Emit an unstaged entry for the work-tree change
+		if hasWorkTreeChange {
+			entries = append(entries, gitStatusEntry{
+				Path:       path,
+				StatusCode: xy,
+				Status:     statusLabel(workTreeStatus),
+				Staged:     false,
+			})
+		}
 	}
 	return entries
 }

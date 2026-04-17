@@ -395,7 +395,7 @@ The `Content` field is a string that could be arbitrarily large. The global `Max
 | 6  | Medium   | Security | SameSite Lax allows GET-based CSRF | Open |
 | 7  | Medium   | Security | Preview cookie secret is ephemeral | Open |
 | 8  | Medium   | Dead Code | `pullImageIfNeeded` never called | Open |
-| 9  | Medium   | Bug | `parseGitStatus` misclassifies dual-status files | Open |
+| 9  | Medium   | Bug | `parseGitStatus` misclassifies dual-status files | Fixed |
 | 10 | Medium   | Bug | Swallowed errors in git `set-config` | Open |
 | 11 | Medium   | Bug | `push` without `--set-upstream` fails on first push | Open |
 | 12 | Low      | Bug | `discard` silently succeeds on untracked files | Open |
