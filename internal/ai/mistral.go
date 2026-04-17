@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -169,7 +170,8 @@ func readSSEStream(body io.ReadCloser, ch chan<- StreamEvent) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		ch <- StreamEvent{Error: fmt.Sprintf("reading stream: %v", err)}
+		log.Printf("error reading SSE stream: %v", err)
+		ch <- StreamEvent{Error: "error reading response stream"}
 	}
 
 	// Emit any accumulated tool calls even if we didn't get [DONE]

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -113,7 +114,8 @@ func (h *Handler) HandleChat(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "no API key configured for this provider")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start chat: %v", err))
+		log.Printf("failed to start chat: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to start chat")
 		return
 	}
 
@@ -202,7 +204,8 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 
 		stream, err := h.service.ChatStream(r.Context(), chatReq)
 		if err != nil {
-			sendEvent(StreamEvent{Error: fmt.Sprintf("chat error: %v", err)})
+			log.Printf("agent chat stream error: %v", err)
+			sendEvent(StreamEvent{Error: "chat error"})
 			sendEvent(StreamEvent{Done: true})
 			return
 		}
@@ -251,7 +254,8 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 				tc.Function.Name, json.RawMessage(tc.Function.Arguments),
 			)
 			if err != nil {
-				result = fmt.Sprintf("Error executing tool: %v", err)
+				log.Printf("error executing tool %s: %v", tc.Function.Name, err)
+				result = "Error executing tool"
 			}
 
 			// Notify frontend of the result

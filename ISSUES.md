@@ -157,24 +157,18 @@ API keys for AI providers (Mistral, MiniMax, etc.) are stored directly in the SQ
 
 ---
 
-### 13. Internal Error Details Leaked to Clients
+### 13. ~~Internal Error Details Leaked to Clients~~ ✅ RESOLVED
 
-**File:** `internal/ai/handler.go:176`
+**Files:** `internal/ai/handler.go`, `internal/ai/mistral.go`
 
-```go
-writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start chat: %v", err))
-```
+**Was:** Raw error messages (which may contain database errors, file paths, connection strings, or internal state) were returned to the client in HTTP response bodies and SSE events, leaking implementation details to potential attackers.
 
-The raw error message (which may contain database errors, file paths, connection strings, or internal state) is returned to the client in the HTTP response body. This leaks implementation details to potential attackers.
-
-Similar patterns exist in other handlers where `err.Error()` is included in client-facing responses.
-
-**Fix:** Log the detailed error server-side, return a generic message to the client:
-
-```go
-log.Printf("failed to start chat: %v", err)
-writeError(w, http.StatusInternalServerError, "failed to start chat")
-```
+**Fix applied:**
+- In `HandleChat`: replaced `fmt.Sprintf("failed to start chat: %v", err)` with `log.Printf` + generic `"failed to start chat"` message.
+- In `HandleAgentChat`: replaced `fmt.Sprintf("chat error: %v", err)` SSE event with `log.Printf` + generic `"chat error"` event.
+- In `HandleAgentChat`: replaced `fmt.Sprintf("Error executing tool: %v", err)` tool result with `log.Printf` + generic `"Error executing tool"` message.
+- In `readSSEStream` (mistral.go): replaced `fmt.Sprintf("reading stream: %v", err)` SSE event with `log.Printf` + generic `"error reading response stream"` event.
+- All detailed errors are now logged server-side only.
 
 ---
 
@@ -410,7 +404,7 @@ The `Content` field is a string that could be arbitrarily large. Unlike the agen
 | 10 | Medium   | Security | Expired preview tokens never cleaned up | ✅ Resolved |
 | 11 | Medium   | Dead Code | `pullImageIfNeeded` never called | Open |
 | 12 | Medium   | Security | AI API keys stored in plaintext | Open |
-| 13 | Medium   | Security | Internal error details leaked to clients | Open |
+| 13 | Medium   | Security | Internal error details leaked to clients | ✅ Resolved |
 | 14 | Medium   | Security | SameSite Lax allows GET-based CSRF | Open |
 | 15 | Medium   | Security | Preview cookie secret is ephemeral | Open |
 | 16 | Medium   | Resource Leak | Agent fsnotify watcher never closed | ✅ Resolved |
