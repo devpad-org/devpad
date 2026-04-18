@@ -54,7 +54,7 @@ func main() {
 
 	// Git operations
 	mux.HandleFunc("GET /api/git/status", handleGitStatus)
-	mux.HandleFunc("GET /api/git/log", handleGitLog)
+	mux.HandleFunc("GET /api/git/commits", handleGitLog)
 	mux.HandleFunc("GET /api/git/branches", handleGitBranches)
 	mux.HandleFunc("GET /api/git/diff", handleGitDiff)
 	mux.HandleFunc("POST /api/git/action", handleGitAction)

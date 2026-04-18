@@ -6,6 +6,7 @@ import {
   type GitCommit,
   type GitBranch,
 } from '@/api/git'
+import { useFileWatcher } from '@/composables/useFileWatcher'
 import GitConfigModal from './GitConfigModal.vue'
 
 const props = defineProps<{
@@ -44,8 +45,18 @@ const diffFile = ref<string | null>(null)
 const diffStaged = ref(false)
 const showDiff = ref(false)
 
-// Poll interval
-let pollTimer: ReturnType<typeof setInterval> | null = null
+// File watcher for event-driven refresh
+const { connect: connectWatcher, onEvent } = useFileWatcher(() => props.workspaceId)
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
+
+function debouncedRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => refresh(false), 1000)
+}
+
+onEvent(() => {
+  debouncedRefresh()
+})
 
 // --- Computed ---
 const stagedFiles = computed(() => (status.value?.files ?? []).filter((f) => f.staged))
@@ -277,11 +288,11 @@ watch(activeTab, () => refresh())
 
 onMounted(() => {
   refresh()
-  pollTimer = setInterval(() => refresh(false), 5000)
+  connectWatcher()
 })
 
 onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer)
+  if (refreshTimer) clearTimeout(refreshTimer)
 })
 </script>
 

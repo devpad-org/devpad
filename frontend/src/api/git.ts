@@ -61,7 +61,7 @@ export const gitApi = {
 
   log(workspaceId: number, count = 50): Promise<GitLogResponse> {
     return apiClient.get<GitLogResponse>(
-      `/api/workspaces/${workspaceId}/git/log?count=${count}`
+      `/api/workspaces/${workspaceId}/git/commits?count=${count}`
     )
   },
 

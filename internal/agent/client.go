@@ -403,7 +403,7 @@ func (c *Client) GitStatus(ctx context.Context) (*GitStatus, error) {
 
 // GitLog returns the commit log.
 func (c *Client) GitLog(ctx context.Context, count int) ([]GitCommit, error) {
-	u := fmt.Sprintf("%s/api/git/log?count=%d", c.baseURL, count)
+	u := fmt.Sprintf("%s/api/git/commits?count=%d", c.baseURL, count)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err

@@ -292,7 +292,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 
 	// Workspace git routes
 	mux.Handle("GET /api/workspaces/{id}/git/status", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitStatus)))
-	mux.Handle("GET /api/workspaces/{id}/git/log", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitLog)))
+	mux.Handle("GET /api/workspaces/{id}/git/commits", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitLog)))
 	mux.Handle("GET /api/workspaces/{id}/git/branches", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitBranches)))
 	mux.Handle("GET /api/workspaces/{id}/git/diff", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitDiff)))
 	mux.Handle("POST /api/workspaces/{id}/git/action", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitAction)))
