@@ -30,8 +30,8 @@ func NewUserRepository(db *sql.DB) UserRepository {
 func (r *userRepository) Create(ctx context.Context, user *User) error {
 	now := time.Now()
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO users (username, email, password, is_admin, totp_secret, totp_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		user.Username, user.Email, user.Password, user.IsAdmin, user.TOTPSecret, user.TOTPEnabled, now, now,
+		`INSERT INTO users (username, email, password, is_admin, totp_secret, totp_enabled, ssh_public_key, ssh_private_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		user.Username, user.Email, user.Password, user.IsAdmin, user.TOTPSecret, user.TOTPEnabled, user.SSHPublicKey, user.SSHPrivateKey, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting user: %w", err)
@@ -51,9 +51,9 @@ func (r *userRepository) Create(ctx context.Context, user *User) error {
 func (r *userRepository) GetByUsername(ctx context.Context, username string) (*User, error) {
 	user := &User{}
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, username, email, password, is_admin, totp_secret, totp_enabled, created_at, updated_at FROM users WHERE username = ?`,
+		`SELECT id, username, email, password, is_admin, totp_secret, totp_enabled, ssh_public_key, ssh_private_key, created_at, updated_at FROM users WHERE username = ?`,
 		username,
-	).Scan(&user.ID, &user.Username, &user.Email, &user.Password, &user.IsAdmin, &user.TOTPSecret, &user.TOTPEnabled, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.Email, &user.Password, &user.IsAdmin, &user.TOTPSecret, &user.TOTPEnabled, &user.SSHPublicKey, &user.SSHPrivateKey, &user.CreatedAt, &user.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -66,9 +66,9 @@ func (r *userRepository) GetByUsername(ctx context.Context, username string) (*U
 func (r *userRepository) GetByID(ctx context.Context, id int64) (*User, error) {
 	user := &User{}
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, username, email, password, is_admin, totp_secret, totp_enabled, created_at, updated_at FROM users WHERE id = ?`,
+		`SELECT id, username, email, password, is_admin, totp_secret, totp_enabled, ssh_public_key, ssh_private_key, created_at, updated_at FROM users WHERE id = ?`,
 		id,
-	).Scan(&user.ID, &user.Username, &user.Email, &user.Password, &user.IsAdmin, &user.TOTPSecret, &user.TOTPEnabled, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.Email, &user.Password, &user.IsAdmin, &user.TOTPSecret, &user.TOTPEnabled, &user.SSHPublicKey, &user.SSHPrivateKey, &user.CreatedAt, &user.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -89,7 +89,7 @@ func (r *userRepository) Count(ctx context.Context) (int, error) {
 
 func (r *userRepository) List(ctx context.Context) ([]*User, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, username, email, password, is_admin, totp_secret, totp_enabled, created_at, updated_at FROM users ORDER BY id`)
+		`SELECT id, username, email, password, is_admin, totp_secret, totp_enabled, ssh_public_key, ssh_private_key, created_at, updated_at FROM users ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
 	}
@@ -98,7 +98,7 @@ func (r *userRepository) List(ctx context.Context) ([]*User, error) {
 	var users []*User
 	for rows.Next() {
 		u := &User{}
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Password, &u.IsAdmin, &u.TOTPSecret, &u.TOTPEnabled, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Password, &u.IsAdmin, &u.TOTPSecret, &u.TOTPEnabled, &u.SSHPublicKey, &u.SSHPrivateKey, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning user row: %w", err)
 		}
 		users = append(users, u)
@@ -109,8 +109,8 @@ func (r *userRepository) List(ctx context.Context) ([]*User, error) {
 func (r *userRepository) Update(ctx context.Context, user *User) error {
 	now := time.Now()
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE users SET username = ?, email = ?, password = ?, is_admin = ?, totp_secret = ?, totp_enabled = ?, updated_at = ? WHERE id = ?`,
-		user.Username, user.Email, user.Password, user.IsAdmin, user.TOTPSecret, user.TOTPEnabled, now, user.ID,
+		`UPDATE users SET username = ?, email = ?, password = ?, is_admin = ?, totp_secret = ?, totp_enabled = ?, ssh_public_key = ?, ssh_private_key = ?, updated_at = ? WHERE id = ?`,
+		user.Username, user.Email, user.Password, user.IsAdmin, user.TOTPSecret, user.TOTPEnabled, user.SSHPublicKey, user.SSHPrivateKey, now, user.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("updating user: %w", err)

@@ -21,6 +21,15 @@ const mfaSubmitting = ref(false)
 const showDisableConfirm = ref(false)
 const disablePassword = ref('')
 
+// SSH key state
+const sshLoading = ref(true)
+const sshPublicKey = ref('')
+const sshError = ref('')
+const sshSuccess = ref('')
+const sshSubmitting = ref(false)
+const showRegenerateConfirm = ref(false)
+const sshCopied = ref(false)
+
 onMounted(async () => {
   try {
     const status = await settingsApi.getMFAStatus()
@@ -31,6 +40,14 @@ onMounted(async () => {
     mfaLoading.value = false
   }
 
+  try {
+    const ssh = await settingsApi.getSSHKey()
+    sshPublicKey.value = ssh.publicKey
+  } catch {
+    sshError.value = 'Failed to load SSH key'
+  } finally {
+    sshLoading.value = false
+  }
 })
 
 async function handleChangePassword() {
@@ -134,6 +151,38 @@ function cancelSetup() {
   totpSetup.value = null
   totpCode.value = ''
   mfaError.value = ''
+}
+
+async function handleGenerateSSHKey() {
+  sshError.value = ''
+  sshSuccess.value = ''
+  sshSubmitting.value = true
+  try {
+    const result = await settingsApi.generateSSHKey()
+    sshPublicKey.value = result.publicKey
+    sshSuccess.value = showRegenerateConfirm.value ? 'SSH key regenerated successfully' : 'SSH key generated successfully'
+    showRegenerateConfirm.value = false
+  } catch (e) {
+    sshError.value = e instanceof Error ? e.message : 'Failed to generate SSH key'
+  } finally {
+    sshSubmitting.value = false
+  }
+}
+
+async function copySSHKey() {
+  try {
+    await navigator.clipboard.writeText(sshPublicKey.value)
+    sshCopied.value = true
+    setTimeout(() => { sshCopied.value = false }, 2000)
+  } catch {
+    sshError.value = 'Failed to copy to clipboard'
+  }
+}
+
+function openRegenerateConfirm() {
+  sshError.value = ''
+  sshSuccess.value = ''
+  showRegenerateConfirm.value = true
 }
 
 </script>
@@ -300,6 +349,69 @@ function cancelSetup() {
                   {{ mfaSubmitting ? 'Verifying...' : 'Enable 2FA' }}
                 </button>
               </div>
+            </div>
+          </div>
+        </template>
+      </section>
+
+      <!-- SSH Key Section -->
+      <section class="settings-section">
+        <h2 class="section-title">SSH Key</h2>
+        <p class="section-desc">
+          Your SSH key is used to authenticate with Git hosting services (GitHub, GitLab, Bitbucket).
+          Copy the public key below and add it to your Git provider's SSH key settings.
+        </p>
+
+        <div v-if="sshError" class="alert alert-error">{{ sshError }}</div>
+        <div v-if="sshSuccess" class="alert alert-success">{{ sshSuccess }}</div>
+
+        <div v-if="sshLoading" class="loading-state">Loading SSH key...</div>
+
+        <template v-else>
+          <!-- No SSH key yet -->
+          <div v-if="!sshPublicKey && !showRegenerateConfirm" class="ssh-status">
+            <div class="mfa-badge disabled">
+              <span class="mfa-dot"></span>
+              Not Generated
+            </div>
+            <p class="mfa-info">Generate an SSH key to enable Git operations over SSH in your workspaces.</p>
+            <button class="btn-primary" :disabled="sshSubmitting" @click="handleGenerateSSHKey">
+              {{ sshSubmitting ? 'Generating...' : 'Generate SSH Key' }}
+            </button>
+          </div>
+
+          <!-- SSH key exists -->
+          <div v-if="sshPublicKey && !showRegenerateConfirm" class="ssh-key-display">
+            <div class="mfa-badge enabled">
+              <span class="mfa-dot"></span>
+              Configured
+            </div>
+
+            <div class="ssh-key-box">
+              <label>Public Key</label>
+              <code class="ssh-key-value">{{ sshPublicKey }}</code>
+            </div>
+
+            <div class="ssh-key-actions">
+              <button class="btn-primary" @click="copySSHKey">
+                {{ sshCopied ? 'Copied!' : 'Copy Public Key' }}
+              </button>
+              <button class="btn-danger-outline" @click="openRegenerateConfirm">Regenerate</button>
+            </div>
+          </div>
+
+          <!-- Regenerate Confirmation -->
+          <div v-if="showRegenerateConfirm" class="mfa-disable-form">
+            <p class="mfa-warning">
+              Regenerating your SSH key will invalidate the current key. You will need to update your
+              public key in any Git hosting services where it is configured. Existing workspaces will
+              receive the new key on their next start.
+            </p>
+            <div class="mfa-actions">
+              <button class="btn-secondary" @click="showRegenerateConfirm = false">Cancel</button>
+              <button class="btn-danger" :disabled="sshSubmitting" @click="handleGenerateSSHKey">
+                {{ sshSubmitting ? 'Regenerating...' : 'Regenerate SSH Key' }}
+              </button>
             </div>
           </div>
         </template>
@@ -628,6 +740,50 @@ function cancelSetup() {
   color: var(--accent-blue);
   word-break: break-all;
   user-select: all;
+}
+
+/* SSH Key */
+.ssh-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.ssh-key-display {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.ssh-key-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.ssh-key-box label {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.ssh-key-value {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--accent-blue);
+  word-break: break-all;
+  user-select: all;
+  line-height: 1.5;
+}
+
+.ssh-key-actions {
+  display: flex;
+  gap: var(--space-2);
 }
 
 </style>

@@ -33,6 +33,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 		is_admin BOOLEAN NOT NULL DEFAULT 0,
 		totp_secret TEXT NOT NULL DEFAULT '',
 		totp_enabled BOOLEAN NOT NULL DEFAULT 0,
+		ssh_public_key TEXT NOT NULL DEFAULT '',
+		ssh_private_key TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);

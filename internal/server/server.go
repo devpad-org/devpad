@@ -17,6 +17,7 @@ import (
 	"github.com/devpad-org/devpad/internal/container"
 	"github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/dockerfile"
+	"github.com/devpad-org/devpad/internal/encrypt"
 	"github.com/devpad-org/devpad/internal/preview"
 	"github.com/devpad-org/devpad/internal/settings"
 	"github.com/devpad-org/devpad/internal/workspace"
@@ -43,6 +44,20 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
+	// Encryption cipher for secrets (SSH private keys).
+	if cfg.EncryptionKey == "" {
+		key, err := encrypt.GenerateKey()
+		if err != nil {
+			return nil, fmt.Errorf("generating encryption key: %w", err)
+		}
+		cfg.EncryptionKey = key
+		log.Printf("WARNING: No encryption key configured. Generated ephemeral key. Set DEVPAD_ENCRYPTION_KEY=%s to persist across restarts.", key)
+	}
+	cipher, err := encrypt.NewCipher(cfg.EncryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("creating encryption cipher: %w", err)
+	}
+
 	// Auth layer
 	userRepo := auth.NewUserRepository(db.Conn())
 	sessionRepo := auth.NewSessionRepository(db.Conn())
@@ -52,7 +67,7 @@ func New(cfg Config) (*Server, error) {
 	authMiddleware := auth.NewMiddleware(authService)
 
 	// Settings layer
-	settingsService := settings.NewService(userRepo)
+	settingsService := settings.NewService(userRepo, cipher)
 	settingsHandler := settings.NewHandler(settingsService)
 
 	// Workspace layer
@@ -68,7 +83,7 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	workspaceRepo := workspace.NewRepository(db.Conn())
-	workspaceService := workspace.NewService(workspaceRepo, containerManager)
+	workspaceService := workspace.NewService(workspaceRepo, containerManager, userRepo, cipher)
 
 	// Admin layer (depends on workspace service for resource limit management)
 	adminService := admin.NewService(userRepo, workspaceService)
@@ -258,6 +273,10 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/settings/mfa/setup", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleTOTPSetup)))
 	mux.Handle("POST /api/settings/mfa/enable", authMiddleware.RequireAuth(authRateLimiter.LimitFunc(settingsHandler.HandleTOTPEnable)))
 	mux.Handle("POST /api/settings/mfa/disable", authMiddleware.RequireAuth(authRateLimiter.LimitFunc(settingsHandler.HandleTOTPDisable)))
+
+	// SSH key routes (authenticated users)
+	mux.Handle("GET /api/settings/ssh-key", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGetSSHKey)))
+	mux.Handle("POST /api/settings/ssh-key/generate", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGenerateSSHKey)))
 
 	// Admin API routes
 	mux.Handle("GET /api/admin/users", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleListUsers)))

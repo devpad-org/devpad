@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/encrypt"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/pquerna/otp/totp"
 )
@@ -31,6 +32,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 		is_admin BOOLEAN NOT NULL DEFAULT 0,
 		totp_secret TEXT NOT NULL DEFAULT '',
 		totp_enabled BOOLEAN NOT NULL DEFAULT 0,
+		ssh_public_key TEXT NOT NULL DEFAULT '',
+		ssh_private_key TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -53,7 +56,15 @@ func setupTestServices(t *testing.T) (Service, auth.Service, *sql.DB) {
 	userRepo := auth.NewUserRepository(db)
 	sessionRepo := auth.NewSessionRepository(db)
 	authSvc := auth.NewService(userRepo, sessionRepo)
-	settingsSvc := NewService(userRepo)
+	key, err := encrypt.GenerateKey()
+	if err != nil {
+		t.Fatalf("generating encryption key: %v", err)
+	}
+	cipher, err := encrypt.NewCipher(key)
+	if err != nil {
+		t.Fatalf("creating cipher: %v", err)
+	}
+	settingsSvc := NewService(userRepo, cipher)
 	return settingsSvc, authSvc, db
 }
 
@@ -323,5 +334,115 @@ func TestHandler_TOTPSetup(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"url"`) {
 		t.Errorf("expected url in response, got: %s", rec.Body.String())
+	}
+}
+
+func TestService_SSHKey_GenerateAndGet(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	ctx := context.Background()
+
+	// Initially no SSH key
+	pubKey, err := settingsSvc.GetSSHPublicKey(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("getting SSH key: %v", err)
+	}
+	if pubKey != "" {
+		t.Errorf("expected empty public key, got %q", pubKey)
+	}
+
+	// Generate SSH key
+	pubKey, err = settingsSvc.GenerateSSHKey(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("generating SSH key: %v", err)
+	}
+	if !strings.HasPrefix(pubKey, "ssh-ed25519 ") {
+		t.Errorf("expected public key starting with 'ssh-ed25519 ', got %q", pubKey)
+	}
+	if !strings.Contains(pubKey, "devpad-testuser") {
+		t.Errorf("expected comment containing 'devpad-testuser', got %q", pubKey)
+	}
+
+	// Get SSH key should return the same key
+	gotKey, err := settingsSvc.GetSSHPublicKey(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("getting SSH key: %v", err)
+	}
+	if gotKey != pubKey {
+		t.Errorf("expected %q, got %q", pubKey, gotKey)
+	}
+}
+
+func TestService_SSHKey_Regenerate(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	ctx := context.Background()
+
+	firstKey, err := settingsSvc.GenerateSSHKey(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("generating SSH key: %v", err)
+	}
+
+	secondKey, err := settingsSvc.GenerateSSHKey(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("regenerating SSH key: %v", err)
+	}
+
+	if firstKey == secondKey {
+		t.Error("expected different keys after regeneration")
+	}
+}
+
+func TestHandler_GetSSHKey(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	handler := NewHandler(settingsSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/ssh-key", nil)
+	ctx := context.WithValue(req.Context(), auth.UserContextKey, user)
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	handler.HandleGetSSHKey(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"publicKey"`) {
+		t.Errorf("expected publicKey in response, got: %s", rec.Body.String())
+	}
+}
+
+func TestHandler_GenerateSSHKey(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	handler := NewHandler(settingsSvc)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/ssh-key/generate", nil)
+	ctx := context.WithValue(req.Context(), auth.UserContextKey, user)
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	handler.HandleGenerateSSHKey(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `ssh-ed25519`) {
+		t.Errorf("expected ssh-ed25519 key in response, got: %s", rec.Body.String())
+	}
+}
+
+func TestHandler_GetSSHKey_Unauthenticated(t *testing.T) {
+	settingsSvc, _, _ := setupTestServices(t)
+	handler := NewHandler(settingsSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/ssh-key", nil)
+	rec := httptest.NewRecorder()
+
+	handler.HandleGetSSHKey(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", rec.Code)
 	}
 }

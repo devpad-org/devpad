@@ -172,6 +172,40 @@ func (h *Handler) HandleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// HandleGetSSHKey returns the user's SSH public key.
+func (h *Handler) HandleGetSSHKey(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	publicKey, err := h.service.GetSSHPublicKey(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get SSH key")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"publicKey": publicKey})
+}
+
+// HandleGenerateSSHKey generates a new SSH key pair for the user.
+func (h *Handler) HandleGenerateSSHKey(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	publicKey, err := h.service.GenerateSSHKey(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate SSH key")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"publicKey": publicKey})
+}
+
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

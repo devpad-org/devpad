@@ -26,6 +26,7 @@ Devpad is configured via command-line flags and/or environment variables. Flags 
 | `--http-redirect-port` | `DEVPAD_HTTP_REDIRECT_PORT` | — | Port for HTTP→HTTPS redirect server. Requires `--domain` |
 | `--db-path` | `DEVPAD_DB_PATH` | `devpad.db` | Path to the SQLite database file |
 | `--preview-domain` | `DEVPAD_PREVIEW_DOMAIN` | — | Domain for workspace previews (e.g. `preview.example.com`) |
+| `--encryption-key` | `DEVPAD_ENCRYPTION_KEY` | — | Hex-encoded 32-byte key for encrypting secrets (SSH private keys). Auto-generated if not set |
 
 ### Examples
 
@@ -93,6 +94,32 @@ You need a Cloudflare API token with **Zone → DNS → Edit** permissions for t
 > ```bash
 > sudo setcap cap_net_bind_service=+ep ./bin/devpad
 > ```
+
+### Encryption Key
+
+Devpad encrypts sensitive data at rest (SSH private keys) using AES-256-GCM. An encryption key is required for production use.
+
+Generate a key:
+
+```bash
+openssl rand -hex 32
+```
+
+Then pass it via flag or environment variable:
+
+```bash
+./bin/devpad --encryption-key "your-64-char-hex-key"
+# or
+DEVPAD_ENCRYPTION_KEY="your-64-char-hex-key" ./bin/devpad
+```
+
+If no key is configured, Devpad generates an ephemeral key on startup and logs it. **Save this key** — without it, previously encrypted data (SSH private keys) cannot be decrypted after a restart.
+
+### SSH Keys
+
+Each user can generate an ED25519 SSH key pair from the **Settings** page. The private key is encrypted and stored in the database; the public key is shown in the UI for users to copy to their Git hosting provider (GitHub, GitLab, Bitbucket).
+
+When a workspace starts, Devpad automatically injects the user's SSH key, a `known_hosts` file for common Git hosts, and an SSH config into the container at `~/.ssh/`. This enables `git push`/`pull` over SSH without any manual setup inside workspaces.
 
 ## License
 

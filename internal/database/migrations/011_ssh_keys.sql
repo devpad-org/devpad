@@ -1,0 +1,2 @@
+ALTER TABLE users ADD COLUMN ssh_public_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN ssh_private_key TEXT NOT NULL DEFAULT '';

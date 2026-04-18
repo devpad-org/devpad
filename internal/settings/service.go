@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/encrypt"
+	"github.com/devpad-org/devpad/internal/sshkey"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -24,15 +26,18 @@ type Service interface {
 	EnableTOTP(ctx context.Context, userID int64, code string) error
 	DisableTOTP(ctx context.Context, userID int64, password string) error
 	GetMFAStatus(ctx context.Context, userID int64) (enabled bool, err error)
+	GetSSHPublicKey(ctx context.Context, userID int64) (publicKey string, err error)
+	GenerateSSHKey(ctx context.Context, userID int64) (publicKey string, err error)
 }
 
 type service struct {
-	users auth.UserRepository
+	users  auth.UserRepository
+	cipher *encrypt.Cipher
 }
 
 // NewService creates a new settings Service.
-func NewService(users auth.UserRepository) Service {
-	return &service{users: users}
+func NewService(users auth.UserRepository, cipher *encrypt.Cipher) Service {
+	return &service{users: users, cipher: cipher}
 }
 
 func (s *service) ChangePassword(ctx context.Context, userID int64, currentPassword, newPassword string) error {
@@ -157,4 +162,44 @@ func (s *service) GetMFAStatus(ctx context.Context, userID int64) (bool, error) 
 		return false, errors.New("user not found")
 	}
 	return user.TOTPEnabled, nil
+}
+
+func (s *service) GetSSHPublicKey(ctx context.Context, userID int64) (string, error) {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return "", fmt.Errorf("looking up user: %w", err)
+	}
+	if user == nil {
+		return "", errors.New("user not found")
+	}
+	return user.SSHPublicKey, nil
+}
+
+func (s *service) GenerateSSHKey(ctx context.Context, userID int64) (string, error) {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return "", fmt.Errorf("looking up user: %w", err)
+	}
+	if user == nil {
+		return "", errors.New("user not found")
+	}
+
+	comment := fmt.Sprintf("devpad-%s", user.Username)
+	privateKey, publicKey, err := sshkey.Generate(comment)
+	if err != nil {
+		return "", fmt.Errorf("generating SSH key: %w", err)
+	}
+
+	encryptedPrivateKey, err := s.cipher.Encrypt(privateKey)
+	if err != nil {
+		return "", fmt.Errorf("encrypting SSH private key: %w", err)
+	}
+
+	user.SSHPublicKey = publicKey
+	user.SSHPrivateKey = encryptedPrivateKey
+	if err := s.users.Update(ctx, user); err != nil {
+		return "", fmt.Errorf("storing SSH key: %w", err)
+	}
+
+	return publicKey, nil
 }

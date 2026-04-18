@@ -20,6 +20,7 @@ func main() {
 	httpRedirectPort := flag.Int("http-redirect-port", 0, "Port for HTTP→HTTPS redirect server (env: DEVPAD_HTTP_REDIRECT_PORT, requires --domain)")
 	dbPath := flag.String("db-path", "", "Path to the SQLite database file (env: DEVPAD_DB_PATH, default: devpad.db)")
 	previewDomain := flag.String("preview-domain", "", "Domain for workspace previews, e.g. preview.example.com (env: DEVPAD_PREVIEW_DOMAIN)")
+	encryptionKey := flag.String("encryption-key", "", "Hex-encoded 32-byte key for encrypting secrets (env: DEVPAD_ENCRYPTION_KEY)")
 	flag.Parse()
 
 	// Environment variable fallbacks (flags take precedence).
@@ -27,6 +28,7 @@ func main() {
 	envFallbackString(cfAPIToken, "DEVPAD_CF_API_TOKEN")
 	envFallbackString(dbPath, "DEVPAD_DB_PATH")
 	envFallbackString(previewDomain, "DEVPAD_PREVIEW_DOMAIN")
+	envFallbackString(encryptionKey, "DEVPAD_ENCRYPTION_KEY")
 	envFallbackInt(port, "DEVPAD_PORT")
 	envFallbackInt(httpRedirectPort, "DEVPAD_HTTP_REDIRECT_PORT")
 
@@ -58,6 +60,7 @@ func main() {
 		HTTPRedirectPort: *httpRedirectPort,
 		DBPath:           *dbPath,
 		PreviewDomain:    *previewDomain,
+		EncryptionKey:    *encryptionKey,
 	}
 
 	srv, err := server.New(cfg)

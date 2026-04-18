@@ -8,4 +8,5 @@ type Config struct {
 	HTTPRedirectPort int    // Port for HTTP→HTTPS redirect server. Requires Domain.
 	DBPath           string
 	PreviewDomain    string // e.g. "preview.example.com" — previews served on {wsID}-{port}.preview.example.com
+	EncryptionKey    string // Hex-encoded 32-byte key for encrypting secrets (SSH private keys). Required.
 }

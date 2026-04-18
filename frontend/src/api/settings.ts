@@ -9,6 +9,10 @@ export interface TOTPSetup {
   url: string
 }
 
+export interface SSHKeyResponse {
+  publicKey: string
+}
+
 export const settingsApi = {
   changePassword(currentPassword: string, newPassword: string): Promise<void> {
     return apiClient.post<void>('/api/settings/password', { currentPassword, newPassword })
@@ -28,5 +32,13 @@ export const settingsApi = {
 
   disableTOTP(password: string): Promise<void> {
     return apiClient.post<void>('/api/settings/mfa/disable', { password })
+  },
+
+  getSSHKey(): Promise<SSHKeyResponse> {
+    return apiClient.get<SSHKeyResponse>('/api/settings/ssh-key')
+  },
+
+  generateSSHKey(): Promise<SSHKeyResponse> {
+    return apiClient.post<SSHKeyResponse>('/api/settings/ssh-key/generate', {})
   },
 }

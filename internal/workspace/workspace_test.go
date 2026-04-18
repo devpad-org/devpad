@@ -11,6 +11,7 @@ import (
 
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/container"
+	"github.com/devpad-org/devpad/internal/encrypt"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -74,6 +75,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 		is_admin BOOLEAN NOT NULL DEFAULT 0,
 		totp_secret TEXT NOT NULL DEFAULT '',
 		totp_enabled BOOLEAN NOT NULL DEFAULT 0,
+		ssh_public_key TEXT NOT NULL DEFAULT '',
+		ssh_private_key TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -104,7 +107,16 @@ func setupTestService(t *testing.T) (Service, *sql.DB) {
 	db := setupTestDB(t)
 	repo := NewRepository(db)
 	cm := &mockContainerManager{}
-	svc := NewService(repo, cm)
+	userRepo := auth.NewUserRepository(db)
+	key, err := encrypt.GenerateKey()
+	if err != nil {
+		t.Fatalf("generating encryption key: %v", err)
+	}
+	cipher, err := encrypt.NewCipher(key)
+	if err != nil {
+		t.Fatalf("creating cipher: %v", err)
+	}
+	svc := NewService(repo, cm, userRepo, cipher)
 	return svc, db
 }
 
