@@ -51,7 +51,7 @@ type Service interface {
 	GitBranches(ctx context.Context, userID, workspaceID int64) (*agent.GitBranches, error)
 	GitDiff(ctx context.Context, userID, workspaceID int64, path string, staged bool) (string, error)
 	GitRemotes(ctx context.Context, userID, workspaceID int64) ([]agent.GitRemote, error)
-	GitAction(ctx context.Context, userID, workspaceID int64, action string, files []string, message, branch, remote, gitURL, newName, userName, userEmail string) (*agent.GitActionResult, error)
+	GitAction(ctx context.Context, userID, workspaceID int64, req GitActionRequest) (*agent.GitActionResult, error)
 
 	// AgentAddr returns the agent's host:port and auth token for a running workspace.
 	AgentAddr(ctx context.Context, userID, workspaceID int64) (addr, agentToken string, err error)
@@ -578,12 +578,22 @@ func (s *service) GitRemotes(ctx context.Context, userID, workspaceID int64) ([]
 	return c.GitRemotes(ctx)
 }
 
-func (s *service) GitAction(ctx context.Context, userID, workspaceID int64, action string, files []string, message, branch, remote, gitURL, newName, userName, userEmail string) (*agent.GitActionResult, error) {
+func (s *service) GitAction(ctx context.Context, userID, workspaceID int64, req GitActionRequest) (*agent.GitActionResult, error) {
 	c, err := s.getAgent(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	return c.GitAction(ctx, action, files, message, branch, remote, gitURL, newName, userName, userEmail)
+	return c.GitAction(ctx, agent.GitActionRequest{
+		Action:    req.Action,
+		Files:     req.Files,
+		Message:   req.Message,
+		Branch:    req.Branch,
+		Remote:    req.Remote,
+		URL:       req.URL,
+		NewName:   req.NewName,
+		UserName:  req.UserName,
+		UserEmail: req.UserEmail,
+	})
 }
 
 func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (string, string, error) {

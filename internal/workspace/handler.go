@@ -441,17 +441,7 @@ func (h *Handler) HandleGitAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Action    string   `json:"action"`
-		Files     []string `json:"files"`
-		Message   string   `json:"message"`
-		Branch    string   `json:"branch"`
-		Remote    string   `json:"remote"`
-		URL       string   `json:"url"`
-		NewName   string   `json:"newName"`
-		UserName  string   `json:"userName"`
-		UserEmail string   `json:"userEmail"`
-	}
+	var req GitActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -462,7 +452,7 @@ func (h *Handler) HandleGitAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.service.GitAction(r.Context(), user.ID, id, req.Action, req.Files, req.Message, req.Branch, req.Remote, req.URL, req.NewName, req.UserName, req.UserEmail)
+	result, err := h.service.GitAction(r.Context(), user.ID, id, req)
 	if err != nil {
 		handleServiceError(w, err)
 		return

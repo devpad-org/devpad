@@ -17,6 +17,19 @@ const (
 	DefaultNanoCPUs    int64 = 2_000_000_000          // 2 cores
 )
 
+// GitActionRequest holds the parameters for a git action.
+type GitActionRequest struct {
+	Action    string   `json:"action"`
+	Files     []string `json:"files,omitempty"`
+	Message   string   `json:"message,omitempty"`
+	Branch    string   `json:"branch,omitempty"`
+	Remote    string   `json:"remote,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	NewName   string   `json:"newName,omitempty"`
+	UserName  string   `json:"userName,omitempty"`
+	UserEmail string   `json:"userEmail,omitempty"`
+}
+
 // Workspace represents a user's development workspace.
 type Workspace struct {
 	ID          int64

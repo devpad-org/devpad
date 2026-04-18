@@ -400,7 +400,7 @@ The `Content` field is a string that could be arbitrarily large. The global `Max
 | 11 | Medium   | Bug | `push` without `--set-upstream` fails on first push | Open |
 | 12 | Low      | Bug | `discard` silently succeeds on untracked files | Open |
 | 13 | Low      | Code Quality | `handleGitAction` is a god function | Fixed |
-| 14 | Low      | Code Quality | `GitAction` service method has 9 parameters | Open |
+| 14 | Low      | Code Quality | `GitAction` service method has 9 parameters | Fixed |
 | 15 | Low      | Code Quality | No action whitelist on server side | Open |
 | 16 | Low      | Code Quality | Agent client unbounded git response bodies | Open |
 | 17 | Low      | Code Quality | GitPanel 5-second polling with no debounce | Open |

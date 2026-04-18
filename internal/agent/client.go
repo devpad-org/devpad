@@ -382,6 +382,19 @@ type GitRemote struct {
 	PushURL  string `json:"pushUrl"`
 }
 
+// GitActionRequest holds the parameters for a git action sent to the agent.
+type GitActionRequest struct {
+	Action    string   `json:"action"`
+	Files     []string `json:"files,omitempty"`
+	Message   string   `json:"message,omitempty"`
+	Branch    string   `json:"branch,omitempty"`
+	Remote    string   `json:"remote,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	NewName   string   `json:"newName,omitempty"`
+	UserName  string   `json:"userName,omitempty"`
+	UserEmail string   `json:"userEmail,omitempty"`
+}
+
 // GitActionResult represents the result of a git action.
 type GitActionResult struct {
 	Success bool   `json:"success"`
@@ -503,29 +516,19 @@ func (c *Client) GitRemotes(ctx context.Context) ([]GitRemote, error) {
 }
 
 // GitAction performs a git action (stage, unstage, commit, push, pull, etc).
-func (c *Client) GitAction(ctx context.Context, action string, files []string, message, branch, remote, gitURL, newName, userName, userEmail string) (*GitActionResult, error) {
-	payload, err := json.Marshal(map[string]any{
-		"action":    action,
-		"files":     files,
-		"message":   message,
-		"branch":    branch,
-		"remote":    remote,
-		"url":       gitURL,
-		"newName":   newName,
-		"userName":  userName,
-		"userEmail": userEmail,
-	})
+func (c *Client) GitAction(ctx context.Context, req GitActionRequest) (*GitActionResult, error) {
+	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/git/action", bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/git/action", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.do(req)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("git action: %w", err)
 	}
