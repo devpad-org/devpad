@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import {
   gitApi,
+  type GitActionResult,
   type GitStatus,
   type GitCommit,
   type GitBranch,
@@ -70,6 +71,10 @@ const hasChanges = computed(() => (status.value?.files?.length ?? 0) > 0)
 const canCommit = computed(() => stagedFiles.value.length > 0 && commitMsg.value.trim() !== '')
 
 // --- Actions ---
+function gitError(result: GitActionResult): string {
+  return result.output || result.error || 'Unknown error'
+}
+
 async function refresh(showLoading = true) {
   if (!props.workspaceId) return
   if (showLoading) loading.value = true
@@ -95,35 +100,35 @@ async function refresh(showLoading = true) {
 async function stageFile(path: string) {
   actionOutput.value = ''
   const result = await gitApi.action(props.workspaceId, 'stage', { files: [path] })
-  if (!result.success) actionOutput.value = result.error || result.output
+  if (!result.success) actionOutput.value = gitError(result)
   await refresh()
 }
 
 async function unstageFile(path: string) {
   actionOutput.value = ''
   const result = await gitApi.action(props.workspaceId, 'unstage', { files: [path] })
-  if (!result.success) actionOutput.value = result.error || result.output
+  if (!result.success) actionOutput.value = gitError(result)
   await refresh()
 }
 
 async function stageAll() {
   actionOutput.value = ''
   const result = await gitApi.action(props.workspaceId, 'stage')
-  if (!result.success) actionOutput.value = result.error || result.output
+  if (!result.success) actionOutput.value = gitError(result)
   await refresh()
 }
 
 async function unstageAll() {
   actionOutput.value = ''
   const result = await gitApi.action(props.workspaceId, 'unstage')
-  if (!result.success) actionOutput.value = result.error || result.output
+  if (!result.success) actionOutput.value = gitError(result)
   await refresh()
 }
 
 async function discardFile(path: string) {
   actionOutput.value = ''
   const result = await gitApi.action(props.workspaceId, 'discard', { files: [path] })
-  if (!result.success) actionOutput.value = result.error || result.output
+  if (!result.success) actionOutput.value = gitError(result)
   await refresh()
 }
 
@@ -163,7 +168,7 @@ async function push() {
   loading.value = true
   try {
     const result = await gitApi.action(props.workspaceId, 'push')
-    actionOutput.value = result.success ? 'Pushed successfully' : result.error || result.output
+    actionOutput.value = result.success ? 'Pushed successfully' : gitError(result)
   } catch (e: any) {
     actionOutput.value = e.message
   }
@@ -175,7 +180,7 @@ async function pull() {
   loading.value = true
   try {
     const result = await gitApi.action(props.workspaceId, 'pull')
-    actionOutput.value = result.success ? 'Pulled successfully' : result.error || result.output
+    actionOutput.value = result.success ? 'Pulled successfully' : gitError(result)
   } catch (e: any) {
     actionOutput.value = e.message
   }
@@ -185,8 +190,26 @@ async function pull() {
 async function initRepo() {
   actionOutput.value = ''
   const result = await gitApi.action(props.workspaceId, 'init')
-  actionOutput.value = result.success ? 'Repository initialized' : result.error || result.output
+  actionOutput.value = result.success ? 'Repository initialized' : gitError(result)
   await refresh()
+}
+
+const cloneUrl = ref('')
+const cloning = ref(false)
+
+async function cloneRepo() {
+  const url = cloneUrl.value.trim()
+  if (!url) return
+  actionOutput.value = ''
+  cloning.value = true
+  try {
+    const result = await gitApi.action(props.workspaceId, 'clone', { url })
+    actionOutput.value = result.success ? 'Repository cloned' : gitError(result)
+    if (result.success) cloneUrl.value = ''
+    await refresh()
+  } finally {
+    cloning.value = false
+  }
 }
 
 async function checkoutBranch(name: string) {
@@ -194,7 +217,7 @@ async function checkoutBranch(name: string) {
   // Strip "origin/" prefix for remote branch checkout
   const branchName = name.startsWith('origin/') ? name.slice(7) : name
   const result = await gitApi.action(props.workspaceId, 'checkout', { branch: branchName })
-  if (!result.success) actionOutput.value = result.error || result.output
+  if (!result.success) actionOutput.value = gitError(result)
   await refresh()
 }
 
@@ -207,7 +230,7 @@ async function createBranch() {
     newBranchName.value = ''
     showNewBranch.value = false
   } else {
-    actionOutput.value = result.error || result.output
+    actionOutput.value = gitError(result)
   }
   await refresh()
 }
@@ -339,6 +362,24 @@ onUnmounted(() => {
       </svg>
       <p>Not a git repository</p>
       <button class="git-btn git-btn--primary" @click="initRepo">Initialize Repository</button>
+      <div class="git-clone-divider">or</div>
+      <div class="git-clone-form">
+        <input
+          v-model="cloneUrl"
+          type="text"
+          class="git-clone-input"
+          placeholder="https://github.com/user/repo.git"
+          :disabled="cloning"
+          @keydown.enter="cloneRepo"
+        />
+        <button
+          class="git-btn git-btn--primary"
+          :disabled="!cloneUrl.trim() || cloning"
+          @click="cloneRepo"
+        >
+          {{ cloning ? 'Cloning…' : 'Clone' }}
+        </button>
+      </div>
     </div>
 
     <!-- Repo content -->
@@ -714,6 +755,41 @@ function diffLineClass(line: string): string {
   padding: var(--space-8);
   color: var(--text-muted);
   font-size: 0.8rem;
+}
+
+.git-clone-divider {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.git-clone-form {
+  display: flex;
+  gap: var(--space-2);
+  width: 100%;
+  max-width: 320px;
+}
+
+.git-clone-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.git-clone-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.git-clone-input:disabled {
+  opacity: 0.5;
 }
 
 .git-empty-small {

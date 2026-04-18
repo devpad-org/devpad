@@ -36,7 +36,7 @@ func NewClient(host string, port int, token string) *Client {
 	return &Client{
 		baseURL: fmt.Sprintf("http://%s:%d", host, port),
 		token:   token,
-		http:    &http.Client{Timeout: 3 * time.Minute},
+		http:    &http.Client{Timeout: 6 * time.Minute},
 	}
 }
 

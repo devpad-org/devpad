@@ -12,7 +12,23 @@ import (
 )
 
 const gitTimeout = 30 * time.Second
+const gitNetworkTimeout = 5 * time.Minute
 const maxGitRequestBody = 1 << 20 // 1 MB
+
+// gitActionTimeout returns the context timeout appropriate for a given action.
+// Network-heavy actions (clone, push, pull) get a longer timeout.
+var longRunningActions = map[string]bool{
+	"clone": true,
+	"push":  true,
+	"pull":  true,
+}
+
+func gitActionTimeout(action string) time.Duration {
+	if longRunningActions[action] {
+		return gitNetworkTimeout
+	}
+	return gitTimeout
+}
 
 // validateGitRef rejects branch/remote names that could be interpreted as flags.
 func validateGitRef(name, field string) error {
@@ -309,6 +325,7 @@ var gitActions = map[string]gitActionFunc{
 	"checkout-new":   actionCheckoutNew,
 	"discard":        actionDiscard,
 	"init":           actionInit,
+	"clone":          actionClone,
 	"remote-add":     actionRemoteAdd,
 	"remote-remove":  actionRemoteRemove,
 	"remote-rename":  actionRemoteRename,
@@ -316,9 +333,6 @@ var gitActions = map[string]gitActionFunc{
 }
 
 func handleGitAction(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
-	defer cancel()
-
 	r.Body = http.MaxBytesReader(w, r.Body, maxGitRequestBody)
 
 	var req gitActionRequest
@@ -337,6 +351,9 @@ func handleGitAction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "unknown action: "+req.Action)
 		return
 	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), gitActionTimeout(req.Action))
+	defer cancel()
 
 	out, err := fn(ctx, req)
 	if err != nil {
@@ -495,6 +512,49 @@ func actionDiscard(ctx context.Context, req gitActionRequest) (string, error) {
 
 func actionInit(ctx context.Context, _ gitActionRequest) (string, error) {
 	return gitOutput(ctx, "init")
+}
+
+func actionClone(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.URL == "" {
+		return "", &gitActionError{"url is required for clone"}
+	}
+	// Try a direct clone first. This works when /workspace is empty.
+	out, err := gitOutput(ctx, "clone", req.URL, ".")
+	if err == nil {
+		return out, nil
+	}
+	// If the directory is not empty, fall back to init + fetch + checkout.
+	if !strings.Contains(out, "not an empty directory") &&
+		!strings.Contains(out, "not empty") {
+		return out, err
+	}
+	if initOut, initErr := gitOutput(ctx, "init"); initErr != nil {
+		return initOut, initErr
+	}
+	if addOut, addErr := gitOutput(ctx, "remote", "add", "origin", req.URL); addErr != nil {
+		return addOut, addErr
+	}
+	if fetchOut, fetchErr := gitOutput(ctx, "fetch", "origin"); fetchErr != nil {
+		return fetchOut, fetchErr
+	}
+	// Determine the default remote branch.
+	refOut, refErr := gitOutput(ctx, "symbolic-ref", "refs/remotes/origin/HEAD", "--short")
+	defaultBranch := strings.TrimSpace(refOut)
+	if refErr != nil || defaultBranch == "" {
+		// Fallback: try common default branch names.
+		for _, candidate := range []string{"origin/main", "origin/master"} {
+			if gitExec(ctx, "rev-parse", "--verify", candidate) == nil {
+				defaultBranch = candidate
+				break
+			}
+		}
+	}
+	if defaultBranch == "" {
+		return "Cloned but could not determine default branch. Use checkout to select one.", nil
+	}
+	// Strip "origin/" prefix for the local branch name.
+	localBranch := strings.TrimPrefix(defaultBranch, "origin/")
+	return gitOutput(ctx, "checkout", "-B", localBranch, defaultBranch)
 }
 
 func actionRemoteAdd(ctx context.Context, req gitActionRequest) (string, error) {
