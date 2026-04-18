@@ -51,7 +51,7 @@ func New(cfg Config) (*Server, error) {
 			return nil, fmt.Errorf("generating encryption key: %w", err)
 		}
 		cfg.EncryptionKey = key
-		log.Printf("WARNING: No encryption key configured. Generated ephemeral key. Set DEVPAD_ENCRYPTION_KEY=%s to persist across restarts.", key)
+		log.Printf("WARNING: No encryption key configured. Generated ephemeral key. SSH keys encrypted with this key will be lost on restart. Use 'openssl rand -hex 32' to generate a persistent key and set DEVPAD_ENCRYPTION_KEY.")
 	}
 	cipher, err := encrypt.NewCipher(cfg.EncryptionKey)
 	if err != nil {

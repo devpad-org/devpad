@@ -396,7 +396,7 @@ gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nO
 bitbucket.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIazEu89wgQZ4bqs3d63QSMzYVa0MuJ2e2gKTKqu+UUO
 `
 
-// sshConfig is placed at ~/.ssh/config to disable strict host key checking
+// sshConfig is placed at ~/.ssh/config to auto-accept new host keys
 // for known Git hosting providers and use the Devpad-managed identity file.
 const sshConfig = `Host github.com gitlab.com bitbucket.org
     IdentityFile ~/.ssh/id_ed25519
