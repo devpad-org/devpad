@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -272,187 +273,78 @@ func handleGitDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"diff": out})
 }
 
+// gitActionRequest holds the decoded and validated request body for a git action.
+type gitActionRequest struct {
+	Action    string   `json:"action"`
+	Files     []string `json:"files"`
+	Msg       string   `json:"message"`
+	Branch    string   `json:"branch"`
+	Remote    string   `json:"remote"`
+	URL       string   `json:"url"`
+	NewName   string   `json:"newName"`
+	UserName  string   `json:"userName"`
+	UserEmail string   `json:"userEmail"`
+}
+
+// gitActionError is a validation error that should be returned as a 400 response.
+type gitActionError struct {
+	msg string
+}
+
+func (e *gitActionError) Error() string { return e.msg }
+
+// gitActionFunc executes a single git action and returns its output.
+// Returning a *gitActionError signals a 400 (bad request) to the handler.
+type gitActionFunc func(ctx context.Context, req gitActionRequest) (string, error)
+
+// gitActions maps action names to their handler functions.
+var gitActions = map[string]gitActionFunc{
+	"stage":          actionStage,
+	"unstage":        actionUnstage,
+	"set-config":     actionSetConfig,
+	"commit":         actionCommit,
+	"push":           actionPush,
+	"pull":           actionPull,
+	"checkout":       actionCheckout,
+	"checkout-new":   actionCheckoutNew,
+	"discard":        actionDiscard,
+	"init":           actionInit,
+	"remote-add":     actionRemoteAdd,
+	"remote-remove":  actionRemoteRemove,
+	"remote-rename":  actionRemoteRename,
+	"remote-set-url": actionRemoteSetURL,
+}
+
 func handleGitAction(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
 	defer cancel()
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxGitRequestBody)
 
-	var req struct {
-		Action    string   `json:"action"`
-		Files     []string `json:"files"`
-		Msg       string   `json:"message"`
-		Branch    string   `json:"branch"`
-		Remote    string   `json:"remote"`
-		URL       string   `json:"url"`
-		NewName   string   `json:"newName"`
-		UserName  string   `json:"userName"`
-		UserEmail string   `json:"userEmail"`
-	}
+	var req gitActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	// Validate inputs to prevent flag injection and path traversal.
-	if req.Branch != "" {
-		if err := validateGitRef(req.Branch, "branch"); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-	if req.Remote != "" {
-		if err := validateGitRef(req.Remote, "remote"); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-	if len(req.Files) > 0 {
-		if err := validateFilePaths(req.Files); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-	if req.URL != "" {
-		if err := validateGitRef(req.URL, "url"); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-	if req.NewName != "" {
-		if err := validateGitRef(req.NewName, "newName"); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-	if req.UserName != "" {
-		if err := validateUserIdentity(req.UserName, "userName"); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-	if req.UserEmail != "" {
-		if err := validateUserIdentity(req.UserEmail, "userEmail"); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
+	if err := validateGitActionInputs(req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
-	var out string
-	var err error
-
-	switch req.Action {
-	case "stage":
-		if len(req.Files) == 0 {
-			out, err = gitOutput(ctx, "add", "-A")
-		} else {
-			args := append([]string{"add", "--"}, req.Files...)
-			out, err = gitOutput(ctx, args...)
-		}
-	case "unstage":
-		// On an empty repo with no commits, HEAD doesn't exist so "git reset HEAD" fails.
-		// Use "git rm --cached" in that case.
-		hasHead := gitExec(ctx, "rev-parse", "HEAD") == nil
-		if hasHead {
-			if len(req.Files) == 0 {
-				out, err = gitOutput(ctx, "reset", "HEAD")
-			} else {
-				args := append([]string{"reset", "HEAD", "--"}, req.Files...)
-				out, err = gitOutput(ctx, args...)
-			}
-		} else {
-			if len(req.Files) == 0 {
-				out, err = gitOutput(ctx, "rm", "--cached", "-r", ".")
-			} else {
-				args := append([]string{"rm", "--cached", "--"}, req.Files...)
-				out, err = gitOutput(ctx, args...)
-			}
-		}
-	case "set-config":
-		if req.UserName != "" {
-			_, _ = gitOutput(ctx, "config", "user.name", req.UserName)
-		}
-		if req.UserEmail != "" {
-			_, _ = gitOutput(ctx, "config", "user.email", req.UserEmail)
-		}
-		out = "Git config updated"
-	case "commit":
-		if req.Msg == "" {
-			writeErr(w, http.StatusBadRequest, "commit message is required")
-			return
-		}
-		out, err = gitOutput(ctx, "commit", "-m", req.Msg)
-	case "push":
-		remote := req.Remote
-		if remote == "" {
-			remote = "origin"
-		}
-		args := []string{"push", remote}
-		if req.Branch != "" {
-			args = append(args, req.Branch)
-		}
-		out, err = gitOutput(ctx, args...)
-	case "pull":
-		remote := req.Remote
-		if remote == "" {
-			remote = "origin"
-		}
-		args := []string{"pull", remote}
-		if req.Branch != "" {
-			args = append(args, req.Branch)
-		}
-		out, err = gitOutput(ctx, args...)
-	case "checkout":
-		if req.Branch == "" {
-			writeErr(w, http.StatusBadRequest, "branch is required")
-			return
-		}
-		out, err = gitOutput(ctx, "checkout", req.Branch)
-	case "checkout-new":
-		if req.Branch == "" {
-			writeErr(w, http.StatusBadRequest, "branch is required")
-			return
-		}
-		out, err = gitOutput(ctx, "checkout", "-b", req.Branch)
-	case "discard":
-		if len(req.Files) == 0 {
-			writeErr(w, http.StatusBadRequest, "files are required for discard")
-			return
-		}
-		args := append([]string{"checkout", "--"}, req.Files...)
-		out, err = gitOutput(ctx, args...)
-	case "init":
-		out, err = gitOutput(ctx, "init")
-	case "remote-add":
-		if req.Remote == "" || req.URL == "" {
-			writeErr(w, http.StatusBadRequest, "remote name and url are required")
-			return
-		}
-		out, err = gitOutput(ctx, "remote", "add", req.Remote, req.URL)
-	case "remote-remove":
-		if req.Remote == "" {
-			writeErr(w, http.StatusBadRequest, "remote name is required")
-			return
-		}
-		out, err = gitOutput(ctx, "remote", "remove", req.Remote)
-	case "remote-rename":
-		if req.Remote == "" || req.NewName == "" {
-			writeErr(w, http.StatusBadRequest, "remote name and new name are required")
-			return
-		}
-		out, err = gitOutput(ctx, "remote", "rename", req.Remote, req.NewName)
-	case "remote-set-url":
-		if req.Remote == "" || req.URL == "" {
-			writeErr(w, http.StatusBadRequest, "remote name and url are required")
-			return
-		}
-		out, err = gitOutput(ctx, "remote", "set-url", req.Remote, req.URL)
-	default:
+	fn, ok := gitActions[req.Action]
+	if !ok {
 		writeErr(w, http.StatusBadRequest, "unknown action: "+req.Action)
 		return
 	}
 
+	out, err := fn(ctx, req)
 	if err != nil {
+		var actionErr *gitActionError
+		if errors.As(err, &actionErr) {
+			writeErr(w, http.StatusBadRequest, actionErr.msg)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success": false,
 			"output":  out,
@@ -465,6 +357,172 @@ func handleGitAction(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"output":  strings.TrimSpace(out),
 	})
+}
+
+// validateGitActionInputs performs shared input sanitization to prevent flag injection
+// and path traversal. Field-specific validation lives in each action function.
+func validateGitActionInputs(req gitActionRequest) error {
+	if req.Branch != "" {
+		if err := validateGitRef(req.Branch, "branch"); err != nil {
+			return err
+		}
+	}
+	if req.Remote != "" {
+		if err := validateGitRef(req.Remote, "remote"); err != nil {
+			return err
+		}
+	}
+	if len(req.Files) > 0 {
+		if err := validateFilePaths(req.Files); err != nil {
+			return err
+		}
+	}
+	if req.URL != "" {
+		if err := validateGitRef(req.URL, "url"); err != nil {
+			return err
+		}
+	}
+	if req.NewName != "" {
+		if err := validateGitRef(req.NewName, "newName"); err != nil {
+			return err
+		}
+	}
+	if req.UserName != "" {
+		if err := validateUserIdentity(req.UserName, "userName"); err != nil {
+			return err
+		}
+	}
+	if req.UserEmail != "" {
+		if err := validateUserIdentity(req.UserEmail, "userEmail"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func actionStage(ctx context.Context, req gitActionRequest) (string, error) {
+	if len(req.Files) == 0 {
+		return gitOutput(ctx, "add", "-A")
+	}
+	args := append([]string{"add", "--"}, req.Files...)
+	return gitOutput(ctx, args...)
+}
+
+func actionUnstage(ctx context.Context, req gitActionRequest) (string, error) {
+	// On an empty repo with no commits, HEAD doesn't exist so "git reset HEAD" fails.
+	// Use "git rm --cached" in that case.
+	hasHead := gitExec(ctx, "rev-parse", "HEAD") == nil
+	if hasHead {
+		if len(req.Files) == 0 {
+			return gitOutput(ctx, "reset", "HEAD")
+		}
+		args := append([]string{"reset", "HEAD", "--"}, req.Files...)
+		return gitOutput(ctx, args...)
+	}
+	if len(req.Files) == 0 {
+		return gitOutput(ctx, "rm", "--cached", "-r", ".")
+	}
+	args := append([]string{"rm", "--cached", "--"}, req.Files...)
+	return gitOutput(ctx, args...)
+}
+
+func actionSetConfig(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.UserName != "" {
+		if _, err := gitOutput(ctx, "config", "user.name", req.UserName); err != nil {
+			return "", fmt.Errorf("setting user.name: %w", err)
+		}
+	}
+	if req.UserEmail != "" {
+		if _, err := gitOutput(ctx, "config", "user.email", req.UserEmail); err != nil {
+			return "", fmt.Errorf("setting user.email: %w", err)
+		}
+	}
+	return "Git config updated", nil
+}
+
+func actionCommit(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.Msg == "" {
+		return "", &gitActionError{"commit message is required"}
+	}
+	return gitOutput(ctx, "commit", "-m", req.Msg)
+}
+
+func actionPush(ctx context.Context, req gitActionRequest) (string, error) {
+	remote := req.Remote
+	if remote == "" {
+		remote = "origin"
+	}
+	args := []string{"push", remote}
+	if req.Branch != "" {
+		args = append(args, req.Branch)
+	}
+	return gitOutput(ctx, args...)
+}
+
+func actionPull(ctx context.Context, req gitActionRequest) (string, error) {
+	remote := req.Remote
+	if remote == "" {
+		remote = "origin"
+	}
+	args := []string{"pull", remote}
+	if req.Branch != "" {
+		args = append(args, req.Branch)
+	}
+	return gitOutput(ctx, args...)
+}
+
+func actionCheckout(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.Branch == "" {
+		return "", &gitActionError{"branch is required"}
+	}
+	return gitOutput(ctx, "checkout", req.Branch)
+}
+
+func actionCheckoutNew(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.Branch == "" {
+		return "", &gitActionError{"branch is required"}
+	}
+	return gitOutput(ctx, "checkout", "-b", req.Branch)
+}
+
+func actionDiscard(ctx context.Context, req gitActionRequest) (string, error) {
+	if len(req.Files) == 0 {
+		return "", &gitActionError{"files are required for discard"}
+	}
+	args := append([]string{"checkout", "--"}, req.Files...)
+	return gitOutput(ctx, args...)
+}
+
+func actionInit(ctx context.Context, _ gitActionRequest) (string, error) {
+	return gitOutput(ctx, "init")
+}
+
+func actionRemoteAdd(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.Remote == "" || req.URL == "" {
+		return "", &gitActionError{"remote name and url are required"}
+	}
+	return gitOutput(ctx, "remote", "add", req.Remote, req.URL)
+}
+
+func actionRemoteRemove(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.Remote == "" {
+		return "", &gitActionError{"remote name is required"}
+	}
+	return gitOutput(ctx, "remote", "remove", req.Remote)
+}
+
+func actionRemoteRename(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.Remote == "" || req.NewName == "" {
+		return "", &gitActionError{"remote name and new name are required"}
+	}
+	return gitOutput(ctx, "remote", "rename", req.Remote, req.NewName)
+}
+
+func actionRemoteSetURL(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.Remote == "" || req.URL == "" {
+		return "", &gitActionError{"remote name and url are required"}
+	}
+	return gitOutput(ctx, "remote", "set-url", req.Remote, req.URL)
 }
 
 // parseGitStatus runs git status --porcelain=v1 and returns structured entries.
