@@ -48,7 +48,8 @@ type Service interface {
 	GitLog(ctx context.Context, userID, workspaceID int64, count int) ([]agent.GitCommit, error)
 	GitBranches(ctx context.Context, userID, workspaceID int64) (*agent.GitBranches, error)
 	GitDiff(ctx context.Context, userID, workspaceID int64, path string, staged bool) (string, error)
-	GitAction(ctx context.Context, userID, workspaceID int64, action string, files []string, message, branch, remote, userName, userEmail string) (*agent.GitActionResult, error)
+	GitRemotes(ctx context.Context, userID, workspaceID int64) ([]agent.GitRemote, error)
+	GitAction(ctx context.Context, userID, workspaceID int64, action string, files []string, message, branch, remote, gitURL, newName, userName, userEmail string) (*agent.GitActionResult, error)
 
 	// AgentAddr returns the agent's host:port and auth token for a running workspace.
 	AgentAddr(ctx context.Context, userID, workspaceID int64) (addr, agentToken string, err error)
@@ -493,12 +494,20 @@ func (s *service) GitDiff(ctx context.Context, userID, workspaceID int64, path s
 	return c.GitDiff(ctx, path, staged)
 }
 
-func (s *service) GitAction(ctx context.Context, userID, workspaceID int64, action string, files []string, message, branch, remote, userName, userEmail string) (*agent.GitActionResult, error) {
+func (s *service) GitRemotes(ctx context.Context, userID, workspaceID int64) ([]agent.GitRemote, error) {
 	c, err := s.getAgent(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	return c.GitAction(ctx, action, files, message, branch, remote, userName, userEmail)
+	return c.GitRemotes(ctx)
+}
+
+func (s *service) GitAction(ctx context.Context, userID, workspaceID int64, action string, files []string, message, branch, remote, gitURL, newName, userName, userEmail string) (*agent.GitActionResult, error) {
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.GitAction(ctx, action, files, message, branch, remote, gitURL, newName, userName, userEmail)
 }
 
 func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (string, string, error) {

@@ -127,7 +127,10 @@ func (m *mockWorkspaceService) GitBranches(_ context.Context, _, _ int64) (*agen
 func (m *mockWorkspaceService) GitDiff(_ context.Context, _, _ int64, _ string, _ bool) (string, error) {
 	return "", nil
 }
-func (m *mockWorkspaceService) GitAction(_ context.Context, _, _ int64, _ string, _ []string, _, _, _, _, _ string) (*agent.GitActionResult, error) {
+func (m *mockWorkspaceService) GitRemotes(_ context.Context, _, _ int64) ([]agent.GitRemote, error) {
+	return nil, nil
+}
+func (m *mockWorkspaceService) GitAction(_ context.Context, _, _ int64, _ string, _ []string, _, _, _, _, _, _, _ string) (*agent.GitActionResult, error) {
 	return nil, nil
 }
 func (m *mockWorkspaceService) AgentAddr(_ context.Context, _, _ int64) (string, string, error) {

@@ -137,3 +137,71 @@ func TestParseGitStatusOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestParseGitRemoteOutput(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []gitRemoteEntry
+	}{
+		{
+			name:     "empty output",
+			input:    "",
+			expected: []gitRemoteEntry{},
+		},
+		{
+			name:  "single remote",
+			input: "origin\thttps://github.com/user/repo.git (fetch)\norigin\thttps://github.com/user/repo.git (push)\n",
+			expected: []gitRemoteEntry{
+				{Name: "origin", FetchURL: "https://github.com/user/repo.git", PushURL: "https://github.com/user/repo.git"},
+			},
+		},
+		{
+			name: "multiple remotes",
+			input: "origin\thttps://github.com/user/repo.git (fetch)\n" +
+				"origin\thttps://github.com/user/repo.git (push)\n" +
+				"upstream\thttps://github.com/org/repo.git (fetch)\n" +
+				"upstream\thttps://github.com/org/repo.git (push)\n",
+			expected: []gitRemoteEntry{
+				{Name: "origin", FetchURL: "https://github.com/user/repo.git", PushURL: "https://github.com/user/repo.git"},
+				{Name: "upstream", FetchURL: "https://github.com/org/repo.git", PushURL: "https://github.com/org/repo.git"},
+			},
+		},
+		{
+			name: "different fetch and push URLs",
+			input: "origin\thttps://github.com/user/repo.git (fetch)\n" +
+				"origin\tgit@github.com:user/repo.git (push)\n",
+			expected: []gitRemoteEntry{
+				{Name: "origin", FetchURL: "https://github.com/user/repo.git", PushURL: "git@github.com:user/repo.git"},
+			},
+		},
+		{
+			name:  "ssh URL",
+			input: "origin\tgit@github.com:user/repo.git (fetch)\norigin\tgit@github.com:user/repo.git (push)\n",
+			expected: []gitRemoteEntry{
+				{Name: "origin", FetchURL: "git@github.com:user/repo.git", PushURL: "git@github.com:user/repo.git"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseGitRemoteOutput(tt.input)
+			if len(got) != len(tt.expected) {
+				t.Fatalf("expected %d entries, got %d: %+v", len(tt.expected), len(got), got)
+			}
+			for i, want := range tt.expected {
+				g := got[i]
+				if g.Name != want.Name {
+					t.Errorf("[%d] Name: got %q, want %q", i, g.Name, want.Name)
+				}
+				if g.FetchURL != want.FetchURL {
+					t.Errorf("[%d] FetchURL: got %q, want %q", i, g.FetchURL, want.FetchURL)
+				}
+				if g.PushURL != want.PushURL {
+					t.Errorf("[%d] PushURL: got %q, want %q", i, g.PushURL, want.PushURL)
+				}
+			}
+		})
+	}
+}

@@ -57,6 +57,7 @@ func main() {
 	mux.HandleFunc("GET /api/git/commits", handleGitLog)
 	mux.HandleFunc("GET /api/git/branches", handleGitBranches)
 	mux.HandleFunc("GET /api/git/diff", handleGitDiff)
+	mux.HandleFunc("GET /api/git/remotes", handleGitRemotes)
 	mux.HandleFunc("POST /api/git/action", handleGitAction)
 
 	// Terminal WebSocket

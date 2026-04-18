@@ -8,6 +8,7 @@ import {
 } from '@/api/git'
 import { useFileWatcher } from '@/composables/useFileWatcher'
 import GitConfigModal from './GitConfigModal.vue'
+import GitRemotesModal from './GitRemotesModal.vue'
 
 const props = defineProps<{
   workspaceId: number
@@ -38,6 +39,9 @@ const showGitConfig = ref(false)
 const needsGitConfig = computed(() =>
   status.value?.isRepo && (!status.value.userName || !status.value.userEmail)
 )
+
+// Remotes modal
+const showRemotes = ref(false)
 
 // Diff
 const diffContent = ref('')
@@ -381,6 +385,24 @@ onUnmounted(() => {
             </svg>
             Push
           </button>
+          <button class="git-btn git-btn--small git-btn--remotes" @click="showRemotes = true" title="Manage remotes">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M2 12h20" />
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>
+            Remotes
+          </button>
+        </div>
+        <div v-else class="git-sync-bar">
+          <button class="git-btn git-btn--small git-btn--remotes" @click="showRemotes = true" title="Add a remote">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M2 12h20" />
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>
+            Add Remote
+          </button>
         </div>
 
         <!-- Staged files -->
@@ -570,6 +592,14 @@ onUnmounted(() => {
       :show="showGitConfig"
       @submit="handleGitConfigSubmit"
       @cancel="showGitConfig = false"
+    />
+
+    <!-- Git remotes modal -->
+    <GitRemotesModal
+      :show="showRemotes"
+      :workspace-id="props.workspaceId"
+      @close="showRemotes = false"
+      @updated="refresh()"
     />
   </div>
 </template>
@@ -887,6 +917,19 @@ function diffLineClass(line: string): string {
 .git-btn--small {
   padding: 2px var(--space-2);
   font-size: 0.7rem;
+}
+
+.git-btn--remotes {
+  margin-left: auto;
+  color: var(--accent-purple);
+  border-color: rgba(124, 58, 237, 0.25);
+  background: rgba(124, 58, 237, 0.06);
+}
+
+.git-btn--remotes:hover:not(:disabled) {
+  background: rgba(124, 58, 237, 0.12);
+  border-color: rgba(124, 58, 237, 0.4);
+  color: var(--accent-purple);
 }
 
 .git-btn--commit {

@@ -332,12 +332,14 @@ func (c *Client) RunCommand(ctx context.Context, command string) (*CommandResult
 
 // GitStatus represents the status of a git repository.
 type GitStatus struct {
-	IsRepo  bool            `json:"isRepo"`
-	Branch  string          `json:"branch"`
-	Files   []GitFileStatus `json:"files"`
-	Ahead   int             `json:"ahead"`
-	Behind  int             `json:"behind"`
-	Remotes []string        `json:"remotes"`
+	IsRepo    bool            `json:"isRepo"`
+	Branch    string          `json:"branch"`
+	Files     []GitFileStatus `json:"files"`
+	Ahead     int             `json:"ahead"`
+	Behind    int             `json:"behind"`
+	Remotes   []string        `json:"remotes"`
+	UserName  string          `json:"userName"`
+	UserEmail string          `json:"userEmail"`
 }
 
 // GitFileStatus represents a single file in git status.
@@ -371,6 +373,13 @@ type GitBranch struct {
 	Upstream string `json:"upstream"`
 	Current  bool   `json:"current"`
 	Remote   bool   `json:"remote"`
+}
+
+// GitRemote represents a single git remote with fetch and push URLs.
+type GitRemote struct {
+	Name     string `json:"name"`
+	FetchURL string `json:"fetchUrl"`
+	PushURL  string `json:"pushUrl"`
 }
 
 // GitActionResult represents the result of a git action.
@@ -470,14 +479,39 @@ func (c *Client) GitDiff(ctx context.Context, path string, staged bool) (string,
 	return result.Diff, nil
 }
 
+// GitRemotes returns the list of remotes with their URLs.
+func (c *Client) GitRemotes(ctx context.Context) ([]GitRemote, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/git/remotes", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("git remotes: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+	var result struct {
+		Remotes []GitRemote `json:"remotes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding git remotes: %w", err)
+	}
+	return result.Remotes, nil
+}
+
 // GitAction performs a git action (stage, unstage, commit, push, pull, etc).
-func (c *Client) GitAction(ctx context.Context, action string, files []string, message, branch, remote, userName, userEmail string) (*GitActionResult, error) {
+func (c *Client) GitAction(ctx context.Context, action string, files []string, message, branch, remote, gitURL, newName, userName, userEmail string) (*GitActionResult, error) {
 	payload, err := json.Marshal(map[string]any{
 		"action":    action,
 		"files":     files,
 		"message":   message,
 		"branch":    branch,
 		"remote":    remote,
+		"url":       gitURL,
+		"newName":   newName,
 		"userName":  userName,
 		"userEmail": userEmail,
 	})

@@ -184,6 +184,63 @@ func handleGitBranches(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"branches": branches, "current": current})
 }
 
+// gitRemoteEntry represents a single git remote with its fetch/push URLs.
+type gitRemoteEntry struct {
+	Name     string `json:"name"`
+	FetchURL string `json:"fetchUrl"`
+	PushURL  string `json:"pushUrl"`
+}
+
+func handleGitRemotes(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
+	defer cancel()
+
+	out, err := gitOutput(ctx, "remote", "-v")
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"remotes": []gitRemoteEntry{}})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"remotes": parseGitRemoteOutput(out)})
+}
+
+// parseGitRemoteOutput parses the output of `git remote -v` into structured entries.
+func parseGitRemoteOutput(out string) []gitRemoteEntry {
+	// Parse "origin\thttps://... (fetch)" and "origin\thttps://... (push)" lines.
+	seen := map[string]*gitRemoteEntry{}
+	var order []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 3 {
+			continue
+		}
+		name := parts[0]
+		url := parts[1]
+		kind := parts[2] // "(fetch)" or "(push)"
+
+		entry, ok := seen[name]
+		if !ok {
+			entry = &gitRemoteEntry{Name: name}
+			seen[name] = entry
+			order = append(order, name)
+		}
+		if kind == "(fetch)" {
+			entry.FetchURL = url
+		} else if kind == "(push)" {
+			entry.PushURL = url
+		}
+	}
+
+	remotes := make([]gitRemoteEntry, 0, len(order))
+	for _, name := range order {
+		remotes = append(remotes, *seen[name])
+	}
+	return remotes
+}
+
 func handleGitDiff(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
 	defer cancel()
@@ -227,6 +284,8 @@ func handleGitAction(w http.ResponseWriter, r *http.Request) {
 		Msg       string   `json:"message"`
 		Branch    string   `json:"branch"`
 		Remote    string   `json:"remote"`
+		URL       string   `json:"url"`
+		NewName   string   `json:"newName"`
 		UserName  string   `json:"userName"`
 		UserEmail string   `json:"userEmail"`
 	}
@@ -250,6 +309,18 @@ func handleGitAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Files) > 0 {
 		if err := validateFilePaths(req.Files); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if req.URL != "" {
+		if err := validateGitRef(req.URL, "url"); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if req.NewName != "" {
+		if err := validateGitRef(req.NewName, "newName"); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -352,6 +423,30 @@ func handleGitAction(w http.ResponseWriter, r *http.Request) {
 		out, err = gitOutput(ctx, args...)
 	case "init":
 		out, err = gitOutput(ctx, "init")
+	case "remote-add":
+		if req.Remote == "" || req.URL == "" {
+			writeErr(w, http.StatusBadRequest, "remote name and url are required")
+			return
+		}
+		out, err = gitOutput(ctx, "remote", "add", req.Remote, req.URL)
+	case "remote-remove":
+		if req.Remote == "" {
+			writeErr(w, http.StatusBadRequest, "remote name is required")
+			return
+		}
+		out, err = gitOutput(ctx, "remote", "remove", req.Remote)
+	case "remote-rename":
+		if req.Remote == "" || req.NewName == "" {
+			writeErr(w, http.StatusBadRequest, "remote name and new name are required")
+			return
+		}
+		out, err = gitOutput(ctx, "remote", "rename", req.Remote, req.NewName)
+	case "remote-set-url":
+		if req.Remote == "" || req.URL == "" {
+			writeErr(w, http.StatusBadRequest, "remote name and url are required")
+			return
+		}
+		out, err = gitOutput(ctx, "remote", "set-url", req.Remote, req.URL)
 	default:
 		writeErr(w, http.StatusBadRequest, "unknown action: "+req.Action)
 		return

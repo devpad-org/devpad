@@ -40,6 +40,12 @@ export interface GitBranches {
   current: string
 }
 
+export interface GitRemote {
+  name: string
+  fetchUrl: string
+  pushUrl: string
+}
+
 export interface GitActionResult {
   success: boolean
   output: string
@@ -52,6 +58,10 @@ interface GitLogResponse {
 
 interface GitDiffResponse {
   diff: string
+}
+
+interface GitRemotesResponse {
+  remotes: GitRemote[]
 }
 
 export const gitApi = {
@@ -69,6 +79,12 @@ export const gitApi = {
     return apiClient.get<GitBranches>(`/api/workspaces/${workspaceId}/git/branches`)
   },
 
+  remotes(workspaceId: number): Promise<GitRemote[]> {
+    return apiClient
+      .get<GitRemotesResponse>(`/api/workspaces/${workspaceId}/git/remotes`)
+      .then((r) => r.remotes)
+  },
+
   diff(workspaceId: number, path?: string, staged = false): Promise<string> {
     const params = new URLSearchParams()
     if (path) params.set('path', path)
@@ -81,7 +97,7 @@ export const gitApi = {
   action(
     workspaceId: number,
     action: string,
-    opts: { files?: string[]; message?: string; branch?: string; remote?: string; userName?: string; userEmail?: string } = {}
+    opts: { files?: string[]; message?: string; branch?: string; remote?: string; url?: string; newName?: string; userName?: string; userEmail?: string } = {}
   ): Promise<GitActionResult> {
     return apiClient.post<GitActionResult>(
       `/api/workspaces/${workspaceId}/git/action`,
@@ -91,6 +107,8 @@ export const gitApi = {
         message: opts.message ?? '',
         branch: opts.branch ?? '',
         remote: opts.remote ?? '',
+        url: opts.url ?? '',
+        newName: opts.newName ?? '',
         userName: opts.userName ?? '',
         userEmail: opts.userEmail ?? '',
       }

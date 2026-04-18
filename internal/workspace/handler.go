@@ -414,6 +414,24 @@ func (h *Handler) HandleGitDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"diff": diff})
 }
 
+// HandleGitRemotes returns the list of remotes with their URLs.
+func (h *Handler) HandleGitRemotes(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	remotes, err := h.service.GitRemotes(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"remotes": remotes})
+}
+
 // HandleGitAction performs a git action (stage, commit, push, etc).
 func (h *Handler) HandleGitAction(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
@@ -429,6 +447,8 @@ func (h *Handler) HandleGitAction(w http.ResponseWriter, r *http.Request) {
 		Message   string   `json:"message"`
 		Branch    string   `json:"branch"`
 		Remote    string   `json:"remote"`
+		URL       string   `json:"url"`
+		NewName   string   `json:"newName"`
 		UserName  string   `json:"userName"`
 		UserEmail string   `json:"userEmail"`
 	}
@@ -442,7 +462,7 @@ func (h *Handler) HandleGitAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.service.GitAction(r.Context(), user.ID, id, req.Action, req.Files, req.Message, req.Branch, req.Remote, req.UserName, req.UserEmail)
+	result, err := h.service.GitAction(r.Context(), user.ID, id, req.Action, req.Files, req.Message, req.Branch, req.Remote, req.URL, req.NewName, req.UserName, req.UserEmail)
 	if err != nil {
 		handleServiceError(w, err)
 		return
