@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -18,6 +20,7 @@ import (
 // mockContainerManager is a test double for container.Manager.
 type mockContainerManager struct {
 	lastCreatedID string
+	ipOverride    string // if set, GetIP returns this instead of the default
 }
 
 func (m *mockContainerManager) Create(_ context.Context, name, volumeName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
@@ -32,6 +35,9 @@ func (m *mockContainerManager) UpdateResources(_ context.Context, _ string, _, _
 	return nil
 }
 func (m *mockContainerManager) GetIP(_ context.Context, _ string) (string, error) {
+	if m.ipOverride != "" {
+		return m.ipOverride, nil
+	}
 	return "172.17.0.2", nil
 }
 func (m *mockContainerManager) GetEnv(_ context.Context, _ string) ([]string, error) {
@@ -106,7 +112,26 @@ func setupTestService(t *testing.T) (Service, *sql.DB) {
 	t.Helper()
 	db := setupTestDB(t)
 	repo := NewRepository(db)
-	cm := &mockContainerManager{}
+
+	// Start a fake agent server that responds to /healthz and /api/version.
+	agentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			w.WriteHeader(http.StatusOK)
+		case "/api/version":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"version": "test"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(agentSrv.Close)
+
+	// Extract host and port from the test server URL.
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(agentSrv.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+
+	cm := &mockContainerManager{ipOverride: host}
 	userRepo := auth.NewUserRepository(db)
 	key, err := encrypt.GenerateKey()
 	if err != nil {
@@ -117,6 +142,8 @@ func setupTestService(t *testing.T) (Service, *sql.DB) {
 		t.Fatalf("creating cipher: %v", err)
 	}
 	svc := NewService(repo, cm, userRepo, cipher)
+	// Override the agent port to point at our test server.
+	svc.(*service).agentPort = port
 	return svc, db
 }
 

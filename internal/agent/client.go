@@ -75,6 +75,33 @@ func (c *Client) Healthz(ctx context.Context) error {
 	return nil
 }
 
+// WaitReady polls the agent's health endpoint until it responds successfully
+// or the context is cancelled. It uses exponential backoff starting at 250ms
+// and capping at 2s, suitable for waiting on a container that was just started
+// or restarted.
+func (c *Client) WaitReady(ctx context.Context) error {
+	backoff := 250 * time.Millisecond
+	maxBackoff := 2 * time.Second
+
+	for {
+		err := c.Healthz(ctx)
+		if err == nil {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("agent not ready: %w", ctx.Err())
+		case <-time.After(backoff):
+		}
+
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
 // Version returns the version string of the running agent.
 // If the endpoint is not available (old agent), it returns an empty string and no error.
 func (c *Client) Version(ctx context.Context) (string, error) {

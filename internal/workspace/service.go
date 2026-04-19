@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/agentbin"
@@ -65,11 +66,12 @@ type service struct {
 	container container.Manager
 	users     auth.UserRepository
 	cipher    *encrypt.Cipher
+	agentPort int
 }
 
 // NewService creates a new workspace Service.
 func NewService(repo Repository, cm container.Manager, users auth.UserRepository, cipher *encrypt.Cipher) Service {
-	return &service{repo: repo, container: cm, users: users, cipher: cipher}
+	return &service{repo: repo, container: cm, users: users, cipher: cipher, agentPort: agent.DefaultPort}
 }
 
 func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*agent.Client, error) {
@@ -84,7 +86,26 @@ func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*age
 	if err != nil {
 		return nil, fmt.Errorf("getting container IP: %w", err)
 	}
-	return agent.NewClient(ip, agent.DefaultPort, ws.AgentToken), nil
+	return agent.NewClient(ip, s.agentPort, ws.AgentToken), nil
+}
+
+// waitForAgent waits until the agent inside the workspace container is ready
+// to accept requests. It uses a 30-second timeout to avoid hanging forever if
+// the container is broken.
+func (s *service) waitForAgent(ctx context.Context, ws *Workspace) error {
+	ip, err := s.container.GetIP(ctx, ws.ContainerID)
+	if err != nil {
+		return fmt.Errorf("getting container IP: %w", err)
+	}
+	c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
+
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if err := c.WaitReady(waitCtx); err != nil {
+		return fmt.Errorf("waiting for agent in workspace %d: %w", ws.ID, err)
+	}
+	return nil
 }
 
 // ensureAgentUpdated checks whether the in-container agent is running the
@@ -101,7 +122,7 @@ func (s *service) ensureAgentUpdated(ctx context.Context, ws *Workspace) error {
 		return fmt.Errorf("getting container IP for update check: %w", err)
 	}
 
-	c := agent.NewClient(ip, agent.DefaultPort, ws.AgentToken)
+	c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
 	remoteVersion, err := c.Version(ctx)
 	if err != nil {
 		// Agent is unreachable or too old to respond — treat as needing update.
@@ -121,6 +142,11 @@ func (s *service) ensureAgentUpdated(ctx context.Context, ws *Workspace) error {
 
 	if err := s.container.Restart(ctx, ws.ContainerID); err != nil {
 		return fmt.Errorf("restarting container after agent update: %w", err)
+	}
+
+	// Wait for the new agent to become ready after the restart.
+	if err := s.waitForAgent(ctx, ws); err != nil {
+		return fmt.Errorf("agent not ready after update: %w", err)
 	}
 
 	log.Printf("workspace %d: agent updated and container restarted", ws.ID)
@@ -184,6 +210,11 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 		_ = s.container.RemoveVolume(ctx, volumeName)
 		_ = s.repo.Delete(ctx, ws.ID)
 		return nil, fmt.Errorf("updating workspace: %w", err)
+	}
+
+	// Wait for the agent to be ready before performing post-start actions.
+	if err := s.waitForAgent(ctx, ws); err != nil {
+		log.Printf("workspace %d: agent not ready after create: %v", ws.ID, err)
 	}
 
 	// Inject SSH keys if the user has them configured. Best-effort.
@@ -317,6 +348,11 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 	ws.Status = StatusRunning
 	if err := s.repo.Update(ctx, ws); err != nil {
 		return nil, fmt.Errorf("updating workspace status: %w", err)
+	}
+
+	// Wait for the agent to be ready before performing post-start actions.
+	if err := s.waitForAgent(ctx, ws); err != nil {
+		log.Printf("workspace %d: agent not ready after start: %v", ws.ID, err)
 	}
 
 	// Check and update the in-container agent if needed. This is best-effort:
@@ -608,7 +644,7 @@ func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (str
 	if err != nil {
 		return "", "", fmt.Errorf("getting container IP: %w", err)
 	}
-	return fmt.Sprintf("%s:%d", ip, agent.DefaultPort), ws.AgentToken, nil
+	return fmt.Sprintf("%s:%d", ip, s.agentPort), ws.AgentToken, nil
 }
 
 // WorkspaceInfo holds combined info about a workspace's agent and container.
@@ -634,7 +670,7 @@ func (s *service) Info(ctx context.Context, userID, workspaceID int64) (*Workspa
 	// Fetch agent version
 	ip, err := s.container.GetIP(ctx, ws.ContainerID)
 	if err == nil {
-		c := agent.NewClient(ip, agent.DefaultPort, ws.AgentToken)
+		c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
 		if v, verr := c.Version(ctx); verr == nil {
 			info.AgentVersion = v
 		}
