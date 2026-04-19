@@ -543,12 +543,23 @@ func (c *Client) GitAction(ctx context.Context, req GitActionRequest) (*GitActio
 	return &result, nil
 }
 
+// AgentError represents an error response from the workspace agent,
+// preserving the HTTP status code so callers can forward it appropriately.
+type AgentError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *AgentError) Error() string {
+	return fmt.Sprintf("agent error (%d): %s", e.StatusCode, e.Message)
+}
+
 func parseError(resp *http.Response) error {
 	var errResp struct {
 		Error string `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
-		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+		return &AgentError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("unexpected status %d", resp.StatusCode)}
 	}
-	return fmt.Errorf("agent error (%d): %s", resp.StatusCode, errResp.Error)
+	return &AgentError{StatusCode: resp.StatusCode, Message: errResp.Error}
 }

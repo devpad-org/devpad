@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/auth"
 )
 
@@ -494,6 +495,11 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, ErrNotRunning) {
 		writeError(w, http.StatusConflict, "workspace is not running")
+		return
+	}
+	var agentErr *agent.AgentError
+	if errors.As(err, &agentErr) {
+		writeError(w, agentErr.StatusCode, agentErr.Message)
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "internal server error")
