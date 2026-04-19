@@ -109,7 +109,7 @@ func (s *service) ResolveContainerAddr(ctx context.Context, workspaceID int64) (
 		return "", "", ErrWorkspaceDown
 	}
 
-	ip, err := s.container.GetIP(ctx, ws.ContainerID)
+	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
 	if err != nil {
 		return "", "", fmt.Errorf("getting container IP: %w", err)
 	}

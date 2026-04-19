@@ -23,7 +23,7 @@ type mockContainerManager struct {
 	ipOverride    string // if set, GetIP returns this instead of the default
 }
 
-func (m *mockContainerManager) Create(_ context.Context, name, volumeName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
+func (m *mockContainerManager) Create(_ context.Context, name, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
 	m.lastCreatedID = "mock-container-" + name
 	return m.lastCreatedID, nil
 }
@@ -34,7 +34,7 @@ func (m *mockContainerManager) Remove(_ context.Context, _ string) error  { retu
 func (m *mockContainerManager) UpdateResources(_ context.Context, _ string, _, _ int64) error {
 	return nil
 }
-func (m *mockContainerManager) GetIP(_ context.Context, _ string) (string, error) {
+func (m *mockContainerManager) GetIP(_ context.Context, _, _ string) (string, error) {
 	if m.ipOverride != "" {
 		return m.ipOverride, nil
 	}
@@ -46,8 +46,10 @@ func (m *mockContainerManager) GetEnv(_ context.Context, _ string) ([]string, er
 func (m *mockContainerManager) Stats(_ context.Context, _ string) (*container.ContainerStats, error) {
 	return &container.ContainerStats{}, nil
 }
-func (m *mockContainerManager) CreateVolume(_ context.Context, _ string) error { return nil }
-func (m *mockContainerManager) RemoveVolume(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) CreateNetwork(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) RemoveNetwork(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) CreateVolume(_ context.Context, _ string) error  { return nil }
+func (m *mockContainerManager) RemoveVolume(_ context.Context, _ string) error  { return nil }
 func (m *mockContainerManager) Exec(_ context.Context, _ string, _ []string) (string, error) {
 	return "mock-exec-id", nil
 }
@@ -94,6 +96,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('creating','running','stopped')),
 		container_id TEXT NOT NULL DEFAULT '',
 		volume_name TEXT NOT NULL DEFAULT '',
+		network_name TEXT NOT NULL DEFAULT '',
 		agent_token TEXT NOT NULL DEFAULT '',
 		memory_limit INTEGER NOT NULL DEFAULT 2147483648,
 		nano_cpus INTEGER NOT NULL DEFAULT 2000000000,

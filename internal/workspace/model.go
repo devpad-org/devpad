@@ -39,6 +39,7 @@ type Workspace struct {
 	Status      Status
 	ContainerID string
 	VolumeName  string
+	NetworkName string
 	AgentToken  string
 	MemoryLimit int64 // bytes; 0 means use default
 	NanoCPUs    int64 // billionths of a CPU; 0 means use default

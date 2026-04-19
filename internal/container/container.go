@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 )
@@ -36,15 +37,17 @@ type ContainerStats struct {
 
 // Manager handles Docker container lifecycle operations.
 type Manager interface {
-	Create(ctx context.Context, name, volumeName string, env []string, memoryLimit, nanoCPUs int64) (containerID string, err error)
+	Create(ctx context.Context, name, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (containerID string, err error)
 	Start(ctx context.Context, containerID string) error
 	Stop(ctx context.Context, containerID string) error
 	Restart(ctx context.Context, containerID string) error
 	Remove(ctx context.Context, containerID string) error
 	UpdateResources(ctx context.Context, containerID string, memoryLimit, nanoCPUs int64) error
-	GetIP(ctx context.Context, containerID string) (string, error)
+	GetIP(ctx context.Context, containerID, networkName string) (string, error)
 	GetEnv(ctx context.Context, containerID string) ([]string, error)
 	Stats(ctx context.Context, containerID string) (*ContainerStats, error)
+	CreateNetwork(ctx context.Context, name string) error
+	RemoveNetwork(ctx context.Context, name string) error
 	CreateVolume(ctx context.Context, name string) error
 	RemoveVolume(ctx context.Context, name string) error
 	Exec(ctx context.Context, containerID string, cmd []string) (execID string, err error)
@@ -74,7 +77,7 @@ func NewManager() (Manager, error) {
 	return &manager{cli: cli}, nil
 }
 
-func (m *manager) Create(ctx context.Context, name, volumeName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
+func (m *manager) Create(ctx context.Context, name, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
 	containerName := fmt.Sprintf("devpad-ws-%s", name)
 
 	var mounts []mount.Mount
@@ -95,6 +98,15 @@ func (m *manager) Create(ctx context.Context, name, volumeName string, env []str
 		},
 	}
 
+	var networkingConfig *network.NetworkingConfig
+	if networkName != "" {
+		networkingConfig = &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				networkName: {},
+			},
+		}
+	}
+
 	resp, err := m.cli.ContainerCreate(ctx,
 		&container.Config{
 			Image: WorkspaceImage,
@@ -105,7 +117,7 @@ func (m *manager) Create(ctx context.Context, name, volumeName string, env []str
 			},
 		},
 		hostConfig,
-		nil, nil, containerName,
+		networkingConfig, nil, containerName,
 	)
 	if err != nil {
 		return "", fmt.Errorf("creating container: %w", err)
@@ -216,11 +228,20 @@ func (m *manager) ExecResize(ctx context.Context, execID string, height, width u
 	return nil
 }
 
-func (m *manager) GetIP(ctx context.Context, containerID string) (string, error) {
+func (m *manager) GetIP(ctx context.Context, containerID, networkName string) (string, error) {
 	info, err := m.cli.ContainerInspect(ctx, containerID)
 	if err != nil {
 		return "", fmt.Errorf("inspecting container: %w", err)
 	}
+
+	// If a custom network is specified, look up the IP on that network.
+	if networkName != "" && info.NetworkSettings.Networks != nil {
+		if ep, ok := info.NetworkSettings.Networks[networkName]; ok && ep.IPAddress != "" {
+			return ep.IPAddress, nil
+		}
+	}
+
+	// Fall back to the default bridge IP for backward compatibility.
 	ip := info.NetworkSettings.IPAddress
 	if ip == "" {
 		return "", fmt.Errorf("container has no IP address")
@@ -326,6 +347,26 @@ func (m *manager) Stats(ctx context.Context, containerID string) (*ContainerStat
 		BlockWrite:    blockWrite,
 		PIDs:          raw.PidsStats.Current,
 	}, nil
+}
+
+func (m *manager) CreateNetwork(ctx context.Context, name string) error {
+	_, err := m.cli.NetworkCreate(ctx, name, network.CreateOptions{
+		Driver: "bridge",
+		Labels: map[string]string{
+			"devpad.managed": "true",
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("creating network: %w", err)
+	}
+	return nil
+}
+
+func (m *manager) RemoveNetwork(ctx context.Context, name string) error {
+	if err := m.cli.NetworkRemove(ctx, name); err != nil {
+		return fmt.Errorf("removing network: %w", err)
+	}
+	return nil
 }
 
 func (m *manager) CreateVolume(ctx context.Context, name string) error {

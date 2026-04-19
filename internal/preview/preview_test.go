@@ -20,7 +20,7 @@ import (
 // mockContainerManager is a test double for container.Manager.
 type mockContainerManager struct{}
 
-func (m *mockContainerManager) Create(_ context.Context, _, _ string, _ []string, _, _ int64) (string, error) {
+func (m *mockContainerManager) Create(_ context.Context, _, _, _ string, _ []string, _, _ int64) (string, error) {
 	return "mock-container", nil
 }
 func (m *mockContainerManager) Start(_ context.Context, _ string) error   { return nil }
@@ -30,7 +30,7 @@ func (m *mockContainerManager) Remove(_ context.Context, _ string) error  { retu
 func (m *mockContainerManager) UpdateResources(_ context.Context, _ string, _, _ int64) error {
 	return nil
 }
-func (m *mockContainerManager) GetIP(_ context.Context, _ string) (string, error) {
+func (m *mockContainerManager) GetIP(_ context.Context, _, _ string) (string, error) {
 	return "172.17.0.2", nil
 }
 func (m *mockContainerManager) GetEnv(_ context.Context, _ string) ([]string, error) {
@@ -39,8 +39,10 @@ func (m *mockContainerManager) GetEnv(_ context.Context, _ string) ([]string, er
 func (m *mockContainerManager) Stats(_ context.Context, _ string) (*container.ContainerStats, error) {
 	return &container.ContainerStats{}, nil
 }
-func (m *mockContainerManager) CreateVolume(_ context.Context, _ string) error { return nil }
-func (m *mockContainerManager) RemoveVolume(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) CreateNetwork(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) RemoveNetwork(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) CreateVolume(_ context.Context, _ string) error  { return nil }
+func (m *mockContainerManager) RemoveVolume(_ context.Context, _ string) error  { return nil }
 func (m *mockContainerManager) Exec(_ context.Context, _ string, _ []string) (string, error) {
 	return "", nil
 }
@@ -87,6 +89,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('creating','running','stopped')),
 		container_id TEXT NOT NULL DEFAULT '',
 		volume_name TEXT NOT NULL DEFAULT '',
+		network_name TEXT NOT NULL DEFAULT '',
 		agent_token TEXT NOT NULL DEFAULT '',
 		memory_limit INTEGER NOT NULL DEFAULT 2147483648,
 		nano_cpus INTEGER NOT NULL DEFAULT 2000000000,

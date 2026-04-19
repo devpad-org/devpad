@@ -29,8 +29,8 @@ func NewRepository(db *sql.DB) Repository {
 func (r *repository) Create(ctx context.Context, ws *Workspace) error {
 	now := time.Now()
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO workspaces (user_id, name, description, status, container_id, volume_name, agent_token, memory_limit, nano_cpus, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ws.UserID, ws.Name, ws.Description, ws.Status, ws.ContainerID, ws.VolumeName, ws.AgentToken, ws.MemoryLimit, ws.NanoCPUs, now, now,
+		`INSERT INTO workspaces (user_id, name, description, status, container_id, volume_name, network_name, agent_token, memory_limit, nano_cpus, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ws.UserID, ws.Name, ws.Description, ws.Status, ws.ContainerID, ws.VolumeName, ws.NetworkName, ws.AgentToken, ws.MemoryLimit, ws.NanoCPUs, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting workspace: %w", err)
@@ -50,9 +50,9 @@ func (r *repository) Create(ctx context.Context, ws *Workspace) error {
 func (r *repository) GetByID(ctx context.Context, id int64) (*Workspace, error) {
 	ws := &Workspace{}
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, user_id, name, description, status, container_id, volume_name, agent_token, memory_limit, nano_cpus, created_at, updated_at FROM workspaces WHERE id = ?`,
+		`SELECT id, user_id, name, description, status, container_id, volume_name, network_name, agent_token, memory_limit, nano_cpus, created_at, updated_at FROM workspaces WHERE id = ?`,
 		id,
-	).Scan(&ws.ID, &ws.UserID, &ws.Name, &ws.Description, &ws.Status, &ws.ContainerID, &ws.VolumeName, &ws.AgentToken, &ws.MemoryLimit, &ws.NanoCPUs, &ws.CreatedAt, &ws.UpdatedAt)
+	).Scan(&ws.ID, &ws.UserID, &ws.Name, &ws.Description, &ws.Status, &ws.ContainerID, &ws.VolumeName, &ws.NetworkName, &ws.AgentToken, &ws.MemoryLimit, &ws.NanoCPUs, &ws.CreatedAt, &ws.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -64,7 +64,7 @@ func (r *repository) GetByID(ctx context.Context, id int64) (*Workspace, error) 
 
 func (r *repository) ListByUserID(ctx context.Context, userID int64) ([]*Workspace, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, user_id, name, description, status, container_id, volume_name, agent_token, memory_limit, nano_cpus, created_at, updated_at FROM workspaces WHERE user_id = ? ORDER BY created_at DESC`,
+		`SELECT id, user_id, name, description, status, container_id, volume_name, network_name, agent_token, memory_limit, nano_cpus, created_at, updated_at FROM workspaces WHERE user_id = ? ORDER BY created_at DESC`,
 		userID,
 	)
 	if err != nil {
@@ -75,7 +75,7 @@ func (r *repository) ListByUserID(ctx context.Context, userID int64) ([]*Workspa
 	var workspaces []*Workspace
 	for rows.Next() {
 		ws := &Workspace{}
-		if err := rows.Scan(&ws.ID, &ws.UserID, &ws.Name, &ws.Description, &ws.Status, &ws.ContainerID, &ws.VolumeName, &ws.AgentToken, &ws.MemoryLimit, &ws.NanoCPUs, &ws.CreatedAt, &ws.UpdatedAt); err != nil {
+		if err := rows.Scan(&ws.ID, &ws.UserID, &ws.Name, &ws.Description, &ws.Status, &ws.ContainerID, &ws.VolumeName, &ws.NetworkName, &ws.AgentToken, &ws.MemoryLimit, &ws.NanoCPUs, &ws.CreatedAt, &ws.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning workspace: %w", err)
 		}
 		workspaces = append(workspaces, ws)
@@ -88,7 +88,7 @@ func (r *repository) ListByUserID(ctx context.Context, userID int64) ([]*Workspa
 
 func (r *repository) ListAll(ctx context.Context) ([]*Workspace, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, user_id, name, description, status, container_id, volume_name, agent_token, memory_limit, nano_cpus, created_at, updated_at FROM workspaces ORDER BY created_at DESC`,
+		`SELECT id, user_id, name, description, status, container_id, volume_name, network_name, agent_token, memory_limit, nano_cpus, created_at, updated_at FROM workspaces ORDER BY created_at DESC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing all workspaces: %w", err)
@@ -98,7 +98,7 @@ func (r *repository) ListAll(ctx context.Context) ([]*Workspace, error) {
 	var workspaces []*Workspace
 	for rows.Next() {
 		ws := &Workspace{}
-		if err := rows.Scan(&ws.ID, &ws.UserID, &ws.Name, &ws.Description, &ws.Status, &ws.ContainerID, &ws.VolumeName, &ws.AgentToken, &ws.MemoryLimit, &ws.NanoCPUs, &ws.CreatedAt, &ws.UpdatedAt); err != nil {
+		if err := rows.Scan(&ws.ID, &ws.UserID, &ws.Name, &ws.Description, &ws.Status, &ws.ContainerID, &ws.VolumeName, &ws.NetworkName, &ws.AgentToken, &ws.MemoryLimit, &ws.NanoCPUs, &ws.CreatedAt, &ws.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning workspace: %w", err)
 		}
 		workspaces = append(workspaces, ws)
@@ -112,8 +112,8 @@ func (r *repository) ListAll(ctx context.Context) ([]*Workspace, error) {
 func (r *repository) Update(ctx context.Context, ws *Workspace) error {
 	now := time.Now()
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE workspaces SET name = ?, description = ?, status = ?, container_id = ?, volume_name = ?, agent_token = ?, memory_limit = ?, nano_cpus = ?, updated_at = ? WHERE id = ?`,
-		ws.Name, ws.Description, ws.Status, ws.ContainerID, ws.VolumeName, ws.AgentToken, ws.MemoryLimit, ws.NanoCPUs, now, ws.ID,
+		`UPDATE workspaces SET name = ?, description = ?, status = ?, container_id = ?, volume_name = ?, network_name = ?, agent_token = ?, memory_limit = ?, nano_cpus = ?, updated_at = ? WHERE id = ?`,
+		ws.Name, ws.Description, ws.Status, ws.ContainerID, ws.VolumeName, ws.NetworkName, ws.AgentToken, ws.MemoryLimit, ws.NanoCPUs, now, ws.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("updating workspace: %w", err)

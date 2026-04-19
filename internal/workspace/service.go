@@ -82,7 +82,7 @@ func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*age
 	if ws.ContainerID == "" || ws.Status != StatusRunning {
 		return nil, ErrNotRunning
 	}
-	ip, err := s.container.GetIP(ctx, ws.ContainerID)
+	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
 	if err != nil {
 		return nil, fmt.Errorf("getting container IP: %w", err)
 	}
@@ -93,7 +93,7 @@ func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*age
 // to accept requests. It uses a 30-second timeout to avoid hanging forever if
 // the container is broken.
 func (s *service) waitForAgent(ctx context.Context, ws *Workspace) error {
-	ip, err := s.container.GetIP(ctx, ws.ContainerID)
+	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
 	if err != nil {
 		return fmt.Errorf("getting container IP: %w", err)
 	}
@@ -117,7 +117,7 @@ func (s *service) ensureAgentUpdated(ctx context.Context, ws *Workspace) error {
 		return nil
 	}
 
-	ip, err := s.container.GetIP(ctx, ws.ContainerID)
+	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
 	if err != nil {
 		return fmt.Errorf("getting container IP for update check: %w", err)
 	}
@@ -178,8 +178,15 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 	}
 
 	// Use the workspace ID for Docker resource names — stable and unique.
+	networkName := fmt.Sprintf("devpad-net-%d", ws.ID)
+	if err := s.container.CreateNetwork(ctx, networkName); err != nil {
+		_ = s.repo.Delete(ctx, ws.ID)
+		return nil, fmt.Errorf("creating network: %w", err)
+	}
+
 	volumeName := fmt.Sprintf("devpad-vol-%d", ws.ID)
 	if err := s.container.CreateVolume(ctx, volumeName); err != nil {
+		_ = s.container.RemoveNetwork(ctx, networkName)
 		_ = s.repo.Delete(ctx, ws.ID)
 		return nil, fmt.Errorf("creating volume: %w", err)
 	}
@@ -187,9 +194,10 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 	containerEnv := []string{
 		fmt.Sprintf("AGENT_AUTH_TOKEN=%s", agentToken),
 	}
-	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), volumeName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
+	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), volumeName, networkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
 	if err != nil {
 		_ = s.container.RemoveVolume(ctx, volumeName)
+		_ = s.container.RemoveNetwork(ctx, networkName)
 		_ = s.repo.Delete(ctx, ws.ID)
 		return nil, fmt.Errorf("creating container: %w", err)
 	}
@@ -197,6 +205,7 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 	if err := s.container.Start(ctx, containerID); err != nil {
 		_ = s.container.Remove(ctx, containerID)
 		_ = s.container.RemoveVolume(ctx, volumeName)
+		_ = s.container.RemoveNetwork(ctx, networkName)
 		_ = s.repo.Delete(ctx, ws.ID)
 		return nil, fmt.Errorf("starting container: %w", err)
 	}
@@ -204,10 +213,12 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 	ws.Status = StatusRunning
 	ws.ContainerID = containerID
 	ws.VolumeName = volumeName
+	ws.NetworkName = networkName
 	if err := s.repo.Update(ctx, ws); err != nil {
 		_ = s.container.Stop(ctx, containerID)
 		_ = s.container.Remove(ctx, containerID)
 		_ = s.container.RemoveVolume(ctx, volumeName)
+		_ = s.container.RemoveNetwork(ctx, networkName)
 		_ = s.repo.Delete(ctx, ws.ID)
 		return nil, fmt.Errorf("updating workspace: %w", err)
 	}
@@ -317,6 +328,13 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 		}
 	}
 
+	// Remove the workspace network
+	if ws.NetworkName != "" {
+		if err := s.container.RemoveNetwork(ctx, ws.NetworkName); err != nil {
+			return fmt.Errorf("removing network: %w", err)
+		}
+	}
+
 	if err := s.repo.Delete(ctx, ws.ID); err != nil {
 		return fmt.Errorf("deleting workspace: %w", err)
 	}
@@ -412,7 +430,7 @@ func (s *service) ensureContainerHasToken(ctx context.Context, ws *Workspace) er
 	containerEnv := []string{
 		fmt.Sprintf("AGENT_AUTH_TOKEN=%s", ws.AgentToken),
 	}
-	newID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.VolumeName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
+	newID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.VolumeName, ws.NetworkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
 	if err != nil {
 		return fmt.Errorf("creating replacement container: %w", err)
 	}
@@ -640,7 +658,7 @@ func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (str
 	if ws.ContainerID == "" || ws.Status != StatusRunning {
 		return "", "", ErrNotRunning
 	}
-	ip, err := s.container.GetIP(ctx, ws.ContainerID)
+	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
 	if err != nil {
 		return "", "", fmt.Errorf("getting container IP: %w", err)
 	}
@@ -668,7 +686,7 @@ func (s *service) Info(ctx context.Context, userID, workspaceID int64) (*Workspa
 	}
 
 	// Fetch agent version
-	ip, err := s.container.GetIP(ctx, ws.ContainerID)
+	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
 	if err == nil {
 		c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
 		if v, verr := c.Version(ctx); verr == nil {
