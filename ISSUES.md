@@ -4,57 +4,11 @@ Comprehensive review covering security flaws, bugs, architecture issues, and cod
 
 ---
 
-## Critical
-
-### 1. Git Flag Injection via Unsanitized Inputs
-
-**File:** `cmd/agent/git.go`
-
-User-supplied `files`, `branch`, `remote`, `userName`, and `userEmail` values are passed directly to `exec.CommandContext("git", args...)` with no validation. While `exec.Command` does not invoke a shell (so `; rm -rf /` won't work), Git accepts flags in argument positions, enabling flag injection:
-
-- **Branch/remote flag injection:** A user could submit `branch: "--upload-pack=malicious"` for checkout, or `remote: "--receive-pack=cmd"` for push. Git interprets these as flags.
-- **`set-config` arbitrary key injection:** `userName` like `"--file=/etc/something"` could cause `git config` to write to arbitrary files.
-- **File path traversal:** `files` values like `../../etc/passwd` are passed to `git add --`, `git checkout --`, etc. While `--` prevents flag injection, git may still operate on files outside the workspace if symlinks exist.
-
-```go
-// Example: branch = "--upload-pack=malicious-command"
-out, err = gitOutput(ctx, "checkout", req.Branch)  // becomes: git checkout --upload-pack=malicious-command
-```
-
-**Fix:** Validate all user inputs before passing to git:
-- Branch/remote names: reject values starting with `-`
-- File paths: reject values containing `..` or starting with `/`
-- UserName/UserEmail: reject values starting with `-`
-
----
-
-## High
-
-### 2. No Request Body Size Limit on Agent Git Endpoint
-
-**File:** `cmd/agent/git.go:172`
-
-`handleGitAction` decodes the request body with `json.NewDecoder(r.Body).Decode(&req)` without any size limit. The main server has a global `MaxBytesReader` middleware, but the agent is a separate HTTP server inside the container with no such middleware. An attacker with network access to the agent can send a multi-gigabyte JSON payload to exhaust memory (DoS).
-
-**Fix:** Use `http.MaxBytesReader` or `io.LimitReader` before decoding, or add a global body-size middleware to the agent.
-
----
-
 ## Medium
 
-### 3. No Authentication on Agent HTTP Server
+### 1. Git Log `count` Parameter Not Validated on Agent
 
-**File:** `cmd/agent/main.go`
-
-The agent HTTP server has zero authentication. Any process that can reach port 9100 on the container network can execute arbitrary git commands, read/write files, and run shell commands. If Docker network isolation is misconfigured, one user's container could reach another's agent.
-
-**Fix:** Add a shared secret/token generated at container creation time and required via header on every agent request.
-
----
-
-### 4. Git Log `count` Parameter Not Validated on Agent
-
-**File:** `cmd/agent/git.go:97-100`
+**File:** `cmd/agent/git.go`
 
 The `count` query param for `handleGitLog` is passed directly to `git log -n <count>` with no validation on the agent side. While the main server handler validates `count` to `[1, 200]`, the agent is a separately-exposed service that can be called directly.
 
@@ -72,7 +26,7 @@ A value like `"99999999"` could cause excessive output; a value starting with `-
 
 ---
 
-### 5. AI Provider API Keys Stored in Plaintext
+### 2. AI Provider API Keys Stored in Plaintext
 
 **File:** `internal/ai/repository.go`
 
@@ -82,7 +36,7 @@ API keys for AI providers (Mistral, MiniMax, etc.) are stored directly in the SQ
 
 ---
 
-### 6. SameSite Lax Allows GET-Based CSRF
+### 3. SameSite Lax Allows GET-Based CSRF
 
 **File:** `internal/auth/handler.go:111`
 
@@ -96,7 +50,7 @@ SameSite: http.SameSiteLaxMode,
 
 ---
 
-### 7. Preview Cookie Secret Is Ephemeral
+### 4. Preview Cookie Secret Is Ephemeral
 
 **File:** `internal/preview/handler.go:33-36`
 
@@ -117,7 +71,7 @@ The preview cookie signing secret is regenerated on every server restart. This m
 
 ---
 
-### 8. Dead Code: `pullImageIfNeeded`
+### 5. Dead Code: `pullImageIfNeeded`
 
 **File:** `internal/container/container.go:161-179`
 
@@ -141,45 +95,7 @@ This function is fully implemented but never called. The `Create` method assumes
 
 ## Bugs
 
-### 9. `parseGitStatus` Misclassifies Dual-Status Files
-
-**File:** `cmd/agent/git.go:298-339`
-
-When a file is modified, staged, then modified again, git reports e.g. `MM file.txt`. The current parser sets `Staged = true` based solely on the index status byte and emits only one entry. The unstaged working-tree modification is invisible to the user — the file appears only in the "Staged Changes" section.
-
-```go
-// Current: emits ONE entry with Staged=true for "MM file.txt"
-if indexStatus != ' ' && indexStatus != '?' {
-    entry.Staged = true
-}
-```
-
-**Fix:** When both index and work-tree statuses are non-space/non-`?`, emit two entries — one with `Staged: true` for the index change, one with `Staged: false` for the work-tree change.
-
----
-
-### 10. Swallowed Errors in Git `set-config` Action
-
-**File:** `cmd/agent/git.go:228-233`
-
-```go
-case "set-config":
-    if req.UserName != "" {
-        _, _ = gitOutput(ctx, "config", "user.name", req.UserName)
-    }
-    if req.UserEmail != "" {
-        _, _ = gitOutput(ctx, "config", "user.email", req.UserEmail)
-    }
-    out = "Git config updated"
-```
-
-Both errors are discarded. If setting the config fails (e.g., read-only `.gitconfig`), the user sees "Git config updated" but the config wasn't actually set. The subsequent commit will then fail with a confusing error about missing identity.
-
-**Fix:** Check and return errors from both `gitOutput` calls.
-
----
-
-### 11. `push` Without `--set-upstream` Fails on First Push
+### 6. `push` Without `--set-upstream` Fails on First Push
 
 **File:** `cmd/agent/git.go:240-248`
 
@@ -189,7 +105,7 @@ When a new branch is pushed for the first time, `git push origin` without `--set
 
 ---
 
-### 12. `discard` Action Silently Succeeds on Untracked Files
+### 7. `discard` Action Silently Succeeds on Untracked Files
 
 **File:** `cmd/agent/git.go:268-272`
 
@@ -211,32 +127,7 @@ case "discard":
 
 ## Code Quality
 
-### 13. `handleGitAction` Is a God Function
-
-**File:** `cmd/agent/git.go:170-283`
-
-A single handler with a giant `switch` on 10 action types violates single-responsibility. Each action has different validation requirements (e.g., `commit` needs a message, `checkout` needs a branch, `discard` needs files) but they all share one code path. This makes it easy to miss validation — and several are indeed missing.
-
-**Fix:** Split into per-action handler functions or at minimum a `map[string]actionHandler` dispatch pattern. Each action should define its own validation.
-
----
-
-### 14. `GitAction` Service Method Has 9 Parameters
-
-**File:** `internal/workspace/service.go:328`
-
-```go
-func (s *service) GitAction(ctx context.Context, userID, workspaceID int64, action string,
-    files []string, message, branch, remote, userName, userEmail string) (*agent.GitActionResult, error)
-```
-
-This is a pass-through of raw form fields with no domain modeling. The same 9-parameter signature is replicated across handler → service → agent client.
-
-**Fix:** Define a `GitActionRequest` struct and pass it through the layers.
-
----
-
-### 15. No Action Whitelist Validation on Server Side
+### 8. No Action Whitelist Validation on Server Side
 
 **File:** `internal/workspace/handler.go:417-460`
 
@@ -246,7 +137,7 @@ The workspace handler validates only that `action != ""` then blindly forwards i
 
 ---
 
-### 16. Agent Client Does Not Limit Git Response Body Size
+### 9. Agent Client Does Not Limit Git Response Body Size
 
 **File:** `internal/agent/client.go:338-475`
 
@@ -256,7 +147,7 @@ All Git response decoders (`json.NewDecoder(resp.Body).Decode(...)`) read unboun
 
 ---
 
-### 17. GitPanel 5-Second Polling With No Debounce
+### 10. GitPanel 5-Second Polling With No Debounce
 
 **File:** `frontend/src/components/ide/GitPanel.vue:276`
 
@@ -266,7 +157,7 @@ The panel polls `git status` every 5 seconds unconditionally, even when the IDE 
 
 ---
 
-### 18. `json.Marshal` Errors Swallowed in AI Streaming
+### 11. `json.Marshal` Errors Swallowed in AI Streaming
 
 **File:** `internal/ai/handler.go:145`
 
@@ -288,7 +179,7 @@ While `json.Marshal` rarely fails for simple structs, ignoring errors is a bad p
 
 ---
 
-### 19. File Upload Silently Truncated at 10MB
+### 12. File Upload Silently Truncated at 10MB
 
 **File:** `cmd/agent/filehandler.go:87`
 
@@ -312,7 +203,7 @@ if len(data) > maxSize {
 
 ---
 
-### 20. Terminal Resize Missing Upper Bounds
+### 13. Terminal Resize Missing Upper Bounds
 
 **File:** `cmd/agent/terminal.go:80`
 
@@ -332,7 +223,7 @@ if resize.Cols > 0 && resize.Rows > 0 && resize.Cols <= 500 && resize.Rows <= 50
 
 ---
 
-### 21. Watcher Event Deduplication Missing
+### 14. Watcher Event Deduplication Missing
 
 **File:** `cmd/agent/watcher.go`
 
@@ -348,7 +239,7 @@ case event := <-w.fsw.Events:
 
 ---
 
-### 22. Module-Level Singleton State in Router
+### 15. Module-Level Singleton State in Router
 
 **File:** `frontend/src/router/index.ts`
 
@@ -365,7 +256,7 @@ A module-level boolean controls one-time initialization in the navigation guard.
 
 ---
 
-### 23. No Request Body Size Limit on Workspace File Writes
+### 16. No Request Body Size Limit on Workspace File Writes
 
 **File:** `internal/workspace/handler.go` (HandleWriteFile)
 
@@ -385,28 +276,72 @@ The `Content` field is a string that could be arbitrarily large. The global `Max
 
 ## Summary
 
-| #  | Severity | Category | Issue | Status |
-|----|----------|----------|-------|--------|
-| 1  | Critical | Security | Git flag injection via unsanitized inputs | Fixed |
-| 2  | High     | Security | No request body size limit on agent git endpoint | Fixed |
-| 3  | Medium   | Security | No authentication on agent HTTP server | Fixed |
-| 4  | Medium   | Security | Git log `count` param not validated on agent | Open |
-| 5  | Medium   | Security | AI API keys stored in plaintext | Open |
-| 6  | Medium   | Security | SameSite Lax allows GET-based CSRF | Open |
-| 7  | Medium   | Security | Preview cookie secret is ephemeral | Open |
-| 8  | Medium   | Dead Code | `pullImageIfNeeded` never called | Open |
-| 9  | Medium   | Bug | `parseGitStatus` misclassifies dual-status files | Fixed |
-| 10 | Medium   | Bug | Swallowed errors in git `set-config` | Fixed |
-| 11 | Medium   | Bug | `push` without `--set-upstream` fails on first push | Open |
-| 12 | Low      | Bug | `discard` silently succeeds on untracked files | Open |
-| 13 | Low      | Code Quality | `handleGitAction` is a god function | Fixed |
-| 14 | Low      | Code Quality | `GitAction` service method has 9 parameters | Fixed |
-| 15 | Low      | Code Quality | No action whitelist on server side | Open |
-| 16 | Low      | Code Quality | Agent client unbounded git response bodies | Open |
-| 17 | Low      | Code Quality | GitPanel 5-second polling with no debounce | Open |
-| 18 | Low      | Code Quality | `json.Marshal` errors swallowed | Open |
-| 19 | Low      | Code Quality | File upload silently truncated at 10MB | Open |
-| 20 | Low      | Code Quality | Terminal resize missing upper bounds | Open |
-| 21 | Low      | Code Quality | Watcher event deduplication missing | Open |
-| 22 | Low      | Code Quality | Module-level singleton state in router | Open |
-| 23 | Low      | Code Quality | No request body size limit on file writes | Open |
+| #  | Severity | Category | Issue |
+|----|----------|----------|-------|
+| 1  | Medium   | Security | Git log `count` param not validated on agent |
+| 2  | Medium   | Security | AI API keys stored in plaintext |
+| 3  | Medium   | Security | SameSite Lax allows GET-based CSRF |
+| 4  | Medium   | Security | Preview cookie secret is ephemeral |
+| 5  | Medium   | Dead Code | `pullImageIfNeeded` never called |
+| 6  | Medium   | Bug | `push` without `--set-upstream` fails on first push |
+| 7  | Low      | Bug | `discard` silently succeeds on untracked files |
+| 8  | Low      | Code Quality | No action whitelist on server side |
+| 9  | Low      | Code Quality | Agent client unbounded git response bodies |
+| 10 | Low      | Code Quality | GitPanel 5-second polling with no debounce |
+| 11 | Low      | Code Quality | `json.Marshal` errors swallowed |
+| 12 | Low      | Code Quality | File upload silently truncated at 10MB |
+| 13 | Low      | Code Quality | Terminal resize missing upper bounds |
+| 14 | Low      | Code Quality | Watcher event deduplication missing |
+| 15 | Low      | Code Quality | Module-level singleton state in router |
+| 16 | Low      | Code Quality | No request body size limit on file writes |
+
+---
+
+## Feature: Workspace Database Services
+
+Allow users to attach database containers (Postgres, MySQL, MongoDB, CouchDB) to workspaces. Each workspace gets its own Docker network for isolation, with sidecar database containers started/stopped alongside the primary workspace container.
+
+### Phase 1: Workspace Network Isolation
+
+Create a per-workspace Docker network (`devpad-net-{ID}`) and attach the workspace container to it. All existing functionality continues working, but workspaces are now network-isolated from each other.
+
+**Changes:**
+- Add `CreateNetwork`, `RemoveNetwork`, `ConnectToNetwork` methods to the container `Manager` interface
+- Add `network_id` column to workspaces table (migration)
+- Update workspace create: create network first, attach workspace container
+- Update workspace delete: remove network after removing container
+- Update workspace start/stop: handle network reconnection
+
+**Status:** Not started
+
+---
+
+### Phase 2: Backend — Database Service Lifecycle
+
+Add a `workspace_services` table and full CRUD for attaching database containers to workspaces. Services are managed alongside the workspace lifecycle.
+
+**Changes:**
+- New migration: `workspace_services` table (id, workspace_id, service_type, container_id, volume_name, status, config)
+- New model, repository, and service layer for workspace services
+- Extend container manager with sidecar lifecycle methods
+- API endpoints: create/list/delete services for a workspace
+- Wire into workspace start/stop/delete to cascade to attached services
+- Inject connection info (host, port, default credentials) as env vars into workspace container
+
+**Supported service types:** `postgres`, `mysql`, `mongodb`, `couchdb`
+
+**Status:** Not started
+
+---
+
+### Phase 3: Frontend — Service Management UI
+
+Add UI for managing database services attached to a workspace.
+
+**Changes:**
+- Service picker in workspace create/edit modal (select DB type)
+- Service status display on workspace card or detail view
+- Connection info panel (host, port, credentials) visible from the IDE
+- Start/stop controls for individual services
+
+**Status:** Not started
