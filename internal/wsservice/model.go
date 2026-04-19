@@ -8,6 +8,8 @@ type ServiceType string
 const (
 	ServicePostgres ServiceType = "postgres"
 	ServiceMongoDB  ServiceType = "mongodb"
+	ServiceMariaDB  ServiceType = "mariadb"
+	ServiceCouchDB  ServiceType = "couchdb"
 )
 
 // ServiceStatus represents the lifecycle state of a service.
@@ -38,6 +40,18 @@ var DefaultConfigs = map[ServiceType]ServiceConfig{
 	ServiceMongoDB: {
 		Image:       "mongo:8",
 		Port:        27017,
+		DefaultUser: "devpad",
+		DefaultDB:   "devpad",
+	},
+	ServiceMariaDB: {
+		Image:       "mariadb:11",
+		Port:        3306,
+		DefaultUser: "devpad",
+		DefaultDB:   "devpad",
+	},
+	ServiceCouchDB: {
+		Image:       "couchdb:3",
+		Port:        5984,
 		DefaultUser: "devpad",
 		DefaultDB:   "devpad",
 	},

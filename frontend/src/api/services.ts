@@ -11,7 +11,7 @@ export interface ServiceConfig {
 export interface WorkspaceService {
   id: number
   workspaceId: number
-  serviceType: 'postgres' | 'mongodb'
+  serviceType: 'postgres' | 'mongodb' | 'mariadb' | 'couchdb'
   status: 'running' | 'stopped'
   config: ServiceConfig
   createdAt: string

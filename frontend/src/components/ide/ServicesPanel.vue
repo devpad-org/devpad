@@ -20,6 +20,8 @@ const togglingId = ref<number | null>(null)
 const serviceTypes = [
   { value: 'postgres', label: 'PostgreSQL', icon: '🐘' },
   { value: 'mongodb', label: 'MongoDB', icon: '🍃' },
+  { value: 'mariadb', label: 'MariaDB', icon: '🐬' },
+  { value: 'couchdb', label: 'CouchDB', icon: '🛋️' },
 ]
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -108,6 +110,12 @@ function connectionString(svc: WorkspaceService): string {
   }
   if (svc.serviceType === 'mongodb') {
     return `mongodb://${c.defaultUser}:${c.defaultPass}@${host}:${c.port}/${c.defaultDb}?authSource=admin`
+  }
+  if (svc.serviceType === 'mariadb') {
+    return `mysql://${c.defaultUser}:${c.defaultPass}@${host}:${c.port}/${c.defaultDb}`
+  }
+  if (svc.serviceType === 'couchdb') {
+    return `http://${c.defaultUser}:${c.defaultPass}@${host}:${c.port}/${c.defaultDb}`
   }
   return ''
 }

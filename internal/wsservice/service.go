@@ -302,6 +302,18 @@ func sidecarEnv(serviceType ServiceType, cfg ServiceConfig) []string {
 			fmt.Sprintf("MONGO_INITDB_ROOT_PASSWORD=%s", cfg.DefaultPass),
 			fmt.Sprintf("MONGO_INITDB_DATABASE=%s", cfg.DefaultDB),
 		}
+	case ServiceMariaDB:
+		return []string{
+			fmt.Sprintf("MARIADB_USER=%s", cfg.DefaultUser),
+			fmt.Sprintf("MARIADB_PASSWORD=%s", cfg.DefaultPass),
+			fmt.Sprintf("MARIADB_DATABASE=%s", cfg.DefaultDB),
+			fmt.Sprintf("MARIADB_ROOT_PASSWORD=%s", cfg.DefaultPass),
+		}
+	case ServiceCouchDB:
+		return []string{
+			fmt.Sprintf("COUCHDB_USER=%s", cfg.DefaultUser),
+			fmt.Sprintf("COUCHDB_PASSWORD=%s", cfg.DefaultPass),
+		}
 	default:
 		return nil
 	}
