@@ -5,7 +5,7 @@ import LoginView from '@/views/LoginView.vue'
 import SetupView from '@/views/SetupView.vue'
 import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
-import IdeView from '@/views/IdeView.vue'
+const IdeView = () => import('@/views/IdeView.vue')
 
 export const router = createRouter({
   history: createWebHistory(),

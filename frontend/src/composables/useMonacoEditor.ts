@@ -1,14 +1,28 @@
 import { ref, shallowRef, reactive, computed, onBeforeUnmount, watch, type Ref } from 'vue'
-import * as monaco from 'monaco-editor'
+import type * as MonacoType from 'monaco-editor'
+
+let monaco: typeof MonacoType | null = null
+let monacoPromise: Promise<typeof MonacoType> | null = null
+
+async function loadMonaco(): Promise<typeof MonacoType> {
+  if (monaco) return monaco
+  if (!monacoPromise) {
+    monacoPromise = import('monaco-editor').then((m) => {
+      monaco = m
+      return m
+    })
+  }
+  return monacoPromise
+}
 
 // Register Devpad dark theme once
 let themeRegistered = false
 
-function registerDevpadTheme() {
+function registerDevpadTheme(m: typeof MonacoType) {
   if (themeRegistered) return
   themeRegistered = true
 
-  monaco.editor.defineTheme('devpad-dark', {
+  m.editor.defineTheme('devpad-dark', {
     base: 'vs-dark',
     inherit: true,
     rules: [
@@ -114,21 +128,36 @@ export function useMonacoEditor(
     readOnly?: boolean
   },
 ) {
-  const editorInstance = shallowRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+  const editorInstance = shallowRef<MonacoType.editor.IStandaloneCodeEditor | null>(null)
   const isDirty = ref(false)
+  const isLoading = ref(true)
 
   // Per-file models and view states
-  const models = new Map<string, monaco.editor.ITextModel>()
-  const viewStates = new Map<string, monaco.editor.ICodeEditorViewState | null>()
+  const models = new Map<string, MonacoType.editor.ITextModel>()
+  const viewStates = new Map<string, MonacoType.editor.ICodeEditorViewState | null>()
   const dirtyFiles = reactive(new Set<string>())
   let activeFilePath: string | null = null
 
-  registerDevpadTheme()
+  let editorReady: Promise<void> | null = null
+  let resolveEditorReady: (() => void) | null = null
 
-  function createEditor() {
+  function initEditorReadyPromise() {
+    editorReady = new Promise<void>((resolve) => {
+      resolveEditorReady = resolve
+    })
+  }
+  initEditorReadyPromise()
+
+  async function createEditor() {
     if (!container.value || editorInstance.value) return
 
-    editorInstance.value = monaco.editor.create(container.value, {
+    const m = await loadMonaco()
+    registerDevpadTheme(m)
+
+    if (!container.value) return // container may have been removed during await
+    isLoading.value = false
+
+    editorInstance.value = m.editor.create(container.value, {
       theme: 'devpad-dark',
       readOnly: options?.readOnly ?? false,
       automaticLayout: true,
@@ -174,11 +203,14 @@ export function useMonacoEditor(
       }
       isDirty.value = true
     })
+
+    resolveEditorReady?.()
   }
 
   /** Open or update a file's model and switch the editor to it */
-  function setContent(content: string, filePath: string) {
-    if (!editorInstance.value) return
+  async function setContent(content: string, filePath: string) {
+    await editorReady
+    if (!editorInstance.value || !monaco) return
 
     // Save view state of the previous file
     if (activeFilePath && activeFilePath !== filePath) {
@@ -300,6 +332,7 @@ export function useMonacoEditor(
   return {
     editor: editorInstance,
     isDirty,
+    isLoading,
     hasDirtyFiles,
     createEditor,
     setContent,
