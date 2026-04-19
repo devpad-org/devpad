@@ -234,6 +234,36 @@ const isThinking = computed(() => {
   return last.segments.length === 0
 })
 
+// activityStatus describes what the agent is currently doing during streaming.
+const activityStatus = computed<string | null>(() => {
+  if (!streaming.value) return null
+  const last = messages.value[messages.value.length - 1]
+  if (!last || last.role !== 'assistant') return null
+  if (last.segments.length === 0) return null // isThinking handles this case
+
+  const segs = last.segments
+  const lastSeg = segs[segs.length - 1]
+
+  // A tool is running (no result yet)
+  if (lastSeg.type === 'tool' && !(lastSeg as ToolSegment).result) {
+    return `Running ${lastSeg.name}…`
+  }
+
+  // Waiting for user approval
+  if (lastSeg.type === 'approval' && (lastSeg as ApprovalSegment).status === 'pending') {
+    return 'Waiting for approval…'
+  }
+
+  // Last segment is a completed tool or has a result — the LLM is generating the next response
+  if (lastSeg.type === 'tool' && (lastSeg as ToolSegment).result) {
+    return 'Thinking…'
+  }
+
+  // Last segment is text but we're still streaming — LLM is still writing
+  // No status needed since the user can see text arriving
+  return null
+})
+
 function scrollToBottom() {
   if (chatBody.value) {
     chatBody.value.scrollTop = chatBody.value.scrollHeight
@@ -365,6 +395,10 @@ function scrollToBottom() {
             <span class="thinking-dot" />
             <span class="thinking-dot" />
             <span class="thinking-dot" />
+          </div>
+          <div v-else-if="i === messages.length - 1 && activityStatus" class="activity-status">
+            <span class="activity-spinner" />
+            <span class="activity-label">{{ activityStatus }}</span>
           </div>
         </div>
         <div v-else class="msg-content">{{ msg.content }}</div>
@@ -962,6 +996,30 @@ function scrollToBottom() {
     transform: scale(1);
     background: var(--accent-blue);
   }
+}
+
+/* Activity status indicator — shown during tool execution and between LLM calls */
+.activity-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 2px;
+}
+
+.activity-spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid rgba(124, 58, 237, 0.2);
+  border-top-color: var(--accent-purple);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.activity-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 @keyframes spin {
