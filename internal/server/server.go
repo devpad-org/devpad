@@ -333,6 +333,8 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	// Workspace service routes (database sidecars)
 	mux.Handle("GET /api/workspaces/{id}/services", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleList)))
 	mux.Handle("POST /api/workspaces/{id}/services", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleCreate)))
+	mux.Handle("POST /api/workspaces/{id}/services/{serviceId}/start", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleStart)))
+	mux.Handle("POST /api/workspaces/{id}/services/{serviceId}/stop", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleStop)))
 	mux.Handle("DELETE /api/workspaces/{id}/services/{serviceId}", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleDelete)))
 
 	// AI API routes

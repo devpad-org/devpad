@@ -33,14 +33,12 @@ var DefaultConfigs = map[ServiceType]ServiceConfig{
 		Image:       "postgres:17",
 		Port:        5432,
 		DefaultUser: "devpad",
-		DefaultPass: "devpad",
 		DefaultDB:   "devpad",
 	},
 	ServiceMongoDB: {
 		Image:       "mongo:8",
 		Port:        27017,
 		DefaultUser: "devpad",
-		DefaultPass: "devpad",
 		DefaultDB:   "devpad",
 	},
 }

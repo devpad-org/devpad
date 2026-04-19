@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import type { Workspace } from '@/api/workspaces'
+import { serviceApi, type WorkspaceService } from '@/api/services'
 
 const props = defineProps<{
   workspace: Workspace
@@ -15,6 +16,33 @@ const emit = defineEmits<{
 }>()
 
 const toggling = ref(false)
+const services = ref<WorkspaceService[]>([])
+const loadingServices = ref(false)
+
+const serviceIcons: Record<string, string> = {
+  postgres: '🐘',
+  mongodb: '🍃',
+}
+
+async function fetchServices() {
+  loadingServices.value = true
+  try {
+    const res = await serviceApi.list(props.workspace.id)
+    services.value = res.services
+  } catch {
+    // non-critical
+  } finally {
+    loadingServices.value = false
+  }
+}
+
+onMounted(fetchServices)
+
+// Re-fetch when workspace status changes (e.g. after start/stop)
+watch(
+  () => props.workspace.status,
+  () => fetchServices(),
+)
 
 async function togglePower() {
   if (toggling.value) return
@@ -65,6 +93,24 @@ function formatDate(dateStr: string) {
         </span>
       </div>
       <p v-if="workspace.description" class="card-desc">{{ workspace.description }}</p>
+      <div v-if="services.length > 0" class="card-services">
+        <span
+          v-for="svc in services"
+          :key="svc.id"
+          class="service-badge"
+          :class="[
+            `service-${svc.status}`,
+            { 'service-starting': svc.status === 'stopped' && workspace.status === 'running' && loadingServices }
+          ]"
+          :title="`${svc.serviceType} — ${svc.status}`"
+        >
+          <span class="service-badge-icon">{{ serviceIcons[svc.serviceType] || '📦' }}</span>
+          <svg v-if="svc.status === 'stopped' && workspace.status === 'running' && loadingServices" class="badge-spinner" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+          <span v-else class="service-badge-dot" />
+        </span>
+      </div>
     </div>
     <div class="card-footer">
       <span class="card-date">Created {{ formatDate(workspace.createdAt) }}</span>
@@ -331,5 +377,49 @@ function formatDate(dateStr: string) {
 
 .action-danger:hover {
   color: var(--accent-rose);
+}
+
+/* Service badges */
+.card-services {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+
+.service-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  font-size: 0.7rem;
+}
+
+.service-badge-icon {
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.service-badge-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.service-running .service-badge-dot {
+  background: var(--accent-green);
+  box-shadow: 0 0 4px var(--accent-green);
+}
+
+.badge-spinner {
+  animation: badge-spin 1s linear infinite;
+  color: var(--accent-amber);
+}
+
+@keyframes badge-spin {
+  to { transform: rotate(360deg); }
 }
 </style>

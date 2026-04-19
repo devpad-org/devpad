@@ -9,6 +9,7 @@ import AiAgentPanel from '@/components/ide/AiAgentPanel.vue'
 import PreviewPanel from '@/components/ide/PreviewPanel.vue'
 import GitPanel from '@/components/ide/GitPanel.vue'
 import WorkspaceInfoPanel from '@/components/ide/WorkspaceInfoPanel.vue'
+import ServicesPanel from '@/components/ide/ServicesPanel.vue'
 import { useResizable } from '@/composables/useResizable'
 
 const route = useRoute()
@@ -24,7 +25,7 @@ const agentVisible = ref(true)
 const previewVisible = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
 
-type SidebarTab = 'explorer' | 'git' | 'info'
+type SidebarTab = 'explorer' | 'git' | 'info' | 'services'
 const activeSidebarTab = ref<SidebarTab>('explorer')
 
 const sidebar = useResizable({
@@ -255,6 +256,18 @@ function handleBack() {
             <path d="M12 8h.01" />
           </svg>
         </button>
+        <button
+          class="activity-btn"
+          :class="{ active: activeSidebarTab === 'services' }"
+          @click="activeSidebarTab = 'services'"
+          title="Database Services"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <ellipse cx="12" cy="5" rx="9" ry="3" />
+            <path d="M3 5v14a9 3 0 0 0 18 0V5" />
+            <path d="M3 12a9 3 0 0 0 18 0" />
+          </svg>
+        </button>
       </div>
 
       <!-- Sidebar -->
@@ -271,6 +284,10 @@ function handleBack() {
         />
         <WorkspaceInfoPanel
           v-show="activeSidebarTab === 'info'"
+          :workspace-id="workspace?.id ?? 0"
+        />
+        <ServicesPanel
+          v-show="activeSidebarTab === 'services'"
           :workspace-id="workspace?.id ?? 0"
         />
       </aside>

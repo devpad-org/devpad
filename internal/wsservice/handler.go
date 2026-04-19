@@ -3,6 +3,7 @@ package wsservice
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -83,6 +84,17 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the workspace is running, start the service immediately.
+	ws, _ := h.workspace.Get(r.Context(), user.ID, wsID)
+	if ws != nil && ws.Status == workspace.StatusRunning && ws.NetworkName != "" {
+		started, err := h.service.Start(r.Context(), svc.ID, ws.NetworkName)
+		if err != nil {
+			log.Printf("service %d: auto-start failed: %v", svc.ID, err)
+		} else {
+			svc = started
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{"service": serviceResponse(svc)})
 }
 
@@ -124,6 +136,90 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// HandleStart starts a single service container.
+func (h *Handler) HandleStart(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	wsID, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	ws, err := h.workspace.Get(r.Context(), user.ID, wsID)
+	if err != nil {
+		handleWorkspaceError(w, err)
+		return
+	}
+
+	svcID, err := parseID(r, "serviceId")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid service id")
+		return
+	}
+
+	svc, err := h.service.Get(r.Context(), svcID)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	if svc.WorkspaceID != wsID {
+		writeError(w, http.StatusNotFound, "service not found")
+		return
+	}
+
+	if ws.NetworkName == "" {
+		writeError(w, http.StatusConflict, "workspace has no network; start the workspace first")
+		return
+	}
+
+	started, err := h.service.Start(r.Context(), svcID, ws.NetworkName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start service")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"service": serviceResponse(started)})
+}
+
+// HandleStop stops a single service container.
+func (h *Handler) HandleStop(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	wsID, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	if _, err := h.workspace.Get(r.Context(), user.ID, wsID); err != nil {
+		handleWorkspaceError(w, err)
+		return
+	}
+
+	svcID, err := parseID(r, "serviceId")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid service id")
+		return
+	}
+
+	svc, err := h.service.Get(r.Context(), svcID)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	if svc.WorkspaceID != wsID {
+		writeError(w, http.StatusNotFound, "service not found")
+		return
+	}
+
+	stopped, err := h.service.Stop(r.Context(), svcID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to stop service")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"service": serviceResponse(stopped)})
 }
 
 func parseID(r *http.Request, name string) (int64, error) {

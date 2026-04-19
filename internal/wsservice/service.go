@@ -2,10 +2,12 @@ package wsservice
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"strings"
 
 	"github.com/devpad-org/devpad/internal/container"
@@ -23,6 +25,11 @@ type Service interface {
 	List(ctx context.Context, workspaceID int64) ([]*WorkspaceService, error)
 	Get(ctx context.Context, id int64) (*WorkspaceService, error)
 	Delete(ctx context.Context, id int64) error
+
+	// Start starts a single service container and attaches it to the given network.
+	Start(ctx context.Context, serviceID int64, networkName string) (*WorkspaceService, error)
+	// Stop stops a single service container.
+	Stop(ctx context.Context, serviceID int64) (*WorkspaceService, error)
 
 	// Lifecycle methods called by the workspace service during start/stop/delete.
 	StartAll(ctx context.Context, workspaceID int64, networkName string) error
@@ -60,6 +67,7 @@ func (s *service) Create(ctx context.Context, workspaceID int64, serviceType Ser
 	}
 
 	cfg := DefaultConfigs[serviceType]
+	cfg.DefaultPass = generatePassword(24)
 	configJSON, _ := json.Marshal(cfg)
 
 	volumeName := fmt.Sprintf("devpad-svc-%d-%s", workspaceID, serviceType)
@@ -201,6 +209,28 @@ func (s *service) EnvVars(ctx context.Context, workspaceID int64, networkName st
 	return envs, nil
 }
 
+func (s *service) Start(ctx context.Context, serviceID int64, networkName string) (*WorkspaceService, error) {
+	svc, err := s.Get(ctx, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.startOne(ctx, svc, networkName); err != nil {
+		return nil, err
+	}
+	return svc, nil
+}
+
+func (s *service) Stop(ctx context.Context, serviceID int64) (*WorkspaceService, error) {
+	svc, err := s.Get(ctx, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.stopOne(ctx, svc); err != nil {
+		return nil, err
+	}
+	return svc, nil
+}
+
 func (s *service) startOne(ctx context.Context, svc *WorkspaceService, networkName string) error {
 	if svc.Status == StatusRunning {
 		return nil
@@ -275,4 +305,16 @@ func sidecarEnv(serviceType ServiceType, cfg ServiceConfig) []string {
 	default:
 		return nil
 	}
+}
+
+// generatePassword returns a cryptographically random alphanumeric string of
+// the given length.
+func generatePassword(length int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, length)
+	for i := range b {
+		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		b[i] = alphabet[n.Int64()]
+	}
+	return string(b)
 }
