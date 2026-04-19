@@ -46,10 +46,11 @@ func (m *mockContainerManager) GetEnv(_ context.Context, _ string) ([]string, er
 func (m *mockContainerManager) Stats(_ context.Context, _ string) (*container.ContainerStats, error) {
 	return &container.ContainerStats{}, nil
 }
-func (m *mockContainerManager) CreateNetwork(_ context.Context, _ string) error { return nil }
-func (m *mockContainerManager) RemoveNetwork(_ context.Context, _ string) error { return nil }
-func (m *mockContainerManager) CreateVolume(_ context.Context, _ string) error  { return nil }
-func (m *mockContainerManager) RemoveVolume(_ context.Context, _ string) error  { return nil }
+func (m *mockContainerManager) CreateNetwork(_ context.Context, _ string) error       { return nil }
+func (m *mockContainerManager) RemoveNetwork(_ context.Context, _ string) error       { return nil }
+func (m *mockContainerManager) ConnectToNetwork(_ context.Context, _, _ string) error { return nil }
+func (m *mockContainerManager) CreateVolume(_ context.Context, _ string) error        { return nil }
+func (m *mockContainerManager) RemoveVolume(_ context.Context, _ string) error        { return nil }
 func (m *mockContainerManager) Exec(_ context.Context, _ string, _ []string) (string, error) {
 	return "mock-exec-id", nil
 }

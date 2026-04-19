@@ -360,6 +360,11 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 		return nil, fmt.Errorf("migrating container config: %w", err)
 	}
 
+	// Backfill network for legacy workspaces created before network isolation.
+	if err := s.ensureNetwork(ctx, ws); err != nil {
+		return nil, fmt.Errorf("backfilling network: %w", err)
+	}
+
 	if err := s.container.Start(ctx, ws.ContainerID); err != nil {
 		return nil, fmt.Errorf("starting container: %w", err)
 	}
@@ -441,6 +446,36 @@ func (s *service) ensureContainerHasToken(ctx context.Context, ws *Workspace) er
 	}
 
 	log.Printf("workspace %d: container recreated with auth token", ws.ID)
+	return nil
+}
+
+// ensureNetwork creates a Docker network for legacy workspaces that were
+// created before network isolation was introduced. The existing container is
+// connected to the new network in-place via Docker's NetworkConnect API —
+// no container recreation is required.
+func (s *service) ensureNetwork(ctx context.Context, ws *Workspace) error {
+	if ws.NetworkName != "" {
+		return nil
+	}
+
+	networkName := fmt.Sprintf("devpad-net-%d", ws.ID)
+	log.Printf("workspace %d: backfilling network %s", ws.ID, networkName)
+
+	if err := s.container.CreateNetwork(ctx, networkName); err != nil {
+		return fmt.Errorf("creating network: %w", err)
+	}
+
+	if err := s.container.ConnectToNetwork(ctx, networkName, ws.ContainerID); err != nil {
+		_ = s.container.RemoveNetwork(ctx, networkName)
+		return fmt.Errorf("connecting container to network: %w", err)
+	}
+
+	ws.NetworkName = networkName
+	if err := s.repo.Update(ctx, ws); err != nil {
+		return fmt.Errorf("updating workspace with network: %w", err)
+	}
+
+	log.Printf("workspace %d: network backfilled", ws.ID)
 	return nil
 }
 

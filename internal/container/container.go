@@ -48,6 +48,7 @@ type Manager interface {
 	Stats(ctx context.Context, containerID string) (*ContainerStats, error)
 	CreateNetwork(ctx context.Context, name string) error
 	RemoveNetwork(ctx context.Context, name string) error
+	ConnectToNetwork(ctx context.Context, networkName, containerID string) error
 	CreateVolume(ctx context.Context, name string) error
 	RemoveVolume(ctx context.Context, name string) error
 	Exec(ctx context.Context, containerID string, cmd []string) (execID string, err error)
@@ -365,6 +366,13 @@ func (m *manager) CreateNetwork(ctx context.Context, name string) error {
 func (m *manager) RemoveNetwork(ctx context.Context, name string) error {
 	if err := m.cli.NetworkRemove(ctx, name); err != nil {
 		return fmt.Errorf("removing network: %w", err)
+	}
+	return nil
+}
+
+func (m *manager) ConnectToNetwork(ctx context.Context, networkName, containerID string) error {
+	if err := m.cli.NetworkConnect(ctx, networkName, containerID, nil); err != nil {
+		return fmt.Errorf("connecting container to network: %w", err)
 	}
 	return nil
 }
