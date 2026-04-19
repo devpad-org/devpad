@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // mistralProvider implements Provider for the Mistral AI API.
@@ -21,7 +22,7 @@ type mistralProvider struct {
 // NewMistralProvider creates a new Mistral AI provider.
 func NewMistralProvider() Provider {
 	return &mistralProvider{
-		client:  &http.Client{},
+		client:  &http.Client{Timeout: 10 * time.Minute},
 		baseURL: "https://api.mistral.ai/v1",
 	}
 }

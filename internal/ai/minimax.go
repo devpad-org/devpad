@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // minimaxProvider implements Provider for the MiniMax AI API.
@@ -18,7 +19,7 @@ type minimaxProvider struct {
 // NewMiniMaxProvider creates a new MiniMax AI provider.
 func NewMiniMaxProvider() Provider {
 	return &minimaxProvider{
-		client:  &http.Client{},
+		client:  &http.Client{Timeout: 10 * time.Minute},
 		baseURL: "https://api.minimaxi.chat/v1",
 	}
 }

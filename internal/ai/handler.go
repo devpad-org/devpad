@@ -138,14 +138,24 @@ func (h *Handler) HandleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for event := range stream {
-		data, _ := json.Marshal(event)
-		fmt.Fprintf(w, "data: %s\n\n", data)
+		data, err := json.Marshal(event)
+		if err != nil {
+			log.Printf("failed to marshal SSE event: %v", err)
+			continue
+		}
+		if _, writeErr := fmt.Fprintf(w, "data: %s\n\n", data); writeErr != nil {
+			log.Printf("SSE write error: %v", writeErr)
+			return
+		}
 		flusher.Flush()
 	}
 }
 
 // maxToolIterations limits the number of tool call rounds to prevent infinite loops.
 const maxToolIterations = 25
+
+// sseKeepAliveInterval is how often a keepalive comment is sent during silent periods.
+const sseKeepAliveInterval = 15 * time.Second
 
 // HandleAgentChat handles a streaming chat with tool execution via SSE.
 // This implements an agentic loop: the LLM can call tools, results are fed back,
@@ -188,10 +198,46 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// writeFailed tracks whether writing to the client has failed.
+	writeFailed := false
+
 	sendEvent := func(event StreamEvent) {
-		data, _ := json.Marshal(event)
-		fmt.Fprintf(w, "data: %s\n\n", data)
+		if writeFailed {
+			return
+		}
+		data, err := json.Marshal(event)
+		if err != nil {
+			log.Printf("failed to marshal SSE event: %v", err)
+			return
+		}
+		if _, writeErr := fmt.Fprintf(w, "data: %s\n\n", data); writeErr != nil {
+			log.Printf("SSE write error: %v", writeErr)
+			writeFailed = true
+			return
+		}
 		flusher.Flush()
+	}
+
+	// sendKeepAlive sends an SSE comment to keep the connection alive.
+	sendKeepAlive := func() {
+		if writeFailed {
+			return
+		}
+		if _, writeErr := fmt.Fprintf(w, ": keepalive\n\n"); writeErr != nil {
+			log.Printf("SSE keepalive write error: %v", writeErr)
+			writeFailed = true
+			return
+		}
+		flusher.Flush()
+	}
+
+	// Start keepalive ticker — sends heartbeat comments during silent periods.
+	keepAliveTicker := time.NewTicker(sseKeepAliveInterval)
+	defer keepAliveTicker.Stop()
+
+	// drainKeepAlive resets the ticker. Call after sending a real event.
+	drainKeepAlive := func() {
+		keepAliveTicker.Reset(sseKeepAliveInterval)
 	}
 
 	// Prepend system prompt and add tools
@@ -201,6 +247,10 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 	tools := agentTools()
 
 	for i := 0; i < maxToolIterations; i++ {
+		if writeFailed {
+			return
+		}
+
 		chatReq := ChatRequest{
 			Model:    req.Model,
 			Messages: messages,
@@ -218,20 +268,34 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		var toolCalls []ToolCall
 		var contentAccum strings.Builder
 
-		for event := range stream {
-			if event.Error != "" {
-				sendEvent(event)
-				sendEvent(StreamEvent{Done: true})
+		// Read from the stream with keepalive during pauses.
+		streamDone := false
+		for !streamDone {
+			select {
+			case event, ok := <-stream:
+				if !ok {
+					streamDone = true
+					break
+				}
+				drainKeepAlive()
+				if event.Error != "" {
+					sendEvent(event)
+					sendEvent(StreamEvent{Done: true})
+					return
+				}
+				if event.Content != "" {
+					sendEvent(StreamEvent{Content: event.Content})
+					contentAccum.WriteString(event.Content)
+				}
+				if len(event.ToolCalls) > 0 {
+					toolCalls = event.ToolCalls
+				}
+				// Don't forward Done yet — we may need to loop
+			case <-keepAliveTicker.C:
+				sendKeepAlive()
+			case <-r.Context().Done():
 				return
 			}
-			if event.Content != "" {
-				sendEvent(StreamEvent{Content: event.Content})
-				contentAccum.WriteString(event.Content)
-			}
-			if len(event.ToolCalls) > 0 {
-				toolCalls = event.ToolCalls
-			}
-			// Don't forward Done yet — we may need to loop
 		}
 
 		// No tool calls — the LLM is done
@@ -251,8 +315,13 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 
 		// Execute each tool and feed results back
 		for _, tc := range toolCalls {
+			if writeFailed {
+				return
+			}
+
 			// Notify frontend that a tool is being called
 			sendEvent(StreamEvent{ToolCalls: []ToolCall{tc}})
+			drainKeepAlive()
 
 			// Check if this is a sudo command that needs approval
 			if tc.Function.Name == "run_command" && commandNeedsSudoApproval(tc.Function.Arguments) {
@@ -272,12 +341,34 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			result, err := h.toolExecutor.ExecuteTool(
-				r.Context(), user.ID, req.WorkspaceID,
-				tc.Function.Name, json.RawMessage(tc.Function.Arguments),
-			)
-			if err != nil {
-				log.Printf("error executing tool %s: %v", tc.Function.Name, err)
+			// Send keepalives while the tool executes.
+			toolDone := make(chan struct{})
+			var toolResult string
+			var toolErr error
+			go func() {
+				defer close(toolDone)
+				toolResult, toolErr = h.toolExecutor.ExecuteTool(
+					r.Context(), user.ID, req.WorkspaceID,
+					tc.Function.Name, json.RawMessage(tc.Function.Arguments),
+				)
+			}()
+
+		toolWait:
+			for {
+				select {
+				case <-toolDone:
+					break toolWait
+				case <-keepAliveTicker.C:
+					sendKeepAlive()
+				case <-r.Context().Done():
+					return
+				}
+			}
+			drainKeepAlive()
+
+			result := toolResult
+			if toolErr != nil {
+				log.Printf("error executing tool %s: %v", tc.Function.Name, toolErr)
 				result = "Error executing tool"
 			}
 
@@ -294,6 +385,11 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 				Content:    result,
 				ToolCallID: tc.ID,
 			})
+		}
+
+		// Warn if we're about to hit the iteration limit
+		if i == maxToolIterations-1 {
+			sendEvent(StreamEvent{Content: "\n\n⚠️ Reached the maximum number of tool call iterations (" + fmt.Sprintf("%d", maxToolIterations) + "). Stopping here."})
 		}
 	}
 

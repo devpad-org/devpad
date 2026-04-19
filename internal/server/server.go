@@ -154,8 +154,11 @@ func New(cfg Config) (*Server, error) {
 
 	s := &Server{
 		httpServer: &http.Server{
-			Addr:    addr,
-			Handler: handler,
+			Addr:         addr,
+			Handler:      handler,
+			ReadTimeout:  30 * time.Second,
+			IdleTimeout:  5 * time.Minute,
+			WriteTimeout: 0, // Disabled — SSE streams require unbounded writes
 		},
 		db:            db,
 		cfg:           cfg,
