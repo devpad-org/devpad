@@ -82,6 +82,7 @@ func readSSEStream(body io.ReadCloser, ch chan<- StreamEvent) {
 	defer body.Close()
 
 	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // Allow up to 1MB lines for large tool call args
 
 	// Accumulate tool calls across streaming chunks
 	var toolCalls []ToolCall

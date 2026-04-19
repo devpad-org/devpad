@@ -37,6 +37,7 @@ interface TextSegment {
 
 interface ToolSegment {
   type: 'tool'
+  toolCallId: string
   name: string
   args: string
   result?: string
@@ -173,6 +174,7 @@ async function sendMessage() {
           for (const tc of event.toolCalls) {
             messages.value[assistantIdx].segments.push({
               type: 'tool',
+              toolCallId: tc.id,
               name: tc.function.name,
               args: tc.function.arguments,
             })
@@ -180,7 +182,7 @@ async function sendMessage() {
         } else if (event.toolResult) {
           const segs = messages.value[assistantIdx].segments
           const toolSeg = segs.find(
-            (s): s is ToolSegment => s.type === 'tool' && s.name === event.toolResult!.name && !s.result
+            (s): s is ToolSegment => s.type === 'tool' && s.toolCallId === event.toolResult!.toolCallId && !s.result
           )
           if (toolSeg) {
             toolSeg.result = event.toolResult.content
