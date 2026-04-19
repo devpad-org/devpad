@@ -59,6 +59,11 @@ type Service interface {
 
 	// Info returns workspace info including agent version and container stats.
 	Info(ctx context.Context, userID, workspaceID int64) (*WorkspaceInfo, error)
+
+	// SetSidecarService injects the sidecar service lifecycle dependency.
+	// Called after construction to break the import cycle between workspace
+	// and wsservice packages.
+	SetSidecarService(sidecar SidecarService)
 }
 
 type service struct {
@@ -67,11 +72,16 @@ type service struct {
 	users     auth.UserRepository
 	cipher    *encrypt.Cipher
 	agentPort int
+	sidecar   SidecarService
 }
 
 // NewService creates a new workspace Service.
 func NewService(repo Repository, cm container.Manager, users auth.UserRepository, cipher *encrypt.Cipher) Service {
 	return &service{repo: repo, container: cm, users: users, cipher: cipher, agentPort: agent.DefaultPort}
+}
+
+func (s *service) SetSidecarService(sidecar SidecarService) {
+	s.sidecar = sidecar
 }
 
 func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*agent.Client, error) {
@@ -194,6 +204,18 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 	containerEnv := []string{
 		fmt.Sprintf("AGENT_AUTH_TOKEN=%s", agentToken),
 	}
+
+	// Inject sidecar service env vars (database connection info) if any
+	// services are already attached.
+	if s.sidecar != nil {
+		svcEnv, err := s.sidecar.EnvVars(ctx, ws.ID, networkName)
+		if err != nil {
+			log.Printf("workspace %d: failed to get sidecar env vars: %v", ws.ID, err)
+		} else {
+			containerEnv = append(containerEnv, svcEnv...)
+		}
+	}
+
 	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), volumeName, networkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
 	if err != nil {
 		_ = s.container.RemoveVolume(ctx, volumeName)
@@ -321,6 +343,13 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 		}
 	}
 
+	// Delete all attached sidecar services (databases) and their resources.
+	if s.sidecar != nil {
+		if err := s.sidecar.DeleteAll(ctx, ws.ID); err != nil {
+			log.Printf("workspace %d: sidecar delete failed: %v", ws.ID, err)
+		}
+	}
+
 	// Remove the associated volume
 	if ws.VolumeName != "" {
 		if err := s.container.RemoveVolume(ctx, ws.VolumeName); err != nil {
@@ -387,6 +416,13 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 	// Inject SSH keys if the user has them configured. Best-effort.
 	if err := s.injectSSHKeys(ctx, ws); err != nil {
 		log.Printf("workspace %d: SSH key injection failed: %v", ws.ID, err)
+	}
+
+	// Start attached sidecar services (databases). Best-effort.
+	if s.sidecar != nil {
+		if err := s.sidecar.StartAll(ctx, ws.ID, ws.NetworkName); err != nil {
+			log.Printf("workspace %d: sidecar start failed: %v", ws.ID, err)
+		}
 	}
 
 	return ws, nil
@@ -554,6 +590,14 @@ func (s *service) Stop(ctx context.Context, userID, workspaceID int64) (*Workspa
 	if err := s.container.Stop(ctx, ws.ContainerID); err != nil {
 		return nil, fmt.Errorf("stopping container: %w", err)
 	}
+
+	// Stop attached sidecar services (databases). Best-effort.
+	if s.sidecar != nil {
+		if err := s.sidecar.StopAll(ctx, ws.ID); err != nil {
+			log.Printf("workspace %d: sidecar stop failed: %v", ws.ID, err)
+		}
+	}
+
 	ws.Status = StatusStopped
 	if err := s.repo.Update(ctx, ws); err != nil {
 		return nil, fmt.Errorf("updating workspace status: %w", err)

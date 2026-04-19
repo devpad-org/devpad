@@ -66,6 +66,9 @@ func (m *mockContainerManager) CopyFileToContainer(_ context.Context, _, _ strin
 func (m *mockContainerManager) BuildImage(_ context.Context, _ []byte, _ []byte, _ string) error {
 	return nil
 }
+func (m *mockContainerManager) CreateSidecar(_ context.Context, _, _, _, _ string, _ []string, _ int) (string, error) {
+	return "sidecar-id", nil
+}
 
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()

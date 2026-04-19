@@ -21,6 +21,7 @@ import (
 	"github.com/devpad-org/devpad/internal/preview"
 	"github.com/devpad-org/devpad/internal/settings"
 	"github.com/devpad-org/devpad/internal/workspace"
+	"github.com/devpad-org/devpad/internal/wsservice"
 	"github.com/devpad-org/devpad/web"
 )
 
@@ -85,6 +86,11 @@ func New(cfg Config) (*Server, error) {
 	workspaceRepo := workspace.NewRepository(db.Conn())
 	workspaceService := workspace.NewService(workspaceRepo, containerManager, userRepo, cipher)
 
+	// Workspace services layer (database sidecars)
+	wsServiceRepo := wsservice.NewRepository(db.Conn())
+	wsServiceService := wsservice.NewService(wsServiceRepo, containerManager)
+	workspaceService.SetSidecarService(wsServiceService)
+
 	// Admin layer (depends on workspace service for resource limit management)
 	adminService := admin.NewService(userRepo, workspaceService)
 	adminHandler := admin.NewHandler(adminService)
@@ -106,6 +112,7 @@ func New(cfg Config) (*Server, error) {
 		)
 	}
 	workspaceHandler := workspace.NewHandler(workspaceService, wsOrigins)
+	wsServiceHandler := wsservice.NewHandler(wsServiceService, workspaceService)
 
 	// AI layer
 	aiRepo := ai.NewRepository(db.Conn())
@@ -122,7 +129,7 @@ func New(cfg Config) (*Server, error) {
 	authRateLimiter := auth.NewRateLimiter(rate.Limit(5), 10)
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, aiHandler, previewHandler)
+	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, aiHandler, previewHandler)
 
 	// Wrap the mux with host-based routing to intercept preview subdomain requests.
 	handler := hostRouter(mux, previewHandler, cfg.PreviewDomain)
@@ -259,7 +266,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, aiHandler *ai.Handler, previewHandler *preview.Handler) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, aiHandler *ai.Handler, previewHandler *preview.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
@@ -322,6 +329,11 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 
 	// Workspace preview route
 	mux.Handle("POST /api/workspaces/{id}/preview", authMiddleware.RequireAuth(http.HandlerFunc(previewHandler.HandleGenerateURL)))
+
+	// Workspace service routes (database sidecars)
+	mux.Handle("GET /api/workspaces/{id}/services", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleList)))
+	mux.Handle("POST /api/workspaces/{id}/services", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleCreate)))
+	mux.Handle("DELETE /api/workspaces/{id}/services/{serviceId}", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleDelete)))
 
 	// AI API routes
 	mux.Handle("GET /api/ai/models", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListModels)))

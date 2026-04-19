@@ -56,6 +56,7 @@ type Manager interface {
 	ExecResize(ctx context.Context, execID string, height, width uint) error
 	CopyFileToContainer(ctx context.Context, containerID, destPath string, fileContent []byte, mode int64) error
 	BuildImage(ctx context.Context, dockerfileContent []byte, agentBinary []byte, version string) error
+	CreateSidecar(ctx context.Context, name, imageName, volumeName, networkName string, env []string, port int) (containerID string, err error)
 }
 
 // HijackedResponse wraps the Docker hijacked connection for exec.
@@ -496,4 +497,49 @@ func (m *manager) pullImageIfNeeded(ctx context.Context, imageName string) error
 
 	log.Printf("image %s pulled successfully", imageName)
 	return nil
+}
+
+func (m *manager) CreateSidecar(ctx context.Context, name, imageName, volumeName, networkName string, env []string, port int) (string, error) {
+	if err := m.pullImageIfNeeded(ctx, imageName); err != nil {
+		return "", fmt.Errorf("pulling sidecar image: %w", err)
+	}
+
+	var mounts []mount.Mount
+	if volumeName != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeVolume,
+			Source: volumeName,
+			Target: "/data",
+		})
+	}
+
+	var networkingConfig *network.NetworkingConfig
+	if networkName != "" {
+		networkingConfig = &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				networkName: {},
+			},
+		}
+	}
+
+	resp, err := m.cli.ContainerCreate(ctx,
+		&container.Config{
+			Image: imageName,
+			Env:   env,
+			Labels: map[string]string{
+				"devpad.managed": "true",
+				"devpad.sidecar": "true",
+			},
+		},
+		&container.HostConfig{
+			RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+			Mounts:        mounts,
+		},
+		networkingConfig, nil, name,
+	)
+	if err != nil {
+		return "", fmt.Errorf("creating sidecar container: %w", err)
+	}
+
+	return resp.ID, nil
 }

@@ -141,6 +141,7 @@ func (m *mockWorkspaceService) AgentAddr(_ context.Context, _, _ int64) (string,
 func (m *mockWorkspaceService) Info(_ context.Context, _, _ int64) (*workspace.WorkspaceInfo, error) {
 	return nil, nil
 }
+func (m *mockWorkspaceService) SetSidecarService(_ workspace.SidecarService) {}
 
 func setupTestService(t *testing.T) (Service, auth.UserRepository) {
 	t.Helper()
