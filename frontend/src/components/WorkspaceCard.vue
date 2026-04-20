@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import type { Workspace } from '@/api/workspaces'
 import { serviceApi, type WorkspaceService } from '@/api/services'
+import { useWorkspaceStore } from '@/stores/workspaces'
 
 const props = defineProps<{
   workspace: Workspace
@@ -15,9 +16,11 @@ const emit = defineEmits<{
   stop: [workspace: Workspace]
 }>()
 
-const toggling = ref(false)
+const store = useWorkspaceStore()
 const services = ref<WorkspaceService[]>([])
 const loadingServices = ref(false)
+
+const transition = computed(() => store.transitioning.get(props.workspace.id) ?? null)
 
 const serviceIcons: Record<string, string> = {
   postgres: '🐘',
@@ -45,20 +48,17 @@ watch(
 )
 
 async function togglePower() {
-  if (toggling.value) return
-  toggling.value = true
-  try {
-    if (props.workspace.status === 'running') {
-      emit('stop', props.workspace)
-    } else {
-      emit('start', props.workspace)
-    }
-  } finally {
-    toggling.value = false
+  if (transition.value) return
+  if (props.workspace.status === 'running') {
+    emit('stop', props.workspace)
+  } else {
+    emit('start', props.workspace)
   }
 }
 
 function statusColor(status: string) {
+  if (transition.value === 'starting') return 'status-starting'
+  if (transition.value === 'stopping') return 'status-stopping'
   switch (status) {
     case 'running':
       return 'status-running'
@@ -70,6 +70,8 @@ function statusColor(status: string) {
 }
 
 function statusLabel(status: string) {
+  if (transition.value === 'starting') return 'Starting…'
+  if (transition.value === 'stopping') return 'Stopping…'
   return status.charAt(0).toUpperCase() + status.slice(1)
 }
 
@@ -117,7 +119,7 @@ function formatDate(dateStr: string) {
       <div class="card-actions">
         <!-- Primary CTA -->
         <button
-          v-if="workspace.status === 'running'"
+          v-if="workspace.status === 'running' && !transition"
           class="btn-primary-action btn-open"
           @click="$emit('open', workspace)"
         >
@@ -128,10 +130,28 @@ function formatDate(dateStr: string) {
           </svg>
           Open IDE
         </button>
+        <span
+          v-else-if="transition === 'starting'"
+          class="transition-label transition-starting"
+        >
+          <svg class="spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+          Starting…
+        </span>
+        <span
+          v-else-if="transition === 'stopping'"
+          class="transition-label transition-stopping"
+        >
+          <svg class="spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+          Stopping…
+        </span>
         <button
           v-else-if="workspace.status === 'stopped'"
           class="btn-primary-action btn-start"
-          :disabled="toggling"
+          :disabled="!!transition"
           @click="togglePower"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -140,7 +160,7 @@ function formatDate(dateStr: string) {
           </svg>
           Start
         </button>
-        <span v-else class="creating-label">
+        <span v-else-if="workspace.status === 'creating'" class="creating-label">
           <svg class="spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
           </svg>
@@ -150,10 +170,9 @@ function formatDate(dateStr: string) {
         <!-- Secondary actions -->
         <div class="action-divider" />
         <button
-          v-if="workspace.status === 'running'"
+          v-if="workspace.status === 'running' && !transition"
           class="action-btn action-power power-on"
           title="Stop"
-          :disabled="toggling"
           @click="togglePower"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -260,6 +279,26 @@ function formatDate(dateStr: string) {
   box-shadow: 0 0 4px var(--accent-amber);
 }
 
+.status-starting {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--accent-green);
+}
+
+.status-starting .status-dot {
+  background: var(--accent-green);
+  box-shadow: 0 0 4px var(--accent-green);
+}
+
+.status-stopping {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--accent-amber);
+}
+
+.status-stopping .status-dot {
+  background: var(--accent-amber);
+  box-shadow: 0 0 4px var(--accent-amber);
+}
+
 .status-stopped {
   background: rgba(113, 113, 122, 0.1);
   color: var(--text-muted);
@@ -336,6 +375,26 @@ function formatDate(dateStr: string) {
   font-size: 0.75rem;
   font-weight: 500;
   color: var(--accent-amber);
+}
+
+.transition-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  font-size: 0.75rem;
+  font-weight: 500;
+  border-radius: var(--radius-md);
+}
+
+.transition-starting {
+  color: var(--accent-green);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.transition-stopping {
+  color: var(--accent-amber);
+  background: rgba(245, 158, 11, 0.08);
 }
 
 .spinner {

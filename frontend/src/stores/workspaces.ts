@@ -1,11 +1,14 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, reactive } from 'vue'
 import { workspaceApi, type Workspace } from '@/api/workspaces'
+
+export type TransitionState = 'starting' | 'stopping'
 
 export const useWorkspaceStore = defineStore('workspaces', () => {
   const workspaces = ref<Workspace[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const transitioning = reactive(new Map<number, TransitionState>())
 
   async function fetchWorkspaces() {
     loading.value = true
@@ -42,27 +45,38 @@ export const useWorkspaceStore = defineStore('workspaces', () => {
   }
 
   async function startWorkspace(id: number) {
-    const response = await workspaceApi.start(id)
-    const index = workspaces.value.findIndex((w) => w.id === id)
-    if (index !== -1) {
-      workspaces.value[index] = response.workspace
+    transitioning.set(id, 'starting')
+    try {
+      const response = await workspaceApi.start(id)
+      const index = workspaces.value.findIndex((w) => w.id === id)
+      if (index !== -1) {
+        workspaces.value[index] = response.workspace
+      }
+      return response.workspace
+    } finally {
+      transitioning.delete(id)
     }
-    return response.workspace
   }
 
   async function stopWorkspace(id: number) {
-    const response = await workspaceApi.stop(id)
-    const index = workspaces.value.findIndex((w) => w.id === id)
-    if (index !== -1) {
-      workspaces.value[index] = response.workspace
+    transitioning.set(id, 'stopping')
+    try {
+      const response = await workspaceApi.stop(id)
+      const index = workspaces.value.findIndex((w) => w.id === id)
+      if (index !== -1) {
+        workspaces.value[index] = response.workspace
+      }
+      return response.workspace
+    } finally {
+      transitioning.delete(id)
     }
-    return response.workspace
   }
 
   return {
     workspaces,
     loading,
     error,
+    transitioning,
     fetchWorkspaces,
     createWorkspace,
     updateWorkspace,
