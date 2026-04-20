@@ -45,6 +45,9 @@ func handlePortProxy(w http.ResponseWriter, r *http.Request) {
 			req.Host = r.Host
 			req.URL.Path = remaining
 			req.URL.RawQuery = r.URL.RawQuery
+			// Remove the internal agent auth header so it doesn't leak
+			// into the proxied application.
+			req.Header.Del(agentAuthHeader)
 		},
 		// Flush immediately for streaming responses (SSE, chunked).
 		FlushInterval: -1,

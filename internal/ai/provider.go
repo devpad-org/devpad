@@ -46,6 +46,7 @@ type StreamEvent struct {
 	ToolCalls        []ToolCall       `json:"toolCalls,omitempty"`
 	ToolResult       *ToolResult      `json:"toolResult,omitempty"`
 	ApprovalRequired *ApprovalRequest `json:"approvalRequired,omitempty"`
+	Plan             []PlanStep       `json:"plan,omitempty"`
 	Done             bool             `json:"done,omitempty"`
 	Error            string           `json:"error,omitempty"`
 }
@@ -87,4 +88,10 @@ type ToolResult struct {
 	ToolCallID string `json:"toolCallId"`
 	Name       string `json:"name"`
 	Content    string `json:"content"`
+}
+
+// PlanStep represents a single step in the AI agent's execution plan.
+type PlanStep struct {
+	Title  string `json:"title"`
+	Status string `json:"status"` // pending, in_progress, completed, failed
 }

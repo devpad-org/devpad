@@ -59,7 +59,7 @@ func (h *Handler) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 	agentURL := fmt.Sprintf("ws://%s/ws/terminal", addr)
 	agentHeaders := http.Header{}
 	if agentToken != "" {
-		agentHeaders.Set("Authorization", "Bearer "+agentToken)
+		agentHeaders.Set("X-Devpad-Agent-Token", agentToken)
 	}
 	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
 	if err != nil {
@@ -137,7 +137,7 @@ func (h *Handler) HandleWatch(w http.ResponseWriter, r *http.Request) {
 	agentURL := fmt.Sprintf("ws://%s/ws/watch", addr)
 	agentHeaders := http.Header{}
 	if agentToken != "" {
-		agentHeaders.Set("Authorization", "Bearer "+agentToken)
+		agentHeaders.Set("X-Devpad-Agent-Token", agentToken)
 	}
 	agentConn, _, err := websocket.DefaultDialer.Dial(agentURL, agentHeaders)
 	if err != nil {

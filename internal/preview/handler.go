@@ -197,7 +197,7 @@ func (h *Handler) proxyToContainer(w http.ResponseWriter, r *http.Request, wsID 
 			removeCookie(req, PreviewCookieName)
 			// Authenticate with the agent.
 			if agentToken != "" {
-				req.Header.Set("Authorization", "Bearer "+agentToken)
+				req.Header.Set("X-Devpad-Agent-Token", agentToken)
 			}
 		},
 		// Flush immediately for streaming responses (SSE, chunked).

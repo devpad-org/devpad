@@ -40,10 +40,10 @@ func NewClient(host string, port int, token string) *Client {
 	}
 }
 
-// setAuth adds the authorization header to a request.
+// setAuth adds the agent authentication header to a request.
 func (c *Client) setAuth(req *http.Request) {
 	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("X-Devpad-Agent-Token", c.token)
 	}
 }
 

@@ -323,6 +323,17 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 			sendEvent(StreamEvent{ToolCalls: []ToolCall{tc}})
 			drainKeepAlive()
 
+			// For update_plan, parse steps and emit a plan event to the frontend
+			if tc.Function.Name == "update_plan" {
+				var planArgs struct {
+					Steps []PlanStep `json:"steps"`
+				}
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &planArgs); err == nil && len(planArgs.Steps) > 0 {
+					sendEvent(StreamEvent{Plan: planArgs.Steps})
+					drainKeepAlive()
+				}
+			}
+
 			// Check if this is a sudo command that needs approval
 			if tc.Function.Name == "run_command" && commandNeedsSudoApproval(tc.Function.Arguments) {
 				result, approved := h.requestApproval(r.Context(), sendEvent, tc.Function.Arguments)

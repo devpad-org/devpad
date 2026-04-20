@@ -43,6 +43,8 @@ func (e *WorkspaceToolExecutor) ExecuteTool(ctx context.Context, userID, workspa
 		return e.editFile(ctx, userID, workspaceID, params)
 	case "read_file_lines":
 		return e.readFileLines(ctx, userID, workspaceID, params)
+	case "update_plan":
+		return "Plan updated.", nil
 	default:
 		return "", fmt.Errorf("unknown tool: %s", toolName)
 	}

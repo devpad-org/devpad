@@ -99,19 +99,22 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"version": Version})
 }
 
-// requireAuth is HTTP middleware that validates a Bearer token on every request.
+// agentAuthHeader is the custom header used to authenticate requests to the agent.
+// A dedicated header is used instead of the standard Authorization header so that
+// previewed applications can use Authorization (e.g. Bearer JWT) without conflict.
+const agentAuthHeader = "X-Devpad-Agent-Token"
+
+// requireAuth is HTTP middleware that validates the agent token on every request.
 func requireAuth(token string, next http.Handler) http.Handler {
 	tokenBytes := []byte(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		const prefix = "Bearer "
-		if len(auth) < len(prefix) || auth[:len(prefix)] != prefix {
-			http.Error(w, `{"error":"missing or invalid authorization header"}`, http.StatusUnauthorized)
+		provided := []byte(r.Header.Get(agentAuthHeader))
+		if len(provided) == 0 {
+			http.Error(w, `{"error":"missing or invalid agent token"}`, http.StatusUnauthorized)
 			return
 		}
-		provided := []byte(auth[len(prefix):])
 		if subtle.ConstantTimeCompare(provided, tokenBytes) != 1 {
-			http.Error(w, `{"error":"invalid auth token"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error":"invalid agent token"}`, http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)

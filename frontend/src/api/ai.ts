@@ -42,11 +42,17 @@ export interface ApprovalRequest {
   command: string
 }
 
+export interface PlanStep {
+  title: string
+  status: 'pending' | 'in_progress' | 'completed' | 'failed'
+}
+
 export interface StreamEvent {
   content?: string
   toolCalls?: ToolCall[]
   toolResult?: ToolResult
   approvalRequired?: ApprovalRequest
+  plan?: PlanStep[]
   done?: boolean
   error?: string
 }

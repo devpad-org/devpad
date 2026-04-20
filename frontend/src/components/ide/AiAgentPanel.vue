@@ -2,7 +2,7 @@
 import { ref, computed, nextTick, onMounted } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { aiApi, type AIModel, type ChatMessage, type StreamEvent } from '@/api/ai'
+import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep } from '@/api/ai'
 
 marked.use({
   breaks: true,
@@ -50,7 +50,12 @@ interface ApprovalSegment {
   status: 'pending' | 'approved' | 'denied'
 }
 
-type MessageSegment = TextSegment | ToolSegment | ApprovalSegment
+interface PlanSegment {
+  type: 'plan'
+  steps: PlanStep[]
+}
+
+type MessageSegment = TextSegment | ToolSegment | ApprovalSegment | PlanSegment
 
 interface DisplayMessage {
   role: 'user' | 'assistant'
@@ -194,6 +199,14 @@ async function sendMessage() {
             command: event.approvalRequired.command,
             status: 'pending',
           })
+        } else if (event.plan) {
+          const segs = messages.value[assistantIdx].segments
+          const existing = segs.find((s): s is PlanSegment => s.type === 'plan')
+          if (existing) {
+            existing.steps = event.plan
+          } else {
+            segs.push({ type: 'plan', steps: event.plan })
+          }
         }
         scrollToBottom()
       },
@@ -388,6 +401,36 @@ function scrollToBottom() {
                   Denied
                 </span>
               </div>
+            </div>
+            <div v-else-if="seg.type === 'plan'" class="plan-checklist">
+              <div class="plan-header">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M9 11l3 3L22 4" />
+                  <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                </svg>
+                <span class="plan-title">Plan</span>
+              </div>
+              <ul class="plan-steps">
+                <li
+                  v-for="(step, stepIdx) in (seg as PlanSegment).steps"
+                  :key="stepIdx"
+                  class="plan-step"
+                  :class="`plan-step-${step.status}`"
+                >
+                  <span class="plan-step-icon">
+                    <svg v-if="step.status === 'completed'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                    <svg v-else-if="step.status === 'failed'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                    <span v-else-if="step.status === 'in_progress'" class="plan-step-spinner" />
+                    <span v-else class="plan-step-pending" />
+                  </span>
+                  <span class="plan-step-label">{{ step.title }}</span>
+                </li>
+              </ul>
             </div>
             <div v-else-if="seg.type === 'text' && seg.content" class="msg-text" v-html="renderMarkdown(seg.content)" />
           </template>
@@ -959,6 +1002,103 @@ function scrollToBottom() {
 .approval-badge.denied {
   background: rgba(244, 63, 94, 0.15);
   color: var(--accent-rose);
+}
+
+/* Plan checklist */
+.plan-checklist {
+  background: rgba(124, 58, 237, 0.06);
+  border: 1px solid rgba(124, 58, 237, 0.2);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin: 6px 0;
+}
+
+.plan-checklist:first-child {
+  margin-top: 0;
+}
+
+.plan-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-purple);
+  font-size: 0.72rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.plan-title {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.68rem;
+}
+
+.plan-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  padding: 3px 0;
+}
+
+.plan-step-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.plan-step-completed .plan-step-icon {
+  color: var(--accent-green);
+}
+
+.plan-step-completed .plan-step-label {
+  color: var(--text-muted);
+}
+
+.plan-step-failed .plan-step-icon {
+  color: var(--accent-rose);
+}
+
+.plan-step-failed .plan-step-label {
+  color: var(--accent-rose);
+}
+
+.plan-step-in_progress .plan-step-label {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.plan-step-pending .plan-step-label {
+  color: var(--text-muted);
+}
+
+.plan-step-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--border-default);
+  border-top-color: var(--accent-purple);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.plan-step-pending {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--border-default);
+  border-radius: 50%;
 }
 
 /* Thinking indicator */
