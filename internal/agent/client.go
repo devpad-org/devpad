@@ -59,12 +59,13 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 }
 
 // Healthz checks if the agent is healthy.
+// The health endpoint does not require authentication.
 func (c *Client) Healthz(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/healthz", nil)
 	if err != nil {
 		return err
 	}
-	resp, err := c.do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("agent health check: %w", err)
 	}
@@ -104,12 +105,13 @@ func (c *Client) WaitReady(ctx context.Context) error {
 
 // Version returns the version string of the running agent.
 // If the endpoint is not available (old agent), it returns an empty string and no error.
+// The version endpoint does not require authentication.
 func (c *Client) Version(ctx context.Context) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/version", nil)
 	if err != nil {
 		return "", err
 	}
-	resp, err := c.do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("agent version check: %w", err)
 	}

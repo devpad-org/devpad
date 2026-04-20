@@ -34,45 +34,48 @@ func main() {
 		log.Fatalf("starting filesystem watcher: %v", err)
 	}
 
-	mux := http.NewServeMux()
-
-	// Health check and version
-	mux.HandleFunc("GET /healthz", handleHealthz)
-	mux.HandleFunc("GET /api/version", handleVersion)
+	// Authenticated routes — require a valid agent token.
+	authedMux := http.NewServeMux()
 
 	// File operations
-	mux.HandleFunc("GET /api/files", handleListFiles)
-	mux.HandleFunc("GET /api/file", handleReadFile)
-	mux.HandleFunc("PUT /api/file", handleWriteFile)
-	mux.HandleFunc("DELETE /api/file", handleDeleteFile)
-	mux.HandleFunc("POST /api/file/mkdir", handleMkdir)
-	mux.HandleFunc("POST /api/file/rename", handleRename)
+	authedMux.HandleFunc("GET /api/files", handleListFiles)
+	authedMux.HandleFunc("GET /api/file", handleReadFile)
+	authedMux.HandleFunc("PUT /api/file", handleWriteFile)
+	authedMux.HandleFunc("DELETE /api/file", handleDeleteFile)
+	authedMux.HandleFunc("POST /api/file/mkdir", handleMkdir)
+	authedMux.HandleFunc("POST /api/file/rename", handleRename)
 
 	// Search and command execution
-	mux.HandleFunc("POST /api/search", handleSearchFiles)
-	mux.HandleFunc("POST /api/command", handleRunCommand)
+	authedMux.HandleFunc("POST /api/search", handleSearchFiles)
+	authedMux.HandleFunc("POST /api/command", handleRunCommand)
 
 	// Git operations
-	mux.HandleFunc("GET /api/git/status", handleGitStatus)
-	mux.HandleFunc("GET /api/git/commits", handleGitLog)
-	mux.HandleFunc("GET /api/git/branches", handleGitBranches)
-	mux.HandleFunc("GET /api/git/diff", handleGitDiff)
-	mux.HandleFunc("GET /api/git/remotes", handleGitRemotes)
-	mux.HandleFunc("POST /api/git/action", handleGitAction)
+	authedMux.HandleFunc("GET /api/git/status", handleGitStatus)
+	authedMux.HandleFunc("GET /api/git/commits", handleGitLog)
+	authedMux.HandleFunc("GET /api/git/branches", handleGitBranches)
+	authedMux.HandleFunc("GET /api/git/diff", handleGitDiff)
+	authedMux.HandleFunc("GET /api/git/remotes", handleGitRemotes)
+	authedMux.HandleFunc("POST /api/git/action", handleGitAction)
 
 	// Terminal WebSocket
-	mux.HandleFunc("GET /ws/terminal", handleTerminal)
+	authedMux.HandleFunc("GET /ws/terminal", handleTerminal)
 
 	// Filesystem watch WebSocket
-	mux.HandleFunc("GET /ws/watch", handleWatch(fsWatcher))
+	authedMux.HandleFunc("GET /ws/watch", handleWatch(fsWatcher))
 
 	// Port proxy — allows the Devpad server to reach any port through the agent.
-	mux.HandleFunc("/proxy/", handlePortProxy)
+	authedMux.HandleFunc("/proxy/", handlePortProxy)
+
+	// Top-level mux: unauthenticated health/version endpoints + auth-protected routes.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", handleHealthz)
+	mux.HandleFunc("GET /api/version", handleVersion)
+	mux.Handle("/", requireAuth(authToken, authedMux))
 
 	addr := ":" + port
 	log.Printf("devpad-agent listening on %s (workspace: %s)", addr, workspaceRoot)
 
-	srv := &http.Server{Addr: addr, Handler: requireAuth(authToken, mux)}
+	srv := &http.Server{Addr: addr, Handler: mux}
 
 	// Graceful shutdown: close the filesystem watcher and HTTP server on SIGINT/SIGTERM.
 	sigCh := make(chan os.Signal, 1)
