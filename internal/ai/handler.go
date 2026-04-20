@@ -152,7 +152,7 @@ func (h *Handler) HandleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 // maxToolIterations limits the number of tool call rounds to prevent infinite loops.
-const maxToolIterations = 25
+const maxToolIterations = 100
 
 // sseKeepAliveInterval is how often a keepalive comment is sent during silent periods.
 const sseKeepAliveInterval = 15 * time.Second
