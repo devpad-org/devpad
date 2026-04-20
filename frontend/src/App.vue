@@ -42,7 +42,7 @@ async function handleLogout() {
   justify-content: space-between;
   padding: var(--space-2) var(--space-4);
   background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   flex-shrink: 0;
 }
 
@@ -53,12 +53,9 @@ async function handleLogout() {
 }
 
 .header-brand {
-  font-weight: 700;
-  font-size: 0.95rem;
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  font-weight: 500;
+  font-size: 0.85rem;
+  color: var(--text-primary);
 }
 
 .header-nav {
@@ -82,7 +79,7 @@ async function handleLogout() {
 
 .nav-link.router-link-active {
   color: var(--accent-blue);
-  background: rgba(0, 212, 255, 0.08);
+  background: var(--accent-glow);
 }
 
 .header-user {
@@ -100,7 +97,7 @@ async function handleLogout() {
   padding: var(--space-1) var(--space-3);
   font-size: 0.8rem;
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   transition: all var(--transition-fast);
 }

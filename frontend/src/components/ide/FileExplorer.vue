@@ -316,11 +316,11 @@ function focusInput(e: { el: HTMLElement }) {
         :style="{ paddingLeft: '12px' }"
       >
         <svg v-if="creatingType === 'directory'" width="16" height="16" viewBox="0 0 24 24" fill="none">
-          <path d="M4 4h5l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" stroke="#e8a87c" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M4 4h5l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
         <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none">
-          <rect x="2" y="2" width="20" height="20" rx="3" fill="none" stroke="#6b7280" stroke-width="1.5" />
-          <path d="M8 8h8M8 12h8M8 16h5" stroke="#6b7280" stroke-width="1.5" fill="none" stroke-linecap="round" />
+          <rect x="2" y="2" width="20" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="1.5" />
+          <path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" />
         </svg>
         <input
           class="create-input"
@@ -409,7 +409,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   height: 38px;
   flex-shrink: 0;
 }
@@ -485,7 +485,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
   flex: 1;
   min-width: 0;
   padding: 1px 4px;
-  border: 1px solid var(--accent-blue);
+  border: 0.5px solid var(--accent-blue);
   border-radius: 3px;
   background: var(--bg-primary);
   color: var(--text-primary);
@@ -544,7 +544,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
   font-weight: 500;
   color: var(--text-secondary);
   background: var(--bg-hover);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: all var(--transition-fast);

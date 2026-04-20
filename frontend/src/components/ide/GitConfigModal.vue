@@ -103,7 +103,7 @@ function handleSubmit() {
 
 .modal {
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 420px;
@@ -126,7 +126,7 @@ function handleSubmit() {
   height: 36px;
   border-radius: 50%;
   flex-shrink: 0;
-  background: rgba(0, 212, 255, 0.1);
+  background: var(--accent-glow);
   color: var(--accent-blue);
 }
 
@@ -162,7 +162,7 @@ function handleSubmit() {
   width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--bg-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: inherit;
@@ -189,7 +189,7 @@ function handleSubmit() {
   background: var(--bg-surface-alt);
   margin: var(--space-4) calc(-1 * var(--space-5)) calc(-1 * var(--space-5));
   padding: var(--space-4) var(--space-5);
-  border-top: 1px solid var(--border-default);
+  border-top: 0.5px solid var(--border-default);
 }
 
 .btn {
@@ -202,7 +202,7 @@ function handleSubmit() {
 
 .btn-cancel {
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
 }
 
 .btn-cancel:hover {

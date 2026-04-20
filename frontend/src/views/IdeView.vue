@@ -140,7 +140,7 @@ function handleBack() {
     <!-- Title bar -->
     <div class="ide-titlebar">
       <button class="titlebar-back" @click="handleBack" title="Back to workspaces">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="m15 18-6-6 6-6" />
         </svg>
       </button>
@@ -156,7 +156,7 @@ function handleBack() {
           @click="editorPanel?.saveActiveFile()"
           title="Save (Ctrl+S)"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
             <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" />
             <path d="M7 3v4a1 1 0 0 0 1 1h7" />
@@ -168,7 +168,7 @@ function handleBack() {
           @click="editorPanel?.saveAllFiles()"
           title="Save All (Ctrl+Alt+S)"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
             <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" />
             <path d="M7 3v4a1 1 0 0 0 1 1h7" />
@@ -185,7 +185,7 @@ function handleBack() {
           @click="previewVisible = !previewVisible"
           title="Toggle preview panel"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <rect width="20" height="14" x="2" y="3" rx="2" />
             <path d="M8 21h8" />
             <path d="M12 17v4" />
@@ -196,7 +196,7 @@ function handleBack() {
           @click="openPreviewNewTab"
           title="Open preview in new tab"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M15 3h6v6" />
             <path d="M10 14 21 3" />
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
@@ -208,11 +208,12 @@ function handleBack() {
           @click="agentVisible = !agentVisible"
           title="Toggle AI agent"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 8V4H8" />
-            <rect width="16" height="12" x="4" y="8" rx="2" />
-            <path d="m2 14 6-6 6 6" />
-            <path d="m14 8 4 4 4-4" />
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+            <path d="M5 3v4" />
+            <path d="M19 17v4" />
+            <path d="M3 5h4" />
+            <path d="M17 19h4" />
           </svg>
         </button>
       </div>
@@ -228,7 +229,7 @@ function handleBack() {
           @click="activeSidebarTab = 'explorer'"
           title="Explorer"
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 4h5l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" />
           </svg>
         </button>
@@ -238,7 +239,7 @@ function handleBack() {
           @click="activeSidebarTab = 'git'"
           title="Source Control"
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="18" cy="18" r="3" />
             <circle cx="6" cy="6" r="3" />
             <path d="M6 21V9a9 9 0 0 0 9 9" />
@@ -250,7 +251,7 @@ function handleBack() {
           @click="activeSidebarTab = 'info'"
           title="Workspace Info"
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10" />
             <path d="M12 16v-4" />
             <path d="M12 8h.01" />
@@ -262,7 +263,7 @@ function handleBack() {
           @click="activeSidebarTab = 'services'"
           title="Database Services"
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <ellipse cx="12" cy="5" rx="9" ry="3" />
             <path d="M3 5v14a9 3 0 0 0 18 0V5" />
             <path d="M3 12a9 3 0 0 0 18 0" />
@@ -395,7 +396,7 @@ function handleBack() {
   padding: var(--space-2) var(--space-4);
   background: var(--bg-surface);
   color: var(--text-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   font-size: 0.8rem;
   transition: all var(--transition-fast);
@@ -420,7 +421,7 @@ function handleBack() {
   gap: var(--space-3);
   padding: var(--space-1) var(--space-3);
   background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   flex-shrink: 0;
   min-height: 36px;
 }
@@ -451,7 +452,7 @@ function handleBack() {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   text-transform: capitalize;
   color: var(--text-muted);
 }
@@ -544,7 +545,7 @@ function handleBack() {
   width: 48px;
   flex-shrink: 0;
   background: var(--bg-surface);
-  border-right: 1px solid var(--border-default);
+  border-right: 0.5px solid var(--border-default);
   padding-top: var(--space-2);
   gap: 2px;
 }
@@ -562,10 +563,12 @@ function handleBack() {
 }
 
 .activity-btn:hover {
-  color: var(--text-primary);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
 }
 
 .activity-btn.active {
+  background: var(--bg-selected);
   color: var(--text-primary);
 }
 

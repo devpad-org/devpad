@@ -201,7 +201,7 @@ function formatDate(dateStr: string) {
 <style scoped>
 .workspace-card {
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   padding: var(--space-4) var(--space-5);
   transition: border-color var(--transition-fast);
@@ -247,7 +247,7 @@ function formatDate(dateStr: string) {
   gap: var(--space-1);
   padding: 2px var(--space-2);
   border-radius: var(--radius-sm);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 500;
   white-space: nowrap;
   flex-shrink: 0;
@@ -260,7 +260,7 @@ function formatDate(dateStr: string) {
 }
 
 .status-running {
-  background: rgba(16, 185, 129, 0.1);
+  background: var(--success-bg);
   color: var(--accent-green);
 }
 
@@ -270,7 +270,7 @@ function formatDate(dateStr: string) {
 }
 
 .status-creating {
-  background: rgba(245, 158, 11, 0.1);
+  background: var(--warning-bg);
   color: var(--accent-amber);
 }
 
@@ -280,7 +280,7 @@ function formatDate(dateStr: string) {
 }
 
 .status-starting {
-  background: rgba(16, 185, 129, 0.1);
+  background: var(--success-bg);
   color: var(--accent-green);
 }
 
@@ -290,7 +290,7 @@ function formatDate(dateStr: string) {
 }
 
 .status-stopping {
-  background: rgba(245, 158, 11, 0.1);
+  background: var(--warning-bg);
   color: var(--accent-amber);
 }
 
@@ -313,7 +313,7 @@ function formatDate(dateStr: string) {
   align-items: center;
   justify-content: space-between;
   padding-top: var(--space-3);
-  border-top: 1px solid var(--border-default);
+  border-top: 0.5px solid var(--border-default);
 }
 
 .card-date {
@@ -343,23 +343,21 @@ function formatDate(dateStr: string) {
 .btn-open {
   background: var(--accent-blue);
   color: var(--bg-primary);
-  box-shadow: 0 0 12px rgba(0, 212, 255, 0.25);
 }
 
 .btn-open:hover {
   background: color-mix(in srgb, var(--accent-blue) 85%, white);
-  box-shadow: 0 0 20px rgba(0, 212, 255, 0.4);
 }
 
 .btn-start {
-  background: rgba(16, 185, 129, 0.12);
+  background: var(--success-bg);
   color: var(--accent-green);
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  border: 0.5px solid var(--success-border);
 }
 
 .btn-start:hover {
-  background: rgba(16, 185, 129, 0.2);
-  border-color: rgba(16, 185, 129, 0.4);
+  background: var(--success-bg);
+  border-color: var(--success-border);
 }
 
 .btn-start:disabled {
@@ -389,12 +387,12 @@ function formatDate(dateStr: string) {
 
 .transition-starting {
   color: var(--accent-green);
-  background: rgba(16, 185, 129, 0.08);
+  background: var(--success-bg);
 }
 
 .transition-stopping {
   color: var(--accent-amber);
-  background: rgba(245, 158, 11, 0.08);
+  background: var(--warning-bg);
 }
 
 .spinner {
@@ -453,7 +451,7 @@ function formatDate(dateStr: string) {
   padding: 1px var(--space-1);
   border-radius: var(--radius-sm);
   background: var(--bg-hover);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 .service-badge-icon {

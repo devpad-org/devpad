@@ -310,7 +310,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   height: 38px;
   flex-shrink: 0;
 }
@@ -354,7 +354,7 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
 }
 
 .services-select {
@@ -364,7 +364,7 @@ onUnmounted(() => {
   font-size: 0.75rem;
   background: var(--bg-primary);
   color: var(--text-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-sm);
   outline: none;
   transition: border-color var(--transition-fast);
@@ -382,12 +382,12 @@ onUnmounted(() => {
   height: 26px;
   border-radius: var(--radius-sm);
   color: var(--accent-green);
-  background: rgba(16, 185, 129, 0.1);
+  background: var(--success-bg);
   transition: all var(--transition-fast);
 }
 
 .services-add-btn:hover:not(:disabled) {
-  background: rgba(16, 185, 129, 0.2);
+  background: var(--success-bg);
 }
 
 .services-add-btn:disabled {
@@ -441,7 +441,7 @@ onUnmounted(() => {
 
 .service-card {
   background: var(--bg-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   padding: var(--space-3);
   transition: border-color var(--transition-fast);
@@ -474,7 +474,7 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   font-weight: 500;
   text-transform: capitalize;
 }
@@ -535,7 +535,7 @@ onUnmounted(() => {
 
 .info-value.mono {
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
 }
 
 /* Connection string copy */
@@ -548,17 +548,17 @@ onUnmounted(() => {
   align-items: center;
   gap: 4px;
   padding: 2px var(--space-2);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   color: var(--accent-blue);
-  background: rgba(0, 212, 255, 0.06);
-  border: 1px solid rgba(0, 212, 255, 0.15);
+  background: var(--accent-glow);
+  border: 0.5px solid var(--accent-border);
   border-radius: var(--radius-sm);
   transition: all var(--transition-fast);
 }
 
 .connstr-copy:hover {
-  background: rgba(0, 212, 255, 0.12);
-  border-color: rgba(0, 212, 255, 0.3);
+  background: var(--accent-glow);
+  border-color: var(--accent-border);
 }
 
 /* Actions */
@@ -573,7 +573,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 4px;
   padding: 2px var(--space-2);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   border-radius: var(--radius-sm);
   transition: all var(--transition-fast);
 }
@@ -588,7 +588,7 @@ onUnmounted(() => {
 }
 
 .toggle-start:hover:not(:disabled) {
-  background: rgba(16, 185, 129, 0.08);
+  background: var(--success-bg);
 }
 
 .toggle-stop {
@@ -596,7 +596,7 @@ onUnmounted(() => {
 }
 
 .toggle-stop:hover:not(:disabled) {
-  background: rgba(245, 158, 11, 0.08);
+  background: var(--warning-bg);
 }
 
 .service-delete-btn {
@@ -604,7 +604,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 4px;
   padding: 2px var(--space-2);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   color: var(--text-muted);
   border-radius: var(--radius-sm);
   transition: all var(--transition-fast);
@@ -617,7 +617,7 @@ onUnmounted(() => {
 
 .service-delete-btn:hover:not(:disabled) {
   color: var(--accent-rose);
-  background: rgba(244, 63, 94, 0.08);
+  background: var(--error-bg);
 }
 
 /* Spinner */
@@ -636,6 +636,6 @@ onUnmounted(() => {
   padding: var(--space-2) var(--space-3);
   color: var(--accent-blue);
   font-size: 0.72rem;
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
 }
 </style>

@@ -155,7 +155,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-1) var(--space-2);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   flex-shrink: 0;
   min-height: 34px;
   gap: var(--space-2);
@@ -180,7 +180,7 @@ onBeforeUnmount(() => {
   width: 64px;
   padding: 2px var(--space-2);
   background: var(--bg-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   font-family: var(--font-mono);
@@ -218,12 +218,12 @@ onBeforeUnmount(() => {
 }
 
 .preview-btn-primary {
-  color: var(--accent-green);
+  color: var(--accent);
 }
 
 .preview-btn-primary:hover:not(:disabled) {
-  color: var(--accent-green);
-  background: rgba(16, 185, 129, 0.1);
+  color: var(--accent);
+  background: var(--accent-glow);
 }
 
 .preview-separator {
@@ -276,7 +276,7 @@ onBeforeUnmount(() => {
   padding: var(--space-1) var(--space-3);
   background: var(--bg-hover);
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-sm);
   font-size: 0.75rem;
   cursor: pointer;

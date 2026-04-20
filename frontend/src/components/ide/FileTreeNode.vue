@@ -33,15 +33,15 @@ interface IconInfo {
 }
 
 function getIconInfo(name: string): IconInfo {
-  if (name.endsWith('.vue')) return { color: '#42b883', type: 'vue' }
-  if (name.endsWith('.ts') || name.endsWith('.tsx')) return { color: '#3178c6', type: 'ts' }
-  if (name.endsWith('.js') || name.endsWith('.jsx')) return { color: '#f0db4f', type: 'js' }
-  if (name.endsWith('.css') || name.endsWith('.scss') || name.endsWith('.less')) return { color: '#56b6c2', type: 'css' }
-  if (name.endsWith('.html')) return { color: '#e34c26', type: 'html' }
-  if (name.endsWith('.json')) return { color: '#f59e0b', type: 'json' }
-  if (name.endsWith('.md')) return { color: '#9ca3af', type: 'md' }
-  if (name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.svg') || name.endsWith('.ico')) return { color: '#a78bfa', type: 'image' }
-  return { color: '#6b7280', type: 'generic' }
+  if (name.endsWith('.vue')) return { color: 'currentColor', type: 'vue' }
+  if (name.endsWith('.ts') || name.endsWith('.tsx')) return { color: 'currentColor', type: 'ts' }
+  if (name.endsWith('.js') || name.endsWith('.jsx')) return { color: 'currentColor', type: 'js' }
+  if (name.endsWith('.css') || name.endsWith('.scss') || name.endsWith('.less')) return { color: 'currentColor', type: 'css' }
+  if (name.endsWith('.html')) return { color: 'currentColor', type: 'html' }
+  if (name.endsWith('.json')) return { color: 'currentColor', type: 'json' }
+  if (name.endsWith('.md')) return { color: 'currentColor', type: 'md' }
+  if (name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.svg') || name.endsWith('.ico')) return { color: 'currentColor', type: 'image' }
+  return { color: 'currentColor', type: 'generic' }
 }
 
 function stopPropagation(e: Event, action: () => void) {
@@ -67,17 +67,17 @@ function focusInput(e: { el: HTMLElement }) {
         <path
           v-if="node.expanded"
           d="M4 4h5l2 2h8a2 2 0 0 1 2 2v1H3V6a2 2 0 0 1 1-2Z"
-          stroke="#e8a87c" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"
+          stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"
         />
         <path
           v-if="node.expanded"
           d="M3 9h18l-1.5 10a2 2 0 0 1-2 1H6.5a2 2 0 0 1-2-1L3 9Z"
-          stroke="#e8a87c" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"
+          stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"
         />
         <path
           v-else
           d="M4 4h5l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"
-          stroke="#e8a87c" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"
+          stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"
         />
       </svg>
       <span class="tree-label">{{ node.name }}</span>
@@ -172,11 +172,11 @@ function focusInput(e: { el: HTMLElement }) {
         :style="{ paddingLeft: `${(depth + 1) * 16 + 12}px` }"
       >
         <svg v-if="creatingType === 'directory'" class="dir-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">
-          <path d="M4 4h5l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" stroke="#e8a87c" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M4 4h5l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
         <svg v-else class="file-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">
-          <rect x="2" y="2" width="20" height="20" rx="3" fill="none" stroke="#6b7280" stroke-width="1.5" />
-          <path d="M8 8h8M8 12h8M8 16h5" stroke="#6b7280" stroke-width="1.5" fill="none" stroke-linecap="round" />
+          <rect x="2" y="2" width="20" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="1.5" />
+          <path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" />
         </svg>
         <input
           class="create-input"
@@ -274,7 +274,7 @@ function focusInput(e: { el: HTMLElement }) {
   flex: 1;
   min-width: 0;
   padding: 1px 4px;
-  border: 1px solid var(--accent-blue);
+  border: 0.5px solid var(--accent-blue);
   border-radius: 3px;
   background: var(--bg-primary);
   color: var(--text-primary);
@@ -284,7 +284,7 @@ function focusInput(e: { el: HTMLElement }) {
 }
 
 .tree-file.selected {
-  background: rgba(0, 212, 255, 0.08);
+  background: var(--accent-glow);
   color: var(--accent-blue);
 }
 

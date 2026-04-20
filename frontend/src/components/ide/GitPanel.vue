@@ -669,7 +669,7 @@ function diffLineClass(line: string): string {
   align-items: center;
   gap: var(--space-2);
   padding: 0 var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   height: 38px;
   flex-shrink: 0;
 }
@@ -692,13 +692,13 @@ function diffLineClass(line: string): string {
 }
 
 .git-branch-badge {
-  font-size: 0.7rem;
+  font-size: 10.5px;
   font-family: var(--font-mono);
   padding: 1px 6px;
   border-radius: var(--radius-sm);
-  background: rgba(124, 58, 237, 0.15);
-  color: var(--accent-purple);
-  border: 1px solid rgba(124, 58, 237, 0.25);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  border: 0.5px solid var(--border-subtle);
 }
 
 .ahead-behind {
@@ -758,7 +758,7 @@ function diffLineClass(line: string): string {
 }
 
 .git-clone-divider {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
   opacity: 0.6;
 }
@@ -778,7 +778,7 @@ function diffLineClass(line: string): string {
   font-family: var(--font-mono);
   color: var(--text-primary);
   background: var(--bg-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   outline: none;
   transition: border-color var(--transition-fast);
@@ -802,7 +802,7 @@ function diffLineClass(line: string): string {
 /* Tabs */
 .git-tabs {
   display: flex;
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   flex-shrink: 0;
 }
 
@@ -830,7 +830,7 @@ function diffLineClass(line: string): string {
 }
 
 .git-tab-badge {
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   min-width: 16px;
   height: 16px;
   display: flex;
@@ -853,12 +853,12 @@ function diffLineClass(line: string): string {
   display: flex;
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
 }
 
 /* Sections */
 .git-section {
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
 }
 
 .git-section-header {
@@ -866,7 +866,7 @@ function diffLineClass(line: string): string {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-1) var(--space-3);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-secondary);
   text-transform: uppercase;
@@ -893,8 +893,8 @@ function diffLineClass(line: string): string {
 
 .git-file-status {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
-  font-weight: 700;
+  font-size: 0.75rem;
+  font-weight: 500;
   width: 14px;
   text-align: center;
   flex-shrink: 0;
@@ -909,7 +909,7 @@ function diffLineClass(line: string): string {
 }
 
 .git-file-dir {
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -929,7 +929,7 @@ function diffLineClass(line: string): string {
 /* Commit box */
 .git-commit-box {
   padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--border-default);
+  border-top: 0.5px solid var(--border-default);
   flex-shrink: 0;
 }
 
@@ -938,7 +938,7 @@ function diffLineClass(line: string): string {
   padding: var(--space-2);
   background: var(--bg-primary);
   color: var(--text-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   font-family: var(--font-sans);
   font-size: 0.75rem;
@@ -963,7 +963,7 @@ function diffLineClass(line: string): string {
   padding: var(--space-1) var(--space-3);
   font-size: 0.75rem;
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   color: var(--text-primary);
   background: var(--bg-surface-alt);
   transition: all var(--transition-fast);
@@ -992,20 +992,20 @@ function diffLineClass(line: string): string {
 
 .git-btn--small {
   padding: 2px var(--space-2);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 .git-btn--remotes {
   margin-left: auto;
-  color: var(--accent-purple);
-  border-color: rgba(124, 58, 237, 0.25);
-  background: rgba(124, 58, 237, 0.06);
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+  background: var(--bg-raised);
 }
 
 .git-btn--remotes:hover:not(:disabled) {
-  background: rgba(124, 58, 237, 0.12);
-  border-color: rgba(124, 58, 237, 0.4);
-  color: var(--accent-purple);
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
 }
 
 .git-btn--commit {
@@ -1022,14 +1022,14 @@ function diffLineClass(line: string): string {
 
 .git-output pre {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-all;
   background: var(--bg-primary);
   padding: var(--space-2);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   max-height: 100px;
   overflow-y: auto;
 }
@@ -1037,7 +1037,7 @@ function diffLineClass(line: string): string {
 /* Commit log */
 .git-commit-entry {
   padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   transition: background var(--transition-fast);
 }
 
@@ -1054,12 +1054,12 @@ function diffLineClass(line: string): string {
 
 .git-commit-hash {
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   color: var(--accent-blue);
 }
 
 .git-commit-time {
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   color: var(--text-muted);
 }
 
@@ -1073,7 +1073,7 @@ function diffLineClass(line: string): string {
 }
 
 .git-commit-author {
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   color: var(--text-muted);
   margin-top: 1px;
 }
@@ -1083,7 +1083,7 @@ function diffLineClass(line: string): string {
   display: flex;
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
 }
 
 .git-branch-input {
@@ -1091,7 +1091,7 @@ function diffLineClass(line: string): string {
   padding: 3px var(--space-2);
   background: var(--bg-primary);
   color: var(--text-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-sm);
   font-size: 0.72rem;
   outline: none;
@@ -1134,7 +1134,7 @@ function diffLineClass(line: string): string {
 }
 
 .git-branch-hash {
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   font-family: var(--font-mono);
   color: var(--text-muted);
   margin-left: auto;
@@ -1155,7 +1155,7 @@ function diffLineClass(line: string): string {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   flex-shrink: 0;
 }
 
@@ -1171,12 +1171,12 @@ function diffLineClass(line: string): string {
 }
 
 .git-diff-badge {
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   padding: 1px 5px;
   border-radius: var(--radius-sm);
-  background: rgba(16, 185, 129, 0.15);
+  background: var(--success-bg);
   color: var(--accent-green);
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  border: 0.5px solid var(--success-border);
 }
 
 .git-diff-content {
@@ -1196,18 +1196,18 @@ function diffLineClass(line: string): string {
 }
 
 .diff-add {
-  background: rgba(16, 185, 129, 0.1);
+  background: var(--success-bg);
   color: var(--accent-green);
 }
 
 .diff-del {
-  background: rgba(244, 63, 94, 0.1);
+  background: var(--error-bg);
   color: var(--accent-rose);
 }
 
 .diff-hunk {
   color: var(--accent-blue);
-  background: rgba(0, 212, 255, 0.05);
+  background: var(--accent-glow);
 }
 
 .diff-meta {

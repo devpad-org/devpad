@@ -110,7 +110,7 @@ async function handleSubmit() {
   max-width: 380px;
   padding: var(--space-8);
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
 }
 
@@ -120,12 +120,9 @@ async function handleSubmit() {
 }
 
 .form-title {
-  font-size: 1.75rem;
-  font-weight: 700;
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  font-size: 1.5rem;
+  font-weight: 500;
+  color: var(--text-primary);
   margin-bottom: var(--space-1);
 }
 
@@ -137,8 +134,8 @@ async function handleSubmit() {
 .form-error {
   padding: var(--space-3);
   margin-bottom: var(--space-4);
-  background: rgba(244, 63, 94, 0.1);
-  border: 1px solid rgba(244, 63, 94, 0.3);
+  background: var(--error-bg);
+  border: 0.5px solid var(--error-border);
   border-radius: var(--radius-md);
   color: var(--accent-rose);
   font-size: 0.85rem;
@@ -160,7 +157,7 @@ async function handleSubmit() {
   width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--bg-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: inherit;
@@ -170,8 +167,8 @@ async function handleSubmit() {
 
 .form-field input:focus {
   outline: none;
-  border-color: var(--accent-blue);
-  box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.15);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 .form-field input::placeholder {
@@ -182,11 +179,11 @@ async function handleSubmit() {
   width: 100%;
   padding: var(--space-2) var(--space-4);
   margin-top: var(--space-2);
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
-  color: white;
-  font-weight: 600;
-  font-size: 0.9rem;
-  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--bg-base);
+  font-weight: 500;
+  font-size: 0.85rem;
+  border-radius: var(--radius-lg);
   transition: opacity var(--transition-fast);
 }
 
@@ -205,7 +202,7 @@ async function handleSubmit() {
   margin-top: var(--space-2);
   font-size: 0.85rem;
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   transition: all var(--transition-fast);
 }

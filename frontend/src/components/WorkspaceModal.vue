@@ -91,7 +91,7 @@ function handleSubmit() {
 
 .modal {
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 480px;
@@ -103,7 +103,7 @@ function handleSubmit() {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
 }
 
 .modal-title {
@@ -142,7 +142,7 @@ function handleSubmit() {
   width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--bg-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: inherit;
@@ -183,7 +183,7 @@ function handleSubmit() {
 
 .btn-secondary {
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
 }
 
 .btn-secondary:hover {

@@ -408,7 +408,7 @@ async function saveRename(oldName: string) {
 
 .modal {
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 520px;
@@ -424,7 +424,7 @@ async function saveRename(oldName: string) {
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   flex-shrink: 0;
 }
 
@@ -432,12 +432,12 @@ async function saveRename(oldName: string) {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
   flex-shrink: 0;
-  background: rgba(124, 58, 237, 0.1);
-  color: var(--accent-purple);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
 }
 
 .modal-title {
@@ -522,7 +522,7 @@ async function saveRename(oldName: string) {
 
 .remote-card {
   background: var(--bg-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   padding: var(--space-3);
   transition: border-color var(--transition-fast);
@@ -580,12 +580,12 @@ async function saveRename(oldName: string) {
 
 .remote-action-btn--danger:hover:not(:disabled) {
   color: var(--accent-rose);
-  background: rgba(244, 63, 94, 0.1);
+  background: var(--error-bg);
 }
 
 .remote-action-btn--confirm:hover:not(:disabled) {
   color: var(--accent-green);
-  background: rgba(16, 185, 129, 0.1);
+  background: var(--success-bg);
 }
 
 /* URL display */
@@ -601,7 +601,7 @@ async function saveRename(oldName: string) {
 }
 
 .remote-url-label {
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -644,7 +644,7 @@ async function saveRename(oldName: string) {
   flex: 1;
   padding: var(--space-1) var(--space-2);
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   font-family: var(--font-mono);
@@ -671,22 +671,22 @@ async function saveRename(oldName: string) {
 }
 
 .remotes-message--error {
-  background: rgba(244, 63, 94, 0.08);
+  background: var(--error-bg);
   color: var(--accent-rose);
-  border: 1px solid rgba(244, 63, 94, 0.2);
+  border: 0.5px solid var(--error-border);
 }
 
 .remotes-message--success {
-  background: rgba(16, 185, 129, 0.08);
+  background: var(--success-bg);
   color: var(--accent-green);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  border: 0.5px solid var(--success-border);
 }
 
 /* Add form */
 .add-remote-form {
   margin-top: var(--space-3);
   padding-top: var(--space-3);
-  border-top: 1px solid var(--border-default);
+  border-top: 0.5px solid var(--border-default);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -710,7 +710,7 @@ async function saveRename(oldName: string) {
   justify-content: flex-end;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-5);
-  border-top: 1px solid var(--border-default);
+  border-top: 0.5px solid var(--border-default);
   background: var(--bg-surface-alt);
   flex-shrink: 0;
 }
@@ -732,19 +732,19 @@ async function saveRename(oldName: string) {
 }
 
 .btn-add {
-  color: var(--accent-purple);
-  border: 1px solid rgba(124, 58, 237, 0.3);
-  background: rgba(124, 58, 237, 0.08);
+  color: var(--accent);
+  border: 0.5px solid var(--accent-border);
+  background: var(--accent-glow);
 }
 
 .btn-add:hover {
-  background: rgba(124, 58, 237, 0.15);
-  border-color: rgba(124, 58, 237, 0.5);
+  background: color-mix(in srgb, var(--accent-glow) 150%, transparent);
+  border-color: var(--accent-border);
 }
 
 .btn-cancel {
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
 }
 
 .btn-cancel:hover {

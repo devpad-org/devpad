@@ -30,28 +30,29 @@ function connect() {
   terminal = new Terminal({
     cursorBlink: true,
     fontSize: 13,
-    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+    lineHeight: 1.65,
+    fontFamily: "'Geist Mono', 'JetBrains Mono', Menlo, monospace",
     theme: {
-      background: '#0a0d13',
-      foreground: '#c9d1d9',
-      cursor: '#00d4ff',
-      selectionBackground: 'rgba(0, 212, 255, 0.2)',
-      black: '#0a0d13',
-      red: '#f43f5e',
-      green: '#10b981',
-      yellow: '#f59e0b',
-      blue: '#00d4ff',
-      magenta: '#7c3aed',
-      cyan: '#06b6d4',
-      white: '#c9d1d9',
-      brightBlack: '#6e7681',
-      brightRed: '#fb7185',
-      brightGreen: '#34d399',
-      brightYellow: '#fbbf24',
-      brightBlue: '#38bdf8',
-      brightMagenta: '#a78bfa',
-      brightCyan: '#22d3ee',
-      brightWhite: '#f0f6fc',
+      background: '#0b0d11',
+      foreground: '#e8eaed',
+      cursor: '#4dd0e1',
+      selectionBackground: 'rgba(77, 208, 225, 0.2)',
+      black: '#0b0d11',
+      red: '#d4a24c',
+      green: '#6fbf73',
+      yellow: '#d4a24c',
+      blue: '#4dd0e1',
+      magenta: '#9499a2',
+      cyan: '#4dd0e1',
+      white: '#e8eaed',
+      brightBlack: '#5f646e',
+      brightRed: '#d4a24c',
+      brightGreen: '#6fbf73',
+      brightYellow: '#d4a24c',
+      brightBlue: '#4dd0e1',
+      brightMagenta: '#9499a2',
+      brightCyan: '#4dd0e1',
+      brightWhite: '#e8eaed',
     },
   })
 
@@ -184,7 +185,7 @@ watch(() => props.minimized, (isMinimized) => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0a0d13;
+  background: var(--bg-base);
 }
 
 .terminal-header {
@@ -193,7 +194,7 @@ watch(() => props.minimized, (isMinimized) => {
   justify-content: space-between;
   padding: var(--space-1) var(--space-3);
   background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   flex-shrink: 0;
 }
 
@@ -218,7 +219,7 @@ watch(() => props.minimized, (isMinimized) => {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   color: var(--text-muted);
 }
 
@@ -267,7 +268,7 @@ watch(() => props.minimized, (isMinimized) => {
   padding: var(--space-1) var(--space-3);
   color: var(--accent-rose);
   font-size: 0.7rem;
-  background: rgba(244, 63, 94, 0.1);
-  border-top: 1px solid rgba(244, 63, 94, 0.2);
+  background: var(--error-bg);
+  border-top: 0.5px solid var(--error-border);
 }
 </style>

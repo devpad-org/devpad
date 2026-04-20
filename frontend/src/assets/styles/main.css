@@ -1,31 +1,46 @@
 :root {
-  /* Background */
-  --bg-primary: #0e1117;
-  --bg-secondary: #121620;
-  --bg-tertiary: #161b28;
-  --bg-surface: #141821;
-  --bg-surface-alt: #1a1f2e;
-  --bg-hover: rgba(255, 255, 255, 0.04);
-
-  /* Accent */
-  --accent-blue: #00d4ff;
-  --accent-purple: #7c3aed;
-  --accent-green: #10b981;
-  --accent-amber: #f59e0b;
-  --accent-rose: #f43f5e;
-
-  /* Text */
-  --text-primary: #e4e4e7;
-  --text-secondary: #a1a1aa;
-  --text-muted: #71717a;
+  /* Surfaces */
+  --bg-void: #08090c;
+  --bg-base: #0b0d11;
+  --bg-elevated: #0f1116;
+  --bg-raised: #14161c;
+  --bg-hover: rgba(255, 255, 255, 0.035);
+  --bg-selected: rgba(255, 255, 255, 0.06);
 
   /* Borders */
-  --border-default: rgba(255, 255, 255, 0.08);
-  --border-active: rgba(255, 255, 255, 0.16);
+  --border-hairline: rgba(255, 255, 255, 0.04);
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.1);
+  --border-top-highlight: rgba(255, 255, 255, 0.05);
+
+  /* Text */
+  --text-primary: #e8eaed;
+  --text-secondary: #9499a2;
+  --text-tertiary: #5f646e;
+  --text-dim: #40454e;
+
+  /* Accent — one chromatic color in the UI */
+  --accent: #4dd0e1;
+  --accent-dim: #2a7a84;
+  --accent-glow: rgba(77, 208, 225, 0.12);
+  --accent-border: rgba(77, 208, 225, 0.25);
+
+  /* Semantic */
+  --success: #6fbf73;
+  --warning: #d4a24c;
+  --error: #e07373;
+
+  /* Semantic tints — for filled backgrounds and borders */
+  --error-bg: rgba(224, 115, 115, 0.08);
+  --error-border: rgba(224, 115, 115, 0.2);
+  --success-bg: rgba(111, 191, 115, 0.08);
+  --success-border: rgba(111, 191, 115, 0.2);
+  --warning-bg: rgba(212, 162, 76, 0.08);
+  --warning-border: rgba(212, 162, 76, 0.2);
 
   /* Typography */
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'Geist Mono', 'JetBrains Mono', Menlo, monospace;
 
   /* Spacing */
   --space-1: 4px;
@@ -37,13 +52,29 @@
   --space-8: 32px;
 
   /* Radius */
-  --radius-sm: 4px;
-  --radius-md: 6px;
+  --radius-sm: 3px;
+  --radius-md: 5px;
   --radius-lg: 8px;
+  --radius-xl: 12px;
 
   /* Transitions */
   --transition-fast: 150ms ease;
-  --transition-normal: 250ms ease;
+  --transition-normal: 200ms ease;
+
+  /* Backward-compat aliases — resolve to new tokens */
+  --bg-primary: var(--bg-base);
+  --bg-secondary: var(--bg-void);
+  --bg-tertiary: var(--bg-elevated);
+  --bg-surface: var(--bg-elevated);
+  --bg-surface-alt: var(--bg-raised);
+  --accent-blue: var(--accent);
+  --accent-purple: var(--accent-dim);
+  --accent-green: var(--success);
+  --accent-amber: var(--warning);
+  --accent-rose: var(--error);
+  --text-muted: var(--text-tertiary);
+  --border-default: var(--border-subtle);
+  --border-active: var(--border-strong);
 }
 
 *,
@@ -61,7 +92,8 @@ body {
   font-size: 14px;
   line-height: 1.5;
   color: var(--text-primary);
-  background-color: var(--bg-primary);
+  background-color: var(--bg-base);
+  font-feature-settings: "ss01", "cv11";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -73,13 +105,13 @@ body {
 }
 
 a {
-  color: var(--accent-blue);
+  color: var(--accent);
   text-decoration: none;
   transition: color var(--transition-fast);
 }
 
 a:hover {
-  color: color-mix(in srgb, var(--accent-blue) 80%, white);
+  color: color-mix(in srgb, var(--accent) 80%, white);
 }
 
 button {
@@ -96,12 +128,12 @@ pre {
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent-blue);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-glow), 0 0 0 1px var(--accent-border);
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--accent-purple) 40%, transparent);
+  background: var(--accent-glow);
 }
 
 ::-webkit-scrollbar {

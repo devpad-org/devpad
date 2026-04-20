@@ -600,7 +600,7 @@ function isSelf(user: AdminUser): boolean {
 
 .admin-title {
   font-size: 1.5rem;
-  font-weight: 700;
+  font-weight: 500;
   color: var(--text-primary);
   margin-bottom: var(--space-1);
 }
@@ -612,11 +612,11 @@ function isSelf(user: AdminUser): boolean {
 
 .btn-create {
   padding: var(--space-2) var(--space-4);
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
-  color: white;
-  font-weight: 600;
+  background: var(--accent);
+  color: var(--bg-base);
+  font-weight: 500;
   font-size: 0.85rem;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   transition: opacity var(--transition-fast);
   white-space: nowrap;
 }
@@ -633,8 +633,8 @@ function isSelf(user: AdminUser): boolean {
 }
 
 .alert-error {
-  background: rgba(244, 63, 94, 0.1);
-  border: 1px solid rgba(244, 63, 94, 0.3);
+  background: var(--error-bg);
+  border: 0.5px solid var(--error-border);
   color: var(--accent-rose);
 }
 
@@ -646,7 +646,7 @@ function isSelf(user: AdminUser): boolean {
 
 .users-table-wrap {
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   overflow: hidden;
 }
@@ -665,14 +665,14 @@ function isSelf(user: AdminUser): boolean {
   letter-spacing: 0.05em;
   color: var(--text-muted);
   background: var(--bg-surface-alt);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
 }
 
 .users-table td {
   padding: var(--space-3) var(--space-4);
   font-size: 0.85rem;
   color: var(--text-secondary);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
 }
 
 .users-table tr:last-child td {
@@ -703,14 +703,14 @@ function isSelf(user: AdminUser): boolean {
   margin-left: var(--space-2);
   vertical-align: middle;
   padding: 1px 6px;
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   border-radius: var(--radius-sm);
-  background: rgba(0, 212, 255, 0.1);
+  background: var(--accent-glow);
   color: var(--accent-blue);
-  border: 1px solid rgba(0, 212, 255, 0.2);
+  border: 0.5px solid var(--accent-border);
 }
 
 .badge-role {
@@ -722,15 +722,15 @@ function isSelf(user: AdminUser): boolean {
 }
 
 .badge-role.admin {
-  background: rgba(124, 58, 237, 0.15);
-  color: var(--accent-purple);
-  border: 1px solid rgba(124, 58, 237, 0.3);
+  background: var(--accent-glow);
+  color: var(--accent);
+  border: 0.5px solid var(--accent-border);
 }
 
 .badge-role.user {
   background: rgba(161, 161, 170, 0.1);
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
 }
 
 .cell-actions {
@@ -742,7 +742,7 @@ function isSelf(user: AdminUser): boolean {
   padding: var(--space-1) var(--space-2);
   font-size: 0.75rem;
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-sm);
   transition: all var(--transition-fast);
   white-space: nowrap;
@@ -756,8 +756,8 @@ function isSelf(user: AdminUser): boolean {
 
 .btn-action.btn-danger:hover:not(:disabled) {
   color: var(--accent-rose);
-  border-color: rgba(244, 63, 94, 0.4);
-  background: rgba(244, 63, 94, 0.08);
+  border-color: var(--error-border);
+  background: var(--error-bg);
 }
 
 .btn-action:disabled {
@@ -789,7 +789,7 @@ function isSelf(user: AdminUser): boolean {
   max-width: 420px;
   padding: var(--space-6);
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
 }
@@ -830,7 +830,7 @@ function isSelf(user: AdminUser): boolean {
   width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--bg-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: inherit;
@@ -840,8 +840,8 @@ function isSelf(user: AdminUser): boolean {
 
 .form-field input:focus {
   outline: none;
-  border-color: var(--accent-blue);
-  box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.15);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 .form-field input::placeholder {
@@ -882,11 +882,11 @@ function isSelf(user: AdminUser): boolean {
 
 .btn-primary {
   padding: var(--space-2) var(--space-4);
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
-  color: white;
-  font-weight: 600;
+  background: var(--accent);
+  color: var(--bg-base);
+  font-weight: 500;
   font-size: 0.85rem;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   transition: opacity var(--transition-fast);
 }
 
@@ -903,7 +903,7 @@ function isSelf(user: AdminUser): boolean {
   padding: var(--space-2) var(--space-4);
   font-size: 0.85rem;
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   transition: all var(--transition-fast);
 }
@@ -919,14 +919,14 @@ function isSelf(user: AdminUser): boolean {
   font-weight: 600;
   font-size: 0.85rem;
   border-radius: var(--radius-md);
-  background: rgba(244, 63, 94, 0.15);
+  background: var(--error-bg);
   color: var(--accent-rose);
-  border: 1px solid rgba(244, 63, 94, 0.3);
+  border: 0.5px solid var(--error-border);
   transition: all var(--transition-fast);
 }
 
 .btn-delete:hover:not(:disabled) {
-  background: rgba(244, 63, 94, 0.25);
+  background: var(--error-bg);
 }
 
 .btn-delete:disabled {
@@ -935,8 +935,8 @@ function isSelf(user: AdminUser): boolean {
 }
 
 .alert-success {
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: var(--success-bg);
+  border: 0.5px solid var(--success-border);
   color: var(--accent-green);
   padding: var(--space-3);
   margin-bottom: var(--space-4);
@@ -954,7 +954,7 @@ function isSelf(user: AdminUser): boolean {
 .ai-provider-card {
   padding: var(--space-4);
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
 }
 
@@ -1000,7 +1000,7 @@ function isSelf(user: AdminUser): boolean {
   height: 20px;
   background: var(--bg-surface-alt);
   border-radius: 10px;
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   transition: background var(--transition-fast);
 }
 
@@ -1017,8 +1017,8 @@ function isSelf(user: AdminUser): boolean {
 }
 
 .toggle-input:checked + .toggle-switch {
-  background: rgba(16, 185, 129, 0.2);
-  border-color: rgba(16, 185, 129, 0.4);
+  background: var(--success-bg);
+  border-color: var(--success-border);
 }
 
 .toggle-input:checked + .toggle-switch::after {
@@ -1036,21 +1036,21 @@ function isSelf(user: AdminUser): boolean {
 }
 
 .badge-status.running {
-  background: rgba(16, 185, 129, 0.15);
+  background: var(--success-bg);
   color: var(--accent-green);
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  border: 0.5px solid var(--success-border);
 }
 
 .badge-status.stopped {
   background: rgba(161, 161, 170, 0.1);
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
 }
 
 .badge-status.creating {
-  background: rgba(245, 158, 11, 0.15);
+  background: var(--warning-bg);
   color: var(--accent-amber);
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  border: 0.5px solid var(--warning-border);
 }
 
 .cell-limit {
@@ -1063,7 +1063,7 @@ function isSelf(user: AdminUser): boolean {
   width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--bg-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: var(--font-mono);
@@ -1073,7 +1073,7 @@ function isSelf(user: AdminUser): boolean {
 
 .form-field input[type='number']:focus {
   outline: none;
-  border-color: var(--accent-blue);
-  box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.15);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 </style>

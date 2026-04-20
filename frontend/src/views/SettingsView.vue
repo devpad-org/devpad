@@ -434,7 +434,7 @@ function openRegenerateConfirm() {
 
 .settings-title {
   font-size: 1.5rem;
-  font-weight: 700;
+  font-weight: 500;
   color: var(--text-primary);
   margin-bottom: var(--space-1);
 }
@@ -448,7 +448,7 @@ function openRegenerateConfirm() {
 .settings-section {
   padding: var(--space-6);
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   margin-bottom: var(--space-6);
 }
@@ -475,14 +475,14 @@ function openRegenerateConfirm() {
 }
 
 .alert-error {
-  background: rgba(244, 63, 94, 0.1);
-  border: 1px solid rgba(244, 63, 94, 0.3);
+  background: var(--error-bg);
+  border: 0.5px solid var(--error-border);
   color: var(--accent-rose);
 }
 
 .alert-success {
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: var(--success-bg);
+  border: 0.5px solid var(--success-border);
   color: var(--accent-green);
 }
 
@@ -503,7 +503,7 @@ function openRegenerateConfirm() {
   width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--bg-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: inherit;
@@ -513,8 +513,8 @@ function openRegenerateConfirm() {
 
 .form-field input:focus {
   outline: none;
-  border-color: var(--accent-blue);
-  box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.15);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 .form-field input::placeholder {
@@ -523,11 +523,11 @@ function openRegenerateConfirm() {
 
 .btn-primary {
   padding: var(--space-2) var(--space-4);
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
-  color: white;
-  font-weight: 600;
+  background: var(--accent);
+  color: var(--bg-base);
+  font-weight: 500;
   font-size: 0.85rem;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   transition: opacity var(--transition-fast);
 }
 
@@ -544,7 +544,7 @@ function openRegenerateConfirm() {
   padding: var(--space-2) var(--space-4);
   font-size: 0.85rem;
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   transition: all var(--transition-fast);
 }
@@ -560,14 +560,14 @@ function openRegenerateConfirm() {
   font-size: 0.85rem;
   font-weight: 500;
   color: var(--accent-rose);
-  border: 1px solid rgba(244, 63, 94, 0.3);
+  border: 0.5px solid var(--error-border);
   border-radius: var(--radius-md);
   background: transparent;
   transition: all var(--transition-fast);
 }
 
 .btn-danger-outline:hover {
-  background: rgba(244, 63, 94, 0.08);
+  background: var(--error-bg);
 }
 
 .btn-danger {
@@ -575,14 +575,14 @@ function openRegenerateConfirm() {
   font-weight: 600;
   font-size: 0.85rem;
   border-radius: var(--radius-md);
-  background: rgba(244, 63, 94, 0.15);
+  background: var(--error-bg);
   color: var(--accent-rose);
-  border: 1px solid rgba(244, 63, 94, 0.3);
+  border: 0.5px solid var(--error-border);
   transition: all var(--transition-fast);
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: rgba(244, 63, 94, 0.25);
+  background: var(--error-bg);
 }
 
 .btn-danger:disabled {
@@ -615,15 +615,15 @@ function openRegenerateConfirm() {
 }
 
 .mfa-badge.enabled {
-  background: rgba(16, 185, 129, 0.1);
+  background: var(--success-bg);
   color: var(--accent-green);
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  border: 0.5px solid var(--success-border);
 }
 
 .mfa-badge.disabled {
   background: rgba(161, 161, 170, 0.1);
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
 }
 
 .mfa-dot {
@@ -653,8 +653,8 @@ function openRegenerateConfirm() {
 
 .mfa-disable-form {
   padding: var(--space-4);
-  background: rgba(244, 63, 94, 0.04);
-  border: 1px solid rgba(244, 63, 94, 0.15);
+  background: var(--error-bg);
+  border: 0.5px solid var(--error-border);
   border-radius: var(--radius-md);
 }
 
@@ -682,10 +682,10 @@ function openRegenerateConfirm() {
   width: 24px;
   height: 24px;
   flex-shrink: 0;
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
-  color: white;
+  background: var(--accent);
+  color: var(--bg-base);
   font-size: 0.75rem;
-  font-weight: 700;
+  font-weight: 500;
   border-radius: 50%;
 }
 
@@ -733,7 +733,7 @@ function openRegenerateConfirm() {
 .secret-value {
   padding: var(--space-2) var(--space-3);
   background: var(--bg-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
   font-size: 0.85rem;
@@ -771,7 +771,7 @@ function openRegenerateConfirm() {
 .ssh-key-value {
   padding: var(--space-2) var(--space-3);
   background: var(--bg-primary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
   font-size: 0.75rem;

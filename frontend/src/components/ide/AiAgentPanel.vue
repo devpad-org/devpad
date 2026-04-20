@@ -338,10 +338,11 @@ function scrollToBottom() {
       <div class="agent-header-info">
         <span class="agent-avatar">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 8V4H8" />
-            <rect width="16" height="12" x="4" y="8" rx="2" />
-            <path d="m2 14 6-6 6 6" />
-            <path d="m14 8 4 4 4-4" />
+            <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+            <path d="M5 3v4" />
+            <path d="M19 17v4" />
+            <path d="M3 5h4" />
+            <path d="M17 19h4" />
           </svg>
         </span>
         <span class="agent-title">AI Agent</span>
@@ -364,10 +365,11 @@ function scrollToBottom() {
       <div v-if="messages.length === 0" class="chat-empty">
         <div class="empty-icon">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 8V4H8" />
-            <rect width="16" height="12" x="4" y="8" rx="2" />
-            <path d="m2 14 6-6 6 6" />
-            <path d="m14 8 4 4 4-4" />
+            <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+            <path d="M5 3v4" />
+            <path d="M19 17v4" />
+            <path d="M3 5h4" />
+            <path d="M17 19h4" />
           </svg>
         </div>
         <p class="empty-text">Ask me anything about your code.</p>
@@ -381,10 +383,11 @@ function scrollToBottom() {
         <div class="msg-avatar">
           <template v-if="msg.role === 'assistant'">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 8V4H8" />
-              <rect width="16" height="12" x="4" y="8" rx="2" />
-              <path d="m2 14 6-6 6 6" />
-              <path d="m14 8 4 4 4-4" />
+              <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+              <path d="M5 3v4" />
+              <path d="M19 17v4" />
+              <path d="M3 5h4" />
+              <path d="M17 19h4" />
             </svg>
           </template>
           <template v-else>
@@ -528,7 +531,7 @@ function scrollToBottom() {
           </svg>
         </button>
         <button v-else class="agent-send" :class="{ active: inputValue.trim() }" @click="sendMessage" title="Send">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
             <path d="m22 2-7 20-4-9-9-4Z" />
             <path d="M22 2 11 13" />
           </svg>
@@ -550,7 +553,7 @@ function scrollToBottom() {
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   height: 38px;
   flex-shrink: 0;
 }
@@ -565,11 +568,11 @@ function scrollToBottom() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-md);
-  background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
-  color: white;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--bg-base);
 }
 
 .agent-title {
@@ -585,14 +588,14 @@ function scrollToBottom() {
 }
 
 .agent-badge {
-  font-size: 0.6rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 2px 8px;
-  border-radius: 9999px;
-  background: rgba(124, 58, 237, 0.15);
-  color: var(--accent-purple);
+  font-size: 10.5px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  padding: 1px 7px;
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--text-tertiary);
+  border: 0.5px solid var(--border-subtle);
 }
 
 .new-chat-btn {
@@ -604,23 +607,23 @@ function scrollToBottom() {
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   cursor: pointer;
   transition: all var(--transition-fast);
 }
 
 .new-chat-btn:hover {
-  background: var(--bg-surface-alt);
+  background: var(--bg-raised);
   color: var(--text-primary);
-  border-color: var(--accent-purple);
+  border-color: var(--border-strong);
 }
 
 .model-selector {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   padding: 2px 8px;
   border-radius: var(--radius-md);
   background: var(--bg-surface-alt);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   color: var(--text-secondary);
   outline: none;
   cursor: pointer;
@@ -628,7 +631,7 @@ function scrollToBottom() {
 }
 
 .model-selector:focus {
-  border-color: var(--accent-purple);
+  border-color: var(--accent-border);
 }
 
 .chat-empty {
@@ -648,8 +651,8 @@ function scrollToBottom() {
   width: 40px;
   height: 40px;
   border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
-  color: white;
+  background: var(--bg-raised);
+  color: var(--text-tertiary);
 }
 
 .empty-text {
@@ -684,8 +687,8 @@ function scrollToBottom() {
 }
 
 .msg-assistant .msg-avatar {
-  background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
-  color: white;
+  background: var(--accent);
+  color: var(--bg-base);
 }
 
 .msg-user .msg-avatar {
@@ -708,13 +711,13 @@ function scrollToBottom() {
 }
 
 .msg-user .msg-content {
-  background: rgba(0, 212, 255, 0.06);
+  background: var(--bg-raised);
   color: var(--text-primary);
 }
 
 .agent-input-area {
   padding: var(--space-3);
-  border-top: 1px solid var(--border-default);
+  border-top: 0.5px solid var(--border-default);
   flex-shrink: 0;
 }
 
@@ -723,7 +726,7 @@ function scrollToBottom() {
   align-items: flex-end;
   gap: var(--space-2);
   background: var(--bg-surface-alt);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg, 12px);
   padding: var(--space-2, 8px);
   padding-left: var(--space-3, 12px);
@@ -732,8 +735,8 @@ function scrollToBottom() {
 }
 
 .input-container.focused {
-  border-color: var(--accent-purple);
-  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.15);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 .agent-input {
@@ -759,11 +762,11 @@ function scrollToBottom() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-md, 8px);
-  background: rgba(124, 58, 237, 0.2);
-  color: var(--text-muted);
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-md);
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
   flex-shrink: 0;
   transition: all var(--transition-fast);
   cursor: pointer;
@@ -771,8 +774,8 @@ function scrollToBottom() {
 }
 
 .agent-send.active {
-  background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
-  color: white;
+  background: var(--accent);
+  color: var(--bg-base);
 }
 
 .agent-send.active:hover {
@@ -781,8 +784,8 @@ function scrollToBottom() {
 }
 
 .agent-stop {
-  background: var(--color-error, #f43f5e) !important;
-  color: white !important;
+  background: var(--warning) !important;
+  color: var(--bg-base) !important;
 }
 
 .agent-stop:hover {
@@ -799,21 +802,21 @@ function scrollToBottom() {
 }
 
 .markdown-body :deep(code) {
-  font-family: var(--font-mono, 'JetBrains Mono', 'Fira Code', monospace);
+  font-family: var(--font-mono);
   font-size: 0.85em;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--bg-raised);
   padding: 0.15em 0.4em;
-  border-radius: var(--radius-sm, 4px);
-  color: var(--accent-blue, #00d4ff);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
 }
 
 .markdown-body :deep(pre) {
   margin: 0.5em 0;
-  padding: var(--space-2, 8px) var(--space-3, 12px);
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: var(--radius-md, 6px);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-void);
+  border-radius: var(--radius-md);
   overflow-x: auto;
-  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border: 0.5px solid var(--border-subtle);
 }
 
 .markdown-body :deep(pre code) {
@@ -851,14 +854,15 @@ function scrollToBottom() {
 
 .markdown-body :deep(blockquote) {
   margin: 0.5em 0;
-  padding: 0.3em 0.8em;
-  border-left: 3px solid var(--accent-purple, #7c3aed);
-  background: rgba(124, 58, 237, 0.06);
+  padding: 4px 8px 4px 12px;
+  border-left: 1.5px solid var(--accent);
+  background: var(--accent-glow);
   color: var(--text-secondary);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
 }
 
 .markdown-body :deep(a) {
-  color: var(--accent-blue, #00d4ff);
+  color: var(--accent);
   text-decoration: none;
 }
 
@@ -868,7 +872,7 @@ function scrollToBottom() {
 
 .markdown-body :deep(hr) {
   border: none;
-  border-top: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border-top: 0.5px solid var(--border-subtle);
   margin: 0.6em 0;
 }
 
@@ -882,7 +886,7 @@ function scrollToBottom() {
 .markdown-body :deep(th),
 .markdown-body :deep(td) {
   padding: 0.3em 0.6em;
-  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border: 0.5px solid var(--border-default, rgba(255, 255, 255, 0.08));
   text-align: left;
 }
 
@@ -912,7 +916,7 @@ function scrollToBottom() {
 /* Tool usage display */
 .tool-usage {
   background: rgba(0, 0, 0, 0.25);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   padding: 6px 10px;
   font-size: 0.72rem;
@@ -927,7 +931,7 @@ function scrollToBottom() {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--accent-purple);
+  color: var(--text-secondary);
 }
 
 .tool-name {
@@ -936,13 +940,13 @@ function scrollToBottom() {
 }
 
 .tool-done {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--accent-green);
   margin-left: auto;
 }
 
 .tool-error {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--accent-rose);
   margin-left: auto;
 }
@@ -950,8 +954,8 @@ function scrollToBottom() {
 .tool-spinner {
   width: 10px;
   height: 10px;
-  border: 1.5px solid var(--border-default);
-  border-top-color: var(--accent-purple);
+  border: 1.5px solid var(--border-subtle);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   margin-left: auto;
@@ -961,7 +965,7 @@ function scrollToBottom() {
   margin-top: 3px;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -969,8 +973,8 @@ function scrollToBottom() {
 
 /* Sudo approval prompt */
 .approval-prompt {
-  background: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: var(--warning-bg);
+  border: 0.5px solid var(--warning-border);
   border-radius: var(--radius-md);
   padding: 10px 12px;
   margin: 6px 0;
@@ -988,7 +992,7 @@ function scrollToBottom() {
 .approval-title {
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  font-size: 0.68rem;
+  font-size: 0.72rem;
 }
 
 .approval-command {
@@ -1023,21 +1027,21 @@ function scrollToBottom() {
 }
 
 .approval-btn.approve {
-  background: rgba(16, 185, 129, 0.15);
+  background: var(--success-bg);
   color: var(--accent-green);
 }
 
 .approval-btn.approve:hover {
-  background: rgba(16, 185, 129, 0.25);
+  background: var(--success-bg);
 }
 
 .approval-btn.deny {
-  background: rgba(244, 63, 94, 0.15);
+  background: var(--error-bg);
   color: var(--accent-rose);
 }
 
 .approval-btn.deny:hover {
-  background: rgba(244, 63, 94, 0.25);
+  background: var(--error-bg);
 }
 
 .approval-resolved {
@@ -1048,27 +1052,27 @@ function scrollToBottom() {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   font-weight: 600;
   padding: 2px 8px;
   border-radius: 9999px;
 }
 
 .approval-badge.approved {
-  background: rgba(16, 185, 129, 0.15);
+  background: var(--success-bg);
   color: var(--accent-green);
 }
 
 .approval-badge.denied {
-  background: rgba(244, 63, 94, 0.15);
+  background: var(--error-bg);
   color: var(--accent-rose);
 }
 
 /* Sticky plan bar */
 .plan-bar {
   flex-shrink: 0;
-  border-top: 1px solid rgba(124, 58, 237, 0.2);
-  background: linear-gradient(135deg, rgba(124, 58, 237, 0.06), rgba(0, 212, 255, 0.03));
+  border-top: 0.5px solid var(--border-subtle);
+  background: var(--bg-elevated);
 }
 
 .plan-bar-toggle {
@@ -1085,7 +1089,7 @@ function scrollToBottom() {
 }
 
 .plan-bar-toggle:hover {
-  background: rgba(124, 58, 237, 0.06);
+  background: var(--bg-hover);
 }
 
 .plan-bar-summary {
@@ -1108,26 +1112,26 @@ function scrollToBottom() {
 .plan-bar-spinner {
   width: 10px;
   height: 10px;
-  border: 1.5px solid rgba(124, 58, 237, 0.25);
-  border-top-color: var(--accent-purple);
+  border: 1.5px solid var(--border-subtle);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
 
 .plan-bar-progress {
-  font-size: 0.7rem;
-  font-weight: 700;
-  color: var(--accent-purple);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent);
   white-space: nowrap;
 }
 
 .plan-bar-sep {
   color: var(--text-muted);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 .plan-bar-title {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -1156,7 +1160,7 @@ function scrollToBottom() {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   padding: 3px 6px;
   border-radius: var(--radius-sm, 4px);
 }
@@ -1189,7 +1193,7 @@ function scrollToBottom() {
 }
 
 .plan-bar-step--in_progress {
-  background: rgba(124, 58, 237, 0.06);
+  background: var(--accent-glow);
 }
 
 .plan-bar-step--in_progress .plan-bar-step-label {
@@ -1204,8 +1208,8 @@ function scrollToBottom() {
 .plan-dot-spinner {
   width: 9px;
   height: 9px;
-  border: 1.5px solid rgba(124, 58, 237, 0.25);
-  border-top-color: var(--accent-purple);
+  border: 1.5px solid var(--border-subtle);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -1213,7 +1217,7 @@ function scrollToBottom() {
 .plan-dot-pending {
   width: 7px;
   height: 7px;
-  border: 1.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: 50%;
   opacity: 0.5;
 }
@@ -1227,10 +1231,10 @@ function scrollToBottom() {
 }
 
 .thinking-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: var(--accent-purple);
+  background: var(--accent);
   opacity: 0.4;
   animation: thinking-pulse 1.4s ease-in-out infinite;
 }
@@ -1251,7 +1255,7 @@ function scrollToBottom() {
   40% {
     opacity: 1;
     transform: scale(1);
-    background: var(--accent-blue);
+    background: var(--accent);
   }
 }
 
@@ -1266,8 +1270,8 @@ function scrollToBottom() {
 .activity-spinner {
   width: 12px;
   height: 12px;
-  border: 1.5px solid rgba(124, 58, 237, 0.2);
-  border-top-color: var(--accent-purple);
+  border: 1.5px solid var(--border-subtle);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   flex-shrink: 0;

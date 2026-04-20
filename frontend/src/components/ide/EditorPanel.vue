@@ -234,15 +234,15 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg-primary);
+  background: var(--bg-void);
 }
 
 /* Tabs */
 .editor-tabs {
   display: flex;
   align-items: stretch;
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-default);
+  background: var(--bg-elevated);
+  border-bottom: 0.5px solid var(--border-hairline);
   height: 38px;
   flex-shrink: 0;
   overflow-x: auto;
@@ -260,8 +260,8 @@ onUnmounted(() => {
   padding: 0 var(--space-3);
   font-size: 0.78rem;
   color: var(--text-secondary);
-  border-right: 1px solid var(--border-default);
-  box-shadow: inset 0 -1px 0 transparent;
+  border-right: 0.5px solid var(--border-hairline);
+  border-top: 1.5px solid transparent;
   cursor: pointer;
   transition: color var(--transition-fast), background var(--transition-fast);
   white-space: nowrap;
@@ -274,8 +274,9 @@ onUnmounted(() => {
 
 .editor-tab.active {
   color: var(--text-primary);
-  background: var(--bg-primary);
-  box-shadow: inset 0 -1px 0 var(--accent-blue);
+  font-weight: 500;
+  background: var(--bg-void);
+  border-top-color: var(--accent);
 }
 
 .tab-icon {
@@ -316,6 +317,22 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+/* Force opaque backgrounds on Monaco's absolutely-positioned overlay elements
+   so that horizontally-scrolled content doesn't bleed through the minimap or
+   overview ruler area on the right side of the editor. */
+.editor-container :deep(.monaco-editor .minimap) {
+  background-color: #08090c;
+}
+.editor-container :deep(.monaco-editor .minimap-gutter) {
+  background-color: #08090c;
+}
+.editor-container :deep(.monaco-editor .decorationsOverviewRuler) {
+  background-color: #08090c;
+}
+.editor-container :deep(.monaco-editor .monaco-scrollable-element > .scrollbar.vertical) {
+  background-color: #08090c;
+}
+
 /* Empty state */
 .editor-empty {
   flex: 1;
@@ -332,11 +349,8 @@ onUnmounted(() => {
 
 .logo-text {
   font-size: 4rem;
-  font-weight: 800;
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  font-weight: 500;
+  color: var(--accent);
 }
 
 .empty-shortcuts {
@@ -366,10 +380,10 @@ kbd {
   height: 22px;
   padding: 0 6px;
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-sm);
   font-family: var(--font-sans);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--text-secondary);
 }
 

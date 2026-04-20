@@ -180,7 +180,7 @@ async function handleDelete() {
 
 .page-title {
   font-size: 1.5rem;
-  font-weight: 700;
+  font-weight: 500;
   margin-bottom: var(--space-1);
 }
 

@@ -166,7 +166,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-default);
   height: 38px;
   flex-shrink: 0;
 }
@@ -241,7 +241,7 @@ onUnmounted(() => {
 }
 
 .info-section + .info-section {
-  border-top: 1px solid var(--border-default);
+  border-top: 0.5px solid var(--border-default);
   margin-top: var(--space-1);
   padding-top: var(--space-3);
 }
@@ -319,8 +319,8 @@ onUnmounted(() => {
 .info-warning {
   margin-top: var(--space-1);
   padding: var(--space-1) var(--space-2);
-  background: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.2);
+  background: var(--warning-bg);
+  border: 0.5px solid var(--warning-border);
   border-radius: var(--radius-sm);
   color: var(--accent-amber);
   font-size: 0.72rem;

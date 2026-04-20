@@ -91,7 +91,7 @@ const emit = defineEmits<{
 
 .modal {
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 400px;
@@ -117,12 +117,12 @@ const emit = defineEmits<{
 }
 
 .modal-icon.danger {
-  background: rgba(244, 63, 94, 0.1);
+  background: var(--error-bg);
   color: var(--accent-rose);
 }
 
 .modal-icon.default {
-  background: rgba(0, 212, 255, 0.1);
+  background: var(--accent-glow);
   color: var(--accent-blue);
 }
 
@@ -147,7 +147,7 @@ const emit = defineEmits<{
   gap: var(--space-2);
   padding: var(--space-4) var(--space-5);
   background: var(--bg-surface-alt);
-  border-top: 1px solid var(--border-default);
+  border-top: 0.5px solid var(--border-default);
 }
 
 .btn {
@@ -160,7 +160,7 @@ const emit = defineEmits<{
 
 .btn-cancel {
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: 0.5px solid var(--border-default);
 }
 
 .btn-cancel:hover {
