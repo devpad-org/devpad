@@ -72,6 +72,7 @@ const streaming = ref(false)
 const abortController = ref<AbortController | null>(null)
 const inputFocused = ref(false)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
+const planExpanded = ref(false)
 
 function autoResize() {
   const el = inputEl.value
@@ -92,11 +93,23 @@ onMounted(async () => {
   }
 })
 
-function formatToolArgs(args: string): string {
+function formatToolArgs(name: string, args: string): string {
   try {
     const parsed = JSON.parse(args)
+
+    // Friendly summary for update_plan
+    if (name === 'update_plan' && Array.isArray(parsed.steps)) {
+      const steps = parsed.steps as { title: string; status: string }[]
+      return `${steps.length} steps`
+    }
+
     return Object.entries(parsed)
-      .map(([k, v]) => `${k}: ${typeof v === 'string' && v.length > 80 ? v.slice(0, 80) + '…' : v}`)
+      .map(([k, v]) => {
+        if (typeof v === 'string') return `${k}: ${v.length > 80 ? v.slice(0, 80) + '…' : v}`
+        if (Array.isArray(v)) return `${k}: [${v.length} items]`
+        if (v && typeof v === 'object') return `${k}: {…}`
+        return `${k}: ${v}`
+      })
       .join(', ')
   } catch {
     return args
@@ -235,6 +248,7 @@ function newChat() {
   }
   messages.value = []
   inputValue.value = ''
+  planExpanded.value = false
   if (inputEl.value) {
     inputEl.value.style.height = 'auto'
   }
@@ -275,6 +289,40 @@ const activityStatus = computed<string | null>(() => {
   // Last segment is text but we're still streaming — LLM is still writing
   // No status needed since the user can see text arriving
   return null
+})
+
+// Find the latest plan across all messages.
+const activePlan = computed<PlanStep[] | null>(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const msg = messages.value[i]
+    if (msg.role !== 'assistant') continue
+    for (let j = msg.segments.length - 1; j >= 0; j--) {
+      const seg = msg.segments[j]
+      if (seg.type === 'plan') return (seg as PlanSegment).steps
+    }
+  }
+  return null
+})
+
+const planSummary = computed(() => {
+  const steps = activePlan.value
+  if (!steps || steps.length === 0) return null
+  const total = steps.length
+  // Find the current step: first in_progress, or first pending, or last completed
+  const inProgress = steps.find((s) => s.status === 'in_progress')
+  if (inProgress) {
+    const idx = steps.indexOf(inProgress) + 1
+    return { idx, total, title: inProgress.title, done: false }
+  }
+  const pending = steps.find((s) => s.status === 'pending')
+  if (pending) {
+    const idx = steps.indexOf(pending) + 1
+    return { idx, total, title: pending.title, done: false }
+  }
+  // All completed or failed
+  const completed = steps.filter((s) => s.status === 'completed').length
+  const last = steps[steps.length - 1]
+  return { idx: total, total, title: last.title, done: completed === total }
 })
 
 function scrollToBottom() {
@@ -361,7 +409,7 @@ function scrollToBottom() {
                 <span v-else-if="seg.result && isToolError(seg as ToolSegment)" class="tool-error">&#x2718;</span>
                 <span v-else-if="seg.result" class="tool-done">&#x2714;</span>
               </div>
-              <div class="tool-args">{{ formatToolArgs(seg.args) }}</div>
+              <div class="tool-args">{{ formatToolArgs(seg.name, seg.args) }}</div>
             </div>
             <div v-else-if="seg.type === 'approval'" class="approval-prompt">
               <div class="approval-header">
@@ -402,36 +450,7 @@ function scrollToBottom() {
                 </span>
               </div>
             </div>
-            <div v-else-if="seg.type === 'plan'" class="plan-checklist">
-              <div class="plan-header">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M9 11l3 3L22 4" />
-                  <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-                </svg>
-                <span class="plan-title">Plan</span>
-              </div>
-              <ul class="plan-steps">
-                <li
-                  v-for="(step, stepIdx) in (seg as PlanSegment).steps"
-                  :key="stepIdx"
-                  class="plan-step"
-                  :class="`plan-step-${step.status}`"
-                >
-                  <span class="plan-step-icon">
-                    <svg v-if="step.status === 'completed'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                      <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                    <svg v-else-if="step.status === 'failed'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                      <line x1="18" y1="6" x2="6" y2="18" />
-                      <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                    <span v-else-if="step.status === 'in_progress'" class="plan-step-spinner" />
-                    <span v-else class="plan-step-pending" />
-                  </span>
-                  <span class="plan-step-label">{{ step.title }}</span>
-                </li>
-              </ul>
-            </div>
+            <template v-else-if="seg.type === 'plan'" />
             <div v-else-if="seg.type === 'text' && seg.content" class="msg-text" v-html="renderMarkdown(seg.content)" />
           </template>
           <div v-if="i === messages.length - 1 && isThinking" class="thinking-indicator">
@@ -445,6 +464,47 @@ function scrollToBottom() {
           </div>
         </div>
         <div v-else class="msg-content">{{ msg.content }}</div>
+      </div>
+    </div>
+
+    <!-- Sticky plan bar -->
+    <div v-if="activePlan" class="plan-bar">
+      <button class="plan-bar-toggle" @click="planExpanded = !planExpanded">
+        <div class="plan-bar-summary">
+          <span class="plan-bar-icon">
+            <svg v-if="planSummary?.done" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            <span v-else class="plan-bar-spinner" />
+          </span>
+          <span class="plan-bar-progress">Step {{ planSummary?.idx }} of {{ planSummary?.total }}</span>
+          <span class="plan-bar-sep">&middot;</span>
+          <span class="plan-bar-title">{{ planSummary?.title }}</span>
+        </div>
+        <svg class="plan-bar-chevron" :class="{ expanded: planExpanded }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      <div v-if="planExpanded" class="plan-bar-steps">
+        <div
+          v-for="(step, stepIdx) in activePlan"
+          :key="stepIdx"
+          class="plan-bar-step"
+          :class="`plan-bar-step--${step.status}`"
+        >
+          <span class="plan-bar-step-icon">
+            <svg v-if="step.status === 'completed'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            <svg v-else-if="step.status === 'failed'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+            <span v-else-if="step.status === 'in_progress'" class="plan-dot-spinner" />
+            <span v-else class="plan-dot-pending" />
+          </span>
+          <span class="plan-bar-step-label">{{ step.title }}</span>
+        </div>
       </div>
     </div>
 
@@ -1004,101 +1064,158 @@ function scrollToBottom() {
   color: var(--accent-rose);
 }
 
-/* Plan checklist */
-.plan-checklist {
+/* Sticky plan bar */
+.plan-bar {
+  flex-shrink: 0;
+  border-top: 1px solid rgba(124, 58, 237, 0.2);
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.06), rgba(0, 212, 255, 0.03));
+}
+
+.plan-bar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 7px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: background 150ms ease;
+}
+
+.plan-bar-toggle:hover {
   background: rgba(124, 58, 237, 0.06);
-  border: 1px solid rgba(124, 58, 237, 0.2);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  margin: 6px 0;
 }
 
-.plan-checklist:first-child {
-  margin-top: 0;
-}
-
-.plan-header {
+.plan-bar-summary {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--accent-purple);
-  font-size: 0.72rem;
-  font-weight: 600;
-  margin-bottom: 8px;
+  min-width: 0;
 }
 
-.plan-title {
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  font-size: 0.68rem;
-}
-
-.plan-steps {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.plan-step {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  padding: 3px 0;
-}
-
-.plan-step-icon {
+.plan-bar-icon {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 16px;
   height: 16px;
   flex-shrink: 0;
-}
-
-.plan-step-completed .plan-step-icon {
   color: var(--accent-green);
 }
 
-.plan-step-completed .plan-step-label {
-  color: var(--text-muted);
-}
-
-.plan-step-failed .plan-step-icon {
-  color: var(--accent-rose);
-}
-
-.plan-step-failed .plan-step-label {
-  color: var(--accent-rose);
-}
-
-.plan-step-in_progress .plan-step-label {
-  color: var(--text-primary);
-  font-weight: 500;
-}
-
-.plan-step-pending .plan-step-label {
-  color: var(--text-muted);
-}
-
-.plan-step-spinner {
+.plan-bar-spinner {
   width: 10px;
   height: 10px;
-  border: 1.5px solid var(--border-default);
+  border: 1.5px solid rgba(124, 58, 237, 0.25);
   border-top-color: var(--accent-purple);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
 
-.plan-step-pending {
-  width: 10px;
-  height: 10px;
+.plan-bar-progress {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--accent-purple);
+  white-space: nowrap;
+}
+
+.plan-bar-sep {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.plan-bar-title {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plan-bar-chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 150ms ease;
+  transform: rotate(180deg);
+}
+
+.plan-bar-chevron.expanded {
+  transform: rotate(0deg);
+}
+
+.plan-bar-steps {
+  padding: 0 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.plan-bar-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.7rem;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm, 4px);
+}
+
+.plan-bar-step-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.plan-bar-step--completed .plan-bar-step-icon {
+  color: var(--accent-green);
+}
+
+.plan-bar-step--completed .plan-bar-step-label {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 255, 255, 0.12);
+}
+
+.plan-bar-step--failed .plan-bar-step-icon {
+  color: var(--accent-rose);
+}
+
+.plan-bar-step--failed .plan-bar-step-label {
+  color: var(--accent-rose);
+}
+
+.plan-bar-step--in_progress {
+  background: rgba(124, 58, 237, 0.06);
+}
+
+.plan-bar-step--in_progress .plan-bar-step-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.plan-bar-step--pending .plan-bar-step-label {
+  color: var(--text-muted);
+}
+
+.plan-dot-spinner {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid rgba(124, 58, 237, 0.25);
+  border-top-color: var(--accent-purple);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.plan-dot-pending {
+  width: 7px;
+  height: 7px;
   border: 1.5px solid var(--border-default);
   border-radius: 50%;
+  opacity: 0.5;
 }
 
 /* Thinking indicator */

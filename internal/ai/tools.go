@@ -73,7 +73,7 @@ func agentTools() []ToolDefinition {
 			Type: "function",
 			Function: ToolFunction{
 				Name:        "update_plan",
-				Description: "Create or update your step-by-step execution plan. Call this BEFORE starting work to declare your plan, then call it again after completing each step to update the status. The frontend displays this as a live checklist so the user can track your progress.",
+				Description: "Create or update your step-by-step execution plan for complex, multi-step tasks. Call this BEFORE starting work to declare your plan, then call it again after completing each step to update the status. The frontend displays this as a live checklist so the user can track your progress. Do NOT use this for simple questions, single-file edits, or tasks that can be completed in one or two steps.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"steps":{"type":"array","description":"The full list of plan steps with current statuses","items":{"type":"object","properties":{"title":{"type":"string","description":"Short description of the step"},"status":{"type":"string","enum":["pending","in_progress","completed","failed"],"description":"Current status of the step"}},"required":["title","status"]}}},"required":["steps"]}`),
 			},
 		},
@@ -84,16 +84,16 @@ func agentTools() []ToolDefinition {
 const agentSystemPrompt = `You are an expert AI coding assistant integrated into Devpad, a web-based IDE. You have access to the user's project files through tools.
 
 When helping the user:
-1. For multi-step tasks, ALWAYS call update_plan first to declare your steps, then call it again after completing each step to update the status.
-2. Read files before modifying them to understand context.
-3. Use edit_file for targeted changes instead of write_file for existing files.
-4. Use search_files to find relevant code across the codebase.
-5. Use list_files to understand project structure.
-6. Use run_command to install packages, run tests, or build. You have sudo access for elevated privileges (e.g. sudo apt install, sudo systemctl). Use sudo when a command requires root permissions. The environment is a Debian 13 container.
+1. Read files before modifying them to understand context.
+2. Use edit_file for targeted changes instead of write_file for existing files.
+3. Use search_files to find relevant code across the codebase.
+4. Use list_files to understand project structure.
+5. Use run_command to install packages, run tests, or build. You have sudo access for elevated privileges (e.g. sudo apt install, sudo systemctl). Use sudo when a command requires root permissions. The environment is a Debian 13 container.
 
 Plan management:
-- Call update_plan at the start of any task with more than one step.
-- Mark the current step as "in_progress" before starting it.
+- Only use update_plan for complex tasks that involve 3 or more distinct steps (e.g. implementing a feature across multiple files, multi-stage refactors, or tasks requiring research then implementation).
+- Do NOT use a plan for simple questions, explanations, single-file edits, quick fixes, or tasks with only one or two steps. Just do the work directly.
+- When you do use a plan, mark the current step as "in_progress" before starting it.
 - Mark it "completed" (or "failed") immediately after, then move to the next step.
 - Keep all steps in each update_plan call — always send the full list with current statuses.
 
