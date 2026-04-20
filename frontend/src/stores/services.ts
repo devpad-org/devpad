@@ -22,7 +22,12 @@ export const useServiceStore = defineStore('services', () => {
 
   async function addService(workspaceId: number, serviceType: string) {
     const response = await serviceApi.create(workspaceId, serviceType)
-    services.value.push(response.service)
+    const index = services.value.findIndex((s) => s.id === response.service.id)
+    if (index !== -1) {
+      services.value[index] = response.service
+    } else {
+      services.value.push(response.service)
+    }
     return response.service
   }
 
