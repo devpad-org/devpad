@@ -190,6 +190,22 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate model and thinking config before committing to SSE — once headers
+	// are written we can no longer send a proper HTTP error response.
+	model, err := h.service.FindModel(req.Model)
+	if err != nil {
+		if errors.Is(err, ErrModelNotFound) {
+			writeError(w, http.StatusBadRequest, "model not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to find model")
+		return
+	}
+	if err := validateThinkingRequest(model, req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

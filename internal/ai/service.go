@@ -35,6 +35,7 @@ type Service interface {
 	ListModels(ctx context.Context) ([]ModelInfo, error)
 	ListProviders(ctx context.Context) ([]ProviderInfo, error)
 	UpdateProvider(ctx context.Context, providerID string, apiKey string, enabled bool) error
+	FindModel(modelID string) (Model, error)
 	ChatStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error)
 }
 
@@ -158,6 +159,11 @@ func (s *service) ChatStream(ctx context.Context, req ChatRequest) (<-chan Strea
 	}
 
 	return provider.ChatCompletionStream(ctx, cfg.APIKey, req)
+}
+
+func (s *service) FindModel(modelID string) (Model, error) {
+	_, model, err := s.findProviderForModel(modelID)
+	return model, err
 }
 
 func (s *service) findProviderForModel(modelID string) (Provider, Model, error) {

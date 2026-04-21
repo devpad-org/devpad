@@ -30,6 +30,11 @@ type ThinkingCapability struct {
 	Supported        bool `json:"supported"`
 	EnabledByDefault bool `json:"enabledByDefault"`
 	CanDisable       bool `json:"canDisable"`
+	// RequiresReasoningContentInContext is a backend-only API quirk flag.
+	// When true, every assistant message in the conversation history must include
+	// a reasoning_content field (empty string if not available) when thinking is
+	// enabled. Currently required by the Kimi K2.6 API.
+	RequiresReasoningContentInContext bool `json:"-"`
 }
 
 // Message is a single message in a chat conversation.
