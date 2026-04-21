@@ -754,6 +754,10 @@ function scrollToBottom() {
   padding: 4px 0;
 }
 
+.agent-input:focus-visible {
+  box-shadow: none;
+}
+
 .agent-input::placeholder {
   color: var(--text-muted);
 }
