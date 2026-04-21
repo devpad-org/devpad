@@ -43,8 +43,10 @@ type service struct {
 
 // providerDisplayNames maps provider IDs to human-readable names.
 var providerDisplayNames = map[string]string{
-	"mistral": "Mistral AI",
-	"minimax": "MiniMax",
+	"mistral":  "Mistral AI",
+	"minimax":  "MiniMax",
+	"moonshot": "Moonshot AI",
+	"openai":   "OpenAI",
 }
 
 // NewService creates a new AI service with the given providers and repository.

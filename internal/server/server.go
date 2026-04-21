@@ -116,7 +116,7 @@ func New(cfg Config) (*Server, error) {
 
 	// AI layer
 	aiRepo := ai.NewRepository(db.Conn())
-	aiService := ai.NewService(aiRepo, ai.NewMistralProvider(), ai.NewMiniMaxProvider())
+	aiService := ai.NewService(aiRepo, ai.NewMistralProvider(), ai.NewMiniMaxProvider(), ai.NewMoonshotProvider(), ai.NewOpenAIProvider())
 	toolExecutor := ai.NewToolExecutor(workspaceService)
 	aiHandler := ai.NewHandler(aiService, toolExecutor)
 

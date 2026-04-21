@@ -253,3 +253,39 @@ func TestMiniMaxProvider_Models(t *testing.T) {
 		t.Errorf("expected MiniMax-M2.7, got %q", models[0].ID)
 	}
 }
+
+func TestOpenAIProvider_Models(t *testing.T) {
+	p := NewOpenAIProvider()
+	if p.ID() != "openai" {
+		t.Errorf("expected ID 'openai', got %q", p.ID())
+	}
+
+	models := p.Models()
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+	if models[0].ID != "gpt-5.4" {
+		t.Errorf("expected gpt-5.4, got %q", models[0].ID)
+	}
+	if models[0].ProviderID != "openai" {
+		t.Errorf("expected provider openai, got %q", models[0].ProviderID)
+	}
+}
+
+func TestMoonshotProvider_Models(t *testing.T) {
+	p := NewMoonshotProvider()
+	if p.ID() != "moonshot" {
+		t.Errorf("expected ID 'moonshot', got %q", p.ID())
+	}
+
+	models := p.Models()
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+	if models[0].ID != "kimi-k2.6" {
+		t.Errorf("expected kimi-k2.6, got %q", models[0].ID)
+	}
+	if models[0].ProviderID != "moonshot" {
+		t.Errorf("expected provider moonshot, got %q", models[0].ProviderID)
+	}
+}
