@@ -34,6 +34,33 @@ func TestReadSSEStream_ContentOnly(t *testing.T) {
 	}
 }
 
+func TestReadSSEStream_ReasoningContent(t *testing.T) {
+	sse := "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Plan: inspect files.\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\" Then update code.\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	ch := make(chan StreamEvent, 64)
+	go readSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+
+	var events []StreamEvent
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+	if events[0].ReasoningContent != "Plan: inspect files." {
+		t.Fatalf("first reasoning chunk: got %q", events[0].ReasoningContent)
+	}
+	if events[1].ReasoningContent != " Then update code." {
+		t.Fatalf("second reasoning chunk: got %q", events[1].ReasoningContent)
+	}
+	if !events[2].Done {
+		t.Fatal("expected final Done event")
+	}
+}
+
 func TestReadSSEStream_ToolCallAccumulation(t *testing.T) {
 	sse := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"edit_file\",\"arguments\":\"\"}}]}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\":\\\"test.ts\\\",\"}}]}}]}\n\n" +

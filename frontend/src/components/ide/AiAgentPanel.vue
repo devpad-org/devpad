@@ -60,6 +60,7 @@ type MessageSegment = TextSegment | ToolSegment | ApprovalSegment | PlanSegment
 interface DisplayMessage {
   role: 'user' | 'assistant'
   content: string
+  reasoningContent?: string
   segments: MessageSegment[]
 }
 
@@ -68,17 +69,58 @@ const inputValue = ref('')
 const chatBody = ref<HTMLElement | null>(null)
 const models = ref<AIModel[]>([])
 const selectedModel = ref('')
+const thinkingPreferences = ref<Record<string, boolean>>({})
 const streaming = ref(false)
 const abortController = ref<AbortController | null>(null)
 const inputFocused = ref(false)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const planExpanded = ref(false)
 
+const currentModel = computed(() => models.value.find((model) => model.id === selectedModel.value) ?? null)
+
+const canToggleThinking = computed(() => {
+  const model = currentModel.value
+  return Boolean(model?.thinking.supported && model.thinking.canDisable)
+})
+
+const thinkingEnabled = computed(() => {
+  const model = currentModel.value
+  if (!model?.thinking.supported) {
+    return false
+  }
+
+  const override = thinkingPreferences.value[model.id]
+  if (override !== undefined) {
+    return override
+  }
+
+  return model.thinking.enabledByDefault
+})
+
+const thinkingRequest = computed(() => {
+  const model = currentModel.value
+  if (!model?.thinking.supported) {
+    return undefined
+  }
+
+  return { enabled: thinkingEnabled.value }
+})
+
 function autoResize() {
   const el = inputEl.value
   if (!el) return
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+}
+
+function toggleThinking() {
+  const model = currentModel.value
+  if (!model || !canToggleThinking.value) return
+
+  thinkingPreferences.value = {
+    ...thinkingPreferences.value,
+    [model.id]: !thinkingEnabled.value,
+  }
 }
 
 onMounted(async () => {
@@ -162,7 +204,11 @@ async function sendMessage() {
   // Build conversation history (exclude tool usages for the API)
   const chatMessages: ChatMessage[] = messages.value
     .slice(0, -1) // exclude the empty assistant message
-    .map((m) => ({ role: m.role, content: m.content }))
+    .map((m) => ({
+      role: m.role,
+      content: m.content,
+      reasoning_content: m.reasoningContent,
+    }))
 
   try {
     await aiApi.agentStream(
@@ -179,7 +225,14 @@ async function sendMessage() {
           } else {
             segs.push({ type: 'text', content: `Error: ${event.error}` })
           }
-        } else if (event.content) {
+        }
+
+        if (event.reasoningContent) {
+          messages.value[assistantIdx].reasoningContent =
+            (messages.value[assistantIdx].reasoningContent || '') + event.reasoningContent
+        }
+
+        if (event.content) {
           messages.value[assistantIdx].content += event.content
           const segs = messages.value[assistantIdx].segments
           const last = segs[segs.length - 1]
@@ -188,7 +241,9 @@ async function sendMessage() {
           } else {
             segs.push({ type: 'text', content: event.content })
           }
-        } else if (event.toolCalls) {
+        }
+
+        if (event.toolCalls) {
           for (const tc of event.toolCalls) {
             messages.value[assistantIdx].segments.push({
               type: 'tool',
@@ -197,7 +252,9 @@ async function sendMessage() {
               args: tc.function.arguments,
             })
           }
-        } else if (event.toolResult) {
+        }
+
+        if (event.toolResult) {
           const segs = messages.value[assistantIdx].segments
           const toolSeg = segs.find(
             (s): s is ToolSegment => s.type === 'tool' && s.toolCallId === event.toolResult!.toolCallId && !s.result
@@ -205,14 +262,18 @@ async function sendMessage() {
           if (toolSeg) {
             toolSeg.result = event.toolResult.content
           }
-        } else if (event.approvalRequired) {
+        }
+
+        if (event.approvalRequired) {
           messages.value[assistantIdx].segments.push({
             type: 'approval',
             id: event.approvalRequired.id,
             command: event.approvalRequired.command,
             status: 'pending',
           })
-        } else if (event.plan) {
+        }
+
+        if (event.plan) {
           const segs = messages.value[assistantIdx].segments
           const existing = segs.find((s): s is PlanSegment => s.type === 'plan')
           if (existing) {
@@ -224,6 +285,7 @@ async function sendMessage() {
         scrollToBottom()
       },
       controller.signal,
+      thinkingRequest.value,
     )
   } catch (err: any) {
     if (err.name !== 'AbortError') {
@@ -348,9 +410,23 @@ function scrollToBottom() {
         <span class="agent-title">AI Agent</span>
       </div>
       <div class="agent-header-actions">
-        <select v-if="models.length > 0" v-model="selectedModel" class="model-selector">
-          <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
-        </select>
+        <template v-if="models.length > 0">
+          <select v-model="selectedModel" class="model-selector">
+            <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
+          </select>
+          <button
+            v-if="canToggleThinking"
+            type="button"
+            class="thinking-toggle"
+            :class="{ active: thinkingEnabled }"
+            :aria-pressed="thinkingEnabled"
+            :title="thinkingEnabled ? 'Thinking is enabled for this model.' : 'Thinking is disabled for this model.'"
+            @click="toggleThinking"
+          >
+            <span class="thinking-toggle-label">Thinking</span>
+            <span class="thinking-toggle-state">{{ thinkingEnabled ? 'On' : 'Off' }}</span>
+          </button>
+        </template>
         <span v-else class="agent-badge">No Models</span>
         <button class="new-chat-btn" title="New Chat" @click="newChat">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -632,6 +708,44 @@ function scrollToBottom() {
 
 .model-selector:focus {
   border-color: var(--accent-border);
+}
+
+.thinking-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-alt);
+  border: 0.5px solid var(--border-default);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.thinking-toggle:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.thinking-toggle.active {
+  background: var(--accent-glow);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.thinking-toggle-label {
+  font-weight: 500;
+}
+
+.thinking-toggle-state {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-tertiary);
+}
+
+.thinking-toggle.active .thinking-toggle-state {
+  color: var(--accent);
 }
 
 .chat-empty {

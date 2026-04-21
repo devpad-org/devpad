@@ -7,10 +7,12 @@ import (
 )
 
 var (
-	ErrProviderNotFound   = errors.New("AI provider not found")
-	ErrProviderNotEnabled = errors.New("AI provider is not enabled")
-	ErrModelNotFound      = errors.New("AI model not found")
-	ErrNoAPIKey           = errors.New("no API key configured for provider")
+	ErrProviderNotFound         = errors.New("AI provider not found")
+	ErrProviderNotEnabled       = errors.New("AI provider is not enabled")
+	ErrModelNotFound            = errors.New("AI model not found")
+	ErrNoAPIKey                 = errors.New("no API key configured for provider")
+	ErrThinkingNotSupported     = errors.New("model does not support thinking")
+	ErrThinkingCannotBeDisabled = errors.New("thinking cannot be disabled for this model")
 )
 
 // ModelInfo is a model with its provider's enabled/configured status.
@@ -136,8 +138,11 @@ func (s *service) UpdateProvider(ctx context.Context, providerID string, apiKey 
 }
 
 func (s *service) ChatStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error) {
-	provider, err := s.findProviderForModel(req.Model)
+	provider, model, err := s.findProviderForModel(req.Model)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateThinkingRequest(model, req); err != nil {
 		return nil, err
 	}
 
@@ -155,15 +160,38 @@ func (s *service) ChatStream(ctx context.Context, req ChatRequest) (<-chan Strea
 	return provider.ChatCompletionStream(ctx, cfg.APIKey, req)
 }
 
-func (s *service) findProviderForModel(modelID string) (Provider, error) {
+func (s *service) findProviderForModel(modelID string) (Provider, Model, error) {
 	for _, p := range s.providers {
 		for _, m := range p.Models() {
 			if m.ID == modelID {
-				return p, nil
+				return p, m, nil
 			}
 		}
 	}
-	return nil, ErrModelNotFound
+	return nil, Model{}, ErrModelNotFound
+}
+
+func validateThinkingRequest(model Model, req ChatRequest) error {
+	if req.Thinking == nil || req.Thinking.Enabled == nil {
+		return nil
+	}
+
+	enabled := *req.Thinking.Enabled
+	if enabled {
+		if !model.Thinking.Supported {
+			return ErrThinkingNotSupported
+		}
+		return nil
+	}
+
+	if !model.Thinking.Supported {
+		return nil
+	}
+	if !model.Thinking.CanDisable {
+		return ErrThinkingCannotBeDisabled
+	}
+
+	return nil
 }
 
 func providerDisplayName(id string) string {

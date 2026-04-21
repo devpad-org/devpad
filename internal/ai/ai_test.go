@@ -51,6 +51,8 @@ func (p *mockProvider) ChatCompletionStream(_ context.Context, _ string, _ ChatR
 	return ch, nil
 }
 
+func boolPtr(v bool) *bool { return &v }
+
 func TestListModels_EmptyConfig(t *testing.T) {
 	repo := newMockRepository()
 	provider := &mockProvider{
@@ -160,6 +162,53 @@ func TestChatStream_Success(t *testing.T) {
 	}
 	if !events[1].Done {
 		t.Error("expected second event to be done")
+	}
+}
+
+func TestChatStream_ThinkingNotSupported(t *testing.T) {
+	repo := newMockRepository()
+	repo.configs["test"] = &ProviderConfig{ID: "test", APIKey: "key123", Enabled: true}
+	provider := &mockProvider{
+		id:     "test",
+		models: []Model{{ID: "m1", Name: "Model 1", ProviderID: "test"}},
+	}
+	svc := NewService(repo, provider)
+
+	_, err := svc.ChatStream(context.Background(), ChatRequest{
+		Model:    "m1",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Thinking: &ThinkingConfig{Enabled: boolPtr(true)},
+	})
+	if err != ErrThinkingNotSupported {
+		t.Fatalf("expected ErrThinkingNotSupported, got %v", err)
+	}
+}
+
+func TestChatStream_ThinkingCannotBeDisabled(t *testing.T) {
+	repo := newMockRepository()
+	repo.configs["test"] = &ProviderConfig{ID: "test", APIKey: "key123", Enabled: true}
+	provider := &mockProvider{
+		id: "test",
+		models: []Model{{
+			ID:         "m1",
+			Name:       "Model 1",
+			ProviderID: "test",
+			Thinking: ThinkingCapability{
+				Supported:        true,
+				EnabledByDefault: true,
+				CanDisable:       false,
+			},
+		}},
+	}
+	svc := NewService(repo, provider)
+
+	_, err := svc.ChatStream(context.Background(), ChatRequest{
+		Model:    "m1",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Thinking: &ThinkingConfig{Enabled: boolPtr(false)},
+	})
+	if err != ErrThinkingCannotBeDisabled {
+		t.Fatalf("expected ErrThinkingCannotBeDisabled, got %v", err)
 	}
 }
 
@@ -287,5 +336,14 @@ func TestMoonshotProvider_Models(t *testing.T) {
 	}
 	if models[0].ProviderID != "moonshot" {
 		t.Errorf("expected provider moonshot, got %q", models[0].ProviderID)
+	}
+	if !models[0].Thinking.Supported {
+		t.Error("expected Moonshot model to support thinking")
+	}
+	if !models[0].Thinking.EnabledByDefault {
+		t.Error("expected Moonshot thinking to be enabled by default")
+	}
+	if !models[0].Thinking.CanDisable {
+		t.Error("expected Moonshot thinking to be disableable")
 	}
 }

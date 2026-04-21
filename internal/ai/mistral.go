@@ -113,8 +113,9 @@ func readSSEStream(body io.ReadCloser, ch chan<- StreamEvent) {
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content   string `json:"content"`
-					ToolCalls []struct {
+					ReasoningContent string `json:"reasoning_content"`
+					Content          string `json:"content"`
+					ToolCalls        []struct {
 						Index    int    `json:"index"`
 						ID       string `json:"id"`
 						Type     string `json:"type"`
@@ -135,6 +136,10 @@ func readSSEStream(body io.ReadCloser, ch chan<- StreamEvent) {
 		}
 
 		choice := chunk.Choices[0]
+
+		if choice.Delta.ReasoningContent != "" {
+			ch <- StreamEvent{ReasoningContent: choice.Delta.ReasoningContent}
+		}
 
 		// Forward content chunks immediately
 		if choice.Delta.Content != "" {

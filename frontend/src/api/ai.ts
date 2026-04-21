@@ -6,6 +6,15 @@ export interface AIModel {
   providerId: string
   providerName: string
   configured: boolean
+  thinking: {
+    supported: boolean
+    enabledByDefault: boolean
+    canDisable: boolean
+  }
+}
+
+export interface ThinkingConfig {
+	enabled?: boolean
 }
 
 export interface AIProvider {
@@ -18,6 +27,7 @@ export interface AIProvider {
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  reasoning_content?: string
   tool_calls?: ToolCall[]
   tool_call_id?: string
 }
@@ -48,6 +58,7 @@ export interface PlanStep {
 }
 
 export interface StreamEvent {
+  reasoningContent?: string
   content?: string
   toolCalls?: ToolCall[]
   toolResult?: ToolResult
@@ -75,11 +86,12 @@ export const aiApi = {
     messages: ChatMessage[],
     onEvent: (event: StreamEvent) => void,
     signal?: AbortSignal,
+    thinking?: ThinkingConfig,
   ): Promise<void> {
     const res = await fetch('/api/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages }),
+      body: JSON.stringify({ model, messages, thinking }),
       signal,
     })
 
@@ -101,11 +113,12 @@ export const aiApi = {
     workspaceId: number,
     onEvent: (event: StreamEvent) => void,
     signal?: AbortSignal,
+    thinking?: ThinkingConfig,
   ): Promise<void> {
     const res = await fetch('/api/ai/agent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages, workspaceId }),
+      body: JSON.stringify({ model, messages, workspaceId, thinking }),
       signal,
     })
 

@@ -19,29 +19,46 @@ type Provider interface {
 
 // Model describes an AI model offered by a provider.
 type Model struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	ProviderID string `json:"providerId"`
+	ID         string             `json:"id"`
+	Name       string             `json:"name"`
+	ProviderID string             `json:"providerId"`
+	Thinking   ThinkingCapability `json:"thinking"`
+}
+
+// ThinkingCapability describes whether a model supports reasoning/thinking mode.
+type ThinkingCapability struct {
+	Supported        bool `json:"supported"`
+	EnabledByDefault bool `json:"enabledByDefault"`
+	CanDisable       bool `json:"canDisable"`
 }
 
 // Message is a single message in a chat conversation.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role             string     `json:"role"`
+	Content          string     `json:"content"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+}
+
+// ThinkingConfig controls whether the selected model should use thinking mode.
+// A nil value uses the model's default behavior.
+type ThinkingConfig struct {
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // ChatRequest is the input for a chat completion.
 type ChatRequest struct {
 	Model       string           `json:"model"`
 	Messages    []Message        `json:"messages"`
+	Thinking    *ThinkingConfig  `json:"thinking,omitempty"`
 	WorkspaceID int64            `json:"workspaceId,omitempty"`
 	Tools       []ToolDefinition `json:"tools,omitempty"`
 }
 
 // StreamEvent represents a single SSE chunk from a streaming chat completion.
 type StreamEvent struct {
+	ReasoningContent string           `json:"reasoningContent,omitempty"`
 	Content          string           `json:"content,omitempty"`
 	ToolCalls        []ToolCall       `json:"toolCalls,omitempty"`
 	ToolResult       *ToolResult      `json:"toolResult,omitempty"`
@@ -94,4 +111,25 @@ type ToolResult struct {
 type PlanStep struct {
 	Title  string `json:"title"`
 	Status string `json:"status"` // pending, in_progress, completed, failed
+}
+
+func modelByID(models []Model, modelID string) (Model, bool) {
+	for _, model := range models {
+		if model.ID == modelID {
+			return model, true
+		}
+	}
+
+	return Model{}, false
+}
+
+func thinkingEnabledForRequest(model Model, req ChatRequest) bool {
+	if !model.Thinking.Supported {
+		return false
+	}
+	if req.Thinking != nil && req.Thinking.Enabled != nil {
+		return *req.Thinking.Enabled
+	}
+
+	return model.Thinking.EnabledByDefault
 }

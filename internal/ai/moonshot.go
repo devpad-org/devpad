@@ -21,6 +21,7 @@ type moonshotChatRequest struct {
 	Messages []moonshotMessage `json:"messages"`
 	Stream   bool              `json:"stream"`
 	Tools    []ToolDefinition  `json:"tools,omitempty"`
+	Thinking *moonshotThinking `json:"thinking,omitempty"`
 }
 
 type moonshotMessage struct {
@@ -29,6 +30,11 @@ type moonshotMessage struct {
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
 	ReasoningContent *string    `json:"reasoning_content,omitempty"`
+}
+
+type moonshotThinking struct {
+	Type string `json:"type"`
+	Keep string `json:"keep,omitempty"`
 }
 
 // NewMoonshotProvider creates a new Kimi provider backed by Moonshot AI.
@@ -43,11 +49,21 @@ func (p *moonshotProvider) ID() string { return "moonshot" }
 
 func (p *moonshotProvider) Models() []Model {
 	return []Model{
-		{ID: "kimi-k2.6", Name: "Kimi K2.6", ProviderID: "moonshot"},
+		{
+			ID:         "kimi-k2.6",
+			Name:       "Kimi K2.6",
+			ProviderID: "moonshot",
+			Thinking: ThinkingCapability{
+				Supported:        true,
+				EnabledByDefault: true,
+				CanDisable:       true,
+			},
+		},
 	}
 }
 
-func buildMoonshotChatRequest(req ChatRequest) moonshotChatRequest {
+func buildMoonshotChatRequest(req ChatRequest, model Model) moonshotChatRequest {
+	thinkingEnabled := thinkingEnabledForRequest(model, req)
 	messages := make([]moonshotMessage, 0, len(req.Messages))
 	for _, msg := range req.Messages {
 		moonshotMsg := moonshotMessage{
@@ -57,24 +73,47 @@ func buildMoonshotChatRequest(req ChatRequest) moonshotChatRequest {
 			ToolCallID: msg.ToolCallID,
 		}
 
-		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
-			reasoningContent := ""
-			moonshotMsg.ReasoningContent = &reasoningContent
+		if thinkingEnabled {
+			switch {
+			case msg.ReasoningContent != "":
+				reasoningContent := msg.ReasoningContent
+				moonshotMsg.ReasoningContent = &reasoningContent
+			case msg.Role == "assistant" && len(msg.ToolCalls) > 0:
+				// Compatibility fallback: preserve the field slot even if an older
+				// client did not retain the previous turn's reasoning content.
+				reasoningContent := ""
+				moonshotMsg.ReasoningContent = &reasoningContent
+			}
 		}
 
 		messages = append(messages, moonshotMsg)
 	}
 
-	return moonshotChatRequest{
+	body := moonshotChatRequest{
 		Model:    req.Model,
 		Messages: messages,
 		Stream:   true,
 		Tools:    req.Tools,
 	}
+	if model.Thinking.Supported {
+		thinking := &moonshotThinking{}
+		if thinkingEnabled {
+			thinking.Type = "enabled"
+			thinking.Keep = "all"
+		} else if model.Thinking.CanDisable {
+			thinking.Type = "disabled"
+		}
+		if thinking.Type != "" {
+			body.Thinking = thinking
+		}
+	}
+
+	return body
 }
 
 func (p *moonshotProvider) ChatCompletionStream(ctx context.Context, apiKey string, req ChatRequest) (<-chan StreamEvent, error) {
-	payload, err := json.Marshal(buildMoonshotChatRequest(req))
+	model, _ := modelByID(p.Models(), req.Model)
+	payload, err := json.Marshal(buildMoonshotChatRequest(req, model))
 	if err != nil {
 		return nil, fmt.Errorf("marshalling request: %w", err)
 	}

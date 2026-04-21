@@ -119,6 +119,10 @@ func (h *Handler) HandleChat(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "no API key configured for this provider")
 			return
 		}
+		if errors.Is(err, ErrThinkingNotSupported) || errors.Is(err, ErrThinkingCannotBeDisabled) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		log.Printf("failed to start chat: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to start chat")
 		return
@@ -254,6 +258,7 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		chatReq := ChatRequest{
 			Model:    req.Model,
 			Messages: messages,
+			Thinking: req.Thinking,
 			Tools:    tools,
 		}
 
@@ -266,6 +271,7 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var toolCalls []ToolCall
+		var reasoningAccum strings.Builder
 		var contentAccum strings.Builder
 
 		// Read from the stream with keepalive during pauses.
@@ -282,6 +288,10 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 					sendEvent(event)
 					sendEvent(StreamEvent{Done: true})
 					return
+				}
+				if event.ReasoningContent != "" {
+					sendEvent(StreamEvent{ReasoningContent: event.ReasoningContent})
+					reasoningAccum.WriteString(event.ReasoningContent)
 				}
 				if event.Content != "" {
 					sendEvent(StreamEvent{Content: event.Content})
@@ -307,6 +317,9 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		assistantMsg := Message{
 			Role:      "assistant",
 			ToolCalls: toolCalls,
+		}
+		if reasoningAccum.Len() > 0 {
+			assistantMsg.ReasoningContent = reasoningAccum.String()
 		}
 		if contentAccum.Len() > 0 {
 			assistantMsg.Content = contentAccum.String()
