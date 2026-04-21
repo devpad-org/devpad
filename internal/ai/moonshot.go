@@ -16,6 +16,21 @@ type moonshotProvider struct {
 	baseURL string
 }
 
+type moonshotChatRequest struct {
+	Model    string            `json:"model"`
+	Messages []moonshotMessage `json:"messages"`
+	Stream   bool              `json:"stream"`
+	Tools    []ToolDefinition  `json:"tools,omitempty"`
+}
+
+type moonshotMessage struct {
+	Role             string     `json:"role"`
+	Content          string     `json:"content"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	ReasoningContent *string    `json:"reasoning_content,omitempty"`
+}
+
 // NewMoonshotProvider creates a new Kimi provider backed by Moonshot AI.
 func NewMoonshotProvider() Provider {
 	return &moonshotProvider{
@@ -32,17 +47,34 @@ func (p *moonshotProvider) Models() []Model {
 	}
 }
 
-func (p *moonshotProvider) ChatCompletionStream(ctx context.Context, apiKey string, req ChatRequest) (<-chan StreamEvent, error) {
-	body := map[string]any{
-		"model":    req.Model,
-		"messages": req.Messages,
-		"stream":   true,
-	}
-	if len(req.Tools) > 0 {
-		body["tools"] = req.Tools
+func buildMoonshotChatRequest(req ChatRequest) moonshotChatRequest {
+	messages := make([]moonshotMessage, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		moonshotMsg := moonshotMessage{
+			Role:       msg.Role,
+			Content:    msg.Content,
+			ToolCalls:  msg.ToolCalls,
+			ToolCallID: msg.ToolCallID,
+		}
+
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			reasoningContent := ""
+			moonshotMsg.ReasoningContent = &reasoningContent
+		}
+
+		messages = append(messages, moonshotMsg)
 	}
 
-	payload, err := json.Marshal(body)
+	return moonshotChatRequest{
+		Model:    req.Model,
+		Messages: messages,
+		Stream:   true,
+		Tools:    req.Tools,
+	}
+}
+
+func (p *moonshotProvider) ChatCompletionStream(ctx context.Context, apiKey string, req ChatRequest) (<-chan StreamEvent, error) {
+	payload, err := json.Marshal(buildMoonshotChatRequest(req))
 	if err != nil {
 		return nil, fmt.Errorf("marshalling request: %w", err)
 	}
