@@ -30,7 +30,7 @@ function connect() {
   terminal = new Terminal({
     cursorBlink: true,
     fontSize: 13,
-    lineHeight: 1.65,
+    lineHeight: 1.2,
     fontFamily: "'Geist Mono', 'JetBrains Mono', Menlo, monospace",
     theme: {
       background: '#0b0d11',
