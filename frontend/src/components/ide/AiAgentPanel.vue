@@ -2,7 +2,8 @@
 import { ref, computed, nextTick, onMounted } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep } from '@/api/ai'
+import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall } from '@/api/ai'
+import { useConversationStore } from '@/stores/chatHistory'
 
 marked.use({
   breaks: true,
@@ -65,7 +66,15 @@ interface DisplayMessage {
   segments: MessageSegment[]
 }
 
+const conversationStore = useConversationStore()
+const activeConversationId = ref<number | null>(null)
+const historyOpen = ref(false)
+
 const messages = ref<DisplayMessage[]>([])
+// rawMessages tracks the full API message history including role:"tool" messages.
+// It is the source of truth for saving; messages is the source of truth for rendering.
+const rawMessages = ref<ChatMessage[]>([])
+
 const inputValue = ref('')
 const chatBody = ref<HTMLElement | null>(null)
 const models = ref<AIModel[]>([])
@@ -140,6 +149,8 @@ onMounted(async () => {
   } catch {
     // models will remain empty
   }
+  // Fetch conversation history for this workspace (non-blocking).
+  conversationStore.fetchConversations(props.workspaceId)
 })
 
 function formatToolArgs(name: string, args: string): string {
@@ -179,6 +190,133 @@ async function handleApproval(seg: ApprovalSegment, approved: boolean) {
   }
 }
 
+function reconstructAssistantDisplay(rawMsgs: ChatMessage[], start: number, end: number): DisplayMessage {
+  const display: DisplayMessage = {
+    role: 'assistant',
+    content: '',
+    segments: [],
+  }
+
+  for (let i = start; i < end; i++) {
+    const msg = rawMsgs[i]
+    if (msg.role !== 'assistant') {
+      continue
+    }
+
+    if (msg.reasoning_content) {
+      display.reasoningContent = (display.reasoningContent || '') + msg.reasoning_content
+    }
+    if (msg.thinking_state !== undefined) {
+      display.thinkingState = msg.thinking_state
+    }
+
+    if (msg.content) {
+      display.content += msg.content
+      const lastSeg = display.segments[display.segments.length - 1]
+      if (lastSeg && lastSeg.type === 'text') {
+        lastSeg.content += msg.content
+      } else {
+        display.segments.push({ type: 'text', content: msg.content })
+      }
+    }
+
+    if (msg.tool_calls && msg.tool_calls.length > 0) {
+      const toolResults = new Map<string, string>()
+      for (let j = i + 1; j < end && rawMsgs[j].role === 'tool'; j++) {
+        const toolCallID = rawMsgs[j].tool_call_id
+        if (toolCallID) {
+          toolResults.set(toolCallID, rawMsgs[j].content)
+        }
+      }
+
+      for (const tc of msg.tool_calls) {
+        display.segments.push({
+          type: 'tool',
+          toolCallId: tc.id,
+          name: tc.function.name,
+          args: tc.function.arguments,
+          result: toolResults.get(tc.id),
+        })
+      }
+    }
+  }
+
+  return display
+}
+
+// reconstructDisplayMessages converts a raw ChatMessage[] into DisplayMessage[] for rendering.
+// Assistant/tool rounds are merged back into a single assistant bubble until the next user message.
+function reconstructDisplayMessages(rawMsgs: ChatMessage[]): DisplayMessage[] {
+  const display: DisplayMessage[] = []
+
+  for (let i = 0; i < rawMsgs.length;) {
+    const msg = rawMsgs[i]
+    if (msg.role === 'user') {
+      display.push({ role: 'user', content: msg.content, segments: [] })
+      i++
+      continue
+    }
+
+    if (msg.role === 'assistant') {
+      let end = i + 1
+      for (; end < rawMsgs.length && rawMsgs[end].role !== 'user'; end++) {
+        // Walk through assistant/tool rounds until the next user message.
+      }
+      display.push(reconstructAssistantDisplay(rawMsgs, i, end))
+      i = end
+      continue
+    }
+
+    // role:"tool" messages are rendered as segments on the surrounding assistant bubble.
+    i++
+  }
+
+  return display
+}
+
+async function loadConversation(convId: number) {
+  try {
+    const res = await aiApi.getMessages(convId)
+    rawMessages.value = res.messages
+    messages.value = reconstructDisplayMessages(res.messages)
+    activeConversationId.value = convId
+    conversationStore.setActive(convId)
+    historyOpen.value = false
+    await nextTick()
+    scrollToBottom()
+  } catch {
+    // Leave current state intact on failure.
+  }
+}
+
+async function saveCurrentConversation() {
+  // If no messages to save, skip.
+  if (rawMessages.value.length === 0) return
+
+  // Create a conversation on first save for this session.
+  if (activeConversationId.value === null) {
+    try {
+      const conv = await conversationStore.createConversation(props.workspaceId, selectedModel.value)
+      activeConversationId.value = conv.id
+      conversationStore.setActive(conv.id)
+    } catch {
+      // Could not create conversation — skip save to avoid losing chat flow.
+      return
+    }
+  }
+
+  const convId = activeConversationId.value
+  if (convId === null) return
+
+  try {
+    await aiApi.saveMessages(convId, rawMessages.value)
+    // Refresh the conversation list so the title/updatedAt updates are reflected.
+    conversationStore.fetchConversations(props.workspaceId)
+  } catch (err) {
+    console.error('Failed to save conversation messages:', err)
+  }
+}
+
 async function sendMessage() {
   const text = inputValue.value.trim()
   if (!text || streaming.value) return
@@ -194,11 +332,13 @@ async function sendMessage() {
     return
   }
 
+  // Push user message to display and raw arrays.
   messages.value.push({ role: 'user', content: text, segments: [] })
+  rawMessages.value.push({ role: 'user', content: text })
   inputValue.value = ''
   resetInputHeight()
 
-  // Add empty assistant message for streaming
+  // Add empty assistant message for streaming.
   messages.value.push({ role: 'assistant', content: '', segments: [] })
   const assistantIdx = messages.value.length - 1
 
@@ -209,15 +349,20 @@ async function sendMessage() {
   const controller = new AbortController()
   abortController.value = controller
 
-  // Build conversation history (exclude tool usages for the API)
-  const chatMessages: ChatMessage[] = messages.value
-    .slice(0, -1) // exclude the empty assistant message
-    .map((m) => ({
-      role: m.role,
-      content: m.content,
-      reasoning_content: m.reasoningContent,
-      thinking_state: m.thinkingState,
-    }))
+  // Build the API payload from rawMessages (excludes the empty assistant placeholder).
+  const chatMessages: ChatMessage[] = rawMessages.value.slice()
+
+  // Each LLM iteration is tracked as a "round" so we can reconstruct the correct
+  // interleaved assistant/tool message sequence for rawMessages on completion.
+  interface Round {
+    content: string
+    reasoningContent: string
+    thinkingState: unknown
+    toolCalls: ToolCall[]
+    toolResults: ChatMessage[]
+  }
+  const rounds: Round[] = [{ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] }]
+  let streamFailed = false
 
   try {
     await aiApi.agentStream(
@@ -226,6 +371,7 @@ async function sendMessage() {
       props.workspaceId,
       (event: StreamEvent) => {
         if (event.error) {
+          streamFailed = true
           messages.value[assistantIdx].content += `\n\nError: ${event.error}`
           const segs = messages.value[assistantIdx].segments
           const last = segs[segs.length - 1]
@@ -237,15 +383,30 @@ async function sendMessage() {
         }
 
         if (event.reasoningContent) {
+          // Reasoning before content marks the start of a new LLM round after tool results.
+          if (rounds[rounds.length - 1].toolResults.length > 0) {
+            rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
+          }
           messages.value[assistantIdx].reasoningContent =
             (messages.value[assistantIdx].reasoningContent || '') + event.reasoningContent
+          rounds[rounds.length - 1].reasoningContent += event.reasoningContent
         }
 
         if (event.thinkingState !== undefined) {
+          // ThinkingState before content also signals a new round when tool results are present.
+          if (rounds[rounds.length - 1].toolResults.length > 0) {
+            rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
+          }
           messages.value[assistantIdx].thinkingState = event.thinkingState
+          rounds[rounds.length - 1].thinkingState = event.thinkingState
         }
 
         if (event.content) {
+          // A content event after tool results signals the start of a new LLM round.
+          if (rounds[rounds.length - 1].toolResults.length > 0) {
+            rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
+          }
+          rounds[rounds.length - 1].content += event.content
           messages.value[assistantIdx].content += event.content
           const segs = messages.value[assistantIdx].segments
           const last = segs[segs.length - 1]
@@ -257,7 +418,14 @@ async function sendMessage() {
         }
 
         if (event.toolCalls) {
+          // The server sends all tool calls for one LLM iteration in a single event
+          // before executing any of them. If there are prior tool results in the current
+          // round, this batch belongs to the next iteration — start a fresh round.
+          if (rounds[rounds.length - 1].toolResults.length > 0) {
+            rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
+          }
           for (const tc of event.toolCalls) {
+            rounds[rounds.length - 1].toolCalls.push({ id: tc.id, type: tc.type, function: tc.function })
             messages.value[assistantIdx].segments.push({
               type: 'tool',
               toolCallId: tc.id,
@@ -275,6 +443,11 @@ async function sendMessage() {
           if (toolSeg) {
             toolSeg.result = event.toolResult.content
           }
+          rounds[rounds.length - 1].toolResults.push({
+            role: 'tool',
+            content: event.toolResult.content,
+            tool_call_id: event.toolResult.toolCallId,
+          })
         }
 
         if (event.approvalRequired) {
@@ -301,15 +474,41 @@ async function sendMessage() {
       thinkingRequest.value,
     )
   } catch (err: any) {
+    streamFailed = true
     if (err.name !== 'AbortError') {
       messages.value[assistantIdx].content =
         messages.value[assistantIdx].content || `Error: ${err.message}`
     }
   } finally {
+    if (!streamFailed) {
+      // Flush each LLM round to rawMessages: assistant message followed by its tool results.
+      // This preserves the exact interleaved structure the provider saw across iterations.
+      for (const round of rounds) {
+        const assistantRaw: ChatMessage = { role: 'assistant', content: round.content }
+        if (round.reasoningContent) assistantRaw.reasoning_content = round.reasoningContent
+        if (round.thinkingState !== undefined) assistantRaw.thinking_state = round.thinkingState
+        if (round.toolCalls.length > 0) assistantRaw.tool_calls = round.toolCalls
+        rawMessages.value.push(assistantRaw)
+        for (const toolMsg of round.toolResults) rawMessages.value.push(toolMsg)
+      }
+    } else {
+      // Revert the user message pushed at the start — don't persist incomplete turns.
+      if (rawMessages.value.length > 0 && rawMessages.value[rawMessages.value.length - 1].role === 'user') {
+        rawMessages.value.pop()
+      }
+    }
+
     streaming.value = false
     abortController.value = null
     await nextTick()
     scrollToBottom()
+
+    // Auto-save only on clean completion — skip on abort or error.
+    if (!streamFailed) {
+      saveCurrentConversation().catch((err) => {
+        console.error('Auto-save failed:', err)
+      })
+    }
   }
 }
 
@@ -322,9 +521,38 @@ function newChat() {
     abortController.value?.abort()
   }
   messages.value = []
+  rawMessages.value = []
   inputValue.value = ''
   planExpanded.value = false
   resetInputHeight()
+  activeConversationId.value = null
+  conversationStore.setActive(null)
+}
+
+// Conversations filtered to the current workspace.
+const workspaceConversations = computed(() =>
+  conversationStore.conversations.filter((c) => c.workspaceId === props.workspaceId),
+)
+
+function formatRelativeTime(dateStr: string): string {
+  const date = new Date(dateStr)
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffMin = Math.floor(diffMs / 60000)
+  if (diffMin < 1) return 'just now'
+  if (diffMin < 60) return `${diffMin}m ago`
+  const diffHr = Math.floor(diffMin / 60)
+  if (diffHr < 24) return `${diffHr}h ago`
+  const diffDay = Math.floor(diffHr / 24)
+  if (diffDay < 7) return `${diffDay}d ago`
+  return date.toLocaleDateString()
+}
+
+async function deleteConversation(id: number) {
+  if (activeConversationId.value === id) {
+    newChat()
+  }
+  await conversationStore.deleteConversation(id)
 }
 
 const isThinking = computed(() => {
@@ -439,12 +667,63 @@ function scrollToBottom() {
           </button>
         </template>
         <span v-else class="agent-badge">No Models</span>
+        <!-- History toggle button -->
+        <button
+          class="history-btn"
+          :class="{ active: historyOpen }"
+          title="Chat history"
+          @click="historyOpen = !historyOpen"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+            <path d="M3 3v5h5" />
+            <path d="M12 7v5l4 2" />
+          </svg>
+        </button>
         <button class="new-chat-btn" title="New Chat" @click="newChat">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 5v14" />
             <path d="M5 12h14" />
           </svg>
         </button>
+      </div>
+    </div>
+
+    <!-- History panel -->
+    <div v-if="historyOpen" class="history-panel">
+      <div class="history-header">
+        <span class="history-title">History</span>
+      </div>
+      <div class="history-list">
+        <div v-if="workspaceConversations.length === 0" class="history-empty">
+          No past conversations
+        </div>
+        <div
+          v-for="conv in workspaceConversations"
+          :key="conv.id"
+          class="history-item"
+          :class="{ active: conv.id === activeConversationId }"
+          @click="loadConversation(conv.id)"
+        >
+          <div class="history-item-main">
+            <span class="history-item-title">{{ conv.title || 'Untitled' }}</span>
+            <span class="history-item-meta">
+              <span class="history-item-model">{{ conv.model }}</span>
+              <span class="history-item-sep">&middot;</span>
+              <span class="history-item-time">{{ formatRelativeTime(conv.updatedAt) }}</span>
+            </span>
+          </div>
+          <button
+            class="history-item-delete"
+            title="Delete conversation"
+            @click.stop="deleteConversation(conv.id)"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -685,7 +964,8 @@ function scrollToBottom() {
   border: 0.5px solid var(--border-subtle);
 }
 
-.new-chat-btn {
+.new-chat-btn,
+.history-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -699,10 +979,17 @@ function scrollToBottom() {
   transition: all var(--transition-fast);
 }
 
-.new-chat-btn:hover {
+.new-chat-btn:hover,
+.history-btn:hover {
   background: var(--bg-raised);
   color: var(--text-primary);
   border-color: var(--border-strong);
+}
+
+.history-btn.active {
+  background: var(--accent-glow);
+  color: var(--accent);
+  border-color: var(--accent-border);
 }
 
 .model-selector {
@@ -757,6 +1044,133 @@ function scrollToBottom() {
 
 .thinking-toggle.active .thinking-toggle-state {
   color: var(--accent);
+}
+
+/* History panel */
+.history-panel {
+  flex-shrink: 0;
+  border-bottom: 0.5px solid var(--border-default);
+  background: var(--bg-surface-alt);
+  max-height: 220px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.history-header {
+  padding: 6px 12px;
+  border-bottom: 0.5px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.history-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.history-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.history-empty {
+  padding: 12px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background 100ms ease;
+  border-radius: var(--radius-sm);
+  margin: 0 4px;
+}
+
+.history-item:hover {
+  background: var(--bg-hover);
+}
+
+.history-item.active {
+  background: var(--accent-glow);
+}
+
+.history-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.history-item-title {
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-item.active .history-item-title {
+  color: var(--accent);
+}
+
+.history-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.history-item-model {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80px;
+}
+
+.history-item-sep {
+  opacity: 0.5;
+}
+
+.history-item-time {
+  white-space: nowrap;
+}
+
+.history-item-delete {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms ease, background 100ms ease, color 100ms ease;
+}
+
+.history-item:hover .history-item-delete {
+  opacity: 1;
+}
+
+.history-item-delete:hover {
+  background: var(--error-bg);
+  color: var(--accent-rose);
 }
 
 .chat-empty {

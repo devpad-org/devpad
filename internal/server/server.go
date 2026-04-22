@@ -116,9 +116,11 @@ func New(cfg Config) (*Server, error) {
 
 	// AI layer
 	aiRepo := ai.NewRepository(db.Conn())
+	aiConvRepo := ai.NewConversationRepository(db.Conn())
 	aiService := ai.NewService(aiRepo, ai.NewMistralProvider(), ai.NewMiniMaxProvider(), ai.NewMoonshotProvider(), ai.NewOpenAIProvider())
+	aiConvSvc := ai.NewConversationService(aiConvRepo)
 	toolExecutor := ai.NewToolExecutor(workspaceService)
-	aiHandler := ai.NewHandler(aiService, toolExecutor)
+	aiHandler := ai.NewHandler(aiService, aiConvSvc, toolExecutor)
 
 	// Preview layer
 	previewRepo := preview.NewRepository(db.Conn())
@@ -134,8 +136,9 @@ func New(cfg Config) (*Server, error) {
 	// Wrap the mux with host-based routing to intercept preview subdomain requests.
 	handler := hostRouter(mux, previewHandler, cfg.PreviewDomain)
 
-	// Apply max body size limit (1MB) to prevent memory exhaustion from oversized requests.
-	handler = maxBodySize(handler, 1<<20)
+	// Apply per-route body size limits to prevent memory exhaustion.
+	// Conversation message saves get 10MB; everything else gets 1MB.
+	handler = requestBodyLimit(handler)
 
 	// Start periodic cleanup of expired sessions and preview tokens.
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
@@ -343,6 +346,13 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/ai/agent", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleAgentChat)))
 	mux.Handle("POST /api/ai/agent/approve", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleApproveCommand)))
 
+	// AI conversation history routes
+	mux.Handle("GET /api/ai/conversations", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListConversations)))
+	mux.Handle("POST /api/ai/conversations", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleCreateConversation)))
+	mux.Handle("DELETE /api/ai/conversations/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleDeleteConversation)))
+	mux.Handle("GET /api/ai/conversations/{id}/messages", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetMessages)))
+	mux.Handle("PUT /api/ai/conversations/{id}/messages", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleSaveMessages)))
+
 	// AI admin routes
 	mux.Handle("GET /api/ai/providers", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleListProviders)))
 	mux.Handle("PUT /api/ai/providers/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleUpdateProvider)))
@@ -377,12 +387,18 @@ func hostRouter(appMux http.Handler, previewHandler *preview.Handler, previewDom
 	})
 }
 
-// maxBodySize wraps a handler to limit request body size, preventing
-// memory exhaustion from oversized payloads.
-func maxBodySize(next http.Handler, maxBytes int64) http.Handler {
+// requestBodyLimit applies body size limits: 10MB for conversation message saves
+// (which can carry large tool histories) and 1MB for all other endpoints.
+func requestBodyLimit(next http.Handler) http.Handler {
+	const defaultLimit = int64(1 << 20)
+	const saveLimit = int64(10 << 20)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
-			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+			limit := defaultLimit
+			if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/ai/conversations/") {
+				limit = saveLimit
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		next.ServeHTTP(w, r)
 	})

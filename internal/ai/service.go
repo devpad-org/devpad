@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 var (
@@ -13,6 +14,7 @@ var (
 	ErrNoAPIKey                 = errors.New("no API key configured for provider")
 	ErrThinkingNotSupported     = errors.New("model does not support thinking")
 	ErrThinkingCannotBeDisabled = errors.New("thinking cannot be disabled for this model")
+	ErrConversationNotFound     = errors.New("conversation not found")
 )
 
 // ModelInfo is a model with its provider's enabled/configured status.
@@ -205,4 +207,117 @@ func providerDisplayName(id string) string {
 		return name
 	}
 	return id
+}
+
+// ConversationService defines business logic for managing chat conversations.
+type ConversationService interface {
+	// CreateConversation creates a new blank conversation.
+	CreateConversation(ctx context.Context, userID, workspaceID int64, model string) (*Conversation, error)
+
+	// ListConversations returns all conversations for a user in a workspace.
+	ListConversations(ctx context.Context, userID, workspaceID int64) ([]Conversation, error)
+
+	// GetConversation returns a single conversation, validating user ownership.
+	GetConversation(ctx context.Context, id, userID int64) (*Conversation, error)
+
+	// DeleteConversation deletes a conversation and its messages (cascades via FK).
+	DeleteConversation(ctx context.Context, id, userID int64) error
+
+	// SaveMessages validates ownership, replaces all messages, updates the
+	// conversation's updated_at, and derives a title from the first user message
+	// if the title is currently empty.
+	SaveMessages(ctx context.Context, conversationID, userID int64, messages []Message) error
+
+	// GetMessages returns messages for a conversation, validating user ownership.
+	GetMessages(ctx context.Context, conversationID, userID int64) ([]Message, error)
+}
+
+type conversationService struct {
+	convRepo ConversationRepository
+}
+
+// NewConversationService creates a ConversationService backed by the given repository.
+func NewConversationService(convRepo ConversationRepository) ConversationService {
+	return &conversationService{convRepo: convRepo}
+}
+
+func (s *conversationService) CreateConversation(ctx context.Context, userID, workspaceID int64, model string) (*Conversation, error) {
+	conv := &Conversation{
+		UserID:      userID,
+		WorkspaceID: workspaceID,
+		Title:       "",
+		Model:       model,
+	}
+	if err := s.convRepo.CreateConversation(ctx, conv); err != nil {
+		return nil, fmt.Errorf("creating conversation: %w", err)
+	}
+	return conv, nil
+}
+
+func (s *conversationService) ListConversations(ctx context.Context, userID, workspaceID int64) ([]Conversation, error) {
+	convs, err := s.convRepo.ListConversations(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("listing conversations: %w", err)
+	}
+	return convs, nil
+}
+
+func (s *conversationService) GetConversation(ctx context.Context, id, userID int64) (*Conversation, error) {
+	conv, err := s.convRepo.GetConversation(ctx, id, userID)
+	if err != nil {
+		return nil, fmt.Errorf("getting conversation: %w", err)
+	}
+	return conv, nil
+}
+
+func (s *conversationService) DeleteConversation(ctx context.Context, id, userID int64) error {
+	if err := s.convRepo.DeleteConversation(ctx, id, userID); err != nil {
+		return fmt.Errorf("deleting conversation: %w", err)
+	}
+	return nil
+}
+
+func (s *conversationService) SaveMessages(ctx context.Context, conversationID, userID int64, messages []Message) error {
+	// Validate ownership before mutating.
+	conv, err := s.convRepo.GetConversation(ctx, conversationID, userID)
+	if err != nil {
+		return fmt.Errorf("validating conversation ownership: %w", err)
+	}
+	if conv == nil {
+		return ErrConversationNotFound
+	}
+
+	// Derive title from first user message if not yet set.
+	newTitle := conv.Title
+	if newTitle == "" {
+		for _, msg := range messages {
+			if msg.Role == "user" && msg.Content != "" {
+				title := msg.Content
+				if len([]rune(title)) > 60 {
+					title = string([]rune(title)[:60])
+				}
+				newTitle = strings.TrimSpace(title)
+				break
+			}
+		}
+	}
+
+	if err := s.convRepo.SaveMessages(ctx, conversationID, messages); err != nil {
+		return fmt.Errorf("saving messages: %w", err)
+	}
+
+	// Update conversation metadata (title and updated_at via UpdateConversation).
+	if err := s.convRepo.UpdateConversation(ctx, conversationID, userID, newTitle, conv.Model); err != nil {
+		return fmt.Errorf("updating conversation metadata: %w", err)
+	}
+
+	return nil
+}
+
+func (s *conversationService) GetMessages(ctx context.Context, conversationID, userID int64) ([]Message, error) {
+	msgs, err := s.convRepo.GetMessages(ctx, conversationID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("getting messages: %w", err)
+	}
+	return msgs, nil
 }

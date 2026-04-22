@@ -24,13 +24,14 @@ type ToolExecutor interface {
 // Handler holds HTTP handlers for AI endpoints.
 type Handler struct {
 	service          Service
+	convService      ConversationService
 	toolExecutor     ToolExecutor
 	pendingApprovals sync.Map // map[string]chan bool
 }
 
 // NewHandler creates a new AI handler.
-func NewHandler(service Service, executor ToolExecutor) *Handler {
-	return &Handler{service: service, toolExecutor: executor}
+func NewHandler(service Service, convService ConversationService, executor ToolExecutor) *Handler {
+	return &Handler{service: service, convService: convService, toolExecutor: executor}
 }
 
 // HandleListModels returns all available AI models with their configuration status.
@@ -355,15 +356,17 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		}
 		messages = append(messages, assistantMsg)
 
+		// Announce all tool calls for this iteration in one event before executing any.
+		// Sending the full slice upfront lets the frontend group them into a single
+		// assistant message even when there are multiple tool calls.
+		sendEvent(StreamEvent{ToolCalls: toolCalls})
+		drainKeepAlive()
+
 		// Execute each tool and feed results back
 		for _, tc := range toolCalls {
 			if writeFailed {
 				return
 			}
-
-			// Notify frontend that a tool is being called
-			sendEvent(StreamEvent{ToolCalls: []ToolCall{tc}})
-			drainKeepAlive()
 
 			// For update_plan, parse steps and emit a plan event to the frontend
 			if tc.Function.Name == "update_plan" {
@@ -538,6 +541,159 @@ func (h *Handler) HandleApproveCommand(w http.ResponseWriter, r *http.Request) {
 
 	ch := val.(chan bool)
 	ch <- req.Approved
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// HandleListConversations returns all conversations for the authenticated user in a workspace.
+// GET /api/ai/conversations?workspaceId=<id>
+func (h *Handler) HandleListConversations(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	workspaceIDStr := r.URL.Query().Get("workspaceId")
+	if workspaceIDStr == "" {
+		writeError(w, http.StatusBadRequest, "workspaceId is required")
+		return
+	}
+	var workspaceID int64
+	if _, err := fmt.Sscanf(workspaceIDStr, "%d", &workspaceID); err != nil || workspaceID <= 0 {
+		writeError(w, http.StatusBadRequest, "workspaceId must be a positive integer")
+		return
+	}
+
+	convs, err := h.convService.ListConversations(r.Context(), user.ID, workspaceID)
+	if err != nil {
+		log.Printf("failed to list conversations: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to list conversations")
+		return
+	}
+
+	if convs == nil {
+		convs = []Conversation{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conversations": convs})
+}
+
+// HandleCreateConversation creates a new conversation for the authenticated user.
+// POST /api/ai/conversations
+func (h *Handler) HandleCreateConversation(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var req struct {
+		WorkspaceID int64  `json:"workspaceId"`
+		Model       string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.WorkspaceID <= 0 {
+		writeError(w, http.StatusBadRequest, "workspaceId is required")
+		return
+	}
+
+	conv, err := h.convService.CreateConversation(r.Context(), user.ID, req.WorkspaceID, req.Model)
+	if err != nil {
+		log.Printf("failed to create conversation: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to create conversation")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{"conversation": conv})
+}
+
+// HandleDeleteConversation deletes a conversation owned by the authenticated user.
+// DELETE /api/ai/conversations/{id}
+func (h *Handler) HandleDeleteConversation(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var convID int64
+	if _, err := fmt.Sscanf(r.PathValue("id"), "%d", &convID); err != nil || convID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid conversation ID")
+		return
+	}
+
+	if err := h.convService.DeleteConversation(r.Context(), convID, user.ID); err != nil {
+		log.Printf("failed to delete conversation %d: %v", convID, err)
+		writeError(w, http.StatusInternalServerError, "failed to delete conversation")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// HandleGetMessages returns all messages for a conversation owned by the authenticated user.
+// GET /api/ai/conversations/{id}/messages
+func (h *Handler) HandleGetMessages(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var convID int64
+	if _, err := fmt.Sscanf(r.PathValue("id"), "%d", &convID); err != nil || convID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid conversation ID")
+		return
+	}
+
+	msgs, err := h.convService.GetMessages(r.Context(), convID, user.ID)
+	if err != nil {
+		log.Printf("failed to get messages for conversation %d: %v", convID, err)
+		writeError(w, http.StatusInternalServerError, "failed to get messages")
+		return
+	}
+
+	if msgs == nil {
+		msgs = []Message{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
+}
+
+// HandleSaveMessages replaces all messages for a conversation (full replacement save).
+// PUT /api/ai/conversations/{id}/messages
+func (h *Handler) HandleSaveMessages(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var convID int64
+	if _, err := fmt.Sscanf(r.PathValue("id"), "%d", &convID); err != nil || convID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid conversation ID")
+		return
+	}
+
+	var req struct {
+		Messages []Message `json:"messages"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.convService.SaveMessages(r.Context(), convID, user.ID, req.Messages); err != nil {
+		if errors.Is(err, ErrConversationNotFound) {
+			writeError(w, http.StatusNotFound, "conversation not found")
+			return
+		}
+		log.Printf("failed to save messages for conversation %d: %v", convID, err)
+		writeError(w, http.StatusInternalServerError, "failed to save messages")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

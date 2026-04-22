@@ -1,5 +1,15 @@
 import { apiClient } from './client'
 
+export interface Conversation {
+  id: number
+  userId: number
+  workspaceId: number
+  title: string
+  model: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface AIModel {
   id: string
   name: string
@@ -130,6 +140,26 @@ export const aiApi = {
     }
 
     await readSSEStream(res, onEvent)
+  },
+
+  listConversations(workspaceId: number): Promise<{ conversations: Conversation[] }> {
+    return apiClient.get<{ conversations: Conversation[] }>(`/api/ai/conversations?workspaceId=${workspaceId}`)
+  },
+
+  createConversation(workspaceId: number, model: string): Promise<{ conversation: Conversation }> {
+    return apiClient.post<{ conversation: Conversation }>('/api/ai/conversations', { workspaceId, model })
+  },
+
+  deleteConversation(id: number): Promise<void> {
+    return apiClient.delete(`/api/ai/conversations/${id}`)
+  },
+
+  getMessages(conversationId: number): Promise<{ messages: ChatMessage[] }> {
+    return apiClient.get<{ messages: ChatMessage[] }>(`/api/ai/conversations/${conversationId}/messages`)
+  },
+
+  saveMessages(conversationId: number, messages: ChatMessage[]): Promise<void> {
+    return apiClient.put<void>(`/api/ai/conversations/${conversationId}/messages`, { messages })
   },
 }
 
