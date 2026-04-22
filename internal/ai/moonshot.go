@@ -54,10 +54,9 @@ func (p *moonshotProvider) Models() []Model {
 			Name:       "Kimi K2.6",
 			ProviderID: "moonshot",
 			Thinking: ThinkingCapability{
-				Supported:                         true,
-				EnabledByDefault:                  true,
-				CanDisable:                        true,
-				RequiresReasoningContentInContext: true,
+				Supported:        true,
+				EnabledByDefault: true,
+				CanDisable:       true,
 			},
 		},
 	}
@@ -79,7 +78,7 @@ func buildMoonshotChatRequest(req ChatRequest, model Model) moonshotChatRequest 
 			case msg.ReasoningContent != "":
 				reasoningContent := msg.ReasoningContent
 				moonshotMsg.ReasoningContent = &reasoningContent
-			case model.Thinking.RequiresReasoningContentInContext && msg.Role == "assistant" && len(msg.ToolCalls) > 0:
+			case msg.Role == "assistant" && len(msg.ToolCalls) > 0:
 				// Compatibility fallback: preserve the field slot even if an older
 				// client did not retain the previous turn's reasoning content.
 				reasoningContent := ""

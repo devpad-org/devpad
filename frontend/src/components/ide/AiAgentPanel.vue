@@ -61,6 +61,7 @@ interface DisplayMessage {
   role: 'user' | 'assistant'
   content: string
   reasoningContent?: string
+  thinkingState?: unknown
   segments: MessageSegment[]
 }
 
@@ -208,6 +209,7 @@ async function sendMessage() {
       role: m.role,
       content: m.content,
       reasoning_content: m.reasoningContent,
+      thinking_state: m.thinkingState,
     }))
 
   try {
@@ -230,6 +232,10 @@ async function sendMessage() {
         if (event.reasoningContent) {
           messages.value[assistantIdx].reasoningContent =
             (messages.value[assistantIdx].reasoningContent || '') + event.reasoningContent
+        }
+
+        if (event.thinkingState !== undefined) {
+          messages.value[assistantIdx].thinkingState = event.thinkingState
         }
 
         if (event.content) {

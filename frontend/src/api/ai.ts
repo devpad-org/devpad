@@ -28,6 +28,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   reasoning_content?: string
+  thinking_state?: unknown
   tool_calls?: ToolCall[]
   tool_call_id?: string
 }
@@ -59,6 +60,7 @@ export interface PlanStep {
 
 export interface StreamEvent {
   reasoningContent?: string
+  thinkingState?: unknown
   content?: string
   toolCalls?: ToolCall[]
   toolResult?: ToolResult

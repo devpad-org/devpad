@@ -30,20 +30,16 @@ type ThinkingCapability struct {
 	Supported        bool `json:"supported"`
 	EnabledByDefault bool `json:"enabledByDefault"`
 	CanDisable       bool `json:"canDisable"`
-	// RequiresReasoningContentInContext is a backend-only API quirk flag.
-	// When true, every assistant message in the conversation history must include
-	// a reasoning_content field (empty string if not available) when thinking is
-	// enabled. Currently required by the Kimi K2.6 API.
-	RequiresReasoningContentInContext bool `json:"-"`
 }
 
 // Message is a single message in a chat conversation.
 type Message struct {
-	Role             string     `json:"role"`
-	Content          string     `json:"content"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	Role             string          `json:"role"`
+	Content          string          `json:"content"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ThinkingState    json.RawMessage `json:"thinking_state,omitempty"`
+	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
 }
 
 // ThinkingConfig controls whether the selected model should use thinking mode.
@@ -64,6 +60,7 @@ type ChatRequest struct {
 // StreamEvent represents a single SSE chunk from a streaming chat completion.
 type StreamEvent struct {
 	ReasoningContent string           `json:"reasoningContent,omitempty"`
+	ThinkingState    json.RawMessage  `json:"thinkingState,omitempty"`
 	Content          string           `json:"content,omitempty"`
 	ToolCalls        []ToolCall       `json:"toolCalls,omitempty"`
 	ToolResult       *ToolResult      `json:"toolResult,omitempty"`
@@ -137,4 +134,12 @@ func thinkingEnabledForRequest(model Model, req ChatRequest) bool {
 	}
 
 	return model.Thinking.EnabledByDefault
+}
+
+func cloneRawMessage(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	return append(json.RawMessage(nil), raw...)
 }

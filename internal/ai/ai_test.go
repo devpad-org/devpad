@@ -301,6 +301,18 @@ func TestMiniMaxProvider_Models(t *testing.T) {
 	if models[0].ID != "MiniMax-M2.7" {
 		t.Errorf("expected MiniMax-M2.7, got %q", models[0].ID)
 	}
+	if models[0].ProviderID != "minimax" {
+		t.Errorf("expected provider minimax, got %q", models[0].ProviderID)
+	}
+	if !models[0].Thinking.Supported {
+		t.Error("expected MiniMax model to support thinking")
+	}
+	if !models[0].Thinking.EnabledByDefault {
+		t.Error("expected MiniMax thinking to be enabled by default")
+	}
+	if models[0].Thinking.CanDisable {
+		t.Error("expected MiniMax thinking to be fixed on")
+	}
 }
 
 func TestOpenAIProvider_Models(t *testing.T) {

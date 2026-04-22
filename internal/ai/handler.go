@@ -288,6 +288,7 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 
 		var toolCalls []ToolCall
 		var reasoningAccum strings.Builder
+		var thinkingState json.RawMessage
 		var contentAccum strings.Builder
 
 		// Read from the stream with keepalive during pauses.
@@ -305,9 +306,18 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 					sendEvent(StreamEvent{Done: true})
 					return
 				}
+				if event.ReasoningContent != "" || len(event.ThinkingState) > 0 {
+					sendEvent(StreamEvent{ReasoningContent: event.ReasoningContent, ThinkingState: event.ThinkingState})
+				}
 				if event.ReasoningContent != "" {
-					sendEvent(StreamEvent{ReasoningContent: event.ReasoningContent})
 					reasoningAccum.WriteString(event.ReasoningContent)
+				}
+				if len(event.ThinkingState) > 0 {
+					// ThinkingState is a cumulative snapshot, not an additive delta —
+					// each chunk contains the full state up to that point (MiniMax sends
+					// the entire reasoning_details array on every chunk). Keeping only the
+					// last value is therefore correct and gives us the complete state.
+					thinkingState = cloneRawMessage(event.ThinkingState)
 				}
 				if event.Content != "" {
 					sendEvent(StreamEvent{Content: event.Content})
@@ -336,6 +346,9 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		}
 		if reasoningAccum.Len() > 0 {
 			assistantMsg.ReasoningContent = reasoningAccum.String()
+		}
+		if len(thinkingState) > 0 {
+			assistantMsg.ThinkingState = cloneRawMessage(thinkingState)
 		}
 		if contentAccum.Len() > 0 {
 			assistantMsg.Content = contentAccum.String()
