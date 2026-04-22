@@ -114,6 +114,12 @@ function autoResize() {
   el.style.height = Math.min(el.scrollHeight, 120) + 'px'
 }
 
+function resetInputHeight() {
+  const el = inputEl.value
+  if (!el) return
+  el.style.height = 'auto'
+}
+
 function toggleThinking() {
   const model = currentModel.value
   if (!model || !canToggleThinking.value) return
@@ -190,6 +196,7 @@ async function sendMessage() {
 
   messages.value.push({ role: 'user', content: text, segments: [] })
   inputValue.value = ''
+  resetInputHeight()
 
   // Add empty assistant message for streaming
   messages.value.push({ role: 'assistant', content: '', segments: [] })
@@ -317,9 +324,7 @@ function newChat() {
   messages.value = []
   inputValue.value = ''
   planExpanded.value = false
-  if (inputEl.value) {
-    inputEl.value.style.height = 'auto'
-  }
+  resetInputHeight()
 }
 
 const isThinking = computed(() => {
