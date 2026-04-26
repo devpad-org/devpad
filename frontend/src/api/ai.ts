@@ -45,6 +45,7 @@ export interface ChatMessage {
 
 export interface ToolCall {
   id: string
+  itemId?: string
   type: string
   function: {
     name: string
@@ -68,16 +69,130 @@ export interface PlanStep {
   status: 'pending' | 'in_progress' | 'completed' | 'failed'
 }
 
+export interface StreamToolCall {
+  id: string
+  itemId?: string
+  type: string
+  name: string
+  arguments: string
+}
+
 export interface StreamEvent {
   reasoningContent?: string
   thinkingState?: unknown
   content?: string
-  toolCalls?: ToolCall[]
+  toolCalls?: StreamToolCall[]
   toolResult?: ToolResult
   approvalRequired?: ApprovalRequest
   plan?: PlanStep[]
   done?: boolean
   error?: string
+}
+
+// Internal transport types matching the backend's DTO schema.
+interface PartDTO {
+  kind: string
+  text?: string
+  thinking?: { text?: string; state?: unknown }
+  toolCall?: { id: string; itemId?: string; name: string; arguments: string }
+  toolResult?: { toolCallId: string; name: string; content: string; isError?: boolean }
+}
+
+interface TurnDTO {
+  role: string
+  parts: PartDTO[]
+}
+
+function messagesToTurns(messages: ChatMessage[]): TurnDTO[] {
+  const turns: TurnDTO[] = []
+  for (const msg of messages) {
+    if (msg.role === 'tool') {
+      turns.push({
+        role: 'user',
+        parts: [{
+          kind: 'tool_result',
+          toolResult: {
+            toolCallId: msg.tool_call_id ?? '',
+            name: '',
+            content: msg.content,
+          },
+        }],
+      })
+    } else if (msg.role === 'assistant') {
+      const parts: PartDTO[] = []
+      if (msg.reasoning_content) {
+        parts.push({
+          kind: 'thinking',
+          thinking: { text: msg.reasoning_content, state: msg.thinking_state },
+        })
+      }
+      if (msg.content) {
+        parts.push({ kind: 'text', text: msg.content })
+      }
+      for (const tc of msg.tool_calls ?? []) {
+        parts.push({
+          kind: 'tool_call',
+          toolCall: { id: tc.id, itemId: tc.itemId, name: tc.function.name, arguments: tc.function.arguments },
+        })
+      }
+      turns.push({ role: 'assistant', parts })
+    } else {
+      turns.push({
+        role: msg.role,
+        parts: msg.content ? [{ kind: 'text', text: msg.content }] : [],
+      })
+    }
+  }
+  return turns
+}
+
+function turnsToMessages(turns: TurnDTO[]): ChatMessage[] {
+  const messages: ChatMessage[] = []
+  for (const turn of turns) {
+    if (turn.role === 'assistant') {
+      const msg: ChatMessage = { role: 'assistant', content: '' }
+      const toolCalls: ToolCall[] = []
+      for (const part of turn.parts) {
+        if (part.kind === 'text') {
+          msg.content += part.text ?? ''
+        } else if (part.kind === 'thinking' && part.thinking) {
+          msg.reasoning_content = (msg.reasoning_content ?? '') + (part.thinking.text ?? '')
+          if (part.thinking.state !== undefined) {
+            msg.thinking_state = part.thinking.state
+          }
+        } else if (part.kind === 'tool_call' && part.toolCall) {
+          toolCalls.push({
+            id: part.toolCall.id,
+            itemId: part.toolCall.itemId,
+            type: 'function',
+            function: { name: part.toolCall.name, arguments: part.toolCall.arguments },
+          })
+        }
+      }
+      if (toolCalls.length > 0) msg.tool_calls = toolCalls
+      messages.push(msg)
+    } else if (turn.role === 'user') {
+      let userContent = ''
+      for (const part of turn.parts) {
+        if (part.kind === 'text') {
+          userContent += part.text ?? ''
+        } else if (part.kind === 'tool_result' && part.toolResult) {
+          messages.push({
+            role: 'tool',
+            content: part.toolResult.content,
+            tool_call_id: part.toolResult.toolCallId,
+          })
+        }
+      }
+      if (userContent) {
+        messages.push({ role: 'user', content: userContent })
+      }
+    } else {
+      const text = turn.parts.filter(p => p.kind === 'text').map(p => p.text ?? '').join('')
+      messages.push({ role: turn.role as ChatMessage['role'], content: text })
+    }
+  }
+  return messages
 }
 
 export const aiApi = {
@@ -103,7 +218,7 @@ export const aiApi = {
     const res = await fetch('/api/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages, thinking }),
+      body: JSON.stringify({ model, turns: messagesToTurns(messages), thinking }),
       signal,
     })
 
@@ -130,7 +245,7 @@ export const aiApi = {
     const res = await fetch('/api/ai/agent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages, workspaceId, thinking }),
+      body: JSON.stringify({ model, turns: messagesToTurns(messages), workspaceId, thinking }),
       signal,
     })
 
@@ -154,12 +269,13 @@ export const aiApi = {
     return apiClient.delete(`/api/ai/conversations/${id}`)
   },
 
-  getMessages(conversationId: number): Promise<{ messages: ChatMessage[] }> {
-    return apiClient.get<{ messages: ChatMessage[] }>(`/api/ai/conversations/${conversationId}/messages`)
+  async getMessages(conversationId: number): Promise<{ messages: ChatMessage[] }> {
+    const res = await apiClient.get<{ turns: TurnDTO[] }>(`/api/ai/conversations/${conversationId}/messages`)
+    return { messages: turnsToMessages(res.turns ?? []) }
   },
 
   saveMessages(conversationId: number, messages: ChatMessage[]): Promise<void> {
-    return apiClient.put<void>(`/api/ai/conversations/${conversationId}/messages`, { messages })
+    return apiClient.put<void>(`/api/ai/conversations/${conversationId}/messages`, { turns: messagesToTurns(messages) })
   },
 }
 

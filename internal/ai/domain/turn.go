@@ -146,8 +146,9 @@ func (t Turn) ToolResult() *ToolResultPart {
 
 func cloneToolCall(toolCall ToolCall) ToolCall {
 	return ToolCall{
-		ID:   toolCall.ID,
-		Type: toolCall.Type,
+		ID:     toolCall.ID,
+		ItemID: toolCall.ItemID,
+		Type:   toolCall.Type,
 		Function: ToolCallFunction{
 			Name:      toolCall.Function.Name,
 			Arguments: toolCall.Function.Arguments,

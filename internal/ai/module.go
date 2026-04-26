@@ -10,7 +10,6 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/provider/minimax"
 	"github.com/devpad-org/devpad/internal/ai/provider/mistral"
 	"github.com/devpad-org/devpad/internal/ai/provider/moonshot"
-	"github.com/devpad-org/devpad/internal/ai/provider/openaichat"
 	"github.com/devpad-org/devpad/internal/ai/provider/openairesponses"
 	"github.com/devpad-org/devpad/internal/ai/storage"
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
@@ -35,7 +34,6 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 		mistral.NewAdapter(),
 		minimax.NewAdapter(),
 		moonshot.NewAdapter(),
-		openaichat.NewAdapter(),
 		openairesponses.NewAdapter(),
 	)
 

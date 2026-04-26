@@ -425,12 +425,12 @@ async function sendMessage() {
             rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
           }
           for (const tc of event.toolCalls) {
-            rounds[rounds.length - 1].toolCalls.push({ id: tc.id, type: tc.type, function: tc.function })
+            rounds[rounds.length - 1].toolCalls.push({ id: tc.id, itemId: tc.itemId, type: tc.type, function: { name: tc.name, arguments: tc.arguments } })
             messages.value[assistantIdx].segments.push({
               type: 'tool',
               toolCallId: tc.id,
-              name: tc.function.name,
-              args: tc.function.arguments,
+              name: tc.name,
+              args: tc.arguments,
             })
           }
         }
@@ -767,6 +767,10 @@ function scrollToBottom() {
           v-if="msg.role === 'assistant'"
           class="msg-content markdown-body"
         >
+          <details v-if="msg.reasoningContent" class="thinking-content">
+            <summary class="thinking-summary">Thinking</summary>
+            <p class="thinking-text">{{ msg.reasoningContent }}</p>
+          </details>
           <template v-for="(seg, si) in msg.segments" :key="si">
             <div v-if="seg.type === 'tool'" class="tool-usage">
               <div class="tool-header">
@@ -1763,6 +1767,49 @@ function scrollToBottom() {
   border: 0.5px solid var(--border-subtle);
   border-radius: 50%;
   opacity: 0.5;
+}
+
+/* Thinking content (reasoning output) */
+.thinking-content {
+  margin-bottom: 8px;
+}
+
+.thinking-summary {
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.7;
+}
+
+.thinking-summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking-summary::before {
+  content: '▶';
+  font-size: 8px;
+  transition: transform 0.15s ease;
+}
+
+details[open] .thinking-summary::before {
+  transform: rotate(90deg);
+}
+
+.thinking-text {
+  margin: 4px 0 0;
+  padding: 6px 10px;
+  font-style: italic;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-left: 2px solid var(--border-subtle);
+  white-space: pre-wrap;
+  line-height: 1.5;
+  opacity: 0.8;
 }
 
 /* Thinking indicator */

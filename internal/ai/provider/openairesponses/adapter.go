@@ -99,11 +99,7 @@ func (a *Adapter) Models() []domain.Model {
 	}
 
 	return []domain.Model{
-		{ID: "gpt-5", Name: "GPT-5", ProviderID: providerID, Thinking: thinking},
-		{ID: "gpt-5.4-pro", Name: "GPT-5.4 Pro", ProviderID: providerID, Thinking: thinking},
-		{ID: "gpt-5-mini", Name: "GPT-5 Mini", ProviderID: providerID, Thinking: thinking},
-		{ID: "gpt-5-nano", Name: "GPT-5 Nano", ProviderID: providerID, Thinking: thinking},
-		{ID: "o4-mini", Name: "o4-mini", ProviderID: providerID, Thinking: thinking},
+		{ID: "gpt-5.4", Name: "GPT-5.4", ProviderID: providerID, Thinking: thinking},
 	}
 }
 
@@ -132,14 +128,13 @@ func buildResponsesRequest(req aiprovider.StreamRequest, model domain.Model) map
 	if len(req.Tools) > 0 {
 		body["tools"] = buildTools(req.Tools)
 		body["tool_choice"] = "auto"
-		body["parallel_tool_calls"] = true
 	}
 
 	if reasoning := buildReasoningConfig(req, model); reasoning != nil {
 		body["reasoning"] = reasoning
 	}
 
-	if include := buildInclude(model); len(include) > 0 {
+	if include := buildInclude(req, model); len(include) > 0 {
 		body["include"] = include
 	}
 
@@ -180,14 +175,17 @@ func buildInput(turns []domain.Turn) []any {
 				if toolCall.ID == "" {
 					continue
 				}
-				input = append(input, map[string]any{
+				item := map[string]any{
 					"type":      "function_call",
-					"id":        toolCall.ID,
 					"call_id":   toolCall.ID,
 					"name":      toolCall.Function.Name,
 					"arguments": toolCall.Function.Arguments,
 					"status":    "completed",
-				})
+				}
+				if toolCall.ItemID != "" {
+					item["id"] = toolCall.ItemID
+				}
+				input = append(input, item)
 			}
 		case domain.RoleUser:
 			toolResults := turn.ToolResults()
@@ -273,13 +271,8 @@ func buildReasoningConfig(req aiprovider.StreamRequest, model domain.Model) map[
 		Thinking: req.Thinking,
 	}
 
-	enabled := domain.ThinkingEnabledForRequest(model, request)
-	if !enabled {
-		if req.Thinking == nil || req.Thinking.Enabled == nil || model.Thinking.EnabledByDefault {
-			return nil
-		}
-
-		return map[string]any{"effort": "none"}
+	if !domain.ThinkingEnabledForRequest(model, request) {
+		return nil
 	}
 
 	return map[string]any{
@@ -288,8 +281,15 @@ func buildReasoningConfig(req aiprovider.StreamRequest, model domain.Model) map[
 	}
 }
 
-func buildInclude(model domain.Model) []string {
+func buildInclude(req aiprovider.StreamRequest, model domain.Model) []string {
 	if !model.Thinking.Supported {
+		return nil
+	}
+
+	if !domain.ThinkingEnabledForRequest(model, domain.ChatRequest{
+		Model:    req.Model,
+		Thinking: req.Thinking,
+	}) {
 		return nil
 	}
 
@@ -367,7 +367,7 @@ func readResponsesStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 				}
 			}
 		case "response.completed":
-			captureResponseOutput(event.Response, toolCallsByIndex, toolCallsByItemID, &reasoningItems)
+			captureResponseOutput(event.Response, toolCallsByIndex, toolCallsByItemID)
 			if state := marshalReasoningState(reasoningItems); len(state) > 0 {
 				ch <- domain.ProviderEvent{ReasoningState: state}
 			}
@@ -497,7 +497,7 @@ func handleOutputItemDone(event streamEvent, byIndex map[int]*pendingToolCall, b
 	return false
 }
 
-func captureResponseOutput(response *responsePayload, byIndex map[int]*pendingToolCall, byItemID map[string]*pendingToolCall, reasoningItems *[]json.RawMessage) {
+func captureResponseOutput(response *responsePayload, byIndex map[int]*pendingToolCall, byItemID map[string]*pendingToolCall) {
 	if response == nil {
 		return
 	}
@@ -508,18 +508,17 @@ func captureResponseOutput(response *responsePayload, byIndex map[int]*pendingTo
 			continue
 		}
 
-		switch item.Type {
-		case "function_call":
-			pending := ensurePendingToolCall(byIndex, byItemID, index, item.ID)
-			pending.call.Type = "function"
-			pending.call.ID = firstNonEmpty(item.CallID, item.ID)
-			pending.call.Function.Name = item.Name
-			pending.args.Reset()
-			pending.args.WriteString(item.Arguments)
-			pending.call.Function.Arguments = pending.args.String()
-		case "reasoning":
-			*reasoningItems = append(*reasoningItems, append(json.RawMessage(nil), raw...))
+		if item.Type != "function_call" {
+			continue
 		}
+
+		pending := ensurePendingToolCall(byIndex, byItemID, index, item.ID)
+		pending.call.Type = "function"
+		pending.call.ID = firstNonEmpty(item.CallID, item.ID)
+		pending.call.Function.Name = item.Name
+		pending.args.Reset()
+		pending.args.WriteString(item.Arguments)
+		pending.call.Function.Arguments = pending.args.String()
 	}
 }
 
@@ -571,6 +570,9 @@ func emitResponseToolCalls(ch chan<- domain.ProviderEvent, byIndex map[int]*pend
 		call := pending.call
 		if call.ID == "" {
 			call.ID = pending.itemID
+		}
+		if call.ItemID == "" {
+			call.ItemID = pending.itemID
 		}
 		if call.Function.Arguments == "" {
 			call.Function.Arguments = pending.args.String()

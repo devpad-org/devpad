@@ -143,9 +143,9 @@ func (r *ConversationRepository) SaveTurns(ctx context.Context, conversationID i
 
 	partStmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO ai_parts (turn_id, position, kind, text, thinking_state,
-		 tool_call_id, tool_call_name, tool_call_args,
+		 tool_call_id, tool_call_item_id, tool_call_name, tool_call_args,
 		 tool_result_call_id, tool_result_name, tool_result_content, tool_result_is_error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return fmt.Errorf("preparing part insert: %w", err)
@@ -177,15 +177,16 @@ func (r *ConversationRepository) SaveTurns(ctx context.Context, conversationID i
 
 func insertPart(ctx context.Context, stmt *sql.Stmt, turnID int64, position int, part domain.Part) error {
 	var (
-		text               string
-		thinkingState      string
-		toolCallID         string
-		toolCallName       string
-		toolCallArgs       string
-		toolResultCallID   string
-		toolResultName     string
-		toolResultContent  string
-		toolResultIsError  int
+		text              string
+		thinkingState     string
+		toolCallID        string
+		toolCallItemID    string
+		toolCallName      string
+		toolCallArgs      string
+		toolResultCallID  string
+		toolResultName    string
+		toolResultContent string
+		toolResultIsError int
 	)
 
 	switch part.Kind {
@@ -201,6 +202,7 @@ func insertPart(ctx context.Context, stmt *sql.Stmt, turnID int64, position int,
 	case domain.PartToolCall:
 		if part.ToolCall != nil {
 			toolCallID = part.ToolCall.ID
+			toolCallItemID = part.ToolCall.ItemID
 			toolCallName = part.ToolCall.Function.Name
 			toolCallArgs = part.ToolCall.Function.Arguments
 		}
@@ -218,7 +220,7 @@ func insertPart(ctx context.Context, stmt *sql.Stmt, turnID int64, position int,
 	_, err := stmt.ExecContext(ctx,
 		turnID, position, string(part.Kind),
 		text, thinkingState,
-		toolCallID, toolCallName, toolCallArgs,
+		toolCallID, toolCallItemID, toolCallName, toolCallArgs,
 		toolResultCallID, toolResultName, toolResultContent, toolResultIsError,
 	)
 	return err
@@ -228,7 +230,7 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT t.id, t.position, t.role,
 		        p.position, p.kind, p.text, p.thinking_state,
-		        p.tool_call_id, p.tool_call_name, p.tool_call_args,
+		        p.tool_call_id, p.tool_call_item_id, p.tool_call_name, p.tool_call_args,
 		        p.tool_result_call_id, p.tool_result_name, p.tool_result_content, p.tool_result_is_error
 		 FROM ai_turns t
 		 LEFT JOIN ai_parts p ON p.turn_id = t.id
@@ -258,14 +260,14 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 			role                                                       string
 			partPos                                                    sql.NullInt64
 			kind, text, thinkingState                                  sql.NullString
-			toolCallID, toolCallName, toolCallArgs                     sql.NullString
+			toolCallID, toolCallItemID, toolCallName, toolCallArgs     sql.NullString
 			toolResultCallID, toolResultName, toolResultContent        sql.NullString
 			toolResultIsError                                          sql.NullInt64
 		)
 		if err := rows.Scan(
 			&turnID, &turnPos, &role,
 			&partPos, &kind, &text, &thinkingState,
-			&toolCallID, &toolCallName, &toolCallArgs,
+			&toolCallID, &toolCallItemID, &toolCallName, &toolCallArgs,
 			&toolResultCallID, &toolResultName, &toolResultContent, &toolResultIsError,
 		); err != nil {
 			return nil, fmt.Errorf("scanning row: %w", err)
@@ -281,7 +283,7 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 		}
 
 		part, err := scanPart(kind.String, text.String, thinkingState.String,
-			toolCallID.String, toolCallName.String, toolCallArgs.String,
+			toolCallID.String, toolCallItemID.String, toolCallName.String, toolCallArgs.String,
 			toolResultCallID.String, toolResultName.String, toolResultContent.String, toolResultIsError.Int64 != 0)
 		if err != nil {
 			return nil, fmt.Errorf("building part: %w", err)
@@ -303,7 +305,7 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 }
 
 func scanPart(kind, text, thinkingState,
-	toolCallID, toolCallName, toolCallArgs,
+	toolCallID, toolCallItemID, toolCallName, toolCallArgs,
 	toolResultCallID, toolResultName, toolResultContent string,
 	toolResultIsError bool) (domain.Part, error) {
 
@@ -322,8 +324,9 @@ func scanPart(kind, text, thinkingState,
 		return domain.Part{
 			Kind: domain.PartToolCall,
 			ToolCall: &domain.ToolCall{
-				ID:   toolCallID,
-				Type: "function",
+				ID:     toolCallID,
+				ItemID: toolCallItemID,
+				Type:   "function",
 				Function: domain.ToolCallFunction{
 					Name:      toolCallName,
 					Arguments: toolCallArgs,

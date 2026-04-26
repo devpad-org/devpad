@@ -26,11 +26,11 @@ func TestAdapterMetadata(t *testing.T) {
 	}
 
 	models := adapter.Models()
-	if len(models) != 5 {
-		t.Fatalf("expected 5 models, got %d", len(models))
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
 	}
 
-	expected := []string{"gpt-5", "gpt-5.4-pro", "gpt-5-mini", "gpt-5-nano", "o4-mini"}
+	expected := []string{"gpt-5.4"}
 	for index, modelID := range expected {
 		if models[index].ID != modelID {
 			t.Fatalf("expected model %d to be %q, got %q", index, modelID, models[index].ID)
@@ -43,7 +43,7 @@ func TestAdapterMetadata(t *testing.T) {
 
 func TestBuildResponsesRequest_SystemAndToolMapping(t *testing.T) {
 	req := aiprovider.StreamRequest{
-		Model: "gpt-5",
+		Model: "gpt-5.4",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleSystem, "You are concise."),
 			domain.NewTextTurn(domain.RoleSystem, "Use tools when needed."),
@@ -64,7 +64,7 @@ func TestBuildResponsesRequest_SystemAndToolMapping(t *testing.T) {
 	if body["instructions"] != "You are concise.\n\nUse tools when needed." {
 		t.Fatalf("unexpected instructions: %v", body["instructions"])
 	}
-	if body["model"] != "gpt-5" {
+	if body["model"] != "gpt-5.4" {
 		t.Fatalf("unexpected model: %v", body["model"])
 	}
 	if body["stream"] != true {
@@ -97,9 +97,8 @@ func TestBuildResponsesRequest_SystemAndToolMapping(t *testing.T) {
 		t.Fatalf("expected strict=false, got %v", tools[0]["strict"])
 	}
 
-	include := body["include"].([]string)
-	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
-		t.Fatalf("unexpected include values: %v", include)
+	if _, ok := body["include"]; ok {
+		t.Fatal("expected include to be omitted when thinking is not enabled")
 	}
 
 	if _, ok := body["reasoning"]; ok {
@@ -110,7 +109,7 @@ func TestBuildResponsesRequest_SystemAndToolMapping(t *testing.T) {
 func TestBuildResponsesRequest_AssistantToolHistoryAndReasoningState(t *testing.T) {
 	reasoningState := json.RawMessage(`[{"id":"rs_123","type":"reasoning","summary":[],"encrypted_content":"enc"}]`)
 	req := aiprovider.StreamRequest{
-		Model: "gpt-5",
+		Model: "gpt-5.4",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleUser, "Check the weather."),
 			{
@@ -180,6 +179,11 @@ func TestBuildResponsesRequest_ThinkingEnabled(t *testing.T) {
 	if reasoning["summary"] != "auto" {
 		t.Fatalf("expected reasoning summary auto, got %v", reasoning["summary"])
 	}
+
+	include := body["include"].([]string)
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("expected include reasoning.encrypted_content when thinking is enabled, got %v", include)
+	}
 }
 
 func TestAdapterStreamTextAndDone(t *testing.T) {
@@ -207,7 +211,7 @@ func TestAdapterStreamTextAndDone(t *testing.T) {
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "gpt-5",
+		Model: "gpt-5.4",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err != nil {
@@ -221,7 +225,7 @@ func TestAdapterStreamTextAndDone(t *testing.T) {
 	if acceptHeader != "text/event-stream" {
 		t.Fatalf("expected SSE accept header, got %q", acceptHeader)
 	}
-	if requestBody["model"] != "gpt-5" {
+	if requestBody["model"] != "gpt-5.4" {
 		t.Fatalf("expected model gpt-5 in request, got %v", requestBody["model"])
 	}
 	if len(events) < 3 {
@@ -257,7 +261,7 @@ func TestAdapterStreamReasoningAndToolCalls(t *testing.T) {
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "gpt-5",
+		Model: "gpt-5.4",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "weather in Paris")},
 	})
 	if err != nil {
@@ -321,7 +325,7 @@ func TestAdapterErrorHandling(t *testing.T) {
 	adapter.client = server.Client()
 
 	_, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "bad-key"}, aiprovider.StreamRequest{
-		Model: "gpt-5",
+		Model: "gpt-5.4",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err == nil {
@@ -350,7 +354,7 @@ func TestAdapterContextCancellation(t *testing.T) {
 	cancel()
 
 	_, err := adapter.Stream(ctx, aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "gpt-5",
+		Model: "gpt-5.4",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err == nil {

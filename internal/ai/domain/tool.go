@@ -18,6 +18,7 @@ type ToolFunction struct {
 // ToolCall represents the AI's request to call a tool.
 type ToolCall struct {
 	ID       string           `json:"id"`
+	ItemID   string           `json:"itemId,omitempty"` // provider item ID (e.g. fc_... for OpenAI Responses API)
 	Type     string           `json:"type"`
 	Function ToolCallFunction `json:"function"`
 }

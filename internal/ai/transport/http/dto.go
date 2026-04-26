@@ -43,6 +43,7 @@ type ThinkingPartDTO struct {
 // ToolCallDTO is the transport representation of a requested tool call.
 type ToolCallDTO struct {
 	ID        string `json:"id"`
+	ItemID    string `json:"itemId,omitempty"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 }
@@ -71,6 +72,7 @@ type StreamEventDTO struct {
 // StreamToolCallDTO carries a tool call in a streaming SSE event.
 type StreamToolCallDTO struct {
 	ID        string `json:"id"`
+	ItemID    string `json:"itemId,omitempty"`
 	Type      string `json:"type"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
@@ -139,8 +141,9 @@ func toDomainPart(dto PartDTO) domain.Part {
 		return domain.Part{
 			Kind: domain.PartToolCall,
 			ToolCall: &domain.ToolCall{
-				ID:   dto.ToolCall.ID,
-				Type: "function",
+				ID:     dto.ToolCall.ID,
+				ItemID: dto.ToolCall.ItemID,
+				Type:   "function",
 				Function: domain.ToolCallFunction{
 					Name:      dto.ToolCall.Name,
 					Arguments: dto.ToolCall.Arguments,
@@ -196,6 +199,7 @@ func fromDomainPart(part domain.Part) PartDTO {
 		if part.ToolCall != nil {
 			dto.ToolCall = &ToolCallDTO{
 				ID:        part.ToolCall.ID,
+				ItemID:    part.ToolCall.ItemID,
 				Name:      part.ToolCall.Function.Name,
 				Arguments: part.ToolCall.Function.Arguments,
 			}
@@ -232,6 +236,7 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 		for _, tc := range event.ToolCalls {
 			dto.ToolCalls = append(dto.ToolCalls, StreamToolCallDTO{
 				ID:        tc.ID,
+				ItemID:    tc.ItemID,
 				Type:      tc.Type,
 				Name:      tc.Function.Name,
 				Arguments: tc.Function.Arguments,

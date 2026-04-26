@@ -85,7 +85,7 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, o
 			Tools:    toolDefinitions,
 		})
 		if err != nil {
-			if !emitEvent(ctx, out, domain.ClientEvent{ErrorMessage: "chat error"}) {
+			if !emitEvent(ctx, out, domain.ClientEvent{ErrorMessage: err.Error()}) {
 				return
 			}
 			emitEvent(ctx, out, domain.ClientEvent{Done: true})
