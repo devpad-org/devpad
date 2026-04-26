@@ -8,8 +8,8 @@ import (
 
 // ChatRequestDTO is the frontend request contract for chat endpoints.
 type ChatRequestDTO struct {
-	Model       string       `json:"model"`
-	Messages    []MessageDTO `json:"messages"`
+	Model       string      `json:"model"`
+	Turns       []TurnDTO   `json:"turns"`
 	Thinking    *ThinkingDTO `json:"thinking,omitempty"`
 	WorkspaceID int64        `json:"workspaceId,omitempty"`
 }
@@ -19,14 +19,40 @@ type ThinkingDTO struct {
 	Enabled *bool `json:"enabled,omitempty"`
 }
 
-// MessageDTO is the stable frontend transport shape for a chat message.
-type MessageDTO struct {
-	Role             string          `json:"role"`
-	Content          string          `json:"content"`
-	ReasoningContent string          `json:"reasoning_content,omitempty"`
-	ThinkingState    json.RawMessage `json:"thinking_state,omitempty"`
-	ToolCalls        []ToolCallDTO   `json:"tool_calls,omitempty"`
-	ToolCallID       string          `json:"tool_call_id,omitempty"`
+// TurnDTO is the stable frontend transport shape for a conversation turn.
+type TurnDTO struct {
+	Role  string    `json:"role"`
+	Parts []PartDTO `json:"parts"`
+}
+
+// PartDTO carries one normalized piece of a turn.
+type PartDTO struct {
+	Kind       string          `json:"kind"`
+	Text       string          `json:"text,omitempty"`
+	Thinking   *ThinkingPartDTO `json:"thinking,omitempty"`
+	ToolCall   *ToolCallDTO     `json:"toolCall,omitempty"`
+	ToolResult *ToolResultDTO   `json:"toolResult,omitempty"`
+}
+
+// ThinkingPartDTO carries the reasoning text and opaque provider state.
+type ThinkingPartDTO struct {
+	Text  string          `json:"text,omitempty"`
+	State json.RawMessage `json:"state,omitempty"`
+}
+
+// ToolCallDTO is the transport representation of a requested tool call.
+type ToolCallDTO struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ToolResultDTO is the transport representation of a tool execution result.
+type ToolResultDTO struct {
+	ToolCallID string `json:"toolCallId"`
+	Name       string `json:"name"`
+	Content    string `json:"content"`
+	IsError    bool   `json:"isError,omitempty"`
 }
 
 // StreamEventDTO is the stable SSE payload sent to the frontend.
@@ -34,29 +60,24 @@ type StreamEventDTO struct {
 	ReasoningContent string              `json:"reasoningContent,omitempty"`
 	ThinkingState    json.RawMessage     `json:"thinkingState,omitempty"`
 	Content          string              `json:"content,omitempty"`
-	ToolCalls        []ToolCallDTO       `json:"toolCalls,omitempty"`
-	ToolResult       *ToolResultDTO      `json:"toolResult,omitempty"`
+	ToolCalls        []StreamToolCallDTO `json:"toolCalls,omitempty"`
+	ToolResult       *StreamToolResultDTO `json:"toolResult,omitempty"`
 	ApprovalRequired *ApprovalRequestDTO `json:"approvalRequired,omitempty"`
 	Plan             []PlanStepDTO       `json:"plan,omitempty"`
 	Done             bool                `json:"done,omitempty"`
 	Error            string              `json:"error,omitempty"`
 }
 
-// ToolCallDTO is the transport representation of a requested tool call.
-type ToolCallDTO struct {
-	ID       string              `json:"id"`
-	Type     string              `json:"type"`
-	Function ToolCallFunctionDTO `json:"function"`
-}
-
-// ToolCallFunctionDTO contains the function name and JSON arguments.
-type ToolCallFunctionDTO struct {
+// StreamToolCallDTO carries a tool call in a streaming SSE event.
+type StreamToolCallDTO struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 }
 
-// ToolResultDTO is sent over SSE after tool execution.
-type ToolResultDTO struct {
+// StreamToolResultDTO is sent over SSE after tool execution.
+type StreamToolResultDTO struct {
 	ToolCallID string `json:"toolCallId"`
 	Name       string `json:"name"`
 	Content    string `json:"content"`
@@ -79,76 +100,121 @@ func ToDomainThinking(dto *ThinkingDTO) *domain.ThinkingConfig {
 	if dto == nil {
 		return nil
 	}
-
 	return &domain.ThinkingConfig{Enabled: dto.Enabled}
 }
 
-// ToDomainTurns converts transport messages into normalized internal turns.
-func ToDomainTurns(messages []MessageDTO) []domain.Turn {
-	turns := make([]domain.Turn, 0, len(messages))
-	for _, message := range messages {
-		turn := domain.Turn{Role: domain.Role(message.Role)}
-
-		if message.Role == string(domain.RoleTool) {
-			if message.Content != "" || message.ToolCallID != "" {
-				turn.Parts = append(turn.Parts, domain.Part{
-					Kind: domain.PartToolResult,
-					ToolResult: &domain.ToolResultPart{
-						ToolCallID: message.ToolCallID,
-						Content:    message.Content,
-					},
-				})
-			}
-		} else {
-			if message.Content != "" {
-				turn.Parts = append(turn.Parts, domain.Part{Kind: domain.PartText, Text: message.Content})
-			}
-			if message.ReasoningContent != "" || len(message.ThinkingState) > 0 {
-				turn.Parts = append(turn.Parts, domain.Part{
-					Kind:          domain.PartReasoning,
-					Text:          message.ReasoningContent,
-					ProviderState: domain.CloneRawMessage(message.ThinkingState),
-				})
-			}
-			for _, toolCall := range message.ToolCalls {
-				domainToolCall := toDomainToolCall(toolCall)
-				turn.Parts = append(turn.Parts, domain.Part{Kind: domain.PartToolCall, ToolCall: &domainToolCall})
-			}
+// ToDomainTurns converts transport turns into normalized internal turns.
+func ToDomainTurns(dtos []TurnDTO) []domain.Turn {
+	turns := make([]domain.Turn, 0, len(dtos))
+	for _, dto := range dtos {
+		turn := domain.Turn{Role: domain.Role(dto.Role)}
+		for _, p := range dto.Parts {
+			part := toDomainPart(p)
+			turn.Parts = append(turn.Parts, part)
 		}
-
 		turns = append(turns, turn)
 	}
-
 	return turns
 }
 
-// FromDomainTurns converts normalized turns back into the stable message transport shape.
-func FromDomainTurns(turns []domain.Turn) []MessageDTO {
-	messages := make([]MessageDTO, 0, len(turns))
-	for _, turn := range turns {
-		message := MessageDTO{Role: string(turn.Role)}
-		if turn.Role == domain.RoleTool {
-			if result := turn.ToolResult(); result != nil {
-				message.Content = result.Content
-				message.ToolCallID = result.ToolCallID
-			}
-			messages = append(messages, message)
-			continue
+func toDomainPart(dto PartDTO) domain.Part {
+	switch domain.PartKind(dto.Kind) {
+	case domain.PartText:
+		return domain.Part{Kind: domain.PartText, Text: dto.Text}
+	case domain.PartThinking:
+		if dto.Thinking == nil {
+			return domain.Part{Kind: domain.PartThinking, Thinking: &domain.ThinkingPart{}}
 		}
-
-		message.Content = turn.Text()
-		message.ReasoningContent = turn.ReasoningText()
-		message.ThinkingState = turn.ReasoningState()
-
-		toolCalls := turn.ToolCalls()
-		if len(toolCalls) > 0 {
-			message.ToolCalls = fromDomainToolCalls(toolCalls)
+		return domain.Part{
+			Kind: domain.PartThinking,
+			Thinking: &domain.ThinkingPart{
+				Text:  dto.Thinking.Text,
+				State: domain.CloneRawMessage(dto.Thinking.State),
+			},
 		}
-
-		messages = append(messages, message)
+	case domain.PartToolCall:
+		if dto.ToolCall == nil {
+			return domain.Part{Kind: domain.PartToolCall}
+		}
+		return domain.Part{
+			Kind: domain.PartToolCall,
+			ToolCall: &domain.ToolCall{
+				ID:   dto.ToolCall.ID,
+				Type: "function",
+				Function: domain.ToolCallFunction{
+					Name:      dto.ToolCall.Name,
+					Arguments: dto.ToolCall.Arguments,
+				},
+			},
+		}
+	case domain.PartToolResult:
+		if dto.ToolResult == nil {
+			return domain.Part{Kind: domain.PartToolResult}
+		}
+		return domain.Part{
+			Kind: domain.PartToolResult,
+			ToolResult: &domain.ToolResultPart{
+				ToolCallID: dto.ToolResult.ToolCallID,
+				Name:       dto.ToolResult.Name,
+				Content:    dto.ToolResult.Content,
+				IsError:    dto.ToolResult.IsError,
+			},
+		}
+	default:
+		return domain.Part{Kind: domain.PartKind(dto.Kind), Text: dto.Text}
 	}
+}
 
-	return messages
+// FromDomainTurns converts normalized turns back into the stable transport shape.
+func FromDomainTurns(turns []domain.Turn) []TurnDTO {
+	dtos := make([]TurnDTO, 0, len(turns))
+	for _, turn := range turns {
+		dto := TurnDTO{Role: string(turn.Role)}
+		for _, part := range turn.Parts {
+			dto.Parts = append(dto.Parts, fromDomainPart(part))
+		}
+		dtos = append(dtos, dto)
+	}
+	return dtos
+}
+
+func fromDomainPart(part domain.Part) PartDTO {
+	switch part.Kind {
+	case domain.PartText:
+		return PartDTO{Kind: "text", Text: part.Text}
+	case domain.PartThinking:
+		dto := PartDTO{Kind: "thinking"}
+		if part.Thinking != nil {
+			dto.Thinking = &ThinkingPartDTO{
+				Text:  part.Thinking.Text,
+				State: domain.CloneRawMessage(part.Thinking.State),
+			}
+		}
+		return dto
+	case domain.PartToolCall:
+		dto := PartDTO{Kind: "tool_call"}
+		if part.ToolCall != nil {
+			dto.ToolCall = &ToolCallDTO{
+				ID:        part.ToolCall.ID,
+				Name:      part.ToolCall.Function.Name,
+				Arguments: part.ToolCall.Function.Arguments,
+			}
+		}
+		return dto
+	case domain.PartToolResult:
+		dto := PartDTO{Kind: "tool_result"}
+		if part.ToolResult != nil {
+			dto.ToolResult = &ToolResultDTO{
+				ToolCallID: part.ToolResult.ToolCallID,
+				Name:       part.ToolResult.Name,
+				Content:    part.ToolResult.Content,
+				IsError:    part.ToolResult.IsError,
+			}
+		}
+		return dto
+	default:
+		return PartDTO{Kind: string(part.Kind)}
+	}
 }
 
 // FromClientEvent converts an internal client event into the stable SSE payload.
@@ -162,10 +228,18 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 	}
 
 	if len(event.ToolCalls) > 0 {
-		dto.ToolCalls = fromDomainToolCalls(event.ToolCalls)
+		dto.ToolCalls = make([]StreamToolCallDTO, 0, len(event.ToolCalls))
+		for _, tc := range event.ToolCalls {
+			dto.ToolCalls = append(dto.ToolCalls, StreamToolCallDTO{
+				ID:        tc.ID,
+				Type:      tc.Type,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			})
+		}
 	}
 	if event.ToolResult != nil {
-		dto.ToolResult = &ToolResultDTO{
+		dto.ToolResult = &StreamToolResultDTO{
 			ToolCallID: event.ToolResult.ToolCallID,
 			Name:       event.ToolResult.Name,
 			Content:    event.ToolResult.Content,
@@ -178,44 +252,11 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 		}
 	}
 	if len(event.Plan) > 0 {
-		dto.Plan = fromDomainPlan(event.Plan)
+		dto.Plan = make([]PlanStepDTO, 0, len(event.Plan))
+		for _, step := range event.Plan {
+			dto.Plan = append(dto.Plan, PlanStepDTO{Title: step.Title, Status: step.Status})
+		}
 	}
 
 	return dto
-}
-
-func toDomainToolCall(dto ToolCallDTO) domain.ToolCall {
-	return domain.ToolCall{
-		ID:   dto.ID,
-		Type: dto.Type,
-		Function: domain.ToolCallFunction{
-			Name:      dto.Function.Name,
-			Arguments: dto.Function.Arguments,
-		},
-	}
-}
-
-func fromDomainToolCalls(toolCalls []domain.ToolCall) []ToolCallDTO {
-	dtos := make([]ToolCallDTO, 0, len(toolCalls))
-	for _, toolCall := range toolCalls {
-		dtos = append(dtos, ToolCallDTO{
-			ID:   toolCall.ID,
-			Type: toolCall.Type,
-			Function: ToolCallFunctionDTO{
-				Name:      toolCall.Function.Name,
-				Arguments: toolCall.Function.Arguments,
-			},
-		})
-	}
-
-	return dtos
-}
-
-func fromDomainPlan(plan []domain.PlanStep) []PlanStepDTO {
-	dtos := make([]PlanStepDTO, 0, len(plan))
-	for _, step := range plan {
-		dtos = append(dtos, PlanStepDTO{Title: step.Title, Status: step.Status})
-	}
-
-	return dtos
 }

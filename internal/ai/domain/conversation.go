@@ -13,10 +13,3 @@ type Conversation struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
-// StoredMessage is a persisted Message with its ordering position.
-type StoredMessage struct {
-	ID             int64
-	ConversationID int64
-	Position       int
-	Message
-}

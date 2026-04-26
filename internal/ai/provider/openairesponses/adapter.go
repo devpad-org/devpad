@@ -166,43 +166,54 @@ func buildInput(turns []domain.Turn) []any {
 			continue
 		}
 
-		appendReasoningItems(&input, turn.ReasoningState())
+		appendReasoningItems(&input, turn.ThinkingState())
 
 		switch turn.Role {
-		case domain.RoleUser, domain.RoleAssistant:
+		case domain.RoleAssistant:
 			if turn.Text() != "" {
 				input = append(input, map[string]any{
-					"role":    string(turn.Role),
+					"role":    "assistant",
 					"content": turn.Text(),
 				})
 			}
-
 			for _, toolCall := range turn.ToolCalls() {
-				callID := toolCall.ID
-				if callID == "" {
+				if toolCall.ID == "" {
 					continue
 				}
-
 				input = append(input, map[string]any{
 					"type":      "function_call",
-					"id":        callID,
-					"call_id":   callID,
+					"id":        toolCall.ID,
+					"call_id":   toolCall.ID,
 					"name":      toolCall.Function.Name,
 					"arguments": toolCall.Function.Arguments,
 					"status":    "completed",
 				})
 			}
-		case domain.RoleTool:
-			toolResult := turn.ToolResult()
-			if toolResult == nil || toolResult.ToolCallID == "" {
-				continue
+		case domain.RoleUser:
+			toolResults := turn.ToolResults()
+			if len(toolResults) > 0 {
+				for _, result := range toolResults {
+					if result.ToolCallID == "" {
+						continue
+					}
+					input = append(input, map[string]any{
+						"type":    "function_call_output",
+						"call_id": result.ToolCallID,
+						"output":  result.Content,
+					})
+				}
+				if text := turn.Text(); text != "" {
+					input = append(input, map[string]any{
+						"role":    "user",
+						"content": text,
+					})
+				}
+			} else if text := turn.Text(); text != "" {
+				input = append(input, map[string]any{
+					"role":    "user",
+					"content": text,
+				})
 			}
-
-			input = append(input, map[string]any{
-				"type":    "function_call_output",
-				"call_id": toolResult.ToolCallID,
-				"output":  toolResult.Content,
-			})
 		}
 	}
 

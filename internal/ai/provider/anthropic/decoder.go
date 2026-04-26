@@ -48,6 +48,13 @@ func startAnthropicStream(ctx context.Context, client *http.Client, url, apiKey 
 	return ch, nil
 }
 
+type pendingThinkingBlock struct {
+	blockType string // "thinking" or "redacted_thinking"
+	thinking  strings.Builder
+	signature string
+	data      string // for redacted_thinking
+}
+
 // readAnthropicStream reads an Anthropic Messages API SSE stream and emits normalized events.
 func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	defer close(ch)
@@ -58,6 +65,8 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 
 	var toolCalls []domain.ToolCall
 	toolCallArgs := make(map[int]*strings.Builder)
+	pendingThinking := make(map[int]*pendingThinkingBlock)
+	var completedThinkingBlocks []map[string]any
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -67,11 +76,12 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 
 		if strings.HasPrefix(line, "event: ") {
 			eventType := strings.TrimPrefix(line, "event: ")
-			if eventType == "error" {
-				// Next line should have data
-				continue
-			}
 			if eventType == "message_stop" {
+				if len(completedThinkingBlocks) > 0 {
+					if raw, err := json.Marshal(completedThinkingBlocks); err == nil {
+						ch <- domain.ProviderEvent{ReasoningState: raw}
+					}
+				}
 				emitAnthropicToolCalls(ch, toolCalls, toolCallArgs)
 				ch <- domain.ProviderEvent{Done: true}
 				return
@@ -84,84 +94,94 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			continue
 		}
 
-		// Parse the event data
 		var event anthropicEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			log.Printf("error parsing anthropic event: %v", err)
 			continue
 		}
 
-		// Handle different event types
 		switch event.Type {
-		case "message_start":
-			// Initial message metadata, no content yet
-			continue
-
 		case "content_block_start":
-			if event.ContentBlock != nil {
-				switch event.ContentBlock.Type {
-				case "text":
-					// Regular text block starting
-					continue
-				case "thinking":
-					// Thinking block starting
-					continue
-				case "tool_use":
-					if event.Index == nil {
-						continue
-					}
-
-					index := *event.Index
-					for len(toolCalls) <= index {
-						toolCalls = append(toolCalls, domain.ToolCall{})
-					}
-
-					toolCalls[index] = domain.ToolCall{
-						ID:   event.ContentBlock.ID,
-						Type: "function",
-						Function: domain.ToolCallFunction{
-							Name: event.ContentBlock.Name,
-						},
-					}
-					toolCallArgs[index] = &strings.Builder{}
+			if event.ContentBlock == nil || event.Index == nil {
+				continue
+			}
+			switch event.ContentBlock.Type {
+			case "thinking":
+				pendingThinking[*event.Index] = &pendingThinkingBlock{blockType: "thinking"}
+			case "redacted_thinking":
+				pendingThinking[*event.Index] = &pendingThinkingBlock{
+					blockType: "redacted_thinking",
+					data:      event.ContentBlock.Data,
 				}
+			case "tool_use":
+				index := *event.Index
+				for len(toolCalls) <= index {
+					toolCalls = append(toolCalls, domain.ToolCall{})
+				}
+				toolCalls[index] = domain.ToolCall{
+					ID:   event.ContentBlock.ID,
+					Type: "function",
+					Function: domain.ToolCallFunction{
+						Name: event.ContentBlock.Name,
+					},
+				}
+				toolCallArgs[index] = &strings.Builder{}
 			}
 
 		case "content_block_delta":
-			if event.Delta != nil {
-				switch event.Delta.Type {
-				case "text_delta":
-					// Regular content delta
-					if event.Delta.Text != "" {
-						ch <- domain.ProviderEvent{TextDelta: event.Delta.Text}
+			if event.Delta == nil {
+				continue
+			}
+			switch event.Delta.Type {
+			case "text_delta":
+				if event.Delta.Text != "" {
+					ch <- domain.ProviderEvent{TextDelta: event.Delta.Text}
+				}
+			case "thinking_delta":
+				if event.Delta.Thinking != "" {
+					ch <- domain.ProviderEvent{ReasoningDelta: event.Delta.Thinking}
+					if event.Index != nil {
+						if block, ok := pendingThinking[*event.Index]; ok {
+							block.thinking.WriteString(event.Delta.Thinking)
+						}
 					}
-				case "thinking_delta":
-					// Thinking/reasoning content delta
-					if event.Delta.Thinking != "" {
-						ch <- domain.ProviderEvent{ReasoningDelta: event.Delta.Thinking}
+				}
+			case "signature_delta":
+				if event.Delta.Signature != "" && event.Index != nil {
+					if block, ok := pendingThinking[*event.Index]; ok {
+						block.signature += event.Delta.Signature
 					}
-				case "input_json_delta":
-					// Tool input accumulation
-					if event.Index == nil || event.Delta.PartialJSON == "" {
-						continue
-					}
-
-					if builder, ok := toolCallArgs[*event.Index]; ok {
-						builder.WriteString(event.Delta.PartialJSON)
-					}
+				}
+			case "input_json_delta":
+				if event.Index == nil || event.Delta.PartialJSON == "" {
+					continue
+				}
+				if builder, ok := toolCallArgs[*event.Index]; ok {
+					builder.WriteString(event.Delta.PartialJSON)
 				}
 			}
 
 		case "content_block_stop":
-			continue
-
-		case "message_delta":
-			// Message-level delta (e.g., stop reason)
-			continue
-
-		case "ping":
-			// Keep-alive ping
-			continue
+			if event.Index == nil {
+				continue
+			}
+			if block, ok := pendingThinking[*event.Index]; ok {
+				var thinkingBlock map[string]any
+				if block.blockType == "redacted_thinking" {
+					thinkingBlock = map[string]any{
+						"type": "redacted_thinking",
+						"data": block.data,
+					}
+				} else {
+					thinkingBlock = map[string]any{
+						"type":      "thinking",
+						"thinking":  block.thinking.String(),
+						"signature": block.signature,
+					}
+				}
+				completedThinkingBlocks = append(completedThinkingBlocks, thinkingBlock)
+				delete(pendingThinking, *event.Index)
+			}
 
 		case "error":
 			if event.Error != nil {
@@ -176,6 +196,11 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
 	}
 
+	if len(completedThinkingBlocks) > 0 {
+		if raw, err := json.Marshal(completedThinkingBlocks); err == nil {
+			ch <- domain.ProviderEvent{ReasoningState: raw}
+		}
+	}
 	emitAnthropicToolCalls(ch, toolCalls, toolCallArgs)
 	ch <- domain.ProviderEvent{Done: true}
 }
@@ -206,34 +231,27 @@ func emitAnthropicToolCalls(ch chan<- domain.ProviderEvent, toolCalls []domain.T
 // anthropicEvent represents the structure of Anthropic SSE events.
 type anthropicEvent struct {
 	Type         string            `json:"type"`
-	Message      *anthropicMessage `json:"message,omitempty"`
 	Index        *int              `json:"index,omitempty"`
 	ContentBlock *anthropicContent `json:"content_block,omitempty"`
 	Delta        *anthropicDelta   `json:"delta,omitempty"`
 	Error        *anthropicError   `json:"error,omitempty"`
 }
 
-type anthropicMessage struct {
-	ID         string             `json:"id"`
-	Type       string             `json:"type"`
-	Role       string             `json:"role"`
-	Content    []anthropicContent `json:"content"`
-	Model      string             `json:"model"`
-	StopReason string             `json:"stop_reason,omitempty"`
-}
-
 type anthropicContent struct {
-	Type  string `json:"type"`
-	Text  string `json:"text,omitempty"`
-	ID    string `json:"id,omitempty"`
-	Name  string `json:"name,omitempty"`
-	Input any    `json:"input,omitempty"`
+	Type      string `json:"type"`
+	Text      string `json:"text,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Input     any    `json:"input,omitempty"`
+	Data      string `json:"data,omitempty"`      // redacted_thinking
+	Signature string `json:"signature,omitempty"` // thinking
 }
 
 type anthropicDelta struct {
 	Type        string `json:"type"`
 	Text        string `json:"text,omitempty"`
 	Thinking    string `json:"thinking,omitempty"`
+	Signature   string `json:"signature,omitempty"`
 	PartialJSON string `json:"partial_json,omitempty"`
 	StopReason  string `json:"stop_reason,omitempty"`
 }

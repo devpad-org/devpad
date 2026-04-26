@@ -40,7 +40,7 @@ func TestBuildChatRequest_PreservesReasoningContentWhenThinkingEnabled(t *testin
 			{
 				Role: domain.RoleAssistant,
 				Parts: []domain.Part{
-					{Kind: domain.PartReasoning, Text: "Need to inspect README before editing."},
+					{Kind: domain.PartThinking, Thinking: &domain.ThinkingPart{Text: "Need to inspect README before editing."}},
 					{Kind: domain.PartToolCall, ToolCall: &domain.ToolCall{
 						ID:   "call_1",
 						Type: "function",

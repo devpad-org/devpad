@@ -80,18 +80,34 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 	thinkingEnabled := domain.ThinkingEnabledForRequest(model, domain.ChatRequest{Model: req.Model, Turns: req.Turns, Thinking: req.Thinking})
 	messages := make([]message, 0, len(req.Turns))
 	for _, turn := range req.Turns {
-		moonshotMsg := message{
-			Role:       string(turn.Role),
-			Content:    turn.Text(),
-			ToolCalls:  turn.ToolCalls(),
-			ToolCallID: turn.ToolCallID(),
+		if turn.Role == domain.RoleUser {
+			toolResults := turn.ToolResults()
+			if len(toolResults) > 0 {
+				for _, result := range toolResults {
+					messages = append(messages, message{
+						Role:       "tool",
+						Content:    result.Content,
+						ToolCallID: result.ToolCallID,
+					})
+				}
+				if text := turn.Text(); text != "" {
+					messages = append(messages, message{Role: "user", Content: text})
+				}
+				continue
+			}
 		}
 
-		reasoningText := turn.ReasoningText()
+		moonshotMsg := message{
+			Role:      string(turn.Role),
+			Content:   turn.Text(),
+			ToolCalls: turn.ToolCalls(),
+		}
+
+		thinkingText := turn.ThinkingText()
 		if thinkingEnabled {
 			switch {
-			case reasoningText != "":
-				reasoningContent := reasoningText
+			case thinkingText != "":
+				reasoningContent := thinkingText
 				moonshotMsg.ReasoningContent = &reasoningContent
 			case turn.Role == domain.RoleAssistant && len(turn.ToolCalls()) > 0:
 				reasoningContent := ""

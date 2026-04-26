@@ -9,7 +9,6 @@ const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
-	RoleTool      Role = "tool"
 )
 
 // PartKind identifies the kind of data stored in a turn part.
@@ -17,7 +16,7 @@ type PartKind string
 
 const (
 	PartText       PartKind = "text"
-	PartReasoning  PartKind = "reasoning"
+	PartThinking   PartKind = "thinking"
 	PartToolCall   PartKind = "tool_call"
 	PartToolResult PartKind = "tool_result"
 )
@@ -30,14 +29,23 @@ type Turn struct {
 
 // Part stores one normalized piece of a turn.
 type Part struct {
-	Kind          PartKind
-	Text          string
-	ToolCall      *ToolCall
-	ToolResult    *ToolResultPart
-	ProviderState json.RawMessage
+	Kind       PartKind
+	Text       string          // PartText
+	Thinking   *ThinkingPart   // PartThinking
+	ToolCall   *ToolCall       // PartToolCall
+	ToolResult *ToolResultPart // PartToolResult
+}
+
+// ThinkingPart holds reasoning output with an opaque provider state for round-trip.
+// State carries the provider-specific blob (e.g. Anthropic signature, OpenAI encrypted_content)
+// required to continue a multi-turn reasoning conversation.
+type ThinkingPart struct {
+	Text  string
+	State json.RawMessage
 }
 
 // ToolResultPart is the normalized form of a tool execution result.
+// Tool results are always carried inside a user turn.
 type ToolResultPart struct {
 	ToolCallID string
 	Name       string
@@ -51,14 +59,13 @@ func NewTextTurn(role Role, text string) Turn {
 	if text != "" {
 		turn.Parts = append(turn.Parts, Part{Kind: PartText, Text: text})
 	}
-
 	return turn
 }
 
-// NewToolResultTurn creates a tool turn with a single tool-result part.
+// NewToolResultTurn creates a user turn with a single tool-result part.
 func NewToolResultTurn(toolCallID, name, content string, isError bool) Turn {
 	return Turn{
-		Role: RoleTool,
+		Role: RoleUser,
 		Parts: []Part{{
 			Kind: PartToolResult,
 			ToolResult: &ToolResultPart{
@@ -79,47 +86,54 @@ func (t Turn) Text() string {
 			text += part.Text
 		}
 	}
-
 	return text
 }
 
-// ReasoningText returns the aggregated reasoning content for the turn.
-func (t Turn) ReasoningText() string {
+// ThinkingText returns the aggregated thinking content for the turn.
+func (t Turn) ThinkingText() string {
 	text := ""
 	for _, part := range t.Parts {
-		if part.Kind == PartReasoning {
-			text += part.Text
+		if part.Kind == PartThinking && part.Thinking != nil {
+			text += part.Thinking.Text
 		}
 	}
-
 	return text
 }
 
-// ReasoningState returns the last non-empty reasoning state attached to the turn.
-func (t Turn) ReasoningState() json.RawMessage {
+// ThinkingState returns the last non-empty thinking state attached to the turn.
+func (t Turn) ThinkingState() json.RawMessage {
 	for i := len(t.Parts) - 1; i >= 0; i-- {
 		part := t.Parts[i]
-		if part.Kind == PartReasoning && len(part.ProviderState) > 0 {
-			return CloneRawMessage(part.ProviderState)
+		if part.Kind == PartThinking && part.Thinking != nil && len(part.Thinking.State) > 0 {
+			return CloneRawMessage(part.Thinking.State)
 		}
 	}
-
 	return nil
 }
 
 // ToolCalls returns the normalized tool calls attached to the turn.
 func (t Turn) ToolCalls() []ToolCall {
-	toolCalls := make([]ToolCall, 0, len(t.Parts))
+	toolCalls := make([]ToolCall, 0)
 	for _, part := range t.Parts {
 		if part.Kind == PartToolCall && part.ToolCall != nil {
 			toolCalls = append(toolCalls, cloneToolCall(*part.ToolCall))
 		}
 	}
-
 	return toolCalls
 }
 
-// ToolResult returns the first normalized tool result attached to the turn.
+// ToolResults returns all tool result parts attached to the turn.
+func (t Turn) ToolResults() []ToolResultPart {
+	results := make([]ToolResultPart, 0)
+	for _, part := range t.Parts {
+		if part.Kind == PartToolResult && part.ToolResult != nil {
+			results = append(results, *part.ToolResult)
+		}
+	}
+	return results
+}
+
+// ToolResult returns the first tool result part attached to the turn.
 func (t Turn) ToolResult() *ToolResultPart {
 	for _, part := range t.Parts {
 		if part.Kind == PartToolResult && part.ToolResult != nil {
@@ -127,18 +141,7 @@ func (t Turn) ToolResult() *ToolResultPart {
 			return &result
 		}
 	}
-
 	return nil
-}
-
-// ToolCallID returns the tool call ID for a tool-result turn when present.
-func (t Turn) ToolCallID() string {
-	result := t.ToolResult()
-	if result == nil {
-		return ""
-	}
-
-	return result.ToolCallID
 }
 
 func cloneToolCall(toolCall ToolCall) ToolCall {

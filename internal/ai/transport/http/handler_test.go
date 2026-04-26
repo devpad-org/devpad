@@ -116,7 +116,7 @@ func TestHandleChat_UsesAppChatService(t *testing.T) {
 	}}
 
 	h := &Handler{catalog: stubCatalogService{}, chat: chat}
-	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}]}`))
+	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","turns":[{"role":"user","parts":[{"kind":"text","text":"hello"}]}]}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/chat", body)
 	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 7}))
 	w := httptest.NewRecorder()
@@ -152,7 +152,7 @@ func TestHandleAgentChat_UsesAppChatService(t *testing.T) {
 	}}
 
 	h := &Handler{catalog: stubCatalogService{}, chat: chat}
-	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":42,"messages":[{"role":"user","content":"hello"}]}`))
+	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":42,"turns":[{"role":"user","parts":[{"kind":"text","text":"hello"}]}]}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/agent", body)
 	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 11}))
 	w := httptest.NewRecorder()

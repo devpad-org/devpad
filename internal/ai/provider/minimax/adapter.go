@@ -90,11 +90,27 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 	messages := make([]message, 0, len(req.Turns))
 
 	for _, turn := range req.Turns {
+		if turn.Role == domain.RoleUser {
+			toolResults := turn.ToolResults()
+			if len(toolResults) > 0 {
+				for _, result := range toolResults {
+					messages = append(messages, message{
+						Role:       "tool",
+						Content:    result.Content,
+						ToolCallID: result.ToolCallID,
+					})
+				}
+				if text := turn.Text(); text != "" {
+					messages = append(messages, message{Role: "user", Content: text})
+				}
+				continue
+			}
+		}
+
 		minimaxMsg := message{
-			Role:       string(turn.Role),
-			Content:    turn.Text(),
-			ToolCalls:  turn.ToolCalls(),
-			ToolCallID: turn.ToolCallID(),
+			Role:      string(turn.Role),
+			Content:   turn.Text(),
+			ToolCalls: turn.ToolCalls(),
 		}
 
 		if thinkingEnabled && turn.Role == domain.RoleAssistant {
@@ -226,13 +242,13 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 }
 
 func reasoningDetailsFromTurn(turn domain.Turn) []reasoningDetail {
-	if state := turn.ReasoningState(); len(state) > 0 {
+	if state := turn.ThinkingState(); len(state) > 0 {
 		var details []reasoningDetail
 		if err := json.Unmarshal(state, &details); err == nil && len(details) > 0 {
 			return details
 		}
 	}
-	if turn.ReasoningText() == "" {
+	if turn.ThinkingText() == "" {
 		return nil
 	}
 
@@ -241,7 +257,7 @@ func reasoningDetailsFromTurn(turn domain.Turn) []reasoningDetail {
 		ID:     "reasoning-text-1",
 		Format: "MiniMax-response-v1",
 		Index:  0,
-		Text:   turn.ReasoningText(),
+		Text:   turn.ThinkingText(),
 	}}
 }
 

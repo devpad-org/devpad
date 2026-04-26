@@ -117,7 +117,7 @@ func TestBuildResponsesRequest_AssistantToolHistoryAndReasoningState(t *testing.
 				Role: domain.RoleAssistant,
 				Parts: []domain.Part{
 					{Kind: domain.PartText, Text: "I'll look that up."},
-					{Kind: domain.PartReasoning, ProviderState: reasoningState},
+					{Kind: domain.PartThinking, Thinking: &domain.ThinkingPart{State: reasoningState}},
 					{Kind: domain.PartToolCall, ToolCall: &domain.ToolCall{
 						ID:   "call_123",
 						Type: "function",

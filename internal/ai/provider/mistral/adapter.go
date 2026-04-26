@@ -46,15 +46,28 @@ func (a *Adapter) Models() []domain.Model {
 func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req aiprovider.StreamRequest) (<-chan domain.ProviderEvent, error) {
 	messages := make([]map[string]any, 0, len(req.Turns))
 	for _, turn := range req.Turns {
+		if turn.Role == domain.RoleUser {
+			toolResults := turn.ToolResults()
+			if len(toolResults) > 0 {
+				for _, result := range toolResults {
+					messages = append(messages, map[string]any{
+						"role":         "tool",
+						"tool_call_id": result.ToolCallID,
+						"content":      result.Content,
+					})
+				}
+				if text := turn.Text(); text != "" {
+					messages = append(messages, map[string]any{"role": "user", "content": text})
+				}
+				continue
+			}
+		}
 		message := map[string]any{
 			"role":    string(turn.Role),
 			"content": turn.Text(),
 		}
 		if toolCalls := turn.ToolCalls(); len(toolCalls) > 0 {
 			message["tool_calls"] = toolCalls
-		}
-		if toolCallID := turn.ToolCallID(); toolCallID != "" {
-			message["tool_call_id"] = toolCallID
 		}
 		messages = append(messages, message)
 	}

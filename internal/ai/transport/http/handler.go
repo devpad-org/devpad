@@ -101,15 +101,15 @@ func (h *Handler) HandleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "model is required")
 		return
 	}
-	if len(req.Messages) == 0 {
-		writeError(w, http.StatusBadRequest, "messages are required")
+	if len(req.Turns) == 0 {
+		writeError(w, http.StatusBadRequest, "turns are required")
 		return
 	}
 
 	stream, err := h.chat.StreamSimple(r.Context(), app.SimpleChatRequest{
 		UserID:   user.ID,
 		Model:    req.Model,
-		Turns:    ToDomainTurns(req.Messages),
+		Turns:    ToDomainTurns(req.Turns),
 		Thinking: ToDomainThinking(req.Thinking),
 	})
 	if err != nil {
@@ -164,8 +164,8 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "model is required")
 		return
 	}
-	if len(req.Messages) == 0 {
-		writeError(w, http.StatusBadRequest, "messages are required")
+	if len(req.Turns) == 0 {
+		writeError(w, http.StatusBadRequest, "turns are required")
 		return
 	}
 	if req.WorkspaceID == 0 {
@@ -177,7 +177,7 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		UserID:      user.ID,
 		WorkspaceID: req.WorkspaceID,
 		Model:       req.Model,
-		Turns:       ToDomainTurns(req.Messages),
+		Turns:       ToDomainTurns(req.Turns),
 		Thinking:    ToDomainThinking(req.Thinking),
 	})
 	if err != nil {
@@ -371,11 +371,11 @@ func (h *Handler) HandleGetMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	messages := FromDomainTurns(turns)
-	if messages == nil {
-		messages = []MessageDTO{}
+	turnDTOs := FromDomainTurns(turns)
+	if turnDTOs == nil {
+		turnDTOs = []TurnDTO{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"messages": messages})
+	writeJSON(w, http.StatusOK, map[string]any{"turns": turnDTOs})
 }
 
 // HandleSaveMessages replaces all messages for a conversation.
@@ -393,14 +393,14 @@ func (h *Handler) HandleSaveMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Messages []MessageDTO `json:"messages"`
+		Turns []TurnDTO `json:"turns"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	if err := h.convService.SaveTurns(r.Context(), conversationID, user.ID, ToDomainTurns(req.Messages)); err != nil {
+	if err := h.convService.SaveTurns(r.Context(), conversationID, user.ID, ToDomainTurns(req.Turns)); err != nil {
 		if errors.Is(err, domain.ErrConversationNotFound) {
 			writeError(w, http.StatusNotFound, "conversation not found")
 			return

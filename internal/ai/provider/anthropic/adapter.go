@@ -80,7 +80,6 @@ func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req 
 
 // buildAnthropicRequest converts the provider StreamRequest into an Anthropic-specific payload.
 func buildAnthropicRequest(req aiprovider.StreamRequest) map[string]any {
-	// Extract system message if present
 	var systemPrompt string
 	var messages []map[string]any
 
@@ -93,62 +92,66 @@ func buildAnthropicRequest(req aiprovider.StreamRequest) map[string]any {
 			continue
 		}
 
-		// Convert to Anthropic message format
-		anthropicMsg := map[string]any{
-			"role": string(turn.Role),
-		}
-
-		// Build content blocks
 		var content []map[string]any
 
-		// Handle tool result messages
-		if toolResult := turn.ToolResult(); toolResult != nil && toolResult.ToolCallID != "" {
-			// Anthropic expects tool results inside a user message, even though the
-			// current Devpad runtime stores them as role=tool.
-			anthropicMsg["role"] = "user"
-			content = append(content, map[string]any{
-				"type":        "tool_result",
-				"tool_use_id": toolResult.ToolCallID,
-				"content":     toolResult.Content,
-			})
-		} else {
-			// Add text content if present (not a tool result message)
-			if turn.Text() != "" {
-				content = append(content, map[string]any{
-					"type": "text",
-					"text": turn.Text(),
-				})
-			}
-
-			// Add tool use blocks if present
-			for _, toolCall := range turn.ToolCalls() {
-				// Parse arguments JSON
+		for _, part := range turn.Parts {
+			switch part.Kind {
+			case domain.PartThinking:
+				// Re-inject prior thinking blocks verbatim for multi-turn continuity.
+				if part.Thinking != nil && len(part.Thinking.State) > 0 {
+					var blocks []map[string]any
+					if err := json.Unmarshal(part.Thinking.State, &blocks); err == nil {
+						content = append(content, blocks...)
+					}
+				}
+			case domain.PartText:
+				if part.Text != "" {
+					content = append(content, map[string]any{
+						"type": "text",
+						"text": part.Text,
+					})
+				}
+			case domain.PartToolCall:
+				if part.ToolCall == nil {
+					continue
+				}
 				var input any
-				if toolCall.Function.Arguments != "" {
-					if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
-						// If parsing fails, use empty object
+				if part.ToolCall.Function.Arguments != "" {
+					if err := json.Unmarshal([]byte(part.ToolCall.Function.Arguments), &input); err != nil {
 						input = map[string]any{}
 					}
 				} else {
 					input = map[string]any{}
 				}
-
 				content = append(content, map[string]any{
 					"type":  "tool_use",
-					"id":    toolCall.ID,
-					"name":  toolCall.Function.Name,
+					"id":    part.ToolCall.ID,
+					"name":  part.ToolCall.Function.Name,
 					"input": input,
+				})
+			case domain.PartToolResult:
+				if part.ToolResult == nil || part.ToolResult.ToolCallID == "" {
+					continue
+				}
+				content = append(content, map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": part.ToolResult.ToolCallID,
+					"content":     part.ToolResult.Content,
 				})
 			}
 		}
 
-		// If we only have one text block, simplify to string
+		if len(content) == 0 {
+			continue
+		}
+
+		anthropicMsg := map[string]any{"role": string(turn.Role)}
+		// Simplify to plain string when there is exactly one text block.
 		if len(content) == 1 && content[0]["type"] == "text" {
 			anthropicMsg["content"] = turn.Text()
 		} else {
 			anthropicMsg["content"] = content
 		}
-
 		messages = append(messages, anthropicMsg)
 	}
 

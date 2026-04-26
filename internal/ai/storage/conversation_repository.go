@@ -37,7 +37,6 @@ func (r *ConversationRepository) CreateConversation(ctx context.Context, conv *d
 	conv.ID = id
 	conv.CreatedAt = now
 	conv.UpdatedAt = now
-
 	return nil
 }
 
@@ -64,7 +63,6 @@ func (r *ConversationRepository) GetConversation(ctx context.Context, id, userID
 	if err != nil {
 		return nil, fmt.Errorf("scanning conversation: %w", err)
 	}
-
 	return &conversation, nil
 }
 
@@ -97,7 +95,6 @@ func (r *ConversationRepository) ListConversations(ctx context.Context, userID, 
 		}
 		conversations = append(conversations, conversation)
 	}
-
 	return conversations, rows.Err()
 }
 
@@ -111,7 +108,6 @@ func (r *ConversationRepository) UpdateConversation(ctx context.Context, id, use
 	if err != nil {
 		return fmt.Errorf("updating conversation: %w", err)
 	}
-
 	return nil
 }
 
@@ -123,7 +119,6 @@ func (r *ConversationRepository) DeleteConversation(ctx context.Context, id, use
 	if err != nil {
 		return fmt.Errorf("deleting conversation: %w", err)
 	}
-
 	return nil
 }
 
@@ -134,139 +129,220 @@ func (r *ConversationRepository) SaveTurns(ctx context.Context, conversationID i
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM ai_messages WHERE conversation_id = ?`, conversationID); err != nil {
-		return fmt.Errorf("deleting existing messages: %w", err)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM ai_turns WHERE conversation_id = ?`, conversationID); err != nil {
+		return fmt.Errorf("deleting existing turns: %w", err)
 	}
 
-	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO ai_messages (conversation_id, position, role, content, reasoning_content, thinking_state, tool_calls, tool_call_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+	turnStmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO ai_turns (conversation_id, position, role) VALUES (?, ?, ?)`,
 	)
 	if err != nil {
-		return fmt.Errorf("preparing insert statement: %w", err)
+		return fmt.Errorf("preparing turn insert: %w", err)
 	}
-	defer stmt.Close()
+	defer turnStmt.Close()
+
+	partStmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO ai_parts (turn_id, position, kind, text, thinking_state,
+		 tool_call_id, tool_call_name, tool_call_args,
+		 tool_result_call_id, tool_result_name, tool_result_content, tool_result_is_error)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	)
+	if err != nil {
+		return fmt.Errorf("preparing part insert: %w", err)
+	}
+	defer partStmt.Close()
 
 	for i, turn := range turns {
-		thinkingStateStr := ""
-		if state := turn.ReasoningState(); len(state) > 0 {
-			thinkingStateStr = string(state)
-		}
-
-		toolCallsStr := ""
-		if toolCalls := turn.ToolCalls(); len(toolCalls) > 0 {
-			data, err := json.Marshal(toolCalls)
-			if err != nil {
-				return fmt.Errorf("marshalling tool calls at position %d: %w", i, err)
-			}
-			toolCallsStr = string(data)
-		}
-
-		content := turn.Text()
-		reasoningContent := turn.ReasoningText()
-		toolCallID := ""
-		if turn.Role == domain.RoleTool {
-			toolResult := turn.ToolResult()
-			if toolResult != nil {
-				content = toolResult.Content
-				toolCallID = toolResult.ToolCallID
-			}
-			reasoningContent = ""
-			thinkingStateStr = ""
-			toolCallsStr = ""
-		}
-
-		if _, err := stmt.ExecContext(ctx,
-			conversationID,
-			i,
-			string(turn.Role),
-			content,
-			reasoningContent,
-			thinkingStateStr,
-			toolCallsStr,
-			toolCallID,
-		); err != nil {
+		result, err := turnStmt.ExecContext(ctx, conversationID, i, string(turn.Role))
+		if err != nil {
 			return fmt.Errorf("inserting turn at position %d: %w", i, err)
+		}
+		turnID, err := result.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("getting turn ID at position %d: %w", i, err)
+		}
+
+		for j, part := range turn.Parts {
+			if err := insertPart(ctx, partStmt, turnID, j, part); err != nil {
+				return fmt.Errorf("inserting part %d for turn %d: %w", j, i, err)
+			}
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing transaction: %w", err)
 	}
-
 	return nil
+}
+
+func insertPart(ctx context.Context, stmt *sql.Stmt, turnID int64, position int, part domain.Part) error {
+	var (
+		text               string
+		thinkingState      string
+		toolCallID         string
+		toolCallName       string
+		toolCallArgs       string
+		toolResultCallID   string
+		toolResultName     string
+		toolResultContent  string
+		toolResultIsError  int
+	)
+
+	switch part.Kind {
+	case domain.PartText:
+		text = part.Text
+	case domain.PartThinking:
+		if part.Thinking != nil {
+			text = part.Thinking.Text
+			if len(part.Thinking.State) > 0 {
+				thinkingState = string(part.Thinking.State)
+			}
+		}
+	case domain.PartToolCall:
+		if part.ToolCall != nil {
+			toolCallID = part.ToolCall.ID
+			toolCallName = part.ToolCall.Function.Name
+			toolCallArgs = part.ToolCall.Function.Arguments
+		}
+	case domain.PartToolResult:
+		if part.ToolResult != nil {
+			toolResultCallID = part.ToolResult.ToolCallID
+			toolResultName = part.ToolResult.Name
+			toolResultContent = part.ToolResult.Content
+			if part.ToolResult.IsError {
+				toolResultIsError = 1
+			}
+		}
+	}
+
+	_, err := stmt.ExecContext(ctx,
+		turnID, position, string(part.Kind),
+		text, thinkingState,
+		toolCallID, toolCallName, toolCallArgs,
+		toolResultCallID, toolResultName, toolResultContent, toolResultIsError,
+	)
+	return err
 }
 
 func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT m.role, m.content, m.reasoning_content, m.thinking_state, m.tool_calls, m.tool_call_id
-		 FROM ai_messages m
-		 JOIN ai_conversations c ON c.id = m.conversation_id
-		 WHERE m.conversation_id = ? AND c.user_id = ?
-		 ORDER BY m.position ASC`,
+		`SELECT t.id, t.position, t.role,
+		        p.position, p.kind, p.text, p.thinking_state,
+		        p.tool_call_id, p.tool_call_name, p.tool_call_args,
+		        p.tool_result_call_id, p.tool_result_name, p.tool_result_content, p.tool_result_is_error
+		 FROM ai_turns t
+		 LEFT JOIN ai_parts p ON p.turn_id = t.id
+		 JOIN ai_conversations c ON c.id = t.conversation_id
+		 WHERE t.conversation_id = ? AND c.user_id = ?
+		 ORDER BY t.position, p.position`,
 		conversationID, userID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("querying messages: %w", err)
+		return nil, fmt.Errorf("querying turns: %w", err)
 	}
 	defer rows.Close()
 
-	var turns []domain.Turn
+	type turnKey struct {
+		id       int64
+		position int
+		role     string
+	}
+
+	var orderedKeys []turnKey
+	turnParts := make(map[int64][]domain.Part)
+	seenTurns := make(map[int64]bool)
+
 	for rows.Next() {
-		var role string
-		var content string
-		var reasoningContent string
-		var thinkingStateStr string
-		var toolCallsStr string
-		var toolCallID string
+		var (
+			turnID, turnPos                                            int64
+			role                                                       string
+			partPos                                                    sql.NullInt64
+			kind, text, thinkingState                                  sql.NullString
+			toolCallID, toolCallName, toolCallArgs                     sql.NullString
+			toolResultCallID, toolResultName, toolResultContent        sql.NullString
+			toolResultIsError                                          sql.NullInt64
+		)
 		if err := rows.Scan(
-			&role,
-			&content,
-			&reasoningContent,
-			&thinkingStateStr,
-			&toolCallsStr,
-			&toolCallID,
+			&turnID, &turnPos, &role,
+			&partPos, &kind, &text, &thinkingState,
+			&toolCallID, &toolCallName, &toolCallArgs,
+			&toolResultCallID, &toolResultName, &toolResultContent, &toolResultIsError,
 		); err != nil {
-			return nil, fmt.Errorf("scanning turn: %w", err)
+			return nil, fmt.Errorf("scanning row: %w", err)
 		}
 
-		turn := domain.Turn{Role: domain.Role(role)}
-		if turn.Role == domain.RoleTool {
-			turn.Parts = append(turn.Parts, domain.Part{Kind: domain.PartToolResult, ToolResult: &domain.ToolResultPart{
-				ToolCallID: toolCallID,
-				Content:    content,
-			}})
-			turns = append(turns, turn)
+		if !seenTurns[turnID] {
+			seenTurns[turnID] = true
+			orderedKeys = append(orderedKeys, turnKey{id: turnID, position: int(turnPos), role: role})
+		}
+
+		if !kind.Valid {
 			continue
 		}
 
-		if thinkingStateStr != "" {
-			turn.Parts = append(turn.Parts, domain.Part{
-				Kind:          domain.PartReasoning,
-				Text:          reasoningContent,
-				ProviderState: json.RawMessage(thinkingStateStr),
-			})
-		} else if reasoningContent != "" {
-			turn.Parts = append(turn.Parts, domain.Part{Kind: domain.PartReasoning, Text: reasoningContent})
+		part, err := scanPart(kind.String, text.String, thinkingState.String,
+			toolCallID.String, toolCallName.String, toolCallArgs.String,
+			toolResultCallID.String, toolResultName.String, toolResultContent.String, toolResultIsError.Int64 != 0)
+		if err != nil {
+			return nil, fmt.Errorf("building part: %w", err)
 		}
-
-		if content != "" {
-			turn.Parts = append(turn.Parts, domain.Part{Kind: domain.PartText, Text: content})
-		}
-
-		if toolCallsStr != "" {
-			var toolCalls []domain.ToolCall
-			if err := json.Unmarshal([]byte(toolCallsStr), &toolCalls); err != nil {
-				return nil, fmt.Errorf("unmarshalling tool calls: %w", err)
-			}
-			for _, toolCall := range toolCalls {
-				toolCall := toolCall
-				turn.Parts = append(turn.Parts, domain.Part{Kind: domain.PartToolCall, ToolCall: &toolCall})
-			}
-		}
-
-		turns = append(turns, turn)
+		turnParts[turnID] = append(turnParts[turnID], part)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	return turns, rows.Err()
+	turns := make([]domain.Turn, 0, len(orderedKeys))
+	for _, key := range orderedKeys {
+		turns = append(turns, domain.Turn{
+			Role:  domain.Role(key.role),
+			Parts: turnParts[key.id],
+		})
+	}
+	return turns, nil
+}
+
+func scanPart(kind, text, thinkingState,
+	toolCallID, toolCallName, toolCallArgs,
+	toolResultCallID, toolResultName, toolResultContent string,
+	toolResultIsError bool) (domain.Part, error) {
+
+	switch domain.PartKind(kind) {
+	case domain.PartText:
+		return domain.Part{Kind: domain.PartText, Text: text}, nil
+
+	case domain.PartThinking:
+		tp := &domain.ThinkingPart{Text: text}
+		if thinkingState != "" {
+			tp.State = json.RawMessage(thinkingState)
+		}
+		return domain.Part{Kind: domain.PartThinking, Thinking: tp}, nil
+
+	case domain.PartToolCall:
+		return domain.Part{
+			Kind: domain.PartToolCall,
+			ToolCall: &domain.ToolCall{
+				ID:   toolCallID,
+				Type: "function",
+				Function: domain.ToolCallFunction{
+					Name:      toolCallName,
+					Arguments: toolCallArgs,
+				},
+			},
+		}, nil
+
+	case domain.PartToolResult:
+		return domain.Part{
+			Kind: domain.PartToolResult,
+			ToolResult: &domain.ToolResultPart{
+				ToolCallID: toolResultCallID,
+				Name:       toolResultName,
+				Content:    toolResultContent,
+				IsError:    toolResultIsError,
+			},
+		}, nil
+
+	default:
+		return domain.Part{}, fmt.Errorf("unknown part kind %q", kind)
+	}
 }

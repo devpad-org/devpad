@@ -1,17 +1,5 @@
 package domain
 
-import "encoding/json"
-
-// Message is a single message in a chat conversation.
-type Message struct {
-	Role             string          `json:"role"`
-	Content          string          `json:"content"`
-	ReasoningContent string          `json:"reasoning_content,omitempty"`
-	ThinkingState    json.RawMessage `json:"thinking_state,omitempty"`
-	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
-	ToolCallID       string          `json:"tool_call_id,omitempty"`
-}
-
 // ThinkingConfig controls whether the selected model should use thinking mode.
 // A nil value uses the model's default behavior.
 type ThinkingConfig struct {

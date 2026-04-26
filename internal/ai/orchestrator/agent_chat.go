@@ -145,15 +145,17 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, o
 		}
 
 		assistantTurn := domain.Turn{Role: domain.RoleAssistant}
-		if contentAccum.Len() > 0 {
-			assistantTurn.Parts = append(assistantTurn.Parts, domain.Part{Kind: domain.PartText, Text: contentAccum.String()})
-		}
 		if reasoningAccum.Len() > 0 || len(thinkingState) > 0 {
 			assistantTurn.Parts = append(assistantTurn.Parts, domain.Part{
-				Kind:          domain.PartReasoning,
-				Text:          reasoningAccum.String(),
-				ProviderState: domain.CloneRawMessage(thinkingState),
+				Kind: domain.PartThinking,
+				Thinking: &domain.ThinkingPart{
+					Text:  reasoningAccum.String(),
+					State: domain.CloneRawMessage(thinkingState),
+				},
 			})
+		}
+		if contentAccum.Len() > 0 {
+			assistantTurn.Parts = append(assistantTurn.Parts, domain.Part{Kind: domain.PartText, Text: contentAccum.String()})
 		}
 		for _, toolCall := range toolCalls {
 			toolCall := toolCall
@@ -236,7 +238,7 @@ func (o *agentChatOrchestrator) emitToolResult(ctx context.Context, result domai
 	turnResult := result
 
 	*turns = append(*turns, domain.Turn{
-		Role: domain.RoleTool,
+		Role: domain.RoleUser,
 		Parts: []domain.Part{{
 			Kind:       domain.PartToolResult,
 			ToolResult: &turnResult,

@@ -29,7 +29,7 @@ func TestBuildChatRequest_UsesReasoningSplitAndReasoningDetails(t *testing.T) {
 			{
 				Role: domain.RoleAssistant,
 				Parts: []domain.Part{
-					{Kind: domain.PartReasoning, Text: "I should inspect the current files before editing.", ProviderState: thinkingState},
+					{Kind: domain.PartThinking, Thinking: &domain.ThinkingPart{Text: "I should inspect the current files before editing.", State: thinkingState}},
 					{Kind: domain.PartToolCall, ToolCall: &domain.ToolCall{
 						ID:   "call_1",
 						Type: "function",
