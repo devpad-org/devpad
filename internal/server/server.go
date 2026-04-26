@@ -115,12 +115,7 @@ func New(cfg Config) (*Server, error) {
 	wsServiceHandler := wsservice.NewHandler(wsServiceService, workspaceService)
 
 	// AI layer
-	aiRepo := ai.NewRepository(db.Conn())
-	aiConvRepo := ai.NewConversationRepository(db.Conn())
-	aiService := ai.NewService(aiRepo, ai.NewMistralProvider(), ai.NewMiniMaxProvider(), ai.NewMoonshotProvider(), ai.NewOpenAIProvider())
-	aiConvSvc := ai.NewConversationService(aiConvRepo)
-	toolExecutor := ai.NewToolExecutor(workspaceService)
-	aiHandler := ai.NewHandler(aiService, aiConvSvc, toolExecutor)
+	aiModule := ai.NewModule(db.Conn(), workspaceService)
 
 	// Preview layer
 	previewRepo := preview.NewRepository(db.Conn())
@@ -131,7 +126,7 @@ func New(cfg Config) (*Server, error) {
 	authRateLimiter := auth.NewRateLimiter(rate.Limit(5), 10)
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, aiHandler, previewHandler)
+	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, aiModule.Handler, previewHandler)
 
 	// Wrap the mux with host-based routing to intercept preview subdomain requests.
 	handler := hostRouter(mux, previewHandler, cfg.PreviewDomain)
@@ -268,8 +263,22 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+type aiRouteHandler interface {
+	HandleListModels(http.ResponseWriter, *http.Request)
+	HandleChat(http.ResponseWriter, *http.Request)
+	HandleAgentChat(http.ResponseWriter, *http.Request)
+	HandleApproveCommand(http.ResponseWriter, *http.Request)
+	HandleListConversations(http.ResponseWriter, *http.Request)
+	HandleCreateConversation(http.ResponseWriter, *http.Request)
+	HandleDeleteConversation(http.ResponseWriter, *http.Request)
+	HandleGetMessages(http.ResponseWriter, *http.Request)
+	HandleSaveMessages(http.ResponseWriter, *http.Request)
+	HandleListProviders(http.ResponseWriter, *http.Request)
+	HandleUpdateProvider(http.ResponseWriter, *http.Request)
+}
+
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, aiHandler *ai.Handler, previewHandler *preview.Handler) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
