@@ -265,6 +265,19 @@ function cancelDelete() {
 function focusInput(e: { el: HTMLElement }) {
   e.el.focus()
 }
+
+// --- Download file ---
+async function downloadFile(node: FileNode) {
+  const res = await fetch(`/api/workspaces/${props.workspaceId}/file?path=${encodeURIComponent(node.path)}`)
+  if (!res.ok) return
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = node.name
+  a.click()
+  URL.revokeObjectURL(url)
+}
 </script>
 
 <template>
@@ -371,6 +384,7 @@ function focusInput(e: { el: HTMLElement }) {
             @create-file="startCreate($event, 'file')"
             @create-dir="startCreate($event, 'directory')"
             @delete="requestDelete"
+            @download="downloadFile"
             @update:creating-name="creatingName = $event"
             @confirm-create="confirmCreate"
             @cancel-create="cancelCreate"

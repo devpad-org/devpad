@@ -22,6 +22,7 @@ const emit = defineEmits<{
   'create-file': [parentPath: string]
   'create-dir': [parentPath: string]
   delete: [node: FileNode]
+  download: [node: FileNode]
   'update:creatingName': [value: string]
   'confirm-create': []
   'cancel-create': []
@@ -157,6 +158,11 @@ function focusInput(e: { el: HTMLElement }) {
       </svg>
       <span class="tree-label">{{ node.name }}</span>
       <span class="tree-actions">
+        <button class="action-btn" title="Download" @click="stopPropagation($event, () => emit('download', node))">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+        </button>
         <button class="action-btn action-btn--danger" title="Delete" @click="stopPropagation($event, () => emit('delete', node))">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
@@ -203,6 +209,7 @@ function focusInput(e: { el: HTMLElement }) {
         @create-file="emit('create-file', $event)"
         @create-dir="emit('create-dir', $event)"
         @delete="emit('delete', $event)"
+        @download="emit('download', $event)"
         @update:creating-name="emit('update:creatingName', $event)"
         @confirm-create="emit('confirm-create')"
         @cancel-create="emit('cancel-create')"
