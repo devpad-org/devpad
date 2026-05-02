@@ -16,9 +16,9 @@ install-frontend:
 frontend: install-frontend
 	cd frontend && npm run build
 
-# Build the workspace agent binary (linux/amd64 for containers)
+# Build the workspace agent binary for the host architecture
 agent:
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build $(AGENT_LDFLAGS) -o bin/devpad-agent ./cmd/agent
+	GOOS=linux GOARCH=$(shell go env GOHOSTARCH) CGO_ENABLED=0 go build $(AGENT_LDFLAGS) -o bin/devpad-agent ./cmd/agent
 
 # Copy the agent binary into the embed directory so the main binary can embed it
 embed-agent: agent
