@@ -56,13 +56,16 @@ interface PlanSegment {
   steps: PlanStep[]
 }
 
-type MessageSegment = TextSegment | ToolSegment | ApprovalSegment | PlanSegment
+interface ThinkingSegment {
+  type: 'thinking'
+  content: string
+}
+
+type MessageSegment = TextSegment | ToolSegment | ApprovalSegment | PlanSegment | ThinkingSegment
 
 interface DisplayMessage {
   role: 'user' | 'assistant'
   content: string
-  reasoningContent?: string
-  thinkingState?: unknown
   segments: MessageSegment[]
 }
 
@@ -204,10 +207,7 @@ function reconstructAssistantDisplay(rawMsgs: ChatMessage[], start: number, end:
     }
 
     if (msg.reasoning_content) {
-      display.reasoningContent = (display.reasoningContent || '') + msg.reasoning_content
-    }
-    if (msg.thinking_state !== undefined) {
-      display.thinkingState = msg.thinking_state
+      display.segments.push({ type: 'thinking', content: msg.reasoning_content })
     }
 
     if (msg.content) {
@@ -387,8 +387,13 @@ async function sendMessage() {
           if (rounds[rounds.length - 1].toolResults.length > 0) {
             rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
           }
-          messages.value[assistantIdx].reasoningContent =
-            (messages.value[assistantIdx].reasoningContent || '') + event.reasoningContent
+          const segs = messages.value[assistantIdx].segments
+          const lastSeg = segs[segs.length - 1]
+          if (lastSeg && lastSeg.type === 'thinking') {
+            lastSeg.content += event.reasoningContent
+          } else {
+            segs.push({ type: 'thinking', content: event.reasoningContent })
+          }
           rounds[rounds.length - 1].reasoningContent += event.reasoningContent
         }
 
@@ -397,7 +402,6 @@ async function sendMessage() {
           if (rounds[rounds.length - 1].toolResults.length > 0) {
             rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
           }
-          messages.value[assistantIdx].thinkingState = event.thinkingState
           rounds[rounds.length - 1].thinkingState = event.thinkingState
         }
 
@@ -767,12 +771,12 @@ function scrollToBottom() {
           v-if="msg.role === 'assistant'"
           class="msg-content markdown-body"
         >
-          <details v-if="msg.reasoningContent" class="thinking-content">
-            <summary class="thinking-summary">Thinking</summary>
-            <p class="thinking-text">{{ msg.reasoningContent }}</p>
-          </details>
           <template v-for="(seg, si) in msg.segments" :key="si">
-            <div v-if="seg.type === 'tool'" class="tool-usage">
+            <details v-if="seg.type === 'thinking'" class="thinking-content">
+              <summary class="thinking-summary">Thinking</summary>
+              <p class="thinking-text">{{ (seg as ThinkingSegment).content }}</p>
+            </details>
+            <div v-else-if="seg.type === 'tool'" class="tool-usage">
               <div class="tool-header">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
