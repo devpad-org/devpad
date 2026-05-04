@@ -4,7 +4,6 @@ import {
   gitApi,
   type GitActionResult,
   type GitStatus,
-  type GitCommit,
   type GitBranch,
 } from '@/api/git'
 import { useFileWatcher } from '@/composables/useFileWatcher'
@@ -16,7 +15,7 @@ const props = defineProps<{
 }>()
 
 // --- State ---
-type Tab = 'changes' | 'log' | 'branches'
+type Tab = 'changes' | 'branches'
 const activeTab = ref<Tab>('changes')
 const loading = ref(false)
 const error = ref('')
@@ -25,9 +24,6 @@ const error = ref('')
 const status = ref<GitStatus | null>(null)
 const commitMsg = ref('')
 const actionOutput = ref('')
-
-// Log
-const commits = ref<GitCommit[]>([])
 
 // Branches
 const branches = ref<GitBranch[]>([])
@@ -82,10 +78,7 @@ async function refresh(showLoading = true) {
   try {
     status.value = await gitApi.status(props.workspaceId)
 
-    if (activeTab.value === 'log') {
-      const res = await gitApi.log(props.workspaceId)
-      commits.value = res.commits
-    } else if (activeTab.value === 'branches') {
+    if (activeTab.value === 'branches') {
       const res = await gitApi.branches(props.workspaceId)
       branches.value = res.branches
       currentBranch.value = res.current
@@ -288,18 +281,7 @@ function statusColor(status: string): string {
   }
 }
 
-function formatTime(timestamp: string): string {
-  const date = new Date(parseInt(timestamp) * 1000)
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
 
-  if (diff < 60_000) return 'just now'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
-  if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d ago`
-
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-}
 
 function fileName(path: string): string {
   return path.split('/').pop() || path
@@ -393,13 +375,6 @@ onUnmounted(() => {
         >
           Changes
           <span v-if="(status.files?.length ?? 0) > 0" class="git-tab-badge">{{ status.files.length }}</span>
-        </button>
-        <button
-          class="git-tab"
-          :class="{ active: activeTab === 'log' }"
-          @click="activeTab = 'log'"
-        >
-          Log
         </button>
         <button
           class="git-tab"
@@ -545,25 +520,6 @@ onUnmounted(() => {
         <!-- Action output -->
         <div v-if="actionOutput" class="git-output">
           <pre>{{ actionOutput }}</pre>
-        </div>
-      </div>
-
-      <!-- Log tab -->
-      <div v-if="activeTab === 'log'" class="git-tab-content">
-        <div v-if="commits.length === 0 && !loading" class="git-empty-small">
-          <p>No commits yet</p>
-        </div>
-        <div
-          v-for="c in commits"
-          :key="c.hash"
-          class="git-commit-entry"
-        >
-          <div class="git-commit-top">
-            <span class="git-commit-hash">{{ c.shortHash }}</span>
-            <span class="git-commit-time">{{ formatTime(c.timestamp) }}</span>
-          </div>
-          <div class="git-commit-msg">{{ c.message }}</div>
-          <div class="git-commit-author">{{ c.author }}</div>
         </div>
       </div>
 
@@ -1032,50 +988,6 @@ function diffLineClass(line: string): string {
   border: 0.5px solid var(--border-default);
   max-height: 100px;
   overflow-y: auto;
-}
-
-/* Commit log */
-.git-commit-entry {
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
-  transition: background var(--transition-fast);
-}
-
-.git-commit-entry:hover {
-  background: var(--bg-hover);
-}
-
-.git-commit-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 2px;
-}
-
-.git-commit-hash {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--accent-blue);
-}
-
-.git-commit-time {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-}
-
-.git-commit-msg {
-  font-size: 0.75rem;
-  color: var(--text-primary);
-  line-height: 1.3;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.git-commit-author {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-  margin-top: 1px;
 }
 
 /* Branches */
