@@ -8,6 +8,7 @@ import TerminalPanel from '@/components/ide/TerminalPanel.vue'
 import AiAgentPanel from '@/components/ide/AiAgentPanel.vue'
 import PreviewPanel from '@/components/ide/PreviewPanel.vue'
 import GitPanel from '@/components/ide/GitPanel.vue'
+import GitStatusBar from '@/components/ide/GitStatusBar.vue'
 import WorkspaceInfoPanel from '@/components/ide/WorkspaceInfoPanel.vue'
 import ServicesPanel from '@/components/ide/ServicesPanel.vue'
 import { useResizable } from '@/composables/useResizable'
@@ -353,6 +354,10 @@ function handleBack() {
         </aside>
       </template>
     </div>
+    <GitStatusBar
+      :workspace-id="workspace?.id ?? 0"
+      @open-git="activeSidebarTab = 'git'"
+    />
   </div>
 </template>
 
@@ -587,6 +592,7 @@ function handleBack() {
 .ide-body {
   display: flex;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
