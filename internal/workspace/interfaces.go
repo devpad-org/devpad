@@ -61,7 +61,7 @@ type CommandService interface {
 // GitService defines workspace Git operations.
 type GitService interface {
 	GitStatus(ctx context.Context, userID, workspaceID int64) (*agent.GitStatus, error)
-	GitLog(ctx context.Context, userID, workspaceID int64, count int) ([]agent.GitCommit, error)
+	GitLog(ctx context.Context, userID, workspaceID int64, count int, opts agent.GitLogOptions) ([]agent.GitCommit, error)
 	GitBranches(ctx context.Context, userID, workspaceID int64) (*agent.GitBranches, error)
 	GitDiff(ctx context.Context, userID, workspaceID int64, path string, staged bool) (string, error)
 	GitRemotes(ctx context.Context, userID, workspaceID int64) ([]agent.GitRemote, error)

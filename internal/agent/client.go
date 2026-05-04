@@ -31,6 +31,11 @@ type Client struct {
 	http    *http.Client
 }
 
+// GitLogOptions controls which commits are returned from the git log.
+type GitLogOptions struct {
+	AllBranches bool
+}
+
 // NewClient creates a new agent Client for the given host, port, and auth token.
 func NewClient(host string, port int, token string) *Client {
 	return &Client{
@@ -381,12 +386,13 @@ type GitFileStatus struct {
 
 // GitCommit represents a single commit from git log.
 type GitCommit struct {
-	Hash      string `json:"hash"`
-	ShortHash string `json:"shortHash"`
-	Author    string `json:"author"`
-	Email     string `json:"email"`
-	Timestamp string `json:"timestamp"`
-	Message   string `json:"message"`
+	Hash      string   `json:"hash"`
+	ShortHash string   `json:"shortHash"`
+	Parents   []string `json:"parents"`
+	Author    string   `json:"author"`
+	Email     string   `json:"email"`
+	Timestamp string   `json:"timestamp"`
+	Message   string   `json:"message"`
 }
 
 // GitBranches represents the branch listing.
@@ -453,9 +459,19 @@ func (c *Client) GitStatus(ctx context.Context) (*GitStatus, error) {
 }
 
 // GitLog returns the commit log.
-func (c *Client) GitLog(ctx context.Context, count int) ([]GitCommit, error) {
-	u := fmt.Sprintf("%s/api/git/commits?count=%d", c.baseURL, count)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+func (c *Client) GitLog(ctx context.Context, count int, opts GitLogOptions) ([]GitCommit, error) {
+	u, err := url.Parse(fmt.Sprintf("%s/api/git/commits", c.baseURL))
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("count", fmt.Sprintf("%d", count))
+	if opts.AllBranches {
+		q.Set("all", "true")
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}

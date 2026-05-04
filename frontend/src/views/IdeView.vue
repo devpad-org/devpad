@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { workspaceApi, type Workspace } from '@/api/workspaces'
 import FileExplorer from '@/components/ide/FileExplorer.vue'
 import EditorPanel from '@/components/ide/EditorPanel.vue'
+import GitGraphPanel from '@/components/ide/GitGraphPanel.vue'
 import TerminalPanel from '@/components/ide/TerminalPanel.vue'
 import AiAgentPanel from '@/components/ide/AiAgentPanel.vue'
 import PreviewPanel from '@/components/ide/PreviewPanel.vue'
@@ -303,10 +304,16 @@ function handleBack() {
       <div class="ide-center">
         <div class="ide-editor-area">
           <EditorPanel
+            v-show="activeSidebarTab !== 'git'"
             ref="editorPanel"
             :workspace-id="workspace?.id ?? 0"
             :file-path="activeFile"
             @active-change="(p: string | null) => activeFile = p"
+          />
+          <GitGraphPanel
+            v-show="activeSidebarTab === 'git'"
+            :workspace-id="workspace?.id ?? 0"
+            :active="activeSidebarTab === 'git'"
           />
         </div>
         <div

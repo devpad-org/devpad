@@ -18,12 +18,12 @@ func (s *service) GitStatus(ctx context.Context, userID, workspaceID int64) (*ag
 	return c.GitStatus(ctx)
 }
 
-func (s *service) GitLog(ctx context.Context, userID, workspaceID int64, count int) ([]agent.GitCommit, error) {
+func (s *service) GitLog(ctx context.Context, userID, workspaceID int64, count int, opts agent.GitLogOptions) ([]agent.GitCommit, error) {
 	c, err := s.getAgent(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	return c.GitLog(ctx, count)
+	return c.GitLog(ctx, count, opts)
 }
 
 func (s *service) GitBranches(ctx context.Context, userID, workspaceID int64) (*agent.GitBranches, error) {

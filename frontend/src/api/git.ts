@@ -21,6 +21,7 @@ export interface GitStatus {
 export interface GitCommit {
   hash: string
   shortHash: string
+  parents?: string[]
   author: string
   email: string
   timestamp: string
@@ -69,9 +70,11 @@ export const gitApi = {
     return apiClient.get<GitStatus>(`/api/workspaces/${workspaceId}/git/status`)
   },
 
-  log(workspaceId: number, count = 50): Promise<GitLogResponse> {
+  log(workspaceId: number, count = 50, opts: { allBranches?: boolean } = {}): Promise<GitLogResponse> {
+    const params = new URLSearchParams({ count: String(count) })
+    if (opts.allBranches) params.set('all', 'true')
     return apiClient.get<GitLogResponse>(
-      `/api/workspaces/${workspaceId}/git/commits?count=${count}`
+      `/api/workspaces/${workspaceId}/git/commits?${params}`
     )
   },
 

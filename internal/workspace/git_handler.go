@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/auth"
 )
 
@@ -42,7 +43,9 @@ func (h *Handler) HandleGitLog(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	commits, err := h.service.GitLog(r.Context(), user.ID, id, count)
+	commits, err := h.service.GitLog(r.Context(), user.ID, id, count, agent.GitLogOptions{
+		AllBranches: r.URL.Query().Get("all") == "true",
+	})
 	if err != nil {
 		handleServiceError(w, err)
 		return

@@ -62,6 +62,25 @@ func validateUserIdentity(value, field string) error {
 	return nil
 }
 
+func parseGitRemoteNames(out string) []string {
+	remotes := []string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line != "" {
+			remotes = append(remotes, line)
+		}
+	}
+	return remotes
+}
+
+func isRemoteBranch(name string, remotes []string) bool {
+	for _, remote := range remotes {
+		if strings.HasPrefix(name, remote+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // gitStatusEntry represents a single file in git status output.
 type gitStatusEntry struct {
 	Path       string `json:"path"`
@@ -105,11 +124,7 @@ func handleGitStatus(w http.ResponseWriter, r *http.Request) {
 	// Remotes
 	remotes := []string{}
 	if out, err := gitOutput(ctx, "remote"); err == nil {
-		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-			if line != "" {
-				remotes = append(remotes, line)
-			}
-		}
+		remotes = parseGitRemoteNames(out)
 	}
 
 	// User config
@@ -143,25 +158,52 @@ func handleGitLog(w http.ResponseWriter, r *http.Request) {
 		count = "50"
 	}
 
-	out, err := gitOutput(ctx, "log", "--oneline", "--format=%H%n%h%n%an%n%ae%n%at%n%s", "-n", count)
+	out, err := gitOutput(ctx, gitLogArgs(count, r.URL.Query().Get("all") == "true")...)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"commits": []any{}})
 		return
 	}
 
+	writeJSON(w, http.StatusOK, map[string]any{"commits": parseGitLogOutput(out)})
+}
+
+func gitLogArgs(count string, allBranches bool) []string {
+	args := []string{"log", "--topo-order", "--format=%H%n%h%n%P%n%an%n%ae%n%at%n%s", "-n", count}
+	if allBranches {
+		args = append(args, "--all")
+	}
+	return args
+}
+
+type gitCommitEntry struct {
+	Hash      string   `json:"hash"`
+	ShortHash string   `json:"shortHash"`
+	Parents   []string `json:"parents"`
+	Author    string   `json:"author"`
+	Email     string   `json:"email"`
+	Timestamp string   `json:"timestamp"`
+	Message   string   `json:"message"`
+}
+
+func parseGitLogOutput(out string) []gitCommitEntry {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	commits := []map[string]string{}
-	for i := 0; i+5 < len(lines); i += 6 {
-		commits = append(commits, map[string]string{
-			"hash":      lines[i],
-			"shortHash": lines[i+1],
-			"author":    lines[i+2],
-			"email":     lines[i+3],
-			"timestamp": lines[i+4],
-			"message":   lines[i+5],
+	commits := []gitCommitEntry{}
+	for i := 0; i+6 < len(lines); i += 7 {
+		parents := strings.Fields(lines[i+2])
+		if parents == nil {
+			parents = []string{}
+		}
+		commits = append(commits, gitCommitEntry{
+			Hash:      lines[i],
+			ShortHash: lines[i+1],
+			Parents:   parents,
+			Author:    lines[i+3],
+			Email:     lines[i+4],
+			Timestamp: lines[i+5],
+			Message:   lines[i+6],
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"commits": commits})
+	return commits
 }
 
 func handleGitBranches(w http.ResponseWriter, r *http.Request) {
@@ -171,6 +213,11 @@ func handleGitBranches(w http.ResponseWriter, r *http.Request) {
 	current := ""
 	if out, err := gitOutput(ctx, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 		current = strings.TrimSpace(out)
+	}
+
+	remotes := []string{}
+	if out, err := gitOutput(ctx, "remote"); err == nil {
+		remotes = parseGitRemoteNames(out)
 	}
 
 	branches := []map[string]any{}
@@ -194,7 +241,7 @@ func handleGitBranches(w http.ResponseWriter, r *http.Request) {
 				"hash":     shortHash,
 				"upstream": upstream,
 				"current":  name == current,
-				"remote":   strings.HasPrefix(name, "origin/"),
+				"remote":   isRemoteBranch(name, remotes),
 			})
 		}
 	}
