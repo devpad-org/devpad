@@ -14,11 +14,11 @@ import (
 // Handler holds HTTP handlers for workspace service endpoints.
 type Handler struct {
 	service   Service
-	workspace workspace.Service
+	workspace workspace.AccessService
 }
 
 // NewHandler creates a new workspace service Handler.
-func NewHandler(service Service, ws workspace.Service) *Handler {
+func NewHandler(service Service, ws workspace.AccessService) *Handler {
 	return &Handler{service: service, workspace: ws}
 }
 

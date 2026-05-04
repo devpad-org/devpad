@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/workspace"
 	_ "github.com/mattn/go-sqlite3"
@@ -51,7 +50,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// mockWorkspaceService is a minimal mock for workspace.Service used by admin tests.
+// mockWorkspaceService is a minimal mock for workspace.AdminService used by admin tests.
 type mockWorkspaceService struct {
 	workspaces []*workspace.Workspace
 }
@@ -74,74 +73,6 @@ func (m *mockWorkspaceService) UpdateResourceLimits(_ context.Context, id, memor
 	}
 	return nil, workspace.ErrNotFound
 }
-
-// Unused interface methods.
-func (m *mockWorkspaceService) Create(_ context.Context, _ int64, _, _ string) (*workspace.Workspace, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) Get(_ context.Context, _, _ int64) (*workspace.Workspace, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) List(_ context.Context, _ int64) ([]*workspace.Workspace, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) Update(_ context.Context, _, _ int64, _, _ string) (*workspace.Workspace, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) Delete(_ context.Context, _, _ int64) error { return nil }
-func (m *mockWorkspaceService) Start(_ context.Context, _, _ int64) (*workspace.Workspace, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) Stop(_ context.Context, _, _ int64) (*workspace.Workspace, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) ListFiles(_ context.Context, _, _ int64, _ string) ([]agent.FileEntry, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) ReadFile(_ context.Context, _, _ int64, _ string) ([]byte, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) WriteFile(_ context.Context, _, _ int64, _ string, _ []byte) error {
-	return nil
-}
-func (m *mockWorkspaceService) DeleteFile(_ context.Context, _, _ int64, _ string) error { return nil }
-func (m *mockWorkspaceService) CreateDirectory(_ context.Context, _, _ int64, _ string) error {
-	return nil
-}
-func (m *mockWorkspaceService) RenameFile(_ context.Context, _, _ int64, _, _ string) error {
-	return nil
-}
-func (m *mockWorkspaceService) SearchFiles(_ context.Context, _, _ int64, _, _ string, _ int) ([]agent.SearchResult, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) RunCommand(_ context.Context, _, _ int64, _ string) (*agent.CommandResult, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) GitStatus(_ context.Context, _, _ int64) (*agent.GitStatus, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) GitLog(_ context.Context, _, _ int64, _ int) ([]agent.GitCommit, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) GitBranches(_ context.Context, _, _ int64) (*agent.GitBranches, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) GitDiff(_ context.Context, _, _ int64, _ string, _ bool) (string, error) {
-	return "", nil
-}
-func (m *mockWorkspaceService) GitRemotes(_ context.Context, _, _ int64) ([]agent.GitRemote, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) GitAction(_ context.Context, _, _ int64, _ workspace.GitActionRequest) (*agent.GitActionResult, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) AgentAddr(_ context.Context, _, _ int64) (string, string, error) {
-	return "", "", nil
-}
-func (m *mockWorkspaceService) Info(_ context.Context, _, _ int64) (*workspace.WorkspaceInfo, error) {
-	return nil, nil
-}
-func (m *mockWorkspaceService) SetSidecarService(_ workspace.SidecarService) {}
 
 func setupTestService(t *testing.T) (Service, auth.UserRepository) {
 	t.Helper()

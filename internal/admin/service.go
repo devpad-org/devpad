@@ -30,11 +30,11 @@ type Service interface {
 
 type service struct {
 	users      auth.UserRepository
-	workspaces workspace.Service
+	workspaces workspace.AdminService
 }
 
 // NewService creates a new admin Service.
-func NewService(users auth.UserRepository, workspaces workspace.Service) Service {
+func NewService(users auth.UserRepository, workspaces workspace.AdminService) Service {
 	return &service{users: users, workspaces: workspaces}
 }
 

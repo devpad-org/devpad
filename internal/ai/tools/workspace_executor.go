@@ -8,16 +8,14 @@ import (
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/ai/domain"
+	"github.com/devpad-org/devpad/internal/workspace"
 )
 
 // WorkspaceOps is the reduced workspace surface the AI tooling needs in Phase 1.
 type WorkspaceOps interface {
-	ReadFile(ctx context.Context, userID, workspaceID int64, path string) ([]byte, error)
-	WriteFile(ctx context.Context, userID, workspaceID int64, path string, content []byte) error
-	ListFiles(ctx context.Context, userID, workspaceID int64, path string) ([]agent.FileEntry, error)
-	DeleteFile(ctx context.Context, userID, workspaceID int64, path string) error
-	SearchFiles(ctx context.Context, userID, workspaceID int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error)
-	RunCommand(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error)
+	workspace.FileContentService
+	workspace.FileSearchService
+	workspace.CommandService
 }
 
 // WorkspaceExecutor implements Executor using workspace operations.
