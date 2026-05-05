@@ -14,6 +14,8 @@ const branches = ref<GitBranch[]>([])
 const selectedHash = ref<string | null>(null)
 const loading = ref(false)
 const error = ref('')
+const actionLoading = ref(false)
+const showPullMenu = ref(false)
 
 const graphLaneSpacing = 18
 const graphRailPadding = 10
@@ -55,13 +57,29 @@ const currentBranch = computed(() => {
   return status.value.branch
 })
 
-const graphStats = computed(() => {
-  return {
-    commits: commits.value.length,
-    branches: branches.value.length,
-    changedFiles: status.value?.files.length ?? 0,
+const hasWorkingChanges = computed(() => (status.value?.files.length ?? 0) > 0)
+const stagedCount = computed(() => (status.value?.files ?? []).filter((f) => f.staged).length)
+const unstagedCount = computed(() => (status.value?.files ?? []).filter((f) => !f.staged).length)
+
+async function doAction(action: string) {
+  if (!props.workspaceId) return
+  actionLoading.value = true
+  error.value = ''
+  showPullMenu.value = false
+  try {
+    const result = await gitApi.action(props.workspaceId, action)
+    if (!result.success) {
+      error.value = result.output || result.error || `${action} failed`
+    } else {
+      await refresh(false)
+    }
+  } catch (err) {
+    error.value = getErrorMessage(err)
+  } finally {
+    actionLoading.value = false
   }
-})
+}
+
 
 const graphLayout = computed(() => buildCommitGraph(commits.value))
 
@@ -302,13 +320,66 @@ onUnmounted(() => {
         <span class="graph-title-text">Git Graph</span>
         <span class="graph-branch">{{ currentBranch }}</span>
       </div>
-      <div class="graph-stats" aria-label="Repository summary">
-        <span>{{ graphStats.commits }} commits</span>
-        <span>{{ graphStats.branches }} branches</span>
-        <span>{{ graphStats.changedFiles }} changed</span>
+
+      <div class="graph-actions">
+        <button
+          class="graph-action-btn"
+          type="button"
+          title="Push"
+          :disabled="actionLoading || loading || !status?.isRepo"
+          @click="doAction('push')"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19V5M5 12l7-7 7 7" />
+          </svg>
+          Push
+          <span v-if="status?.ahead" class="action-badge">{{ status.ahead }}</span>
+        </button>
+
+        <div class="pull-split-wrapper">
+          <div class="pull-dropdown-container">
+            <button
+              class="graph-action-btn pull-main-btn"
+              type="button"
+              title="Pull"
+              :disabled="actionLoading || loading || !status?.isRepo"
+              @click="doAction('pull')"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 5v14M5 12l7 7 7-7" />
+              </svg>
+              Pull
+              <span v-if="status?.behind" class="action-badge">{{ status.behind }}</span>
+            </button>
+            <button
+              class="graph-action-btn pull-chevron-btn"
+              type="button"
+              title="Pull options"
+              :disabled="actionLoading || loading || !status?.isRepo"
+              @click.stop="showPullMenu = !showPullMenu"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </button>
+
+            <div v-if="showPullMenu" class="dropdown-overlay" @click="showPullMenu = false" />
+            <div v-if="showPullMenu" class="pull-menu" role="menu">
+              <button class="pull-menu-item" role="menuitem" type="button" @click="doAction('fetch')">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                Fetch
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
-      <button class="refresh-btn" type="button" :disabled="loading || !workspaceId" @click="refresh()">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading }" aria-hidden="true">
+
+      <button class="refresh-btn" type="button" :disabled="loading || actionLoading || !workspaceId" @click="refresh()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading || actionLoading }" aria-hidden="true">
           <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
           <path d="M21 3v5h-5" />
         </svg>
@@ -336,6 +407,40 @@ onUnmounted(() => {
 
     <div v-else class="graph-shell">
       <div class="graph-timeline" :style="graphTimelineStyle" aria-label="Commit timeline">
+        <div
+          v-if="hasWorkingChanges"
+          class="commit-row commit-row--ghost"
+          aria-label="Uncommitted changes"
+        >
+          <span class="graph-rail" aria-hidden="true">
+            <svg class="rail-svg" :viewBox="`0 0 ${graphLayout.width} ${graphLayout.height}`" focusable="false">
+              <path
+                class="rail-path rail-path--ghost"
+                :d="`M ${graphRailPadding} ${graphMiddle} V ${graphRowHeight}`"
+                :style="{ stroke: laneColor(0) }"
+              />
+              <circle
+                class="commit-node commit-node--ghost"
+                :cx="graphRailPadding"
+                :cy="graphMiddle"
+                r="5"
+                :style="{ stroke: laneColor(0) }"
+              />
+            </svg>
+          </span>
+          <span class="commit-card commit-card--ghost">
+            <span class="commit-topline">
+              <code>working tree</code>
+              <span>now</span>
+            </span>
+            <strong>Uncommitted changes</strong>
+            <span class="commit-meta">
+              <span v-if="stagedCount > 0" class="change-pill change-pill--staged">{{ stagedCount }} staged</span>
+              <span v-if="unstagedCount > 0" class="change-pill change-pill--unstaged">{{ unstagedCount }} unstaged</span>
+            </span>
+          </span>
+        </div>
+
         <button
           v-for="row in graphLayout.rows"
           :key="row.commit.hash"

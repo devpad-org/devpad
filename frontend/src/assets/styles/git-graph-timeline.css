@@ -153,8 +153,49 @@
   to { transform: rotate(360deg); }
 }
 
-@media (max-width: 980px) {
-  .graph-stats {
-    display: none;
-  }
+/* Ghost / uncommitted working-tree row */
+.commit-row--ghost {
+  pointer-events: none;
+}
+
+.commit-row--ghost .commit-card {
+  border-style: dashed;
+  border-color: var(--border-default);
+  background: transparent;
+  opacity: 0.72;
+}
+
+.commit-node--ghost {
+  fill: var(--bg-void);
+  stroke-dasharray: 3 2;
+}
+
+.rail-path--ghost {
+  stroke-dasharray: 5 3;
+  opacity: 0.5;
+}
+
+.commit-card--ghost .commit-topline code {
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
+.change-pill {
+  padding: 0 5px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+}
+
+.change-pill--staged {
+  color: var(--accent-green);
+  border-color: var(--success-border);
+  background: var(--success-bg);
+}
+
+.change-pill--unstaged {
+  color: var(--accent-amber);
+  border-color: var(--warning-border, color-mix(in srgb, var(--accent-amber) 30%, transparent));
+  background: var(--warning-bg, color-mix(in srgb, var(--accent-amber) 10%, transparent));
 }

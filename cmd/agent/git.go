@@ -21,6 +21,7 @@ var longRunningActions = map[string]bool{
 	"clone": true,
 	"push":  true,
 	"pull":  true,
+	"fetch": true,
 }
 
 func gitActionTimeout(action string) time.Duration {
@@ -368,6 +369,7 @@ var gitActions = map[string]gitActionFunc{
 	"commit":         actionCommit,
 	"push":           actionPush,
 	"pull":           actionPull,
+	"fetch":          actionFetch,
 	"checkout":       actionCheckout,
 	"checkout-new":   actionCheckoutNew,
 	"discard":        actionDiscard,
@@ -529,6 +531,18 @@ func actionPull(ctx context.Context, req gitActionRequest) (string, error) {
 		remote = "origin"
 	}
 	args := []string{"pull", remote}
+	if req.Branch != "" {
+		args = append(args, req.Branch)
+	}
+	return gitOutput(ctx, args...)
+}
+
+func actionFetch(ctx context.Context, req gitActionRequest) (string, error) {
+	remote := req.Remote
+	if remote == "" {
+		remote = "origin"
+	}
+	args := []string{"fetch", remote}
 	if req.Branch != "" {
 		args = append(args, req.Branch)
 	}
