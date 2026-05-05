@@ -189,6 +189,13 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	}
 	var agentErr *agent.AgentError
 	if errors.As(err, &agentErr) {
+		if agentErr.SSHHostKey != nil {
+			writeJSON(w, agentErr.StatusCode, map[string]any{
+				"error":      agentErr.Message,
+				"sshHostKey": agentErr.SSHHostKey,
+			})
+			return
+		}
 		writeError(w, agentErr.StatusCode, agentErr.Message)
 		return
 	}

@@ -1,4 +1,4 @@
-import { apiClient } from './client'
+import { ApiError, apiClient } from './client'
 
 export interface GitFileStatus {
   path: string
@@ -63,10 +63,18 @@ export interface GitRemote {
   pushUrl: string
 }
 
+export interface GitSshHostKey {
+  host: string
+  keyType: string
+  fingerprint: string
+  rawOutput?: string
+}
+
 export interface GitActionResult {
   success: boolean
   output: string
   error?: string
+  sshHostKey?: GitSshHostKey
 }
 
 interface GitLogResponse {
@@ -148,7 +156,7 @@ export const gitApi = {
   action(
     workspaceId: number,
     action: string,
-    opts: { files?: string[]; message?: string; branch?: string; remote?: string; url?: string; newName?: string; userName?: string; userEmail?: string } = {}
+    opts: { files?: string[]; message?: string; branch?: string; remote?: string; url?: string; newName?: string; userName?: string; userEmail?: string; host?: string; keyType?: string; fingerprint?: string } = {}
   ): Promise<GitActionResult> {
     return apiClient.post<GitActionResult>(
       `/api/workspaces/${workspaceId}/git/action`,
@@ -162,7 +170,36 @@ export const gitApi = {
         newName: opts.newName ?? '',
         userName: opts.userName ?? '',
         userEmail: opts.userEmail ?? '',
+        host: opts.host ?? '',
+        keyType: opts.keyType ?? '',
+        fingerprint: opts.fingerprint ?? '',
       }
     )
   },
+
+  acceptSshHostKey(workspaceId: number, hostKey: GitSshHostKey): Promise<GitActionResult> {
+    return gitApi.action(workspaceId, 'accept-ssh-host-key', {
+      host: hostKey.host,
+      keyType: hostKey.keyType,
+      fingerprint: hostKey.fingerprint,
+    })
+  },
+}
+
+export function gitSshHostKeyFromError(err: unknown): GitSshHostKey | null {
+  if (!(err instanceof ApiError) || !isRecord(err.body)) return null
+  const hostKey = err.body.sshHostKey
+  return isGitSshHostKey(hostKey) ? hostKey : null
+}
+
+function isGitSshHostKey(value: unknown): value is GitSshHostKey {
+  return isRecord(value) &&
+    typeof value.host === 'string' &&
+    typeof value.keyType === 'string' &&
+    typeof value.fingerprint === 'string' &&
+    (value.rawOutput === undefined || typeof value.rawOutput === 'string')
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }

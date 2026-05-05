@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -16,6 +19,8 @@ import (
 const gitTimeout = 30 * time.Second
 const gitNetworkTimeout = 5 * time.Minute
 const maxGitRequestBody = 1 << 20 // 1 MB
+
+var sshHostAuthenticityRE = regexp.MustCompile(`(?is)The authenticity of host '([^']+)' can't be established\.\s*([A-Za-z0-9_-]+) key fingerprint is ([^\s.]+)`)
 
 // gitActionTimeout returns the context timeout appropriate for a given action.
 // Network-heavy actions (clone, push, pull) get a longer timeout.
@@ -178,6 +183,13 @@ func handleGitLog(w http.ResponseWriter, r *http.Request) {
 
 	out, err := gitOutput(ctx, gitLogArgs(count, r.URL.Query().Get("all") == "true")...)
 	if err != nil {
+		if prompt := parseSSHHostKeyPrompt(out); prompt != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":      "ssh host key is not trusted",
+				"sshHostKey": prompt,
+			})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"commits": []any{}})
 		return
 	}
@@ -581,6 +593,30 @@ func parseGitLogOutput(out string) []gitCommitEntry {
 	return commits
 }
 
+func parseSSHHostKeyPrompt(out string) *sshHostKeyPrompt {
+	match := sshHostAuthenticityRE.FindStringSubmatch(out)
+	if len(match) != 4 {
+		return nil
+	}
+
+	host := strings.TrimSpace(match[1])
+	if idx := strings.Index(host, " ("); idx != -1 {
+		host = host[:idx]
+	}
+	keyType := strings.ToUpper(strings.TrimSpace(match[2]))
+	fingerprint := strings.TrimSpace(match[3])
+	if host == "" || fingerprint == "" {
+		return nil
+	}
+
+	return &sshHostKeyPrompt{
+		Host:        host,
+		KeyType:     keyType,
+		Fingerprint: fingerprint,
+		RawOutput:   strings.TrimSpace(out),
+	}
+}
+
 func handleGitBranches(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
 	defer cancel()
@@ -713,15 +749,25 @@ func handleGitDiff(w http.ResponseWriter, r *http.Request) {
 
 // gitActionRequest holds the decoded and validated request body for a git action.
 type gitActionRequest struct {
-	Action    string   `json:"action"`
-	Files     []string `json:"files"`
-	Msg       string   `json:"message"`
-	Branch    string   `json:"branch"`
-	Remote    string   `json:"remote"`
-	URL       string   `json:"url"`
-	NewName   string   `json:"newName"`
-	UserName  string   `json:"userName"`
-	UserEmail string   `json:"userEmail"`
+	Action      string   `json:"action"`
+	Files       []string `json:"files"`
+	Msg         string   `json:"message"`
+	Branch      string   `json:"branch"`
+	Remote      string   `json:"remote"`
+	URL         string   `json:"url"`
+	NewName     string   `json:"newName"`
+	UserName    string   `json:"userName"`
+	UserEmail   string   `json:"userEmail"`
+	Host        string   `json:"host"`
+	KeyType     string   `json:"keyType"`
+	Fingerprint string   `json:"fingerprint"`
+}
+
+type sshHostKeyPrompt struct {
+	Host        string `json:"host"`
+	KeyType     string `json:"keyType"`
+	Fingerprint string `json:"fingerprint"`
+	RawOutput   string `json:"rawOutput,omitempty"`
 }
 
 // gitActionError is a validation error that should be returned as a 400 response.
@@ -737,22 +783,23 @@ type gitActionFunc func(ctx context.Context, req gitActionRequest) (string, erro
 
 // gitActions maps action names to their handler functions.
 var gitActions = map[string]gitActionFunc{
-	"stage":          actionStage,
-	"unstage":        actionUnstage,
-	"set-config":     actionSetConfig,
-	"commit":         actionCommit,
-	"push":           actionPush,
-	"pull":           actionPull,
-	"fetch":          actionFetch,
-	"checkout":       actionCheckout,
-	"checkout-new":   actionCheckoutNew,
-	"discard":        actionDiscard,
-	"init":           actionInit,
-	"clone":          actionClone,
-	"remote-add":     actionRemoteAdd,
-	"remote-remove":  actionRemoteRemove,
-	"remote-rename":  actionRemoteRename,
-	"remote-set-url": actionRemoteSetURL,
+	"stage":               actionStage,
+	"unstage":             actionUnstage,
+	"set-config":          actionSetConfig,
+	"commit":              actionCommit,
+	"push":                actionPush,
+	"pull":                actionPull,
+	"fetch":               actionFetch,
+	"checkout":            actionCheckout,
+	"checkout-new":        actionCheckoutNew,
+	"discard":             actionDiscard,
+	"init":                actionInit,
+	"clone":               actionClone,
+	"accept-ssh-host-key": actionAcceptSSHHostKey,
+	"remote-add":          actionRemoteAdd,
+	"remote-remove":       actionRemoteRemove,
+	"remote-rename":       actionRemoteRename,
+	"remote-set-url":      actionRemoteSetURL,
 }
 
 func handleGitAction(w http.ResponseWriter, r *http.Request) {
@@ -785,11 +832,15 @@ func handleGitAction(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, actionErr.msg)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		resp := map[string]any{
 			"success": false,
 			"output":  out,
 			"error":   err.Error(),
-		})
+		}
+		if prompt := parseSSHHostKeyPrompt(out); prompt != nil {
+			resp["sshHostKey"] = prompt
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -990,6 +1041,195 @@ func actionClone(ctx context.Context, req gitActionRequest) (string, error) {
 	// Strip "origin/" prefix for the local branch name.
 	localBranch := strings.TrimPrefix(defaultBranch, "origin/")
 	return gitOutput(ctx, "checkout", "-B", localBranch, defaultBranch)
+}
+
+func actionAcceptSSHHostKey(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.Host == "" {
+		return "", &gitActionError{"host is required"}
+	}
+	if req.Fingerprint == "" {
+		return "", &gitActionError{"fingerprint is required"}
+	}
+
+	target, err := parseSSHHostTarget(req.Host)
+	if err != nil {
+		return "", &gitActionError{err.Error()}
+	}
+	keyType, err := normalizeSSHKeyType(req.KeyType)
+	if err != nil {
+		return "", &gitActionError{err.Error()}
+	}
+
+	args := []string{}
+	if keyType != "" {
+		args = append(args, "-t", keyType)
+	}
+	if target.Port != "" {
+		args = append(args, "-p", target.Port)
+	}
+	args = append(args, target.ScanHost)
+
+	cmd := exec.CommandContext(ctx, "ssh-keyscan", args...)
+	scanOut, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(scanOut), fmt.Errorf("scanning ssh host key: %w", err)
+	}
+
+	line, err := matchingScannedHostKey(ctx, string(scanOut), req.Fingerprint, keyType)
+	if err != nil {
+		return string(scanOut), err
+	}
+	if err := appendKnownHostLine(line); err != nil {
+		return string(scanOut), fmt.Errorf("writing known_hosts: %w", err)
+	}
+
+	displayKeyType := strings.ToUpper(keyType)
+	if displayKeyType == "" {
+		displayKeyType = "SSH"
+	}
+	return fmt.Sprintf("Accepted %s host key for %s", displayKeyType, target.KnownHost), nil
+}
+
+type sshHostTarget struct {
+	ScanHost  string
+	Port      string
+	KnownHost string
+}
+
+func parseSSHHostTarget(host string) (*sshHostTarget, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return nil, fmt.Errorf("host is required")
+	}
+	if strings.HasPrefix(host, "-") || strings.ContainsFunc(host, unicode.IsSpace) {
+		return nil, fmt.Errorf("host is invalid")
+	}
+
+	if strings.HasPrefix(host, "[") {
+		end := strings.Index(host, "]")
+		if end <= 1 || end == len(host)-1 || host[end+1] != ':' {
+			return nil, fmt.Errorf("host is invalid")
+		}
+		port := host[end+2:]
+		if err := validateSSHPort(port); err != nil {
+			return nil, err
+		}
+		scanHost := host[1:end]
+		if scanHost == "" || strings.HasPrefix(scanHost, "-") || strings.ContainsFunc(scanHost, unicode.IsSpace) {
+			return nil, fmt.Errorf("host is invalid")
+		}
+		return &sshHostTarget{ScanHost: scanHost, Port: port, KnownHost: host}, nil
+	}
+
+	if strings.Contains(host, "]") {
+		return nil, fmt.Errorf("host is invalid")
+	}
+	return &sshHostTarget{ScanHost: host, KnownHost: host}, nil
+}
+
+func validateSSHPort(port string) error {
+	if port == "" {
+		return fmt.Errorf("port is required")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("port is invalid")
+	}
+	return nil
+}
+
+func normalizeSSHKeyType(keyType string) (string, error) {
+	keyType = strings.ToLower(strings.TrimSpace(keyType))
+	if keyType == "" {
+		return "", nil
+	}
+	switch keyType {
+	case "rsa", "dsa", "ecdsa", "ed25519":
+		return keyType, nil
+	default:
+		return "", fmt.Errorf("keyType is unsupported")
+	}
+}
+
+func matchingScannedHostKey(ctx context.Context, scanOut, expectedFingerprint, expectedKeyType string) (string, error) {
+	expectedFingerprint = strings.TrimSpace(expectedFingerprint)
+	for _, line := range strings.Split(scanOut, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fingerprint, keyType, err := fingerprintKnownHostLine(ctx, line)
+		if err != nil {
+			continue
+		}
+		if fingerprint != expectedFingerprint {
+			continue
+		}
+		if expectedKeyType != "" {
+			normalizedExpected, err := normalizeSSHKeyType(expectedKeyType)
+			if err != nil {
+				return "", err
+			}
+			normalizedScanned, err := normalizeSSHKeyType(keyType)
+			if err != nil || normalizedScanned != normalizedExpected {
+				continue
+			}
+		}
+		return line, nil
+	}
+	return "", fmt.Errorf("scanned SSH host key did not match expected fingerprint")
+}
+
+func fingerprintKnownHostLine(ctx context.Context, line string) (fingerprint, keyType string, err error) {
+	cmd := exec.CommandContext(ctx, "ssh-keygen", "-lf", "-")
+	cmd.Stdin = strings.NewReader(line + "\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", "", fmt.Errorf("fingerprinting ssh host key: %w", err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 4 {
+		return "", "", fmt.Errorf("unexpected ssh-keygen output")
+	}
+	keyType = strings.Trim(fields[len(fields)-1], "()")
+	return fields[1], keyType, nil
+}
+
+func appendKnownHostLine(line string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolving home directory: %w", err)
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		return fmt.Errorf("creating .ssh directory: %w", err)
+	}
+
+	knownHostsPath := filepath.Join(sshDir, "known_hosts")
+	existing, err := os.ReadFile(knownHostsPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("reading known_hosts: %w", err)
+	}
+	for _, existingLine := range strings.Split(string(existing), "\n") {
+		if strings.TrimSpace(existingLine) == line {
+			return nil
+		}
+	}
+
+	f, err := os.OpenFile(knownHostsPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("opening known_hosts: %w", err)
+	}
+	defer f.Close()
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		if _, err := f.WriteString("\n"); err != nil {
+			return fmt.Errorf("separating known_hosts entry: %w", err)
+		}
+	}
+	if _, err := f.WriteString(line + "\n"); err != nil {
+		return fmt.Errorf("appending known_hosts entry: %w", err)
+	}
+	return nil
 }
 
 func actionRemoteAdd(ctx context.Context, req gitActionRequest) (string, error) {

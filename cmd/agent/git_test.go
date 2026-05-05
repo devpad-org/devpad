@@ -347,6 +347,109 @@ func TestParseGitLogOutput(t *testing.T) {
 	}
 }
 
+func TestParseSSHHostKeyPrompt(t *testing.T) {
+	tests := []struct {
+		name        string
+		output      string
+		wantHost    string
+		wantKeyType string
+		wantFP      string
+		wantPrompt  bool
+	}{
+		{
+			name: "standard host",
+			output: "The authenticity of host 'git.example.com (203.0.113.10)' can't be established.\n" +
+				"ED25519 key fingerprint is SHA256:abc123/def456.\n" +
+				"Are you sure you want to continue connecting (yes/no/[fingerprint])?",
+			wantHost:    "git.example.com",
+			wantKeyType: "ED25519",
+			wantFP:      "SHA256:abc123/def456",
+			wantPrompt:  true,
+		},
+		{
+			name: "custom port host",
+			output: "The authenticity of host '[git.example.com]:2222 ([203.0.113.10]:2222)' can't be established.\n" +
+				"ECDSA key fingerprint is SHA256:xyz789.\n",
+			wantHost:    "[git.example.com]:2222",
+			wantKeyType: "ECDSA",
+			wantFP:      "SHA256:xyz789",
+			wantPrompt:  true,
+		},
+		{
+			name:       "unrelated git failure",
+			output:     "fatal: not a git repository",
+			wantPrompt: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseSSHHostKeyPrompt(tt.output)
+			if !tt.wantPrompt {
+				if got != nil {
+					t.Fatalf("expected no prompt, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected prompt, got nil")
+			}
+			if got.Host != tt.wantHost || got.KeyType != tt.wantKeyType || got.Fingerprint != tt.wantFP {
+				t.Fatalf("unexpected prompt: %+v", got)
+			}
+			if got.RawOutput == "" {
+				t.Fatal("expected raw output to be preserved")
+			}
+		})
+	}
+}
+
+func TestParseSSHHostTarget(t *testing.T) {
+	tests := []struct {
+		name      string
+		host      string
+		scanHost  string
+		port      string
+		knownHost string
+		wantErr   bool
+	}{
+		{
+			name:      "plain host",
+			host:      "git.example.com",
+			scanHost:  "git.example.com",
+			knownHost: "git.example.com",
+		},
+		{
+			name:      "custom port",
+			host:      "[git.example.com]:2222",
+			scanHost:  "git.example.com",
+			port:      "2222",
+			knownHost: "[git.example.com]:2222",
+		},
+		{name: "flag injection", host: "-oProxyCommand=bad", wantErr: true},
+		{name: "space", host: "git example.com", wantErr: true},
+		{name: "bad port", host: "[git.example.com]:99999", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseSSHHostTarget(tt.host)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if got.ScanHost != tt.scanHost || got.Port != tt.port || got.KnownHost != tt.knownHost {
+				t.Fatalf("unexpected target: %+v", got)
+			}
+		})
+	}
+}
+
 func TestValidateGitCommitHash(t *testing.T) {
 	tests := []struct {
 		name    string
