@@ -9,7 +9,9 @@ import {
   type GitStatus,
 } from '@/api/git'
 import { useFileWatcher } from '@/composables/useFileWatcher'
+import { useGitSshHostKey } from '@/composables/useGitSshHostKey'
 import MonacoDiffViewer from './MonacoDiffViewer.vue'
+import GitSshHostKeyModal from './GitSshHostKeyModal.vue'
 
 const props = defineProps<{
   workspaceId: number
@@ -82,6 +84,15 @@ interface CommitGraphLayout {
 const { connect: connectWatcher, disconnect: disconnectWatcher, onEvent } = useFileWatcher(
   () => props.workspaceId
 )
+const {
+  hostKey: sshHostKey,
+  accepting: acceptingSshHostKey,
+  error: sshHostKeyError,
+  promptFromActionResult,
+  promptFromError,
+  accept: acceptSshHostKey,
+  cancel: cancelSshHostKey,
+} = useGitSshHostKey(() => props.workspaceId)
 
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 let loadVersion = 0
@@ -122,12 +133,14 @@ async function doAction(action: string) {
   showPullMenu.value = false
   try {
     const result = await gitApi.action(props.workspaceId, action)
+    if (promptFromActionResult(result, () => doAction(action))) return
     if (!result.success) {
       error.value = result.output || result.error || `${action} failed`
     } else {
       await refresh(false)
     }
   } catch (err) {
+    if (promptFromError(err, () => doAction(action))) return
     error.value = getErrorMessage(err)
   } finally {
     actionLoading.value = false
@@ -301,6 +314,7 @@ async function refresh(showLoading = true) {
     }
   } catch (err) {
     if (props.workspaceId === currentWorkspaceId && currentLoad === loadVersion) {
+      if (promptFromError(err, () => refresh(showLoading))) return
       error.value = getErrorMessage(err)
     }
   } finally {
@@ -641,6 +655,15 @@ onUnmounted(() => {
       </div>
     </div>
   </section>
+
+  <GitSshHostKeyModal
+    :show="sshHostKey !== null"
+    :host-key="sshHostKey"
+    :loading="acceptingSshHostKey"
+    :error="sshHostKeyError"
+    @accept="acceptSshHostKey"
+    @cancel="cancelSshHostKey"
+  />
 </template>
 
 <style src="../../assets/styles/git-graph.css" scoped></style>

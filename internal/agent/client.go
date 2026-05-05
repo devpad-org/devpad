@@ -437,22 +437,34 @@ type GitRemote struct {
 
 // GitActionRequest holds the parameters for a git action sent to the agent.
 type GitActionRequest struct {
-	Action    string   `json:"action"`
-	Files     []string `json:"files,omitempty"`
-	Message   string   `json:"message,omitempty"`
-	Branch    string   `json:"branch,omitempty"`
-	Remote    string   `json:"remote,omitempty"`
-	URL       string   `json:"url,omitempty"`
-	NewName   string   `json:"newName,omitempty"`
-	UserName  string   `json:"userName,omitempty"`
-	UserEmail string   `json:"userEmail,omitempty"`
+	Action      string   `json:"action"`
+	Files       []string `json:"files,omitempty"`
+	Message     string   `json:"message,omitempty"`
+	Branch      string   `json:"branch,omitempty"`
+	Remote      string   `json:"remote,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	NewName     string   `json:"newName,omitempty"`
+	UserName    string   `json:"userName,omitempty"`
+	UserEmail   string   `json:"userEmail,omitempty"`
+	Host        string   `json:"host,omitempty"`
+	KeyType     string   `json:"keyType,omitempty"`
+	Fingerprint string   `json:"fingerprint,omitempty"`
+}
+
+// GitSSHHostKeyPrompt describes an SSH host key that needs user approval.
+type GitSSHHostKeyPrompt struct {
+	Host        string `json:"host"`
+	KeyType     string `json:"keyType"`
+	Fingerprint string `json:"fingerprint"`
+	RawOutput   string `json:"rawOutput,omitempty"`
 }
 
 // GitActionResult represents the result of a git action.
 type GitActionResult struct {
-	Success bool   `json:"success"`
-	Output  string `json:"output"`
-	Error   string `json:"error,omitempty"`
+	Success    bool                 `json:"success"`
+	Output     string               `json:"output"`
+	Error      string               `json:"error,omitempty"`
+	SSHHostKey *GitSSHHostKeyPrompt `json:"sshHostKey,omitempty"`
 }
 
 // GitStatus returns the current git status of the workspace.
@@ -707,6 +719,7 @@ func (c *Client) GitAction(ctx context.Context, req GitActionRequest) (*GitActio
 type AgentError struct {
 	StatusCode int
 	Message    string
+	SSHHostKey *GitSSHHostKeyPrompt
 }
 
 func (e *AgentError) Error() string {
@@ -715,10 +728,11 @@ func (e *AgentError) Error() string {
 
 func parseError(resp *http.Response) error {
 	var errResp struct {
-		Error string `json:"error"`
+		Error      string               `json:"error"`
+		SSHHostKey *GitSSHHostKeyPrompt `json:"sshHostKey,omitempty"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
 		return &AgentError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("unexpected status %d", resp.StatusCode)}
 	}
-	return &AgentError{StatusCode: resp.StatusCode, Message: errResp.Error}
+	return &AgentError{StatusCode: resp.StatusCode, Message: errResp.Error, SSHHostKey: errResp.SSHHostKey}
 }

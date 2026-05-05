@@ -3,7 +3,10 @@ package workspace
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/devpad-org/devpad/internal/auth"
@@ -14,21 +17,65 @@ import (
 // against the handler's allowed origins list.
 func (h *Handler) upgrader() *websocket.Upgrader {
 	return &websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			origin := r.Header.Get("Origin")
-			if origin == "" {
-				// Same-origin requests from browsers don't include an Origin header.
-				return true
-			}
-			for _, allowed := range h.allowedOrigins {
-				if origin == allowed {
-					return true
-				}
-			}
-			log.Printf("websocket: rejected origin %q", origin)
-			return false
-		},
+		CheckOrigin: h.checkWebSocketOrigin,
 	}
+}
+
+func (h *Handler) checkWebSocketOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// Same-origin requests from browsers don't include an Origin header.
+		return true
+	}
+	for _, allowed := range h.allowedOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+
+	originURL, err := url.Parse(origin)
+	if err != nil || originURL.Host == "" {
+		log.Printf("websocket: rejected invalid origin %q", origin)
+		return false
+	}
+
+	originHost := normalizeOriginHost(originURL.Host)
+	requestHost := normalizeOriginHost(r.Host)
+	if originHost == requestHost {
+		return true
+	}
+	if sameLoopbackHostname(originHost, requestHost) {
+		return true
+	}
+
+	log.Printf("websocket: rejected origin %q", origin)
+	return false
+}
+
+func normalizeOriginHost(host string) string {
+	return strings.ToLower(strings.TrimSpace(host))
+}
+
+func sameLoopbackHostname(a, b string) bool {
+	aHost := hostnameWithoutPort(a)
+	bHost := hostnameWithoutPort(b)
+	return aHost != "" && aHost == bHost && isLoopbackHostname(aHost)
+}
+
+func hostnameWithoutPort(host string) string {
+	host = normalizeOriginHost(host)
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		return strings.Trim(parsedHost, "[]")
+	}
+	return strings.Trim(host, "[]")
+}
+
+func isLoopbackHostname(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // HandleTerminal upgrades to WebSocket and proxies the connection to the

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"strings"
 	"testing"
 )
 
@@ -344,6 +346,236 @@ func TestParseGitLogOutput(t *testing.T) {
 	}
 	if len(got[1].Parents) != 0 {
 		t.Fatalf("expected root commit to have no parents, got %+v", got[1].Parents)
+	}
+}
+
+func TestParseSSHHostKeyPrompt(t *testing.T) {
+	tests := []struct {
+		name        string
+		output      string
+		wantHost    string
+		wantKeyType string
+		wantFP      string
+		wantPrompt  bool
+	}{
+		{
+			name: "standard host",
+			output: "The authenticity of host 'git.example.com (203.0.113.10)' can't be established.\n" +
+				"ED25519 key fingerprint is SHA256:abc123/def456.\n" +
+				"Are you sure you want to continue connecting (yes/no/[fingerprint])?",
+			wantHost:    "git.example.com",
+			wantKeyType: "ED25519",
+			wantFP:      "SHA256:abc123/def456",
+			wantPrompt:  true,
+		},
+		{
+			name: "custom port host",
+			output: "The authenticity of host '[git.example.com]:2222 ([203.0.113.10]:2222)' can't be established.\n" +
+				"ECDSA key fingerprint is SHA256:xyz789.\n",
+			wantHost:    "[git.example.com]:2222",
+			wantKeyType: "ECDSA",
+			wantFP:      "SHA256:xyz789",
+			wantPrompt:  true,
+		},
+		{
+			name:       "unrelated git failure",
+			output:     "fatal: not a git repository",
+			wantPrompt: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseSSHHostKeyPrompt(tt.output)
+			if !tt.wantPrompt {
+				if got != nil {
+					t.Fatalf("expected no prompt, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected prompt, got nil")
+			}
+			if got.Host != tt.wantHost || got.KeyType != tt.wantKeyType || got.Fingerprint != tt.wantFP {
+				t.Fatalf("unexpected prompt: %+v", got)
+			}
+			if got.RawOutput == "" {
+				t.Fatal("expected raw output to be preserved")
+			}
+		})
+	}
+}
+
+func TestParseSSHHostTarget(t *testing.T) {
+	tests := []struct {
+		name      string
+		host      string
+		scanHost  string
+		port      string
+		knownHost string
+		wantErr   bool
+	}{
+		{
+			name:      "plain host",
+			host:      "git.example.com",
+			scanHost:  "git.example.com",
+			knownHost: "git.example.com",
+		},
+		{
+			name:      "custom port",
+			host:      "[git.example.com]:2222",
+			scanHost:  "git.example.com",
+			port:      "2222",
+			knownHost: "[git.example.com]:2222",
+		},
+		{name: "flag injection", host: "-oProxyCommand=bad", wantErr: true},
+		{name: "space", host: "git example.com", wantErr: true},
+		{name: "bad port", host: "[git.example.com]:99999", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseSSHHostTarget(tt.host)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if got.ScanHost != tt.scanHost || got.Port != tt.port || got.KnownHost != tt.knownHost {
+				t.Fatalf("unexpected target: %+v", got)
+			}
+		})
+	}
+}
+
+func TestParseGitSSHRemoteTarget(t *testing.T) {
+	tests := []struct {
+		name      string
+		remoteURL string
+		scanHost  string
+		port      string
+		knownHost string
+		wantOK    bool
+	}{
+		{
+			name:      "scp-like git remote",
+			remoteURL: "git@git.example.com:org/repo.git",
+			scanHost:  "git.example.com",
+			knownHost: "git.example.com",
+			wantOK:    true,
+		},
+		{
+			name:      "ssh url",
+			remoteURL: "ssh://git@git.example.com/org/repo.git",
+			scanHost:  "git.example.com",
+			knownHost: "git.example.com",
+			wantOK:    true,
+		},
+		{
+			name:      "ssh url with custom port",
+			remoteURL: "ssh://git@git.example.com:2222/org/repo.git",
+			scanHost:  "git.example.com",
+			port:      "2222",
+			knownHost: "[git.example.com]:2222",
+			wantOK:    true,
+		},
+		{
+			name:      "git ssh url with custom port",
+			remoteURL: "git+ssh://git@git.example.com:2222/org/repo.git",
+			scanHost:  "git.example.com",
+			port:      "2222",
+			knownHost: "[git.example.com]:2222",
+			wantOK:    true,
+		},
+		{
+			name:      "https remote ignored",
+			remoteURL: "https://git.example.com/org/repo.git",
+			wantOK:    false,
+		},
+		{
+			name:      "flag-like remote ignored",
+			remoteURL: "-oProxyCommand=bad",
+			wantOK:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseGitSSHRemoteTarget(tt.remoteURL)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v, target=%+v", ok, tt.wantOK, got)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if got.ScanHost != tt.scanHost || got.Port != tt.port || got.KnownHost != tt.knownHost {
+				t.Fatalf("unexpected target: %+v", got)
+			}
+		})
+	}
+}
+
+func TestIsSSHHostKeyVerificationFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{
+			name: "host key verification failed",
+			out:  "Host key verification failed.\nfatal: Could not read from remote repository.",
+			want: true,
+		},
+		{
+			name: "case insensitive",
+			out:  "host key verification failed",
+			want: true,
+		},
+		{
+			name: "unrelated auth failure",
+			out:  "Permission denied (publickey).",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isSSHHostKeyVerificationFailure(tt.out); got != tt.want {
+				t.Fatalf("isSSHHostKeyVerificationFailure() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitCommandIsNonInteractive(t *testing.T) {
+	cmd := gitCommand(context.Background(), "pull")
+
+	if cmd.Dir != workspaceRoot {
+		t.Fatalf("Dir = %q, want %q", cmd.Dir, workspaceRoot)
+	}
+
+	env := map[string]string{}
+	for _, entry := range cmd.Env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			env[key] = value
+		}
+	}
+
+	want := map[string]string{
+		"GIT_TERMINAL_PROMPT": "0",
+		"GIT_SSH_COMMAND":     gitSSHCommand,
+		"GIT_MERGE_AUTOEDIT":  "no",
+		"GIT_EDITOR":          "true",
+	}
+	for key, value := range want {
+		if got := env[key]; got != value {
+			t.Fatalf("%s = %q, want %q", key, got, value)
+		}
 	}
 }
 

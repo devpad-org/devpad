@@ -9,7 +9,9 @@ import {
   type GitCommitFile,
 } from '@/api/git'
 import { useFileWatcher } from '@/composables/useFileWatcher'
+import { useGitSshHostKey } from '@/composables/useGitSshHostKey'
 import GitConfigModal from './GitConfigModal.vue'
+import GitSshHostKeyModal from './GitSshHostKeyModal.vue'
 
 const props = defineProps<{
   workspaceId: number
@@ -52,6 +54,15 @@ const needsGitConfig = computed(() =>
 
 // File watcher for event-driven refresh
 const { connect: connectWatcher, onEvent } = useFileWatcher(() => props.workspaceId)
+const {
+  hostKey: sshHostKey,
+  accepting: acceptingSshHostKey,
+  error: sshHostKeyError,
+  promptFromActionResult,
+  promptFromError,
+  accept: acceptSshHostKey,
+  cancel: cancelSshHostKey,
+} = useGitSshHostKey(() => props.workspaceId)
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
 function debouncedRefresh() {
@@ -208,9 +219,13 @@ async function cloneRepo() {
   cloning.value = true
   try {
     const result = await gitApi.action(props.workspaceId, 'clone', { url })
+    if (promptFromActionResult(result, cloneRepo)) return
     actionOutput.value = result.success ? 'Repository cloned' : gitError(result)
     if (result.success) cloneUrl.value = ''
     await refresh()
+  } catch (e) {
+    if (promptFromError(e, cloneRepo)) return
+    actionOutput.value = e instanceof Error ? e.message : 'Failed to clone repository'
   } finally {
     cloning.value = false
   }
@@ -594,6 +609,14 @@ onUnmounted(() => {
       :show="showGitConfig"
       @submit="handleGitConfigSubmit"
       @cancel="showGitConfig = false"
+    />
+    <GitSshHostKeyModal
+      :show="sshHostKey !== null"
+      :host-key="sshHostKey"
+      :loading="acceptingSshHostKey"
+      :error="sshHostKeyError"
+      @accept="acceptSshHostKey"
+      @cancel="cancelSshHostKey"
     />
   </div>
 </template>
