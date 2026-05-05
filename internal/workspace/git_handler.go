@@ -108,6 +108,31 @@ func (h *Handler) HandleGitCommitFileDiff(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, diff)
 }
 
+// HandleGitFileDiff returns before/after contents for a staged or unstaged file.
+func (h *Handler) HandleGitFileDiff(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	path := r.URL.Query().Get("path")
+	staged := r.URL.Query().Get("staged") == "true"
+	if path == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+
+	diff, err := h.service.GitFileDiff(r.Context(), user.ID, id, path, staged)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, diff)
+}
+
 // HandleGitBranches returns the branches of a workspace.
 func (h *Handler) HandleGitBranches(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())

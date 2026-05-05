@@ -15,7 +15,7 @@ const props = defineProps<{
   workspaceId: number
   active: boolean
   selectedCommitHash: string | null
-  diffRequest: GitCommitDiffRequest | null
+  diffRequest: GitDiffRequest | null
 }>()
 
 const emit = defineEmits<{
@@ -24,10 +24,20 @@ const emit = defineEmits<{
 }>()
 
 interface GitCommitDiffRequest {
+  kind: 'commit'
   commit: GitCommit
   file: GitCommitFile
   requestId: number
 }
+
+interface GitWorkingDiffRequest {
+  kind: 'working'
+  path: string
+  staged: boolean
+  requestId: number
+}
+
+type GitDiffRequest = GitCommitDiffRequest | GitWorkingDiffRequest
 
 const status = ref<GitStatus | null>(null)
 const commits = ref<GitCommit[]>([])
@@ -87,15 +97,20 @@ const stagedCount = computed(() => (status.value?.files ?? []).filter((f) => f.s
 const unstagedCount = computed(() => (status.value?.files ?? []).filter((f) => !f.staged).length)
 const showingDiff = computed(() => props.diffRequest !== null || diff.value !== null || diffLoading.value)
 const diffTitle = computed(() => {
-  const file = props.diffRequest?.file
-  if (!file) return ''
+  if (!props.diffRequest) return ''
+  if (props.diffRequest.kind === 'working') return props.diffRequest.path
+
+  const file = props.diffRequest.file
   return file.oldPath && file.oldPath !== file.path
     ? `${file.oldPath} → ${file.path}`
     : file.path
 })
 const graphSubtitle = computed(() => {
   if (showingDiff.value) {
-    return props.diffRequest?.commit.shortHash ?? ''
+    if (!props.diffRequest) return ''
+    return props.diffRequest.kind === 'commit'
+      ? props.diffRequest.commit.shortHash
+      : props.diffRequest.staged ? 'staged changes' : 'unstaged changes'
   }
   return currentBranch.value
 })
@@ -308,29 +323,33 @@ function selectCommit(commit: GitCommit) {
   emit('commitSelect', commit)
 }
 
-function closeCommitDiff() {
+function closeDiff() {
   diff.value = null
   diffError.value = ''
   diffLoading.value = false
   emit('closeDiff')
 }
 
-async function loadCommitDiff(request: GitCommitDiffRequest) {
+async function loadDiff(request: GitDiffRequest) {
   if (!props.workspaceId) return
 
   const currentLoad = ++diffLoadVersion
-  selectedHash.value = request.commit.hash
+  if (request.kind === 'commit') {
+    selectedHash.value = request.commit.hash
+  }
   diff.value = null
   diffError.value = ''
   diffLoading.value = true
 
   try {
-    const nextDiff = await gitApi.commitFileDiff(
-      props.workspaceId,
-      request.commit.hash,
-      request.file.path,
-      request.file.oldPath
-    )
+    const nextDiff = request.kind === 'commit'
+      ? await gitApi.commitFileDiff(
+        props.workspaceId,
+        request.commit.hash,
+        request.file.path,
+        request.file.oldPath
+      )
+      : await gitApi.fileDiff(props.workspaceId, request.path, request.staged)
     if (currentLoad !== diffLoadVersion) return
     diff.value = nextDiff
   } catch (err) {
@@ -393,7 +412,7 @@ watch(
       diffLoading.value = false
       return
     }
-    void loadCommitDiff(props.diffRequest)
+    void loadDiff(props.diffRequest)
   },
   { immediate: true }
 )
@@ -415,13 +434,13 @@ onUnmounted(() => {
             <path d="M6 21V9a9 9 0 0 0 9 9" />
           </svg>
         </span>
-        <span class="graph-title-text">{{ showingDiff ? 'Commit Diff' : 'Git Graph' }}</span>
+        <span class="graph-title-text">{{ showingDiff ? 'Diff' : 'Git Graph' }}</span>
         <span class="graph-branch">{{ graphSubtitle }}</span>
       </div>
 
       <div v-if="showingDiff" class="graph-actions">
         <span class="diff-file-title">{{ diffTitle }}</span>
-        <button class="graph-action-btn" type="button" title="Close diff" @click="closeCommitDiff">
+        <button class="graph-action-btn" type="button" title="Close diff" @click="closeDiff">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M18 6 6 18" /><path d="m6 6 12 12" />
           </svg>

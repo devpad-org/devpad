@@ -42,6 +42,14 @@ func (s *service) GitCommitFileDiff(ctx context.Context, userID, workspaceID int
 	return c.GitCommitFileDiff(ctx, commit, path, oldPath)
 }
 
+func (s *service) GitFileDiff(ctx context.Context, userID, workspaceID int64, path string, staged bool) (*agent.GitFileDiff, error) {
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.GitFileDiff(ctx, path, staged)
+}
+
 func (s *service) GitBranches(ctx context.Context, userID, workspaceID int64) (*agent.GitBranches, error) {
 	c, err := s.getAgent(ctx, userID, workspaceID)
 	if err != nil {

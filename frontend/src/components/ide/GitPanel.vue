@@ -18,6 +18,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'commitFileSelect', payload: { commit: GitCommit; file: GitCommitFile }): void
+  (e: 'workingFileSelect', payload: { path: string; staged: boolean }): void
   (e: 'clearCommit'): void
 }>()
 
@@ -48,12 +49,6 @@ const showGitConfig = ref(false)
 const needsGitConfig = computed(() =>
   status.value?.isRepo && (!status.value.userName || !status.value.userEmail)
 )
-
-// Diff
-const diffContent = ref('')
-const diffFile = ref<string | null>(null)
-const diffStaged = ref(false)
-const showDiff = ref(false)
 
 // File watcher for event-driven refresh
 const { connect: connectWatcher, onEvent } = useFileWatcher(() => props.workspaceId)
@@ -244,21 +239,8 @@ async function createBranch() {
   await refresh()
 }
 
-async function viewDiff(path: string, staged: boolean) {
-  diffFile.value = path
-  diffStaged.value = staged
-  showDiff.value = true
-  try {
-    diffContent.value = await gitApi.diff(props.workspaceId, path, staged)
-  } catch {
-    diffContent.value = 'Failed to load diff'
-  }
-}
-
-function closeDiff() {
-  showDiff.value = false
-  diffContent.value = ''
-  diffFile.value = null
+function viewDiff(path: string, staged: boolean) {
+  emit('workingFileSelect', { path, staged })
 }
 
 function statusIcon(status: string): string {
@@ -313,7 +295,6 @@ watch(activeTab, () => refresh())
 watch(
   selectedCommitHash,
   () => {
-    closeDiff()
     if (!props.selectedCommit) {
       commitFiles.value = []
       commitFilesError.value = ''
@@ -603,20 +584,6 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Diff overlay -->
-      <div v-if="showDiff" class="git-diff-overlay">
-        <div class="git-diff-header">
-          <span class="git-diff-title">{{ diffFile }}</span>
-          <span v-if="diffStaged" class="git-diff-badge">staged</span>
-          <button class="git-icon-btn" @click="closeDiff">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M18 6 6 18" /><path d="m6 6 12 12" />
-            </svg>
-          </button>
-        </div>
-        <pre class="git-diff-content"><code v-for="(line, i) in diffContent.split('\n')" :key="i" :class="diffLineClass(line)">{{ line }}
-</code></pre>
-      </div>
     </template>
 
     <!-- Error -->
@@ -630,16 +597,6 @@ onUnmounted(() => {
     />
   </div>
 </template>
-
-<script lang="ts">
-function diffLineClass(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'diff-meta'
-  if (line.startsWith('@@')) return 'diff-hunk'
-  if (line.startsWith('+')) return 'diff-add'
-  if (line.startsWith('-')) return 'diff-del'
-  return ''
-}
-</script>
 
 <style scoped>
 .git-panel {
@@ -1090,81 +1047,6 @@ function diffLineClass(line: string): string {
   font-family: var(--font-mono);
   color: var(--text-muted);
   margin-left: auto;
-}
-
-/* Diff overlay */
-.git-diff-overlay {
-  position: absolute;
-  inset: 0;
-  background: var(--bg-surface);
-  display: flex;
-  flex-direction: column;
-  z-index: 10;
-}
-
-.git-diff-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
-  flex-shrink: 0;
-}
-
-.git-diff-title {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--text-primary);
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.git-diff-badge {
-  font-size: 0.72rem;
-  padding: 1px 5px;
-  border-radius: var(--radius-sm);
-  background: var(--success-bg);
-  color: var(--accent-green);
-  border: 0.5px solid var(--success-border);
-}
-
-.git-diff-content {
-  flex: 1;
-  overflow: auto;
-  padding: var(--space-2);
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  line-height: 1.65;
-  background: var(--bg-primary);
-  margin: 0;
-}
-
-.git-diff-content code {
-  display: block;
-  padding: 0 var(--space-2);
-}
-
-.diff-add {
-  background: var(--success-bg);
-  color: var(--accent-green);
-}
-
-.diff-del {
-  background: var(--error-bg);
-  color: var(--accent-rose);
-}
-
-.diff-hunk {
-  color: var(--accent-blue);
-  background: var(--accent-glow);
-}
-
-.diff-meta {
-  color: var(--text-muted);
-  font-weight: 600;
 }
 
 /* Error */

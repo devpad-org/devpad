@@ -574,6 +574,38 @@ func (c *Client) GitCommitFileDiff(ctx context.Context, commit, path, oldPath st
 	return &result, nil
 }
 
+// GitFileDiff returns before/after contents for one staged or unstaged file.
+func (c *Client) GitFileDiff(ctx context.Context, path string, staged bool) (*GitFileDiff, error) {
+	u, err := url.Parse(fmt.Sprintf("%s/api/git/file-diff", c.baseURL))
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("path", path)
+	if staged {
+		q.Set("staged", "true")
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("git file diff: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+	var result GitFileDiff
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding git file diff: %w", err)
+	}
+	return &result, nil
+}
+
 // GitBranches returns the list of branches.
 func (c *Client) GitBranches(ctx context.Context) (*GitBranches, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/git/branches", nil)

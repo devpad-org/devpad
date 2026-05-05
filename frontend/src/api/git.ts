@@ -122,6 +122,14 @@ export const gitApi = {
     )
   },
 
+  fileDiff(workspaceId: number, path: string, staged = false): Promise<GitFileDiff> {
+    const params = new URLSearchParams({ path })
+    if (staged) params.set('staged', 'true')
+    return apiClient.get<GitFileDiff>(
+      `/api/workspaces/${workspaceId}/git/file-diff?${params}`
+    )
+  },
+
   remotes(workspaceId: number): Promise<GitRemote[]> {
     return apiClient
       .get<GitRemotesResponse>(`/api/workspaces/${workspaceId}/git/remotes`)

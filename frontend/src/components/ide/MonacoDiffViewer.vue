@@ -12,6 +12,7 @@ const props = defineProps<{
   newContent: string
   oldFileName: string
   newFileName: string
+  sideBySide?: boolean
 }>()
 
 const container = ref<HTMLElement | null>(null)
@@ -35,7 +36,7 @@ async function renderDiff() {
       theme: 'devpad-dark',
       readOnly: true,
       automaticLayout: true,
-      renderSideBySide: true,
+      renderSideBySide: props.sideBySide ?? true,
       minimap: { enabled: false },
       lineNumbers: 'on',
       fontSize: 14,
@@ -60,6 +61,9 @@ async function renderDiff() {
   const language = getLanguageFromPath(props.newFileName || props.oldFileName)
   originalModel = monaco.editor.createModel(props.oldContent, language)
   modifiedModel = monaco.editor.createModel(props.newContent, language)
+  editor.value.updateOptions({
+    renderSideBySide: props.sideBySide ?? true,
+  })
   editor.value.setModel({
     original: originalModel,
     modified: modifiedModel,
@@ -73,6 +77,7 @@ watch(
     props.newContent,
     props.oldFileName,
     props.newFileName,
+    props.sideBySide,
   ] as const,
   () => {
     void renderDiff()

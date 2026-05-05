@@ -31,11 +31,9 @@ const selectedGitCommit = ref<GitCommit | null>(null)
 const gitDiffRequest = ref<GitDiffRequest | null>(null)
 let gitDiffRequestId = 0
 
-interface GitDiffRequest {
-  commit: GitCommit
-  file: GitCommitFile
-  requestId: number
-}
+type GitDiffRequest =
+  | { kind: 'commit'; commit: GitCommit; file: GitCommitFile; requestId: number }
+  | { kind: 'working'; path: string; staged: boolean; requestId: number }
 
 type SidebarTab = 'explorer' | 'git' | 'info' | 'services'
 const activeSidebarTab = ref<SidebarTab>('explorer')
@@ -129,6 +127,16 @@ function handleGitCommitSelect(commit: GitCommit) {
 function handleGitCommitFileSelect(payload: { commit: GitCommit; file: GitCommitFile }) {
   selectedGitCommit.value = payload.commit
   gitDiffRequest.value = {
+    kind: 'commit',
+    ...payload,
+    requestId: ++gitDiffRequestId,
+  }
+}
+
+function handleGitWorkingFileSelect(payload: { path: string; staged: boolean }) {
+  selectedGitCommit.value = null
+  gitDiffRequest.value = {
+    kind: 'working',
     ...payload,
     requestId: ++gitDiffRequestId,
   }
@@ -318,6 +326,7 @@ function handleBack() {
           :workspace-id="workspace?.id ?? 0"
           :selected-commit="selectedGitCommit"
           @commit-file-select="handleGitCommitFileSelect"
+          @working-file-select="handleGitWorkingFileSelect"
           @clear-commit="clearSelectedGitCommit"
         />
         <WorkspaceInfoPanel

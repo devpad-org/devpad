@@ -338,6 +338,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("GET /api/workspaces/{id}/git/commit-diff", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitCommitFileDiff)))
 	mux.Handle("GET /api/workspaces/{id}/git/branches", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitBranches)))
 	mux.Handle("GET /api/workspaces/{id}/git/diff", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitDiff)))
+	mux.Handle("GET /api/workspaces/{id}/git/file-diff", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitFileDiff)))
 	mux.Handle("GET /api/workspaces/{id}/git/remotes", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitRemotes)))
 	mux.Handle("POST /api/workspaces/{id}/git/action", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGitAction)))
 

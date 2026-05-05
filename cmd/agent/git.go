@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -257,6 +258,34 @@ func handleGitCommitDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, diff)
 }
 
+func handleGitFileDiff(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
+	defer cancel()
+
+	path := r.URL.Query().Get("path")
+	staged := r.URL.Query().Get("staged") == "true"
+	if path == "" {
+		writeErr(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	if err := validateFilePaths([]string{path}); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	diff, err := gitWorkingFileDiff(ctx, path, staged)
+	if err != nil {
+		if errors.Is(err, errGitCommitFileNotFound) {
+			writeErr(w, http.StatusNotFound, "file not found in git changes")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "failed to load file diff")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, diff)
+}
+
 func gitCommitFiles(ctx context.Context, commit string) ([]gitCommitFileEntry, error) {
 	if err := gitExec(ctx, "rev-parse", "--verify", commit+"^{commit}"); err != nil {
 		return nil, fmt.Errorf("verifying commit: %w", err)
@@ -303,6 +332,92 @@ func parseGitCommitFilesOutput(out string) []gitCommitFileEntry {
 		files = append(files, entry)
 	}
 	return files
+}
+
+func gitWorkingFileDiff(ctx context.Context, path string, staged bool) (*gitFileDiffEntry, error) {
+	info, err := gitWorkingFileDiffInfo(ctx, path, staged)
+	if err != nil {
+		return nil, err
+	}
+
+	oldPath := info.OldPath
+	if oldPath == "" {
+		oldPath = path
+	}
+
+	diff := &gitFileDiffEntry{
+		Path:        info.Path,
+		OldPath:     info.OldPath,
+		Status:      info.Status,
+		OldFileName: oldPath,
+		NewFileName: info.Path,
+	}
+
+	if staged {
+		if info.Status != "added" && gitHasHead(ctx) {
+			oldContent, err := gitShowFile(ctx, "HEAD", oldPath)
+			if err != nil {
+				return nil, fmt.Errorf("reading HEAD file content: %w", err)
+			}
+			diff.OldContent = oldContent
+		}
+		if info.Status != "deleted" {
+			newContent, err := gitShowIndexFile(ctx, info.Path)
+			if err != nil {
+				return nil, fmt.Errorf("reading staged file content: %w", err)
+			}
+			diff.NewContent = newContent
+		}
+		return diff, nil
+	}
+
+	if info.Status != "untracked" {
+		oldContent, err := gitShowIndexFile(ctx, oldPath)
+		if err != nil {
+			if !gitHasHead(ctx) {
+				return nil, fmt.Errorf("reading index file content: %w", err)
+			}
+			oldContent, err = gitShowFile(ctx, "HEAD", oldPath)
+			if err != nil {
+				return nil, fmt.Errorf("reading HEAD file content: %w", err)
+			}
+		}
+		diff.OldContent = oldContent
+	}
+	if info.Status != "deleted" {
+		newContent, err := readWorkspaceFile(info.Path)
+		if err != nil {
+			return nil, fmt.Errorf("reading working file content: %w", err)
+		}
+		diff.NewContent = newContent
+	}
+
+	return diff, nil
+}
+
+func gitWorkingFileDiffInfo(ctx context.Context, path string, staged bool) (*gitCommitFileEntry, error) {
+	args := []string{"diff", "--name-status", "-M", "--", path}
+	if staged {
+		args = []string{"diff", "--cached", "--name-status", "-M", "--", path}
+	}
+	if out, err := gitOutput(ctx, args...); err == nil {
+		files := parseGitCommitFilesOutput(out)
+		for i := range files {
+			if files[i].Path == path {
+				return &files[i], nil
+			}
+		}
+	}
+
+	for _, file := range parseGitStatus(ctx) {
+		if file.Path == path && file.Staged == staged {
+			return &gitCommitFileEntry{
+				Path:   file.Path,
+				Status: file.Status,
+			}, nil
+		}
+	}
+	return nil, errGitCommitFileNotFound
 }
 
 func commitFileStatus(code string) string {
@@ -401,6 +516,30 @@ func gitShowFile(ctx context.Context, commit, path string) (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+func gitShowIndexFile(ctx context.Context, path string) (string, error) {
+	out, err := gitOutput(ctx, "show", ":"+path)
+	if err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+func gitHasHead(ctx context.Context) bool {
+	return gitExec(ctx, "rev-parse", "--verify", "HEAD") == nil
+}
+
+func readWorkspaceFile(path string) (string, error) {
+	fullPath, err := validatePath(path)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func gitLogArgs(count string, allBranches bool) []string {

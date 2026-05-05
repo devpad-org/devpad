@@ -64,6 +64,7 @@ type GitService interface {
 	GitLog(ctx context.Context, userID, workspaceID int64, count int, opts agent.GitLogOptions) ([]agent.GitCommit, error)
 	GitCommitFiles(ctx context.Context, userID, workspaceID int64, commit string) ([]agent.GitCommitFile, error)
 	GitCommitFileDiff(ctx context.Context, userID, workspaceID int64, commit, path, oldPath string) (*agent.GitFileDiff, error)
+	GitFileDiff(ctx context.Context, userID, workspaceID int64, path string, staged bool) (*agent.GitFileDiff, error)
 	GitBranches(ctx context.Context, userID, workspaceID int64) (*agent.GitBranches, error)
 	GitDiff(ctx context.Context, userID, workspaceID int64, path string, staged bool) (string, error)
 	GitRemotes(ctx context.Context, userID, workspaceID int64) ([]agent.GitRemote, error)
