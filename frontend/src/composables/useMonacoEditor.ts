@@ -4,7 +4,7 @@ import type * as MonacoType from 'monaco-editor'
 let monaco: typeof MonacoType | null = null
 let monacoPromise: Promise<typeof MonacoType> | null = null
 
-async function loadMonaco(): Promise<typeof MonacoType> {
+export async function loadMonaco(): Promise<typeof MonacoType> {
   if (monaco) return monaco
   if (!monacoPromise) {
     monacoPromise = import('monaco-editor').then((m) => {
@@ -18,7 +18,7 @@ async function loadMonaco(): Promise<typeof MonacoType> {
 // Register Devpad dark theme once
 let themeRegistered = false
 
-function registerDevpadTheme(m: typeof MonacoType) {
+export function registerDevpadTheme(m: typeof MonacoType) {
   if (themeRegistered) return
   themeRegistered = true
 
@@ -104,7 +104,7 @@ function registerDevpadTheme(m: typeof MonacoType) {
 }
 
 /** Map file extensions to Monaco language IDs */
-function getLanguageFromPath(filePath: string): string {
+export function getLanguageFromPath(filePath: string): string {
   const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
   const map: Record<string, string> = {
     ts: 'typescript',

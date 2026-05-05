@@ -346,3 +346,63 @@ func TestParseGitLogOutput(t *testing.T) {
 		t.Fatalf("expected root commit to have no parents, got %+v", got[1].Parents)
 	}
 }
+
+func TestValidateGitCommitHash(t *testing.T) {
+	tests := []struct {
+		name    string
+		hash    string
+		wantErr bool
+	}{
+		{name: "short sha", hash: "abc1234", wantErr: false},
+		{name: "full sha", hash: "0123456789abcdef0123456789abcdef01234567", wantErr: false},
+		{name: "empty", hash: "", wantErr: true},
+		{name: "too short", hash: "abc123", wantErr: true},
+		{name: "flag-like", hash: "-abc1234", wantErr: true},
+		{name: "non hex", hash: "abc123g", wantErr: true},
+		{name: "too long", hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateGitCommitHash(tt.hash)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestParseGitCommitFilesOutput(t *testing.T) {
+	input := "M\tREADME.md\n" +
+		"A\tnew.go\n" +
+		"D\told.go\n" +
+		"R100\told/name.go\tnew/name.go\n" +
+		"C075\tsrc/base.go\tsrc/copy.go\n"
+
+	got := parseGitCommitFilesOutput(input)
+	expected := []gitCommitFileEntry{
+		{Path: "README.md", Status: "modified"},
+		{Path: "new.go", Status: "added"},
+		{Path: "old.go", Status: "deleted"},
+		{Path: "new/name.go", OldPath: "old/name.go", Status: "renamed"},
+		{Path: "src/copy.go", OldPath: "src/base.go", Status: "copied"},
+	}
+
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d files, got %d: %+v", len(expected), len(got), got)
+	}
+	for i, want := range expected {
+		if got[i].Path != want.Path {
+			t.Errorf("[%d] Path: got %q, want %q", i, got[i].Path, want.Path)
+		}
+		if got[i].OldPath != want.OldPath {
+			t.Errorf("[%d] OldPath: got %q, want %q", i, got[i].OldPath, want.OldPath)
+		}
+		if got[i].Status != want.Status {
+			t.Errorf("[%d] Status: got %q, want %q", i, got[i].Status, want.Status)
+		}
+	}
+}

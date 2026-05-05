@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const gitTimeout = 30 * time.Second
@@ -35,6 +36,21 @@ func gitActionTimeout(action string) time.Duration {
 func validateGitRef(name, field string) error {
 	if strings.HasPrefix(name, "-") {
 		return fmt.Errorf("%s must not start with '-'", field)
+	}
+	return nil
+}
+
+func validateGitCommitHash(hash string) error {
+	if hash == "" {
+		return fmt.Errorf("commit is required")
+	}
+	if len(hash) < 7 || len(hash) > 64 {
+		return fmt.Errorf("commit must be a 7-64 character hex hash")
+	}
+	for _, r := range hash {
+		if !unicode.Is(unicode.ASCII_Hex_Digit, r) {
+			return fmt.Errorf("commit must be a hex hash")
+		}
 	}
 	return nil
 }
@@ -166,6 +182,225 @@ func handleGitLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"commits": parseGitLogOutput(out)})
+}
+
+type gitCommitFileEntry struct {
+	Path    string `json:"path"`
+	OldPath string `json:"oldPath,omitempty"`
+	Status  string `json:"status"`
+}
+
+type gitFileDiffEntry struct {
+	Path        string `json:"path"`
+	OldPath     string `json:"oldPath,omitempty"`
+	Status      string `json:"status"`
+	OldContent  string `json:"oldContent"`
+	NewContent  string `json:"newContent"`
+	OldFileName string `json:"oldFileName"`
+	NewFileName string `json:"newFileName"`
+}
+
+func handleGitCommitFiles(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
+	defer cancel()
+
+	commit := r.URL.Query().Get("commit")
+	if err := validateGitCommitHash(commit); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	files, err := gitCommitFiles(ctx, commit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "failed to load commit files")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"files": files})
+}
+
+func handleGitCommitDiff(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
+	defer cancel()
+
+	commit := r.URL.Query().Get("commit")
+	path := r.URL.Query().Get("path")
+	oldPath := r.URL.Query().Get("oldPath")
+
+	if err := validateGitCommitHash(commit); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if path == "" {
+		writeErr(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	paths := []string{path}
+	if oldPath != "" {
+		paths = append(paths, oldPath)
+	}
+	if err := validateFilePaths(paths); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	diff, err := gitCommitFileDiff(ctx, commit, path, oldPath)
+	if err != nil {
+		if errors.Is(err, errGitCommitFileNotFound) {
+			writeErr(w, http.StatusNotFound, "file not found in commit")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "failed to load commit diff")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, diff)
+}
+
+func gitCommitFiles(ctx context.Context, commit string) ([]gitCommitFileEntry, error) {
+	if err := gitExec(ctx, "rev-parse", "--verify", commit+"^{commit}"); err != nil {
+		return nil, fmt.Errorf("verifying commit: %w", err)
+	}
+
+	parent, hasParent, err := firstCommitParent(ctx, commit)
+	if err != nil {
+		return nil, err
+	}
+
+	args := []string{"diff-tree", "--no-commit-id", "--name-status", "-r", "-M", "--root", commit}
+	if hasParent {
+		args = []string{"diff", "--name-status", "-M", parent, commit, "--"}
+	}
+
+	out, err := gitOutput(ctx, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing commit files: %w", err)
+	}
+	return parseGitCommitFilesOutput(out), nil
+}
+
+func parseGitCommitFilesOutput(out string) []gitCommitFileEntry {
+	files := []gitCommitFileEntry{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			continue
+		}
+
+		entry := gitCommitFileEntry{Status: commitFileStatus(parts[0])}
+		if strings.HasPrefix(parts[0], "R") || strings.HasPrefix(parts[0], "C") {
+			if len(parts) < 3 {
+				continue
+			}
+			entry.OldPath = parts[1]
+			entry.Path = parts[2]
+		} else {
+			entry.Path = parts[1]
+		}
+		files = append(files, entry)
+	}
+	return files
+}
+
+func commitFileStatus(code string) string {
+	switch {
+	case strings.HasPrefix(code, "A"):
+		return "added"
+	case strings.HasPrefix(code, "D"):
+		return "deleted"
+	case strings.HasPrefix(code, "R"):
+		return "renamed"
+	case strings.HasPrefix(code, "C"):
+		return "copied"
+	case strings.HasPrefix(code, "M"):
+		return "modified"
+	default:
+		return "modified"
+	}
+}
+
+var errGitCommitFileNotFound = errors.New("file not found in commit")
+
+func gitCommitFileDiff(ctx context.Context, commit, path, oldPath string) (*gitFileDiffEntry, error) {
+	files, err := gitCommitFiles(ctx, commit)
+	if err != nil {
+		return nil, err
+	}
+
+	var selected *gitCommitFileEntry
+	for i := range files {
+		if files[i].Path != path {
+			continue
+		}
+		if oldPath != "" && files[i].OldPath != oldPath {
+			continue
+		}
+		selected = &files[i]
+		break
+	}
+	if selected == nil {
+		return nil, errGitCommitFileNotFound
+	}
+
+	parent, hasParent, err := firstCommitParent(ctx, commit)
+	if err != nil {
+		return nil, err
+	}
+
+	if selected.OldPath != "" {
+		oldPath = selected.OldPath
+	}
+	if oldPath == "" {
+		oldPath = path
+	}
+
+	diff := &gitFileDiffEntry{
+		Path:        selected.Path,
+		OldPath:     selected.OldPath,
+		Status:      selected.Status,
+		OldFileName: oldPath,
+		NewFileName: selected.Path,
+	}
+
+	if selected.Status != "added" && hasParent {
+		oldContent, err := gitShowFile(ctx, parent, oldPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading old file content: %w", err)
+		}
+		diff.OldContent = oldContent
+	}
+	if selected.Status != "deleted" {
+		newContent, err := gitShowFile(ctx, commit, selected.Path)
+		if err != nil {
+			return nil, fmt.Errorf("reading new file content: %w", err)
+		}
+		diff.NewContent = newContent
+	}
+
+	return diff, nil
+}
+
+func firstCommitParent(ctx context.Context, commit string) (string, bool, error) {
+	out, err := gitOutput(ctx, "rev-list", "--parents", "-n", "1", commit)
+	if err != nil {
+		return "", false, fmt.Errorf("reading commit parents: %w", err)
+	}
+	parts := strings.Fields(out)
+	if len(parts) < 2 {
+		return "", false, nil
+	}
+	return parts[1], true, nil
+}
+
+func gitShowFile(ctx context.Context, commit, path string) (string, error) {
+	out, err := gitOutput(ctx, "show", commit+":"+path)
+	if err != nil {
+		return "", err
+	}
+	return out, nil
 }
 
 func gitLogArgs(count string, allBranches bool) []string {

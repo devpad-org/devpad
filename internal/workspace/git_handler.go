@@ -54,6 +54,60 @@ func (h *Handler) HandleGitLog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"commits": commits})
 }
 
+// HandleGitCommitFiles returns the files changed by a commit.
+func (h *Handler) HandleGitCommitFiles(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	commit := r.URL.Query().Get("commit")
+	if commit == "" {
+		writeError(w, http.StatusBadRequest, "commit is required")
+		return
+	}
+
+	files, err := h.service.GitCommitFiles(r.Context(), user.ID, id, commit)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"files": files})
+}
+
+// HandleGitCommitFileDiff returns before/after contents for a file changed by a commit.
+func (h *Handler) HandleGitCommitFileDiff(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	commit := r.URL.Query().Get("commit")
+	path := r.URL.Query().Get("path")
+	oldPath := r.URL.Query().Get("oldPath")
+	if commit == "" {
+		writeError(w, http.StatusBadRequest, "commit is required")
+		return
+	}
+	if path == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+
+	diff, err := h.service.GitCommitFileDiff(r.Context(), user.ID, id, commit, path, oldPath)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, diff)
+}
+
 // HandleGitBranches returns the branches of a workspace.
 func (h *Handler) HandleGitBranches(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())

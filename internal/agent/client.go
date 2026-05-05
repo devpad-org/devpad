@@ -395,6 +395,24 @@ type GitCommit struct {
 	Message   string   `json:"message"`
 }
 
+// GitCommitFile represents a file changed by a commit.
+type GitCommitFile struct {
+	Path    string `json:"path"`
+	OldPath string `json:"oldPath,omitempty"`
+	Status  string `json:"status"`
+}
+
+// GitFileDiff represents the before/after contents for a changed file.
+type GitFileDiff struct {
+	Path        string `json:"path"`
+	OldPath     string `json:"oldPath,omitempty"`
+	Status      string `json:"status"`
+	OldContent  string `json:"oldContent"`
+	NewContent  string `json:"newContent"`
+	OldFileName string `json:"oldFileName"`
+	NewFileName string `json:"newFileName"`
+}
+
 // GitBranches represents the branch listing.
 type GitBranches struct {
 	Branches []GitBranch `json:"branches"`
@@ -490,6 +508,70 @@ func (c *Client) GitLog(ctx context.Context, count int, opts GitLogOptions) ([]G
 		return nil, fmt.Errorf("decoding git log: %w", err)
 	}
 	return result.Commits, nil
+}
+
+// GitCommitFiles returns the files changed by a commit.
+func (c *Client) GitCommitFiles(ctx context.Context, commit string) ([]GitCommitFile, error) {
+	u, err := url.Parse(fmt.Sprintf("%s/api/git/commit-files", c.baseURL))
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("commit", commit)
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("git commit files: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+	var result struct {
+		Files []GitCommitFile `json:"files"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding git commit files: %w", err)
+	}
+	return result.Files, nil
+}
+
+// GitCommitFileDiff returns the before/after contents for one file in a commit.
+func (c *Client) GitCommitFileDiff(ctx context.Context, commit, path, oldPath string) (*GitFileDiff, error) {
+	u, err := url.Parse(fmt.Sprintf("%s/api/git/commit-diff", c.baseURL))
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("commit", commit)
+	q.Set("path", path)
+	if oldPath != "" {
+		q.Set("oldPath", oldPath)
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("git commit diff: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+	var result GitFileDiff
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding git commit diff: %w", err)
+	}
+	return &result, nil
 }
 
 // GitBranches returns the list of branches.

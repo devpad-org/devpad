@@ -52,6 +52,8 @@ func main() {
 	// Git operations
 	authedMux.HandleFunc("GET /api/git/status", handleGitStatus)
 	authedMux.HandleFunc("GET /api/git/commits", handleGitLog)
+	authedMux.HandleFunc("GET /api/git/commit-files", handleGitCommitFiles)
+	authedMux.HandleFunc("GET /api/git/commit-diff", handleGitCommitDiff)
 	authedMux.HandleFunc("GET /api/git/branches", handleGitBranches)
 	authedMux.HandleFunc("GET /api/git/diff", handleGitDiff)
 	authedMux.HandleFunc("GET /api/git/remotes", handleGitRemotes)

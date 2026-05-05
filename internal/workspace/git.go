@@ -26,6 +26,22 @@ func (s *service) GitLog(ctx context.Context, userID, workspaceID int64, count i
 	return c.GitLog(ctx, count, opts)
 }
 
+func (s *service) GitCommitFiles(ctx context.Context, userID, workspaceID int64, commit string) ([]agent.GitCommitFile, error) {
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.GitCommitFiles(ctx, commit)
+}
+
+func (s *service) GitCommitFileDiff(ctx context.Context, userID, workspaceID int64, commit, path, oldPath string) (*agent.GitFileDiff, error) {
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.GitCommitFileDiff(ctx, commit, path, oldPath)
+}
+
 func (s *service) GitBranches(ctx context.Context, userID, workspaceID int64) (*agent.GitBranches, error) {
 	c, err := s.getAgent(ctx, userID, workspaceID)
 	if err != nil {

@@ -82,6 +82,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  min-width: 0;
 }
 
 .graph-action-btn {
@@ -119,6 +120,25 @@
   font-weight: 600;
   line-height: 16px;
   text-align: center;
+}
+
+.diff-file-title {
+  min-width: 0;
+  max-width: min(44vw, 560px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.diff-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  background: var(--bg-void);
 }
 
 .pull-split-wrapper {

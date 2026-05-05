@@ -1,12 +1,33 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { gitApi, type GitBranch, type GitCommit, type GitStatus } from '@/api/git'
+import {
+  gitApi,
+  type GitBranch,
+  type GitCommit,
+  type GitCommitFile,
+  type GitFileDiff,
+  type GitStatus,
+} from '@/api/git'
 import { useFileWatcher } from '@/composables/useFileWatcher'
+import MonacoDiffViewer from './MonacoDiffViewer.vue'
 
 const props = defineProps<{
   workspaceId: number
   active: boolean
+  selectedCommitHash: string | null
+  diffRequest: GitCommitDiffRequest | null
 }>()
+
+const emit = defineEmits<{
+  (e: 'commitSelect', commit: GitCommit): void
+  (e: 'closeDiff'): void
+}>()
+
+interface GitCommitDiffRequest {
+  commit: GitCommit
+  file: GitCommitFile
+  requestId: number
+}
 
 const status = ref<GitStatus | null>(null)
 const commits = ref<GitCommit[]>([])
@@ -16,6 +37,10 @@ const loading = ref(false)
 const error = ref('')
 const actionLoading = ref(false)
 const showPullMenu = ref(false)
+const diff = ref<GitFileDiff | null>(null)
+const diffLoading = ref(false)
+const diffError = ref('')
+let diffLoadVersion = 0
 
 const graphLaneSpacing = 18
 const graphRailPadding = 10
@@ -60,6 +85,20 @@ const currentBranch = computed(() => {
 const hasWorkingChanges = computed(() => (status.value?.files.length ?? 0) > 0)
 const stagedCount = computed(() => (status.value?.files ?? []).filter((f) => f.staged).length)
 const unstagedCount = computed(() => (status.value?.files ?? []).filter((f) => !f.staged).length)
+const showingDiff = computed(() => props.diffRequest !== null || diff.value !== null || diffLoading.value)
+const diffTitle = computed(() => {
+  const file = props.diffRequest?.file
+  if (!file) return ''
+  return file.oldPath && file.oldPath !== file.path
+    ? `${file.oldPath} → ${file.path}`
+    : file.path
+})
+const graphSubtitle = computed(() => {
+  if (showingDiff.value) {
+    return props.diffRequest?.commit.shortHash ?? ''
+  }
+  return currentBranch.value
+})
 
 async function doAction(action: string) {
   if (!props.workspaceId) return
@@ -266,6 +305,43 @@ function debouncedRefresh() {
 
 function selectCommit(commit: GitCommit) {
   selectedHash.value = commit.hash
+  emit('commitSelect', commit)
+}
+
+function closeCommitDiff() {
+  diff.value = null
+  diffError.value = ''
+  diffLoading.value = false
+  emit('closeDiff')
+}
+
+async function loadCommitDiff(request: GitCommitDiffRequest) {
+  if (!props.workspaceId) return
+
+  const currentLoad = ++diffLoadVersion
+  selectedHash.value = request.commit.hash
+  diff.value = null
+  diffError.value = ''
+  diffLoading.value = true
+
+  try {
+    const nextDiff = await gitApi.commitFileDiff(
+      props.workspaceId,
+      request.commit.hash,
+      request.file.path,
+      request.file.oldPath
+    )
+    if (currentLoad !== diffLoadVersion) return
+    diff.value = nextDiff
+  } catch (err) {
+    if (currentLoad === diffLoadVersion) {
+      diffError.value = getErrorMessage(err)
+    }
+  } finally {
+    if (currentLoad === diffLoadVersion) {
+      diffLoading.value = false
+    }
+  }
 }
 
 function formatTime(timestamp: string): string {
@@ -300,6 +376,28 @@ watch(
   { immediate: true }
 )
 
+watch(
+  () => props.selectedCommitHash,
+  (hash) => {
+    if (hash) selectedHash.value = hash
+  }
+)
+
+watch(
+  () => props.diffRequest?.requestId ?? null,
+  () => {
+    if (!props.diffRequest) {
+      diffLoadVersion += 1
+      diff.value = null
+      diffError.value = ''
+      diffLoading.value = false
+      return
+    }
+    void loadCommitDiff(props.diffRequest)
+  },
+  { immediate: true }
+)
+
 onUnmounted(() => {
   if (refreshTimer) clearTimeout(refreshTimer)
   disconnectWatcher()
@@ -317,11 +415,21 @@ onUnmounted(() => {
             <path d="M6 21V9a9 9 0 0 0 9 9" />
           </svg>
         </span>
-        <span class="graph-title-text">Git Graph</span>
-        <span class="graph-branch">{{ currentBranch }}</span>
+        <span class="graph-title-text">{{ showingDiff ? 'Commit Diff' : 'Git Graph' }}</span>
+        <span class="graph-branch">{{ graphSubtitle }}</span>
       </div>
 
-      <div class="graph-actions">
+      <div v-if="showingDiff" class="graph-actions">
+        <span class="diff-file-title">{{ diffTitle }}</span>
+        <button class="graph-action-btn" type="button" title="Close diff" @click="closeCommitDiff">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+          </svg>
+          Close
+        </button>
+      </div>
+
+      <div v-else class="graph-actions">
         <button
           class="graph-action-btn"
           type="button"
@@ -386,7 +494,22 @@ onUnmounted(() => {
       </button>
     </header>
 
-    <div v-if="error" class="graph-state graph-state--error" role="status">{{ error }}</div>
+    <div v-if="showingDiff" class="diff-shell">
+      <div v-if="diffError" class="graph-state graph-state--error" role="status">{{ diffError }}</div>
+      <div v-else-if="diffLoading || !diff" class="graph-state" role="status">
+        <span class="graph-loader" />
+        Loading diff…
+      </div>
+      <MonacoDiffViewer
+        v-else
+        :old-content="diff.oldContent"
+        :new-content="diff.newContent"
+        :old-file-name="diff.oldFileName"
+        :new-file-name="diff.newFileName"
+      />
+    </div>
+
+    <div v-else-if="error" class="graph-state graph-state--error" role="status">{{ error }}</div>
 
     <div v-else-if="loading && commits.length === 0" class="graph-state" role="status">
       <span class="graph-loader" />

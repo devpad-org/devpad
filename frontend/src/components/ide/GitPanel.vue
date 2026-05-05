@@ -5,12 +5,20 @@ import {
   type GitActionResult,
   type GitStatus,
   type GitBranch,
+  type GitCommit,
+  type GitCommitFile,
 } from '@/api/git'
 import { useFileWatcher } from '@/composables/useFileWatcher'
 import GitConfigModal from './GitConfigModal.vue'
 
 const props = defineProps<{
   workspaceId: number
+  selectedCommit: GitCommit | null
+}>()
+
+const emit = defineEmits<{
+  (e: 'commitFileSelect', payload: { commit: GitCommit; file: GitCommitFile }): void
+  (e: 'clearCommit'): void
 }>()
 
 // --- State ---
@@ -29,6 +37,11 @@ const branches = ref<GitBranch[]>([])
 const currentBranch = ref('')
 const newBranchName = ref('')
 const showNewBranch = ref(false)
+
+// Commit selection
+const commitFiles = ref<GitCommitFile[]>([])
+const commitFilesLoading = ref(false)
+const commitFilesError = ref('')
 
 // Git config modal
 const showGitConfig = ref(false)
@@ -58,9 +71,14 @@ onEvent(() => {
 // --- Computed ---
 const stagedFiles = computed(() => (status.value?.files ?? []).filter((f) => f.staged))
 const unstagedFiles = computed(() => (status.value?.files ?? []).filter((f) => !f.staged))
+const selectedCommitHash = computed(() => props.selectedCommit?.hash ?? null)
+const viewingCommit = computed(() => props.selectedCommit !== null)
 
 const hasChanges = computed(() => (status.value?.files?.length ?? 0) > 0)
 const canCommit = computed(() => stagedFiles.value.length > 0 && commitMsg.value.trim() !== '')
+const changesTabCount = computed(() =>
+  viewingCommit.value ? commitFiles.value.length : (status.value?.files?.length ?? 0)
+)
 
 // --- Actions ---
 function gitError(result: GitActionResult): string {
@@ -84,6 +102,32 @@ async function refresh(showLoading = true) {
   } finally {
     loading.value = false
   }
+}
+
+async function loadCommitFiles(commit: GitCommit) {
+  if (!props.workspaceId) return
+
+  commitFilesLoading.value = true
+  commitFilesError.value = ''
+  try {
+    commitFiles.value = await gitApi.commitFiles(props.workspaceId, commit.hash)
+  } catch (e: any) {
+    commitFilesError.value = e.message || 'Failed to load commit files'
+    commitFiles.value = []
+  } finally {
+    commitFilesLoading.value = false
+  }
+}
+
+function clearSelectedCommit() {
+  commitFiles.value = []
+  commitFilesError.value = ''
+  emit('clearCommit')
+}
+
+function selectCommitFile(file: GitCommitFile) {
+  if (!props.selectedCommit) return
+  emit('commitFileSelect', { commit: props.selectedCommit, file })
 }
 
 async function stageFile(path: string) {
@@ -227,10 +271,10 @@ function statusIcon(status: string): string {
       return 'D'
     case 'renamed':
       return 'R'
-    case 'untracked':
-      return 'U'
     case 'copied':
       return 'C'
+    case 'untracked':
+      return 'U'
     default:
       return '?'
   }
@@ -266,6 +310,21 @@ function dirName(path: string): string {
 
 // Auto-refresh
 watch(activeTab, () => refresh())
+watch(
+  selectedCommitHash,
+  () => {
+    closeDiff()
+    if (!props.selectedCommit) {
+      commitFiles.value = []
+      commitFilesError.value = ''
+      return
+    }
+
+    activeTab.value = 'changes'
+    void loadCommitFiles(props.selectedCommit)
+  },
+  { immediate: true }
+)
 
 onMounted(() => {
   refresh()
@@ -346,7 +405,7 @@ onUnmounted(() => {
           @click="activeTab = 'changes'"
         >
           Changes
-          <span v-if="(status.files?.length ?? 0) > 0" class="git-tab-badge">{{ status.files.length }}</span>
+          <span v-if="changesTabCount > 0" class="git-tab-badge">{{ changesTabCount }}</span>
         </button>
         <button
           class="git-tab"
@@ -359,106 +418,147 @@ onUnmounted(() => {
 
       <!-- Changes tab -->
       <div v-if="activeTab === 'changes'" class="git-tab-content">
-        <!-- Staged files -->
-        <div v-if="stagedFiles.length > 0" class="git-section">
-          <div class="git-section-header">
-            <span>Staged Changes</span>
-            <button class="git-icon-btn" @click="unstageAll" title="Unstage all">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M5 12h14" />
+        <template v-if="viewingCommit && selectedCommit">
+          <div class="git-commit-context">
+            <div class="git-commit-context-main">
+              <code>{{ selectedCommit.shortHash }}</code>
+              <span>{{ selectedCommit.message }}</span>
+            </div>
+            <button class="git-icon-btn" title="Show working tree changes" @click="clearSelectedCommit">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 6 6 18" /><path d="m6 6 12 12" />
               </svg>
             </button>
           </div>
-          <div
-            v-for="file in stagedFiles"
-            :key="file.path + '-staged'"
-            class="git-file"
-            @click="viewDiff(file.path, true)"
-          >
-            <span class="git-file-status" :style="{ color: statusColor(file.status) }">
-              {{ statusIcon(file.status) }}
-            </span>
-            <span class="git-file-name">{{ fileName(file.path) }}</span>
-            <span class="git-file-dir">{{ dirName(file.path) }}</span>
-            <div class="git-file-actions">
-              <button class="git-icon-btn" @click.stop="unstageFile(file.path)" title="Unstage">
+
+          <div v-if="commitFilesLoading" class="git-empty-small">
+            <p>Loading commit files…</p>
+          </div>
+          <div v-else-if="commitFilesError" class="git-error">{{ commitFilesError }}</div>
+          <div v-else-if="commitFiles.length > 0" class="git-section">
+            <div class="git-section-header">
+              <span>Changed Files</span>
+            </div>
+            <div
+              v-for="file in commitFiles"
+              :key="`${selectedCommit.hash}:${file.oldPath ?? ''}:${file.path}`"
+              class="git-file"
+              @click="selectCommitFile(file)"
+            >
+              <span class="git-file-status" :style="{ color: statusColor(file.status) }">
+                {{ statusIcon(file.status) }}
+              </span>
+              <span class="git-file-name">{{ fileName(file.path) }}</span>
+              <span class="git-file-dir">{{ dirName(file.path) }}</span>
+            </div>
+          </div>
+          <div v-else class="git-empty-small">
+            <p>No files changed in this commit</p>
+          </div>
+        </template>
+
+        <template v-else>
+          <!-- Staged files -->
+          <div v-if="stagedFiles.length > 0" class="git-section">
+            <div class="git-section-header">
+              <span>Staged Changes</span>
+              <button class="git-icon-btn" @click="unstageAll" title="Unstage all">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M5 12h14" />
                 </svg>
               </button>
             </div>
+            <div
+              v-for="file in stagedFiles"
+              :key="file.path + '-staged'"
+              class="git-file"
+              @click="viewDiff(file.path, true)"
+            >
+              <span class="git-file-status" :style="{ color: statusColor(file.status) }">
+                {{ statusIcon(file.status) }}
+              </span>
+              <span class="git-file-name">{{ fileName(file.path) }}</span>
+              <span class="git-file-dir">{{ dirName(file.path) }}</span>
+              <div class="git-file-actions">
+                <button class="git-icon-btn" @click.stop="unstageFile(file.path)" title="Unstage">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M5 12h14" />
+                  </svg>
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
 
-        <!-- Unstaged files -->
-        <div v-if="unstagedFiles.length > 0" class="git-section">
-          <div class="git-section-header">
-            <span>Changes</span>
-            <button class="git-icon-btn" @click="stageAll" title="Stage all">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 5v14" /><path d="M5 12h14" />
-              </svg>
-            </button>
-          </div>
-          <div
-            v-for="file in unstagedFiles"
-            :key="file.path + '-unstaged'"
-            class="git-file"
-            @click="viewDiff(file.path, false)"
-          >
-            <span class="git-file-status" :style="{ color: statusColor(file.status) }">
-              {{ statusIcon(file.status) }}
-            </span>
-            <span class="git-file-name">{{ fileName(file.path) }}</span>
-            <span class="git-file-dir">{{ dirName(file.path) }}</span>
-            <div class="git-file-actions">
-              <button class="git-icon-btn" @click.stop="stageFile(file.path)" title="Stage">
+          <!-- Unstaged files -->
+          <div v-if="unstagedFiles.length > 0" class="git-section">
+            <div class="git-section-header">
+              <span>Changes</span>
+              <button class="git-icon-btn" @click="stageAll" title="Stage all">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M12 5v14" /><path d="M5 12h14" />
                 </svg>
               </button>
-              <button
-                v-if="file.status !== 'untracked'"
-                class="git-icon-btn git-icon-btn--danger"
-                @click.stop="discardFile(file.path)"
-                title="Discard changes"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="m3 6 3 18h12l3-18" /><path d="M2 6h20" /><path d="m9 2 1-1h4l1 1" />
-                </svg>
-              </button>
+            </div>
+            <div
+              v-for="file in unstagedFiles"
+              :key="file.path + '-unstaged'"
+              class="git-file"
+              @click="viewDiff(file.path, false)"
+            >
+              <span class="git-file-status" :style="{ color: statusColor(file.status) }">
+                {{ statusIcon(file.status) }}
+              </span>
+              <span class="git-file-name">{{ fileName(file.path) }}</span>
+              <span class="git-file-dir">{{ dirName(file.path) }}</span>
+              <div class="git-file-actions">
+                <button class="git-icon-btn" @click.stop="stageFile(file.path)" title="Stage">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 5v14" /><path d="M5 12h14" />
+                  </svg>
+                </button>
+                <button
+                  v-if="file.status !== 'untracked'"
+                  class="git-icon-btn git-icon-btn--danger"
+                  @click.stop="discardFile(file.path)"
+                  title="Discard changes"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="m3 6 3 18h12l3-18" /><path d="M2 6h20" /><path d="m9 2 1-1h4l1 1" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
-        </div>
 
-        <!-- No changes -->
-        <div v-if="!hasChanges && !loading" class="git-empty-small">
-          <p>No changes</p>
-        </div>
+          <!-- No changes -->
+          <div v-if="!hasChanges && !loading" class="git-empty-small">
+            <p>No changes</p>
+          </div>
 
-        <!-- Commit box -->
-        <div class="git-commit-box">
-          <textarea
-            v-model="commitMsg"
-            class="git-commit-input"
-            placeholder="Commit message…"
-            rows="2"
-            @keydown.ctrl.enter="commit"
-            @keydown.meta.enter="commit"
-          />
-          <button
-            class="git-btn git-btn--primary git-btn--commit"
-            :disabled="!canCommit"
-            @click="commit"
-          >
-            Commit
-          </button>
-        </div>
+          <!-- Commit box -->
+          <div class="git-commit-box">
+            <textarea
+              v-model="commitMsg"
+              class="git-commit-input"
+              placeholder="Commit message…"
+              rows="2"
+              @keydown.ctrl.enter="commit"
+              @keydown.meta.enter="commit"
+            />
+            <button
+              class="git-btn git-btn--primary git-btn--commit"
+              :disabled="!canCommit"
+              @click="commit"
+            >
+              Commit
+            </button>
+          </div>
 
-        <!-- Action output -->
-        <div v-if="actionOutput" class="git-output">
-          <pre>{{ actionOutput }}</pre>
-        </div>
+          <!-- Action output -->
+          <div v-if="actionOutput" class="git-output">
+            <pre>{{ actionOutput }}</pre>
+          </div>
+        </template>
       </div>
 
       <!-- Branches tab -->
@@ -732,6 +832,37 @@ function diffLineClass(line: string): string {
 .git-tab-content {
   flex: 1;
   overflow-y: auto;
+}
+
+.git-commit-context {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 0.5px solid var(--border-default);
+  background: var(--bg-raised);
+}
+
+.git-commit-context-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.git-commit-context-main code {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--accent-blue);
+}
+
+.git-commit-context-main span {
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Sections */

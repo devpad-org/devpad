@@ -13,6 +13,7 @@ import GitStatusBar from '@/components/ide/GitStatusBar.vue'
 import WorkspaceInfoPanel from '@/components/ide/WorkspaceInfoPanel.vue'
 import ServicesPanel from '@/components/ide/ServicesPanel.vue'
 import { useResizable } from '@/composables/useResizable'
+import type { GitCommit, GitCommitFile } from '@/api/git'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,6 +27,15 @@ const terminalMinimized = ref(false)
 const agentVisible = ref(true)
 const previewVisible = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
+const selectedGitCommit = ref<GitCommit | null>(null)
+const gitDiffRequest = ref<GitDiffRequest | null>(null)
+let gitDiffRequestId = 0
+
+interface GitDiffRequest {
+  commit: GitCommit
+  file: GitCommitFile
+  requestId: number
+}
 
 type SidebarTab = 'explorer' | 'git' | 'info' | 'services'
 const activeSidebarTab = ref<SidebarTab>('explorer')
@@ -109,6 +119,28 @@ onUnmounted(() => {
 
 function handleFileSelect(path: string) {
   activeFile.value = path
+}
+
+function handleGitCommitSelect(commit: GitCommit) {
+  activeSidebarTab.value = 'git'
+  selectedGitCommit.value = commit
+}
+
+function handleGitCommitFileSelect(payload: { commit: GitCommit; file: GitCommitFile }) {
+  selectedGitCommit.value = payload.commit
+  gitDiffRequest.value = {
+    ...payload,
+    requestId: ++gitDiffRequestId,
+  }
+}
+
+function clearSelectedGitCommit() {
+  selectedGitCommit.value = null
+  gitDiffRequest.value = null
+}
+
+function closeGitDiff() {
+  gitDiffRequest.value = null
 }
 
 async function openPreviewNewTab() {
@@ -284,6 +316,9 @@ function handleBack() {
         <GitPanel
           v-show="activeSidebarTab === 'git'"
           :workspace-id="workspace?.id ?? 0"
+          :selected-commit="selectedGitCommit"
+          @commit-file-select="handleGitCommitFileSelect"
+          @clear-commit="clearSelectedGitCommit"
         />
         <WorkspaceInfoPanel
           v-show="activeSidebarTab === 'info'"
@@ -314,6 +349,10 @@ function handleBack() {
             v-show="activeSidebarTab === 'git'"
             :workspace-id="workspace?.id ?? 0"
             :active="activeSidebarTab === 'git'"
+            :selected-commit-hash="selectedGitCommit?.hash ?? null"
+            :diff-request="gitDiffRequest"
+            @commit-select="handleGitCommitSelect"
+            @close-diff="closeGitDiff"
           />
         </div>
         <div

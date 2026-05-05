@@ -28,6 +28,22 @@ export interface GitCommit {
   message: string
 }
 
+export interface GitCommitFile {
+  path: string
+  oldPath?: string
+  status: string
+}
+
+export interface GitFileDiff {
+  path: string
+  oldPath?: string
+  status: string
+  oldContent: string
+  newContent: string
+  oldFileName: string
+  newFileName: string
+}
+
 export interface GitBranch {
   name: string
   hash: string
@@ -61,6 +77,10 @@ interface GitDiffResponse {
   diff: string
 }
 
+interface GitCommitFilesResponse {
+  files: GitCommitFile[]
+}
+
 interface GitRemotesResponse {
   remotes: GitRemote[]
 }
@@ -80,6 +100,26 @@ export const gitApi = {
 
   branches(workspaceId: number): Promise<GitBranches> {
     return apiClient.get<GitBranches>(`/api/workspaces/${workspaceId}/git/branches`)
+  },
+
+  commitFiles(workspaceId: number, commit: string): Promise<GitCommitFile[]> {
+    const params = new URLSearchParams({ commit })
+    return apiClient
+      .get<GitCommitFilesResponse>(`/api/workspaces/${workspaceId}/git/commit-files?${params}`)
+      .then((r) => r.files)
+  },
+
+  commitFileDiff(
+    workspaceId: number,
+    commit: string,
+    path: string,
+    oldPath?: string
+  ): Promise<GitFileDiff> {
+    const params = new URLSearchParams({ commit, path })
+    if (oldPath) params.set('oldPath', oldPath)
+    return apiClient.get<GitFileDiff>(
+      `/api/workspaces/${workspaceId}/git/commit-diff?${params}`
+    )
   },
 
   remotes(workspaceId: number): Promise<GitRemote[]> {
