@@ -728,7 +728,7 @@ function isSelf(user: AdminUser): boolean {
 }
 
 .badge-role.user {
-  background: rgba(161, 161, 170, 0.1);
+  background: var(--bg-neutral);
   color: var(--text-secondary);
   border: 0.5px solid var(--border-default);
 }
@@ -776,7 +776,7 @@ function isSelf(user: AdminUser): boolean {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -791,7 +791,7 @@ function isSelf(user: AdminUser): boolean {
   background: var(--bg-surface);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-strong);
 }
 
 .modal-title {
@@ -1042,7 +1042,7 @@ function isSelf(user: AdminUser): boolean {
 }
 
 .badge-status.stopped {
-  background: rgba(161, 161, 170, 0.1);
+  background: var(--bg-neutral);
   color: var(--text-secondary);
   border: 0.5px solid var(--border-default);
 }

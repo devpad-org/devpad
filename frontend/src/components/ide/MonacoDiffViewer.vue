@@ -2,6 +2,7 @@
 import { onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import type * as MonacoType from 'monaco-editor'
 import {
+  DEVPAD_MONACO_THEME,
   getLanguageFromPath,
   loadMonaco,
   registerDevpadTheme,
@@ -33,7 +34,7 @@ async function renderDiff() {
 
   if (!editor.value) {
     editor.value = monaco.editor.createDiffEditor(el, {
-      theme: 'devpad-dark',
+      theme: DEVPAD_MONACO_THEME,
       readOnly: true,
       automaticLayout: true,
       renderSideBySide: props.sideBySide ?? true,

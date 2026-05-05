@@ -321,16 +321,16 @@ onUnmounted(() => {
    so that horizontally-scrolled content doesn't bleed through the minimap or
    overview ruler area on the right side of the editor. */
 .editor-container :deep(.monaco-editor .minimap) {
-  background-color: #08090c;
+  background-color: var(--bg-void);
 }
 .editor-container :deep(.monaco-editor .minimap-gutter) {
-  background-color: #08090c;
+  background-color: var(--bg-void);
 }
 .editor-container :deep(.monaco-editor .decorationsOverviewRuler) {
-  background-color: #08090c;
+  background-color: var(--bg-void);
 }
 .editor-container :deep(.monaco-editor .monaco-scrollable-element > .scrollbar.vertical) {
-  background-color: #08090c;
+  background-color: var(--bg-void);
 }
 
 /* Empty state */

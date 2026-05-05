@@ -203,7 +203,7 @@ async function handleDelete() {
 }
 
 .btn-create:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, white);
+  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
 }
 
 .workspace-grid {

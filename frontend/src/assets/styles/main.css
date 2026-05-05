@@ -1,42 +1,74 @@
 :root {
+  /* Gruvbox dark palette */
+  --gruvbox-bg0-hard: #1d2021;
+  --gruvbox-bg0: #282828;
+  --gruvbox-bg0-soft: #32302f;
+  --gruvbox-bg1: #3c3836;
+  --gruvbox-bg2: #504945;
+  --gruvbox-bg3: #665c54;
+  --gruvbox-bg4: #7c6f64;
+  --gruvbox-fg0: #fbf1c7;
+  --gruvbox-fg1: #ebdbb2;
+  --gruvbox-fg2: #d5c4a1;
+  --gruvbox-fg3: #bdae93;
+  --gruvbox-fg4: #a89984;
+  --gruvbox-gray: #928374;
+  --gruvbox-red: #fb4934;
+  --gruvbox-green: #b8bb26;
+  --gruvbox-yellow: #fabd2f;
+  --gruvbox-blue: #83a598;
+  --gruvbox-purple: #d3869b;
+  --gruvbox-aqua: #8ec07c;
+  --gruvbox-orange: #fe8019;
+
   /* Surfaces */
-  --bg-void: #08090c;
-  --bg-base: #0b0d11;
-  --bg-elevated: #0f1116;
-  --bg-raised: #14161c;
-  --bg-hover: rgba(255, 255, 255, 0.035);
-  --bg-selected: rgba(255, 255, 255, 0.06);
+  --bg-void: var(--gruvbox-bg0-hard);
+  --bg-base: var(--gruvbox-bg0);
+  --bg-elevated: var(--gruvbox-bg0-soft);
+  --bg-raised: var(--gruvbox-bg1);
+  --bg-hover: rgba(235, 219, 178, 0.07);
+  --bg-selected: rgba(250, 189, 47, 0.13);
+  --bg-overlay: rgba(29, 32, 33, 0.74);
+  --bg-neutral: rgba(168, 153, 132, 0.13);
 
   /* Borders */
-  --border-hairline: rgba(255, 255, 255, 0.04);
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-strong: rgba(255, 255, 255, 0.1);
-  --border-top-highlight: rgba(255, 255, 255, 0.05);
+  --border-hairline: rgba(235, 219, 178, 0.06);
+  --border-subtle: rgba(235, 219, 178, 0.1);
+  --border-strong: rgba(235, 219, 178, 0.18);
+  --border-top-highlight: rgba(251, 241, 199, 0.08);
 
   /* Text */
-  --text-primary: #e8eaed;
-  --text-secondary: #9499a2;
-  --text-tertiary: #5f646e;
-  --text-dim: #40454e;
+  --text-primary: var(--gruvbox-fg1);
+  --text-secondary: var(--gruvbox-fg3);
+  --text-tertiary: var(--gruvbox-fg4);
+  --text-dim: var(--gruvbox-bg4);
+  --text-on-accent: var(--gruvbox-bg0-hard);
+  --text-decoration-muted: rgba(235, 219, 178, 0.18);
 
-  /* Accent — one chromatic color in the UI */
-  --accent: #4dd0e1;
-  --accent-dim: #2a7a84;
-  --accent-glow: rgba(77, 208, 225, 0.12);
-  --accent-border: rgba(77, 208, 225, 0.25);
+  /* Accent */
+  --accent: var(--gruvbox-yellow);
+  --accent-dim: #d79921;
+  --accent-glow: rgba(250, 189, 47, 0.14);
+  --accent-border: rgba(250, 189, 47, 0.34);
 
   /* Semantic */
-  --success: #6fbf73;
-  --warning: #d4a24c;
-  --error: #e07373;
+  --success: var(--gruvbox-green);
+  --warning: var(--gruvbox-yellow);
+  --error: var(--gruvbox-red);
 
   /* Semantic tints — for filled backgrounds and borders */
-  --error-bg: rgba(224, 115, 115, 0.08);
-  --error-border: rgba(224, 115, 115, 0.2);
-  --success-bg: rgba(111, 191, 115, 0.08);
-  --success-border: rgba(111, 191, 115, 0.2);
-  --warning-bg: rgba(212, 162, 76, 0.08);
-  --warning-border: rgba(212, 162, 76, 0.2);
+  --error-bg: rgba(251, 73, 52, 0.12);
+  --error-border: rgba(251, 73, 52, 0.28);
+  --success-bg: rgba(184, 187, 38, 0.12);
+  --success-border: rgba(184, 187, 38, 0.28);
+  --warning-bg: rgba(250, 189, 47, 0.12);
+  --warning-border: rgba(250, 189, 47, 0.28);
+
+  /* Effects */
+  --shadow-strong: 0 16px 48px rgba(29, 32, 33, 0.55);
+  --shadow-popover: 0 4px 16px rgba(29, 32, 33, 0.48);
+  --spinner-track: rgba(235, 219, 178, 0.3);
+  --qr-bg: var(--gruvbox-fg0);
 
   /* Typography */
   --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -67,8 +99,8 @@
   --bg-tertiary: var(--bg-elevated);
   --bg-surface: var(--bg-elevated);
   --bg-surface-alt: var(--bg-raised);
-  --accent-blue: var(--accent);
-  --accent-purple: var(--accent-dim);
+  --accent-blue: var(--gruvbox-blue);
+  --accent-purple: var(--gruvbox-purple);
   --accent-green: var(--success);
   --accent-amber: var(--warning);
   --accent-rose: var(--error);
@@ -111,7 +143,7 @@ a {
 }
 
 a:hover {
-  color: color-mix(in srgb, var(--accent) 80%, white);
+  color: color-mix(in srgb, var(--accent) 80%, var(--gruvbox-fg0));
 }
 
 button {

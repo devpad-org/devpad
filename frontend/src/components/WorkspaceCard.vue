@@ -300,7 +300,7 @@ function formatDate(dateStr: string) {
 }
 
 .status-stopped {
-  background: rgba(113, 113, 122, 0.1);
+  background: var(--bg-neutral);
   color: var(--text-muted);
 }
 
@@ -346,7 +346,7 @@ function formatDate(dateStr: string) {
 }
 
 .btn-open:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, white);
+  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
 }
 
 .btn-start {

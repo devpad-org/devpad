@@ -399,7 +399,7 @@ async function saveRename(oldName: string) {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -415,7 +415,7 @@ async function saveRename(oldName: string) {
   max-height: 80vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-strong);
   overflow: hidden;
 }
 
@@ -758,7 +758,7 @@ async function saveRename(oldName: string) {
 }
 
 .btn-confirm:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-blue) 85%, white);
+  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
 }
 
 /* Transitions */

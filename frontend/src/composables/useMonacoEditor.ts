@@ -1,5 +1,6 @@
 import { ref, shallowRef, reactive, computed, onBeforeUnmount, watch, type Ref } from 'vue'
 import type * as MonacoType from 'monaco-editor'
+import { gruvboxMonacoTheme } from '@/theme/gruvbox'
 
 let monaco: typeof MonacoType | null = null
 let monacoPromise: Promise<typeof MonacoType> | null = null
@@ -15,92 +16,16 @@ export async function loadMonaco(): Promise<typeof MonacoType> {
   return monacoPromise
 }
 
-// Register Devpad dark theme once
+export const DEVPAD_MONACO_THEME = 'devpad-gruvbox'
+
+// Register Devpad editor theme once
 let themeRegistered = false
 
 export function registerDevpadTheme(m: typeof MonacoType) {
   if (themeRegistered) return
   themeRegistered = true
 
-  m.editor.defineTheme('devpad-dark', {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [
-      // Devpad brand palette — electric blue, violet, emerald, amber, rose
-      { token: 'comment',              foreground: '4a5568', fontStyle: 'italic' },
-      { token: 'comment.doc',          foreground: '5a6a80', fontStyle: 'italic' },
-      { token: 'keyword',              foreground: 'a78bfa' },          // violet
-      { token: 'keyword.control',      foreground: 'c084fc' },          // brighter violet
-      { token: 'keyword.operator',     foreground: '94a3b8' },          // slate
-      { token: 'storage',              foreground: 'a78bfa' },          // violet
-      { token: 'storage.type',         foreground: 'a78bfa' },
-      { token: 'string',               foreground: '34d399' },          // emerald
-      { token: 'string.escape',        foreground: '10b981', fontStyle: 'bold' },
-      { token: 'string.template',      foreground: '34d399' },
-      { token: 'number',               foreground: 'fbbf24' },          // amber
-      { token: 'number.float',         foreground: 'fbbf24' },
-      { token: 'number.hex',           foreground: 'f59e0b' },
-      { token: 'type',                 foreground: 'c084fc' },          // soft purple
-      { token: 'type.identifier',      foreground: 'c084fc' },
-      { token: 'class',                foreground: '60cdff' },          // electric blue
-      { token: 'class.name',           foreground: '60cdff' },
-      { token: 'interface',            foreground: '60cdff' },
-      { token: 'function',             foreground: '38bdf8' },          // sky blue
-      { token: 'function.call',        foreground: '7dd3fc' },
-      { token: 'method',               foreground: '38bdf8' },
-      { token: 'method.call',          foreground: '7dd3fc' },
-      { token: 'variable',             foreground: 'e2e8f0' },          // near-white
-      { token: 'variable.name',        foreground: 'e2e8f0' },
-      { token: 'variable.parameter',   foreground: 'f1a8b8' },          // rose-tinted
-      { token: 'variable.language',    foreground: 'fb923c' },          // orange (this, self)
-      { token: 'constant',             foreground: 'fb923c' },          // orange
-      { token: 'constant.language',    foreground: 'f87171' },          // rose (true/false/null)
-      { token: 'constant.numeric',     foreground: 'fbbf24' },
-      { token: 'tag',                  foreground: '60cdff' },          // electric blue
-      { token: 'tag.id',               foreground: '38bdf8' },
-      { token: 'tag.class',            foreground: '7dd3fc' },
-      { token: 'metatag',              foreground: 'a78bfa' },
-      { token: 'attribute.name',       foreground: 'a78bfa' },          // violet
-      { token: 'attribute.value',      foreground: '34d399' },          // emerald
-      { token: 'delimiter',            foreground: '64748b' },          // visible slate
-      { token: 'delimiter.bracket',    foreground: '7dd3fc' },          // blue brackets
-      { token: 'delimiter.curly',      foreground: 'a78bfa' },          // purple braces
-      { token: 'delimiter.parenthesis',foreground: '94a3b8' },
-      { token: 'operator',             foreground: '94a3b8' },          // slate
-      { token: 'operator.assignment',  foreground: '60cdff' },
-      { token: 'identifier',           foreground: 'e2e8f0' },
-      { token: 'namespace',            foreground: '60cdff' },
-      { token: 'decorator',            foreground: 'fb923c' },          // orange
-      { token: 'annotation',           foreground: 'fb923c' },
-      { token: 'regexp',               foreground: 'f87171' },          // rose
-      { token: 'invalid',              foreground: 'f43f5e', fontStyle: 'underline' },
-    ],
-    colors: {
-      'editor.background': '#08090c',
-      'editor.foreground': '#e8eaed',
-      'editor.lineHighlightBackground': '#4dd0e108',
-      'editor.selectionBackground': '#4dd0e120',
-      'editor.inactiveSelectionBackground': '#4dd0e10c',
-      'editorLineNumber.foreground': '#40454e',
-      'editorLineNumber.activeForeground': '#5f646e',
-      'editorCursor.foreground': '#4dd0e1',
-      'editorIndentGuide.background': '#ffffff08',
-      'editorIndentGuide.activeBackground': '#ffffff12',
-      'editor.selectionHighlightBackground': '#4dd0e112',
-      'editorBracketMatch.background': '#4dd0e115',
-      'editorBracketMatch.border': '#4dd0e130',
-      'editorGutter.background': '#08090c',
-      'minimap.background': '#08090c',
-      'minimapGutter.background': '#08090c',
-      'minimapSlider.background': '#ffffff08',
-      'minimapSlider.hoverBackground': '#ffffff12',
-      'minimapSlider.activeBackground': '#ffffff1e',
-      'scrollbar.shadow': '#00000000',
-      'scrollbarSlider.background': '#ffffff10',
-      'scrollbarSlider.hoverBackground': '#ffffff1a',
-      'scrollbarSlider.activeBackground': '#ffffff25',
-    },
-  })
+  m.editor.defineTheme(DEVPAD_MONACO_THEME, gruvboxMonacoTheme)
 }
 
 /** Map file extensions to Monaco language IDs */
@@ -193,7 +118,7 @@ export function useMonacoEditor(
     isLoading.value = false
 
     editorInstance.value = m.editor.create(container.value, {
-      theme: 'devpad-dark',
+      theme: DEVPAD_MONACO_THEME,
       readOnly: options?.readOnly ?? false,
       automaticLayout: true,
       minimap: {

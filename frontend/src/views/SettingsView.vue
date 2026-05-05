@@ -621,7 +621,7 @@ function openRegenerateConfirm() {
 }
 
 .mfa-badge.disabled {
-  background: rgba(161, 161, 170, 0.1);
+  background: var(--bg-neutral);
   color: var(--text-secondary);
   border: 0.5px solid var(--border-default);
 }
@@ -706,7 +706,7 @@ function openRegenerateConfirm() {
   display: flex;
   justify-content: center;
   padding: var(--space-4);
-  background: white;
+  background: var(--qr-bg);
   border-radius: var(--radius-md);
   width: fit-content;
   margin: 0 auto;

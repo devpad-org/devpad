@@ -82,7 +82,7 @@ const emit = defineEmits<{
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -95,7 +95,7 @@ const emit = defineEmits<{
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 400px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-strong);
   overflow: hidden;
 }
 
@@ -170,11 +170,11 @@ const emit = defineEmits<{
 
 .btn-confirm.danger {
   background: var(--accent-rose);
-  color: white;
+  color: var(--text-on-accent);
 }
 
 .btn-confirm.danger:hover {
-  background: color-mix(in srgb, var(--accent-rose) 85%, white);
+  background: color-mix(in srgb, var(--accent-rose) 85%, var(--gruvbox-fg0));
 }
 
 .btn-confirm.default {
@@ -183,7 +183,7 @@ const emit = defineEmits<{
 }
 
 .btn-confirm.default:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, white);
+  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
 }
 
 .btn:disabled {
@@ -200,7 +200,7 @@ const emit = defineEmits<{
 .spinner {
   width: 14px;
   height: 14px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
+  border: 2px solid var(--spinner-track);
   border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 0.6s linear infinite;

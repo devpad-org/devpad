@@ -976,7 +976,7 @@ onUnmounted(() => {
 }
 
 .git-btn--primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-blue) 85%, white);
+  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
 }
 
 .git-btn--small {

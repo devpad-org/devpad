@@ -3,6 +3,7 @@ import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { gruvboxTerminalTheme } from '@/theme/gruvbox'
 
 const props = defineProps<{
   workspaceId: number
@@ -32,28 +33,7 @@ function connect() {
     fontSize: 13,
     lineHeight: 1.2,
     fontFamily: "'Geist Mono', 'JetBrains Mono', Menlo, monospace",
-    theme: {
-      background: '#0b0d11',
-      foreground: '#e8eaed',
-      cursor: '#4dd0e1',
-      selectionBackground: 'rgba(77, 208, 225, 0.2)',
-      black: '#0b0d11',
-      red: '#d4a24c',
-      green: '#6fbf73',
-      yellow: '#d4a24c',
-      blue: '#4dd0e1',
-      magenta: '#9499a2',
-      cyan: '#4dd0e1',
-      white: '#e8eaed',
-      brightBlack: '#5f646e',
-      brightRed: '#d4a24c',
-      brightGreen: '#6fbf73',
-      brightYellow: '#d4a24c',
-      brightBlue: '#4dd0e1',
-      brightMagenta: '#9499a2',
-      brightCyan: '#4dd0e1',
-      brightWhite: '#e8eaed',
-    },
+    theme: gruvboxTerminalTheme,
   })
 
   fitAddon = new FitAddon()

@@ -1373,7 +1373,7 @@ function scrollToBottom() {
 .markdown-body :deep(pre code) {
   background: none;
   padding: 0;
-  color: var(--text-primary, #e0e0e0);
+  color: var(--text-primary);
   font-size: 0.8rem;
   line-height: 1.5;
 }
@@ -1382,7 +1382,7 @@ function scrollToBottom() {
 .markdown-body :deep(h2),
 .markdown-body :deep(h3),
 .markdown-body :deep(h4) {
-  color: var(--text-primary, #e0e0e0);
+  color: var(--text-primary);
   margin: 0.6em 0 0.3em;
   font-weight: 600;
   line-height: 1.3;
@@ -1437,18 +1437,18 @@ function scrollToBottom() {
 .markdown-body :deep(th),
 .markdown-body :deep(td) {
   padding: 0.3em 0.6em;
-  border: 0.5px solid var(--border-default, rgba(255, 255, 255, 0.08));
+  border: 0.5px solid var(--border-default);
   text-align: left;
 }
 
 .markdown-body :deep(th) {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-hover);
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .markdown-body :deep(strong) {
-  color: var(--text-primary, #e0e0e0);
+  color: var(--text-primary);
   font-weight: 600;
 }
 
@@ -1466,7 +1466,7 @@ function scrollToBottom() {
 
 /* Tool usage display */
 .tool-usage {
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--bg-void);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   padding: 6px 10px;
@@ -1550,7 +1550,7 @@ function scrollToBottom() {
   display: block;
   margin-top: 8px;
   padding: 6px 10px;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--bg-void);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 0.72rem;
@@ -1732,7 +1732,7 @@ function scrollToBottom() {
 .plan-bar-step--completed .plan-bar-step-label {
   color: var(--text-muted);
   text-decoration: line-through;
-  text-decoration-color: rgba(255, 255, 255, 0.12);
+  text-decoration-color: var(--text-decoration-muted);
 }
 
 .plan-bar-step--failed .plan-bar-step-icon {
