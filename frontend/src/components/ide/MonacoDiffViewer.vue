@@ -38,6 +38,7 @@ async function renderDiff() {
       readOnly: true,
       automaticLayout: true,
       renderSideBySide: props.sideBySide ?? true,
+      useInlineViewWhenSpaceIsLimited: false,
       minimap: { enabled: false },
       lineNumbers: 'on',
       fontSize: 14,
@@ -64,6 +65,7 @@ async function renderDiff() {
   modifiedModel = monaco.editor.createModel(props.newContent, language)
   editor.value.updateOptions({
     renderSideBySide: props.sideBySide ?? true,
+    useInlineViewWhenSpaceIsLimited: false,
   })
   editor.value.setModel({
     original: originalModel,

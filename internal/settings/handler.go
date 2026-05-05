@@ -206,6 +206,54 @@ func (h *Handler) HandleGenerateSSHKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"publicKey": publicKey})
 }
 
+// HandleGetPreferences returns the authenticated user's UI preferences.
+func (h *Handler) HandleGetPreferences(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	preferences, err := h.service.GetPreferences(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get preferences")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, preferences)
+}
+
+// HandleUpdatePreferences updates the authenticated user's UI preferences.
+func (h *Handler) HandleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var req struct {
+		DiffViewSideBySide *bool `json:"diffViewSideBySide"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.DiffViewSideBySide == nil {
+		writeError(w, http.StatusBadRequest, "diffViewSideBySide is required")
+		return
+	}
+
+	preferences, err := h.service.UpdatePreferences(r.Context(), user.ID, UserPreferences{
+		DiffViewSideBySide: *req.DiffViewSideBySide,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update preferences")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, preferences)
+}
+
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

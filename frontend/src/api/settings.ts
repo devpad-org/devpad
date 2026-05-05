@@ -13,6 +13,10 @@ export interface SSHKeyResponse {
   publicKey: string
 }
 
+export interface UserPreferences {
+  diffViewSideBySide: boolean
+}
+
 export const settingsApi = {
   changePassword(currentPassword: string, newPassword: string): Promise<void> {
     return apiClient.post<void>('/api/settings/password', { currentPassword, newPassword })
@@ -40,5 +44,13 @@ export const settingsApi = {
 
   generateSSHKey(): Promise<SSHKeyResponse> {
     return apiClient.post<SSHKeyResponse>('/api/settings/ssh-key/generate', {})
+  },
+
+  getPreferences(): Promise<UserPreferences> {
+    return apiClient.get<UserPreferences>('/api/settings/preferences')
+  },
+
+  updatePreferences(preferences: UserPreferences): Promise<UserPreferences> {
+    return apiClient.put<UserPreferences>('/api/settings/preferences', preferences)
   },
 }

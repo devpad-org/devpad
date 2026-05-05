@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   gitApi,
   type GitBranch,
@@ -10,6 +10,7 @@ import {
 } from '@/api/git'
 import { useFileWatcher } from '@/composables/useFileWatcher'
 import { useGitSshHostKey } from '@/composables/useGitSshHostKey'
+import { useUserPreferences } from '@/composables/useUserPreferences'
 import MonacoDiffViewer from './MonacoDiffViewer.vue'
 import GitSshHostKeyModal from './GitSshHostKeyModal.vue'
 
@@ -53,6 +54,14 @@ const diff = ref<GitFileDiff | null>(null)
 const diffLoading = ref(false)
 const diffError = ref('')
 let diffLoadVersion = 0
+const {
+  preferences,
+  loading: preferencesLoading,
+  saving: preferencesSaving,
+  error: preferencesError,
+  loadPreferences,
+  setDiffViewSideBySide,
+} = useUserPreferences()
 
 const graphLaneSpacing = 18
 const graphRailPadding = 10
@@ -107,6 +116,7 @@ const hasWorkingChanges = computed(() => (status.value?.files.length ?? 0) > 0)
 const stagedCount = computed(() => (status.value?.files ?? []).filter((f) => f.staged).length)
 const unstagedCount = computed(() => (status.value?.files ?? []).filter((f) => !f.staged).length)
 const showingDiff = computed(() => props.diffRequest !== null || diff.value !== null || diffLoading.value)
+const diffSideBySide = computed(() => preferences.value.diffViewSideBySide)
 const diffTitle = computed(() => {
   if (!props.diffRequest) return ''
   if (props.diffRequest.kind === 'working') return props.diffRequest.path
@@ -344,6 +354,10 @@ function closeDiff() {
   emit('closeDiff')
 }
 
+async function toggleDiffLayout() {
+  await setDiffViewSideBySide(!diffSideBySide.value)
+}
+
 async function loadDiff(request: GitDiffRequest) {
   if (!props.workspaceId) return
 
@@ -391,6 +405,10 @@ function formatTime(timestamp: string): string {
 
 onEvent(() => {
   debouncedRefresh()
+})
+
+onMounted(() => {
+  void loadPreferences()
 })
 
 watch(
@@ -454,6 +472,26 @@ onUnmounted(() => {
 
       <div v-if="showingDiff" class="graph-actions">
         <span class="diff-file-title">{{ diffTitle }}</span>
+        <span v-if="preferencesError" class="diff-layout-error" role="alert">{{ preferencesError }}</span>
+        <button
+          class="graph-action-btn diff-layout-toggle"
+          type="button"
+          :title="diffSideBySide ? 'Switch diff to inline view' : 'Switch diff to side-by-side view'"
+          :aria-pressed="diffSideBySide"
+          :disabled="preferencesLoading || preferencesSaving"
+          @click="toggleDiffLayout"
+        >
+          <svg v-if="diffSideBySide" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="4" width="7" height="16" rx="1" />
+            <rect x="14" y="4" width="7" height="16" rx="1" />
+          </svg>
+          <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 7h16" />
+            <path d="M4 12h16" />
+            <path d="M4 17h16" />
+          </svg>
+          {{ diffSideBySide ? 'Side by side' : 'Inline' }}
+        </button>
         <button class="graph-action-btn" type="button" title="Close diff" @click="closeDiff">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M18 6 6 18" /><path d="m6 6 12 12" />
@@ -539,6 +577,7 @@ onUnmounted(() => {
         :new-content="diff.newContent"
         :old-file-name="diff.oldFileName"
         :new-file-name="diff.newFileName"
+        :side-by-side="diffSideBySide"
       />
     </div>
 

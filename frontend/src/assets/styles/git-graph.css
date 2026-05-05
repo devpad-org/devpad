@@ -133,6 +133,21 @@
   font-size: 0.72rem;
 }
 
+.diff-layout-toggle[aria-pressed="true"] {
+  color: var(--accent-blue);
+  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+}
+
+.diff-layout-error {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent-rose);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
 .diff-shell {
   flex: 1;
   min-height: 0;

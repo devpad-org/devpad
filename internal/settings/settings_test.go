@@ -43,6 +43,12 @@ func setupTestDB(t *testing.T) *sql.DB {
 		token TEXT NOT NULL UNIQUE,
 		expires_at DATETIME NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE user_preferences (
+		user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+		diff_view_side_by_side BOOLEAN NOT NULL DEFAULT 1,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`
 	if _, err := db.Exec(schema); err != nil {
 		t.Fatalf("creating schema: %v", err)
@@ -54,6 +60,7 @@ func setupTestServices(t *testing.T) (Service, auth.Service, *sql.DB) {
 	t.Helper()
 	db := setupTestDB(t)
 	userRepo := auth.NewUserRepository(db)
+	preferencesRepo := NewPreferencesRepository(db)
 	sessionRepo := auth.NewSessionRepository(db)
 	authSvc := auth.NewService(userRepo, sessionRepo)
 	key, err := encrypt.GenerateKey()
@@ -64,7 +71,7 @@ func setupTestServices(t *testing.T) (Service, auth.Service, *sql.DB) {
 	if err != nil {
 		t.Fatalf("creating cipher: %v", err)
 	}
-	settingsSvc := NewService(userRepo, cipher)
+	settingsSvc := NewService(userRepo, preferencesRepo, cipher)
 	return settingsSvc, authSvc, db
 }
 
@@ -334,6 +341,70 @@ func TestHandler_TOTPSetup(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"url"`) {
 		t.Errorf("expected url in response, got: %s", rec.Body.String())
+	}
+}
+
+func TestService_UserPreferences_DefaultAndUpdate(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	ctx := context.Background()
+
+	preferences, err := settingsSvc.GetPreferences(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("getting default preferences: %v", err)
+	}
+	if !preferences.DiffViewSideBySide {
+		t.Fatal("expected side-by-side diff view to be enabled by default")
+	}
+
+	updated, err := settingsSvc.UpdatePreferences(ctx, user.ID, UserPreferences{DiffViewSideBySide: false})
+	if err != nil {
+		t.Fatalf("updating preferences: %v", err)
+	}
+	if updated.DiffViewSideBySide {
+		t.Fatal("expected diff view preference to be updated")
+	}
+
+	persisted, err := settingsSvc.GetPreferences(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("getting persisted preferences: %v", err)
+	}
+	if persisted.DiffViewSideBySide {
+		t.Fatal("expected persisted diff view preference to be inline")
+	}
+}
+
+func TestHandler_UserPreferences(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	handler := NewHandler(settingsSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/preferences", nil)
+	ctx := context.WithValue(req.Context(), auth.UserContextKey, user)
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	handler.HandleGetPreferences(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"diffViewSideBySide":true`) {
+		t.Errorf("expected default side-by-side preference, got: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/settings/preferences", strings.NewReader(`{"diffViewSideBySide":false}`))
+	ctx = context.WithValue(req.Context(), auth.UserContextKey, user)
+	req = req.WithContext(ctx)
+	rec = httptest.NewRecorder()
+
+	handler.HandleUpdatePreferences(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"diffViewSideBySide":false`) {
+		t.Errorf("expected updated inline preference, got: %s", rec.Body.String())
 	}
 }
 

@@ -68,7 +68,8 @@ func New(cfg Config) (*Server, error) {
 	authMiddleware := auth.NewMiddleware(authService)
 
 	// Settings layer
-	settingsService := settings.NewService(userRepo, cipher)
+	preferencesRepo := settings.NewPreferencesRepository(db.Conn())
+	settingsService := settings.NewService(userRepo, preferencesRepo, cipher)
 	settingsHandler := settings.NewHandler(settingsService)
 
 	// Workspace layer
@@ -295,6 +296,8 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/settings/mfa/setup", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleTOTPSetup)))
 	mux.Handle("POST /api/settings/mfa/enable", authMiddleware.RequireAuth(authRateLimiter.LimitFunc(settingsHandler.HandleTOTPEnable)))
 	mux.Handle("POST /api/settings/mfa/disable", authMiddleware.RequireAuth(authRateLimiter.LimitFunc(settingsHandler.HandleTOTPDisable)))
+	mux.Handle("GET /api/settings/preferences", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGetPreferences)))
+	mux.Handle("PUT /api/settings/preferences", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleUpdatePreferences)))
 
 	// SSH key routes (authenticated users)
 	mux.Handle("GET /api/settings/ssh-key", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGetSSHKey)))

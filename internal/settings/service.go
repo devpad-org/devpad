@@ -28,16 +28,19 @@ type Service interface {
 	GetMFAStatus(ctx context.Context, userID int64) (enabled bool, err error)
 	GetSSHPublicKey(ctx context.Context, userID int64) (publicKey string, err error)
 	GenerateSSHKey(ctx context.Context, userID int64) (publicKey string, err error)
+	GetPreferences(ctx context.Context, userID int64) (UserPreferences, error)
+	UpdatePreferences(ctx context.Context, userID int64, preferences UserPreferences) (UserPreferences, error)
 }
 
 type service struct {
-	users  auth.UserRepository
-	cipher *encrypt.Cipher
+	users       auth.UserRepository
+	preferences PreferencesRepository
+	cipher      *encrypt.Cipher
 }
 
 // NewService creates a new settings Service.
-func NewService(users auth.UserRepository, cipher *encrypt.Cipher) Service {
-	return &service{users: users, cipher: cipher}
+func NewService(users auth.UserRepository, preferences PreferencesRepository, cipher *encrypt.Cipher) Service {
+	return &service{users: users, preferences: preferences, cipher: cipher}
 }
 
 func (s *service) ChangePassword(ctx context.Context, userID int64, currentPassword, newPassword string) error {
@@ -202,4 +205,37 @@ func (s *service) GenerateSSHKey(ctx context.Context, userID int64) (string, err
 	}
 
 	return publicKey, nil
+}
+
+func (s *service) GetPreferences(ctx context.Context, userID int64) (UserPreferences, error) {
+	if err := s.ensureUser(ctx, userID); err != nil {
+		return UserPreferences{}, err
+	}
+	preferences, err := s.preferences.Get(ctx, userID)
+	if err != nil {
+		return UserPreferences{}, fmt.Errorf("getting user preferences: %w", err)
+	}
+	return preferences, nil
+}
+
+func (s *service) UpdatePreferences(ctx context.Context, userID int64, preferences UserPreferences) (UserPreferences, error) {
+	if err := s.ensureUser(ctx, userID); err != nil {
+		return UserPreferences{}, err
+	}
+	updated, err := s.preferences.Update(ctx, userID, preferences)
+	if err != nil {
+		return UserPreferences{}, fmt.Errorf("updating user preferences: %w", err)
+	}
+	return updated, nil
+}
+
+func (s *service) ensureUser(ctx context.Context, userID int64) error {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("looking up user: %w", err)
+	}
+	if user == nil {
+		return errors.New("user not found")
+	}
+	return nil
 }
