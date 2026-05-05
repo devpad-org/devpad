@@ -21,6 +21,7 @@ import (
 const gitTimeout = 30 * time.Second
 const gitNetworkTimeout = 5 * time.Minute
 const maxGitRequestBody = 1 << 20 // 1 MB
+const gitSSHCommand = "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o NumberOfPasswordPrompts=0 -o ConnectTimeout=15"
 
 var sshHostAuthenticityRE = regexp.MustCompile(`(?is)The authenticity of host '([^']+)' can't be established\.\s*([A-Za-z0-9_-]+) key fingerprint is ([^\s.]+)`)
 
@@ -1501,15 +1502,25 @@ func parseGitStatusOutput(out string) []gitStatusEntry {
 
 // gitExec runs a git command and returns an error if it fails.
 func gitExec(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = workspaceRoot
+	cmd := gitCommand(ctx, args...)
 	return cmd.Run()
 }
 
 // gitOutput runs a git command and returns its combined stdout+stderr.
 func gitOutput(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = workspaceRoot
+	cmd := gitCommand(ctx, args...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = workspaceRoot
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_SSH_COMMAND="+gitSSHCommand,
+		"GIT_MERGE_AUTOEDIT=no",
+		"GIT_EDITOR=true",
+	)
+	return cmd
 }

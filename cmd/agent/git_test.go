@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"strings"
 	"testing"
 )
 
@@ -546,6 +548,34 @@ func TestIsSSHHostKeyVerificationFailure(t *testing.T) {
 				t.Fatalf("isSSHHostKeyVerificationFailure() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGitCommandIsNonInteractive(t *testing.T) {
+	cmd := gitCommand(context.Background(), "pull")
+
+	if cmd.Dir != workspaceRoot {
+		t.Fatalf("Dir = %q, want %q", cmd.Dir, workspaceRoot)
+	}
+
+	env := map[string]string{}
+	for _, entry := range cmd.Env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			env[key] = value
+		}
+	}
+
+	want := map[string]string{
+		"GIT_TERMINAL_PROMPT": "0",
+		"GIT_SSH_COMMAND":     gitSSHCommand,
+		"GIT_MERGE_AUTOEDIT":  "no",
+		"GIT_EDITOR":          "true",
+	}
+	for key, value := range want {
+		if got := env[key]; got != value {
+			t.Fatalf("%s = %q, want %q", key, got, value)
+		}
 	}
 }
 
