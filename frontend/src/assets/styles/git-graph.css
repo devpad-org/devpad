@@ -125,15 +125,14 @@
   display: flex;
   border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  overflow: hidden;
 }
 
 .pull-main-btn {
-  border-radius: 0;
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
 }
 
 .pull-chevron-btn {
-  border-radius: 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
   border-left: 0.5px solid var(--border-subtle);
   padding: 0 var(--space-1);
 }
