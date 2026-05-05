@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -617,6 +619,106 @@ func parseSSHHostKeyPrompt(out string) *sshHostKeyPrompt {
 	}
 }
 
+func sshHostKeyPromptFromGitFailure(ctx context.Context, out string, req gitActionRequest) *sshHostKeyPrompt {
+	if prompt := parseSSHHostKeyPrompt(out); prompt != nil {
+		return prompt
+	}
+	if !isSSHHostKeyVerificationFailure(out) {
+		return nil
+	}
+
+	target, ok := sshHostTargetForGitAction(ctx, req)
+	if !ok {
+		return nil
+	}
+	prompt, err := scanSSHHostKeyPrompt(ctx, target, out)
+	if err != nil {
+		log.Printf("git ssh host key prompt: %v", err)
+		return nil
+	}
+	return prompt
+}
+
+func isSSHHostKeyVerificationFailure(out string) bool {
+	return strings.Contains(strings.ToLower(out), "host key verification failed")
+}
+
+func sshHostTargetForGitAction(ctx context.Context, req gitActionRequest) (*sshHostTarget, bool) {
+	switch req.Action {
+	case "clone":
+		return parseGitSSHRemoteTarget(req.URL)
+	case "push", "pull", "fetch":
+		remote := req.Remote
+		if remote == "" {
+			remote = "origin"
+		}
+		out, err := gitOutput(ctx, "remote", "get-url", remote)
+		if err != nil {
+			return nil, false
+		}
+		return parseGitSSHRemoteTarget(strings.TrimSpace(out))
+	default:
+		return nil, false
+	}
+}
+
+func parseGitSSHRemoteTarget(remoteURL string) (*sshHostTarget, bool) {
+	remoteURL = strings.TrimSpace(remoteURL)
+	if remoteURL == "" || strings.HasPrefix(remoteURL, "-") {
+		return nil, false
+	}
+
+	if strings.Contains(remoteURL, "://") {
+		u, err := url.Parse(remoteURL)
+		if err != nil {
+			return nil, false
+		}
+		if u.Scheme != "ssh" && u.Scheme != "git+ssh" {
+			return nil, false
+		}
+		host := u.Hostname()
+		if host == "" {
+			return nil, false
+		}
+		if port := u.Port(); port != "" {
+			host = "[" + host + "]:" + port
+		}
+		target, err := parseSSHHostTarget(host)
+		return target, err == nil
+	}
+
+	colon := strings.Index(remoteURL, ":")
+	if colon <= 0 || strings.Contains(remoteURL[:colon], "/") {
+		return nil, false
+	}
+	hostPart := remoteURL[:colon]
+	if at := strings.LastIndex(hostPart, "@"); at != -1 {
+		hostPart = hostPart[at+1:]
+	}
+	target, err := parseSSHHostTarget(hostPart)
+	return target, err == nil
+}
+
+func scanSSHHostKeyPrompt(ctx context.Context, target *sshHostTarget, rawOutput string) (*sshHostKeyPrompt, error) {
+	scanOut, err := scanSSHHostKeys(ctx, target, "")
+	if err != nil {
+		return nil, err
+	}
+	line, fingerprint, keyType, err := preferredScannedHostKey(ctx, scanOut)
+	if err != nil {
+		return nil, err
+	}
+	if line == "" {
+		return nil, fmt.Errorf("scanned SSH host key was empty")
+	}
+	return &sshHostKeyPrompt{
+		Host:        target.KnownHost,
+		KeyType:     strings.ToUpper(keyType),
+		Fingerprint: fingerprint,
+		RawOutput:   strings.TrimSpace(rawOutput),
+	}, nil
+}
+
 func handleGitBranches(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
 	defer cancel()
@@ -837,7 +939,7 @@ func handleGitAction(w http.ResponseWriter, r *http.Request) {
 			"output":  out,
 			"error":   err.Error(),
 		}
-		if prompt := parseSSHHostKeyPrompt(out); prompt != nil {
+		if prompt := sshHostKeyPromptFromGitFailure(ctx, out, req); prompt != nil {
 			resp["sshHostKey"] = prompt
 		}
 		writeJSON(w, http.StatusOK, resp)
@@ -1060,6 +1162,27 @@ func actionAcceptSSHHostKey(ctx context.Context, req gitActionRequest) (string, 
 		return "", &gitActionError{err.Error()}
 	}
 
+	scanOut, err := scanSSHHostKeys(ctx, target, keyType)
+	if err != nil {
+		return scanOut, fmt.Errorf("scanning ssh host key: %w", err)
+	}
+
+	line, err := matchingScannedHostKey(ctx, scanOut, req.Fingerprint, keyType)
+	if err != nil {
+		return scanOut, err
+	}
+	if err := appendKnownHostLine(line); err != nil {
+		return scanOut, fmt.Errorf("writing known_hosts: %w", err)
+	}
+
+	displayKeyType := strings.ToUpper(keyType)
+	if displayKeyType == "" {
+		displayKeyType = "SSH"
+	}
+	return fmt.Sprintf("Accepted %s host key for %s", displayKeyType, target.KnownHost), nil
+}
+
+func scanSSHHostKeys(ctx context.Context, target *sshHostTarget, keyType string) (string, error) {
 	args := []string{}
 	if keyType != "" {
 		args = append(args, "-t", keyType)
@@ -1070,24 +1193,8 @@ func actionAcceptSSHHostKey(ctx context.Context, req gitActionRequest) (string, 
 	args = append(args, target.ScanHost)
 
 	cmd := exec.CommandContext(ctx, "ssh-keyscan", args...)
-	scanOut, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(scanOut), fmt.Errorf("scanning ssh host key: %w", err)
-	}
-
-	line, err := matchingScannedHostKey(ctx, string(scanOut), req.Fingerprint, keyType)
-	if err != nil {
-		return string(scanOut), err
-	}
-	if err := appendKnownHostLine(line); err != nil {
-		return string(scanOut), fmt.Errorf("writing known_hosts: %w", err)
-	}
-
-	displayKeyType := strings.ToUpper(keyType)
-	if displayKeyType == "" {
-		displayKeyType = "SSH"
-	}
-	return fmt.Sprintf("Accepted %s host key for %s", displayKeyType, target.KnownHost), nil
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 
 type sshHostTarget struct {
@@ -1178,6 +1285,45 @@ func matchingScannedHostKey(ctx context.Context, scanOut, expectedFingerprint, e
 		return line, nil
 	}
 	return "", fmt.Errorf("scanned SSH host key did not match expected fingerprint")
+}
+
+func preferredScannedHostKey(ctx context.Context, scanOut string) (line, fingerprint, keyType string, err error) {
+	type scannedKey struct {
+		line        string
+		fingerprint string
+		keyType     string
+	}
+	keys := []scannedKey{}
+	for _, line := range strings.Split(scanOut, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fingerprint, keyType, err := fingerprintKnownHostLine(ctx, line)
+		if err != nil {
+			continue
+		}
+		keys = append(keys, scannedKey{line: line, fingerprint: fingerprint, keyType: keyType})
+	}
+	if len(keys) == 0 {
+		return "", "", "", fmt.Errorf("no SSH host keys found")
+	}
+
+	for _, preferred := range []string{"ed25519", "ecdsa", "rsa", "dsa"} {
+		for _, key := range keys {
+			normalized, err := normalizeSSHKeyType(key.keyType)
+			if err == nil && normalized == preferred {
+				return key.line, key.fingerprint, normalized, nil
+			}
+		}
+	}
+
+	key := keys[0]
+	normalized, err := normalizeSSHKeyType(key.keyType)
+	if err != nil {
+		normalized = strings.ToLower(key.keyType)
+	}
+	return key.line, key.fingerprint, normalized, nil
 }
 
 func fingerprintKnownHostLine(ctx context.Context, line string) (fingerprint, keyType string, err error) {

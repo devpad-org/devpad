@@ -450,6 +450,105 @@ func TestParseSSHHostTarget(t *testing.T) {
 	}
 }
 
+func TestParseGitSSHRemoteTarget(t *testing.T) {
+	tests := []struct {
+		name      string
+		remoteURL string
+		scanHost  string
+		port      string
+		knownHost string
+		wantOK    bool
+	}{
+		{
+			name:      "scp-like git remote",
+			remoteURL: "git@git.example.com:org/repo.git",
+			scanHost:  "git.example.com",
+			knownHost: "git.example.com",
+			wantOK:    true,
+		},
+		{
+			name:      "ssh url",
+			remoteURL: "ssh://git@git.example.com/org/repo.git",
+			scanHost:  "git.example.com",
+			knownHost: "git.example.com",
+			wantOK:    true,
+		},
+		{
+			name:      "ssh url with custom port",
+			remoteURL: "ssh://git@git.example.com:2222/org/repo.git",
+			scanHost:  "git.example.com",
+			port:      "2222",
+			knownHost: "[git.example.com]:2222",
+			wantOK:    true,
+		},
+		{
+			name:      "git ssh url with custom port",
+			remoteURL: "git+ssh://git@git.example.com:2222/org/repo.git",
+			scanHost:  "git.example.com",
+			port:      "2222",
+			knownHost: "[git.example.com]:2222",
+			wantOK:    true,
+		},
+		{
+			name:      "https remote ignored",
+			remoteURL: "https://git.example.com/org/repo.git",
+			wantOK:    false,
+		},
+		{
+			name:      "flag-like remote ignored",
+			remoteURL: "-oProxyCommand=bad",
+			wantOK:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseGitSSHRemoteTarget(tt.remoteURL)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v, target=%+v", ok, tt.wantOK, got)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if got.ScanHost != tt.scanHost || got.Port != tt.port || got.KnownHost != tt.knownHost {
+				t.Fatalf("unexpected target: %+v", got)
+			}
+		})
+	}
+}
+
+func TestIsSSHHostKeyVerificationFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{
+			name: "host key verification failed",
+			out:  "Host key verification failed.\nfatal: Could not read from remote repository.",
+			want: true,
+		},
+		{
+			name: "case insensitive",
+			out:  "host key verification failed",
+			want: true,
+		},
+		{
+			name: "unrelated auth failure",
+			out:  "Permission denied (publickey).",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isSSHHostKeyVerificationFailure(tt.out); got != tt.want {
+				t.Fatalf("isSSHHostKeyVerificationFailure() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateGitCommitHash(t *testing.T) {
 	tests := []struct {
 		name    string
