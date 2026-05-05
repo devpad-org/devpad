@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { gitApi, type GitStatus } from '@/api/git'
 import { useFileWatcher } from '@/composables/useFileWatcher'
+import GitRemotesModal from './GitRemotesModal.vue'
 
 const props = defineProps<{
   workspaceId: number
@@ -14,6 +15,7 @@ const emit = defineEmits<{
 const status = ref<GitStatus | null>(null)
 const loading = ref(false)
 const error = ref('')
+const showRemotes = ref(false)
 
 const { connect: connectWatcher, disconnect: disconnectWatcher, onEvent } = useFileWatcher(
   () => props.workspaceId
@@ -166,19 +168,43 @@ onUnmounted(() => {
 
     <span v-if="error" class="git-status-message" role="status">{{ error }}</span>
 
-    <button
-      type="button"
-      class="git-status-refresh"
-      :disabled="loading || !workspaceId"
-      title="Refresh git status"
-      @click="refresh(true)"
-    >
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading }" aria-hidden="true">
-        <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
-        <path d="M21 3v5h-5" />
-      </svg>
-    </button>
+    <div class="git-status-end">
+      <button
+        v-if="status?.isRepo"
+        type="button"
+        class="git-status-item git-status-remotes"
+        title="Manage remotes"
+        @click="showRemotes = true"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" />
+          <path d="M2 12h20" />
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+        </svg>
+        Remotes
+      </button>
+
+      <button
+        type="button"
+        class="git-status-refresh"
+        :disabled="loading || !workspaceId"
+        title="Refresh git status"
+        @click="refresh(true)"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading }" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+          <path d="M21 3v5h-5" />
+        </svg>
+      </button>
+    </div>
   </footer>
+
+  <GitRemotesModal
+    :show="showRemotes"
+    :workspace-id="workspaceId"
+    @close="showRemotes = false"
+    @updated="refresh()"
+  />
 </template>
 
 <style scoped>
@@ -234,10 +260,22 @@ onUnmounted(() => {
 }
 
 .git-status-refresh {
-  margin-left: auto;
   width: 24px;
   padding: 0;
   color: var(--text-muted);
+}
+
+.git-status-end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.git-status-remotes {
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
 }
 
 .git-status-refresh:disabled {

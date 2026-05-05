@@ -8,7 +8,6 @@ import {
 } from '@/api/git'
 import { useFileWatcher } from '@/composables/useFileWatcher'
 import GitConfigModal from './GitConfigModal.vue'
-import GitRemotesModal from './GitRemotesModal.vue'
 
 const props = defineProps<{
   workspaceId: number
@@ -36,9 +35,6 @@ const showGitConfig = ref(false)
 const needsGitConfig = computed(() =>
   status.value?.isRepo && (!status.value.userName || !status.value.userEmail)
 )
-
-// Remotes modal
-const showRemotes = ref(false)
 
 // Diff
 const diffContent = ref('')
@@ -154,30 +150,6 @@ async function handleGitConfigSubmit(name: string, email: string) {
   await gitApi.action(props.workspaceId, 'set-config', { userName: name, userEmail: email })
   await refresh()
   await doCommit()
-}
-
-async function push() {
-  actionOutput.value = ''
-  loading.value = true
-  try {
-    const result = await gitApi.action(props.workspaceId, 'push')
-    actionOutput.value = result.success ? 'Pushed successfully' : gitError(result)
-  } catch (e: any) {
-    actionOutput.value = e.message
-  }
-  await refresh()
-}
-
-async function pull() {
-  actionOutput.value = ''
-  loading.value = true
-  try {
-    const result = await gitApi.action(props.workspaceId, 'pull')
-    actionOutput.value = result.success ? 'Pulled successfully' : gitError(result)
-  } catch (e: any) {
-    actionOutput.value = e.message
-  }
-  await refresh()
 }
 
 async function initRepo() {
@@ -387,40 +359,6 @@ onUnmounted(() => {
 
       <!-- Changes tab -->
       <div v-if="activeTab === 'changes'" class="git-tab-content">
-        <!-- Sync buttons -->
-        <div v-if="(status.remotes?.length ?? 0) > 0" class="git-sync-bar">
-          <button class="git-btn git-btn--small" @click="pull" :disabled="loading" title="Pull">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 5v14" /><path d="m19 12-7 7-7-7" />
-            </svg>
-            Pull
-          </button>
-          <button class="git-btn git-btn--small" @click="push" :disabled="loading" title="Push">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 19V5" /><path d="m5 12 7-7 7 7" />
-            </svg>
-            Push
-          </button>
-          <button class="git-btn git-btn--small git-btn--remotes" @click="showRemotes = true" title="Manage remotes">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M2 12h20" />
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-            </svg>
-            Remotes
-          </button>
-        </div>
-        <div v-else class="git-sync-bar">
-          <button class="git-btn git-btn--small git-btn--remotes" @click="showRemotes = true" title="Add a remote">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M2 12h20" />
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-            </svg>
-            Add Remote
-          </button>
-        </div>
-
         <!-- Staged files -->
         <div v-if="stagedFiles.length > 0" class="git-section">
           <div class="git-section-header">
@@ -589,14 +527,6 @@ onUnmounted(() => {
       :show="showGitConfig"
       @submit="handleGitConfigSubmit"
       @cancel="showGitConfig = false"
-    />
-
-    <!-- Git remotes modal -->
-    <GitRemotesModal
-      :show="showRemotes"
-      :workspace-id="props.workspaceId"
-      @close="showRemotes = false"
-      @updated="refresh()"
     />
   </div>
 </template>
@@ -804,14 +734,6 @@ function diffLineClass(line: string): string {
   overflow-y: auto;
 }
 
-/* Sync bar */
-.git-sync-bar {
-  display: flex;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
-}
-
 /* Sections */
 .git-section {
   border-bottom: 0.5px solid var(--border-default);
@@ -949,19 +871,6 @@ function diffLineClass(line: string): string {
 .git-btn--small {
   padding: 2px var(--space-2);
   font-size: 0.75rem;
-}
-
-.git-btn--remotes {
-  margin-left: auto;
-  color: var(--text-secondary);
-  border-color: var(--border-subtle);
-  background: var(--bg-raised);
-}
-
-.git-btn--remotes:hover:not(:disabled) {
-  background: var(--bg-hover);
-  border-color: var(--border-strong);
-  color: var(--text-primary);
 }
 
 .git-btn--commit {
