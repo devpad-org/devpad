@@ -116,6 +116,14 @@ function formatRelativeTime(dateStr: string): string {
 
 watch(() => props.workspaceId, startRefreshTimer)
 
+watch(activeCount, (count, prevCount) => {
+  if (count === 0) {
+    stopRefreshTimer()
+  } else if (prevCount === 0) {
+    startRefreshTimer()
+  }
+})
+
 onMounted(startRefreshTimer)
 onUnmounted(stopRefreshTimer)
 </script>

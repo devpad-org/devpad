@@ -1,32 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
 import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
-
-marked.use({
-  breaks: true,
-  gfm: true,
-})
-
-const emojiMap: Record<string, string> = {
-  ':rocket:': '🚀', ':white_check_mark:': '✅', ':x:': '❌', ':warning:': '⚠️',
-  ':bulb:': '💡', ':gear:': '⚙️', ':file_folder:': '📁', ':memo:': '📝',
-  ':sparkles:': '✨', ':tada:': '🎉', ':wrench:': '🔧', ':bug:': '🐛',
-  ':zap:': '⚡', ':fire:': '🔥', ':thumbsup:': '👍', ':thumbsdown:': '👎',
-  ':eyes:': '👀', ':heavy_check_mark:': '✔️', ':arrow_right:': '➡️', ':star:': '⭐',
-  ':package:': '📦', ':lock:': '🔒', ':key:': '🔑', ':hammer:': '🔨',
-  ':link:': '🔗', ':clipboard:': '📋', ':mag:': '🔍', ':pencil:': '✏️',
-  ':green_circle:': '🟢', ':red_circle:': '🔴', ':check:': '✅', ':x_mark:': '❌',
-}
-
-function renderMarkdown(content: string): string {
-  const withEmoji = content.replace(/:[a-z_]+:/g, (m) => emojiMap[m] || m)
-  const raw = marked.parse(withEmoji) as string
-  return DOMPurify.sanitize(raw)
-}
+import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 
 const props = defineProps<{
   workspaceId: number
@@ -200,6 +177,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   cancelFocusedRunEventStream()
+  if (scrollRaf !== null) cancelAnimationFrame(scrollRaf)
+  if (fetchRunsDebounceTimer !== null) clearTimeout(fetchRunsDebounceTimer)
 })
 
 watch(() => props.focusedRunId, (runId) => {
@@ -450,11 +429,15 @@ function applyFocusedRunEvent(event: StreamEvent) {
   }
 }
 
+let fetchRunsDebounceTimer: number | null = null
+
 function refreshRunsAfterSubAgentTool(toolResult: ToolResult) {
-  if (toolResult.name !== 'spawn_sub_agent' || props.workspaceId <= 0) {
-    return
-  }
-  void agentRunStore.fetchRuns(props.workspaceId)
+  if (toolResult.name !== 'spawn_sub_agent' || props.workspaceId <= 0) return
+  if (fetchRunsDebounceTimer !== null) clearTimeout(fetchRunsDebounceTimer)
+  fetchRunsDebounceTimer = window.setTimeout(() => {
+    fetchRunsDebounceTimer = null
+    void agentRunStore.fetchRuns(props.workspaceId)
+  }, 300)
 }
 
 function hasDisplayableRunEventContent(event: StreamEvent): boolean {
@@ -894,10 +877,16 @@ const planSummary = computed(() => {
   return { idx: total, total, title: last.title, done: completed === total }
 })
 
+let scrollRaf: number | null = null
+
 function scrollToBottom() {
-  if (chatBody.value) {
-    chatBody.value.scrollTop = chatBody.value.scrollHeight
-  }
+  if (scrollRaf !== null) return
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = null
+    if (chatBody.value) {
+      chatBody.value.scrollTop = chatBody.value.scrollHeight
+    }
+  })
 }
 </script>
 
@@ -1056,7 +1045,7 @@ function scrollToBottom() {
               </div>
             </div>
             <template v-else-if="seg.type === 'plan'" />
-            <div v-else-if="seg.type === 'text' && seg.content" class="msg-text" v-html="renderMarkdown(seg.content)" />
+            <MarkdownMessage v-else-if="seg.type === 'text' && seg.content" :content="seg.content" />
           </template>
           <div v-if="i === visibleMessages.length - 1 && displayIsThinking" class="thinking-indicator">
             <span class="thinking-dot" />
