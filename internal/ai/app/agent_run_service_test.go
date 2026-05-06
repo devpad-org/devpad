@@ -149,6 +149,65 @@ func (s fakeRunnerChatService) StreamAgent(ctx context.Context, req AgentChatReq
 	return ch, nil
 }
 
+type conversationSaveCall struct {
+	conversationID int64
+	userID         int64
+	turns          []domain.Turn
+}
+
+type fakeConversationService struct {
+	mu       sync.Mutex
+	saveErr  error
+	saveCall []conversationSaveCall
+}
+
+func (s *fakeConversationService) CreateConversation(context.Context, int64, int64, string) (*domain.Conversation, error) {
+	return nil, nil
+}
+
+func (s *fakeConversationService) ListConversations(context.Context, int64, int64) ([]domain.Conversation, error) {
+	return nil, nil
+}
+
+func (s *fakeConversationService) GetConversation(context.Context, int64, int64) (*domain.Conversation, error) {
+	return nil, nil
+}
+
+func (s *fakeConversationService) DeleteConversation(context.Context, int64, int64) error {
+	return nil
+}
+
+func (s *fakeConversationService) SaveTurns(_ context.Context, conversationID, userID int64, turns []domain.Turn) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+	s.saveCall = append(s.saveCall, conversationSaveCall{
+		conversationID: conversationID,
+		userID:         userID,
+		turns:          cloneTurns(turns),
+	})
+	return nil
+}
+
+func (s *fakeConversationService) GetTurns(context.Context, int64, int64) ([]domain.Turn, error) {
+	return nil, nil
+}
+
+func (s *fakeConversationService) saveCalls() []conversationSaveCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	calls := make([]conversationSaveCall, 0, len(s.saveCall))
+	for _, call := range s.saveCall {
+		call.turns = cloneTurns(call.turns)
+		calls = append(calls, call)
+	}
+	return calls
+}
+
 func TestAgentRunService_StartRunContinuesAfterRequestContextCancel(t *testing.T) {
 	repo := newFakeAgentRunRepository()
 	events := make(chan domain.ClientEvent, 2)
@@ -163,7 +222,7 @@ func TestAgentRunService_StartRunContinuesAfterRequestContextCancel(t *testing.T
 		}
 		return events, nil
 	}}
-	service := NewAgentRunService(context.Background(), repo, chat)
+	service := NewAgentRunService(context.Background(), repo, chat, nil)
 	defer shutdownRunner(t, service)
 
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
@@ -195,6 +254,113 @@ func TestAgentRunService_StartRunContinuesAfterRequestContextCancel(t *testing.T
 	}
 }
 
+func TestAgentRunService_PersistsLinkedConversationFromRunLifecycle(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	conversations := &fakeConversationService{}
+	events := make(chan domain.ClientEvent, 8)
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			return events, nil
+		},
+	}, conversations)
+	defer shutdownRunner(t, service)
+
+	run, err := service.StartRun(context.Background(), StartAgentRunRequest{
+		UserID:         7,
+		WorkspaceID:    9,
+		ConversationID: 33,
+		Model:          "gpt-5.4",
+		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, "build it")},
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	initialSaves := conversations.saveCalls()
+	if len(initialSaves) != 1 {
+		t.Fatalf("expected initial conversation save, got %d", len(initialSaves))
+	}
+	assertSavedConversationTurn(t, initialSaves[0], 33, 7, 1)
+	if got := initialSaves[0].turns[0].Text(); got != "build it" {
+		t.Fatalf("expected initial user turn, got %q", got)
+	}
+
+	events <- domain.ClientEvent{ReasoningDelta: "thinking", ReasoningState: []byte(`{"state":"one"}`)}
+	events <- domain.ClientEvent{TextDelta: "I'll "}
+	events <- domain.ClientEvent{TextDelta: "do it"}
+	events <- domain.ClientEvent{ToolCalls: []domain.ToolCall{{
+		ID:     "call-1",
+		ItemID: "item-1",
+		Type:   "function",
+		Function: domain.ToolCallFunction{
+			Name:      "read_file",
+			Arguments: `{"path":"README.md"}`,
+		},
+	}}}
+	events <- domain.ClientEvent{ToolResult: &domain.ToolResultPart{
+		ToolCallID: "call-1",
+		Name:       "read_file",
+		Content:    "README contents",
+	}}
+	events <- domain.ClientEvent{TextDelta: "done"}
+	events <- domain.ClientEvent{Done: true}
+	close(events)
+
+	waitForRunStatus(t, repo, run.ID, domain.AgentRunCompleted)
+	saves := conversations.saveCalls()
+	if len(saves) != 2 {
+		t.Fatalf("expected initial and completed conversation saves, got %d", len(saves))
+	}
+	finalSave := saves[1]
+	assertSavedConversationTurn(t, finalSave, 33, 7, 4)
+	if got := finalSave.turns[0].Text(); got != "build it" {
+		t.Fatalf("expected user prompt to be preserved, got %q", got)
+	}
+	assertAssistantTurn(t, finalSave.turns[1], "thinking", `{"state":"one"}`, "I'll do it", "call-1")
+	assertToolResultTurn(t, finalSave.turns[2], "call-1", "read_file", "README contents")
+	assertAssistantTurn(t, finalSave.turns[3], "", "", "done", "")
+}
+
+func TestAgentRunService_DoesNotPersistChildRunConversation(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	conversations := &fakeConversationService{}
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			ch := make(chan domain.ClientEvent, 1)
+			ch <- domain.ClientEvent{Done: true}
+			close(ch)
+			return ch, nil
+		},
+	}, conversations)
+	defer shutdownRunner(t, service)
+
+	parent, err := service.StartRun(context.Background(), StartAgentRunRequest{
+		UserID:      7,
+		WorkspaceID: 9,
+		Model:       "gpt-5.4",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "parent")},
+	})
+	if err != nil {
+		t.Fatalf("start parent: %v", err)
+	}
+	waitForRunStatus(t, repo, parent.ID, domain.AgentRunCompleted)
+
+	child, err := service.StartChildRun(context.Background(), parent.ID, StartAgentRunRequest{
+		UserID:         7,
+		WorkspaceID:    9,
+		ConversationID: 33,
+		Model:          "gpt-5.4",
+		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, "child")},
+	})
+	if err != nil {
+		t.Fatalf("start child: %v", err)
+	}
+	waitForRunStatus(t, repo, child.ID, domain.AgentRunCompleted)
+
+	if saves := conversations.saveCalls(); len(saves) != 0 {
+		t.Fatalf("expected child run not to save primary conversation, got %d saves", len(saves))
+	}
+}
+
 func TestAgentRunService_SubscribeEventsReplaysPersistedEvents(t *testing.T) {
 	repo := newFakeAgentRunRepository()
 	events := make(chan domain.ClientEvent, 2)
@@ -202,7 +368,7 @@ func TestAgentRunService_SubscribeEventsReplaysPersistedEvents(t *testing.T) {
 		streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
 			return events, nil
 		},
-	})
+	}, nil)
 	defer shutdownRunner(t, service)
 
 	run, err := service.StartRun(context.Background(), StartAgentRunRequest{
@@ -238,7 +404,7 @@ func TestAgentRunService_CancelRunCancelsActiveRun(t *testing.T) {
 		streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
 			return events, nil
 		},
-	})
+	}, nil)
 	defer shutdownRunner(t, service)
 
 	run, err := service.StartRun(context.Background(), StartAgentRunRequest{
@@ -274,7 +440,7 @@ func TestAgentRunService_StartChildRunPersistsParentRun(t *testing.T) {
 			close(ch)
 			return ch, nil
 		},
-	})
+	}, nil)
 	defer shutdownRunner(t, service)
 
 	parent, err := service.StartRun(context.Background(), StartAgentRunRequest{
@@ -309,7 +475,7 @@ func TestAgentRunService_GetRunEnforcesOwnership(t *testing.T) {
 			close(ch)
 			return ch, nil
 		},
-	})
+	}, nil)
 	defer shutdownRunner(t, service)
 
 	run, err := service.StartRun(context.Background(), StartAgentRunRequest{
@@ -351,6 +517,58 @@ func receiveRunEvent(t *testing.T, stream <-chan domain.AgentRunEvent) domain.Ag
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for run event")
 		return domain.AgentRunEvent{}
+	}
+}
+
+func assertSavedConversationTurn(t *testing.T, call conversationSaveCall, conversationID, userID int64, turnCount int) {
+	t.Helper()
+	if call.conversationID != conversationID || call.userID != userID {
+		t.Fatalf("expected save for conversation %d user %d, got conversation %d user %d", conversationID, userID, call.conversationID, call.userID)
+	}
+	if len(call.turns) != turnCount {
+		t.Fatalf("expected %d saved turns, got %d: %+v", turnCount, len(call.turns), call.turns)
+	}
+}
+
+func assertAssistantTurn(t *testing.T, turn domain.Turn, thinkingText, thinkingState, text, toolCallID string) {
+	t.Helper()
+	if turn.Role != domain.RoleAssistant {
+		t.Fatalf("expected assistant turn, got %s", turn.Role)
+	}
+	if got := turn.ThinkingText(); got != thinkingText {
+		t.Fatalf("expected thinking %q, got %q", thinkingText, got)
+	}
+	if thinkingState != "" {
+		if got := string(turn.ThinkingState()); got != thinkingState {
+			t.Fatalf("expected thinking state %s, got %s", thinkingState, got)
+		}
+	}
+	if got := turn.Text(); got != text {
+		t.Fatalf("expected assistant text %q, got %q", text, got)
+	}
+	toolCalls := turn.ToolCalls()
+	if toolCallID == "" {
+		if len(toolCalls) != 0 {
+			t.Fatalf("expected no tool calls, got %+v", toolCalls)
+		}
+		return
+	}
+	if len(toolCalls) != 1 || toolCalls[0].ID != toolCallID {
+		t.Fatalf("expected tool call %q, got %+v", toolCallID, toolCalls)
+	}
+}
+
+func assertToolResultTurn(t *testing.T, turn domain.Turn, toolCallID, name, content string) {
+	t.Helper()
+	if turn.Role != domain.RoleUser {
+		t.Fatalf("expected user tool-result turn, got %s", turn.Role)
+	}
+	result := turn.ToolResult()
+	if result == nil {
+		t.Fatalf("expected tool result, got %+v", turn)
+	}
+	if result.ToolCallID != toolCallID || result.Name != name || result.Content != content {
+		t.Fatalf("unexpected tool result: %+v", result)
 	}
 }
 

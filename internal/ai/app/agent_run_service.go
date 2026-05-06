@@ -52,9 +52,10 @@ type agentEventBroker interface {
 }
 
 type agentRunService struct {
-	repo   AgentRunRepository
-	chat   ChatService
-	broker agentEventBroker
+	repo          AgentRunRepository
+	chat          ChatService
+	conversations ConversationService
+	broker        agentEventBroker
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
@@ -65,18 +66,19 @@ type agentRunService struct {
 }
 
 // NewAgentRunService creates an agent runner that owns background run lifecycles.
-func NewAgentRunService(ctx context.Context, repo AgentRunRepository, chat ChatService) *agentRunService {
+func NewAgentRunService(ctx context.Context, repo AgentRunRepository, chat ChatService, conversations ConversationService) *agentRunService {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	rootCtx, cancel := context.WithCancel(ctx)
 	service := &agentRunService{
-		repo:       repo,
-		chat:       chat,
-		broker:     newMemoryAgentEventBroker(),
-		rootCtx:    rootCtx,
-		rootCancel: cancel,
-		cancels:    make(map[int64]context.CancelFunc),
+		repo:          repo,
+		chat:          chat,
+		conversations: conversations,
+		broker:        newMemoryAgentEventBroker(),
+		rootCtx:       rootCtx,
+		rootCancel:    cancel,
+		cancels:       make(map[int64]context.CancelFunc),
 	}
 	if err := service.repo.MarkActiveRunsFailed(context.Background(), runnerShutdownMessage); err != nil {
 		log.Printf("failed to reconcile active agent runs: %v", err)
@@ -95,6 +97,11 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 		}
 		if parent.WorkspaceID != req.WorkspaceID {
 			return nil, fmt.Errorf("parent run workspace mismatch: %w", domain.ErrAgentRunNotFound)
+		}
+	}
+	if req.ParentRunID == 0 && req.ConversationID > 0 && s.conversations != nil {
+		if err := s.conversations.SaveTurns(ctx, req.ConversationID, req.UserID, cloneTurns(req.Turns)); err != nil {
+			return nil, fmt.Errorf("saving initial agent run conversation: %w", err)
 		}
 	}
 
@@ -328,9 +335,43 @@ func (s *agentRunService) finishRun(runID int64, currentStatus domain.AgentRunSt
 	if errorMessage != "" || currentStatus == domain.AgentRunFailed {
 		status = domain.AgentRunFailed
 	}
+	if status == domain.AgentRunCompleted {
+		if err := s.persistCompletedRunConversation(context.Background(), runID); err != nil {
+			log.Printf("failed to persist completed agent run %d conversation: %v", runID, err)
+			status = domain.AgentRunFailed
+			errorMessage = fmt.Sprintf("saving completed conversation transcript: %v", err)
+		}
+	}
 	if err := s.repo.UpdateStatus(context.Background(), runID, status, errorMessage); err != nil {
 		log.Printf("failed to finish agent run %d: %v", runID, err)
 	}
+}
+
+func (s *agentRunService) persistCompletedRunConversation(ctx context.Context, runID int64) error {
+	run, err := s.repo.GetRun(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("getting agent run: %w", err)
+	}
+	if run == nil {
+		return domain.ErrAgentRunNotFound
+	}
+	if !s.shouldPersistRunConversation(run) {
+		return nil
+	}
+
+	events, err := s.repo.ListEvents(ctx, runID, 0)
+	if err != nil {
+		return fmt.Errorf("listing agent run events: %w", err)
+	}
+	turns := buildAgentRunConversationTurns(run.InputTurns, events)
+	if err := s.conversations.SaveTurns(ctx, run.ConversationID, run.UserID, turns); err != nil {
+		return fmt.Errorf("saving conversation turns: %w", err)
+	}
+	return nil
+}
+
+func (s *agentRunService) shouldPersistRunConversation(run *domain.AgentRun) bool {
+	return s.conversations != nil && run != nil && run.ConversationID > 0 && run.ParentRunID == 0
 }
 
 func (s *agentRunService) failRun(runID int64, message string) error {

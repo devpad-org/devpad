@@ -48,7 +48,7 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	approvalBroker := approval.NewMemoryBroker()
 	chatService := app.NewChatService(catalogService, aitools.NewCatalog(), toolExecutor, approvalBroker)
 	agentRuns := storage.NewAgentRunRepository(db)
-	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService)
+	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService)
 	toolExecutor.SetChildAgentRunner(childAgentRunStarter{runs: agentRunService})
 
 	return &Module{

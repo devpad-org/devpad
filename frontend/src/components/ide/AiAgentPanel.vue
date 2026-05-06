@@ -579,11 +579,6 @@ async function sendMessage() {
   // Build the API payload from rawMessages (excludes the empty assistant placeholder).
   const chatMessages: ChatMessage[] = rawMessages.value.slice()
 
-  // Pre-save the user message (and any prior history) so the linked conversation is never
-  // empty — this ensures "Continue" always loads at least the user's message even if the
-  // SSE stream is later aborted (e.g. "New Chat" while streaming).
-  await saveCurrentConversation().catch((err) => console.error('Pre-run save failed:', err))
-
   // Each LLM iteration is tracked as a "round" so we can reconstruct the correct
   // interleaved assistant/tool message sequence for rawMessages on completion.
   interface Round {
