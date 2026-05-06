@@ -24,7 +24,6 @@ const error = ref<string | null>(null)
 
 const activeFile = ref<string | null>(null)
 const terminalMinimized = ref(false)
-const agentVisible = ref(true)
 const previewVisible = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
 const selectedGitCommit = ref<GitCommit | null>(null)
@@ -35,8 +34,8 @@ type GitDiffRequest =
   | { kind: 'commit'; commit: GitCommit; file: GitCommitFile; requestId: number }
   | { kind: 'working'; path: string; staged: boolean; requestId: number }
 
-type SidebarTab = 'explorer' | 'git' | 'info' | 'services'
-const activeSidebarTab = ref<SidebarTab>('explorer')
+type ActivityTab = 'ai' | 'explorer' | 'git' | 'info' | 'services'
+const activeActivity = ref<ActivityTab>('ai')
 
 const sidebar = useResizable({
   direction: 'horizontal',
@@ -54,7 +53,7 @@ const terminal = useResizable({
   maxSize: 600,
 })
 
-const agent = useResizable({
+const aiSidePanel = useResizable({
   direction: 'horizontal',
   edge: 'right',
   initialSize: 320,
@@ -120,7 +119,7 @@ function handleFileSelect(path: string) {
 }
 
 function handleGitCommitSelect(commit: GitCommit) {
-  activeSidebarTab.value = 'git'
+  activeActivity.value = 'git'
   selectedGitCommit.value = commit
 }
 
@@ -184,7 +183,7 @@ function handleBack() {
       - ide-toolbar: top toolbar/title bar
       - ide-activity-bar: far-left activity switcher
       - ide-left-panel: left side panel next to the activity bar
-      - ide-primary-surface: editor or git graph surface
+      - ide-primary-surface: AI chat, editor, or git graph surface
       - ide-right-panel: far-right side panel region
       - ide-terminal-panel: bottom terminal panel
       - ide-status-bar: bottom status bar (declared in GitStatusBar.vue)
@@ -253,20 +252,6 @@ function handleBack() {
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
           </svg>
         </button>
-        <button
-          class="titlebar-toggle"
-          :class="{ active: agentVisible }"
-          @click="agentVisible = !agentVisible"
-          title="Toggle AI agent"
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
-            <path d="M5 3v4" />
-            <path d="M19 17v4" />
-            <path d="M3 5h4" />
-            <path d="M17 19h4" />
-          </svg>
-        </button>
       </div>
     </div>
 
@@ -275,8 +260,22 @@ function handleBack() {
       <nav id="ide-activity-bar" class="activity-bar" aria-label="Activity bar">
         <button
           class="activity-btn"
-          :class="{ active: activeSidebarTab === 'explorer' }"
-          @click="activeSidebarTab = 'explorer'"
+          :class="{ active: activeActivity === 'ai' }"
+          @click="activeActivity = 'ai'"
+          title="AI"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+            <path d="M5 3v4" />
+            <path d="M19 17v4" />
+            <path d="M3 5h4" />
+            <path d="M17 19h4" />
+          </svg>
+        </button>
+        <button
+          class="activity-btn"
+          :class="{ active: activeActivity === 'explorer' }"
+          @click="activeActivity = 'explorer'"
           title="Explorer"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -285,8 +284,8 @@ function handleBack() {
         </button>
         <button
           class="activity-btn"
-          :class="{ active: activeSidebarTab === 'git' }"
-          @click="activeSidebarTab = 'git'"
+          :class="{ active: activeActivity === 'git' }"
+          @click="activeActivity = 'git'"
           title="Source Control"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -297,8 +296,8 @@ function handleBack() {
         </button>
         <button
           class="activity-btn"
-          :class="{ active: activeSidebarTab === 'info' }"
-          @click="activeSidebarTab = 'info'"
+          :class="{ active: activeActivity === 'info' }"
+          @click="activeActivity = 'info'"
           title="Workspace Info"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -309,8 +308,8 @@ function handleBack() {
         </button>
         <button
           class="activity-btn"
-          :class="{ active: activeSidebarTab === 'services' }"
-          @click="activeSidebarTab = 'services'"
+          :class="{ active: activeActivity === 'services' }"
+          @click="activeActivity = 'services'"
           title="Database Services"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -322,19 +321,20 @@ function handleBack() {
       </nav>
 
       <aside
+        v-show="activeActivity !== 'ai'"
         id="ide-left-panel"
         class="ide-sidebar"
         aria-label="Left side panel"
         :style="{ width: sidebar.size.value + 'px' }"
       >
         <FileExplorer
-          v-show="activeSidebarTab === 'explorer'"
+          v-show="activeActivity === 'explorer'"
           :workspace-id="workspace?.id ?? 0"
           :workspace-name="workspace?.name ?? ''"
           @select="handleFileSelect"
         />
         <GitPanel
-          v-show="activeSidebarTab === 'git'"
+          v-show="activeActivity === 'git'"
           :workspace-id="workspace?.id ?? 0"
           :selected-commit="selectedGitCommit"
           @commit-file-select="handleGitCommitFileSelect"
@@ -342,15 +342,16 @@ function handleBack() {
           @clear-commit="clearSelectedGitCommit"
         />
         <WorkspaceInfoPanel
-          v-show="activeSidebarTab === 'info'"
+          v-show="activeActivity === 'info'"
           :workspace-id="workspace?.id ?? 0"
         />
         <ServicesPanel
-          v-show="activeSidebarTab === 'services'"
+          v-show="activeActivity === 'services'"
           :workspace-id="workspace?.id ?? 0"
         />
       </aside>
       <div
+        v-show="activeActivity !== 'ai'"
         class="resize-handle resize-handle--horizontal"
         :class="{ active: sidebar.isDragging.value }"
         @pointerdown="sidebar.onPointerDown"
@@ -358,18 +359,21 @@ function handleBack() {
 
       <!-- Center + Bottom -->
       <div class="ide-center">
-        <section id="ide-primary-surface" class="ide-editor-area" aria-label="Primary editor surface">
+        <section id="ide-primary-surface" class="ide-editor-area" aria-label="Primary IDE surface">
+          <div v-show="activeActivity === 'ai'" class="ide-ai-surface">
+            <AiAgentPanel :workspace-id="workspace?.id ?? 0" />
+          </div>
           <EditorPanel
-            v-show="activeSidebarTab !== 'git'"
+            v-show="activeActivity !== 'ai' && activeActivity !== 'git'"
             ref="editorPanel"
             :workspace-id="workspace?.id ?? 0"
             :file-path="activeFile"
             @active-change="(p: string | null) => activeFile = p"
           />
           <GitGraphPanel
-            v-show="activeSidebarTab === 'git'"
+            v-show="activeActivity === 'git'"
             :workspace-id="workspace?.id ?? 0"
-            :active="activeSidebarTab === 'git'"
+            :active="activeActivity === 'git'"
             :selected-commit-hash="selectedGitCommit?.hash ?? null"
             :diff-request="gitDiffRequest"
             @commit-select="handleGitCommitSelect"
@@ -398,7 +402,7 @@ function handleBack() {
       </div>
 
       <div
-        v-if="previewVisible || agentVisible"
+        v-if="previewVisible || activeActivity === 'ai'"
         id="ide-right-panel"
         class="ide-right-panel"
         role="region"
@@ -419,22 +423,20 @@ function handleBack() {
           </aside>
         </template>
 
-        <!-- Right panel: AI Agent -->
-        <template v-if="agentVisible">
+        <!-- Right panel: reserved for AI context -->
+        <template v-else-if="activeActivity === 'ai'">
           <div
             class="resize-handle resize-handle--horizontal"
-            :class="{ active: agent.isDragging.value }"
-            @pointerdown="agent.onPointerDown"
+            :class="{ active: aiSidePanel.isDragging.value }"
+            @pointerdown="aiSidePanel.onPointerDown"
           />
-          <aside class="ide-agent" :style="{ width: agent.size.value + 'px' }">
-            <AiAgentPanel :workspace-id="workspace?.id ?? 0" />
-          </aside>
+          <aside class="ide-ai-side-panel" :style="{ width: aiSidePanel.size.value + 'px' }" aria-label="AI side panel" />
         </template>
       </div>
     </div>
     <GitStatusBar
       :workspace-id="workspace?.id ?? 0"
-      @open-git="activeSidebarTab = 'git'"
+      @open-git="activeActivity = 'git'"
     />
   </div>
 </template>
@@ -696,6 +698,12 @@ function handleBack() {
   min-height: 0;
 }
 
+.ide-ai-surface {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-base);
+}
+
 .ide-terminal-area {
   flex-shrink: 0;
 }
@@ -710,7 +718,7 @@ function handleBack() {
   min-width: 0;
 }
 
-.ide-agent {
+.ide-ai-side-panel {
   flex-shrink: 0;
   overflow-y: auto;
   background: var(--bg-surface);
