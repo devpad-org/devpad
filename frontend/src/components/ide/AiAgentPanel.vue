@@ -653,25 +653,6 @@ function scrollToBottom() {
         <span class="agent-title">AI Agent</span>
       </div>
       <div class="agent-header-actions">
-        <template v-if="models.length > 0">
-          <select v-model="selectedModel" class="model-selector">
-            <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
-          </select>
-          <button
-            v-if="canToggleThinking"
-            type="button"
-            class="thinking-toggle"
-            :class="{ active: thinkingEnabled }"
-            :aria-pressed="thinkingEnabled"
-            :title="thinkingEnabled ? 'Thinking is enabled for this model.' : 'Thinking is disabled for this model.'"
-            @click="toggleThinking"
-          >
-            <span class="thinking-toggle-label">Thinking</span>
-            <span class="thinking-toggle-state">{{ thinkingEnabled ? 'On' : 'Off' }}</span>
-          </button>
-        </template>
-        <span v-else class="agent-badge">No Models</span>
-        <!-- History toggle button -->
         <button
           class="history-btn"
           :class="{ active: historyOpen }"
@@ -886,30 +867,52 @@ function scrollToBottom() {
     </div>
 
     <div class="agent-input-area">
-        <div class="input-container" :class="{ focused: inputFocused }" @click="inputEl?.focus()">
-        <textarea
-          v-model="inputValue"
-          class="agent-input"
-          placeholder="Ask the AI agent…"
-          rows="1"
-          :disabled="streaming"
-          @keydown.enter.exact.prevent="sendMessage"
-          @focus="inputFocused = true"
-          @blur="inputFocused = false"
-          @input="autoResize"
-          ref="inputEl"
-        />
-        <button v-if="streaming" class="agent-send agent-stop" @click="stopStreaming" title="Stop">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-            <rect x="6" y="6" width="12" height="12" rx="2" />
-          </svg>
-        </button>
-        <button v-else class="agent-send" :class="{ active: inputValue.trim() }" @click="sendMessage" title="Send">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m22 2-7 20-4-9-9-4Z" />
-            <path d="M22 2 11 13" />
-          </svg>
-        </button>
+      <div class="input-shell" :class="{ focused: inputFocused }">
+        <div class="input-container" @click="inputEl?.focus()">
+          <textarea
+            v-model="inputValue"
+            class="agent-input"
+            placeholder="Ask the AI agent…"
+            rows="1"
+            :disabled="streaming"
+            @keydown.enter.exact.prevent="sendMessage"
+            @focus="inputFocused = true"
+            @blur="inputFocused = false"
+            @input="autoResize"
+            ref="inputEl"
+          />
+          <button v-if="streaming" class="agent-send agent-stop" @click="stopStreaming" title="Stop">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
+          </button>
+          <button v-else class="agent-send" :class="{ active: inputValue.trim() }" @click="sendMessage" title="Send">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m22 2-7 20-4-9-9-4Z" />
+              <path d="M22 2 11 13" />
+            </svg>
+          </button>
+        </div>
+        <div class="input-toolbar">
+          <template v-if="models.length > 0">
+            <select v-model="selectedModel" class="model-selector">
+              <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
+            </select>
+            <button
+              v-if="canToggleThinking"
+              type="button"
+              class="thinking-toggle"
+              :class="{ active: thinkingEnabled }"
+              :aria-pressed="thinkingEnabled"
+              :title="thinkingEnabled ? 'Thinking is enabled for this model.' : 'Thinking is disabled for this model.'"
+              @click="toggleThinking"
+            >
+              <span class="thinking-toggle-label">Thinking</span>
+              <span class="thinking-toggle-state">{{ thinkingEnabled ? 'On' : 'Off' }}</span>
+            </button>
+          </template>
+          <span v-else class="agent-badge">No Models</span>
+        </div>
       </div>
     </div>
   </div>
@@ -1268,22 +1271,36 @@ function scrollToBottom() {
   flex-shrink: 0;
 }
 
+.input-shell {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface-alt);
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-lg, 12px);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.input-shell.focused {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
 .input-container {
   display: flex;
   align-items: flex-end;
   gap: var(--space-2);
-  background: var(--bg-surface-alt);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-lg, 12px);
   padding: var(--space-2, 8px);
   padding-left: var(--space-3, 12px);
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   cursor: text;
 }
 
-.input-container.focused {
-  border-color: var(--accent-border);
-  box-shadow: 0 0 0 3px var(--accent-glow);
+.input-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: 0 var(--space-2, 8px) var(--space-2, 8px);
+  padding-left: var(--space-3, 12px);
 }
 
 .agent-input {
