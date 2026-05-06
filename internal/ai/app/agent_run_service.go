@@ -116,11 +116,13 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 	s.registerCancel(run.ID, cancel)
 
 	stream, err := s.chat.StreamAgent(runCtx, AgentChatRequest{
-		UserID:      req.UserID,
-		WorkspaceID: req.WorkspaceID,
-		Model:       req.Model,
-		Turns:       cloneTurns(req.Turns),
-		Thinking:    cloneThinking(req.Thinking),
+		UserID:         req.UserID,
+		WorkspaceID:    req.WorkspaceID,
+		CurrentRunID:   run.ID,
+		ConversationID: req.ConversationID,
+		Model:          req.Model,
+		Turns:          cloneTurns(req.Turns),
+		Thinking:       cloneThinking(req.Thinking),
 	})
 	if err != nil {
 		s.unregisterCancel(run.ID)

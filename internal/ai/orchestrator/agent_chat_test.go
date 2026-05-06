@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
+	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 )
 
 type mockChatService struct {
@@ -35,14 +35,14 @@ func (m *mockChatService) ChatStream(ctx context.Context, req domain.ChatRequest
 }
 
 type mockToolExecutor struct {
-	executeToolFn func(ctx context.Context, userID, workspaceID int64, toolName string, args json.RawMessage) domain.ToolResultPart
+	executeToolFn func(ctx context.Context, req aitools.ExecutionRequest) domain.ToolResultPart
 }
 
-func (m *mockToolExecutor) ExecuteTool(ctx context.Context, userID, workspaceID int64, toolName string, args json.RawMessage) domain.ToolResultPart {
+func (m *mockToolExecutor) ExecuteTool(ctx context.Context, req aitools.ExecutionRequest) domain.ToolResultPart {
 	if m.executeToolFn != nil {
-		return m.executeToolFn(ctx, userID, workspaceID, toolName, args)
+		return m.executeToolFn(ctx, req)
 	}
-	return domain.ToolResultPart{Name: toolName, Content: "ok"}
+	return domain.ToolResultPart{Name: req.ToolName, Content: "ok"}
 }
 
 type mockApprovalBroker struct {
@@ -133,8 +133,8 @@ func TestAgentChatOrchestrator_MultiToolCallOrdering(t *testing.T) {
 			},
 		},
 		toolCatalog: fakeToolCatalog{},
-		toolExecutor: &mockToolExecutor{executeToolFn: func(_ context.Context, _, _ int64, toolName string, _ json.RawMessage) domain.ToolResultPart {
-			return domain.ToolResultPart{Name: toolName, Content: "result-" + toolName}
+		toolExecutor: &mockToolExecutor{executeToolFn: func(_ context.Context, req aitools.ExecutionRequest) domain.ToolResultPart {
+			return domain.ToolResultPart{Name: req.ToolName, Content: "result-" + req.ToolName}
 		}},
 		approvals:         &mockApprovalBroker{awaitFn: func(context.Context, string) (bool, error) { return true, nil }},
 		maxToolIterations: defaultMaxToolIterations,
@@ -227,7 +227,7 @@ func TestAgentChatOrchestrator_ApprovalWaitAndDenial(t *testing.T) {
 			},
 		},
 		toolCatalog: fakeToolCatalog{},
-		toolExecutor: &mockToolExecutor{executeToolFn: func(_ context.Context, _, _ int64, _ string, _ json.RawMessage) domain.ToolResultPart {
+		toolExecutor: &mockToolExecutor{executeToolFn: func(_ context.Context, _ aitools.ExecutionRequest) domain.ToolResultPart {
 			toolCalls++
 			return domain.ToolResultPart{Name: "run_command", Content: "should-not-run"}
 		}},
@@ -316,7 +316,7 @@ func TestAgentChatOrchestrator_CancellationStopsToolExecution(t *testing.T) {
 			},
 		},
 		toolCatalog: fakeToolCatalog{},
-		toolExecutor: &mockToolExecutor{executeToolFn: func(ctx context.Context, _, _ int64, _ string, _ json.RawMessage) domain.ToolResultPart {
+		toolExecutor: &mockToolExecutor{executeToolFn: func(ctx context.Context, _ aitools.ExecutionRequest) domain.ToolResultPart {
 			toolStarted <- struct{}{}
 			<-ctx.Done()
 			return domain.ToolResultPart{Name: "read_file", Content: ctx.Err().Error(), IsError: true}

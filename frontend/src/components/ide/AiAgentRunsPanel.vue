@@ -11,6 +11,12 @@ const emit = defineEmits<{
   (e: 'focus', run: AgentRun): void
 }>()
 
+interface RunListItem {
+  run: AgentRun
+  depth: number
+  isLastChild: boolean
+}
+
 const runStore = useAgentRunStore()
 let refreshTimer: number | null = null
 
@@ -21,6 +27,44 @@ const workspaceRuns = computed(() =>
 const activeCount = computed(() =>
   workspaceRuns.value.filter((run) => isAgentRunActiveStatus(run.status)).length,
 )
+
+const runListItems = computed<RunListItem[]>(() => {
+  const byId = new Map(workspaceRuns.value.map((run) => [run.id, run]))
+  const children = new Map<number, AgentRun[]>()
+  const roots: AgentRun[] = []
+
+  for (const run of workspaceRuns.value) {
+    if (run.parentRunId && byId.has(run.parentRunId)) {
+      const siblings = children.get(run.parentRunId) ?? []
+      siblings.push(run)
+      children.set(run.parentRunId, siblings)
+    } else {
+      roots.push(run)
+    }
+  }
+
+  const compareRuns = (a: AgentRun, b: AgentRun) =>
+    new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime() || b.id - a.id
+
+  roots.sort(compareRuns)
+  for (const siblings of children.values()) {
+    siblings.sort(compareRuns)
+  }
+
+  const items: RunListItem[] = []
+  const appendRun = (run: AgentRun, depth: number, isLastChild: boolean) => {
+    items.push({ run, depth, isLastChild })
+    const runChildren = children.get(run.id) ?? []
+    runChildren.forEach((child, index) => {
+      appendRun(child, depth + 1, index === runChildren.length - 1)
+    })
+  }
+
+  roots.forEach((run, index) => {
+    appendRun(run, 0, index === roots.length - 1)
+  })
+  return items
+})
 
 async function refreshRuns(): Promise<void> {
   await runStore.fetchRuns(props.workspaceId)
@@ -101,30 +145,35 @@ onUnmounted(stopRefreshTimer)
     </div>
     <div v-else class="agent-runs-list">
       <button
-        v-for="run in workspaceRuns"
-        :key="run.id"
+        v-for="item in runListItems"
+        :key="item.run.id"
         type="button"
         class="agent-run-item"
         :class="[
-          `agent-run-item--${run.status}`,
+          `agent-run-item--${item.run.status}`,
           {
-            selected: run.id === selectedRunId,
-            active: isAgentRunActiveStatus(run.status),
+            selected: item.run.id === selectedRunId,
+            active: isAgentRunActiveStatus(item.run.status),
+            child: item.depth > 0,
+            'last-child': item.isLastChild,
           },
         ]"
-        @click="focusRun(run)"
+        :style="{ '--run-depth': item.depth }"
+        @click="focusRun(item.run)"
       >
-        <span class="run-status-dot" />
-        <span class="run-main">
-          <span class="run-title">{{ formatRunTitle(run) }}</span>
-          <span class="run-meta">
-            <span>{{ run.model }}</span>
-            <span class="run-meta-sep">&middot;</span>
-            <span>{{ formatRelativeTime(run.updatedAt) }}</span>
-          </span>
-          <span v-if="run.error" class="run-error">{{ run.error }}</span>
+        <span class="run-tree" :class="{ child: item.depth > 0, 'last-child': item.isLastChild }" aria-hidden="true">
+          <span class="run-status-dot" />
         </span>
-        <span class="run-status">{{ formatStatus(run.status) }}</span>
+        <span class="run-main">
+          <span class="run-title">{{ formatRunTitle(item.run) }}</span>
+          <span class="run-meta">
+            <span>{{ item.run.model }}</span>
+            <span class="run-meta-sep">&middot;</span>
+            <span>{{ formatRelativeTime(item.run.updatedAt) }}</span>
+          </span>
+          <span v-if="item.run.error" class="run-error">{{ item.run.error }}</span>
+        </span>
+        <span class="run-status">{{ formatStatus(item.run.status) }}</span>
       </button>
     </div>
   </div>
@@ -201,8 +250,10 @@ onUnmounted(stopRefreshTimer)
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
   gap: var(--space-2);
+  position: relative;
   width: 100%;
   padding: var(--space-2);
+  padding-left: calc(var(--space-2) + (var(--run-depth, 0) * 16px));
   border: 0.5px solid transparent;
   border-radius: var(--radius-md);
   color: var(--text-secondary);
@@ -222,6 +273,39 @@ onUnmounted(stopRefreshTimer)
 }
 
 .agent-run-item.active .run-title { color: var(--text-primary); }
+
+.run-tree {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: 10px;
+  min-height: 18px;
+}
+
+.run-tree.child::before {
+  content: '';
+  position: absolute;
+  left: -9px;
+  top: -11px;
+  bottom: 9px;
+  width: 1px;
+  background: var(--border-default);
+}
+
+.run-tree.child:not(.last-child)::before {
+  bottom: -17px;
+}
+
+.run-tree.child::after {
+  content: '';
+  position: absolute;
+  left: -9px;
+  top: 8px;
+  width: 9px;
+  height: 1px;
+  background: var(--border-default);
+}
 
 .run-status-dot {
   width: 7px;

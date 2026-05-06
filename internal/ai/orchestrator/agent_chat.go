@@ -212,13 +212,16 @@ func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentCha
 		}
 	}
 
-	result := o.toolExecutor.ExecuteTool(
-		ctx,
-		req.UserID,
-		req.WorkspaceID,
-		toolCall.Function.Name,
-		json.RawMessage(toolCall.Function.Arguments),
-	)
+	result := o.toolExecutor.ExecuteTool(ctx, aitools.ExecutionRequest{
+		UserID:         req.UserID,
+		WorkspaceID:    req.WorkspaceID,
+		CurrentRunID:   req.CurrentRunID,
+		ConversationID: req.ConversationID,
+		Model:          req.Model,
+		Thinking:       req.Thinking,
+		ToolName:       toolCall.Function.Name,
+		Arguments:      json.RawMessage(toolCall.Function.Arguments),
+	})
 	if ctx.Err() != nil {
 		return false
 	}

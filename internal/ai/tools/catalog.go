@@ -99,6 +99,14 @@ func AgentTools() []domain.ToolDefinition {
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"steps":{"type":"array","description":"The full list of plan steps with current statuses","items":{"type":"object","properties":{"title":{"type":"string","description":"Short description of the step"},"status":{"type":"string","enum":["pending","in_progress","completed","failed"],"description":"Current status of the step"}},"required":["title","status"]}}},"required":["steps"]}`),
 			},
 		},
+		{
+			Type: "function",
+			Function: domain.ToolFunction{
+				Name:        "spawn_sub_agent",
+				Description: "Start a child AI agent run for an independent subtask. The child appears nested under this run in the Agent Runs sidebar. Use wait_for_result when you need the child's final answer, such as a module summary, before continuing.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"Complete instructions for the child agent, including all necessary context, scope, and expected output."},"model":{"type":"string","description":"Optional model ID. Defaults to the current model."},"wait_for_result":{"type":"boolean","description":"When true, wait for the child run to finish and return its final text in the summary field. Defaults to false."},"timeout_seconds":{"type":"integer","description":"Maximum seconds to wait when wait_for_result is true. Defaults to 120 and is capped at 600."}},"required":["prompt"]}`),
+			},
+		},
 	}
 }
 
@@ -118,6 +126,11 @@ Plan management:
 - When you do use a plan, mark the current step as "in_progress" before starting it.
 - Mark it "completed" (or "failed") immediately after, then move to the next step.
 - Keep all steps in each update_plan call — always send the full list with current statuses.
+
+Sub-agents:
+- Use spawn_sub_agent only when a task has independent subtasks that can make progress without sharing live context.
+- Make each sub-agent prompt self-contained: include the goal, relevant constraints, and the expected result.
+- By default the tool returns a child run ID immediately. Set wait_for_result=true when you need the child's answer before continuing; the result will include a summary field with the child's final response.
 
 Format your responses using Markdown for readability:
 - Use **bold** for emphasis and key terms.

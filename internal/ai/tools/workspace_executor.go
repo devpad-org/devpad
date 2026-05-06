@@ -3,12 +3,19 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	"github.com/devpad-org/devpad/internal/workspace"
+)
+
+const (
+	childAgentDefaultWaitSeconds = 120
+	childAgentMaxWaitSeconds     = 600
 )
 
 // WorkspaceOps is the reduced workspace surface the AI tooling needs in Phase 1.
@@ -20,7 +27,8 @@ type WorkspaceOps interface {
 
 // WorkspaceExecutor implements Executor using workspace operations.
 type WorkspaceExecutor struct {
-	ws WorkspaceOps
+	ws          WorkspaceOps
+	childRunner ChildAgentRunner
 }
 
 // NewWorkspaceExecutor creates an Executor backed by workspace operations.
@@ -28,33 +36,40 @@ func NewWorkspaceExecutor(ws WorkspaceOps) *WorkspaceExecutor {
 	return &WorkspaceExecutor{ws: ws}
 }
 
-func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, userID, workspaceID int64, toolName string, args json.RawMessage) domain.ToolResultPart {
+// SetChildAgentRunner wires the background runner used by spawn_sub_agent.
+func (e *WorkspaceExecutor) SetChildAgentRunner(runner ChildAgentRunner) {
+	e.childRunner = runner
+}
+
+func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionRequest) domain.ToolResultPart {
 	var params map[string]any
-	if err := json.Unmarshal(args, &params); err != nil {
-		return toolFailure(toolName, "invalid tool arguments: %v", err)
+	if err := json.Unmarshal(req.Arguments, &params); err != nil {
+		return toolFailure(req.ToolName, "invalid tool arguments: %v", err)
 	}
 
-	switch toolName {
+	switch req.ToolName {
 	case "read_file":
-		return e.readFile(ctx, userID, workspaceID, params)
+		return e.readFile(ctx, req.UserID, req.WorkspaceID, params)
 	case "write_file":
-		return e.writeFile(ctx, userID, workspaceID, params)
+		return e.writeFile(ctx, req.UserID, req.WorkspaceID, params)
 	case "list_files":
-		return e.listFiles(ctx, userID, workspaceID, params)
+		return e.listFiles(ctx, req.UserID, req.WorkspaceID, params)
 	case "delete_file":
-		return e.deleteFile(ctx, userID, workspaceID, params)
+		return e.deleteFile(ctx, req.UserID, req.WorkspaceID, params)
 	case "search_files":
-		return e.searchFiles(ctx, userID, workspaceID, params)
+		return e.searchFiles(ctx, req.UserID, req.WorkspaceID, params)
 	case "run_command":
-		return e.runCommand(ctx, userID, workspaceID, params)
+		return e.runCommand(ctx, req.UserID, req.WorkspaceID, params)
 	case "edit_file":
-		return e.editFile(ctx, userID, workspaceID, params)
+		return e.editFile(ctx, req.UserID, req.WorkspaceID, params)
 	case "read_file_lines":
-		return e.readFileLines(ctx, userID, workspaceID, params)
+		return e.readFileLines(ctx, req.UserID, req.WorkspaceID, params)
 	case "update_plan":
-		return toolSuccess(toolName, "Plan updated.")
+		return toolSuccess(req.ToolName, "Plan updated.")
+	case "spawn_sub_agent":
+		return e.spawnSubAgent(ctx, req, params)
 	default:
-		return toolFailure(toolName, "unknown tool: %s", toolName)
+		return toolFailure(req.ToolName, "unknown tool: %s", req.ToolName)
 	}
 }
 
@@ -227,6 +242,90 @@ func (e *WorkspaceExecutor) readFileLines(ctx context.Context, userID, workspace
 	return toolSuccess("read_file_lines", result.String())
 }
 
+func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequest, params map[string]any) domain.ToolResultPart {
+	if req.CurrentRunID <= 0 {
+		return toolFailure("spawn_sub_agent", "Error: spawn_sub_agent is only available from a persisted agent run")
+	}
+	if e.childRunner == nil {
+		return toolFailure("spawn_sub_agent", "Error: sub-agent runner is not available")
+	}
+
+	prompt, _ := params["prompt"].(string)
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return toolFailure("spawn_sub_agent", "Error: prompt is required")
+	}
+
+	model, _ := params["model"].(string)
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = req.Model
+	}
+
+	child, err := e.childRunner.StartChildAgentRun(ctx, ChildAgentRunRequest{
+		ParentRunID:    req.CurrentRunID,
+		UserID:         req.UserID,
+		WorkspaceID:    req.WorkspaceID,
+		ConversationID: req.ConversationID,
+		Model:          model,
+		Prompt:         prompt,
+		Thinking:       cloneThinking(req.Thinking),
+	})
+	if err != nil {
+		return toolFailure("spawn_sub_agent", "Error: %v", err)
+	}
+
+	response := map[string]any{
+		"runId":          child.ID,
+		"parentRunId":    child.ParentRunID,
+		"workspaceId":    child.WorkspaceID,
+		"conversationId": child.ConversationID,
+		"model":          child.Model,
+		"status":         child.Status,
+		"message":        fmt.Sprintf("Sub-agent run #%d started.", child.ID),
+	}
+
+	waitForResult, _ := params["wait_for_result"].(bool)
+	if waitForResult {
+		timeoutSeconds := childAgentDefaultWaitSeconds
+		if value, ok := params["timeout_seconds"].(float64); ok {
+			timeoutSeconds = int(value)
+		}
+		timeoutSeconds = clamp(timeoutSeconds, 1, childAgentMaxWaitSeconds)
+
+		waitCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+		result, waitErr := e.childRunner.WaitChildAgentRun(waitCtx, req.UserID, child.ID)
+		cancel()
+		if waitErr != nil {
+			if errors.Is(waitErr, context.DeadlineExceeded) {
+				response["timedOut"] = true
+				response["message"] = fmt.Sprintf("Sub-agent run #%d is still running after %d seconds.", child.ID, timeoutSeconds)
+				return marshalToolResponse("spawn_sub_agent", response)
+			}
+			return toolFailure("spawn_sub_agent", "Error waiting for sub-agent result: %v", waitErr)
+		}
+		response["status"] = result.Status
+		response["summary"] = result.Summary
+		if result.Error != "" {
+			response["error"] = result.Error
+			response["message"] = fmt.Sprintf("Sub-agent run #%d finished with an error.", child.ID)
+		} else {
+			response["message"] = fmt.Sprintf("Sub-agent run #%d completed.", child.ID)
+		}
+	}
+
+	return marshalToolResponse("spawn_sub_agent", response)
+}
+
+func marshalToolResponse(toolName string, response map[string]any) domain.ToolResultPart {
+	data, err := json.Marshal(response)
+	if err != nil {
+		return toolFailure(toolName, "Error: %v", err)
+	}
+
+	return toolSuccess(toolName, string(data))
+}
+
 func toolSuccess(toolName, content string) domain.ToolResultPart {
 	return domain.ToolResultPart{
 		Name:    toolName,
@@ -240,6 +339,28 @@ func toolFailure(toolName, format string, args ...any) domain.ToolResultPart {
 		Content: fmt.Sprintf(format, args...),
 		IsError: true,
 	}
+}
+
+func cloneThinking(thinking *domain.ThinkingConfig) *domain.ThinkingConfig {
+	if thinking == nil {
+		return nil
+	}
+	clone := &domain.ThinkingConfig{}
+	if thinking.Enabled != nil {
+		enabled := *thinking.Enabled
+		clone.Enabled = &enabled
+	}
+	return clone
+}
+
+func clamp(value, minValue, maxValue int) int {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }
 
 func formatFileEntries(entries []agent.FileEntry) []map[string]any {

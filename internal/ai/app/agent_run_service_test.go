@@ -153,7 +153,7 @@ func TestAgentRunService_StartRunContinuesAfterRequestContextCancel(t *testing.T
 	repo := newFakeAgentRunRepository()
 	events := make(chan domain.ClientEvent, 2)
 	chat := fakeRunnerChatService{streamAgentFn: func(ctx context.Context, req AgentChatRequest) (<-chan domain.ClientEvent, error) {
-		if req.UserID != 7 || req.WorkspaceID != 9 || req.Model != "gpt-5.4" {
+		if req.UserID != 7 || req.WorkspaceID != 9 || req.Model != "gpt-5.4" || req.CurrentRunID <= 0 {
 			t.Fatalf("unexpected request: %+v", req)
 		}
 		select {

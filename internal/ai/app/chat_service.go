@@ -19,11 +19,13 @@ type SimpleChatRequest struct {
 
 // AgentChatRequest contains the inputs for tool-enabled agent chat.
 type AgentChatRequest struct {
-	UserID      int64
-	WorkspaceID int64
-	Model       string
-	Turns       []domain.Turn
-	Thinking    *domain.ThinkingConfig
+	UserID         int64
+	WorkspaceID    int64
+	CurrentRunID   int64
+	ConversationID int64
+	Model          string
+	Turns          []domain.Turn
+	Thinking       *domain.ThinkingConfig
 }
 
 // ChatService owns the app-level chat entry points.
@@ -61,11 +63,13 @@ func (s *chatService) StreamSimple(ctx context.Context, req SimpleChatRequest) (
 
 func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-chan domain.ClientEvent, error) {
 	return s.agent.Stream(ctx, orchestrator.AgentChatRequest{
-		UserID:      req.UserID,
-		WorkspaceID: req.WorkspaceID,
-		Model:       req.Model,
-		Turns:       req.Turns,
-		Thinking:    req.Thinking,
+		UserID:         req.UserID,
+		WorkspaceID:    req.WorkspaceID,
+		CurrentRunID:   req.CurrentRunID,
+		ConversationID: req.ConversationID,
+		Model:          req.Model,
+		Turns:          req.Turns,
+		Thinking:       req.Thinking,
 	})
 }
 

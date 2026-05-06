@@ -310,6 +310,7 @@ export const aiApi = {
     workspaceId: number,
     conversationId?: number,
     thinking?: ThinkingConfig,
+    parentRunId?: number,
   ): Promise<{ run: AgentRun }> {
     const res = await apiClient.post<{ run: AgentRunDTO }>('/api/ai/agent/runs', {
       model,
@@ -317,6 +318,7 @@ export const aiApi = {
       workspaceId,
       conversationId,
       thinking,
+      parentRunId,
     })
     return { run: agentRunFromDTO(res.run) }
   },

@@ -2,7 +2,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall } from '@/api/ai'
+import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
 
@@ -428,6 +428,7 @@ function applyFocusedRunEvent(event: StreamEvent) {
     if (toolSeg) {
       toolSeg.result = toolResult.content
     }
+    refreshRunsAfterSubAgentTool(toolResult)
   }
 
   if (event.approvalRequired) {
@@ -447,6 +448,13 @@ function applyFocusedRunEvent(event: StreamEvent) {
       msg.segments.push({ type: 'plan', steps: event.plan })
     }
   }
+}
+
+function refreshRunsAfterSubAgentTool(toolResult: ToolResult) {
+  if (toolResult.name !== 'spawn_sub_agent' || props.workspaceId <= 0) {
+    return
+  }
+  void agentRunStore.fetchRuns(props.workspaceId)
 }
 
 function hasDisplayableRunEventContent(event: StreamEvent): boolean {
@@ -697,6 +705,7 @@ async function sendMessage() {
             content: toolResult.content,
             tool_call_id: toolResult.toolCallId,
           })
+          refreshRunsAfterSubAgentTool(toolResult)
         }
 
         if (event.approvalRequired) {
