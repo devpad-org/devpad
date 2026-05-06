@@ -87,7 +87,22 @@ func (s childAgentRunStarter) StartChildAgentRun(ctx context.Context, req aitool
 	}, nil
 }
 
-func (s childAgentRunStarter) WaitChildAgentRun(ctx context.Context, userID, runID int64) (*aitools.ChildAgentRunResult, error) {
+func (s childAgentRunStarter) WaitChildAgentRun(ctx context.Context, userID, parentRunID, runID int64) (*aitools.ChildAgentRunResult, error) {
+	run, err := s.runs.GetRun(ctx, userID, runID)
+	if err != nil {
+		return nil, fmt.Errorf("getting child agent run: %w", err)
+	}
+	if run.ParentRunID != parentRunID {
+		return nil, domain.ErrAgentRunNotFound
+	}
+	if domain.AgentRunStatusTerminal(run.Status) {
+		events, err := s.runs.ListEvents(ctx, userID, runID, 0)
+		if err != nil {
+			return nil, fmt.Errorf("listing child agent run events: %w", err)
+		}
+		return childAgentResultFromEvents(runID, string(run.Status), run.Error, events), nil
+	}
+
 	stream, err := s.runs.SubscribeEvents(ctx, userID, runID, 0)
 	if err != nil {
 		return nil, fmt.Errorf("subscribing to child agent run: %w", err)
@@ -109,6 +124,9 @@ func (s childAgentRunStarter) WaitChildAgentRun(ctx context.Context, userID, run
 			}
 			if run, err := s.runs.GetRun(ctx, userID, runID); err == nil && run != nil && domain.AgentRunStatusTerminal(run.Status) {
 				status = string(run.Status)
+				if errorMessage == "" {
+					errorMessage = run.Error
+				}
 			}
 			return &aitools.ChildAgentRunResult{
 				RunID:   runID,
@@ -121,7 +139,38 @@ func (s childAgentRunStarter) WaitChildAgentRun(ctx context.Context, userID, run
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	run, err = s.runs.GetRun(ctx, userID, runID)
+	if err == nil && run != nil && domain.AgentRunStatusTerminal(run.Status) {
+		events, listErr := s.runs.ListEvents(ctx, userID, runID, 0)
+		if listErr != nil {
+			return nil, fmt.Errorf("listing child agent run events: %w", listErr)
+		}
+		return childAgentResultFromEvents(runID, string(run.Status), run.Error, events), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("getting child agent run after event stream closed: %w", err)
+	}
 	return nil, fmt.Errorf("child agent run event stream closed before completion")
+}
+
+func childAgentResultFromEvents(runID int64, status, runError string, events []domain.AgentRunEvent) *aitools.ChildAgentRunResult {
+	var summary strings.Builder
+	errorMessage := runError
+	for _, event := range events {
+		if event.Event.TextDelta != "" {
+			summary.WriteString(event.Event.TextDelta)
+		}
+		if event.Event.ErrorMessage != "" {
+			errorMessage = event.Event.ErrorMessage
+		}
+	}
+
+	return &aitools.ChildAgentRunResult{
+		RunID:   runID,
+		Status:  status,
+		Summary: strings.TrimSpace(summary.String()),
+		Error:   errorMessage,
+	}
 }
 
 // Shutdown stops AI background workers owned by the module.

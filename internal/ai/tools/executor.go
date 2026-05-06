@@ -51,7 +51,7 @@ type ChildAgentRunResult struct {
 // ChildAgentRunner starts child agent runs and can wait for their result.
 type ChildAgentRunner interface {
 	StartChildAgentRun(ctx context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error)
-	WaitChildAgentRun(ctx context.Context, userID, runID int64) (*ChildAgentRunResult, error)
+	WaitChildAgentRun(ctx context.Context, userID, parentRunID, runID int64) (*ChildAgentRunResult, error)
 }
 
 // Executor executes AI agent tools against a workspace.

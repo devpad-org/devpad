@@ -103,8 +103,16 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "spawn_sub_agent",
-				Description: "Start a child AI agent run for an independent subtask. The child appears nested under this run in the Agent Runs sidebar. Use wait_for_result when you need the child's final answer, such as a module summary, before continuing.",
+				Description: "Start a child AI agent run for an independent subtask. The child appears nested under this run in the Agent Runs sidebar. Use wait_for_result only when you need this single child's final answer before continuing; otherwise keep the returned runId and call wait_for_sub_agents later.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"Complete instructions for the child agent, including all necessary context, scope, and expected output."},"model":{"type":"string","description":"Optional model ID. Defaults to the current model."},"wait_for_result":{"type":"boolean","description":"When true, wait for the child run to finish and return its final text in the summary field. Defaults to false."},"timeout_seconds":{"type":"integer","description":"Maximum seconds to wait when wait_for_result is true. Defaults to 120 and is capped at 600."}},"required":["prompt"]}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: domain.ToolFunction{
+				Name:        "wait_for_sub_agents",
+				Description: "Wait for one or more previously spawned child AI agent runs from this parent run. Use this after spawning multiple sub-agents in parallel; pass their runIds and the tool returns ordered results with status, summary, error, and timedOut fields.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"run_ids":{"type":"array","description":"Child agent run IDs returned by spawn_sub_agent. Results are returned in the same order; pass one ID as a one-item array when waiting for a single child.","items":{"type":"integer"},"minItems":1,"maxItems":20},"timeout_seconds":{"type":"integer","description":"Maximum seconds to wait for all requested child runs. Defaults to 120 and is capped at 600."}},"required":["run_ids"]}`),
 			},
 		},
 	}
@@ -131,6 +139,7 @@ Sub-agents:
 - Use spawn_sub_agent only when a task has independent subtasks that can make progress without sharing live context.
 - Make each sub-agent prompt self-contained: include the goal, relevant constraints, and the expected result.
 - By default the tool returns a child run ID immediately. Set wait_for_result=true when you need the child's answer before continuing; the result will include a summary field with the child's final response.
+- For parallel fan-out/fan-in work, call spawn_sub_agent multiple times with wait_for_result=false, keep the returned runIds, then call wait_for_sub_agents with those runIds when you need all child results.
 
 Format your responses using Markdown for readability:
 - Use **bold** for emphasis and key terms.

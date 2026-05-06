@@ -3,19 +3,12 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	"github.com/devpad-org/devpad/internal/workspace"
-)
-
-const (
-	childAgentDefaultWaitSeconds = 120
-	childAgentMaxWaitSeconds     = 600
 )
 
 // WorkspaceOps is the reduced workspace surface the AI tooling needs in Phase 1.
@@ -68,6 +61,8 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 		return toolSuccess(req.ToolName, "Plan updated.")
 	case "spawn_sub_agent":
 		return e.spawnSubAgent(ctx, req, params)
+	case "wait_for_sub_agents":
+		return e.waitForSubAgents(ctx, req, params)
 	default:
 		return toolFailure(req.ToolName, "unknown tool: %s", req.ToolName)
 	}
@@ -242,82 +237,7 @@ func (e *WorkspaceExecutor) readFileLines(ctx context.Context, userID, workspace
 	return toolSuccess("read_file_lines", result.String())
 }
 
-func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequest, params map[string]any) domain.ToolResultPart {
-	if req.CurrentRunID <= 0 {
-		return toolFailure("spawn_sub_agent", "Error: spawn_sub_agent is only available from a persisted agent run")
-	}
-	if e.childRunner == nil {
-		return toolFailure("spawn_sub_agent", "Error: sub-agent runner is not available")
-	}
-
-	prompt, _ := params["prompt"].(string)
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" {
-		return toolFailure("spawn_sub_agent", "Error: prompt is required")
-	}
-
-	model, _ := params["model"].(string)
-	model = strings.TrimSpace(model)
-	if model == "" {
-		model = req.Model
-	}
-
-	child, err := e.childRunner.StartChildAgentRun(ctx, ChildAgentRunRequest{
-		ParentRunID:    req.CurrentRunID,
-		UserID:         req.UserID,
-		WorkspaceID:    req.WorkspaceID,
-		ConversationID: req.ConversationID,
-		Model:          model,
-		Prompt:         prompt,
-		Thinking:       cloneThinking(req.Thinking),
-	})
-	if err != nil {
-		return toolFailure("spawn_sub_agent", "Error: %v", err)
-	}
-
-	response := map[string]any{
-		"runId":          child.ID,
-		"parentRunId":    child.ParentRunID,
-		"workspaceId":    child.WorkspaceID,
-		"conversationId": child.ConversationID,
-		"model":          child.Model,
-		"status":         child.Status,
-		"message":        fmt.Sprintf("Sub-agent run #%d started.", child.ID),
-	}
-
-	waitForResult, _ := params["wait_for_result"].(bool)
-	if waitForResult {
-		timeoutSeconds := childAgentDefaultWaitSeconds
-		if value, ok := params["timeout_seconds"].(float64); ok {
-			timeoutSeconds = int(value)
-		}
-		timeoutSeconds = clamp(timeoutSeconds, 1, childAgentMaxWaitSeconds)
-
-		waitCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
-		result, waitErr := e.childRunner.WaitChildAgentRun(waitCtx, req.UserID, child.ID)
-		cancel()
-		if waitErr != nil {
-			if errors.Is(waitErr, context.DeadlineExceeded) {
-				response["timedOut"] = true
-				response["message"] = fmt.Sprintf("Sub-agent run #%d is still running after %d seconds.", child.ID, timeoutSeconds)
-				return marshalToolResponse("spawn_sub_agent", response)
-			}
-			return toolFailure("spawn_sub_agent", "Error waiting for sub-agent result: %v", waitErr)
-		}
-		response["status"] = result.Status
-		response["summary"] = result.Summary
-		if result.Error != "" {
-			response["error"] = result.Error
-			response["message"] = fmt.Sprintf("Sub-agent run #%d finished with an error.", child.ID)
-		} else {
-			response["message"] = fmt.Sprintf("Sub-agent run #%d completed.", child.ID)
-		}
-	}
-
-	return marshalToolResponse("spawn_sub_agent", response)
-}
-
-func marshalToolResponse(toolName string, response map[string]any) domain.ToolResultPart {
+func marshalToolResponse(toolName string, response any) domain.ToolResultPart {
 	data, err := json.Marshal(response)
 	if err != nil {
 		return toolFailure(toolName, "Error: %v", err)

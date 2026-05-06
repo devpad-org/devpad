@@ -17,7 +17,7 @@ type stubWorkspaceOps struct {
 
 type stubChildAgentRunner struct {
 	startFn func(ctx context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error)
-	waitFn  func(ctx context.Context, userID, runID int64) (*ChildAgentRunResult, error)
+	waitFn  func(ctx context.Context, userID, parentRunID, runID int64) (*ChildAgentRunResult, error)
 }
 
 func (s stubChildAgentRunner) StartChildAgentRun(ctx context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error) {
@@ -34,9 +34,9 @@ func (s stubChildAgentRunner) StartChildAgentRun(ctx context.Context, req ChildA
 	}, nil
 }
 
-func (s stubChildAgentRunner) WaitChildAgentRun(ctx context.Context, userID, runID int64) (*ChildAgentRunResult, error) {
+func (s stubChildAgentRunner) WaitChildAgentRun(ctx context.Context, userID, parentRunID, runID int64) (*ChildAgentRunResult, error) {
 	if s.waitFn != nil {
-		return s.waitFn(ctx, userID, runID)
+		return s.waitFn(ctx, userID, parentRunID, runID)
 	}
 	return &ChildAgentRunResult{RunID: runID, Status: "completed", Summary: "done"}, nil
 }
@@ -182,9 +182,9 @@ func TestWorkspaceExecutor_SpawnSubAgentCanWaitForSummary(t *testing.T) {
 		startFn: func(_ context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error) {
 			return &ChildAgentRun{ID: 303, ParentRunID: req.ParentRunID, WorkspaceID: req.WorkspaceID, Model: req.Model, Status: "queued"}, nil
 		},
-		waitFn: func(_ context.Context, userID, runID int64) (*ChildAgentRunResult, error) {
-			if userID != 7 || runID != 303 {
-				t.Fatalf("unexpected wait request: user=%d run=%d", userID, runID)
+		waitFn: func(_ context.Context, userID, parentRunID, runID int64) (*ChildAgentRunResult, error) {
+			if userID != 7 || parentRunID != 101 || runID != 303 {
+				t.Fatalf("unexpected wait request: user=%d parent=%d run=%d", userID, parentRunID, runID)
 			}
 			return &ChildAgentRunResult{RunID: runID, Status: "completed", Summary: "The auth module handles sessions."}, nil
 		},
@@ -216,6 +216,110 @@ func TestWorkspaceExecutor_SpawnSubAgentRequiresCurrentRun(t *testing.T) {
 	executor.SetChildAgentRunner(stubChildAgentRunner{})
 
 	result := executor.ExecuteTool(context.Background(), toolReq(7, 9, "spawn_sub_agent", []byte(`{"prompt":"child work"}`)))
+	if !result.IsError {
+		t.Fatalf("expected missing current run to fail, got %+v", result)
+	}
+	if !strings.Contains(result.Content, "persisted agent run") {
+		t.Fatalf("expected current run error, got %q", result.Content)
+	}
+}
+
+func TestWorkspaceExecutor_WaitForSubAgentsReturnsOrderedResults(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetChildAgentRunner(stubChildAgentRunner{
+		waitFn: func(_ context.Context, userID, parentRunID, runID int64) (*ChildAgentRunResult, error) {
+			if userID != 7 || parentRunID != 101 {
+				t.Fatalf("unexpected wait request scope: user=%d parent=%d", userID, parentRunID)
+			}
+			switch runID {
+			case 303:
+				return &ChildAgentRunResult{RunID: runID, Status: "completed", Summary: "Backend summary"}, nil
+			case 202:
+				return &ChildAgentRunResult{RunID: runID, Status: "failed", Error: "Frontend failed"}, nil
+			default:
+				t.Fatalf("unexpected run ID: %d", runID)
+				return nil, nil
+			}
+		},
+	})
+
+	req := toolReq(7, 9, "wait_for_sub_agents", []byte(`{"run_ids":[303,202]}`))
+	req.CurrentRunID = 101
+	result := executor.ExecuteTool(context.Background(), req)
+	if result.IsError {
+		t.Fatalf("expected wait success, got %+v", result)
+	}
+
+	var payload struct {
+		Results []struct {
+			RunID   int64  `json:"runId"`
+			Status  string `json:"status"`
+			Summary string `json:"summary"`
+			Error   string `json:"error"`
+		} `json:"results"`
+		Completed int `json:"completed"`
+		Failed    int `json:"failed"`
+		TimedOut  int `json:"timedOut"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("decoding wait result: %v", err)
+	}
+	if len(payload.Results) != 2 {
+		t.Fatalf("expected two results, got %+v", payload)
+	}
+	if payload.Results[0].RunID != 303 || payload.Results[0].Summary != "Backend summary" {
+		t.Fatalf("unexpected first result: %+v", payload.Results[0])
+	}
+	if payload.Results[1].RunID != 202 || payload.Results[1].Error != "Frontend failed" {
+		t.Fatalf("unexpected second result: %+v", payload.Results[1])
+	}
+	if payload.Completed != 1 || payload.Failed != 1 || payload.TimedOut != 0 {
+		t.Fatalf("unexpected wait counts: %+v", payload)
+	}
+}
+
+func TestWorkspaceExecutor_WaitForSubAgentsReportsTimeouts(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetChildAgentRunner(stubChildAgentRunner{
+		waitFn: func(_ context.Context, _ int64, _ int64, runID int64) (*ChildAgentRunResult, error) {
+			if runID == 404 {
+				return nil, context.DeadlineExceeded
+			}
+			return &ChildAgentRunResult{RunID: runID, Status: "completed", Summary: "done"}, nil
+		},
+	})
+
+	req := toolReq(7, 9, "wait_for_sub_agents", []byte(`{"run_ids":[303,404]}`))
+	req.CurrentRunID = 101
+	result := executor.ExecuteTool(context.Background(), req)
+	if result.IsError {
+		t.Fatalf("expected timeout payload, got %+v", result)
+	}
+
+	var payload struct {
+		Results []struct {
+			RunID    int64 `json:"runId"`
+			TimedOut bool  `json:"timedOut"`
+		} `json:"results"`
+		Completed int `json:"completed"`
+		TimedOut  int `json:"timedOut"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("decoding wait result: %v", err)
+	}
+	if payload.Completed != 1 || payload.TimedOut != 1 {
+		t.Fatalf("unexpected timeout counts: %+v", payload)
+	}
+	if !payload.Results[1].TimedOut {
+		t.Fatalf("expected second result to be timed out: %+v", payload.Results)
+	}
+}
+
+func TestWorkspaceExecutor_WaitForSubAgentsRequiresCurrentRun(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetChildAgentRunner(stubChildAgentRunner{})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(7, 9, "wait_for_sub_agents", []byte(`{"run_ids":[202]}`)))
 	if !result.IsError {
 		t.Fatalf("expected missing current run to fail, got %+v", result)
 	}
