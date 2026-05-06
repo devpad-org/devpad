@@ -20,6 +20,7 @@ type ClientEvent struct {
 	ToolCalls      []ToolCall
 	ToolResult     *ToolResultPart
 	Approval       *ApprovalRequest
+	ApprovalResult *ApprovalResult
 	Plan           []PlanStep
 	Done           bool
 	ErrorMessage   string
@@ -33,6 +34,7 @@ type StreamEvent struct {
 	ToolCalls        []ToolCall       `json:"toolCalls,omitempty"`
 	ToolResult       *ToolResult      `json:"toolResult,omitempty"`
 	ApprovalRequired *ApprovalRequest `json:"approvalRequired,omitempty"`
+	ApprovalResolved *ApprovalResult  `json:"approvalResolved,omitempty"`
 	Plan             []PlanStep       `json:"plan,omitempty"`
 	Done             bool             `json:"done,omitempty"`
 	Error            string           `json:"error,omitempty"`
@@ -42,6 +44,13 @@ type StreamEvent struct {
 type ApprovalRequest struct {
 	ID      string `json:"id"`
 	Command string `json:"command"`
+}
+
+// ApprovalResult is sent after a pending approval has been resolved.
+type ApprovalResult struct {
+	ID      string `json:"id"`
+	Command string `json:"command"`
+	Status  string `json:"status"`
 }
 
 // CloneRawMessage returns an owned copy of the raw JSON payload.

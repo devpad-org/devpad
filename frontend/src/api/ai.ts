@@ -83,6 +83,12 @@ export interface ApprovalRequest {
   command: string
 }
 
+export interface ApprovalResult {
+  id: string
+  command: string
+  status: 'approved' | 'denied' | 'expired' | 'failed'
+}
+
 export interface PlanStep {
   title: string
   status: 'pending' | 'in_progress' | 'completed' | 'failed'
@@ -105,6 +111,7 @@ export interface StreamEvent {
   toolCalls?: StreamToolCall[]
   toolResult?: ToolResult
   approvalRequired?: ApprovalRequest
+  approvalResolved?: ApprovalResult
   plan?: PlanStep[]
   done?: boolean
   error?: string

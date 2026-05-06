@@ -274,6 +274,11 @@ func TestAgentChatOrchestrator_ApprovalWaitAndDenial(t *testing.T) {
 
 	decisionCh <- false
 
+	approvalResultEvent := nextEvent(t, stream)
+	if approvalResultEvent.ApprovalResult == nil || approvalResultEvent.ApprovalResult.Status != "denied" {
+		t.Fatalf("expected denied approval result, got %+v", approvalResultEvent)
+	}
+
 	toolResultEvent := nextEvent(t, stream)
 	if toolResultEvent.ToolResult == nil {
 		t.Fatalf("expected ToolResult after denial, got %+v", toolResultEvent)

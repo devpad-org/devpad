@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult } from '@/api/ai'
+import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
@@ -31,7 +31,8 @@ interface ApprovalSegment {
   type: 'approval'
   id: string
   command: string
-  status: 'pending' | 'approved' | 'denied'
+  status: 'pending' | ApprovalResult['status']
+  error?: string
 }
 
 interface PlanSegment {
@@ -214,12 +215,71 @@ function isToolError(seg: ToolSegment): boolean {
 }
 
 async function handleApproval(seg: ApprovalSegment, approved: boolean) {
-  seg.status = approved ? 'approved' : 'denied'
   try {
     await aiApi.approveCommand(seg.id, approved)
-  } catch {
-    // The stream will handle any errors
+    seg.status = approved ? 'approved' : 'denied'
+    seg.error = undefined
+  } catch (err) {
+    seg.error = err instanceof Error ? err.message : 'Failed to resolve approval'
   }
+}
+
+function approvalStatusLabel(status: ApprovalSegment['status']): string {
+  switch (status) {
+    case 'approved':
+      return 'Approved'
+    case 'denied':
+      return 'Denied'
+    case 'expired':
+      return 'Expired'
+    case 'failed':
+      return 'Failed'
+    default:
+      return 'Pending'
+  }
+}
+
+function findApprovalSegment(segments: MessageSegment[], id: string): ApprovalSegment | undefined {
+  return segments.find((seg): seg is ApprovalSegment => seg.type === 'approval' && seg.id === id)
+}
+
+function applyApprovalRequired(segments: MessageSegment[], id: string, command: string): void {
+  const existing = findApprovalSegment(segments, id)
+  if (existing) {
+    existing.command = command
+    return
+  }
+
+  segments.push({
+    type: 'approval',
+    id,
+    command,
+    status: 'pending',
+  })
+}
+
+function applyApprovalResolved(segments: MessageSegment[], result: ApprovalResult): void {
+  const existing = findApprovalSegment(segments, result.id)
+  if (existing) {
+    existing.command = result.command || existing.command
+    existing.status = result.status
+    existing.error = undefined
+    return
+  }
+
+  segments.push({
+    type: 'approval',
+    id: result.id,
+    command: result.command,
+    status: result.status,
+  })
+}
+
+function refreshRunForEvent(event: StreamEvent): void {
+  if (!event.runId) return
+  agentRunStore.refreshRun(event.runId).catch((err) => {
+    console.error('Failed to refresh agent run:', err)
+  })
 }
 
 function reconstructAssistantDisplay(rawMsgs: ChatMessage[], start: number, end: number): DisplayMessage {
@@ -301,6 +361,29 @@ function reconstructDisplayMessages(rawMsgs: ChatMessage[]): DisplayMessage[] {
   }
 
   return display
+}
+
+function cloneDisplayMessages(source: DisplayMessage[]): DisplayMessage[] {
+  return source.map((msg) => ({
+    role: msg.role,
+    content: msg.content,
+    segments: msg.segments.map(cloneMessageSegment),
+  }))
+}
+
+function cloneMessageSegment(seg: MessageSegment): MessageSegment {
+  switch (seg.type) {
+    case 'text':
+      return { type: 'text', content: seg.content }
+    case 'tool':
+      return { type: 'tool', toolCallId: seg.toolCallId, name: seg.name, args: seg.args, result: seg.result }
+    case 'approval':
+      return { type: 'approval', id: seg.id, command: seg.command, status: seg.status, error: seg.error }
+    case 'plan':
+      return { type: 'plan', steps: seg.steps.map((step) => ({ ...step })) }
+    case 'thinking':
+      return { type: 'thinking', content: seg.content }
+  }
 }
 
 function cancelFocusedRunEventStream() {
@@ -411,12 +494,13 @@ function applyFocusedRunEvent(event: StreamEvent) {
   }
 
   if (event.approvalRequired) {
-    msg.segments.push({
-      type: 'approval',
-      id: event.approvalRequired.id,
-      command: event.approvalRequired.command,
-      status: 'pending',
-    })
+    applyApprovalRequired(msg.segments, event.approvalRequired.id, event.approvalRequired.command)
+    refreshRunForEvent(event)
+  }
+
+  if (event.approvalResolved) {
+    applyApprovalResolved(msg.segments, event.approvalResolved)
+    refreshRunForEvent(event)
   }
 
   if (event.plan) {
@@ -448,6 +532,7 @@ function hasDisplayableRunEventContent(event: StreamEvent): boolean {
     event.toolCalls?.length ||
     event.toolResult ||
     event.approvalRequired ||
+    event.approvalResolved ||
     event.plan?.length,
   )
 }
@@ -692,12 +777,13 @@ async function sendMessage() {
         }
 
         if (event.approvalRequired) {
-          messages.value[assistantIdx].segments.push({
-            type: 'approval',
-            id: event.approvalRequired.id,
-            command: event.approvalRequired.command,
-            status: 'pending',
-          })
+          applyApprovalRequired(messages.value[assistantIdx].segments, event.approvalRequired.id, event.approvalRequired.command)
+          refreshRunForEvent(event)
+        }
+
+        if (event.approvalResolved) {
+          applyApprovalResolved(messages.value[assistantIdx].segments, event.approvalResolved)
+          refreshRunForEvent(event)
         }
 
         if (event.plan) {
@@ -796,9 +882,14 @@ async function continueFocusedRunConversation() {
   if (!conversationId) return
 
   try {
+    const focusedTranscript = cloneDisplayMessages(focusedRunMessages.value)
     await loadConversation(conversationId)
+    if (focusedTranscript.length > 0) {
+      messages.value = focusedTranscript
+    }
     emit('clear-focused-run')
     await nextTick()
+    scrollToBottom()
     inputEl.value?.focus()
   } catch (err) {
     focusedRunError.value = err instanceof Error ? err.message : 'Failed to load conversation for this run'
@@ -1028,19 +1119,29 @@ function scrollToBottom() {
                 </button>
               </div>
               <div v-else class="approval-resolved">
-                <span v-if="(seg as ApprovalSegment).status === 'approved'" class="approval-badge approved">
+                <span
+                  v-if="(seg as ApprovalSegment).status === 'approved'"
+                  class="approval-badge approved"
+                >
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12" />
                   </svg>
-                  Approved
+                  {{ approvalStatusLabel((seg as ApprovalSegment).status) }}
                 </span>
-                <span v-else class="approval-badge denied">
+                <span
+                  v-else
+                  class="approval-badge denied"
+                  :class="{ expired: (seg as ApprovalSegment).status === 'expired', failed: (seg as ApprovalSegment).status === 'failed' }"
+                >
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="18" y1="6" x2="6" y2="18" />
                     <line x1="6" y1="6" x2="18" y2="18" />
                   </svg>
-                  Denied
+                  {{ approvalStatusLabel((seg as ApprovalSegment).status) }}
                 </span>
+              </div>
+              <div v-if="(seg as ApprovalSegment).error" class="approval-error">
+                {{ (seg as ApprovalSegment).error }}
               </div>
             </div>
             <template v-else-if="seg.type === 'plan'" />
@@ -1880,6 +1981,18 @@ function scrollToBottom() {
 .approval-badge.denied {
   background: var(--error-bg);
   color: var(--accent-rose);
+}
+
+.approval-badge.expired,
+.approval-badge.failed {
+  background: var(--warning-bg);
+  color: var(--accent-amber);
+}
+
+.approval-error {
+  margin-top: var(--space-2);
+  color: var(--accent-rose);
+  font-size: 0.72rem;
 }
 
 /* Sticky plan bar */

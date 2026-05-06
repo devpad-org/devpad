@@ -164,11 +164,12 @@ func TestFromClientEvent(t *testing.T) {
 				Arguments: `{"path":"."}`,
 			},
 		}},
-		ToolResult:   &domain.ToolResultPart{ToolCallID: "call-1", Name: "list_files", Content: "ok"},
-		Approval:     &domain.ApprovalRequest{ID: "approval-1", Command: "sudo ls"},
-		Plan:         []domain.PlanStep{{Title: "Inspect repo", Status: "in_progress"}},
-		Done:         true,
-		ErrorMessage: "",
+		ToolResult:     &domain.ToolResultPart{ToolCallID: "call-1", Name: "list_files", Content: "ok"},
+		Approval:       &domain.ApprovalRequest{ID: "approval-1", Command: "sudo ls"},
+		ApprovalResult: &domain.ApprovalResult{ID: "approval-1", Command: "sudo ls", Status: "approved"},
+		Plan:           []domain.PlanStep{{Title: "Inspect repo", Status: "in_progress"}},
+		Done:           true,
+		ErrorMessage:   "",
 	}
 
 	dto := FromClientEvent(event)
@@ -186,6 +187,9 @@ func TestFromClientEvent(t *testing.T) {
 	}
 	if dto.ApprovalRequired == nil || dto.ApprovalRequired.ID != "approval-1" {
 		t.Fatalf("unexpected approval: %+v", dto.ApprovalRequired)
+	}
+	if dto.ApprovalResolved == nil || dto.ApprovalResolved.Status != "approved" {
+		t.Fatalf("unexpected approval result: %+v", dto.ApprovalResolved)
 	}
 	if len(dto.Plan) != 1 || dto.Plan[0].Title != "Inspect repo" {
 		t.Fatalf("unexpected plan: %+v", dto.Plan)

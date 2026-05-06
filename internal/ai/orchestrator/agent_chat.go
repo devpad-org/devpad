@@ -265,6 +265,13 @@ func (o *agentChatOrchestrator) awaitApproval(ctx context.Context, userID int64,
 	defer cancel()
 	approved, err := o.approvals.Await(approvalCtx, request.ID)
 	if err == nil {
+		status := "denied"
+		if approved {
+			status = "approved"
+		}
+		if !emitApprovalResult(ctx, out, request, status) {
+			return "", false, false
+		}
 		if !approved {
 			return "Command denied by user. The user rejected executing this sudo command.", false, true
 		}
@@ -273,10 +280,27 @@ func (o *agentChatOrchestrator) awaitApproval(ctx context.Context, userID int64,
 
 	switch {
 	case errors.Is(err, context.Canceled):
+		if !emitApprovalResult(ctx, out, request, "expired") {
+			return "", false, false
+		}
 		return "Command approval timed out — the request was cancelled.", false, true
 	case errors.Is(err, context.DeadlineExceeded):
+		if !emitApprovalResult(ctx, out, request, "expired") {
+			return "", false, false
+		}
 		return "Command approval timed out after 60 seconds.", false, true
 	default:
+		if !emitApprovalResult(ctx, out, request, "failed") {
+			return "", false, false
+		}
 		return "Command approval failed.", false, true
 	}
+}
+
+func emitApprovalResult(ctx context.Context, out chan<- domain.ClientEvent, request domain.ApprovalRequest, status string) bool {
+	return emitEvent(ctx, out, domain.ClientEvent{ApprovalResult: &domain.ApprovalResult{
+		ID:      request.ID,
+		Command: request.Command,
+		Status:  status,
+	}})
 }

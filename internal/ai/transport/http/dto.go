@@ -81,6 +81,7 @@ type StreamEventDTO struct {
 	ToolCalls        []StreamToolCallDTO  `json:"toolCalls,omitempty"`
 	ToolResult       *StreamToolResultDTO `json:"toolResult,omitempty"`
 	ApprovalRequired *ApprovalRequestDTO  `json:"approvalRequired,omitempty"`
+	ApprovalResolved *ApprovalResultDTO   `json:"approvalResolved,omitempty"`
 	Plan             []PlanStepDTO        `json:"plan,omitempty"`
 	Done             bool                 `json:"done,omitempty"`
 	Error            string               `json:"error,omitempty"`
@@ -124,6 +125,13 @@ type StreamToolResultDTO struct {
 type ApprovalRequestDTO struct {
 	ID      string `json:"id"`
 	Command string `json:"command"`
+}
+
+// ApprovalResultDTO reports the outcome of a previous approval request.
+type ApprovalResultDTO struct {
+	ID      string `json:"id"`
+	Command string `json:"command"`
+	Status  string `json:"status"`
 }
 
 // PlanStepDTO is the frontend transport representation of an execution plan step.
@@ -289,6 +297,13 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 		dto.ApprovalRequired = &ApprovalRequestDTO{
 			ID:      event.Approval.ID,
 			Command: event.Approval.Command,
+		}
+	}
+	if event.ApprovalResult != nil {
+		dto.ApprovalResolved = &ApprovalResultDTO{
+			ID:      event.ApprovalResult.ID,
+			Command: event.ApprovalResult.Command,
+			Status:  event.ApprovalResult.Status,
 		}
 	}
 	if len(event.Plan) > 0 {
