@@ -40,6 +40,7 @@
 }
 
 .graph-title {
+  flex: 1;
   min-width: 0;
   font-family: var(--font-sans);
   color: var(--text-primary);
@@ -122,15 +123,69 @@
   text-align: center;
 }
 
-.diff-file-title {
+.diff-breadcrumbs {
+  flex: 1;
   min-width: 0;
-  max-width: min(44vw, 560px);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.diff-path-pill {
+  min-width: 0;
+  max-width: min(30vw, 360px);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  padding: 2px 10px;
+  border: 0.5px solid var(--border-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-blue) 10%, var(--bg-raised));
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.diff-path-pill--previous {
+  border-color: var(--warning-border);
+  background: color-mix(in srgb, var(--warning-bg) 75%, var(--bg-raised));
+  color: var(--text-secondary);
+}
+
+.diff-path-pill--current {
+  border-color: color-mix(in srgb, var(--accent-blue) 34%, var(--border-strong));
+  color: var(--text-primary);
+}
+
+.diff-path-directory {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.diff-path-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  font-weight: 600;
+}
+
+.diff-path-separator {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.diff-path-arrow {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
 }
 
 .diff-layout-toggle[aria-pressed="true"] {

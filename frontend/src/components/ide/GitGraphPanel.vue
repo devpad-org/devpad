@@ -90,6 +90,13 @@ interface CommitGraphLayout {
   height: number
 }
 
+interface DiffBreadcrumb {
+  fullPath: string
+  directory: string
+  fileName: string
+  variant: 'current' | 'previous'
+}
+
 const { connect: connectWatcher, disconnect: disconnectWatcher, onEvent } = useFileWatcher(
   () => props.workspaceId
 )
@@ -117,14 +124,21 @@ const stagedCount = computed(() => (status.value?.files ?? []).filter((f) => f.s
 const unstagedCount = computed(() => (status.value?.files ?? []).filter((f) => !f.staged).length)
 const showingDiff = computed(() => props.diffRequest !== null || diff.value !== null || diffLoading.value)
 const diffSideBySide = computed(() => preferences.value.diffViewSideBySide)
-const diffTitle = computed(() => {
-  if (!props.diffRequest) return ''
-  if (props.diffRequest.kind === 'working') return props.diffRequest.path
+const diffBreadcrumbs = computed<DiffBreadcrumb[]>(() => {
+  if (!props.diffRequest) return []
+  if (props.diffRequest.kind === 'working') {
+    return [toDiffBreadcrumb(props.diffRequest.path, 'current')]
+  }
 
-  const file = props.diffRequest.file
-  return file.oldPath && file.oldPath !== file.path
-    ? `${file.oldPath} → ${file.path}`
-    : file.path
+  const { file } = props.diffRequest
+  if (file.oldPath && file.oldPath !== file.path) {
+    return [
+      toDiffBreadcrumb(file.oldPath, 'previous'),
+      toDiffBreadcrumb(file.path, 'current'),
+    ]
+  }
+
+  return [toDiffBreadcrumb(file.path, 'current')]
 })
 const graphSubtitle = computed(() => {
   if (showingDiff.value) {
@@ -289,6 +303,18 @@ function laneColor(lane: number): string {
 
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : 'Failed to load git graph'
+}
+
+function toDiffBreadcrumb(path: string, variant: DiffBreadcrumb['variant']): DiffBreadcrumb {
+  const segments = path.split('/').filter(Boolean)
+  const fileName = segments[segments.length - 1] ?? path
+
+  return {
+    fullPath: path,
+    directory: segments.slice(0, -1).join(' / '),
+    fileName,
+    variant,
+  }
 }
 
 async function refresh(showLoading = true) {
@@ -467,11 +493,29 @@ onUnmounted(() => {
           </svg>
         </span>
         <span class="graph-title-text">{{ showingDiff ? 'Diff' : 'Git Graph' }}</span>
+        <div v-if="showingDiff && diffBreadcrumbs.length" class="diff-breadcrumbs" aria-label="Diff file path">
+          <template v-for="(breadcrumb, index) in diffBreadcrumbs" :key="`${breadcrumb.variant}-${breadcrumb.fullPath}`">
+            <span
+              class="diff-path-pill"
+              :class="`diff-path-pill--${breadcrumb.variant}`"
+              :title="breadcrumb.fullPath"
+            >
+              <span v-if="breadcrumb.directory" class="diff-path-directory">{{ breadcrumb.directory }}</span>
+              <span v-if="breadcrumb.directory" class="diff-path-separator" aria-hidden="true">/</span>
+              <span class="diff-path-file">{{ breadcrumb.fileName }}</span>
+            </span>
+            <span v-if="index < diffBreadcrumbs.length - 1" class="diff-path-arrow" aria-hidden="true">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M5 12h14" />
+                <path d="m13 6 6 6-6 6" />
+              </svg>
+            </span>
+          </template>
+        </div>
         <span class="graph-branch">{{ graphSubtitle }}</span>
       </div>
 
       <div v-if="showingDiff" class="graph-actions">
-        <span class="diff-file-title">{{ diffTitle }}</span>
         <span v-if="preferencesError" class="diff-layout-error" role="alert">{{ preferencesError }}</span>
         <button
           class="graph-action-btn diff-layout-toggle"
@@ -557,7 +601,13 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <button class="refresh-btn" type="button" :disabled="loading || actionLoading || !workspaceId" @click="refresh()">
+      <button
+        v-if="!showingDiff"
+        class="refresh-btn"
+        type="button"
+        :disabled="loading || actionLoading || !workspaceId"
+        @click="refresh()"
+      >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading || actionLoading }" aria-hidden="true">
           <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
           <path d="M21 3v5h-5" />
