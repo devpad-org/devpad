@@ -775,11 +775,9 @@ function stopStreaming() {
 
 function newChat() {
   if (streaming.value) {
-    if (activeAgentRunId.value !== null) {
-      aiApi.cancelAgentRun(activeAgentRunId.value).catch((err) => {
-        console.error('Failed to cancel agent run:', err)
-      })
-    }
+    // Disconnect from the SSE stream without cancelling the backend run.
+    // The run continues in the background and remains visible in AiAgentRunsPanel.
+    // Use stopStreaming() to explicitly cancel a run.
     abortController.value?.abort()
   }
   messages.value = []
