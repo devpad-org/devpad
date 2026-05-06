@@ -10,4 +10,6 @@ var (
 	ErrThinkingNotSupported     = errors.New("model does not support thinking")
 	ErrThinkingCannotBeDisabled = errors.New("thinking cannot be disabled for this model")
 	ErrConversationNotFound     = errors.New("conversation not found")
+	ErrAgentRunNotFound         = errors.New("agent run not found")
+	ErrAgentRunNotActive        = errors.New("agent run is not active")
 )

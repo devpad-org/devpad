@@ -1,7 +1,9 @@
 package ai
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 
 	"github.com/devpad-org/devpad/internal/ai/app"
 	"github.com/devpad-org/devpad/internal/ai/approval"
@@ -20,6 +22,7 @@ import (
 type Module struct {
 	CatalogService      app.CatalogService
 	ChatService         app.ChatService
+	AgentRunService     app.AgentRunService
 	ConversationService app.ConversationService
 	ToolExecutor        aitools.Executor
 	Handler             *httptransport.Handler
@@ -42,12 +45,26 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	toolExecutor := aitools.NewWorkspaceExecutor(workspaceOps)
 	approvalBroker := approval.NewMemoryBroker()
 	chatService := app.NewChatService(catalogService, aitools.NewCatalog(), toolExecutor, approvalBroker)
+	agentRuns := storage.NewAgentRunRepository(db)
+	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService)
 
 	return &Module{
 		CatalogService:      catalogService,
 		ChatService:         chatService,
+		AgentRunService:     agentRunService,
 		ConversationService: conversationService,
 		ToolExecutor:        toolExecutor,
-		Handler:             httptransport.NewHandler(catalogService, chatService, conversationService, approvalBroker),
+		Handler:             httptransport.NewHandler(catalogService, chatService, agentRunService, conversationService, approvalBroker),
 	}
+}
+
+// Shutdown stops AI background workers owned by the module.
+func (m *Module) Shutdown(ctx context.Context) error {
+	if m == nil || m.AgentRunService == nil {
+		return nil
+	}
+	if err := m.AgentRunService.Shutdown(ctx); err != nil {
+		return fmt.Errorf("shutting down agent runner: %w", err)
+	}
+	return nil
 }

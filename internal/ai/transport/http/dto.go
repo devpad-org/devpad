@@ -2,16 +2,27 @@ package httptransport
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
 // ChatRequestDTO is the frontend request contract for chat endpoints.
 type ChatRequestDTO struct {
-	Model       string      `json:"model"`
-	Turns       []TurnDTO   `json:"turns"`
+	Model       string       `json:"model"`
+	Turns       []TurnDTO    `json:"turns"`
 	Thinking    *ThinkingDTO `json:"thinking,omitempty"`
 	WorkspaceID int64        `json:"workspaceId,omitempty"`
+}
+
+// CreateAgentRunRequestDTO is the frontend request contract for background agent runs.
+type CreateAgentRunRequestDTO struct {
+	Model          string       `json:"model"`
+	Turns          []TurnDTO    `json:"turns"`
+	Thinking       *ThinkingDTO `json:"thinking,omitempty"`
+	WorkspaceID    int64        `json:"workspaceId,omitempty"`
+	ConversationID int64        `json:"conversationId,omitempty"`
+	ParentRunID    int64        `json:"parentRunId,omitempty"`
 }
 
 // ThinkingDTO controls thinking mode over the transport boundary.
@@ -27,8 +38,8 @@ type TurnDTO struct {
 
 // PartDTO carries one normalized piece of a turn.
 type PartDTO struct {
-	Kind       string          `json:"kind"`
-	Text       string          `json:"text,omitempty"`
+	Kind       string           `json:"kind"`
+	Text       string           `json:"text,omitempty"`
 	Thinking   *ThinkingPartDTO `json:"thinking,omitempty"`
 	ToolCall   *ToolCallDTO     `json:"toolCall,omitempty"`
 	ToolResult *ToolResultDTO   `json:"toolResult,omitempty"`
@@ -58,15 +69,33 @@ type ToolResultDTO struct {
 
 // StreamEventDTO is the stable SSE payload sent to the frontend.
 type StreamEventDTO struct {
-	ReasoningContent string              `json:"reasoningContent,omitempty"`
-	ThinkingState    json.RawMessage     `json:"thinkingState,omitempty"`
-	Content          string              `json:"content,omitempty"`
-	ToolCalls        []StreamToolCallDTO `json:"toolCalls,omitempty"`
+	RunID            int64                `json:"runId,omitempty"`
+	Sequence         int64                `json:"sequence,omitempty"`
+	ReasoningContent string               `json:"reasoningContent,omitempty"`
+	ThinkingState    json.RawMessage      `json:"thinkingState,omitempty"`
+	Content          string               `json:"content,omitempty"`
+	ToolCalls        []StreamToolCallDTO  `json:"toolCalls,omitempty"`
 	ToolResult       *StreamToolResultDTO `json:"toolResult,omitempty"`
-	ApprovalRequired *ApprovalRequestDTO `json:"approvalRequired,omitempty"`
-	Plan             []PlanStepDTO       `json:"plan,omitempty"`
-	Done             bool                `json:"done,omitempty"`
-	Error            string              `json:"error,omitempty"`
+	ApprovalRequired *ApprovalRequestDTO  `json:"approvalRequired,omitempty"`
+	Plan             []PlanStepDTO        `json:"plan,omitempty"`
+	Done             bool                 `json:"done,omitempty"`
+	Error            string               `json:"error,omitempty"`
+}
+
+// AgentRunDTO is the HTTP representation of a background agent run.
+type AgentRunDTO struct {
+	ID             int64      `json:"id"`
+	ParentRunID    int64      `json:"parentRunId,omitempty"`
+	UserID         int64      `json:"userId"`
+	WorkspaceID    int64      `json:"workspaceId"`
+	ConversationID int64      `json:"conversationId,omitempty"`
+	Model          string     `json:"model"`
+	Status         string     `json:"status"`
+	Error          string     `json:"error,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+	StartedAt      *time.Time `json:"startedAt,omitempty"`
+	CompletedAt    *time.Time `json:"completedAt,omitempty"`
 }
 
 // StreamToolCallDTO carries a tool call in a streaming SSE event.
@@ -263,5 +292,34 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 		}
 	}
 
+	return dto
+}
+
+// FromAgentRun converts run metadata into the stable transport shape.
+func FromAgentRun(run *domain.AgentRun) AgentRunDTO {
+	if run == nil {
+		return AgentRunDTO{}
+	}
+	return AgentRunDTO{
+		ID:             run.ID,
+		ParentRunID:    run.ParentRunID,
+		UserID:         run.UserID,
+		WorkspaceID:    run.WorkspaceID,
+		ConversationID: run.ConversationID,
+		Model:          run.Model,
+		Status:         string(run.Status),
+		Error:          run.Error,
+		CreatedAt:      run.CreatedAt,
+		UpdatedAt:      run.UpdatedAt,
+		StartedAt:      run.StartedAt,
+		CompletedAt:    run.CompletedAt,
+	}
+}
+
+// FromAgentRunEvent converts a persisted agent event into the SSE payload shape.
+func FromAgentRunEvent(event domain.AgentRunEvent) StreamEventDTO {
+	dto := FromClientEvent(event.Event)
+	dto.RunID = event.RunID
+	dto.Sequence = event.Sequence
 	return dto
 }

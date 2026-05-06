@@ -32,6 +32,7 @@ type Server struct {
 	db             *database.DB
 	cfg            Config
 	cleanupCancel  context.CancelFunc
+	aiShutdown     func(context.Context) error
 }
 
 // New creates a new Server with the given configuration.
@@ -169,6 +170,7 @@ func New(cfg Config) (*Server, error) {
 		db:            db,
 		cfg:           cfg,
 		cleanupCancel: cleanupCancel,
+		aiShutdown:    aiModule.Shutdown,
 	}
 
 	return s, nil
@@ -246,6 +248,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.cleanupCancel != nil {
 		s.cleanupCancel()
 	}
+	if s.aiShutdown != nil {
+		if err := s.aiShutdown(ctx); err != nil {
+			return fmt.Errorf("AI shutdown: %w", err)
+		}
+	}
 
 	if s.redirectServer != nil {
 		if err := s.redirectServer.Shutdown(ctx); err != nil {
@@ -269,6 +276,11 @@ type aiRouteHandler interface {
 	HandleChat(http.ResponseWriter, *http.Request)
 	HandleAgentChat(http.ResponseWriter, *http.Request)
 	HandleApproveCommand(http.ResponseWriter, *http.Request)
+	HandleCreateAgentRun(http.ResponseWriter, *http.Request)
+	HandleListAgentRuns(http.ResponseWriter, *http.Request)
+	HandleGetAgentRun(http.ResponseWriter, *http.Request)
+	HandleAgentRunEvents(http.ResponseWriter, *http.Request)
+	HandleCancelAgentRun(http.ResponseWriter, *http.Request)
 	HandleListConversations(http.ResponseWriter, *http.Request)
 	HandleCreateConversation(http.ResponseWriter, *http.Request)
 	HandleDeleteConversation(http.ResponseWriter, *http.Request)
@@ -360,6 +372,11 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/ai/chat", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleChat)))
 	mux.Handle("POST /api/ai/agent", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleAgentChat)))
 	mux.Handle("POST /api/ai/agent/approve", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleApproveCommand)))
+	mux.Handle("POST /api/ai/agent/runs", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleCreateAgentRun)))
+	mux.Handle("GET /api/ai/agent/runs", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListAgentRuns)))
+	mux.Handle("GET /api/ai/agent/runs/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetAgentRun)))
+	mux.Handle("GET /api/ai/agent/runs/{id}/events", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleAgentRunEvents)))
+	mux.Handle("POST /api/ai/agent/runs/{id}/cancel", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleCancelAgentRun)))
 
 	// AI conversation history routes
 	mux.Handle("GET /api/ai/conversations", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListConversations)))

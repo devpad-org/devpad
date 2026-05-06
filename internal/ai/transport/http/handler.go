@@ -20,15 +20,17 @@ const sseKeepAliveInterval = 15 * time.Second
 type Handler struct {
 	catalog     app.CatalogService
 	chat        app.ChatService
+	runs        app.AgentRunService
 	convService app.ConversationService
 	approvals   approval.Broker
 }
 
 // NewHandler creates a new AI handler.
-func NewHandler(catalog app.CatalogService, chat app.ChatService, convService app.ConversationService, approvals approval.Broker) *Handler {
+func NewHandler(catalog app.CatalogService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, approvals approval.Broker) *Handler {
 	return &Handler{
 		catalog:     catalog,
 		chat:        chat,
+		runs:        runs,
 		convService: convService,
 		approvals:   approvals,
 	}
