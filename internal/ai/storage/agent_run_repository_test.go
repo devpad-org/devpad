@@ -2,7 +2,11 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	appdb "github.com/devpad-org/devpad/internal/database"
@@ -92,6 +96,87 @@ func TestAgentRunRepository_PersistsRunsAndOrderedEvents(t *testing.T) {
 	}
 	if completed.Status != domain.AgentRunCompleted || completed.CompletedAt == nil {
 		t.Fatalf("expected completed run, got %+v", completed)
+	}
+}
+
+func TestAgentRunRepository_AppendsEventsFromConcurrentRuns(t *testing.T) {
+	db, err := appdb.Open(filepath.Join(t.TempDir(), "devpad.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	userID := insertAgentRunTestUser(t, db)
+	workspaceID := insertAgentRunTestWorkspace(t, db, userID)
+	repo := NewAgentRunRepository(db.Conn())
+
+	const (
+		runCount     = 8
+		eventsPerRun = 25
+	)
+	runs := make([]*domain.AgentRun, 0, runCount)
+	for i := 0; i < runCount; i++ {
+		run := &domain.AgentRun{
+			UserID:      userID,
+			WorkspaceID: workspaceID,
+			Model:       "gpt-5.4",
+			Status:      domain.AgentRunQueued,
+			InputTurns:  []domain.Turn{domain.NewTextTurn(domain.RoleUser, fmt.Sprintf("run %d", i))},
+		}
+		if err := repo.CreateRun(ctx, run); err != nil {
+			t.Fatalf("create run %d: %v", i, err)
+		}
+		runs = append(runs, run)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, runCount)
+	var wg sync.WaitGroup
+	for _, run := range runs {
+		run := run
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for eventIndex := 0; eventIndex < eventsPerRun; eventIndex++ {
+				if _, err := repo.AppendEvent(ctx, run.ID, domain.ClientEvent{
+					TextDelta: fmt.Sprintf("run %d event %d", run.ID, eventIndex),
+				}); err != nil {
+					errs <- fmt.Errorf("append event for run %d: %w", run.ID, err)
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, run := range runs {
+		events, err := repo.ListEvents(ctx, run.ID, 0)
+		if err != nil {
+			t.Fatalf("list events for run %d: %v", run.ID, err)
+		}
+		if len(events) != eventsPerRun {
+			t.Fatalf("expected %d events for run %d, got %d", eventsPerRun, run.ID, len(events))
+		}
+		for i, event := range events {
+			wantSequence := int64(i + 1)
+			if event.Sequence != wantSequence {
+				t.Fatalf("expected sequence %d for run %d event %d, got %d", wantSequence, run.ID, i, event.Sequence)
+			}
+		}
 	}
 }
 
