@@ -191,3 +191,100 @@ func TestFromClientEvent(t *testing.T) {
 		t.Fatalf("unexpected plan: %+v", dto.Plan)
 	}
 }
+
+func TestFromAgentRunIncludesInputTurns(t *testing.T) {
+	run := &domain.AgentRun{
+		ID:             42,
+		UserID:         7,
+		WorkspaceID:    9,
+		ConversationID: 11,
+		Model:          "gpt-5.4",
+		Status:         domain.AgentRunCompleted,
+		InputTurns: []domain.Turn{
+			domain.NewTextTurn(domain.RoleUser, "build the feature"),
+		},
+	}
+
+	dto := FromAgentRun(run)
+
+	if dto.ID != 42 || dto.ConversationID != 11 {
+		t.Fatalf("unexpected run metadata: %+v", dto)
+	}
+	if dto.PromptPreview != "build the feature" {
+		t.Fatalf("expected prompt preview, got %q", dto.PromptPreview)
+	}
+	if len(dto.InputTurns) != 1 {
+		t.Fatalf("expected one input turn, got %d", len(dto.InputTurns))
+	}
+	if dto.InputTurns[0].Role != "user" || len(dto.InputTurns[0].Parts) != 1 || dto.InputTurns[0].Parts[0].Text != "build the feature" {
+		t.Fatalf("unexpected input turn: %+v", dto.InputTurns[0])
+	}
+}
+
+func TestFromAgentRunSummaryOmitsInputTurns(t *testing.T) {
+	run := &domain.AgentRun{
+		ID:          42,
+		UserID:      7,
+		WorkspaceID: 9,
+		Model:       "gpt-5.4",
+		Status:      domain.AgentRunCompleted,
+		InputTurns: []domain.Turn{
+			domain.NewTextTurn(domain.RoleUser, "build the feature"),
+		},
+	}
+
+	dto := FromAgentRunSummary(run)
+
+	if len(dto.InputTurns) != 0 {
+		t.Fatalf("expected summary to omit input turns, got %+v", dto.InputTurns)
+	}
+	if dto.PromptPreview != "build the feature" {
+		t.Fatalf("expected summary prompt preview, got %q", dto.PromptPreview)
+	}
+}
+
+func TestAgentRunPromptPreview(t *testing.T) {
+	longPrompt := "Please implement this very important feature with enough detail to exceed the preview limit so the run list remains compact and readable for users."
+	tests := []struct {
+		name  string
+		turns []domain.Turn
+		want  string
+	}{
+		{
+			name: "uses first non-empty user text",
+			turns: []domain.Turn{
+				domain.NewTextTurn(domain.RoleAssistant, "previous assistant output"),
+				domain.NewTextTurn(domain.RoleUser, "  build\n\tthe   feature  "),
+				domain.NewTextTurn(domain.RoleUser, "second user prompt"),
+			},
+			want: "build the feature",
+		},
+		{
+			name: "skips user turns without text",
+			turns: []domain.Turn{
+				domain.NewToolResultTurn("call-1", "tool", "result only", false),
+				domain.NewTextTurn(domain.RoleUser, "next real prompt"),
+			},
+			want: "next real prompt",
+		},
+		{
+			name:  "truncates long prompt",
+			turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, longPrompt)},
+			want:  "Please implement this very important feature with enough detail to exceed the preview limit so the run list remains com…",
+		},
+		{
+			name:  "returns empty without user prompt",
+			turns: []domain.Turn{domain.NewTextTurn(domain.RoleAssistant, "assistant only")},
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AgentRunPromptPreview(tt.turns)
+			if got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}

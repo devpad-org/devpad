@@ -86,7 +86,7 @@ func (h *Handler) HandleListAgentRuns(w http.ResponseWriter, r *http.Request) {
 	runDTOs := make([]AgentRunDTO, 0, len(runs))
 	for _, run := range runs {
 		run := run
-		runDTOs = append(runDTOs, FromAgentRun(&run))
+		runDTOs = append(runDTOs, FromAgentRunSummary(&run))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"runs": runDTOs})

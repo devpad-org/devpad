@@ -2,10 +2,14 @@ package httptransport
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
+
+const agentRunPromptPreviewMaxRunes = 120
 
 // ChatRequestDTO is the frontend request contract for chat endpoints.
 type ChatRequestDTO struct {
@@ -89,9 +93,11 @@ type AgentRunDTO struct {
 	UserID         int64      `json:"userId"`
 	WorkspaceID    int64      `json:"workspaceId"`
 	ConversationID int64      `json:"conversationId,omitempty"`
+	PromptPreview  string     `json:"promptPreview,omitempty"`
 	Model          string     `json:"model"`
 	Status         string     `json:"status"`
 	Error          string     `json:"error,omitempty"`
+	InputTurns     []TurnDTO  `json:"inputTurns,omitempty"`
 	CreatedAt      time.Time  `json:"createdAt"`
 	UpdatedAt      time.Time  `json:"updatedAt"`
 	StartedAt      *time.Time `json:"startedAt,omitempty"`
@@ -297,15 +303,25 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 
 // FromAgentRun converts run metadata into the stable transport shape.
 func FromAgentRun(run *domain.AgentRun) AgentRunDTO {
+	return fromAgentRun(run, true)
+}
+
+// FromAgentRunSummary converts run metadata without the full input conversation.
+func FromAgentRunSummary(run *domain.AgentRun) AgentRunDTO {
+	return fromAgentRun(run, false)
+}
+
+func fromAgentRun(run *domain.AgentRun, includeInputTurns bool) AgentRunDTO {
 	if run == nil {
 		return AgentRunDTO{}
 	}
-	return AgentRunDTO{
+	dto := AgentRunDTO{
 		ID:             run.ID,
 		ParentRunID:    run.ParentRunID,
 		UserID:         run.UserID,
 		WorkspaceID:    run.WorkspaceID,
 		ConversationID: run.ConversationID,
+		PromptPreview:  AgentRunPromptPreview(run.InputTurns),
 		Model:          run.Model,
 		Status:         string(run.Status),
 		Error:          run.Error,
@@ -314,6 +330,38 @@ func FromAgentRun(run *domain.AgentRun) AgentRunDTO {
 		StartedAt:      run.StartedAt,
 		CompletedAt:    run.CompletedAt,
 	}
+	if includeInputTurns && len(run.InputTurns) > 0 {
+		dto.InputTurns = FromDomainTurns(run.InputTurns)
+	}
+	return dto
+}
+
+// AgentRunPromptPreview returns a lightweight display title derived from the
+// first user-authored text turn in a run. It deliberately avoids exposing the
+// full input conversation in list responses.
+func AgentRunPromptPreview(turns []domain.Turn) string {
+	for _, turn := range turns {
+		if turn.Role != domain.RoleUser {
+			continue
+		}
+		preview := strings.Join(strings.Fields(turn.Text()), " ")
+		if preview == "" {
+			continue
+		}
+		return truncateRunes(preview, agentRunPromptPreviewMaxRunes)
+	}
+	return ""
+}
+
+func truncateRunes(value string, maxRunes int) string {
+	if maxRunes <= 0 || utf8.RuneCountInString(value) <= maxRunes {
+		return value
+	}
+	runes := []rune(value)
+	if maxRunes == 1 {
+		return "…"
+	}
+	return string(runes[:maxRunes-1]) + "…"
 }
 
 // FromAgentRunEvent converts a persisted agent event into the SSE payload shape.

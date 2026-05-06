@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
+import { useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
 
 marked.use({
   breaks: true,
@@ -29,6 +30,11 @@ function renderMarkdown(content: string): string {
 
 const props = defineProps<{
   workspaceId: number
+  focusedRunId?: number | null
+}>()
+
+const emit = defineEmits<{
+  (e: 'clear-focused-run'): void
 }>()
 
 interface TextSegment {
@@ -70,8 +76,8 @@ interface DisplayMessage {
 }
 
 const conversationStore = useConversationStore()
+const agentRunStore = useAgentRunStore()
 const activeConversationId = ref<number | null>(null)
-const historyOpen = ref(false)
 
 const messages = ref<DisplayMessage[]>([])
 // rawMessages tracks the full API message history including role:"tool" messages.
@@ -85,11 +91,47 @@ const selectedModel = ref('')
 const thinkingPreferences = ref<Record<string, boolean>>({})
 const streaming = ref(false)
 const abortController = ref<AbortController | null>(null)
+const activeAgentRunId = ref<number | null>(null)
 const inputFocused = ref(false)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const planExpanded = ref(false)
+const focusedRunMessages = ref<DisplayMessage[]>([])
+const focusedRunLoading = ref(false)
+const focusedRunError = ref<string | null>(null)
+const focusedRunLastSequence = ref(0)
+const focusedRunEventController = ref<AbortController | null>(null)
+const focusedRunOutputStarted = ref(false)
 
 const currentModel = computed(() => models.value.find((model) => model.id === selectedModel.value) ?? null)
+
+const viewingFocusedRun = computed(() => props.focusedRunId !== null && props.focusedRunId !== undefined)
+
+const focusedRun = computed(() => {
+  if (!props.focusedRunId) return null
+  return agentRunStore.runs.find((run) => run.id === props.focusedRunId) ?? null
+})
+
+const focusedRunTitle = computed(() => (
+  focusedRun.value?.promptPreview?.trim() || (props.focusedRunId ? `Agent Run #${props.focusedRunId}` : 'AI Agent')
+))
+
+const focusedRunStatus = computed(() => (
+  focusedRun.value?.status.replace('_', ' ') ?? 'loading'
+))
+
+const focusedRunActive = computed(() => (
+  focusedRun.value ? isAgentRunActiveStatus(focusedRun.value.status) : false
+))
+
+const canContinueFocusedRun = computed(() => Boolean(focusedRun.value?.conversationId))
+
+const visibleMessages = computed(() => (
+  viewingFocusedRun.value ? focusedRunMessages.value : messages.value
+))
+
+const displayStreaming = computed(() => (
+  viewingFocusedRun.value ? focusedRunActive.value : streaming.value
+))
 
 const canToggleThinking = computed(() => {
   const model = currentModel.value
@@ -152,9 +194,17 @@ onMounted(async () => {
   } catch {
     // models will remain empty
   }
-  // Fetch conversation history for this workspace (non-blocking).
+  // Fetch conversation metadata for internal thread tracking (non-blocking).
   conversationStore.fetchConversations(props.workspaceId)
 })
+
+onUnmounted(() => {
+  cancelFocusedRunEventStream()
+})
+
+watch(() => props.focusedRunId, (runId) => {
+  void loadFocusedRun(runId ?? null)
+}, { immediate: true })
 
 function formatToolArgs(name: string, args: string): string {
   try {
@@ -274,19 +324,177 @@ function reconstructDisplayMessages(rawMsgs: ChatMessage[]): DisplayMessage[] {
   return display
 }
 
-async function loadConversation(convId: number) {
-  try {
-    const res = await aiApi.getMessages(convId)
-    rawMessages.value = res.messages
-    messages.value = reconstructDisplayMessages(res.messages)
-    activeConversationId.value = convId
-    conversationStore.setActive(convId)
-    historyOpen.value = false
-    await nextTick()
-    scrollToBottom()
-  } catch {
-    // Leave current state intact on failure.
+function cancelFocusedRunEventStream() {
+  focusedRunEventController.value?.abort()
+  focusedRunEventController.value = null
+}
+
+async function loadFocusedRun(runId: number | null) {
+  cancelFocusedRunEventStream()
+  focusedRunMessages.value = []
+  focusedRunError.value = null
+  focusedRunLastSequence.value = 0
+  focusedRunOutputStarted.value = false
+
+  if (runId === null) {
+    focusedRunLoading.value = false
+    return
   }
+
+  focusedRunLoading.value = true
+  const loadedRun = await agentRunStore.refreshRun(runId)
+  if (props.focusedRunId !== runId) {
+    focusedRunLoading.value = false
+    return
+  }
+  if (!loadedRun) {
+    focusedRunLoading.value = false
+    focusedRunError.value = agentRunStore.error
+    return
+  }
+  focusedRunMessages.value = reconstructDisplayMessages(loadedRun.inputMessages ?? [])
+  await nextTick()
+  scrollToBottom()
+
+  const controller = new AbortController()
+  focusedRunEventController.value = controller
+  focusedRunLoading.value = false
+
+  try {
+    await aiApi.streamAgentRunEvents(
+      runId,
+      (event) => {
+        applyFocusedRunEvent(event)
+        focusedRunLastSequence.value = Math.max(focusedRunLastSequence.value, event.sequence ?? 0)
+        void nextTick(scrollToBottom)
+      },
+      focusedRunLastSequence.value,
+      controller.signal,
+    )
+  } catch (err) {
+    if (!isAbortError(err)) {
+      focusedRunError.value = err instanceof Error ? err.message : 'Failed to load agent run events'
+    }
+  } finally {
+    if (focusedRunEventController.value === controller) {
+      focusedRunEventController.value = null
+    }
+    if (props.workspaceId > 0) {
+      void agentRunStore.fetchRuns(props.workspaceId)
+    }
+  }
+}
+
+function applyFocusedRunEvent(event: StreamEvent) {
+  if (!hasDisplayableRunEventContent(event)) {
+    return
+  }
+
+  const msg = ensureFocusedRunAssistantMessage()
+
+  if (event.error) {
+    appendTextSegment(msg, `\n\nError: ${event.error}`)
+  }
+
+  if (event.reasoningContent) {
+    const lastSeg = msg.segments[msg.segments.length - 1]
+    if (lastSeg && lastSeg.type === 'thinking') {
+      lastSeg.content += event.reasoningContent
+    } else {
+      msg.segments.push({ type: 'thinking', content: event.reasoningContent })
+    }
+  }
+
+  if (event.content) {
+    appendTextSegment(msg, event.content)
+  }
+
+  if (event.toolCalls) {
+    for (const tc of event.toolCalls) {
+      msg.segments.push({
+        type: 'tool',
+        toolCallId: tc.id,
+        name: tc.name,
+        args: tc.arguments,
+      })
+    }
+  }
+
+  const toolResult = event.toolResult
+  if (toolResult) {
+    const toolSeg = msg.segments.find(
+      (seg): seg is ToolSegment => seg.type === 'tool' && seg.toolCallId === toolResult.toolCallId && !seg.result,
+    )
+    if (toolSeg) {
+      toolSeg.result = toolResult.content
+    }
+  }
+
+  if (event.approvalRequired) {
+    msg.segments.push({
+      type: 'approval',
+      id: event.approvalRequired.id,
+      command: event.approvalRequired.command,
+      status: 'pending',
+    })
+  }
+
+  if (event.plan) {
+    const existing = msg.segments.find((seg): seg is PlanSegment => seg.type === 'plan')
+    if (existing) {
+      existing.steps = event.plan
+    } else {
+      msg.segments.push({ type: 'plan', steps: event.plan })
+    }
+  }
+}
+
+function hasDisplayableRunEventContent(event: StreamEvent): boolean {
+  return Boolean(
+    event.error ||
+    event.reasoningContent ||
+    event.content ||
+    event.toolCalls?.length ||
+    event.toolResult ||
+    event.approvalRequired ||
+    event.plan?.length,
+  )
+}
+
+function ensureFocusedRunAssistantMessage(): DisplayMessage {
+  const last = focusedRunMessages.value[focusedRunMessages.value.length - 1]
+  if (focusedRunOutputStarted.value && last && last.role === 'assistant') {
+    return last
+  }
+
+  const msg: DisplayMessage = { role: 'assistant', content: '', segments: [] }
+  focusedRunMessages.value.push(msg)
+  focusedRunOutputStarted.value = true
+  return msg
+}
+
+function appendTextSegment(msg: DisplayMessage, content: string) {
+  msg.content += content
+  const lastSeg = msg.segments[msg.segments.length - 1]
+  if (lastSeg && lastSeg.type === 'text') {
+    lastSeg.content += content
+  } else {
+    msg.segments.push({ type: 'text', content })
+  }
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError'
+}
+
+async function loadConversation(convId: number) {
+  const res = await aiApi.getMessages(convId)
+  rawMessages.value = res.messages
+  messages.value = reconstructDisplayMessages(res.messages)
+  activeConversationId.value = convId
+  conversationStore.setActive(convId)
+  await nextTick()
+  scrollToBottom()
 }
 
 async function saveCurrentConversation() {
@@ -317,6 +525,22 @@ async function saveCurrentConversation() {
   }
 }
 
+async function ensureActiveConversation(): Promise<number | null> {
+  if (activeConversationId.value !== null) {
+    return activeConversationId.value
+  }
+
+  try {
+    const conv = await conversationStore.createConversation(props.workspaceId, selectedModel.value)
+    activeConversationId.value = conv.id
+    conversationStore.setActive(conv.id)
+    return conv.id
+  } catch (err) {
+    console.error('Failed to create conversation for agent run:', err)
+    return null
+  }
+}
+
 async function sendMessage() {
   const text = inputValue.value.trim()
   if (!text || streaming.value) return
@@ -326,6 +550,18 @@ async function sendMessage() {
       role: 'assistant',
       content: 'No AI model is configured. Ask an admin to set up an AI provider in Settings.',
       segments: [{ type: 'text', content: 'No AI model is configured. Ask an admin to set up an AI provider in Settings.' }],
+    })
+    await nextTick()
+    scrollToBottom()
+    return
+  }
+
+  const conversationId = await ensureActiveConversation()
+  if (conversationId === null) {
+    messages.value.push({
+      role: 'assistant',
+      content: 'Unable to start the AI agent because the chat session could not be created.',
+      segments: [{ type: 'text', content: 'Unable to start the AI agent because the chat session could not be created.' }],
     })
     await nextTick()
     scrollToBottom()
@@ -365,10 +601,18 @@ async function sendMessage() {
   let streamFailed = false
 
   try {
-    await aiApi.agentStream(
+    const created = await aiApi.createAgentRun(
       selectedModel.value,
       chatMessages,
       props.workspaceId,
+      conversationId,
+      thinkingRequest.value,
+    )
+    agentRunStore.upsertRun(created.run)
+    activeAgentRunId.value = created.run.id
+
+    await aiApi.streamAgentRunEvents(
+      created.run.id,
       (event: StreamEvent) => {
         if (event.error) {
           streamFailed = true
@@ -439,18 +683,19 @@ async function sendMessage() {
           }
         }
 
-        if (event.toolResult) {
+        const toolResult = event.toolResult
+        if (toolResult) {
           const segs = messages.value[assistantIdx].segments
           const toolSeg = segs.find(
-            (s): s is ToolSegment => s.type === 'tool' && s.toolCallId === event.toolResult!.toolCallId && !s.result
+            (s): s is ToolSegment => s.type === 'tool' && s.toolCallId === toolResult.toolCallId && !s.result
           )
           if (toolSeg) {
-            toolSeg.result = event.toolResult.content
+            toolSeg.result = toolResult.content
           }
           rounds[rounds.length - 1].toolResults.push({
             role: 'tool',
-            content: event.toolResult.content,
-            tool_call_id: event.toolResult.toolCallId,
+            content: toolResult.content,
+            tool_call_id: toolResult.toolCallId,
           })
         }
 
@@ -474,8 +719,8 @@ async function sendMessage() {
         }
         scrollToBottom()
       },
+      0,
       controller.signal,
-      thinkingRequest.value,
     )
   } catch (err: any) {
     streamFailed = true
@@ -504,8 +749,16 @@ async function sendMessage() {
 
     streaming.value = false
     abortController.value = null
+    const completedRunId = activeAgentRunId.value
+    activeAgentRunId.value = null
     await nextTick()
     scrollToBottom()
+
+    if (completedRunId !== null) {
+      agentRunStore.refreshRun(completedRunId).catch((err) => {
+        console.error('Failed to refresh completed agent run:', err)
+      })
+    }
 
     // Auto-save only on clean completion — skip on abort or error.
     if (!streamFailed) {
@@ -517,59 +770,61 @@ async function sendMessage() {
 }
 
 function stopStreaming() {
+  if (activeAgentRunId.value !== null) {
+    aiApi.cancelAgentRun(activeAgentRunId.value).catch((err) => {
+      console.error('Failed to cancel agent run:', err)
+      abortController.value?.abort()
+    })
+    return
+  }
+
   abortController.value?.abort()
 }
 
 function newChat() {
   if (streaming.value) {
+    if (activeAgentRunId.value !== null) {
+      aiApi.cancelAgentRun(activeAgentRunId.value).catch((err) => {
+        console.error('Failed to cancel agent run:', err)
+      })
+    }
     abortController.value?.abort()
   }
   messages.value = []
   rawMessages.value = []
   inputValue.value = ''
   planExpanded.value = false
+  activeAgentRunId.value = null
   resetInputHeight()
   activeConversationId.value = null
   conversationStore.setActive(null)
 }
 
-// Conversations filtered to the current workspace.
-const workspaceConversations = computed(() =>
-  conversationStore.conversations.filter((c) => c.workspaceId === props.workspaceId),
-)
+async function continueFocusedRunConversation() {
+  const conversationId = focusedRun.value?.conversationId
+  if (!conversationId) return
 
-function formatRelativeTime(dateStr: string): string {
-  const date = new Date(dateStr)
-  const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffMin = Math.floor(diffMs / 60000)
-  if (diffMin < 1) return 'just now'
-  if (diffMin < 60) return `${diffMin}m ago`
-  const diffHr = Math.floor(diffMin / 60)
-  if (diffHr < 24) return `${diffHr}h ago`
-  const diffDay = Math.floor(diffHr / 24)
-  if (diffDay < 7) return `${diffDay}d ago`
-  return date.toLocaleDateString()
-}
-
-async function deleteConversation(id: number) {
-  if (activeConversationId.value === id) {
-    newChat()
+  try {
+    await loadConversation(conversationId)
+    emit('clear-focused-run')
+    await nextTick()
+    inputEl.value?.focus()
+  } catch (err) {
+    focusedRunError.value = err instanceof Error ? err.message : 'Failed to load conversation for this run'
   }
-  await conversationStore.deleteConversation(id)
 }
 
-const isThinking = computed(() => {
-  if (!streaming.value) return false
-  const last = messages.value[messages.value.length - 1]
+const displayIsThinking = computed(() => {
+  if (!displayStreaming.value) return false
+  const last = visibleMessages.value[visibleMessages.value.length - 1]
   if (!last || last.role !== 'assistant') return false
   return last.segments.length === 0
 })
 
 // activityStatus describes what the agent is currently doing during streaming.
-const activityStatus = computed<string | null>(() => {
-  if (!streaming.value) return null
-  const last = messages.value[messages.value.length - 1]
+const displayActivityStatus = computed<string | null>(() => {
+  if (!displayStreaming.value) return null
+  const last = visibleMessages.value[visibleMessages.value.length - 1]
   if (!last || last.role !== 'assistant') return null
   if (last.segments.length === 0) return null // isThinking handles this case
 
@@ -598,8 +853,8 @@ const activityStatus = computed<string | null>(() => {
 
 // Find the latest plan across all messages.
 const activePlan = computed<PlanStep[] | null>(() => {
-  for (let i = messages.value.length - 1; i >= 0; i--) {
-    const msg = messages.value[i]
+  for (let i = visibleMessages.value.length - 1; i >= 0; i--) {
+    const msg = visibleMessages.value[i]
     if (msg.role !== 'assistant') continue
     for (let j = msg.segments.length - 1; j >= 0; j--) {
       const seg = msg.segments[j]
@@ -650,21 +905,30 @@ function scrollToBottom() {
             <path d="M17 19h4" />
           </svg>
         </span>
-        <span class="agent-title">AI Agent</span>
+        <span class="agent-title">{{ focusedRunTitle }}</span>
       </div>
-      <div class="agent-header-actions">
+      <div v-if="viewingFocusedRun" class="agent-header-actions">
+        <span class="focused-run-status" :class="{ active: focusedRunActive }">
+          <span class="focused-run-dot" />
+          {{ focusedRunStatus }}
+        </span>
         <button
-          class="history-btn"
-          :class="{ active: historyOpen }"
-          title="Chat history"
-          @click="historyOpen = !historyOpen"
+          class="continue-run-btn"
+          type="button"
+          :disabled="!canContinueFocusedRun"
+          title="Continue this conversation"
+          @click="continueFocusedRunConversation"
         >
+          Continue
+        </button>
+        <button class="header-icon-btn" title="Return to chat" @click="emit('clear-focused-run')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-            <path d="M3 3v5h5" />
-            <path d="M12 7v5l4 2" />
+            <path d="m12 19-7-7 7-7" />
+            <path d="M19 12H5" />
           </svg>
         </button>
+      </div>
+      <div v-else class="agent-header-actions">
         <button class="new-chat-btn" title="New Chat" @click="newChat">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 5v14" />
@@ -674,46 +938,18 @@ function scrollToBottom() {
       </div>
     </div>
 
-    <!-- History panel -->
-    <div v-if="historyOpen" class="history-panel">
-      <div class="history-header">
-        <span class="history-title">History</span>
-      </div>
-      <div class="history-list">
-        <div v-if="workspaceConversations.length === 0" class="history-empty">
-          No past conversations
-        </div>
-        <div
-          v-for="conv in workspaceConversations"
-          :key="conv.id"
-          class="history-item"
-          :class="{ active: conv.id === activeConversationId }"
-          @click="loadConversation(conv.id)"
-        >
-          <div class="history-item-main">
-            <span class="history-item-title">{{ conv.title || 'Untitled' }}</span>
-            <span class="history-item-meta">
-              <span class="history-item-model">{{ conv.model }}</span>
-              <span class="history-item-sep">&middot;</span>
-              <span class="history-item-time">{{ formatRelativeTime(conv.updatedAt) }}</span>
-            </span>
-          </div>
-          <button
-            class="history-item-delete"
-            title="Delete conversation"
-            @click.stop="deleteConversation(conv.id)"
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-      </div>
-    </div>
-
     <div ref="chatBody" class="agent-body">
-      <div v-if="messages.length === 0" class="chat-empty">
+      <div v-if="viewingFocusedRun" class="run-focus-banner">
+        <span class="run-focus-label">Focused background run</span>
+        <span v-if="focusedRun?.model" class="run-focus-meta">{{ focusedRun.model }}</span>
+      </div>
+      <div v-if="focusedRunError" class="run-focus-error">
+        {{ focusedRunError }}
+      </div>
+      <div v-if="focusedRunLoading" class="chat-empty">
+        <p class="empty-text">Loading agent run…</p>
+      </div>
+      <div v-else-if="visibleMessages.length === 0" class="chat-empty">
         <div class="empty-icon">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
@@ -723,10 +959,12 @@ function scrollToBottom() {
             <path d="M17 19h4" />
           </svg>
         </div>
-        <p class="empty-text">Ask me anything about your code.</p>
+        <p class="empty-text">
+          {{ viewingFocusedRun ? 'No events have been recorded for this run yet.' : 'Ask me anything about your code.' }}
+        </p>
       </div>
       <div
-        v-for="(msg, i) in messages"
+        v-for="(msg, i) in visibleMessages"
         :key="i"
         class="chat-message"
         :class="`msg-${msg.role}`"
@@ -763,7 +1001,7 @@ function scrollToBottom() {
                   <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
                 </svg>
                 <span class="tool-name">{{ seg.name }}</span>
-                <span v-if="!seg.result && streaming && i === messages.length - 1" class="tool-spinner" />
+                <span v-if="!seg.result && displayStreaming && i === visibleMessages.length - 1" class="tool-spinner" />
                 <span v-else-if="seg.result && isToolError(seg as ToolSegment)" class="tool-error">&#x2718;</span>
                 <span v-else-if="seg.result" class="tool-done">&#x2714;</span>
               </div>
@@ -811,14 +1049,14 @@ function scrollToBottom() {
             <template v-else-if="seg.type === 'plan'" />
             <div v-else-if="seg.type === 'text' && seg.content" class="msg-text" v-html="renderMarkdown(seg.content)" />
           </template>
-          <div v-if="i === messages.length - 1 && isThinking" class="thinking-indicator">
+          <div v-if="i === visibleMessages.length - 1 && displayIsThinking" class="thinking-indicator">
             <span class="thinking-dot" />
             <span class="thinking-dot" />
             <span class="thinking-dot" />
           </div>
-          <div v-else-if="i === messages.length - 1 && activityStatus" class="activity-status">
+          <div v-else-if="i === visibleMessages.length - 1 && displayActivityStatus" class="activity-status">
             <span class="activity-spinner" />
-            <span class="activity-label">{{ activityStatus }}</span>
+            <span class="activity-label">{{ displayActivityStatus }}</span>
           </div>
         </div>
         <div v-else class="msg-content">{{ msg.content }}</div>
@@ -866,7 +1104,21 @@ function scrollToBottom() {
       </div>
     </div>
 
-    <div class="agent-input-area">
+    <div v-if="viewingFocusedRun" class="run-focus-footer">
+      <button
+        class="continue-run-btn continue-run-btn--footer"
+        type="button"
+        :disabled="!canContinueFocusedRun"
+        @click="continueFocusedRunConversation"
+      >
+        Continue conversation
+      </button>
+      <button class="return-chat-btn" type="button" @click="emit('clear-focused-run')">
+        Return to chat
+      </button>
+    </div>
+
+    <div v-else class="agent-input-area">
       <div class="input-shell" :class="{ focused: inputFocused }">
         <div class="input-container" @click="inputEl?.focus()">
           <textarea
@@ -964,6 +1216,36 @@ function scrollToBottom() {
   gap: var(--space-2, 8px);
 }
 
+.focused-run-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 0.5px solid var(--border-default);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  text-transform: capitalize;
+}
+
+.focused-run-status.active {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--accent-green);
+}
+
+.focused-run-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.focused-run-status.active .focused-run-dot {
+  background: var(--accent-green);
+  box-shadow: 0 0 8px var(--accent-green);
+}
+
 .agent-badge {
   font-size: 10.5px;
   font-weight: 500;
@@ -976,7 +1258,7 @@ function scrollToBottom() {
 }
 
 .new-chat-btn,
-.history-btn {
+.header-icon-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -991,13 +1273,39 @@ function scrollToBottom() {
 }
 
 .new-chat-btn:hover,
-.history-btn:hover {
+.header-icon-btn:hover {
   background: var(--bg-raised);
   color: var(--text-primary);
   border-color: var(--border-strong);
 }
 
-.history-btn.active {
+.continue-run-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 var(--space-2);
+  border: 0.5px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-glow);
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 600;
+  transition: all var(--transition-fast);
+}
+
+.continue-run-btn:hover:not(:disabled) {
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.continue-run-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.header-icon-btn.active {
   background: var(--accent-glow);
   color: var(--accent);
   border-color: var(--accent-border);
@@ -1057,133 +1365,6 @@ function scrollToBottom() {
   color: var(--accent);
 }
 
-/* History panel */
-.history-panel {
-  flex-shrink: 0;
-  border-bottom: 0.5px solid var(--border-default);
-  background: var(--bg-surface-alt);
-  max-height: 220px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.history-header {
-  padding: 6px 12px;
-  border-bottom: 0.5px solid var(--border-subtle);
-  flex-shrink: 0;
-}
-
-.history-title {
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.history-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 4px 0;
-}
-
-.history-empty {
-  padding: 12px;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  text-align: center;
-}
-
-.history-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  cursor: pointer;
-  transition: background 100ms ease;
-  border-radius: var(--radius-sm);
-  margin: 0 4px;
-}
-
-.history-item:hover {
-  background: var(--bg-hover);
-}
-
-.history-item.active {
-  background: var(--accent-glow);
-}
-
-.history-item-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.history-item-title {
-  font-size: 0.75rem;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.history-item.active .history-item-title {
-  color: var(--accent);
-}
-
-.history-item-meta {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.68rem;
-  color: var(--text-muted);
-}
-
-.history-item-model {
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 80px;
-}
-
-.history-item-sep {
-  opacity: 0.5;
-}
-
-.history-item-time {
-  white-space: nowrap;
-}
-
-.history-item-delete {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 100ms ease, background 100ms ease, color 100ms ease;
-}
-
-.history-item:hover .history-item-delete {
-  opacity: 1;
-}
-
-.history-item-delete:hover {
-  background: var(--error-bg);
-  color: var(--accent-rose);
-}
-
 .chat-empty {
   display: flex;
   flex-direction: column;
@@ -1217,6 +1398,44 @@ function scrollToBottom() {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+}
+
+.run-focus-banner,
+.run-focus-error {
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+}
+
+.run-focus-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 0.5px solid var(--accent-border);
+  background: var(--accent-glow);
+}
+
+.run-focus-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.run-focus-meta {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-focus-error {
+  padding: var(--space-2) var(--space-3);
+  border: 0.5px solid var(--error-border);
+  background: var(--error-bg);
+  color: var(--accent-rose);
 }
 
 .chat-message {
@@ -1269,6 +1488,36 @@ function scrollToBottom() {
   padding: var(--space-3);
   border-top: 0.5px solid var(--border-default);
   flex-shrink: 0;
+}
+
+.run-focus-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  padding: var(--space-3);
+  border-top: 0.5px solid var(--border-default);
+}
+
+.continue-run-btn--footer {
+  min-height: auto;
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.78rem;
+}
+
+.return-chat-btn {
+  padding: var(--space-2) var(--space-3);
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  transition: all var(--transition-fast);
+}
+
+.return-chat-btn:hover {
+  border-color: var(--border-active);
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .input-shell {

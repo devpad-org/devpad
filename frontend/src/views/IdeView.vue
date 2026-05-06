@@ -7,6 +7,7 @@ import EditorPanel from '@/components/ide/EditorPanel.vue'
 import GitGraphPanel from '@/components/ide/GitGraphPanel.vue'
 import TerminalPanel from '@/components/ide/TerminalPanel.vue'
 import AiAgentPanel from '@/components/ide/AiAgentPanel.vue'
+import AiAgentRunsPanel from '@/components/ide/AiAgentRunsPanel.vue'
 import PreviewPanel from '@/components/ide/PreviewPanel.vue'
 import GitPanel from '@/components/ide/GitPanel.vue'
 import GitStatusBar from '@/components/ide/GitStatusBar.vue'
@@ -14,6 +15,7 @@ import WorkspaceInfoPanel from '@/components/ide/WorkspaceInfoPanel.vue'
 import ServicesPanel from '@/components/ide/ServicesPanel.vue'
 import { useResizable } from '@/composables/useResizable'
 import type { GitCommit, GitCommitFile } from '@/api/git'
+import type { AgentRun } from '@/api/ai'
 
 const route = useRoute()
 const router = useRouter()
@@ -28,6 +30,7 @@ const previewVisible = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
 const selectedGitCommit = ref<GitCommit | null>(null)
 const gitDiffRequest = ref<GitDiffRequest | null>(null)
+const focusedAgentRunId = ref<number | null>(null)
 let gitDiffRequestId = 0
 
 type GitDiffRequest =
@@ -139,6 +142,11 @@ function handleGitWorkingFileSelect(payload: { path: string; staged: boolean }) 
     ...payload,
     requestId: ++gitDiffRequestId,
   }
+}
+
+function handleAgentRunFocus(run: AgentRun) {
+  focusedAgentRunId.value = run.id
+  activeActivity.value = 'ai'
 }
 
 function clearSelectedGitCommit() {
@@ -361,7 +369,11 @@ function handleBack() {
       <div class="ide-center">
         <section id="ide-primary-surface" class="ide-editor-area" aria-label="Primary IDE surface">
           <div v-show="activeActivity === 'ai'" class="ide-ai-surface">
-            <AiAgentPanel :workspace-id="workspace?.id ?? 0" />
+            <AiAgentPanel
+              :workspace-id="workspace?.id ?? 0"
+              :focused-run-id="focusedAgentRunId"
+              @clear-focused-run="focusedAgentRunId = null"
+            />
           </div>
           <EditorPanel
             v-show="activeActivity !== 'ai' && activeActivity !== 'git'"
@@ -401,13 +413,7 @@ function handleBack() {
         </div>
       </div>
 
-      <div
-        v-if="previewVisible || activeActivity === 'ai'"
-        id="ide-right-panel"
-        class="ide-right-panel"
-        role="region"
-        aria-label="Right side panel"
-      >
+      <div id="ide-right-panel" class="ide-right-panel" role="region" aria-label="Right side panel">
         <!-- Right panel: Preview -->
         <template v-if="previewVisible">
           <div
@@ -423,15 +429,18 @@ function handleBack() {
           </aside>
         </template>
 
-        <!-- Right panel: reserved for AI context -->
-        <template v-else-if="activeActivity === 'ai'">
-          <div
-            class="resize-handle resize-handle--horizontal"
-            :class="{ active: aiSidePanel.isDragging.value }"
-            @pointerdown="aiSidePanel.onPointerDown"
+        <div
+          class="resize-handle resize-handle--horizontal"
+          :class="{ active: aiSidePanel.isDragging.value }"
+          @pointerdown="aiSidePanel.onPointerDown"
+        />
+        <aside class="ide-ai-side-panel" :style="{ width: aiSidePanel.size.value + 'px' }" aria-label="AI agent runs">
+          <AiAgentRunsPanel
+            :workspace-id="workspace?.id ?? 0"
+            :selected-run-id="focusedAgentRunId"
+            @focus="handleAgentRunFocus"
           />
-          <aside class="ide-ai-side-panel" :style="{ width: aiSidePanel.size.value + 'px' }" aria-label="AI side panel" />
-        </template>
+        </aside>
       </div>
     </div>
     <GitStatusBar

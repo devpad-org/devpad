@@ -27,6 +27,25 @@ export interface ThinkingConfig {
 	enabled?: boolean
 }
 
+export type AgentRunStatus = 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled'
+
+export interface AgentRun {
+  id: number
+  parentRunId?: number
+  userId: number
+  workspaceId: number
+  conversationId?: number
+  promptPreview?: string
+  model: string
+  status: AgentRunStatus
+  error?: string
+  inputMessages?: ChatMessage[]
+  createdAt: string
+  updatedAt: string
+  startedAt?: string
+  completedAt?: string
+}
+
 export interface AIProvider {
   id: string
   name: string
@@ -78,6 +97,8 @@ export interface StreamToolCall {
 }
 
 export interface StreamEvent {
+  runId?: number
+  sequence?: number
   reasoningContent?: string
   thinkingState?: unknown
   content?: string
@@ -101,6 +122,23 @@ interface PartDTO {
 interface TurnDTO {
   role: string
   parts: PartDTO[]
+}
+
+interface AgentRunDTO {
+  id: number
+  parentRunId?: number
+  userId: number
+  workspaceId: number
+  conversationId?: number
+  promptPreview?: string
+  model: string
+  status: AgentRunStatus
+  error?: string
+  inputTurns?: TurnDTO[]
+  createdAt: string
+  updatedAt: string
+  startedAt?: string
+  completedAt?: string
 }
 
 function messagesToTurns(messages: ChatMessage[]): TurnDTO[] {
@@ -195,6 +233,28 @@ function turnsToMessages(turns: TurnDTO[]): ChatMessage[] {
   return messages
 }
 
+function agentRunFromDTO(dto: AgentRunDTO): AgentRun {
+  const run: AgentRun = {
+    id: dto.id,
+    parentRunId: dto.parentRunId,
+    userId: dto.userId,
+    workspaceId: dto.workspaceId,
+    conversationId: dto.conversationId,
+    promptPreview: dto.promptPreview,
+    model: dto.model,
+    status: dto.status,
+    error: dto.error,
+    createdAt: dto.createdAt,
+    updatedAt: dto.updatedAt,
+    startedAt: dto.startedAt,
+    completedAt: dto.completedAt,
+  }
+  if (dto.inputTurns && dto.inputTurns.length > 0) {
+    run.inputMessages = turnsToMessages(dto.inputTurns)
+  }
+  return run
+}
+
 export const aiApi = {
   listModels(): Promise<{ models: AIModel[] }> {
     return apiClient.get<{ models: AIModel[] }>('/api/ai/models')
@@ -232,6 +292,53 @@ export const aiApi = {
 
   approveCommand(id: string, approved: boolean): Promise<void> {
     return apiClient.post<void>('/api/ai/agent/approve', { id, approved })
+  },
+
+  async listAgentRuns(workspaceId: number): Promise<{ runs: AgentRun[] }> {
+    const res = await apiClient.get<{ runs: AgentRunDTO[] }>(`/api/ai/agent/runs?workspaceId=${workspaceId}`)
+    return { runs: res.runs.map(agentRunFromDTO) }
+  },
+
+  async getAgentRun(id: number): Promise<{ run: AgentRun }> {
+    const res = await apiClient.get<{ run: AgentRunDTO }>(`/api/ai/agent/runs/${id}`)
+    return { run: agentRunFromDTO(res.run) }
+  },
+
+  async createAgentRun(
+    model: string,
+    messages: ChatMessage[],
+    workspaceId: number,
+    conversationId?: number,
+    thinking?: ThinkingConfig,
+  ): Promise<{ run: AgentRun }> {
+    const res = await apiClient.post<{ run: AgentRunDTO }>('/api/ai/agent/runs', {
+      model,
+      turns: messagesToTurns(messages),
+      workspaceId,
+      conversationId,
+      thinking,
+    })
+    return { run: agentRunFromDTO(res.run) }
+  },
+
+  cancelAgentRun(id: number): Promise<void> {
+    return apiClient.post<void>(`/api/ai/agent/runs/${id}/cancel`, {})
+  },
+
+  async streamAgentRunEvents(
+    runId: number,
+    onEvent: (event: StreamEvent) => void,
+    afterSequence = 0,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const res = await fetch(`/api/ai/agent/runs/${runId}/events?after=${afterSequence}`, { signal })
+
+    if (!res.ok) {
+      const err = await res.json()
+      throw new Error(err.error || `Agent run events request failed: ${res.status}`)
+    }
+
+    await readSSEStream(res, onEvent)
   },
 
   async agentStream(
