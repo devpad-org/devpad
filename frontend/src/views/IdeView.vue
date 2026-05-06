@@ -179,8 +179,17 @@ function handleBack() {
     <button class="ide-back-btn" @click="handleBack">Back to Workspaces</button>
   </div>
   <div v-else class="ide-layout">
-    <!-- Title bar -->
-    <div class="ide-titlebar">
+    <!--
+      IDE panel IDs:
+      - ide-toolbar: top toolbar/title bar
+      - ide-activity-bar: far-left activity switcher
+      - ide-left-panel: left side panel next to the activity bar
+      - ide-primary-surface: editor or git graph surface
+      - ide-right-panel: far-right side panel region
+      - ide-terminal-panel: bottom terminal panel
+      - ide-status-bar: bottom status bar (declared in GitStatusBar.vue)
+    -->
+    <div id="ide-toolbar" class="ide-titlebar" role="toolbar" aria-label="IDE toolbar">
       <button class="titlebar-back" @click="handleBack" title="Back to workspaces">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="m15 18-6-6 6-6" />
@@ -263,8 +272,7 @@ function handleBack() {
 
     <!-- Main IDE area -->
     <div class="ide-body">
-      <!-- Activity Bar -->
-      <div class="activity-bar">
+      <nav id="ide-activity-bar" class="activity-bar" aria-label="Activity bar">
         <button
           class="activity-btn"
           :class="{ active: activeSidebarTab === 'explorer' }"
@@ -311,10 +319,14 @@ function handleBack() {
             <path d="M3 12a9 3 0 0 0 18 0" />
           </svg>
         </button>
-      </div>
+      </nav>
 
-      <!-- Sidebar -->
-      <aside class="ide-sidebar" :style="{ width: sidebar.size.value + 'px' }">
+      <aside
+        id="ide-left-panel"
+        class="ide-sidebar"
+        aria-label="Left side panel"
+        :style="{ width: sidebar.size.value + 'px' }"
+      >
         <FileExplorer
           v-show="activeSidebarTab === 'explorer'"
           :workspace-id="workspace?.id ?? 0"
@@ -346,7 +358,7 @@ function handleBack() {
 
       <!-- Center + Bottom -->
       <div class="ide-center">
-        <div class="ide-editor-area">
+        <section id="ide-primary-surface" class="ide-editor-area" aria-label="Primary editor surface">
           <EditorPanel
             v-show="activeSidebarTab !== 'git'"
             ref="editorPanel"
@@ -363,14 +375,17 @@ function handleBack() {
             @commit-select="handleGitCommitSelect"
             @close-diff="closeGitDiff"
           />
-        </div>
+        </section>
         <div
           class="resize-handle resize-handle--vertical"
           :class="{ active: terminal.isDragging.value, hidden: terminalMinimized }"
           @pointerdown="terminal.onPointerDown"
         />
         <div
+          id="ide-terminal-panel"
           class="ide-terminal-area"
+          role="region"
+          aria-label="Terminal panel"
           :class="{ minimized: terminalMinimized }"
           :style="terminalMinimized ? {} : { height: terminal.size.value + 'px' }"
         >
@@ -382,32 +397,40 @@ function handleBack() {
         </div>
       </div>
 
-      <!-- Right panel: Preview -->
-      <template v-if="previewVisible">
-        <div
-          class="resize-handle resize-handle--horizontal"
-          :class="{ active: preview.isDragging.value }"
-          @pointerdown="preview.onPointerDown"
-        />
-        <aside class="ide-preview" :style="{ width: preview.size.value + 'px' }">
-          <PreviewPanel
-            :workspace-id="workspace?.id ?? 0"
-            @close="previewVisible = false"
+      <div
+        v-if="previewVisible || agentVisible"
+        id="ide-right-panel"
+        class="ide-right-panel"
+        role="region"
+        aria-label="Right side panel"
+      >
+        <!-- Right panel: Preview -->
+        <template v-if="previewVisible">
+          <div
+            class="resize-handle resize-handle--horizontal"
+            :class="{ active: preview.isDragging.value }"
+            @pointerdown="preview.onPointerDown"
           />
-        </aside>
-      </template>
+          <aside class="ide-preview" :style="{ width: preview.size.value + 'px' }">
+            <PreviewPanel
+              :workspace-id="workspace?.id ?? 0"
+              @close="previewVisible = false"
+            />
+          </aside>
+        </template>
 
-      <!-- Right panel: AI Agent -->
-      <template v-if="agentVisible">
-        <div
-          class="resize-handle resize-handle--horizontal"
-          :class="{ active: agent.isDragging.value }"
-          @pointerdown="agent.onPointerDown"
-        />
-        <aside class="ide-agent" :style="{ width: agent.size.value + 'px' }">
-          <AiAgentPanel :workspace-id="workspace?.id ?? 0" />
-        </aside>
-      </template>
+        <!-- Right panel: AI Agent -->
+        <template v-if="agentVisible">
+          <div
+            class="resize-handle resize-handle--horizontal"
+            :class="{ active: agent.isDragging.value }"
+            @pointerdown="agent.onPointerDown"
+          />
+          <aside class="ide-agent" :style="{ width: agent.size.value + 'px' }">
+            <AiAgentPanel :workspace-id="workspace?.id ?? 0" />
+          </aside>
+        </template>
+      </div>
     </div>
     <GitStatusBar
       :workspace-id="workspace?.id ?? 0"
@@ -679,6 +702,12 @@ function handleBack() {
 
 .ide-terminal-area.minimized {
   height: auto;
+}
+
+.ide-right-panel {
+  display: flex;
+  flex-shrink: 0;
+  min-width: 0;
 }
 
 .ide-agent {

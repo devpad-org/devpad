@@ -128,7 +128,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <footer class="git-status-bar" role="contentinfo" aria-label="Git status">
+  <footer id="ide-status-bar" class="git-status-bar" role="contentinfo" aria-label="IDE status bar">
     <button
       type="button"
       class="git-status-item git-status-branch"
