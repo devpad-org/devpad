@@ -100,7 +100,7 @@ const focusedRunActive = computed(() => (
   focusedRun.value ? isAgentRunActiveStatus(focusedRun.value.status) : false
 ))
 
-const canContinueFocusedRun = computed(() => Boolean(focusedRun.value?.conversationId))
+const canContinueFocusedRun = computed(() => Boolean(focusedRun.value?.conversationId) && !focusedRunActive.value)
 
 const visibleMessages = computed(() => (
   viewingFocusedRun.value ? focusedRunMessages.value : messages.value
@@ -579,6 +579,11 @@ async function sendMessage() {
   // Build the API payload from rawMessages (excludes the empty assistant placeholder).
   const chatMessages: ChatMessage[] = rawMessages.value.slice()
 
+  // Pre-save the user message (and any prior history) so the linked conversation is never
+  // empty — this ensures "Continue" always loads at least the user's message even if the
+  // SSE stream is later aborted (e.g. "New Chat" while streaming).
+  await saveCurrentConversation().catch((err) => console.error('Pre-run save failed:', err))
+
   // Each LLM iteration is tracked as a "round" so we can reconstruct the correct
   // interleaved assistant/tool message sequence for rawMessages on completion.
   interface Round {
@@ -746,16 +751,17 @@ async function sendMessage() {
     await nextTick()
     scrollToBottom()
 
-    if (completedRunId !== null) {
-      agentRunStore.refreshRun(completedRunId).catch((err) => {
-        console.error('Failed to refresh completed agent run:', err)
+    // Auto-save on clean completion. Await it before refreshing the run status so that
+    // the "Continue" button only becomes available after the conversation is persisted.
+    if (!streamFailed) {
+      await saveCurrentConversation().catch((err) => {
+        console.error('Auto-save failed:', err)
       })
     }
 
-    // Auto-save only on clean completion — skip on abort or error.
-    if (!streamFailed) {
-      saveCurrentConversation().catch((err) => {
-        console.error('Auto-save failed:', err)
+    if (completedRunId !== null) {
+      agentRunStore.refreshRun(completedRunId).catch((err) => {
+        console.error('Failed to refresh completed agent run:', err)
       })
     }
   }
