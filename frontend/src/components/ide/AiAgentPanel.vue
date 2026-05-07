@@ -4,6 +4,15 @@ import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep,
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
+import AiToolGroup from '@/components/ide/AiToolGroup.vue'
+import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
+import {
+  planStepsFromToolArgs,
+  shouldRenderToolCall,
+  toolGroupKey,
+  type ToolDisplaySegment,
+  type ToolGroupDisplay,
+} from '@/components/ide/aiToolDisplay'
 
 const props = defineProps<{
   workspaceId: number
@@ -19,12 +28,8 @@ interface TextSegment {
   content: string
 }
 
-interface ToolSegment {
+interface ToolSegment extends ToolDisplaySegment {
   type: 'tool'
-  toolCallId: string
-  name: string
-  args: string
-  result?: string
 }
 
 interface ApprovalSegment {
@@ -46,6 +51,8 @@ interface ThinkingSegment {
 }
 
 type MessageSegment = TextSegment | ToolSegment | ApprovalSegment | PlanSegment | ThinkingSegment
+
+type MessageRenderItem = MessageSegment | ToolGroupDisplay
 
 interface DisplayMessage {
   role: 'user' | 'assistant'
@@ -186,32 +193,51 @@ watch(() => props.focusedRunId, (runId) => {
   void loadFocusedRun(runId ?? null)
 }, { immediate: true })
 
-function formatToolArgs(name: string, args: string): string {
-  try {
-    const parsed = JSON.parse(args)
-
-    // Friendly summary for update_plan
-    if (name === 'update_plan' && Array.isArray(parsed.steps)) {
-      const steps = parsed.steps as { title: string; status: string }[]
-      return `${steps.length} steps`
-    }
-
-    return Object.entries(parsed)
-      .map(([k, v]) => {
-        if (typeof v === 'string') return `${k}: ${v.length > 80 ? v.slice(0, 80) + '…' : v}`
-        if (Array.isArray(v)) return `${k}: [${v.length} items]`
-        if (v && typeof v === 'object') return `${k}: {…}`
-        return `${k}: ${v}`
-      })
-      .join(', ')
-  } catch {
-    return args
+function upsertPlanSegment(segments: MessageSegment[], steps: PlanStep[]): void {
+  if (steps.length === 0) return
+  const existing = segments.find((seg): seg is PlanSegment => seg.type === 'plan')
+  if (existing) {
+    existing.steps = steps
+  } else {
+    segments.push({ type: 'plan', steps })
   }
 }
 
-function isToolError(seg: ToolSegment): boolean {
-  if (!seg.result) return false
-  return seg.result.startsWith('Error:') || seg.result.startsWith('Command failed') || seg.result.startsWith('Command timed out')
+function messageRenderItems(msg: DisplayMessage): MessageRenderItem[] {
+  const items: MessageRenderItem[] = []
+  let pendingTools: ToolSegment[] = []
+  let pendingKey = ''
+
+  const flushTools = () => {
+    if (pendingTools.length === 0) return
+    items.push({
+      type: 'tool-group',
+      key: pendingTools.map((tool) => tool.toolCallId).join(':'),
+      tools: pendingTools,
+    })
+    pendingTools = []
+    pendingKey = ''
+  }
+
+  for (const seg of msg.segments) {
+    if (seg.type === 'tool' && shouldRenderToolCall(seg.name)) {
+      const key = toolGroupKey(seg.name)
+      if (pendingTools.length > 0 && pendingKey !== key) {
+        flushTools()
+      }
+      pendingTools.push(seg)
+      pendingKey = key
+      continue
+    }
+
+    flushTools()
+    if (seg.type !== 'tool') {
+      items.push(seg)
+    }
+  }
+
+  flushTools()
+  return items
 }
 
 async function handleApproval(seg: ApprovalSegment, approved: boolean) {
@@ -319,6 +345,11 @@ function reconstructAssistantDisplay(rawMsgs: ChatMessage[], start: number, end:
       }
 
       for (const tc of msg.tool_calls) {
+        if (tc.function.name === 'update_plan') {
+          upsertPlanSegment(display.segments, planStepsFromToolArgs(tc.function.arguments))
+          continue
+        }
+
         display.segments.push({
           type: 'tool',
           toolCallId: tc.id,
@@ -473,6 +504,7 @@ function applyFocusedRunEvent(event: StreamEvent) {
 
   if (event.toolCalls) {
     for (const tc of event.toolCalls) {
+      if (!shouldRenderToolCall(tc.name)) continue
       msg.segments.push({
         type: 'tool',
         toolCallId: tc.id,
@@ -504,12 +536,7 @@ function applyFocusedRunEvent(event: StreamEvent) {
   }
 
   if (event.plan) {
-    const existing = msg.segments.find((seg): seg is PlanSegment => seg.type === 'plan')
-    if (existing) {
-      existing.steps = event.plan
-    } else {
-      msg.segments.push({ type: 'plan', steps: event.plan })
-    }
+    upsertPlanSegment(msg.segments, event.plan)
   }
 }
 
@@ -750,6 +777,7 @@ async function sendMessage() {
           }
           for (const tc of event.toolCalls) {
             rounds[rounds.length - 1].toolCalls.push({ id: tc.id, itemId: tc.itemId, type: tc.type, function: { name: tc.name, arguments: tc.arguments } })
+            if (!shouldRenderToolCall(tc.name)) continue
             messages.value[assistantIdx].segments.push({
               type: 'tool',
               toolCallId: tc.id,
@@ -787,13 +815,7 @@ async function sendMessage() {
         }
 
         if (event.plan) {
-          const segs = messages.value[assistantIdx].segments
-          const existing = segs.find((s): s is PlanSegment => s.type === 'plan')
-          if (existing) {
-            existing.steps = event.plan
-          } else {
-            segs.push({ type: 'plan', steps: event.plan })
-          }
+          upsertPlanSegment(messages.value[assistantIdx].segments, event.plan)
         }
         scrollToBottom()
       },
@@ -1078,39 +1100,25 @@ function scrollToBottom() {
           v-if="msg.role === 'assistant'"
           class="msg-content markdown-body"
         >
-          <template v-for="(seg, si) in msg.segments" :key="si">
-            <details v-if="seg.type === 'thinking'" class="thinking-content">
-              <summary class="thinking-summary">Thinking</summary>
-              <p class="thinking-text">{{ (seg as ThinkingSegment).content }}</p>
-            </details>
-            <div v-else-if="seg.type === 'tool'" class="tool-usage">
-              <div class="tool-header">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-                </svg>
-                <span class="tool-name">{{ seg.name }}</span>
-                <span v-if="!seg.result && displayStreaming && i === visibleMessages.length - 1" class="tool-spinner" />
-                <span v-else-if="seg.result && isToolError(seg as ToolSegment)" class="tool-error">&#x2718;</span>
-                <span v-else-if="seg.result" class="tool-done">&#x2714;</span>
-              </div>
-              <div class="tool-args">{{ formatToolArgs(seg.name, seg.args) }}</div>
-            </div>
-            <div v-else-if="seg.type === 'approval'" class="approval-prompt">
+          <template v-for="(item, si) in messageRenderItems(msg)" :key="`${item.type}-${si}`">
+            <AiThinkingSection v-if="item.type === 'thinking'" :content="(item as ThinkingSegment).content" />
+            <AiToolGroup v-else-if="item.type === 'tool-group'" :group="item as ToolGroupDisplay" />
+            <div v-else-if="item.type === 'approval'" class="approval-prompt">
               <div class="approval-header">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" />
                 </svg>
                 <span class="approval-title">sudo command requires approval</span>
               </div>
-              <code class="approval-command">{{ (seg as ApprovalSegment).command }}</code>
-              <div v-if="(seg as ApprovalSegment).status === 'pending'" class="approval-actions">
-                <button class="approval-btn approve" @click="handleApproval(seg as ApprovalSegment, true)">
+              <code class="approval-command">{{ (item as ApprovalSegment).command }}</code>
+              <div v-if="(item as ApprovalSegment).status === 'pending'" class="approval-actions">
+                <button class="approval-btn approve" @click="handleApproval(item as ApprovalSegment, true)">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12" />
                   </svg>
                   Approve
                 </button>
-                <button class="approval-btn deny" @click="handleApproval(seg as ApprovalSegment, false)">
+                <button class="approval-btn deny" @click="handleApproval(item as ApprovalSegment, false)">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="18" y1="6" x2="6" y2="18" />
                     <line x1="6" y1="6" x2="18" y2="18" />
@@ -1120,32 +1128,32 @@ function scrollToBottom() {
               </div>
               <div v-else class="approval-resolved">
                 <span
-                  v-if="(seg as ApprovalSegment).status === 'approved'"
+                  v-if="(item as ApprovalSegment).status === 'approved'"
                   class="approval-badge approved"
                 >
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12" />
                   </svg>
-                  {{ approvalStatusLabel((seg as ApprovalSegment).status) }}
+                  {{ approvalStatusLabel((item as ApprovalSegment).status) }}
                 </span>
                 <span
                   v-else
                   class="approval-badge denied"
-                  :class="{ expired: (seg as ApprovalSegment).status === 'expired', failed: (seg as ApprovalSegment).status === 'failed' }"
+                  :class="{ expired: (item as ApprovalSegment).status === 'expired', failed: (item as ApprovalSegment).status === 'failed' }"
                 >
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="18" y1="6" x2="6" y2="18" />
                     <line x1="6" y1="6" x2="18" y2="18" />
                   </svg>
-                  {{ approvalStatusLabel((seg as ApprovalSegment).status) }}
+                  {{ approvalStatusLabel((item as ApprovalSegment).status) }}
                 </span>
               </div>
-              <div v-if="(seg as ApprovalSegment).error" class="approval-error">
-                {{ (seg as ApprovalSegment).error }}
+              <div v-if="(item as ApprovalSegment).error" class="approval-error">
+                {{ (item as ApprovalSegment).error }}
               </div>
             </div>
-            <template v-else-if="seg.type === 'plan'" />
-            <MarkdownMessage v-else-if="seg.type === 'text' && seg.content" :content="seg.content" />
+            <template v-else-if="item.type === 'plan'" />
+            <MarkdownMessage v-else-if="item.type === 'text' && item.content" :content="item.content" />
           </template>
           <div v-if="i === visibleMessages.length - 1 && displayIsThinking" class="thinking-indicator">
             <span class="thinking-dot" />
@@ -1411,27 +1419,30 @@ function scrollToBottom() {
 
 .model-selector {
   font-size: 0.75rem;
-  padding: 2px 8px;
+  min-height: 23px;
+  padding: 2px 26px 2px 8px;
   border-radius: var(--radius-md);
-  background: var(--bg-surface-alt);
+  background: color-mix(in srgb, var(--bg-raised) 70%, var(--bg-elevated));
   border: 0.5px solid var(--border-default);
   color: var(--text-secondary);
   outline: none;
   cursor: pointer;
-  transition: border-color var(--transition-fast);
+  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
 }
 
 .model-selector:focus {
   border-color: var(--accent-border);
+  color: var(--text-primary);
 }
 
 .thinking-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-height: 23px;
   padding: 2px 8px;
   border-radius: var(--radius-md);
-  background: var(--bg-surface-alt);
+  background: color-mix(in srgb, var(--bg-raised) 70%, var(--bg-elevated));
   border: 0.5px solid var(--border-default);
   color: var(--text-secondary);
   font-size: 0.72rem;
@@ -1559,8 +1570,9 @@ function scrollToBottom() {
 }
 
 .msg-user .msg-avatar {
-  background: var(--bg-surface-alt);
+  background: var(--bg-raised);
   color: var(--text-secondary);
+  border: 0.5px solid var(--border-subtle);
 }
 
 .msg-content {
@@ -1568,24 +1580,28 @@ function scrollToBottom() {
   font-size: 0.8rem;
   line-height: 1.55;
   color: var(--text-secondary);
-  padding: var(--space-2) var(--space-3);
+  padding: 10px 12px;
   border-radius: var(--radius-lg);
   min-width: 0;
+  border: 0.5px solid transparent;
 }
 
 .msg-assistant .msg-content {
-  background: var(--bg-surface-alt);
+  background: var(--bg-elevated);
+  border-color: var(--border-hairline);
 }
 
 .msg-user .msg-content {
   background: var(--bg-raised);
   color: var(--text-primary);
+  border-color: var(--border-subtle);
 }
 
 .agent-input-area {
   padding: var(--space-3);
   border-top: 0.5px solid var(--border-default);
   flex-shrink: 0;
+  background: var(--bg-base);
 }
 
 .run-focus-footer {
@@ -1621,10 +1637,11 @@ function scrollToBottom() {
 .input-shell {
   display: flex;
   flex-direction: column;
-  background: var(--bg-surface-alt);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-lg, 12px);
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  overflow: hidden;
+  background: var(--bg-elevated);
+  border: 0.5px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
 }
 
 .input-shell.focused {
@@ -1635,9 +1652,9 @@ function scrollToBottom() {
 .input-container {
   display: flex;
   align-items: flex-end;
-  gap: var(--space-2);
-  padding: var(--space-2, 8px);
-  padding-left: var(--space-3, 12px);
+  gap: var(--space-3);
+  min-height: 54px;
+  padding: 12px;
   cursor: text;
 }
 
@@ -1646,8 +1663,10 @@ function scrollToBottom() {
   align-items: center;
   gap: var(--space-2);
   flex-wrap: wrap;
-  padding: 0 var(--space-2, 8px) var(--space-2, 8px);
-  padding-left: var(--space-3, 12px);
+  min-height: 34px;
+  padding: 7px 10px;
+  border-top: 0.5px solid var(--border-hairline);
+  background: color-mix(in srgb, var(--bg-void) 34%, transparent);
 }
 
 .agent-input {
@@ -1655,14 +1674,14 @@ function scrollToBottom() {
   background: transparent;
   border: none;
   font-family: var(--font-sans);
-  font-size: 0.8rem;
+  font-size: 0.84rem;
   color: var(--text-primary);
   resize: none;
   outline: none;
-  line-height: 1.5;
+  line-height: 1.55;
   max-height: 120px;
-  min-height: 22px;
-  padding: 4px 0;
+  min-height: 26px;
+  padding: 2px 0;
 }
 
 .agent-input:focus-visible {
@@ -1677,30 +1696,31 @@ function scrollToBottom() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--radius-md);
   background: var(--bg-hover);
   color: var(--text-tertiary);
   flex-shrink: 0;
-  transition: all var(--transition-fast);
+  transition: transform var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
   cursor: pointer;
-  border: none;
+  border: 0.5px solid var(--border-subtle);
 }
 
 .agent-send.active {
   background: var(--accent);
   color: var(--bg-base);
+  border-color: var(--accent-border);
 }
 
 .agent-send.active:hover {
-  opacity: 0.85;
-  transform: scale(1.05);
+  transform: translateY(-1px);
 }
 
 .agent-stop {
   background: var(--warning) !important;
   color: var(--bg-base) !important;
+  border-color: var(--warning-border) !important;
 }
 
 .agent-stop:hover {
@@ -1826,64 +1846,6 @@ function scrollToBottom() {
 
 .msg-text :deep(p:last-child) {
   margin-bottom: 0;
-}
-
-/* Tool usage display */
-.tool-usage {
-  background: var(--bg-void);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 6px 10px;
-  font-size: 0.72rem;
-  margin: 6px 0;
-}
-
-.tool-usage:first-child {
-  margin-top: 0;
-}
-
-.tool-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-secondary);
-}
-
-.tool-name {
-  font-weight: 600;
-  font-family: var(--font-mono);
-}
-
-.tool-done {
-  font-size: 0.75rem;
-  color: var(--accent-green);
-  margin-left: auto;
-}
-
-.tool-error {
-  font-size: 0.75rem;
-  color: var(--accent-rose);
-  margin-left: auto;
-}
-
-.tool-spinner {
-  width: 10px;
-  height: 10px;
-  border: 1.5px solid var(--border-subtle);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  margin-left: auto;
-}
-
-.tool-args {
-  margin-top: 3px;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* Sudo approval prompt */
@@ -2147,49 +2109,6 @@ function scrollToBottom() {
   border: 0.5px solid var(--border-subtle);
   border-radius: 50%;
   opacity: 0.5;
-}
-
-/* Thinking content (reasoning output) */
-.thinking-content {
-  margin-bottom: 8px;
-}
-
-.thinking-summary {
-  font-size: 11px;
-  color: var(--text-muted);
-  cursor: pointer;
-  user-select: none;
-  list-style: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  opacity: 0.7;
-}
-
-.thinking-summary::-webkit-details-marker {
-  display: none;
-}
-
-.thinking-summary::before {
-  content: '▶';
-  font-size: 8px;
-  transition: transform 0.15s ease;
-}
-
-details[open] .thinking-summary::before {
-  transform: rotate(90deg);
-}
-
-.thinking-text {
-  margin: 4px 0 0;
-  padding: 6px 10px;
-  font-style: italic;
-  font-size: 12px;
-  color: var(--text-muted);
-  border-left: 2px solid var(--border-subtle);
-  white-space: pre-wrap;
-  line-height: 1.5;
-  opacity: 0.8;
 }
 
 /* Thinking indicator */
