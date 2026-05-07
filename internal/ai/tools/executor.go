@@ -19,12 +19,18 @@ type ExecutionRequest struct {
 	Arguments      json.RawMessage
 }
 
+// AgentLister exposes the agents a user can assign to child runs.
+type AgentLister interface {
+	ListAgents(ctx context.Context, userID, workspaceID int64) ([]domain.Agent, error)
+}
+
 // ChildAgentRunRequest is the minimal request a tool executor needs to spawn a child run.
 type ChildAgentRunRequest struct {
 	ParentRunID    int64
 	UserID         int64
 	WorkspaceID    int64
 	ConversationID int64
+	AgentID        string
 	Model          string
 	Prompt         string
 	Thinking       *domain.ThinkingConfig
@@ -36,6 +42,7 @@ type ChildAgentRun struct {
 	ParentRunID    int64  `json:"parentRunId"`
 	WorkspaceID    int64  `json:"workspaceId"`
 	ConversationID int64  `json:"conversationId,omitempty"`
+	AgentID        string `json:"agentId"`
 	Model          string `json:"model"`
 	Status         string `json:"status"`
 }

@@ -22,6 +22,7 @@ type WorkspaceOps interface {
 type WorkspaceExecutor struct {
 	ws          WorkspaceOps
 	childRunner ChildAgentRunner
+	agentLister AgentLister
 }
 
 // NewWorkspaceExecutor creates an Executor backed by workspace operations.
@@ -32,6 +33,11 @@ func NewWorkspaceExecutor(ws WorkspaceOps) *WorkspaceExecutor {
 // SetChildAgentRunner wires the background runner used by spawn_sub_agent.
 func (e *WorkspaceExecutor) SetChildAgentRunner(runner ChildAgentRunner) {
 	e.childRunner = runner
+}
+
+// SetAgentLister wires the agent catalog exposed to coordination tools.
+func (e *WorkspaceExecutor) SetAgentLister(lister AgentLister) {
+	e.agentLister = lister
 }
 
 func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionRequest) domain.ToolResultPart {
@@ -59,6 +65,8 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 		return e.readFileLines(ctx, req.UserID, req.WorkspaceID, params)
 	case "update_plan":
 		return toolSuccess(req.ToolName, "Plan updated.")
+	case "list_available_agents":
+		return e.listAvailableAgents(ctx, req)
 	case "spawn_sub_agent":
 		return e.spawnSubAgent(ctx, req, params)
 	case "wait_for_sub_agents":

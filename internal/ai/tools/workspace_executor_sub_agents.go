@@ -25,6 +25,49 @@ type subAgentWaitResult struct {
 	TimedOut bool   `json:"timedOut,omitempty"`
 }
 
+type availableAgentPayload struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Purpose   string `json:"purpose,omitempty"`
+	Scope     string `json:"scope"`
+	IsDefault bool   `json:"isDefault"`
+	IsGlobal  bool   `json:"isGlobal"`
+}
+
+func (e *WorkspaceExecutor) listAvailableAgents(ctx context.Context, req ExecutionRequest) domain.ToolResultPart {
+	if e.agentLister == nil {
+		return toolFailure("list_available_agents", "Error: agent lister is not available")
+	}
+	if req.UserID <= 0 {
+		return toolFailure("list_available_agents", "Error: user ID is required")
+	}
+	if req.WorkspaceID <= 0 {
+		return toolFailure("list_available_agents", "Error: workspace ID is required")
+	}
+
+	agents, err := e.agentLister.ListAgents(ctx, req.UserID, req.WorkspaceID)
+	if err != nil {
+		return toolFailure("list_available_agents", "Error: %v", err)
+	}
+
+	payload := make([]availableAgentPayload, 0, len(agents))
+	for _, agent := range agents {
+		payload = append(payload, availableAgentPayload{
+			ID:        agent.ID,
+			Name:      agent.Name,
+			Purpose:   agent.Purpose,
+			Scope:     agentScope(agent),
+			IsDefault: agent.IsDefault,
+			IsGlobal:  agent.IsGlobal,
+		})
+	}
+
+	return marshalToolResponse("list_available_agents", map[string]any{
+		"agents":  payload,
+		"message": "Use an agent id as spawn_sub_agent.agent_id to assign a child run to that agent.",
+	})
+}
+
 func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequest, params map[string]any) domain.ToolResultPart {
 	if req.CurrentRunID <= 0 {
 		return toolFailure("spawn_sub_agent", "Error: spawn_sub_agent is only available from a persisted agent run")
@@ -45,11 +88,18 @@ func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequ
 		model = req.Model
 	}
 
+	agentID, _ := params["agent_id"].(string)
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		agentID = domain.DefaultAgentID
+	}
+
 	child, err := e.childRunner.StartChildAgentRun(ctx, ChildAgentRunRequest{
 		ParentRunID:    req.CurrentRunID,
 		UserID:         req.UserID,
 		WorkspaceID:    req.WorkspaceID,
 		ConversationID: req.ConversationID,
+		AgentID:        agentID,
 		Model:          model,
 		Prompt:         prompt,
 		Thinking:       cloneThinking(req.Thinking),
@@ -63,6 +113,7 @@ func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequ
 		"parentRunId":    child.ParentRunID,
 		"workspaceId":    child.WorkspaceID,
 		"conversationId": child.ConversationID,
+		"agentId":        child.AgentID,
 		"model":          child.Model,
 		"status":         child.Status,
 		"message":        fmt.Sprintf("Sub-agent run #%d started.", child.ID),
@@ -94,6 +145,17 @@ func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequ
 	}
 
 	return marshalToolResponse("spawn_sub_agent", response)
+}
+
+func agentScope(agent domain.Agent) string {
+	switch {
+	case agent.IsDefault:
+		return "default"
+	case agent.IsGlobal:
+		return "global"
+	default:
+		return "workspace"
+	}
 }
 
 func (e *WorkspaceExecutor) waitForSubAgents(ctx context.Context, req ExecutionRequest, params map[string]any) domain.ToolResultPart {

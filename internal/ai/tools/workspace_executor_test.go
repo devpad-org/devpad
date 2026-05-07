@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
 type stubWorkspaceOps struct {
@@ -20,6 +21,10 @@ type stubChildAgentRunner struct {
 	waitFn  func(ctx context.Context, userID, parentRunID, runID int64) (*ChildAgentRunResult, error)
 }
 
+type stubAgentLister struct {
+	listFn func(ctx context.Context, userID, workspaceID int64) ([]domain.Agent, error)
+}
+
 func (s stubChildAgentRunner) StartChildAgentRun(ctx context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error) {
 	if s.startFn != nil {
 		return s.startFn(ctx, req)
@@ -29,6 +34,7 @@ func (s stubChildAgentRunner) StartChildAgentRun(ctx context.Context, req ChildA
 		ParentRunID:    req.ParentRunID,
 		WorkspaceID:    req.WorkspaceID,
 		ConversationID: req.ConversationID,
+		AgentID:        req.AgentID,
 		Model:          req.Model,
 		Status:         "queued",
 	}, nil
@@ -39,6 +45,13 @@ func (s stubChildAgentRunner) WaitChildAgentRun(ctx context.Context, userID, par
 		return s.waitFn(ctx, userID, parentRunID, runID)
 	}
 	return &ChildAgentRunResult{RunID: runID, Status: "completed", Summary: "done"}, nil
+}
+
+func (s stubAgentLister) ListAgents(ctx context.Context, userID, workspaceID int64) ([]domain.Agent, error) {
+	if s.listFn != nil {
+		return s.listFn(ctx, userID, workspaceID)
+	}
+	return []domain.Agent{domain.DefaultAgent()}, nil
 }
 
 func (s *stubWorkspaceOps) ReadFile(ctx context.Context, userID, workspaceID int64, path string) ([]byte, error) {
@@ -149,13 +162,16 @@ func TestWorkspaceExecutor_SpawnSubAgentStartsChildRun(t *testing.T) {
 		if req.Model != "gpt-5.4" {
 			t.Fatalf("expected model fallback, got %q", req.Model)
 		}
+		if req.AgentID != "review-agent" {
+			t.Fatalf("expected selected agent, got %q", req.AgentID)
+		}
 		if req.Prompt != "review the auth package" {
 			t.Fatalf("unexpected prompt: %q", req.Prompt)
 		}
-		return &ChildAgentRun{ID: 202, ParentRunID: req.ParentRunID, WorkspaceID: req.WorkspaceID, ConversationID: req.ConversationID, Model: req.Model, Status: "queued"}, nil
+		return &ChildAgentRun{ID: 202, ParentRunID: req.ParentRunID, WorkspaceID: req.WorkspaceID, ConversationID: req.ConversationID, AgentID: req.AgentID, Model: req.Model, Status: "queued"}, nil
 	}})
 
-	req := toolReq(7, 9, "spawn_sub_agent", []byte(`{"prompt":" review the auth package "}`))
+	req := toolReq(7, 9, "spawn_sub_agent", []byte(`{"prompt":" review the auth package ","agent_id":"review-agent"}`))
 	req.CurrentRunID = 101
 	req.ConversationID = 33
 	req.Model = "gpt-5.4"
@@ -165,14 +181,68 @@ func TestWorkspaceExecutor_SpawnSubAgentStartsChildRun(t *testing.T) {
 	}
 
 	var payload struct {
-		RunID       int64 `json:"runId"`
-		ParentRunID int64 `json:"parentRunId"`
+		RunID       int64  `json:"runId"`
+		ParentRunID int64  `json:"parentRunId"`
+		AgentID     string `json:"agentId"`
 	}
 	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
 		t.Fatalf("decoding spawn result: %v", err)
 	}
 	if payload.RunID != 202 || payload.ParentRunID != 101 {
 		t.Fatalf("unexpected spawn payload: %+v", payload)
+	}
+	if payload.AgentID != "review-agent" {
+		t.Fatalf("expected agent ID in payload, got %+v", payload)
+	}
+}
+
+func TestWorkspaceExecutor_ListAvailableAgentsReturnsScopedCatalog(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetAgentLister(stubAgentLister{listFn: func(_ context.Context, userID, workspaceID int64) ([]domain.Agent, error) {
+		if userID != 7 || workspaceID != 9 {
+			t.Fatalf("unexpected list scope: user=%d workspace=%d", userID, workspaceID)
+		}
+		defaultAgent := domain.DefaultAgent()
+		return []domain.Agent{
+			defaultAgent,
+			{ID: "12", UserID: userID, WorkspaceID: workspaceID, Name: "Code Review", Purpose: "Review risky code paths"},
+			{ID: "15", UserID: userID, Name: "UI Design", Purpose: "Improve visual polish", IsGlobal: true},
+		}, nil
+	}})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(7, 9, "list_available_agents", []byte(`{}`)))
+	if result.IsError {
+		t.Fatalf("expected list success, got %+v", result)
+	}
+
+	var payload struct {
+		Agents []struct {
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			Purpose   string `json:"purpose"`
+			Scope     string `json:"scope"`
+			IsDefault bool   `json:"isDefault"`
+			IsGlobal  bool   `json:"isGlobal"`
+		} `json:"agents"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("decoding list result: %v", err)
+	}
+	if len(payload.Agents) != 3 {
+		t.Fatalf("expected 3 agents, got %+v", payload)
+	}
+	if payload.Agents[0].ID != domain.DefaultAgentID || payload.Agents[0].Scope != "default" || !payload.Agents[0].IsDefault {
+		t.Fatalf("unexpected default agent payload: %+v", payload.Agents[0])
+	}
+	if payload.Agents[1].ID != "12" || payload.Agents[1].Scope != "workspace" {
+		t.Fatalf("unexpected workspace agent payload: %+v", payload.Agents[1])
+	}
+	if payload.Agents[2].ID != "15" || payload.Agents[2].Scope != "global" || !payload.Agents[2].IsGlobal {
+		t.Fatalf("unexpected global agent payload: %+v", payload.Agents[2])
+	}
+	if !strings.Contains(payload.Message, "spawn_sub_agent.agent_id") {
+		t.Fatalf("expected assignment hint in message, got %q", payload.Message)
 	}
 }
 

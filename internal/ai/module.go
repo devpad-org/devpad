@@ -53,6 +53,7 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	agentRuns := storage.NewAgentRunRepository(db)
 	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService)
 	toolExecutor.SetChildAgentRunner(childAgentRunStarter{runs: agentRunService})
+	toolExecutor.SetAgentLister(agentService)
 
 	return &Module{
 		CatalogService:      catalogService,
@@ -75,7 +76,7 @@ func (s childAgentRunStarter) StartChildAgentRun(ctx context.Context, req aitool
 		WorkspaceID:    req.WorkspaceID,
 		ConversationID: req.ConversationID,
 		Model:          req.Model,
-		AgentID:        domain.DefaultAgentID,
+		AgentID:        req.AgentID,
 		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, req.Prompt)},
 		Thinking:       req.Thinking,
 	})
@@ -87,6 +88,7 @@ func (s childAgentRunStarter) StartChildAgentRun(ctx context.Context, req aitool
 		ParentRunID:    run.ParentRunID,
 		WorkspaceID:    run.WorkspaceID,
 		ConversationID: run.ConversationID,
+		AgentID:        run.AgentID,
 		Model:          run.Model,
 		Status:         string(run.Status),
 	}, nil

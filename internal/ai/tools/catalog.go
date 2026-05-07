@@ -103,8 +103,16 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "spawn_sub_agent",
-				Description: "Start a child AI agent run for an independent subtask. The child appears nested under this run in the Agent Runs sidebar. Use wait_for_result only when you need this single child's final answer before continuing; otherwise keep the returned runId and call wait_for_sub_agents later.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"Complete instructions for the child agent, including all necessary context, scope, and expected output."},"model":{"type":"string","description":"Optional model ID. Defaults to the current model."},"wait_for_result":{"type":"boolean","description":"When true, wait for the child run to finish and return its final text in the summary field. Defaults to false."},"timeout_seconds":{"type":"integer","description":"Maximum seconds to wait when wait_for_result is true. Defaults to 120 and is capped at 600."}},"required":["prompt"]}`),
+				Description: "Start a child AI agent run for an independent subtask. The child appears nested under this run in the Agent Runs sidebar. Use agent_id from list_available_agents to assign the best purpose-built agent. Use wait_for_result only when you need this single child's final answer before continuing; otherwise keep the returned runId and call wait_for_sub_agents later.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"Complete instructions for the child agent, including all necessary context, scope, and expected output."},"agent_id":{"type":"string","description":"Optional agent ID from list_available_agents. Defaults to the baked-in default agent."},"model":{"type":"string","description":"Optional model ID. Defaults to the current model."},"wait_for_result":{"type":"boolean","description":"When true, wait for the child run to finish and return its final text in the summary field. Defaults to false."},"timeout_seconds":{"type":"integer","description":"Maximum seconds to wait when wait_for_result is true. Defaults to 120 and is capped at 600."}},"required":["prompt"]}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: domain.ToolFunction{
+				Name:        "list_available_agents",
+				Description: "List the AI agents available in this workspace for the current user. Use this before coordinating specialized sub-agents so you can pass the best agent_id to spawn_sub_agent.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			},
 		},
 		{
@@ -137,6 +145,7 @@ Plan management:
 
 Sub-agents:
 - Use spawn_sub_agent only when a task has independent subtasks that can make progress without sharing live context.
+- When coordinating specialized work, call list_available_agents first, choose the best purpose-built agent, and pass its id as spawn_sub_agent.agent_id.
 - Make each sub-agent prompt self-contained: include the goal, relevant constraints, and the expected result.
 - By default the tool returns a child run ID immediately. Set wait_for_result=true when you need the child's answer before continuing; the result will include a summary field with the child's final response.
 - For parallel fan-out/fan-in work, call spawn_sub_agent multiple times with wait_for_result=false, keep the returned runIds, then call wait_for_sub_agents with those runIds when you need all child results.
