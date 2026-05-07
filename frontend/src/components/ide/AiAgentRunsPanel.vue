@@ -131,14 +131,15 @@ onUnmounted(stopRefreshTimer)
 <template>
   <div class="agent-runs-panel">
     <header class="agent-runs-header">
-      <div>
-        <h2 class="agent-runs-title">Agent Runs</h2>
-        <p class="agent-runs-subtitle">
-          <span v-if="activeCount > 0">{{ activeCount }} active</span>
-          <span v-else>No active runs</span>
-        </p>
-      </div>
-      <span v-if="activeCount > 0" class="active-indicator" aria-label="Active agent run" />
+      <span class="agent-runs-title">
+        <svg class="panel-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+          <path d="m3.3 7 8.7 5 8.7-5" />
+          <path d="M12 22V12" />
+        </svg>
+        Agent Runs
+      </span>
+      <span v-if="activeCount > 0" class="agent-runs-badge" aria-label="Active agent runs">{{ activeCount }}</span>
     </header>
 
     <div v-if="runStore.error" class="agent-runs-error">
@@ -200,36 +201,43 @@ onUnmounted(stopRefreshTimer)
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3);
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
-  background: var(--bg-surface);
+  height: 38px;
+  flex-shrink: 0;
 }
 
 .agent-runs-title {
-  font-size: 0.78rem;
-  line-height: 1.2;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
   text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
 }
 
-.agent-runs-subtitle { margin-top: 2px; color: var(--text-muted); font-size: 0.72rem; }
-
-.active-indicator {
-  width: 8px;
-  height: 8px;
+.panel-icon {
+  color: var(--accent-purple);
+  opacity: 0.7;
   flex-shrink: 0;
-  border-radius: 50%;
-  background: var(--accent-green);
-  box-shadow: 0 0 10px var(--accent-green);
-  animation: activePulse 1.3s ease-in-out infinite;
 }
 
-@keyframes activePulse {
-  0%, 100% { opacity: 0.55; transform: scale(0.9); }
-  50% { opacity: 1; transform: scale(1.15); }
+.agent-runs-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  flex-shrink: 0;
+  border: 0.5px solid var(--success-border);
+  border-radius: 999px;
+  background: var(--success-bg);
+  color: var(--accent-green);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 17px;
+  text-align: center;
 }
 
 .agent-runs-error {

@@ -97,10 +97,12 @@ async function deleteEditingAgent(): Promise<void> {
 <template>
   <div class="agents-panel">
     <header class="agents-header">
-      <div>
-        <h2>AI Agents</h2>
-        <p>Select a purpose-built agent for this workspace.</p>
-      </div>
+      <span class="agents-title">
+        <svg class="panel-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+        </svg>
+        AI Agents
+      </span>
       <button type="button" class="agents-add" title="Create agent" @click="openCreateModal">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 5v14" />
@@ -202,26 +204,37 @@ async function deleteEditingAgent(): Promise<void> {
 
 .agents-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  padding: var(--space-3);
+  padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
+  height: 38px;
+  flex-shrink: 0;
 }
 
-.agents-header h2,
+.agents-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.panel-icon {
+  color: var(--accent-purple);
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
 .agent-modal-header h3 {
   margin: 0;
   color: var(--text-primary);
   font-size: 0.86rem;
   font-weight: 650;
-}
-
-.agents-header p {
-  margin: 3px 0 0;
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  line-height: 1.4;
 }
 
 .agents-add,
@@ -237,8 +250,9 @@ async function deleteEditingAgent(): Promise<void> {
 }
 
 .agents-add {
-  width: 26px;
-  height: 26px;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
 }
 
 .agents-add:hover,
