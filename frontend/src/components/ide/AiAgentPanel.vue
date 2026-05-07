@@ -7,6 +7,7 @@ import { useAiAgentStore } from '@/stores/aiAgents'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
+import AiMessageCopyButton from '@/components/ide/AiMessageCopyButton.vue'
 import {
   planStepsFromToolArgs,
   shouldRenderToolCall,
@@ -253,6 +254,10 @@ function messageRenderItems(msg: DisplayMessage): MessageRenderItem[] {
 
   flushTools()
   return items
+}
+
+function messageMarkdown(msg: DisplayMessage): string {
+  return msg.content
 }
 
 async function handleApproval(seg: ApprovalSegment, approved: boolean) {
@@ -1116,7 +1121,9 @@ function scrollToBottom() {
         <div
           v-if="msg.role === 'assistant'"
           class="msg-content markdown-body"
+          :class="{ 'has-copy-action': messageMarkdown(msg) }"
         >
+          <AiMessageCopyButton v-if="messageMarkdown(msg)" :markdown="messageMarkdown(msg)" />
           <template v-for="(item, si) in messageRenderItems(msg)" :key="`${item.type}-${si}`">
             <AiThinkingSection v-if="item.type === 'thinking'" :content="(item as ThinkingSegment).content" />
             <AiToolGroup v-else-if="item.type === 'tool-group'" :group="item as ToolGroupDisplay" />
@@ -1182,7 +1189,14 @@ function scrollToBottom() {
             <span class="activity-label">{{ displayActivityStatus }}</span>
           </div>
         </div>
-        <div v-else class="msg-content">{{ msg.content }}</div>
+        <div
+          v-else
+          class="msg-content"
+          :class="{ 'has-copy-action': messageMarkdown(msg) }"
+        >
+          <AiMessageCopyButton v-if="messageMarkdown(msg)" :markdown="messageMarkdown(msg)" />
+          <span class="msg-plain-text">{{ msg.content }}</span>
+        </div>
       </div>
     </div>
 
@@ -1604,6 +1618,7 @@ function scrollToBottom() {
 
 .msg-content {
   flex: 1;
+  position: relative;
   font-size: 0.8rem;
   line-height: 1.55;
   color: var(--text-secondary);
@@ -1611,6 +1626,57 @@ function scrollToBottom() {
   border-radius: var(--radius-lg);
   min-width: 0;
   border: 0.5px solid transparent;
+}
+
+.msg-content.has-copy-action {
+  padding-right: 40px;
+}
+
+.msg-copy-btn {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-raised) 82%, transparent);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.chat-message:hover .msg-copy-btn,
+.msg-copy-btn:focus-visible,
+.msg-copy-btn.copied,
+.msg-copy-btn.failed {
+  opacity: 1;
+}
+
+.msg-copy-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.msg-copy-btn.copied {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--accent-green);
+}
+
+.msg-copy-btn.failed {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: var(--accent-rose);
+}
+
+.msg-plain-text {
+  display: block;
+  white-space: pre-wrap;
 }
 
 .msg-assistant .msg-content {
