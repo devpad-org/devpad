@@ -48,6 +48,10 @@ func main() {
 	// Search and command execution
 	authedMux.HandleFunc("POST /api/search", handleSearchFiles)
 	authedMux.HandleFunc("POST /api/command", handleRunCommand)
+	authedMux.HandleFunc("POST /api/commands", handleStartCommand)
+	authedMux.HandleFunc("GET /api/commands/{id}", handleCommandStatus)
+	authedMux.HandleFunc("GET /api/commands/{id}/output", handleReadCommandOutput)
+	authedMux.HandleFunc("POST /api/commands/{id}/stop", handleStopCommand)
 
 	// Git operations
 	authedMux.HandleFunc("GET /api/git/status", handleGitStatus)

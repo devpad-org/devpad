@@ -63,8 +63,40 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "run_command",
-				Description: "Execute a shell command in the project's workspace container. The working directory is /workspace (project root). Has a 30-second timeout. Use for installing packages, running tests, building, etc. You have sudo access — use it when commands require elevated privileges (e.g. apt install, systemctl). Commands using sudo require user approval before execution.",
+				Description: "Execute a finite shell command in the project's workspace container and wait for it to finish. The working directory is /workspace (project root). Has a 30-second timeout. Use for installing packages, running tests, building, etc. Do not use for long-running dev servers or watchers; use start_command instead. You have sudo access — use it when commands require elevated privileges (e.g. apt install, systemctl). Commands using sudo require user approval before execution.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"The shell command to run, e.g. npm install express"}},"required":["command"]}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: domain.ToolFunction{
+				Name:        "start_command",
+				Description: "Start a long-running shell command in the workspace container and return immediately with a command_id. Use for dev servers, file watchers, or commands like npm start that keep running. Read logs with read_command_output and stop it with stop_command when finished. Commands using sudo require user approval before execution.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"The shell command to start, e.g. npm start"},"cwd":{"type":"string","description":"Optional relative working directory from /workspace. Defaults to /workspace."}},"required":["command"]}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: domain.ToolFunction{
+				Name:        "read_command_output",
+				Description: "Read buffered stdout/stderr from a command started by start_command. Pass the previous next_cursor to read only new output. Use wait_ms for short polling when waiting for logs.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"command_id":{"type":"string","description":"The command_id returned by start_command"},"cursor":{"type":"integer","description":"Cursor to read from. Use 0 for the first read or the prior next_cursor for subsequent reads."},"max_bytes":{"type":"integer","description":"Maximum output bytes to return. Defaults to 12288 and is capped server-side."},"wait_ms":{"type":"integer","description":"Optional milliseconds to wait for new output when none is available. Defaults to 0 and is capped server-side."}},"required":["command_id"]}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: domain.ToolFunction{
+				Name:        "command_status",
+				Description: "Get status metadata for a command started by start_command, including running/exited/stopped status and exit code when available.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"command_id":{"type":"string","description":"The command_id returned by start_command"}},"required":["command_id"]}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: domain.ToolFunction{
+				Name:        "stop_command",
+				Description: "Stop a command started by start_command. This terminates the command process group, allowing dev servers and watchers to be cleaned up.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"command_id":{"type":"string","description":"The command_id returned by start_command"}},"required":["command_id"]}`),
 			},
 		},
 		{
@@ -134,7 +166,7 @@ When helping the user:
 2. Use edit_file for targeted changes instead of write_file for existing files.
 3. Use search_files to find relevant code across the codebase.
 4. Use list_files to understand project structure.
-5. Use run_command to install packages, run tests, or build. You have sudo access for elevated privileges (e.g. sudo apt install, sudo systemctl). Use sudo when a command requires root permissions. The environment is a Debian 13 container.
+5. Use run_command for finite commands such as installing packages, running tests, or building. Use start_command for long-running dev servers or watchers such as npm start, then inspect logs with read_command_output and stop the process with stop_command when it is no longer needed. You have sudo access for elevated privileges (e.g. sudo apt install, sudo systemctl). Use sudo when a command requires root permissions. The environment is a Debian 13 container.
 
 Plan management:
 - Only use update_plan for complex tasks that involve 3 or more distinct steps (e.g. implementing a feature across multiple files, multi-stage refactors, or tasks requiring research then implementation).

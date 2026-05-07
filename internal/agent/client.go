@@ -332,6 +332,32 @@ type CommandResult struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// ManagedCommand represents a background command session inside the workspace container.
+type ManagedCommand struct {
+	CommandID  string `json:"command_id"`
+	Command    string `json:"command"`
+	CWD        string `json:"cwd"`
+	Status     string `json:"status"`
+	ExitCode   *int   `json:"exit_code,omitempty"`
+	Error      string `json:"error,omitempty"`
+	StartedAt  string `json:"started_at"`
+	FinishedAt string `json:"finished_at,omitempty"`
+	Cursor     int64  `json:"cursor"`
+}
+
+// CommandOutput holds buffered output read from a managed command session.
+type CommandOutput struct {
+	CommandID  string `json:"command_id"`
+	Status     string `json:"status"`
+	Output     string `json:"output"`
+	Cursor     int64  `json:"cursor"`
+	NextCursor int64  `json:"next_cursor"`
+	Truncated  bool   `json:"truncated"`
+	HasMore    bool   `json:"has_more"`
+	ExitCode   *int   `json:"exit_code,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
 // RunCommand executes a shell command in the workspace container.
 func (c *Client) RunCommand(ctx context.Context, command string) (*CommandResult, error) {
 	payload, err := json.Marshal(map[string]string{
@@ -358,6 +384,112 @@ func (c *Client) RunCommand(ctx context.Context, command string) (*CommandResult
 	}
 
 	var result CommandResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return &result, nil
+}
+
+// StartCommand starts a managed background command in the workspace container.
+func (c *Client) StartCommand(ctx context.Context, command, cwd string) (*ManagedCommand, error) {
+	payload, err := json.Marshal(map[string]string{
+		"command": command,
+		"cwd":     cwd,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/commands", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("starting command: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+
+	var result ManagedCommand
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return &result, nil
+}
+
+// CommandStatus returns metadata for a managed command session.
+func (c *Client) CommandStatus(ctx context.Context, commandID string) (*ManagedCommand, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/commands/"+url.PathEscape(commandID), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("getting command status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+
+	var result ManagedCommand
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return &result, nil
+}
+
+// ReadCommandOutput reads buffered output from a managed command session.
+func (c *Client) ReadCommandOutput(ctx context.Context, commandID string, cursor int64, maxBytes, waitMS int) (*CommandOutput, error) {
+	u := fmt.Sprintf("%s/api/commands/%s/output?cursor=%d&max_bytes=%d&wait_ms=%d", c.baseURL, url.PathEscape(commandID), cursor, maxBytes, waitMS)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("reading command output: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+
+	var result CommandOutput
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return &result, nil
+}
+
+// StopCommand stops a managed command session and its process group.
+func (c *Client) StopCommand(ctx context.Context, commandID string) (*ManagedCommand, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/commands/"+url.PathEscape(commandID)+"/stop", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("stopping command: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+
+	var result ManagedCommand
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}

@@ -12,8 +12,12 @@ import (
 )
 
 type stubWorkspaceOps struct {
-	readFileFn   func(ctx context.Context, userID, workspaceID int64, path string) ([]byte, error)
-	runCommandFn func(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error)
+	readFileFn          func(ctx context.Context, userID, workspaceID int64, path string) ([]byte, error)
+	runCommandFn        func(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error)
+	startCommandFn      func(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
+	commandStatusFn     func(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
+	readCommandOutputFn func(ctx context.Context, userID, workspaceID int64, commandID string, cursor int64, maxBytes, waitMS int) (*agent.CommandOutput, error)
+	stopCommandFn       func(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
 }
 
 type stubChildAgentRunner struct {
@@ -84,6 +88,34 @@ func (s *stubWorkspaceOps) RunCommand(ctx context.Context, userID, workspaceID i
 	return nil, nil
 }
 
+func (s *stubWorkspaceOps) StartCommand(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error) {
+	if s.startCommandFn != nil {
+		return s.startCommandFn(ctx, userID, workspaceID, command, cwd)
+	}
+	return nil, nil
+}
+
+func (s *stubWorkspaceOps) CommandStatus(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error) {
+	if s.commandStatusFn != nil {
+		return s.commandStatusFn(ctx, userID, workspaceID, commandID)
+	}
+	return nil, nil
+}
+
+func (s *stubWorkspaceOps) ReadCommandOutput(ctx context.Context, userID, workspaceID int64, commandID string, cursor int64, maxBytes, waitMS int) (*agent.CommandOutput, error) {
+	if s.readCommandOutputFn != nil {
+		return s.readCommandOutputFn(ctx, userID, workspaceID, commandID, cursor, maxBytes, waitMS)
+	}
+	return nil, nil
+}
+
+func (s *stubWorkspaceOps) StopCommand(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error) {
+	if s.stopCommandFn != nil {
+		return s.stopCommandFn(ctx, userID, workspaceID, commandID)
+	}
+	return nil, nil
+}
+
 func TestWorkspaceExecutor_ExecuteToolReturnsStructuredArgumentErrors(t *testing.T) {
 	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
 
@@ -130,6 +162,62 @@ func TestWorkspaceExecutor_RunCommandFailureSetsIsError(t *testing.T) {
 	}
 	if !strings.Contains(result.Content, "permission denied") {
 		t.Fatalf("expected stderr in content, got %q", result.Content)
+	}
+}
+
+func TestWorkspaceExecutor_StartCommandReturnsStructuredResult(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{startCommandFn: func(_ context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error) {
+		if userID != 7 || workspaceID != 9 || command != "npm start" || cwd != "frontend" {
+			t.Fatalf("unexpected start command call: user=%d workspace=%d command=%q cwd=%q", userID, workspaceID, command, cwd)
+		}
+		return &agent.ManagedCommand{CommandID: "cmd_123", Command: command, CWD: "/workspace/frontend", Status: "running", Cursor: 0}, nil
+	}})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(7, 9, "start_command", []byte(`{"command":"npm start","cwd":"frontend"}`)))
+	if result.IsError {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+
+	var payload agent.ManagedCommand
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("unmarshal result content: %v", err)
+	}
+	if payload.CommandID != "cmd_123" || payload.Status != "running" {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+}
+
+func TestWorkspaceExecutor_ReadCommandOutputUsesCursor(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readCommandOutputFn: func(_ context.Context, userID, workspaceID int64, commandID string, cursor int64, maxBytes, waitMS int) (*agent.CommandOutput, error) {
+		if userID != 7 || workspaceID != 9 || commandID != "cmd_123" || cursor != 42 || maxBytes != 1000 || waitMS != 250 {
+			t.Fatalf("unexpected read output call: user=%d workspace=%d id=%q cursor=%d max=%d wait=%d", userID, workspaceID, commandID, cursor, maxBytes, waitMS)
+		}
+		return &agent.CommandOutput{CommandID: commandID, Status: "running", Output: "listening", Cursor: 42, NextCursor: 51}, nil
+	}})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(7, 9, "read_command_output", []byte(`{"command_id":"cmd_123","cursor":42,"max_bytes":1000,"wait_ms":250}`)))
+	if result.IsError {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+
+	var payload agent.CommandOutput
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("unmarshal result content: %v", err)
+	}
+	if payload.Output != "listening" || payload.NextCursor != 51 {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+}
+
+func TestWorkspaceExecutor_StopCommandRequiresCommandID(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(1, 2, "stop_command", []byte(`{}`)))
+	if !result.IsError {
+		t.Fatalf("expected missing command_id error, got %+v", result)
+	}
+	if !strings.Contains(result.Content, "command_id is required") {
+		t.Fatalf("expected command_id error, got %q", result.Content)
 	}
 }
 

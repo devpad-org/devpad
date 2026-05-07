@@ -59,6 +59,14 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 		return e.searchFiles(ctx, req.UserID, req.WorkspaceID, params)
 	case "run_command":
 		return e.runCommand(ctx, req.UserID, req.WorkspaceID, params)
+	case "start_command":
+		return e.startCommand(ctx, req.UserID, req.WorkspaceID, params)
+	case "read_command_output":
+		return e.readCommandOutput(ctx, req.UserID, req.WorkspaceID, params)
+	case "command_status":
+		return e.commandStatus(ctx, req.UserID, req.WorkspaceID, params)
+	case "stop_command":
+		return e.stopCommand(ctx, req.UserID, req.WorkspaceID, params)
 	case "edit_file":
 		return e.editFile(ctx, req.UserID, req.WorkspaceID, params)
 	case "read_file_lines":
@@ -148,29 +156,6 @@ func (e *WorkspaceExecutor) searchFiles(ctx context.Context, userID, workspaceID
 	}
 
 	return toolSuccess("search_files", string(data))
-}
-
-func (e *WorkspaceExecutor) runCommand(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
-	command, _ := params["command"].(string)
-	if command == "" {
-		return toolFailure("run_command", "Error: command is required")
-	}
-	result, err := e.ws.RunCommand(ctx, userID, workspaceID, command)
-	if err != nil {
-		return toolFailure("run_command", "Error: %v", err)
-	}
-	if result.ExitCode != 0 {
-		message := fmt.Sprintf("Command failed (exit code %d):\n%s", result.ExitCode, result.Output)
-		if result.Error != "" {
-			message += "\n" + result.Error
-		}
-		return toolFailure("run_command", "%s", message)
-	}
-	if result.Error != "" {
-		return toolFailure("run_command", "Command timed out:\n%s\n%s", result.Output, result.Error)
-	}
-
-	return toolSuccess("run_command", result.Output)
 }
 
 func (e *WorkspaceExecutor) editFile(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {

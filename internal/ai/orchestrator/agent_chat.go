@@ -201,7 +201,7 @@ func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentCha
 		}
 	}
 
-	if toolCall.Function.Name == "run_command" && aitools.CommandNeedsSudoApproval(toolCall.Function.Arguments) {
+	if aitools.ToolCallNeedsSudoApproval(toolCall.Function.Name, toolCall.Function.Arguments) {
 		result, approved, ok := o.awaitApproval(ctx, req.UserID, toolCall.Function.Arguments, out)
 		if !ok {
 			return false
