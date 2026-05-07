@@ -141,7 +141,7 @@ onUnmounted(() => {
         <circle cx="6" cy="6" r="3" />
         <path d="M6 21V9a9 9 0 0 0 9 9" />
       </svg>
-      <span>{{ branchLabel }}</span>
+      <span class="git-status-label">{{ branchLabel }}</span>
     </button>
 
     <button
@@ -153,7 +153,7 @@ onUnmounted(() => {
       @click="openGitPanel"
     >
       <span class="status-dot" aria-hidden="true" />
-      <span>{{ changeLabel }}</span>
+      <span class="git-status-label">{{ changeLabel }}</span>
     </button>
 
     <button
@@ -163,7 +163,7 @@ onUnmounted(() => {
       title="Open source control sync status"
       @click="openGitPanel"
     >
-      <span>{{ syncLabel }}</span>
+      <span class="git-status-label">{{ syncLabel }}</span>
     </button>
 
     <span v-if="error" class="git-status-message" role="status">{{ error }}</span>
@@ -211,14 +211,15 @@ onUnmounted(() => {
 .git-status-bar {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
-  min-height: 28px;
+  gap: 2px;
+  min-height: 26px;
   padding: 0 var(--space-2);
-  background: var(--bg-surface);
+  background: color-mix(in srgb, var(--bg-surface) 88%, var(--bg-base));
   border-top: 0.5px solid var(--border-default);
   color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  line-height: 1;
   flex-shrink: 0;
   overflow: hidden;
 }
@@ -228,17 +229,22 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 5px;
   min-height: 22px;
-  padding: 0 var(--space-2);
+  padding: 0 7px;
+  border: 0.5px solid transparent;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  transition: color var(--transition-fast), background var(--transition-fast);
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .git-status-item:hover,
 .git-status-refresh:hover:not(:disabled) {
   background: var(--bg-hover);
+  border-color: var(--border-subtle);
   color: var(--text-primary);
 }
 
@@ -246,7 +252,7 @@ onUnmounted(() => {
   max-width: 260px;
 }
 
-.git-status-branch span {
+.git-status-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -257,6 +263,7 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--accent-rose);
+  font-weight: 500;
 }
 
 .git-status-refresh {
@@ -269,13 +276,11 @@ onUnmounted(() => {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: 2px;
 }
 
 .git-status-remotes {
   color: var(--text-muted);
-  font-family: var(--font-sans);
-  font-size: 0.72rem;
 }
 
 .git-status-refresh:disabled {
@@ -284,8 +289,8 @@ onUnmounted(() => {
 }
 
 .status-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: currentColor;
 }
