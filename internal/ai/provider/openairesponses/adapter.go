@@ -22,7 +22,8 @@ const (
 	providerName = "OpenAI"
 	baseURL      = "https://api.openai.com/v1"
 
-	defaultReasoningEffort = "medium"
+	defaultReasoningEffort  = "medium"
+	disabledReasoningEffort = "none"
 )
 
 // Adapter streams chat responses from OpenAI's Responses API.
@@ -92,14 +93,20 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 }
 
 func (a *Adapter) Models() []domain.Model {
-	thinking := domain.ThinkingCapability{
+	gpt54Thinking := domain.ThinkingCapability{
 		Supported:        true,
 		EnabledByDefault: false,
 		CanDisable:       true,
 	}
+	gpt55Thinking := domain.ThinkingCapability{
+		Supported:        true,
+		EnabledByDefault: true,
+		CanDisable:       true,
+	}
 
 	return []domain.Model{
-		{ID: "gpt-5.4", Name: "GPT-5.4", ProviderID: providerID, Thinking: thinking},
+		{ID: "gpt-5.4", Name: "GPT-5.4", ProviderID: providerID, Thinking: gpt54Thinking},
+		{ID: "gpt-5.5", Name: "GPT-5.5", ProviderID: providerID, Thinking: gpt55Thinking},
 	}
 }
 
@@ -271,14 +278,20 @@ func buildReasoningConfig(req aiprovider.StreamRequest, model domain.Model) map[
 		Thinking: req.Thinking,
 	}
 
-	if !domain.ThinkingEnabledForRequest(model, request) {
-		return nil
+	if domain.ThinkingEnabledForRequest(model, request) {
+		return map[string]any{
+			"effort":  defaultReasoningEffort,
+			"summary": "auto",
+		}
 	}
 
-	return map[string]any{
-		"effort":  defaultReasoningEffort,
-		"summary": "auto",
+	if req.Thinking != nil && req.Thinking.Enabled != nil && !*req.Thinking.Enabled && model.Thinking.CanDisable {
+		return map[string]any{
+			"effort": disabledReasoningEffort,
+		}
 	}
+
+	return nil
 }
 
 func buildInclude(req aiprovider.StreamRequest, model domain.Model) []string {
