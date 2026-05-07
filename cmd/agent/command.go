@@ -10,8 +10,17 @@ import (
 	"time"
 )
 
-const commandTimeout = 30 * time.Second
-const maxOutputSize = 64 * 1024 // 64KB
+const (
+	commandTimeout = 30 * time.Second
+	commandShell   = "/bin/bash"
+	maxOutputSize  = 64 * 1024 // 64KB
+)
+
+type commandResult struct {
+	Output   string `json:"output"`
+	ExitCode int    `json:"exit_code"`
+	Error    string `json:"error,omitempty"`
+}
 
 func handleRunCommand(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -30,37 +39,45 @@ func handleRunCommand(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), commandTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", req.Command)
-	cmd.Dir = workspaceRoot
+	result, err := runShellCommand(ctx, req.Command, workspaceRoot)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 
+	writeJSON(w, http.StatusOK, result)
+}
+
+func runShellCommand(ctx context.Context, command, workDir string) (commandResult, error) {
+	cmd := exec.CommandContext(ctx, commandShell, "-lc", command)
+	cmd.Dir = workDir
 	output, err := cmd.CombinedOutput()
 
-	// Truncate output if too large
 	result := string(output)
 	if len(result) > maxOutputSize {
 		result = result[:maxOutputSize] + fmt.Sprintf("\n... (output truncated, %d bytes total)", len(output))
 	}
+	result = strings.TrimRight(result, "\n")
 
-	exitCode := 0
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"output":    strings.TrimRight(result, "\n"),
-				"exit_code": -1,
-				"error":     "command timed out after 30 seconds",
-			})
-			return
+			return commandResult{
+				Output:   result,
+				ExitCode: -1,
+				Error:    "command timed out after 30 seconds",
+			}, nil
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			writeErr(w, http.StatusInternalServerError, fmt.Sprintf("failed to execute command: %v", err))
-			return
+			return commandResult{
+				Output:   result,
+				ExitCode: exitErr.ExitCode(),
+			}, nil
 		}
+		return commandResult{}, fmt.Errorf("failed to execute command with %s: %w", commandShell, err)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"output":    strings.TrimRight(result, "\n"),
-		"exit_code": exitCode,
-	})
+	return commandResult{
+		Output:   result,
+		ExitCode: 0,
+	}, nil
 }
