@@ -49,6 +49,7 @@ func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID:    req.WorkspaceID,
 		ConversationID: req.ConversationID,
 		ParentRunID:    req.ParentRunID,
+		AgentID:        req.AgentID,
 		Model:          req.Model,
 		Turns:          ToDomainTurns(req.Turns),
 		Thinking:       ToDomainThinking(req.Thinking),
@@ -212,6 +213,8 @@ func (h *Handler) writeAgentRunError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "agent run not found")
 	case errors.Is(err, domain.ErrAgentRunNotActive):
 		writeError(w, http.StatusConflict, "agent run is not active")
+	case errors.Is(err, domain.ErrAgentNotFound):
+		writeError(w, http.StatusNotFound, "agent not found")
 	case errors.Is(err, domain.ErrModelNotFound):
 		writeError(w, http.StatusBadRequest, "model not found")
 	case errors.Is(err, domain.ErrProviderNotEnabled):

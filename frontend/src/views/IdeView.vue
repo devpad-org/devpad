@@ -7,6 +7,7 @@ import EditorPanel from '@/components/ide/EditorPanel.vue'
 import GitGraphPanel from '@/components/ide/GitGraphPanel.vue'
 import TerminalPanel from '@/components/ide/TerminalPanel.vue'
 import AiAgentPanel from '@/components/ide/AiAgentPanel.vue'
+import AiAgentsPanel from '@/components/ide/AiAgentsPanel.vue'
 import AiAgentRunsPanel from '@/components/ide/AiAgentRunsPanel.vue'
 import PreviewPanel from '@/components/ide/PreviewPanel.vue'
 import GitPanel from '@/components/ide/GitPanel.vue'
@@ -31,6 +32,7 @@ const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
 const selectedGitCommit = ref<GitCommit | null>(null)
 const gitDiffRequest = ref<GitDiffRequest | null>(null)
 const focusedAgentRunId = ref<number | null>(null)
+const selectedAgentId = ref('default')
 let gitDiffRequestId = 0
 
 type GitDiffRequest =
@@ -147,6 +149,11 @@ function handleGitWorkingFileSelect(payload: { path: string; staged: boolean }) 
 function handleAgentRunFocus(run: AgentRun) {
   focusedAgentRunId.value = run.id
   activeActivity.value = 'ai'
+}
+
+function handleAgentSelect(agentId: string) {
+  selectedAgentId.value = agentId
+  focusedAgentRunId.value = null
 }
 
 function clearSelectedGitCommit() {
@@ -329,12 +336,17 @@ function handleBack() {
       </nav>
 
       <aside
-        v-show="activeActivity !== 'ai'"
         id="ide-left-panel"
         class="ide-sidebar"
         aria-label="Left side panel"
         :style="{ width: sidebar.size.value + 'px' }"
       >
+        <AiAgentsPanel
+          v-show="activeActivity === 'ai'"
+          :workspace-id="workspace?.id ?? 0"
+          :selected-agent-id="selectedAgentId"
+          @select="handleAgentSelect"
+        />
         <FileExplorer
           v-show="activeActivity === 'explorer'"
           :workspace-id="workspace?.id ?? 0"
@@ -359,7 +371,6 @@ function handleBack() {
         />
       </aside>
       <div
-        v-show="activeActivity !== 'ai'"
         class="resize-handle resize-handle--horizontal"
         :class="{ active: sidebar.isDragging.value }"
         @pointerdown="sidebar.onPointerDown"
@@ -371,8 +382,10 @@ function handleBack() {
           <div v-show="activeActivity === 'ai'" class="ide-ai-surface">
             <AiAgentPanel
               :workspace-id="workspace?.id ?? 0"
+              :selected-agent-id="selectedAgentId"
               :focused-run-id="focusedAgentRunId"
               @clear-focused-run="focusedAgentRunId = null"
+              @select-agent="handleAgentSelect"
             />
           </div>
           <EditorPanel

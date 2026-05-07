@@ -29,6 +29,7 @@ type StartAgentRunRequest struct {
 	WorkspaceID    int64
 	ConversationID int64
 	ParentRunID    int64
+	AgentID        string
 	Model          string
 	Turns          []domain.Turn
 	Thinking       *domain.ThinkingConfig
@@ -55,6 +56,7 @@ type agentRunService struct {
 	repo          AgentRunRepository
 	chat          ChatService
 	conversations ConversationService
+	agents        AgentService
 	broker        agentEventBroker
 
 	rootCtx    context.Context
@@ -86,6 +88,12 @@ func NewAgentRunService(ctx context.Context, repo AgentRunRepository, chat ChatS
 	return service
 }
 
+// WithAgentService configures the agent lookup dependency.
+func (s *agentRunService) WithAgentService(agents AgentService) *agentRunService {
+	s.agents = agents
+	return s
+}
+
 func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest) (*domain.AgentRun, error) {
 	if err := validateStartAgentRunRequest(req); err != nil {
 		return nil, err
@@ -99,6 +107,10 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 			return nil, fmt.Errorf("parent run workspace mismatch: %w", domain.ErrAgentRunNotFound)
 		}
 	}
+	agent, err := s.resolveAgent(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("resolving agent: %w", err)
+	}
 	if req.ParentRunID == 0 && req.ConversationID > 0 && s.conversations != nil {
 		if err := s.conversations.SaveTurns(ctx, req.ConversationID, req.UserID, cloneTurns(req.Turns)); err != nil {
 			return nil, fmt.Errorf("saving initial agent run conversation: %w", err)
@@ -110,6 +122,7 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 		UserID:         req.UserID,
 		WorkspaceID:    req.WorkspaceID,
 		ConversationID: req.ConversationID,
+		AgentID:        agent.ID,
 		Model:          req.Model,
 		Status:         domain.AgentRunQueued,
 		InputTurns:     cloneTurns(req.Turns),
@@ -130,6 +143,7 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 		Model:          req.Model,
 		Turns:          cloneTurns(req.Turns),
 		Thinking:       cloneThinking(req.Thinking),
+		AgentPrompt:    agent.Instructions,
 	})
 	if err != nil {
 		s.unregisterCancel(run.ID)
@@ -148,6 +162,18 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 		return nil, fmt.Errorf("loading created agent run: %w", err)
 	}
 	return created, nil
+}
+
+func (s *agentRunService) resolveAgent(ctx context.Context, req StartAgentRunRequest) (*domain.Agent, error) {
+	if s.agents == nil {
+		agent := domain.DefaultAgent()
+		return &agent, nil
+	}
+	agent, err := s.agents.GetAgent(ctx, req.UserID, req.WorkspaceID, req.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	return agent, nil
 }
 
 func (s *agentRunService) StartChildRun(ctx context.Context, parentRunID int64, req StartAgentRunRequest) (*domain.AgentRun, error) {

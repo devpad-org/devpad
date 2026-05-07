@@ -33,12 +33,13 @@ func (r *AgentRunRepository) CreateRun(ctx context.Context, run *domain.AgentRun
 	now := time.Now().UTC()
 	result, err := r.db.ExecContext(ctx,
 		`INSERT INTO ai_agent_runs
-		 (parent_run_id, user_id, workspace_id, conversation_id, model, status, error, input_turns, thinking, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (parent_run_id, user_id, workspace_id, conversation_id, agent_id, model, status, error, input_turns, thinking, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nullableInt64(run.ParentRunID),
 		run.UserID,
 		run.WorkspaceID,
 		nullableInt64(run.ConversationID),
+		agentIDOrDefault(run.AgentID),
 		run.Model,
 		string(run.Status),
 		run.Error,
@@ -63,7 +64,7 @@ func (r *AgentRunRepository) CreateRun(ctx context.Context, run *domain.AgentRun
 
 func (r *AgentRunRepository) GetRun(ctx context.Context, id int64) (*domain.AgentRun, error) {
 	row := r.db.QueryRowContext(ctx,
-		`SELECT id, parent_run_id, user_id, workspace_id, conversation_id, model, status, error,
+		`SELECT id, parent_run_id, user_id, workspace_id, conversation_id, agent_id, model, status, error,
 		        input_turns, thinking, created_at, updated_at, started_at, completed_at
 		 FROM ai_agent_runs
 		 WHERE id = ?`,
@@ -82,7 +83,7 @@ func (r *AgentRunRepository) GetRun(ctx context.Context, id int64) (*domain.Agen
 
 func (r *AgentRunRepository) ListRuns(ctx context.Context, userID, workspaceID int64) ([]domain.AgentRun, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, parent_run_id, user_id, workspace_id, conversation_id, model, status, error,
+		`SELECT id, parent_run_id, user_id, workspace_id, conversation_id, agent_id, model, status, error,
 		        input_turns, thinking, created_at, updated_at, started_at, completed_at
 		 FROM ai_agent_runs
 		 WHERE user_id = ? AND workspace_id = ?
@@ -273,6 +274,7 @@ func scanAgentRun(scanner agentRunScanner) (*domain.AgentRun, error) {
 		&run.UserID,
 		&run.WorkspaceID,
 		&conversationID,
+		&run.AgentID,
 		&run.Model,
 		&status,
 		&run.Error,
@@ -289,6 +291,9 @@ func scanAgentRun(scanner agentRunScanner) (*domain.AgentRun, error) {
 
 	run.ParentRunID = parentRunID.Int64
 	run.ConversationID = conversationID.Int64
+	if run.AgentID == "" {
+		run.AgentID = domain.DefaultAgentID
+	}
 	run.Status = domain.AgentRunStatus(status)
 	if inputTurns != "" {
 		if err := json.Unmarshal([]byte(inputTurns), &run.InputTurns); err != nil {
@@ -346,4 +351,11 @@ func marshalOptionalJSON(value any) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func agentIDOrDefault(value string) string {
+	if value == "" {
+		return domain.DefaultAgentID
+	}
+	return value
 }

@@ -62,12 +62,16 @@ func (o *agentChatOrchestrator) Stream(ctx context.Context, req AgentChatRequest
 func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, out chan<- domain.ClientEvent) {
 	defer close(out)
 
+	systemPrompt := o.toolCatalog.SystemPrompt()
+	if strings.TrimSpace(req.AgentPrompt) != "" {
+		systemPrompt = systemPrompt + "\n\nSelected agent instructions:\n" + strings.TrimSpace(req.AgentPrompt)
+	}
 	turns := make([]domain.Turn, 0, len(req.Turns)+1)
 	turns = append(turns, domain.Turn{
 		Role: domain.RoleSystem,
 		Parts: []domain.Part{{
 			Kind: domain.PartText,
-			Text: o.toolCatalog.SystemPrompt(),
+			Text: systemPrompt,
 		}},
 	})
 	turns = append(turns, req.Turns...)

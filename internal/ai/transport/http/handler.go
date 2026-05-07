@@ -19,6 +19,7 @@ const sseKeepAliveInterval = 15 * time.Second
 // Handler holds HTTP handlers for AI endpoints.
 type Handler struct {
 	catalog     app.CatalogService
+	agents      app.AgentService
 	chat        app.ChatService
 	runs        app.AgentRunService
 	convService app.ConversationService
@@ -26,9 +27,10 @@ type Handler struct {
 }
 
 // NewHandler creates a new AI handler.
-func NewHandler(catalog app.CatalogService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, approvals approval.Broker) *Handler {
+func NewHandler(catalog app.CatalogService, agents app.AgentService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, approvals approval.Broker) *Handler {
 	return &Handler{
 		catalog:     catalog,
+		agents:      agents,
 		chat:        chat,
 		runs:        runs,
 		convService: convService,
@@ -175,9 +177,19 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	agentPrompt := ""
+	if h.agents != nil {
+		agent, err := h.agents.GetAgent(r.Context(), user.ID, req.WorkspaceID, req.AgentID)
+		if err != nil {
+			h.writeAgentError(w, err)
+			return
+		}
+		agentPrompt = agent.Instructions
+	}
 	stream, err := h.chat.StreamAgent(r.Context(), app.AgentChatRequest{
 		UserID:      user.ID,
 		WorkspaceID: req.WorkspaceID,
+		AgentPrompt: agentPrompt,
 		Model:       req.Model,
 		Turns:       ToDomainTurns(req.Turns),
 		Thinking:    ToDomainThinking(req.Thinking),

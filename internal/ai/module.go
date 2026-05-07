@@ -23,6 +23,7 @@ import (
 // Module bundles the composed AI dependencies used by the server.
 type Module struct {
 	CatalogService      app.CatalogService
+	AgentService        app.AgentService
 	ChatService         app.ChatService
 	AgentRunService     app.AgentRunService
 	ConversationService app.ConversationService
@@ -34,6 +35,7 @@ type Module struct {
 func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	providerConfigs := storage.NewProviderConfigRepository(db)
 	conversations := storage.NewConversationRepository(db)
+	agents := storage.NewAgentRepository(db)
 	registry := aiprovider.NewRegistry(
 		anthropic.NewAdapter(),
 		mistral.NewAdapter(),
@@ -43,21 +45,23 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	)
 
 	catalogService := app.NewCatalogService(providerConfigs, registry)
+	agentService := app.NewAgentService(agents)
 	conversationService := app.NewConversationService(conversations)
 	toolExecutor := aitools.NewWorkspaceExecutor(workspaceOps)
 	approvalBroker := approval.NewMemoryBroker()
 	chatService := app.NewChatService(catalogService, aitools.NewCatalog(), toolExecutor, approvalBroker)
 	agentRuns := storage.NewAgentRunRepository(db)
-	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService)
+	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService)
 	toolExecutor.SetChildAgentRunner(childAgentRunStarter{runs: agentRunService})
 
 	return &Module{
 		CatalogService:      catalogService,
+		AgentService:        agentService,
 		ChatService:         chatService,
 		AgentRunService:     agentRunService,
 		ConversationService: conversationService,
 		ToolExecutor:        toolExecutor,
-		Handler:             httptransport.NewHandler(catalogService, chatService, agentRunService, conversationService, approvalBroker),
+		Handler:             httptransport.NewHandler(catalogService, agentService, chatService, agentRunService, conversationService, approvalBroker),
 	}
 }
 
@@ -71,6 +75,7 @@ func (s childAgentRunStarter) StartChildAgentRun(ctx context.Context, req aitool
 		WorkspaceID:    req.WorkspaceID,
 		ConversationID: req.ConversationID,
 		Model:          req.Model,
+		AgentID:        domain.DefaultAgentID,
 		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, req.Prompt)},
 		Thinking:       req.Thinking,
 	})

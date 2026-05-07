@@ -36,6 +36,7 @@ export interface AgentRun {
   workspaceId: number
   conversationId?: number
   promptPreview?: string
+  agentId: string
   model: string
   status: AgentRunStatus
   error?: string
@@ -51,6 +52,27 @@ export interface AIProvider {
   name: string
   enabled: boolean
   hasApiKey: boolean
+}
+
+export interface AIAgent {
+  id: string
+  userId?: number
+  workspaceId?: number
+  name: string
+  purpose: string
+  instructions: string
+  isGlobal: boolean
+  isDefault: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SaveAgentPayload {
+  workspaceId: number
+  name: string
+  purpose: string
+  instructions: string
+  isGlobal: boolean
 }
 
 export interface ChatMessage {
@@ -138,6 +160,7 @@ interface AgentRunDTO {
   workspaceId: number
   conversationId?: number
   promptPreview?: string
+  agentId: string
   model: string
   status: AgentRunStatus
   error?: string
@@ -248,6 +271,7 @@ function agentRunFromDTO(dto: AgentRunDTO): AgentRun {
     workspaceId: dto.workspaceId,
     conversationId: dto.conversationId,
     promptPreview: dto.promptPreview,
+    agentId: dto.agentId || 'default',
     model: dto.model,
     status: dto.status,
     error: dto.error,
@@ -269,6 +293,22 @@ export const aiApi = {
 
   listProviders(): Promise<{ providers: AIProvider[] }> {
     return apiClient.get<{ providers: AIProvider[] }>('/api/ai/providers')
+  },
+
+  listAgents(workspaceId: number): Promise<{ agents: AIAgent[] }> {
+    return apiClient.get<{ agents: AIAgent[] }>(`/api/ai/agents?workspaceId=${workspaceId}`)
+  },
+
+  createAgent(payload: SaveAgentPayload): Promise<{ agent: AIAgent }> {
+    return apiClient.post<{ agent: AIAgent }>('/api/ai/agents', payload)
+  },
+
+  updateAgent(id: string, payload: SaveAgentPayload): Promise<{ agent: AIAgent }> {
+    return apiClient.put<{ agent: AIAgent }>(`/api/ai/agents/${id}`, payload)
+  },
+
+  deleteAgent(id: string): Promise<void> {
+    return apiClient.delete(`/api/ai/agents/${id}`)
   },
 
   updateProvider(id: string, apiKey: string, enabled: boolean): Promise<void> {
@@ -318,6 +358,7 @@ export const aiApi = {
     conversationId?: number,
     thinking?: ThinkingConfig,
     parentRunId?: number,
+    agentId?: string,
   ): Promise<{ run: AgentRun }> {
     const res = await apiClient.post<{ run: AgentRunDTO }>('/api/ai/agent/runs', {
       model,
@@ -326,6 +367,7 @@ export const aiApi = {
       conversationId,
       thinking,
       parentRunId,
+      agentId,
     })
     return { run: agentRunFromDTO(res.run) }
   },
@@ -357,11 +399,12 @@ export const aiApi = {
     onEvent: (event: StreamEvent) => void,
     signal?: AbortSignal,
     thinking?: ThinkingConfig,
+    agentId?: string,
   ): Promise<void> {
     const res = await fetch('/api/ai/agent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, turns: messagesToTurns(messages), workspaceId, thinking }),
+      body: JSON.stringify({ model, turns: messagesToTurns(messages), workspaceId, thinking, agentId }),
       signal,
     })
 

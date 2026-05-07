@@ -273,6 +273,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 type aiRouteHandler interface {
 	HandleListModels(http.ResponseWriter, *http.Request)
+	HandleListAgents(http.ResponseWriter, *http.Request)
+	HandleCreateAgent(http.ResponseWriter, *http.Request)
+	HandleUpdateAgent(http.ResponseWriter, *http.Request)
+	HandleDeleteAgent(http.ResponseWriter, *http.Request)
 	HandleChat(http.ResponseWriter, *http.Request)
 	HandleAgentChat(http.ResponseWriter, *http.Request)
 	HandleApproveCommand(http.ResponseWriter, *http.Request)
@@ -369,6 +373,10 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 
 	// AI API routes
 	mux.Handle("GET /api/ai/models", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListModels)))
+	mux.Handle("GET /api/ai/agents", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListAgents)))
+	mux.Handle("POST /api/ai/agents", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleCreateAgent)))
+	mux.Handle("PUT /api/ai/agents/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleUpdateAgent)))
+	mux.Handle("DELETE /api/ai/agents/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleDeleteAgent)))
 	mux.Handle("POST /api/ai/chat", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleChat)))
 	mux.Handle("POST /api/ai/agent", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleAgentChat)))
 	mux.Handle("POST /api/ai/agent/approve", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleApproveCommand)))

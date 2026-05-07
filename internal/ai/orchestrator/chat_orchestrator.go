@@ -34,6 +34,7 @@ type AgentChatRequest struct {
 	Model          string
 	Turns          []domain.Turn
 	Thinking       *domain.ThinkingConfig
+	AgentPrompt    string
 }
 
 // AgentChatOrchestrator owns the agent runtime state machine outside HTTP transport.

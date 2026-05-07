@@ -12,4 +12,6 @@ var (
 	ErrConversationNotFound     = errors.New("conversation not found")
 	ErrAgentRunNotFound         = errors.New("agent run not found")
 	ErrAgentRunNotActive        = errors.New("agent run is not active")
+	ErrAgentNotFound            = errors.New("AI agent not found")
+	ErrAgentNotEditable         = errors.New("AI agent cannot be edited")
 )

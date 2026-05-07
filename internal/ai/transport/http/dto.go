@@ -14,6 +14,7 @@ const agentRunPromptPreviewMaxRunes = 120
 // ChatRequestDTO is the frontend request contract for chat endpoints.
 type ChatRequestDTO struct {
 	Model       string       `json:"model"`
+	AgentID     string       `json:"agentId,omitempty"`
 	Turns       []TurnDTO    `json:"turns"`
 	Thinking    *ThinkingDTO `json:"thinking,omitempty"`
 	WorkspaceID int64        `json:"workspaceId,omitempty"`
@@ -22,6 +23,7 @@ type ChatRequestDTO struct {
 // CreateAgentRunRequestDTO is the frontend request contract for background agent runs.
 type CreateAgentRunRequestDTO struct {
 	Model          string       `json:"model"`
+	AgentID        string       `json:"agentId,omitempty"`
 	Turns          []TurnDTO    `json:"turns"`
 	Thinking       *ThinkingDTO `json:"thinking,omitempty"`
 	WorkspaceID    int64        `json:"workspaceId,omitempty"`
@@ -95,6 +97,7 @@ type AgentRunDTO struct {
 	WorkspaceID    int64      `json:"workspaceId"`
 	ConversationID int64      `json:"conversationId,omitempty"`
 	PromptPreview  string     `json:"promptPreview,omitempty"`
+	AgentID        string     `json:"agentId"`
 	Model          string     `json:"model"`
 	Status         string     `json:"status"`
 	Error          string     `json:"error,omitempty"`
@@ -337,6 +340,7 @@ func fromAgentRun(run *domain.AgentRun, includeInputTurns bool) AgentRunDTO {
 		WorkspaceID:    run.WorkspaceID,
 		ConversationID: run.ConversationID,
 		PromptPreview:  AgentRunPromptPreview(run.InputTurns),
+		AgentID:        run.AgentID,
 		Model:          run.Model,
 		Status:         string(run.Status),
 		Error:          run.Error,

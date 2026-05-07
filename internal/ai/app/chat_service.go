@@ -26,6 +26,7 @@ type AgentChatRequest struct {
 	Model          string
 	Turns          []domain.Turn
 	Thinking       *domain.ThinkingConfig
+	AgentPrompt    string
 }
 
 // ChatService owns the app-level chat entry points.
@@ -70,6 +71,7 @@ func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-
 		Model:          req.Model,
 		Turns:          req.Turns,
 		Thinking:       req.Thinking,
+		AgentPrompt:    req.AgentPrompt,
 	})
 }
 

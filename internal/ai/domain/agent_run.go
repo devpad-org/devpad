@@ -21,6 +21,7 @@ type AgentRun struct {
 	UserID         int64
 	WorkspaceID    int64
 	ConversationID int64
+	AgentID        string
 	Model          string
 	Status         AgentRunStatus
 	Error          string

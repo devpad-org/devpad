@@ -3,6 +3,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
+import { useAiAgentStore } from '@/stores/aiAgents'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
@@ -16,11 +17,13 @@ import {
 
 const props = defineProps<{
   workspaceId: number
+  selectedAgentId: string
   focusedRunId?: number | null
 }>()
 
 const emit = defineEmits<{
   (e: 'clear-focused-run'): void
+  (e: 'select-agent', agentId: string): void
 }>()
 
 interface TextSegment {
@@ -62,6 +65,7 @@ interface DisplayMessage {
 
 const conversationStore = useConversationStore()
 const agentRunStore = useAgentRunStore()
+const aiAgentStore = useAiAgentStore()
 const activeConversationId = ref<number | null>(null)
 
 const messages = ref<DisplayMessage[]>([])
@@ -97,7 +101,11 @@ const focusedRun = computed(() => {
 })
 
 const focusedRunTitle = computed(() => (
-  focusedRun.value?.promptPreview?.trim() || (props.focusedRunId ? `Agent Run #${props.focusedRunId}` : 'AI Agent')
+  focusedRun.value?.promptPreview?.trim() || (props.focusedRunId ? `Agent Run #${props.focusedRunId}` : currentAgentName.value)
+))
+
+const currentAgentName = computed(() => (
+  aiAgentStore.agents.find((agent) => agent.id === props.selectedAgentId)?.name ?? 'AI Agent'
 ))
 
 const focusedRunStatus = computed(() => (
@@ -169,6 +177,12 @@ function toggleThinking() {
   }
 }
 
+function handleAgentSelectorChange(event: Event) {
+  const agentId = (event.target as HTMLSelectElement).value
+  aiAgentStore.setSelectedAgent(agentId)
+  emit('select-agent', agentId)
+}
+
 onMounted(async () => {
   try {
     const res = await aiApi.listModels()
@@ -181,6 +195,7 @@ onMounted(async () => {
   }
   // Fetch conversation metadata for internal thread tracking (non-blocking).
   conversationStore.fetchConversations(props.workspaceId)
+  aiAgentStore.fetchAgents(props.workspaceId)
 })
 
 onUnmounted(() => {
@@ -710,6 +725,8 @@ async function sendMessage() {
       props.workspaceId,
       conversationId,
       thinkingRequest.value,
+      undefined,
+      props.selectedAgentId,
     )
     agentRunStore.upsertRun(created.run)
     activeAgentRunId.value = created.run.id
@@ -1253,6 +1270,16 @@ function scrollToBottom() {
         </div>
         <div class="input-toolbar">
           <template v-if="models.length > 0">
+            <select
+              :value="props.selectedAgentId"
+              class="model-selector agent-selector"
+              title="Select AI agent"
+              @change="handleAgentSelectorChange"
+            >
+              <option v-for="agent in aiAgentStore.agents" :key="agent.id" :value="agent.id">
+                {{ agent.name }}
+              </option>
+            </select>
             <select v-model="selectedModel" class="model-selector">
               <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
             </select>
