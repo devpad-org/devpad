@@ -33,9 +33,10 @@ func TestAdapterMetadata(t *testing.T) {
 	expected := []struct {
 		id               string
 		enabledByDefault bool
+		defaultEffort    string
 	}{
-		{id: "gpt-5.4", enabledByDefault: false},
-		{id: "gpt-5.5", enabledByDefault: true},
+		{id: "gpt-5.4", enabledByDefault: false, defaultEffort: defaultReasoningEffort},
+		{id: "gpt-5.5", enabledByDefault: true, defaultEffort: "medium"},
 	}
 	for index, expectedModel := range expected {
 		if models[index].ID != expectedModel.id {
@@ -49,6 +50,12 @@ func TestAdapterMetadata(t *testing.T) {
 		}
 		if models[index].Thinking.EnabledByDefault != expectedModel.enabledByDefault {
 			t.Fatalf("expected model %q thinking enabled by default to be %v, got %v", models[index].ID, expectedModel.enabledByDefault, models[index].Thinking.EnabledByDefault)
+		}
+		if !models[index].Thinking.SupportsEffortSelection() {
+			t.Fatalf("expected model %q to expose selectable effort levels", models[index].ID)
+		}
+		if models[index].Thinking.DefaultEffort != expectedModel.defaultEffort {
+			t.Fatalf("expected model %q default effort to be %q, got %q", models[index].ID, expectedModel.defaultEffort, models[index].Thinking.DefaultEffort)
 		}
 		if !models[index].Thinking.CanDisable {
 			t.Fatalf("expected model %q thinking to be disableable", models[index].ID)
@@ -198,6 +205,23 @@ func TestBuildResponsesRequest_ThinkingEnabled(t *testing.T) {
 	include := body["include"].([]string)
 	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
 		t.Fatalf("expected include reasoning.encrypted_content when thinking is enabled, got %v", include)
+	}
+}
+
+func TestBuildResponsesRequest_ThinkingEffortSelection(t *testing.T) {
+	enabled := true
+	body := buildResponsesRequest(aiprovider.StreamRequest{
+		Model:    "gpt-5.4",
+		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+		Thinking: &domain.ThinkingConfig{Enabled: &enabled, Effort: "high"},
+	}, NewAdapter().Models()[0])
+
+	reasoning := body["reasoning"].(map[string]any)
+	if reasoning["effort"] != "high" {
+		t.Fatalf("expected reasoning effort high, got %v", reasoning["effort"])
+	}
+	if reasoning["summary"] != "auto" {
+		t.Fatalf("expected reasoning summary auto, got %v", reasoning["summary"])
 	}
 }
 

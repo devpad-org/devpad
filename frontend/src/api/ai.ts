@@ -16,15 +16,20 @@ export interface AIModel {
   providerId: string
   providerName: string
   configured: boolean
-  thinking: {
-    supported: boolean
-    enabledByDefault: boolean
-    canDisable: boolean
-  }
+  thinking: ThinkingCapability
+}
+
+export interface ThinkingCapability {
+  supported: boolean
+  enabledByDefault: boolean
+  canDisable: boolean
+  supportedEfforts?: string[]
+  defaultEffort?: string
 }
 
 export interface ThinkingConfig {
-	enabled?: boolean
+  enabled?: boolean
+  effort?: string
 }
 
 export type AgentRunStatus = 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled'

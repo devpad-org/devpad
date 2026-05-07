@@ -38,6 +38,14 @@ func NewHandler(catalog app.CatalogService, agents app.AgentService, chat app.Ch
 	}
 }
 
+func isThinkingRequestError(err error) bool {
+	return errors.Is(err, domain.ErrThinkingNotSupported) ||
+		errors.Is(err, domain.ErrThinkingCannotBeDisabled) ||
+		errors.Is(err, domain.ErrThinkingEffortNotSupported) ||
+		errors.Is(err, domain.ErrThinkingEffortInvalid) ||
+		errors.Is(err, domain.ErrThinkingEffortRequiresThinking)
+}
+
 // HandleListModels returns all available AI models with their configuration status.
 func (h *Handler) HandleListModels(w http.ResponseWriter, r *http.Request) {
 	models, err := h.catalog.ListModels(r.Context())
@@ -124,7 +132,7 @@ func (h *Handler) HandleChat(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "AI provider is not enabled")
 		case errors.Is(err, domain.ErrNoAPIKey):
 			writeError(w, http.StatusBadRequest, "no API key configured for this provider")
-		case errors.Is(err, domain.ErrThinkingNotSupported), errors.Is(err, domain.ErrThinkingCannotBeDisabled):
+		case isThinkingRequestError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
 			log.Printf("failed to start chat: %v", err)
@@ -198,7 +206,7 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, domain.ErrModelNotFound):
 			writeError(w, http.StatusBadRequest, "model not found")
-		case errors.Is(err, domain.ErrThinkingNotSupported), errors.Is(err, domain.ErrThinkingCannotBeDisabled):
+		case isThinkingRequestError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
 			writeError(w, http.StatusInternalServerError, "failed to start agent chat")

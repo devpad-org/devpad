@@ -68,6 +68,24 @@ func TestToDomainTurns(t *testing.T) {
 	}
 }
 
+func TestToDomainThinkingCopiesEffort(t *testing.T) {
+	enabled := true
+	thinking := ToDomainThinking(&ThinkingDTO{
+		Enabled: &enabled,
+		Effort:  "high",
+	})
+
+	if thinking == nil {
+		t.Fatal("expected thinking config")
+	}
+	if thinking.Enabled == nil || !*thinking.Enabled {
+		t.Fatalf("expected enabled true, got %+v", thinking.Enabled)
+	}
+	if thinking.Effort != "high" {
+		t.Fatalf("expected effort high, got %q", thinking.Effort)
+	}
+}
+
 func TestFromDomainTurns(t *testing.T) {
 	turns := []domain.Turn{
 		{

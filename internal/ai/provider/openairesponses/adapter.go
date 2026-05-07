@@ -97,11 +97,15 @@ func (a *Adapter) Models() []domain.Model {
 		Supported:        true,
 		EnabledByDefault: false,
 		CanDisable:       true,
+		SupportedEfforts: []string{"low", "medium", "high", "xhigh"},
+		DefaultEffort:    defaultReasoningEffort,
 	}
 	gpt55Thinking := domain.ThinkingCapability{
 		Supported:        true,
 		EnabledByDefault: true,
 		CanDisable:       true,
+		SupportedEfforts: []string{"low", "medium", "high", "xhigh"},
+		DefaultEffort:    defaultReasoningEffort,
 	}
 
 	return []domain.Model{
@@ -279,8 +283,9 @@ func buildReasoningConfig(req aiprovider.StreamRequest, model domain.Model) map[
 	}
 
 	if domain.ThinkingEnabledForRequest(model, request) {
+		effort := requestedReasoningEffort(model, req.Thinking)
 		return map[string]any{
-			"effort":  defaultReasoningEffort,
+			"effort":  effort,
 			"summary": "auto",
 		}
 	}
@@ -292,6 +297,20 @@ func buildReasoningConfig(req aiprovider.StreamRequest, model domain.Model) map[
 	}
 
 	return nil
+}
+
+func requestedReasoningEffort(model domain.Model, thinking *domain.ThinkingConfig) string {
+	if thinking != nil {
+		if effort := strings.TrimSpace(thinking.Effort); effort != "" {
+			return effort
+		}
+	}
+
+	if model.Thinking.SupportsEffortSelection() && model.Thinking.DefaultEffort != "" {
+		return model.Thinking.DefaultEffort
+	}
+
+	return defaultReasoningEffort
 }
 
 func buildInclude(req aiprovider.StreamRequest, model domain.Model) []string {

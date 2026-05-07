@@ -79,6 +79,7 @@ const chatBody = ref<HTMLElement | null>(null)
 const models = ref<AIModel[]>([])
 const selectedModel = ref('')
 const thinkingPreferences = ref<Record<string, boolean>>({})
+const thinkingEffortPreferences = ref<Record<string, string>>({})
 const streaming = ref(false)
 const abortController = ref<AbortController | null>(null)
 const activeAgentRunId = ref<number | null>(null)
@@ -132,6 +133,11 @@ const canToggleThinking = computed(() => {
   return Boolean(model?.thinking.supported && model.thinking.canDisable)
 })
 
+const canSelectThinkingEffort = computed(() => {
+  const model = currentModel.value
+  return Boolean(model?.thinking.supported && (model.thinking.supportedEfforts?.length ?? 0) > 0)
+})
+
 const thinkingEnabled = computed(() => {
   const model = currentModel.value
   if (!model?.thinking.supported) {
@@ -146,13 +152,47 @@ const thinkingEnabled = computed(() => {
   return model.thinking.enabledByDefault
 })
 
+function defaultThinkingEffort(model: AIModel): string {
+  return model.thinking.defaultEffort ?? model.thinking.supportedEfforts?.[0] ?? ''
+}
+
+const thinkingEffort = computed<string>({
+  get() {
+    const model = currentModel.value
+    if (!model?.thinking.supported) {
+      return ''
+    }
+
+    return thinkingEffortPreferences.value[model.id] ?? defaultThinkingEffort(model)
+  },
+  set(value: string) {
+    const model = currentModel.value
+    if (!model?.thinking.supported) {
+      return
+    }
+
+    thinkingEffortPreferences.value = {
+      ...thinkingEffortPreferences.value,
+      [model.id]: value,
+    }
+  },
+})
+
 const thinkingRequest = computed(() => {
   const model = currentModel.value
   if (!model?.thinking.supported) {
     return undefined
   }
 
-  return { enabled: thinkingEnabled.value }
+  const request: { enabled: boolean; effort?: string } = {
+    enabled: thinkingEnabled.value,
+  }
+
+  if (thinkingEnabled.value && canSelectThinkingEffort.value) {
+    request.effort = thinkingEffort.value || defaultThinkingEffort(model)
+  }
+
+  return request
 })
 
 function autoResize() {
@@ -175,6 +215,23 @@ function toggleThinking() {
   thinkingPreferences.value = {
     ...thinkingPreferences.value,
     [model.id]: !thinkingEnabled.value,
+  }
+}
+
+function thinkingEffortLabel(effort: string): string {
+  switch (effort) {
+    case 'none':
+      return 'None'
+    case 'low':
+      return 'Low'
+    case 'medium':
+      return 'Medium'
+    case 'high':
+      return 'High'
+    case 'xhigh':
+      return 'Extra high'
+    default:
+      return effort
   }
 }
 
@@ -1309,6 +1366,16 @@ function scrollToBottom() {
               <span class="thinking-toggle-label">Thinking</span>
               <span class="thinking-toggle-state">{{ thinkingEnabled ? 'On' : 'Off' }}</span>
             </button>
+            <select
+              v-if="canSelectThinkingEffort && thinkingEnabled"
+              v-model="thinkingEffort"
+              class="model-selector thinking-effort-selector"
+              title="Select reasoning level"
+            >
+              <option v-for="effort in currentModel?.thinking.supportedEfforts ?? []" :key="effort" :value="effort">
+                {{ thinkingEffortLabel(effort) }}
+              </option>
+            </select>
           </template>
           <span v-else class="agent-badge">No Models</span>
         </div>
@@ -1469,6 +1536,10 @@ function scrollToBottom() {
   outline: none;
   cursor: pointer;
   transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.thinking-effort-selector {
+  min-width: 126px;
 }
 
 .model-selector:focus {

@@ -1,9 +1,15 @@
 package domain
 
+import (
+	"fmt"
+	"strings"
+)
+
 // ThinkingConfig controls whether the selected model should use thinking mode.
 // A nil value uses the model's default behavior.
 type ThinkingConfig struct {
-	Enabled *bool `json:"enabled,omitempty"`
+	Enabled *bool  `json:"enabled,omitempty"`
+	Effort  string `json:"effort,omitempty"`
 }
 
 // ChatRequest is the input for a chat completion.
@@ -23,6 +29,9 @@ func ThinkingEnabledForRequest(model Model, req ChatRequest) bool {
 	if req.Thinking != nil && req.Thinking.Enabled != nil {
 		return *req.Thinking.Enabled
 	}
+	if req.Thinking != nil && strings.TrimSpace(req.Thinking.Effort) != "" {
+		return true
+	}
 
 	return model.Thinking.EnabledByDefault
 }
@@ -30,7 +39,7 @@ func ThinkingEnabledForRequest(model Model, req ChatRequest) bool {
 // ValidateThinkingRequest validates the request against the selected model.
 func ValidateThinkingRequest(model Model, req ChatRequest) error {
 	if req.Thinking == nil || req.Thinking.Enabled == nil {
-		return nil
+		return validateThinkingEffort(model, req.Thinking)
 	}
 
 	enabled := *req.Thinking.Enabled
@@ -38,15 +47,40 @@ func ValidateThinkingRequest(model Model, req ChatRequest) error {
 		if !model.Thinking.Supported {
 			return ErrThinkingNotSupported
 		}
+		if err := validateThinkingEffort(model, req.Thinking); err != nil {
+			return err
+		}
 		return nil
 	}
 
 	if !model.Thinking.Supported {
-		return nil
+		return validateThinkingEffort(model, req.Thinking)
 	}
 	if !model.Thinking.CanDisable {
 		return ErrThinkingCannotBeDisabled
 	}
+	if strings.TrimSpace(req.Thinking.Effort) != "" {
+		return ErrThinkingEffortRequiresThinking
+	}
 
+	return validateThinkingEffort(model, req.Thinking)
+}
+
+func validateThinkingEffort(model Model, thinking *ThinkingConfig) error {
+	if thinking == nil {
+		return nil
+	}
+
+	effort := strings.TrimSpace(thinking.Effort)
+	if effort == "" {
+		return nil
+	}
+
+	if !model.Thinking.Supported || !model.Thinking.SupportsEffortSelection() {
+		return ErrThinkingEffortNotSupported
+	}
+	if !model.Thinking.SupportsEffort(effort) {
+		return fmt.Errorf("%w: %s", ErrThinkingEffortInvalid, effort)
+	}
 	return nil
 }

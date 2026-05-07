@@ -33,7 +33,8 @@ type CreateAgentRunRequestDTO struct {
 
 // ThinkingDTO controls thinking mode over the transport boundary.
 type ThinkingDTO struct {
-	Enabled *bool `json:"enabled,omitempty"`
+	Enabled *bool  `json:"enabled,omitempty"`
+	Effort  string `json:"effort,omitempty"`
 }
 
 // TurnDTO is the stable frontend transport shape for a conversation turn.
@@ -148,7 +149,7 @@ func ToDomainThinking(dto *ThinkingDTO) *domain.ThinkingConfig {
 	if dto == nil {
 		return nil
 	}
-	return &domain.ThinkingConfig{Enabled: dto.Enabled}
+	return &domain.ThinkingConfig{Enabled: dto.Enabled, Effort: dto.Effort}
 }
 
 // ToDomainTurns converts transport turns into normalized internal turns.

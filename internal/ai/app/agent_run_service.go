@@ -495,6 +495,7 @@ func cloneThinking(thinking *domain.ThinkingConfig) *domain.ThinkingConfig {
 		enabled := *thinking.Enabled
 		clone.Enabled = &enabled
 	}
+	clone.Effort = thinking.Effort
 	return clone
 }
 
