@@ -63,6 +63,32 @@ func TestReadSSEStream_ReasoningContent(t *testing.T) {
 	}
 }
 
+func TestReadSSEStream_ContentThinkingChunks(t *testing.T) {
+	sse := `data: {"choices":[{"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"I should reason this through."}]},{"type":"text","text":"Final answer."}]}}]}` + "\n\n" +
+		"data: [DONE]\n\n"
+
+	ch := make(chan domain.ProviderEvent, 64)
+	go ReadSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+
+	var events []domain.ProviderEvent
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+	if events[0].ReasoningDelta != "I should reason this through." {
+		t.Fatalf("thinking chunk: got %q", events[0].ReasoningDelta)
+	}
+	if events[1].TextDelta != "Final answer." {
+		t.Fatalf("text chunk: got %q", events[1].TextDelta)
+	}
+	if !events[2].Done {
+		t.Fatal("expected final Done event")
+	}
+}
+
 func TestReadSSEStream_ToolCallAccumulation(t *testing.T) {
 	sse := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"edit_file\",\"arguments\":\"\"}}]}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\":\\\"test.ts\\\",\"}}]}}]}\n\n" +
