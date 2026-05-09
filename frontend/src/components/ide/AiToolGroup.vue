@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  hasToolResult,
   isToolError,
   toolFriendlyName,
   toolGroupState,
@@ -42,7 +43,7 @@ defineProps<{
         v-for="tool in group.tools"
         :key="tool.toolCallId"
         class="tool-row"
-        :class="{ 'tool-row--error': isToolError(tool), 'tool-row--running': !tool.result }"
+        :class="{ 'tool-row--error': isToolError(tool), 'tool-row--running': !hasToolResult(tool) }"
       >
         <div class="tool-row-main">
           <span class="tool-row-name">{{ toolFriendlyName(tool.name) }}</span>

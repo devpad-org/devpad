@@ -9,6 +9,7 @@ import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
 import AiMessageCopyButton from '@/components/ide/AiMessageCopyButton.vue'
 import {
+  hasToolResult,
   planStepsFromToolArgs,
   shouldRenderToolCall,
   toolGroupKey,
@@ -594,7 +595,7 @@ function applyFocusedRunEvent(event: StreamEvent) {
   const toolResult = event.toolResult
   if (toolResult) {
     const toolSeg = msg.segments.find(
-      (seg): seg is ToolSegment => seg.type === 'tool' && seg.toolCallId === toolResult.toolCallId && !seg.result,
+      (seg): seg is ToolSegment => seg.type === 'tool' && seg.toolCallId === toolResult.toolCallId && !hasToolResult(seg),
     )
     if (toolSeg) {
       toolSeg.result = toolResult.content
@@ -870,7 +871,7 @@ async function sendMessage() {
         if (toolResult) {
           const segs = messages.value[assistantIdx].segments
           const toolSeg = segs.find(
-            (s): s is ToolSegment => s.type === 'tool' && s.toolCallId === toolResult.toolCallId && !s.result
+            (s): s is ToolSegment => s.type === 'tool' && s.toolCallId === toolResult.toolCallId && !hasToolResult(s)
           )
           if (toolSeg) {
             toolSeg.result = toolResult.content
@@ -1015,7 +1016,7 @@ const displayActivityStatus = computed<string | null>(() => {
   const lastSeg = segs[segs.length - 1]
 
   // A tool is running (no result yet)
-  if (lastSeg.type === 'tool' && !(lastSeg as ToolSegment).result) {
+  if (lastSeg.type === 'tool' && !hasToolResult(lastSeg as ToolSegment)) {
     return `Running ${lastSeg.name}…`
   }
 
@@ -1025,7 +1026,7 @@ const displayActivityStatus = computed<string | null>(() => {
   }
 
   // Last segment is a completed tool or has a result — the LLM is generating the next response
-  if (lastSeg.type === 'tool' && (lastSeg as ToolSegment).result) {
+  if (lastSeg.type === 'tool' && hasToolResult(lastSeg as ToolSegment)) {
     return 'Thinking…'
   }
 

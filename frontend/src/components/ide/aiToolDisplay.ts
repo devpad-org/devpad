@@ -49,8 +49,12 @@ export function formatToolArgs(name: string, args: string): string {
 }
 
 export function isToolError(seg: ToolDisplaySegment): boolean {
-  if (!seg.result) return false
+  if (!hasToolResult(seg)) return false
   return seg.result.startsWith('Error:') || seg.result.startsWith('Command failed') || seg.result.startsWith('Command timed out')
+}
+
+export function hasToolResult(seg: ToolDisplaySegment): seg is ToolDisplaySegment & { result: string } {
+  return seg.result !== undefined
 }
 
 export function shouldRenderToolCall(name: string): boolean {
@@ -188,25 +192,25 @@ export function toolGroupTitle(group: ToolGroupDisplay): string {
 export function toolGroupSubtitle(group: ToolGroupDisplay): string {
   if (group.tools.length === 1) return toolResultMeta(group.tools[0])
   const failed = group.tools.filter(isToolError).length
-  const running = group.tools.filter((tool) => !tool.result).length
+  const running = group.tools.filter((tool) => !hasToolResult(tool)).length
   if (running > 0) return `${running} running`
   if (failed > 0) return `${failed} failed`
   return 'Completed'
 }
 
 export function toolGroupState(group: ToolGroupDisplay): 'running' | 'error' | 'done' {
-  if (group.tools.some((tool) => !tool.result)) return 'running'
+  if (group.tools.some((tool) => !hasToolResult(tool))) return 'running'
   if (group.tools.some(isToolError)) return 'error'
   return 'done'
 }
 
 export function toolStatusLabel(seg: ToolDisplaySegment): string {
-  if (!seg.result) return 'Running'
+  if (!hasToolResult(seg)) return 'Running'
   return isToolError(seg) ? 'Issue' : 'Done'
 }
 
 export function toolResultMeta(seg: ToolDisplaySegment): string {
-  if (!seg.result) return 'Running'
+  if (!hasToolResult(seg)) return 'Running'
   if (isToolError(seg)) return 'Needs attention'
 
   switch (seg.name) {
