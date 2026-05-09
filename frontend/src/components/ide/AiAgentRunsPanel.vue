@@ -2,6 +2,9 @@
 import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { type AgentRun, useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
 
+const treeStepPx = 18
+const treeNodeSizePx = 14
+
 const props = defineProps<{
   workspaceId: number
   selectedRunId: number | null
@@ -15,6 +18,8 @@ interface RunListItem {
   run: AgentRun
   depth: number
   isLastChild: boolean
+  hasChildren: boolean
+  ancestorContinuations: boolean[]
 }
 
 const runStore = useAgentRunStore()
@@ -60,16 +65,17 @@ const runListItems = computed<RunListItem[]>(() => {
   }
 
   const items: RunListItem[] = []
-  const appendRun = (run: AgentRun, depth: number, isLastChild: boolean) => {
-    items.push({ run, depth, isLastChild })
+  const appendRun = (run: AgentRun, depth: number, isLastChild: boolean, ancestorContinuations: boolean[]) => {
     const runChildren = children.get(run.id) ?? []
+    items.push({ run, depth, isLastChild, hasChildren: runChildren.length > 0, ancestorContinuations })
     runChildren.forEach((child, index) => {
-      appendRun(child, depth + 1, index === runChildren.length - 1)
+      const childIsLast = index === runChildren.length - 1
+      appendRun(child, depth + 1, childIsLast, [...ancestorContinuations, !childIsLast])
     })
   }
 
   roots.forEach((run, index) => {
-    appendRun(run, 0, index === roots.length - 1)
+    appendRun(run, 0, index === roots.length - 1, [])
   })
   return items
 })
@@ -120,6 +126,20 @@ function formatRelativeTime(dateStr: string): string {
   const diffDay = Math.floor(diffHr / 24)
   if (diffDay < 7) return `${diffDay}d ago`
   return date.toLocaleDateString()
+}
+
+function runItemStyle(item: RunListItem): Record<string, string> {
+  return {
+    '--run-depth': String(item.depth),
+    '--run-tree-width': `${treeNodeSizePx + item.depth * treeStepPx}px`,
+    '--run-node-offset': `${item.depth * treeStepPx}px`,
+  }
+}
+
+function treeLaneStyle(lane: number): Record<string, string> {
+  return {
+    '--lane-offset': `${lane * treeStepPx}px`,
+  }
 }
 
 function runTime(updatedAt: string, createdAt: string): number {
@@ -179,14 +199,28 @@ onUnmounted(stopRefreshTimer)
             selected: item.run.id === selectedRunId,
             active: isAgentRunActiveStatus(item.run.status),
             child: item.depth > 0,
+            parent: item.hasChildren,
             'last-child': item.isLastChild,
           },
         ]"
-        :style="{ '--run-depth': item.depth }"
+        :style="runItemStyle(item)"
         @click="focusRun(item.run)"
       >
-        <span class="run-tree" :class="{ child: item.depth > 0, 'last-child': item.isLastChild }" aria-hidden="true">
-          <span class="run-status-dot" />
+        <span class="run-tree" aria-hidden="true">
+          <span
+            v-for="(continues, lane) in item.ancestorContinuations"
+            :key="lane"
+            class="tree-lane"
+            :class="{
+              continues,
+              branch: lane === item.depth - 1,
+              'last-branch': lane === item.depth - 1 && item.isLastChild,
+            }"
+            :style="treeLaneStyle(lane)"
+          />
+          <span class="run-node">
+            <span class="run-status-dot" />
+          </span>
         </span>
         <span class="run-main">
           <span class="run-title">{{ formatRunTitle(item.run) }}</span>
@@ -205,6 +239,11 @@ onUnmounted(stopRefreshTimer)
 
 <style scoped>
 .agent-runs-panel {
+  --tree-step: 18px;
+  --tree-node-size: 14px;
+  --tree-node-center: calc(var(--tree-node-size) / 2);
+  --tree-line: color-mix(in srgb, var(--accent-purple) 42%, var(--border-strong));
+  --tree-line-muted: color-mix(in srgb, var(--text-muted) 26%, transparent);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -270,27 +309,33 @@ onUnmounted(stopRefreshTimer)
 .agent-runs-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-3);
 }
 
 .agent-run-item {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
-  gap: var(--space-2);
+  grid-template-columns: var(--run-tree-width) minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 10px;
   position: relative;
   width: 100%;
-  padding: var(--space-2);
-  padding-left: calc(var(--space-2) + (var(--run-depth, 0) * 16px));
+  min-height: 48px;
+  padding: 6px 8px;
   border: 0.5px solid transparent;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
+  background: transparent;
   color: var(--text-secondary);
   text-align: left;
-  transition: all var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
+
+.agent-run-item + .agent-run-item { margin-top: 1px; }
 
 .agent-run-item:hover {
   border-color: var(--border-default);
@@ -303,64 +348,119 @@ onUnmounted(stopRefreshTimer)
   background: var(--bg-selected);
 }
 
+.agent-run-item.parent:not(.selected) {
+  border-color: color-mix(in srgb, var(--border-default) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-raised) 28%, transparent);
+}
+
 .agent-run-item.active .run-title { color: var(--text-primary); }
 
 .run-tree {
   position: relative;
-  display: flex;
-  align-items: flex-start;
+  align-self: stretch;
+  width: var(--run-tree-width);
+  min-height: 34px;
+}
+
+.tree-lane {
+  position: absolute;
+  top: -8px;
+  bottom: -8px;
+  left: calc(var(--lane-offset) + var(--tree-node-center));
+  width: var(--tree-step);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.tree-lane.continues::before,
+.tree-lane.branch::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1.5px;
+  border-radius: 999px;
+  background: var(--tree-line);
+}
+
+.tree-lane.branch.last-branch::before {
+  bottom: 50%;
+}
+
+.tree-lane.branch::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: var(--tree-step);
+  height: 1.5px;
+  border-radius: 999px;
+  background: var(--tree-line);
+}
+
+.run-node {
+  position: absolute;
+  left: var(--run-node-offset);
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
-  width: 10px;
-  min-height: 18px;
+  width: var(--tree-node-size);
+  height: var(--tree-node-size);
+  border: 0.5px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
+  border-radius: 50%;
+  background: var(--bg-surface);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--bg-surface) 80%, transparent);
+  z-index: 1;
+  transform: translateY(-50%);
 }
 
-.run-tree.child::before {
+.agent-run-item.parent .run-tree::after {
   content: '';
   position: absolute;
-  left: -9px;
-  top: -11px;
-  bottom: 9px;
-  width: 1px;
-  background: var(--border-default);
-}
-
-.run-tree.child:not(.last-child)::before {
-  bottom: -17px;
-}
-
-.run-tree.child::after {
-  content: '';
-  position: absolute;
-  left: -9px;
-  top: 8px;
-  width: 9px;
-  height: 1px;
-  background: var(--border-default);
+  left: calc(var(--run-node-offset) + var(--tree-node-center));
+  top: 50%;
+  bottom: -8px;
+  width: 1.5px;
+  border-radius: 999px;
+  background: var(--tree-line);
+  z-index: 0;
+  pointer-events: none;
 }
 
 .run-status-dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  margin-top: 5px;
   background: var(--text-muted);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-void) 70%, transparent);
 }
 
 .agent-run-item--queued .run-status-dot,
 .agent-run-item--running .run-status-dot,
 .agent-run-item--waiting_approval .run-status-dot {
   background: var(--accent-green);
-  box-shadow: 0 0 8px var(--accent-green);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--bg-void) 70%, transparent),
+    0 0 10px color-mix(in srgb, var(--accent-green) 72%, transparent);
 }
 
-.agent-run-item--completed .run-status-dot { background: var(--accent-blue); }
+.agent-run-item--completed .run-status-dot {
+  background: var(--accent-blue);
+}
 
 .agent-run-item--failed .run-status-dot,
 .agent-run-item--cancelled .run-status-dot {
   background: var(--accent-rose);
 }
 
-.run-main { display: flex; flex-direction: column; min-width: 0; }
+.run-main {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
 
 .run-title {
   overflow: hidden;
@@ -400,10 +500,11 @@ onUnmounted(stopRefreshTimer)
 }
 
 .run-status {
-  align-self: start;
-  padding: 1px 6px;
+  align-self: center;
+  padding: 2px 7px;
   border: 0.5px solid var(--border-default);
   border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-void) 24%, transparent);
   color: var(--text-muted);
   font-size: 0.64rem;
   line-height: 1.4;
@@ -415,5 +516,17 @@ onUnmounted(stopRefreshTimer)
   border-color: var(--success-border);
   background: var(--success-bg);
   color: var(--accent-green);
+}
+
+.agent-run-item--completed .run-status {
+  border-color: color-mix(in srgb, var(--accent-blue) 28%, var(--border-default));
+  color: var(--accent-blue);
+}
+
+.agent-run-item--failed .run-status,
+.agent-run-item--cancelled .run-status {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: var(--accent-rose);
 }
 </style>
