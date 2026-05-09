@@ -43,8 +43,16 @@ const runListItems = computed<RunListItem[]>(() => {
     }
   }
 
+  const runActivityTime = (run: AgentRun): number => {
+    let latest = runTime(run.updatedAt, run.createdAt)
+    for (const child of children.get(run.id) ?? []) {
+      latest = Math.max(latest, runActivityTime(child))
+    }
+    return latest
+  }
+
   const compareRuns = (a: AgentRun, b: AgentRun) =>
-    new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime() || b.id - a.id
+    runActivityTime(b) - runActivityTime(a) || b.id - a.id
 
   roots.sort(compareRuns)
   for (const siblings of children.values()) {
@@ -112,6 +120,13 @@ function formatRelativeTime(dateStr: string): string {
   const diffDay = Math.floor(diffHr / 24)
   if (diffDay < 7) return `${diffDay}d ago`
   return date.toLocaleDateString()
+}
+
+function runTime(updatedAt: string, createdAt: string): number {
+  const updated = new Date(updatedAt).getTime()
+  if (Number.isFinite(updated)) return updated
+  const created = new Date(createdAt).getTime()
+  return Number.isFinite(created) ? created : 0
 }
 
 watch(() => props.workspaceId, startRefreshTimer)

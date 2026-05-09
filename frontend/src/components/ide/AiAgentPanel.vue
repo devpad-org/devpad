@@ -2,7 +2,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
-import { useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
+import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import AiToolGroup from '@/components/ide/AiToolGroup.vue'
@@ -84,6 +84,7 @@ const thinkingEffortPreferences = ref<Record<string, string>>({})
 const streaming = ref(false)
 const abortController = ref<AbortController | null>(null)
 const activeAgentRunId = ref<number | null>(null)
+const continuationParentRunId = ref<number | null>(null)
 const inputFocused = ref(false)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const planExpanded = ref(false)
@@ -673,6 +674,7 @@ async function loadConversation(convId: number) {
   rawMessages.value = res.messages
   messages.value = reconstructDisplayMessages(res.messages)
   activeConversationId.value = convId
+  continuationParentRunId.value = findContinuationParentRunId(convId)
   conversationStore.setActive(convId)
   await nextTick()
   scrollToBottom()
@@ -780,6 +782,8 @@ async function sendMessage() {
   }
   const rounds: Round[] = [{ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] }]
   let streamFailed = false
+  let createdRun: AgentRun | null = null
+  const parentRunId = continuationParentRunId.value
 
   try {
     const created = await aiApi.createAgentRun(
@@ -788,9 +792,10 @@ async function sendMessage() {
       props.workspaceId,
       conversationId,
       thinkingRequest.value,
-      undefined,
+      parentRunId ?? undefined,
       props.selectedAgentId,
     )
+    createdRun = created.run
     agentRunStore.upsertRun(created.run)
     activeAgentRunId.value = created.run.id
 
@@ -940,6 +945,9 @@ async function sendMessage() {
       await saveCurrentConversation().catch((err) => {
         console.error('Auto-save failed:', err)
       })
+      if (createdRun) {
+        continuationParentRunId.value = rootRunIdFor(createdRun)
+      }
     }
 
     if (completedRunId !== null) {
@@ -974,9 +982,43 @@ function newChat() {
   inputValue.value = ''
   planExpanded.value = false
   activeAgentRunId.value = null
+  continuationParentRunId.value = null
   resetInputHeight()
   activeConversationId.value = null
   conversationStore.setActive(null)
+}
+
+function findContinuationParentRunId(conversationId: number): number | null {
+  const runs = agentRunStore.runs
+    .filter((run) => run.workspaceId === props.workspaceId && run.conversationId === conversationId)
+    .sort(compareRunsByUpdatedAt)
+  const latest = runs[0]
+  return latest ? rootRunIdFor(latest) : null
+}
+
+function rootRunIdFor(run: AgentRun): number {
+  let current = run
+  const seen = new Set<number>()
+
+  while (current.parentRunId && !seen.has(current.id)) {
+    seen.add(current.id)
+    const parent = agentRunStore.runs.find((candidate) => candidate.id === current.parentRunId)
+    if (!parent) return current.parentRunId
+    current = parent
+  }
+
+  return current.id
+}
+
+function compareRunsByUpdatedAt(a: AgentRun, b: AgentRun): number {
+  return runTime(b.updatedAt, b.createdAt) - runTime(a.updatedAt, a.createdAt) || b.id - a.id
+}
+
+function runTime(updatedAt: string, createdAt: string): number {
+  const updated = new Date(updatedAt).getTime()
+  if (Number.isFinite(updated)) return updated
+  const created = new Date(createdAt).getTime()
+  return Number.isFinite(created) ? created : 0
 }
 
 async function continueFocusedRunConversation() {
@@ -984,8 +1026,10 @@ async function continueFocusedRunConversation() {
   if (!conversationId) return
 
   try {
+    const parentRunId = rootRunIdFor(focusedRun.value)
     const focusedTranscript = cloneDisplayMessages(focusedRunMessages.value)
     await loadConversation(conversationId)
+    continuationParentRunId.value = parentRunId
     if (focusedTranscript.length > 0) {
       messages.value = focusedTranscript
     }
