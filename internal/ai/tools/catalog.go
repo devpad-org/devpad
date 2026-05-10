@@ -31,7 +31,7 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "read_file",
-				Description: "Read the contents of a file in the project. Use this to understand existing code before modifying it.",
+				Description: "Read the contents of a file in the project. Results are truncated for large files; use read_file_lines for targeted sections.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative path from the project root, e.g. src/main.ts"}},"required":["path"]}`),
 			},
 		},
@@ -104,7 +104,7 @@ func AgentTools() []domain.ToolDefinition {
 			Function: domain.ToolFunction{
 				Name:        "search_files",
 				Description: "Search for a regex pattern across all files in the project. Returns matching lines with file paths and line numbers. Use this to find function definitions, usages, imports, or any text across the codebase.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string","description":"Regex pattern to search for (Go regex syntax)"},"path_filter":{"type":"string","description":"Optional: filter by file name/path pattern, e.g. *.ts or src/"},"max_results":{"type":"integer","description":"Maximum number of results to return (default 100, max 500)"}},"required":["pattern"]}`),
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string","description":"Regex pattern to search for (Go regex syntax)"},"path_filter":{"type":"string","description":"Optional: filter by file name/path pattern, e.g. *.ts or src/"},"max_results":{"type":"integer","description":"Maximum number of results to return (default 100, max 100)"}},"required":["pattern"]}`),
 			},
 		},
 		{
@@ -119,7 +119,7 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "read_file_lines",
-				Description: "Read a specific range of lines from a file. Lines are 1-indexed. Use this instead of read_file for large files when you only need a specific section.",
+				Description: "Read a specific range of lines from a file. Lines are 1-indexed and capped per call. Use this instead of read_file for large files when you only need a specific section.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative path from the project root"},"start_line":{"type":"integer","description":"First line to read (1-indexed)"},"end_line":{"type":"integer","description":"Last line to read (inclusive)"}},"required":["path","start_line","end_line"]}`),
 			},
 		},
@@ -177,6 +177,7 @@ Plan management:
 
 Sub-agents:
 - Use spawn_sub_agent only when a task has independent subtasks that can make progress without sharing live context.
+- Keep sub-agent fan-out small: at most 3 child agents can run at once for a parent run. Prefer sequential targeted exploration on rate-limited models.
 - When coordinating specialized work, call list_available_agents first, choose the best purpose-built agent, and pass its id as spawn_sub_agent.agent_id.
 - Make each sub-agent prompt self-contained: include the goal, relevant constraints, and the expected result.
 - By default the tool returns a child run ID immediately. Set wait_for_result=true when you need the child's answer before continuing; the result will include a summary field with the child's final response.

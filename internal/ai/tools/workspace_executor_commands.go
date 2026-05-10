@@ -21,13 +21,14 @@ func (e *WorkspaceExecutor) runCommand(ctx context.Context, userID, workspaceID 
 		if result.Error != "" {
 			message += "\n" + result.Error
 		}
-		return toolFailure("run_command", "%s", message)
+		return toolFailure("run_command", "%s", truncateToolText(message, maxToolTextBytes, "\n\n[Command output truncated to %d bytes. Use start_command and read_command_output with cursors for large output.]"))
 	}
 	if result.Error != "" {
-		return toolFailure("run_command", "Command timed out:\n%s\n%s", result.Output, result.Error)
+		message := fmt.Sprintf("Command timed out:\n%s\n%s", result.Output, result.Error)
+		return toolFailure("run_command", "%s", truncateToolText(message, maxToolTextBytes, "\n\n[Command output truncated to %d bytes. Use start_command and read_command_output with cursors for large output.]"))
 	}
 
-	return toolSuccess("run_command", result.Output)
+	return toolSuccess("run_command", truncateToolText(result.Output, maxToolTextBytes, "\n\n[Command output truncated to %d bytes. Use start_command and read_command_output with cursors for large output.]"))
 }
 
 func (e *WorkspaceExecutor) startCommand(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {

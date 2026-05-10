@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -464,6 +465,54 @@ func TestAgentRunService_StartChildRunPersistsParentRun(t *testing.T) {
 	}
 	if child.ParentRunID != parent.ID {
 		t.Fatalf("expected parent run id %d, got %d", parent.ID, child.ParentRunID)
+	}
+}
+
+func TestAgentRunService_StartChildRunLimitsActiveChildren(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			t.Fatal("child run should not start when active child limit is reached")
+			return nil, nil
+		},
+	}, nil)
+	defer shutdownRunner(t, service)
+
+	parent := &domain.AgentRun{
+		UserID:      8,
+		WorkspaceID: 3,
+		Model:       "gpt-5.4",
+		Status:      domain.AgentRunRunning,
+		InputTurns:  []domain.Turn{domain.NewTextTurn(domain.RoleUser, "parent")},
+	}
+	if err := repo.CreateRun(context.Background(), parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	for i := 0; i < maxActiveChildRunsPerParent; i++ {
+		child := &domain.AgentRun{
+			ParentRunID: parent.ID,
+			UserID:      8,
+			WorkspaceID: 3,
+			Model:       "gpt-5.4",
+			Status:      domain.AgentRunRunning,
+			InputTurns:  []domain.Turn{domain.NewTextTurn(domain.RoleUser, "child")},
+		}
+		if err := repo.CreateRun(context.Background(), child); err != nil {
+			t.Fatalf("create active child %d: %v", i, err)
+		}
+	}
+
+	_, err := service.StartChildRun(context.Background(), parent.ID, StartAgentRunRequest{
+		UserID:      8,
+		WorkspaceID: 3,
+		Model:       "gpt-5.4",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "another child")},
+	})
+	if err == nil {
+		t.Fatal("expected active child limit error")
+	}
+	if !strings.Contains(err.Error(), "active child runs") {
+		t.Fatalf("expected active child limit error, got %v", err)
 	}
 }
 

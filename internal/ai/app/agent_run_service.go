@@ -10,7 +10,10 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
-const runnerShutdownMessage = "agent run stopped because the server restarted or shut down"
+const (
+	runnerShutdownMessage       = "agent run stopped because the server restarted or shut down"
+	maxActiveChildRunsPerParent = 3
+)
 
 // AgentRunRepository persists background agent runs and their ordered event log.
 type AgentRunRepository interface {
@@ -106,6 +109,9 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 		if parent.WorkspaceID != req.WorkspaceID {
 			return nil, fmt.Errorf("parent run workspace mismatch: %w", domain.ErrAgentRunNotFound)
 		}
+		if err := s.ensureChildRunCapacity(ctx, req.UserID, req.WorkspaceID, req.ParentRunID); err != nil {
+			return nil, err
+		}
 	}
 	agent, err := s.resolveAgent(ctx, req)
 	if err != nil {
@@ -162,6 +168,24 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 		return nil, fmt.Errorf("loading created agent run: %w", err)
 	}
 	return created, nil
+}
+
+func (s *agentRunService) ensureChildRunCapacity(ctx context.Context, userID, workspaceID, parentRunID int64) error {
+	runs, err := s.repo.ListRuns(ctx, userID, workspaceID)
+	if err != nil {
+		return fmt.Errorf("checking active child agent runs: %w", err)
+	}
+
+	active := 0
+	for _, run := range runs {
+		if run.ParentRunID == parentRunID && !domain.AgentRunStatusTerminal(run.Status) {
+			active++
+		}
+	}
+	if active >= maxActiveChildRunsPerParent {
+		return fmt.Errorf("parent agent run already has %d active child runs; wait for one to finish before spawning another", active)
+	}
+	return nil
 }
 
 func (s *agentRunService) resolveAgent(ctx context.Context, req StartAgentRunRequest) (*domain.Agent, error) {

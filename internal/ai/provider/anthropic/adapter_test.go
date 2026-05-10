@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -29,17 +30,50 @@ func TestAnthropicAdapter_Metadata(t *testing.T) {
 		t.Fatalf("expected 3 models, got %d", len(models))
 	}
 
-	expectedModels := []string{
-		"claude-3-5-sonnet-20241022",
-		"claude-3-7-sonnet-20250219",
-		"claude-sonnet-4-20250514",
+	expectedModels := []struct {
+		id            string
+		name          string
+		efforts       []string
+		defaultEffort string
+	}{
+		{
+			id:            "claude-opus-4-7",
+			name:          "Claude Opus 4.7",
+			efforts:       []string{"low", "medium", "high", "xhigh", "max"},
+			defaultEffort: "xhigh",
+		},
+		{
+			id:            "claude-sonnet-4-6",
+			name:          "Claude Sonnet 4.6",
+			efforts:       []string{"low", "medium", "high", "max"},
+			defaultEffort: "medium",
+		},
+		{id: "claude-haiku-4-5", name: "Claude Haiku 4.5"},
 	}
 	for i, expected := range expectedModels {
-		if models[i].ID != expected {
-			t.Fatalf("expected model %d to be %q, got %q", i, expected, models[i].ID)
+		if models[i].ID != expected.id {
+			t.Fatalf("expected model %d to be %q, got %q", i, expected.id, models[i].ID)
+		}
+		if models[i].Name != expected.name {
+			t.Fatalf("expected model %d name to be %q, got %q", i, expected.name, models[i].Name)
 		}
 		if models[i].ProviderID != "anthropic" {
 			t.Fatalf("expected model %d provider ID to be anthropic, got %q", i, models[i].ProviderID)
+		}
+		if !models[i].Thinking.Supported {
+			t.Fatalf("expected model %d thinking to be supported", i)
+		}
+		if models[i].Thinking.EnabledByDefault {
+			t.Fatalf("expected model %d thinking to be disabled by default", i)
+		}
+		if !models[i].Thinking.CanDisable {
+			t.Fatalf("expected model %d thinking to be disableable", i)
+		}
+		if !slices.Equal(models[i].Thinking.SupportedEfforts, expected.efforts) {
+			t.Fatalf("expected model %d efforts to be %v, got %v", i, expected.efforts, models[i].Thinking.SupportedEfforts)
+		}
+		if models[i].Thinking.DefaultEffort != expected.defaultEffort {
+			t.Fatalf("expected model %d default effort to be %q, got %q", i, expected.defaultEffort, models[i].Thinking.DefaultEffort)
 		}
 	}
 }
@@ -54,7 +88,7 @@ func TestAnthropicAdapter_StreamTextContent(t *testing.T) {
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		response := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022"}}
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-7"}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
@@ -80,7 +114,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-3-5-sonnet-20241022",
+		Model: "claude-opus-4-7",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err != nil {
@@ -114,7 +148,7 @@ func TestAnthropicAdapter_StreamThinkingContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		response := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514"}}
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6"}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}
@@ -146,7 +180,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-sonnet-4-20250514",
+		Model: "claude-sonnet-4-6",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err != nil {
@@ -170,7 +204,7 @@ func TestAnthropicAdapter_StreamToolUse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		response := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022"}}
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-7"}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_123","name":"get_weather"}}
@@ -196,7 +230,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-3-5-sonnet-20241022",
+		Model: "claude-opus-4-7",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "what's the weather")},
 		Tools: []domain.ToolDefinition{
 			{
@@ -237,7 +271,7 @@ func TestAnthropicAdapter_StreamMultipleToolUsesAsSingleEvent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		response := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022"}}
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-7"}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file"}}
@@ -269,7 +303,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-3-5-sonnet-20241022",
+		Model: "claude-opus-4-7",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "read two files")},
 	})
 	if err != nil {
@@ -302,7 +336,7 @@ func TestAnthropicAdapter_ErrorHandling(t *testing.T) {
 	adapter.client = server.Client()
 
 	_, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "bad-key"}, aiprovider.StreamRequest{
-		Model: "claude-3-5-sonnet-20241022",
+		Model: "claude-opus-4-7",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 
 type stubWorkspaceOps struct {
 	readFileFn          func(ctx context.Context, userID, workspaceID int64, path string) ([]byte, error)
+	searchFilesFn       func(ctx context.Context, userID, workspaceID int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error)
 	runCommandFn        func(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error)
 	startCommandFn      func(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
 	commandStatusFn     func(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
@@ -77,7 +79,10 @@ func (s *stubWorkspaceOps) DeleteFile(context.Context, int64, int64, string) err
 	return nil
 }
 
-func (s *stubWorkspaceOps) SearchFiles(context.Context, int64, int64, string, string, int) ([]agent.SearchResult, error) {
+func (s *stubWorkspaceOps) SearchFiles(ctx context.Context, userID, workspaceID int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error) {
+	if s.searchFilesFn != nil {
+		return s.searchFilesFn(ctx, userID, workspaceID, pattern, pathFilter, maxResults)
+	}
 	return nil, nil
 }
 
@@ -238,6 +243,61 @@ func TestWorkspaceExecutor_ReadFileSuccessReturnsStructuredResult(t *testing.T) 
 	}
 	if result.Content != "# Devpad" {
 		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func TestWorkspaceExecutor_ReadFileTruncatesLargeResults(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
+		return []byte(strings.Repeat("a", maxToolTextBytes+1024)), nil
+	}})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(7, 9, "read_file", []byte(`{"path":"large.txt"}`)))
+	if result.IsError {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+	if len(result.Content) <= maxToolTextBytes {
+		t.Fatalf("expected truncation notice beyond capped content, got length %d", len(result.Content))
+	}
+	if !strings.Contains(result.Content, "Output truncated") {
+		t.Fatalf("expected truncation notice, got %q", result.Content[len(result.Content)-120:])
+	}
+	if !strings.HasPrefix(result.Content, strings.Repeat("a", maxToolTextBytes)) {
+		t.Fatalf("expected exactly %d content bytes before notice", maxToolTextBytes)
+	}
+}
+
+func TestWorkspaceExecutor_ReadFileLinesCapsLargeRanges(t *testing.T) {
+	var builder strings.Builder
+	for i := 1; i <= maxReadFileLines+25; i++ {
+		fmt.Fprintf(&builder, "line %d\n", i)
+	}
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
+		return []byte(builder.String()), nil
+	}})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(7, 9, "read_file_lines", []byte(`{"path":"main.go","start_line":1,"end_line":425}`)))
+	if result.IsError {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+	if !strings.Contains(result.Content, "400: line 400") {
+		t.Fatalf("expected capped range to include line 400, got %q", result.Content)
+	}
+	if strings.Contains(result.Content, "401: line 401") {
+		t.Fatalf("expected capped range to exclude line 401, got %q", result.Content)
+	}
+}
+
+func TestWorkspaceExecutor_SearchFilesCapsMaxResults(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{searchFilesFn: func(_ context.Context, _, _ int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error) {
+		if maxResults != maxSearchFileResults {
+			t.Fatalf("expected max_results to be capped to %d, got %d", maxSearchFileResults, maxResults)
+		}
+		return []agent.SearchResult{{File: "main.go", Line: 1, Content: "package main"}}, nil
+	}})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(7, 9, "search_files", []byte(`{"pattern":"main","max_results":500}`)))
+	if result.IsError {
+		t.Fatalf("expected success result, got %+v", result)
 	}
 }
 

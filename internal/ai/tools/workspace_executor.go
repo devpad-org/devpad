@@ -5,10 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	"github.com/devpad-org/devpad/internal/workspace"
+)
+
+const (
+	maxToolTextBytes       = 16 * 1024
+	maxReadFileLines       = 400
+	maxSearchFileResults   = 100
+	truncationNoticeFormat = "\n\n[Output truncated to %d bytes. Use read_file_lines with a narrower range or search_files for more targeted context.]"
 )
 
 // WorkspaceOps is the reduced workspace surface the AI tooling needs in Phase 1.
@@ -94,7 +102,7 @@ func (e *WorkspaceExecutor) readFile(ctx context.Context, userID, workspaceID in
 		return toolFailure("read_file", "Error: %v", err)
 	}
 
-	return toolSuccess("read_file", string(data))
+	return toolSuccess("read_file", truncateToolText(string(data), maxToolTextBytes, truncationNoticeFormat))
 }
 
 func (e *WorkspaceExecutor) writeFile(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
@@ -146,6 +154,7 @@ func (e *WorkspaceExecutor) searchFiles(ctx context.Context, userID, workspaceID
 	if value, ok := params["max_results"].(float64); ok {
 		maxResults = int(value)
 	}
+	maxResults = clamp(maxResults, 1, maxSearchFileResults)
 	results, err := e.ws.SearchFiles(ctx, userID, workspaceID, pattern, pathFilter, maxResults)
 	if err != nil {
 		return toolFailure("search_files", "Error: %v", err)
@@ -217,6 +226,13 @@ func (e *WorkspaceExecutor) readFileLines(ctx context.Context, userID, workspace
 	if startLine > len(lines) {
 		return toolFailure("read_file_lines", "Error: start_line is beyond end of file")
 	}
+	if endLine < startLine {
+		return toolFailure("read_file_lines", "Error: end_line must be greater than or equal to start_line")
+	}
+	maxEndLine := startLine + maxReadFileLines - 1
+	if endLine > maxEndLine {
+		endLine = maxEndLine
+	}
 
 	selected := lines[startLine-1 : endLine]
 	var result strings.Builder
@@ -227,7 +243,7 @@ func (e *WorkspaceExecutor) readFileLines(ctx context.Context, userID, workspace
 		}
 	}
 
-	return toolSuccess("read_file_lines", result.String())
+	return toolSuccess("read_file_lines", truncateToolText(result.String(), maxToolTextBytes, truncationNoticeFormat))
 }
 
 func marshalToolResponse(toolName string, response any) domain.ToolResultPart {
@@ -252,6 +268,18 @@ func toolFailure(toolName, format string, args ...any) domain.ToolResultPart {
 		Content: fmt.Sprintf(format, args...),
 		IsError: true,
 	}
+}
+
+func truncateToolText(content string, maxBytes int, noticeFormat string) string {
+	if maxBytes <= 0 || len(content) <= maxBytes {
+		return content
+	}
+
+	truncated := content[:maxBytes]
+	for !utf8.ValidString(truncated) && len(truncated) > 0 {
+		truncated = truncated[:len(truncated)-1]
+	}
+	return truncated + fmt.Sprintf(noticeFormat, maxBytes)
 }
 
 func cloneThinking(thinking *domain.ThinkingConfig) *domain.ThinkingConfig {
