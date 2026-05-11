@@ -121,6 +121,19 @@ export interface PlanStep {
   status: 'pending' | 'in_progress' | 'completed' | 'failed'
 }
 
+export interface ContextSize {
+  approximate: boolean
+  providerId?: string
+  model?: string
+  nextRequestTokens: number
+  totalTranscriptTokens: number
+  providerFacingTokens: number
+  inputBudgetTokens: number
+  percentageUsed: number
+  warningThresholdPercentage: number
+  warning: boolean
+}
+
 export interface StreamToolCall {
   id: string
   itemId?: string
@@ -140,6 +153,7 @@ export interface StreamEvent {
   approvalRequired?: ApprovalRequest
   approvalResolved?: ApprovalResult
   plan?: PlanStep[]
+  contextSize?: ContextSize
   done?: boolean
   error?: string
 }

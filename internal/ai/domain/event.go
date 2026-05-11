@@ -22,6 +22,7 @@ type ClientEvent struct {
 	Approval       *ApprovalRequest
 	ApprovalResult *ApprovalResult
 	Plan           []PlanStep
+	ContextSize    *ContextSize
 	Done           bool
 	ErrorMessage   string
 }
@@ -36,6 +37,7 @@ type StreamEvent struct {
 	ApprovalRequired *ApprovalRequest `json:"approvalRequired,omitempty"`
 	ApprovalResolved *ApprovalResult  `json:"approvalResolved,omitempty"`
 	Plan             []PlanStep       `json:"plan,omitempty"`
+	ContextSize      *ContextSize     `json:"contextSize,omitempty"`
 	Done             bool             `json:"done,omitempty"`
 	Error            string           `json:"error,omitempty"`
 }

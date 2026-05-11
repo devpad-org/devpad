@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult } from '@/api/ai'
+import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult, type ContextSize } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
@@ -94,6 +94,8 @@ const focusedRunError = ref<string | null>(null)
 const focusedRunLastSequence = ref(0)
 const focusedRunEventController = ref<AbortController | null>(null)
 const focusedRunOutputStarted = ref(false)
+const activeContextSize = ref<ContextSize | null>(null)
+const focusedRunContextSize = ref<ContextSize | null>(null)
 
 const currentModel = computed(() => models.value.find((model) => model.id === selectedModel.value) ?? null)
 
@@ -128,6 +130,10 @@ const visibleMessages = computed(() => (
 
 const displayStreaming = computed(() => (
   viewingFocusedRun.value ? focusedRunActive.value : streaming.value
+))
+
+const displayedContextSize = computed(() => (
+  viewingFocusedRun.value ? focusedRunContextSize.value : activeContextSize.value
 ))
 
 const canToggleThinking = computed(() => {
@@ -380,6 +386,32 @@ function applyApprovalResolved(segments: MessageSegment[], result: ApprovalResul
   })
 }
 
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1000) {
+    return `${(tokens / 1000).toFixed(1).replace(/\.0$/, '')}k`
+  }
+  return `${tokens}`
+}
+
+function contextSizeLabel(size: ContextSize): string {
+  if (size.inputBudgetTokens > 0) {
+    return `Approx. context: ${formatTokenCount(size.nextRequestTokens)} / ${formatTokenCount(size.inputBudgetTokens)} tokens`
+  }
+  return `Approx. context: ${formatTokenCount(size.nextRequestTokens)} tokens`
+}
+
+function contextSizeTitle(size: ContextSize): string {
+  const parts = [
+    `Approximate provider input for the next request: ${size.nextRequestTokens.toLocaleString()} tokens.`,
+    `Transcript before compaction: ${size.totalTranscriptTokens.toLocaleString()} tokens.`,
+    `Provider-facing after compaction: ${size.providerFacingTokens.toLocaleString()} tokens.`,
+  ]
+  if (size.inputBudgetTokens > 0) {
+    parts.push(`Budget used: ${size.percentageUsed.toFixed(1)}% of ${size.inputBudgetTokens.toLocaleString()} tokens.`)
+  }
+  return parts.join(' ')
+}
+
 function refreshRunForEvent(event: StreamEvent): void {
   if (!event.runId) return
   agentRunStore.refreshRun(event.runId).catch((err) => {
@@ -507,6 +539,7 @@ async function loadFocusedRun(runId: number | null) {
   focusedRunError.value = null
   focusedRunLastSequence.value = 0
   focusedRunOutputStarted.value = false
+  focusedRunContextSize.value = null
 
   if (runId === null) {
     focusedRunLoading.value = false
@@ -558,6 +591,10 @@ async function loadFocusedRun(runId: number | null) {
 }
 
 function applyFocusedRunEvent(event: StreamEvent) {
+  if (event.contextSize) {
+    focusedRunContextSize.value = event.contextSize
+  }
+
   if (!hasDisplayableRunEventContent(event)) {
     return
   }
@@ -767,6 +804,7 @@ async function sendMessage() {
   streaming.value = true
   const controller = new AbortController()
   abortController.value = controller
+  activeContextSize.value = null
 
   // Build the API payload from rawMessages (excludes the empty assistant placeholder).
   const chatMessages: ChatMessage[] = rawMessages.value.slice()
@@ -802,6 +840,10 @@ async function sendMessage() {
     await aiApi.streamAgentRunEvents(
       created.run.id,
       (event: StreamEvent) => {
+        if (event.contextSize) {
+          activeContextSize.value = event.contextSize
+        }
+
         if (event.error) {
           streamFailed = true
           messages.value[assistantIdx].content += `\n\nError: ${event.error}`
@@ -983,6 +1025,8 @@ function newChat() {
   planExpanded.value = false
   activeAgentRunId.value = null
   continuationParentRunId.value = null
+  activeContextSize.value = null
+  focusedRunContextSize.value = null
   resetInputHeight()
   activeConversationId.value = null
   conversationStore.setActive(null)
@@ -1145,6 +1189,14 @@ function scrollToBottom() {
         <span class="focused-run-status" :class="{ active: focusedRunActive }">
           <span class="focused-run-dot" />
           {{ focusedRunStatus }}
+        </span>
+        <span
+          v-if="displayedContextSize"
+          class="context-size-badge"
+          :class="{ warning: displayedContextSize.warning }"
+          :title="contextSizeTitle(displayedContextSize)"
+        >
+          {{ contextSizeLabel(displayedContextSize) }}
         </span>
         <button
           class="continue-run-btn"
@@ -1399,6 +1451,14 @@ function scrollToBottom() {
             <select v-model="selectedModel" class="model-selector">
               <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
             </select>
+            <span
+              v-if="displayedContextSize"
+              class="context-size-badge"
+              :class="{ warning: displayedContextSize.warning }"
+              :title="contextSizeTitle(displayedContextSize)"
+            >
+              {{ contextSizeLabel(displayedContextSize) }}
+            </span>
             <button
               v-if="canToggleThinking"
               type="button"
@@ -1514,6 +1574,27 @@ function scrollToBottom() {
   background: var(--bg-raised);
   color: var(--text-tertiary);
   border: 0.5px solid var(--border-subtle);
+}
+
+.context-size-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 23px;
+  padding: 1px 7px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.context-size-badge.warning {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--accent-amber);
 }
 
 .new-chat-btn,

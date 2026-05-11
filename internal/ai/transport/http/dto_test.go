@@ -186,8 +186,20 @@ func TestFromClientEvent(t *testing.T) {
 		Approval:       &domain.ApprovalRequest{ID: "approval-1", Command: "sudo ls"},
 		ApprovalResult: &domain.ApprovalResult{ID: "approval-1", Command: "sudo ls", Status: "approved"},
 		Plan:           []domain.PlanStep{{Title: "Inspect repo", Status: "in_progress"}},
-		Done:           true,
-		ErrorMessage:   "",
+		ContextSize: &domain.ContextSize{
+			Approximate:                true,
+			ProviderID:                 "openai",
+			Model:                      "gpt-5.5",
+			NextRequestTokens:          18400,
+			TotalTranscriptTokens:      18400,
+			ProviderFacingTokens:       18400,
+			InputBudgetTokens:          25000,
+			PercentageUsed:             73.6,
+			WarningThresholdPercentage: 80,
+			Warning:                    false,
+		},
+		Done:         true,
+		ErrorMessage: "",
 	}
 
 	dto := FromClientEvent(event)
@@ -211,6 +223,9 @@ func TestFromClientEvent(t *testing.T) {
 	}
 	if len(dto.Plan) != 1 || dto.Plan[0].Title != "Inspect repo" {
 		t.Fatalf("unexpected plan: %+v", dto.Plan)
+	}
+	if dto.ContextSize == nil || dto.ContextSize.NextRequestTokens != 18400 || dto.ContextSize.ProviderID != "openai" {
+		t.Fatalf("unexpected context telemetry: %+v", dto.ContextSize)
 	}
 }
 

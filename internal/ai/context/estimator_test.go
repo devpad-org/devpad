@@ -123,6 +123,48 @@ func TestEstimateChatRequest_UsesResolvedModelProvider(t *testing.T) {
 	assertPositive(t, "total tokens", estimate.TotalTokens)
 }
 
+func TestBudgetFor_ReturnsProviderModelDefaults(t *testing.T) {
+	tests := []struct {
+		name       string
+		providerID string
+		modelID    string
+		wantBudget int
+	}{
+		{name: "anthropic opus long context", providerID: "anthropic", modelID: "claude-opus-4-7", wantBudget: 1000000},
+		{name: "anthropic sonnet long context", providerID: "anthropic", modelID: "claude-sonnet-4-6", wantBudget: 1000000},
+		{name: "anthropic haiku context", providerID: "anthropic", modelID: "claude-haiku-4-5", wantBudget: 200000},
+		{name: "openai gpt 5.4 context", providerID: "openai", modelID: "gpt-5.4", wantBudget: 1050000},
+		{name: "openai gpt 5.5 context", providerID: "openai", modelID: "gpt-5.5", wantBudget: 1050000},
+		{name: "mistral devstral context", providerID: "mistral", modelID: "devstral-medium-latest", wantBudget: 256000},
+		{name: "mistral medium context", providerID: "mistral", modelID: "mistral-medium-3-5", wantBudget: 256000},
+		{name: "mistral large context", providerID: "mistral", modelID: "mistral-large-latest", wantBudget: 256000},
+		{name: "moonshot kimi context", providerID: "moonshot", modelID: "kimi-k2.6", wantBudget: 256000},
+		{name: "minimax m2.7 context", providerID: "minimax", modelID: "MiniMax-M2.7", wantBudget: 204800},
+		{name: "unknown conservative fallback", providerID: "unknown", modelID: "custom", wantBudget: 25000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			budget := BudgetFor(tt.providerID, tt.modelID)
+			if budget.InputTokens != tt.wantBudget {
+				t.Fatalf("InputTokens = %d, want %d", budget.InputTokens, tt.wantBudget)
+			}
+			if budget.WarningThresholdPercentage != 80 {
+				t.Fatalf("WarningThresholdPercentage = %d, want 80", budget.WarningThresholdPercentage)
+			}
+		})
+	}
+}
+
+func TestPercentageUsed(t *testing.T) {
+	if got := PercentageUsed(200, 1000); got != 20 {
+		t.Fatalf("PercentageUsed() = %v, want 20", got)
+	}
+	if got := PercentageUsed(200, 0); got != 0 {
+		t.Fatalf("PercentageUsed() with zero budget = %v, want 0", got)
+	}
+}
+
 func TestEstimator_ToolResultContentDrivesBroadRunGrowth(t *testing.T) {
 	baseTurns := []domain.Turn{
 		domain.NewTextTurn(domain.RoleSystem, "You are a coding agent."),

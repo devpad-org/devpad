@@ -99,15 +99,72 @@ func collectEvents(t *testing.T, stream <-chan domain.ClientEvent) []domain.Clie
 func nextEvent(t *testing.T, stream <-chan domain.ClientEvent) domain.ClientEvent {
 	t.Helper()
 
-	select {
-	case event, ok := <-stream:
-		if !ok {
-			t.Fatal("stream closed unexpectedly")
+	for {
+		select {
+		case event, ok := <-stream:
+			if !ok {
+				t.Fatal("stream closed unexpectedly")
+			}
+			if event.ContextSize != nil {
+				continue
+			}
+			return event
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for stream event")
+			return domain.ClientEvent{}
 		}
-		return event
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for stream event")
-		return domain.ClientEvent{}
+	}
+}
+
+func TestAgentChatOrchestrator_EmitsContextTelemetryBeforeProviderRequest(t *testing.T) {
+	orch := &agentChatOrchestrator{
+		service: &mockChatService{
+			findModelFn: func(modelID string) (domain.Model, error) {
+				return domain.Model{ID: modelID, ProviderID: "anthropic"}, nil
+			},
+			chatStreamFn: func(_ context.Context, _ domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+				ch := make(chan domain.ProviderEvent, 1)
+				ch <- domain.ProviderEvent{TextDelta: "done"}
+				close(ch)
+				return ch, nil
+			},
+		},
+		toolCatalog:       fakeToolCatalog{},
+		toolExecutor:      &mockToolExecutor{},
+		approvals:         &mockApprovalBroker{},
+		maxToolIterations: defaultMaxToolIterations,
+		approvalTimeout:   defaultApprovalTimeout,
+	}
+
+	stream, err := orch.Stream(context.Background(), AgentChatRequest{
+		UserID:      1,
+		WorkspaceID: 1,
+		Model:       "claude-haiku-4-5",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, strings.Repeat("x", 120))},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	events := collectEvents(t, stream)
+	if len(events) == 0 || events[0].ContextSize == nil {
+		t.Fatalf("expected first event to contain context telemetry, got %+v", events)
+	}
+	telemetry := events[0].ContextSize
+	if !telemetry.Approximate {
+		t.Fatal("expected telemetry to be marked approximate")
+	}
+	if telemetry.ProviderID != "anthropic" || telemetry.Model != "claude-haiku-4-5" {
+		t.Fatalf("unexpected provider/model telemetry: %+v", telemetry)
+	}
+	if telemetry.NextRequestTokens <= 0 || telemetry.TotalTranscriptTokens != telemetry.NextRequestTokens {
+		t.Fatalf("unexpected token estimates: %+v", telemetry)
+	}
+	if telemetry.ProviderFacingTokens != telemetry.NextRequestTokens {
+		t.Fatalf("expected uncompacted provider-facing tokens to match next request estimate: %+v", telemetry)
+	}
+	if telemetry.InputBudgetTokens != 200000 || telemetry.PercentageUsed <= 0 {
+		t.Fatalf("unexpected budget telemetry: %+v", telemetry)
 	}
 }
 

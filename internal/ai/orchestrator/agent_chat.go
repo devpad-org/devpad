@@ -54,12 +54,12 @@ func (o *agentChatOrchestrator) Stream(ctx context.Context, req AgentChatRequest
 	}
 
 	out := make(chan domain.ClientEvent)
-	go o.run(ctx, req, out)
+	go o.run(ctx, req, model, out)
 
 	return out, nil
 }
 
-func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, out chan<- domain.ClientEvent) {
+func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, model domain.Model, out chan<- domain.ClientEvent) {
 	defer close(out)
 
 	systemPrompt := o.toolCatalog.SystemPrompt()
@@ -82,12 +82,17 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, o
 			return
 		}
 
-		stream, err := o.service.ChatStream(ctx, domain.ChatRequest{
+		chatReq := domain.ChatRequest{
 			Model:    req.Model,
 			Turns:    turns,
 			Thinking: req.Thinking,
 			Tools:    toolDefinitions,
-		})
+		}
+		if !emitEvent(ctx, out, domain.ClientEvent{ContextSize: contextSizeForRequest(model, chatReq)}) {
+			return
+		}
+
+		stream, err := o.service.ChatStream(ctx, chatReq)
 		if err != nil {
 			if !emitEvent(ctx, out, domain.ClientEvent{ErrorMessage: err.Error()}) {
 				return

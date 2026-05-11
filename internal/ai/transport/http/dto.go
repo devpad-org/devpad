@@ -86,6 +86,7 @@ type StreamEventDTO struct {
 	ApprovalRequired *ApprovalRequestDTO  `json:"approvalRequired,omitempty"`
 	ApprovalResolved *ApprovalResultDTO   `json:"approvalResolved,omitempty"`
 	Plan             []PlanStepDTO        `json:"plan,omitempty"`
+	ContextSize      *ContextSizeDTO      `json:"contextSize,omitempty"`
 	Done             bool                 `json:"done,omitempty"`
 	Error            string               `json:"error,omitempty"`
 }
@@ -142,6 +143,20 @@ type ApprovalResultDTO struct {
 type PlanStepDTO struct {
 	Title  string `json:"title"`
 	Status string `json:"status"`
+}
+
+// ContextSizeDTO is numeric-only context pressure telemetry for the UI.
+type ContextSizeDTO struct {
+	Approximate                bool    `json:"approximate"`
+	ProviderID                 string  `json:"providerId,omitempty"`
+	Model                      string  `json:"model,omitempty"`
+	NextRequestTokens          int     `json:"nextRequestTokens"`
+	TotalTranscriptTokens      int     `json:"totalTranscriptTokens"`
+	ProviderFacingTokens       int     `json:"providerFacingTokens"`
+	InputBudgetTokens          int     `json:"inputBudgetTokens"`
+	PercentageUsed             float64 `json:"percentageUsed"`
+	WarningThresholdPercentage int     `json:"warningThresholdPercentage"`
+	Warning                    bool    `json:"warning"`
 }
 
 // ToDomainThinking maps a transport thinking config into the domain shape.
@@ -314,6 +329,20 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 		dto.Plan = make([]PlanStepDTO, 0, len(event.Plan))
 		for _, step := range event.Plan {
 			dto.Plan = append(dto.Plan, PlanStepDTO{Title: step.Title, Status: step.Status})
+		}
+	}
+	if event.ContextSize != nil {
+		dto.ContextSize = &ContextSizeDTO{
+			Approximate:                event.ContextSize.Approximate,
+			ProviderID:                 event.ContextSize.ProviderID,
+			Model:                      event.ContextSize.Model,
+			NextRequestTokens:          event.ContextSize.NextRequestTokens,
+			TotalTranscriptTokens:      event.ContextSize.TotalTranscriptTokens,
+			ProviderFacingTokens:       event.ContextSize.ProviderFacingTokens,
+			InputBudgetTokens:          event.ContextSize.InputBudgetTokens,
+			PercentageUsed:             event.ContextSize.PercentageUsed,
+			WarningThresholdPercentage: event.ContextSize.WarningThresholdPercentage,
+			Warning:                    event.ContextSize.Warning,
 		}
 	}
 
