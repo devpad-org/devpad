@@ -68,6 +68,7 @@ interface DisplayMessage {
 const conversationStore = useConversationStore()
 const agentRunStore = useAgentRunStore()
 const aiAgentStore = useAiAgentStore()
+const DEFAULT_AI_MODEL_ID = 'mistral-medium-3-5'
 const activeConversationId = ref<number | null>(null)
 
 const messages = ref<DisplayMessage[]>([])
@@ -164,6 +165,10 @@ function defaultThinkingEffort(model: AIModel): string {
   return model.thinking.defaultEffort ?? model.thinking.supportedEfforts?.[0] ?? ''
 }
 
+function defaultAIModel(availableModels: AIModel[]): AIModel | undefined {
+  return availableModels.find((model) => model.id === DEFAULT_AI_MODEL_ID) ?? availableModels[0]
+}
+
 const thinkingEffort = computed<string>({
   get() {
     const model = currentModel.value
@@ -253,8 +258,9 @@ onMounted(async () => {
   try {
     const res = await aiApi.listModels()
     models.value = res.models.filter((m) => m.configured)
-    if (models.value.length > 0) {
-      selectedModel.value = models.value[0].id
+    const defaultModel = defaultAIModel(models.value)
+    if (defaultModel) {
+      selectedModel.value = defaultModel.id
     }
   } catch {
     // models will remain empty
