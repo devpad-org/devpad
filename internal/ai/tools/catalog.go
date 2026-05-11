@@ -38,6 +38,14 @@ func AgentTools() []domain.ToolDefinition {
 		{
 			Type: "function",
 			Function: domain.ToolFunction{
+				Name:        "summarize_file",
+				Description: "Generate a concise AI-oriented summary of a repository file without returning the full contents. Use this to understand large files before targeted reads.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative path from the project root, e.g. src/main.ts"},"focus":{"type":"string","description":"Optional focus for the summary, such as public API, side effects, tests, or risks."}},"required":["path"]}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: domain.ToolFunction{
 				Name:        "write_file",
 				Description: "Create or overwrite a file in the project. Parent directories are created automatically. Always write the complete file content.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative path from the project root"},"content":{"type":"string","description":"The complete file content to write"}},"required":["path","content"]}`),
@@ -163,10 +171,11 @@ const AgentSystemPrompt = `You are an expert AI coding assistant integrated into
 
 When helping the user:
 1. Read files before modifying them to understand context.
-2. Use edit_file for targeted changes instead of write_file for existing files.
-3. Use search_files to find relevant code across the codebase.
-4. Use list_files to understand project structure.
-5. Use run_command for finite commands such as installing packages, running tests, or building. Use start_command for long-running dev servers or watchers such as npm start, then inspect logs with read_command_output and stop the process with stop_command when it is no longer needed. You have sudo access for elevated privileges (e.g. sudo apt install, sudo systemctl). Use sudo when a command requires root permissions. The environment is a Debian 13 container.
+2. Use summarize_file to understand large or unfamiliar files before deciding which sections to inspect with read_file_lines.
+3. Use edit_file for targeted changes instead of write_file for existing files.
+4. Use search_files to find relevant code across the codebase.
+5. Use list_files to understand project structure.
+6. Use run_command for finite commands such as installing packages, running tests, or building. Use start_command for long-running dev servers or watchers such as npm start, then inspect logs with read_command_output and stop the process with stop_command when it is no longer needed. You have sudo access for elevated privileges (e.g. sudo apt install, sudo systemctl). Use sudo when a command requires root permissions. The environment is a Debian 13 container.
 
 Plan management:
 - Only use update_plan for complex tasks that involve 3 or more distinct steps (e.g. implementing a feature across multiple files, multi-stage refactors, or tasks requiring research then implementation).

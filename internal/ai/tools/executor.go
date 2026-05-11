@@ -19,6 +19,20 @@ type ExecutionRequest struct {
 	Arguments      json.RawMessage
 }
 
+// FileSummaryRequest contains the workspace file content prepared for summarization.
+type FileSummaryRequest struct {
+	UserID      int64
+	WorkspaceID int64
+	Path        string
+	Focus       string
+	Content     string
+}
+
+// FileSummarizer produces concise AI-oriented repository file summaries.
+type FileSummarizer interface {
+	SummarizeFile(ctx context.Context, req FileSummaryRequest) (string, error)
+}
+
 // AgentLister exposes the agents a user can assign to child runs.
 type AgentLister interface {
 	ListAgents(ctx context.Context, userID, workspaceID int64) ([]domain.Agent, error)

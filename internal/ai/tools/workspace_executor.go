@@ -13,13 +13,16 @@ import (
 )
 
 const (
-	maxToolTextBytes     = 16 * 1024
-	maxReadFileLines     = 400
-	maxSearchFileResults = 100
+	maxToolTextBytes      = 16 * 1024
+	maxSummaryInputBytes  = 128 * 1024
+	maxSummaryOutputBytes = 4 * 1024
+	maxReadFileLines      = 400
+	maxSearchFileResults  = 100
 	// Keep recursive listings below the raw agent API caps to protect model context.
 	maxListFilesDepth      = 6
 	maxListFilesEntries    = 1000
 	truncationNoticeFormat = "\n\n[Output truncated to %d bytes. Use read_file_lines with a narrower range or search_files for more targeted context.]"
+	summaryInputNotice     = "\n\n[File content truncated to %d bytes before summarization.]"
 )
 
 // WorkspaceOps is the reduced workspace surface the AI tooling needs in Phase 1.
@@ -34,6 +37,7 @@ type WorkspaceExecutor struct {
 	ws          WorkspaceOps
 	childRunner ChildAgentRunner
 	agentLister AgentLister
+	summarizer  FileSummarizer
 }
 
 // NewWorkspaceExecutor creates an Executor backed by workspace operations.
@@ -51,6 +55,11 @@ func (e *WorkspaceExecutor) SetAgentLister(lister AgentLister) {
 	e.agentLister = lister
 }
 
+// SetFileSummarizer wires the AI summarizer used by summarize_file.
+func (e *WorkspaceExecutor) SetFileSummarizer(summarizer FileSummarizer) {
+	e.summarizer = summarizer
+}
+
 func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionRequest) domain.ToolResultPart {
 	var params map[string]any
 	if err := json.Unmarshal(req.Arguments, &params); err != nil {
@@ -60,6 +69,8 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 	switch req.ToolName {
 	case "read_file":
 		return e.readFile(ctx, req.UserID, req.WorkspaceID, params)
+	case "summarize_file":
+		return e.summarizeFile(ctx, req.UserID, req.WorkspaceID, params)
 	case "write_file":
 		return e.writeFile(ctx, req.UserID, req.WorkspaceID, params)
 	case "list_files":

@@ -32,6 +32,10 @@ type stubAgentLister struct {
 	listFn func(ctx context.Context, userID, workspaceID int64) ([]domain.Agent, error)
 }
 
+type stubFileSummarizer struct {
+	summarizeFn func(ctx context.Context, req FileSummaryRequest) (string, error)
+}
+
 func (s stubChildAgentRunner) StartChildAgentRun(ctx context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error) {
 	if s.startFn != nil {
 		return s.startFn(ctx, req)
@@ -59,6 +63,13 @@ func (s stubAgentLister) ListAgents(ctx context.Context, userID, workspaceID int
 		return s.listFn(ctx, userID, workspaceID)
 	}
 	return []domain.Agent{domain.DefaultAgent()}, nil
+}
+
+func (s stubFileSummarizer) SummarizeFile(ctx context.Context, req FileSummaryRequest) (string, error) {
+	if s.summarizeFn != nil {
+		return s.summarizeFn(ctx, req)
+	}
+	return "summary", nil
 }
 
 func (s *stubWorkspaceOps) ReadFile(ctx context.Context, userID, workspaceID int64, path string) ([]byte, error) {
@@ -312,6 +323,140 @@ func TestWorkspaceExecutor_ReadFileTruncatesLargeResults(t *testing.T) {
 	}
 }
 
+func TestWorkspaceExecutor_SummarizeFileRequiresPath(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetFileSummarizer(stubFileSummarizer{})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(1, 2, "summarize_file", []byte(`{}`)))
+	if !result.IsError {
+		t.Fatalf("expected missing path error, got %+v", result)
+	}
+	if !strings.Contains(result.Content, "path is required") {
+		t.Fatalf("expected path error, got %q", result.Content)
+	}
+}
+
+func TestWorkspaceExecutor_SummarizeFileRequiresConfiguredSummarizer(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(1, 2, "summarize_file", []byte(`{"path":"main.go"}`)))
+	if !result.IsError {
+		t.Fatalf("expected missing summarizer error, got %+v", result)
+	}
+	if !strings.Contains(result.Content, "not configured") {
+		t.Fatalf("expected configuration error, got %q", result.Content)
+	}
+}
+
+func TestWorkspaceExecutor_SummarizeFileReadsThroughWorkspaceAndReturnsSummary(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(_ context.Context, userID, workspaceID int64, path string) ([]byte, error) {
+		if userID != 7 || workspaceID != 9 || path != "internal/app.go" {
+			t.Fatalf("unexpected read scope: user=%d workspace=%d path=%q", userID, workspaceID, path)
+		}
+		return []byte("package internal\n\nfunc Start() {}"), nil
+	}})
+	executor.SetFileSummarizer(stubFileSummarizer{summarizeFn: func(_ context.Context, req FileSummaryRequest) (string, error) {
+		if req.UserID != 7 || req.WorkspaceID != 9 || req.Path != "internal/app.go" {
+			t.Fatalf("unexpected summary scope: %+v", req)
+		}
+		if req.Focus != "public API" {
+			t.Fatalf("expected focus to pass through, got %q", req.Focus)
+		}
+		if req.Content != "1: package internal\n2: \n3: func Start() {}" {
+			t.Fatalf("unexpected summary content: %q", req.Content)
+		}
+		return "Defines the app startup entrypoint.", nil
+	}})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(7, 9, "summarize_file", []byte(`{"path":" internal/app.go ","focus":" public API "}`)))
+	if result.IsError {
+		t.Fatalf("expected summary success, got %+v", result)
+	}
+	if result.Name != "summarize_file" || result.Content != "Defines the app startup entrypoint." {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestWorkspaceExecutor_SummarizeFileReportsReadErrors(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
+		return nil, errors.New("file unavailable")
+	}})
+	executor.SetFileSummarizer(stubFileSummarizer{})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(1, 2, "summarize_file", []byte(`{"path":"main.go"}`)))
+	if !result.IsError {
+		t.Fatalf("expected read error, got %+v", result)
+	}
+	if !strings.Contains(result.Content, "file unavailable") {
+		t.Fatalf("expected read error content, got %q", result.Content)
+	}
+}
+
+func TestWorkspaceExecutor_SummarizeFileReportsSummarizerErrors(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
+		return []byte("package main"), nil
+	}})
+	executor.SetFileSummarizer(stubFileSummarizer{summarizeFn: func(context.Context, FileSummaryRequest) (string, error) {
+		return "", errors.New("provider missing api key")
+	}})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(1, 2, "summarize_file", []byte(`{"path":"main.go"}`)))
+	if !result.IsError {
+		t.Fatalf("expected summarizer error, got %+v", result)
+	}
+	if !strings.Contains(result.Content, "provider missing api key") {
+		t.Fatalf("expected summarizer error content, got %q", result.Content)
+	}
+}
+
+func TestWorkspaceExecutor_SummarizeFileCapsModelInput(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
+		return []byte(strings.Repeat("a", maxSummaryInputBytes+1024)), nil
+	}})
+	executor.SetFileSummarizer(stubFileSummarizer{summarizeFn: func(_ context.Context, req FileSummaryRequest) (string, error) {
+		if len(req.Content) <= maxSummaryInputBytes {
+			t.Fatalf("expected truncation notice beyond capped content, got length %d", len(req.Content))
+		}
+		if !strings.Contains(req.Content, "File content truncated") {
+			t.Fatalf("expected truncation notice, got suffix %q", req.Content[len(req.Content)-120:])
+		}
+		return "Large generated file.", nil
+	}})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(1, 2, "summarize_file", []byte(`{"path":"large.go"}`)))
+	if result.IsError {
+		t.Fatalf("expected success, got %+v", result)
+	}
+}
+
+func TestWorkspaceExecutor_SummarizeFileCapsSummaryOutput(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
+		return []byte("package main"), nil
+	}})
+	executor.SetFileSummarizer(stubFileSummarizer{summarizeFn: func(context.Context, FileSummaryRequest) (string, error) {
+		return strings.Repeat("s", maxSummaryOutputBytes+1024), nil
+	}})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(1, 2, "summarize_file", []byte(`{"path":"main.go"}`)))
+	if result.IsError {
+		t.Fatalf("expected success, got %+v", result)
+	}
+	if !strings.Contains(result.Content, "Output truncated") {
+		t.Fatalf("expected summary truncation notice, got suffix %q", result.Content[len(result.Content)-120:])
+	}
+	if !strings.HasPrefix(result.Content, strings.Repeat("s", maxSummaryOutputBytes)) {
+		t.Fatalf("expected exactly %d summary bytes before notice", maxSummaryOutputBytes)
+	}
+}
+
+func TestLineNumberedContent(t *testing.T) {
+	got := lineNumberedContent("first\n\nthird")
+	want := "1: first\n2: \n3: third"
+	if got != want {
+		t.Fatalf("lineNumberedContent() = %q, want %q", got, want)
+	}
+}
+
 func TestWorkspaceExecutor_ReadFileLinesCapsLargeRanges(t *testing.T) {
 	var builder strings.Builder
 	for i := 1; i <= maxReadFileLines+25; i++ {
@@ -331,6 +476,32 @@ func TestWorkspaceExecutor_ReadFileLinesCapsLargeRanges(t *testing.T) {
 	if strings.Contains(result.Content, "401: line 401") {
 		t.Fatalf("expected capped range to exclude line 401, got %q", result.Content)
 	}
+}
+
+func TestAgentToolsIncludesSummarizeFile(t *testing.T) {
+	definitions := AgentTools()
+	for _, definition := range definitions {
+		if definition.Function.Name != "summarize_file" {
+			continue
+		}
+		var schema struct {
+			Required   []string       `json:"required"`
+			Properties map[string]any `json:"properties"`
+		}
+		if err := json.Unmarshal(definition.Function.Parameters, &schema); err != nil {
+			t.Fatalf("decoding summarize_file schema: %v", err)
+		}
+		if _, ok := schema.Properties["path"]; !ok {
+			t.Fatalf("expected path property in schema: %+v", schema.Properties)
+		}
+		for _, required := range schema.Required {
+			if required == "path" {
+				return
+			}
+		}
+		t.Fatalf("expected path to be required, got %+v", schema.Required)
+	}
+	t.Fatal("summarize_file tool definition not found")
 }
 
 func TestWorkspaceExecutor_SearchFilesCapsMaxResults(t *testing.T) {
