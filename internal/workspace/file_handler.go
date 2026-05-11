@@ -2,8 +2,11 @@ package workspace
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 
+	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/auth"
 )
 
@@ -21,13 +24,57 @@ func (h *Handler) HandleListFiles(w http.ResponseWriter, r *http.Request) {
 		path = "/workspace"
 	}
 
-	entries, err := h.service.ListFiles(r.Context(), user.ID, id, path)
+	opts, err := parseListFilesOptions(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	list, err := h.service.ListFiles(r.Context(), user.ID, id, path, opts)
 	if err != nil {
 		handleServiceError(w, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
+	writeJSON(w, http.StatusOK, list)
+}
+
+func parseListFilesOptions(r *http.Request) (agent.ListFilesOptions, error) {
+	query := r.URL.Query()
+	var opts agent.ListFilesOptions
+
+	if value := query.Get("recursive"); value != "" {
+		recursive, err := strconv.ParseBool(value)
+		if err != nil {
+			return opts, fmt.Errorf("recursive must be a boolean")
+		}
+		opts.Recursive = recursive
+	}
+
+	maxDepth, err := parsePositiveQueryInt(query.Get("max_depth"), "max_depth")
+	if err != nil {
+		return opts, err
+	}
+	opts.MaxDepth = maxDepth
+
+	maxEntries, err := parsePositiveQueryInt(query.Get("max_entries"), "max_entries")
+	if err != nil {
+		return opts, err
+	}
+	opts.MaxEntries = maxEntries
+
+	return opts, nil
+}
+
+func parsePositiveQueryInt(value, name string) (int, error) {
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return parsed, nil
 }
 
 // HandleReadFile reads a file from the workspace.

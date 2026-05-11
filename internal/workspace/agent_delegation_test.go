@@ -111,6 +111,53 @@ func TestFileHandlerListFilesDefaultsToWorkspacePath(t *testing.T) {
 	}
 }
 
+func TestFileHandlerListFilesForwardsRecursiveOptions(t *testing.T) {
+	svc, ws := setupAgentBackedWorkspace(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/files" {
+			t.Fatalf("unexpected agent path %q", r.URL.Path)
+		}
+		query := r.URL.Query()
+		if got := query.Get("path"); got != "src" {
+			t.Fatalf("expected path src, got %q", got)
+		}
+		if got := query.Get("recursive"); got != "true" {
+			t.Fatalf("expected recursive=true, got %q", got)
+		}
+		if got := query.Get("max_depth"); got != "4" {
+			t.Fatalf("expected max_depth=4, got %q", got)
+		}
+		if got := query.Get("max_entries"); got != "50" {
+			t.Fatalf("expected max_entries=50, got %q", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(agent.FileList{
+			Entries:   []agent.FileEntry{{Name: "main.go", Path: "/workspace/src/main.go", Type: "file"}},
+			Truncated: true,
+		})
+	})
+
+	handler := NewHandler(svc, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/1/files?path=src&recursive=true&max_depth=4&max_entries=50", nil)
+	req.SetPathValue("id", strconv.FormatInt(ws.ID, 10))
+	req = authedRequest(req, testUser(1))
+	rec := httptest.NewRecorder()
+
+	handler.HandleListFiles(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp agent.FileList
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if !resp.Truncated || len(resp.Entries) != 1 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
 func TestGitActionDelegatesAgentRequest(t *testing.T) {
 	var wantToken string
 	svc, ws := setupAgentBackedWorkspace(t, func(w http.ResponseWriter, r *http.Request) {

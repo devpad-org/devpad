@@ -47,8 +47,8 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "list_files",
-				Description: "List files and directories at a given path in the project. Returns names, sizes, and whether each entry is a directory.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative directory path from the project root. Use empty string or / for root."}},"required":["path"]}`),
+				Description: "List files and directories at a given path in the project. Recursive listing is opt-in and bounded; common large directories are not expanded.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative directory path from the project root. Use empty string or / for root."},"recursive":{"type":"boolean","description":"When true, list descendants recursively. Defaults to false."},"max_depth":{"type":"integer","description":"Maximum recursive depth from the requested path. Defaults server-side and is capped."},"max_entries":{"type":"integer","description":"Maximum entries to return. Defaults server-side and is capped."}},"required":["path"]}`),
 			},
 		},
 		{

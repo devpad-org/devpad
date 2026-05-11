@@ -6,12 +6,12 @@ import (
 	"github.com/devpad-org/devpad/internal/agent"
 )
 
-func (s *service) ListFiles(ctx context.Context, userID, workspaceID int64, path string) ([]agent.FileEntry, error) {
+func (s *service) ListFiles(ctx context.Context, userID, workspaceID int64, path string, opts agent.ListFilesOptions) (*agent.FileList, error) {
 	c, err := s.getAgent(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	return c.ListFiles(ctx, path)
+	return c.ListFiles(ctx, path, opts)
 }
 
 func (s *service) ReadFile(ctx context.Context, userID, workspaceID int64, path string) ([]byte, error) {

@@ -46,6 +46,13 @@ interface WorkspaceListResponse {
 
 interface FileListResponse {
   entries: FileEntry[]
+  truncated?: boolean
+}
+
+interface ListFilesOptions {
+  recursive?: boolean
+  maxDepth?: number
+  maxEntries?: number
 }
 
 export const workspaceApi = {
@@ -77,9 +84,20 @@ export const workspaceApi = {
     return apiClient.post<WorkspaceResponse>(`/api/workspaces/${id}/stop`, {})
   },
 
-  listFiles(id: number, path: string): Promise<FileListResponse> {
+  listFiles(id: number, path: string, options: ListFilesOptions = {}): Promise<FileListResponse> {
+    const params = new URLSearchParams({ path })
+    if (options.recursive) {
+      params.set('recursive', 'true')
+    }
+    if (options.maxDepth !== undefined) {
+      params.set('max_depth', String(options.maxDepth))
+    }
+    if (options.maxEntries !== undefined) {
+      params.set('max_entries', String(options.maxEntries))
+    }
+
     return apiClient.get<FileListResponse>(
-      `/api/workspaces/${id}/files?path=${encodeURIComponent(path)}`
+      `/api/workspaces/${id}/files?${params.toString()}`
     )
   },
 

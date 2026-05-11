@@ -29,7 +29,7 @@ type AdminService interface {
 
 // FileContentService defines workspace file content operations.
 type FileContentService interface {
-	ListFiles(ctx context.Context, userID, workspaceID int64, path string) ([]agent.FileEntry, error)
+	ListFiles(ctx context.Context, userID, workspaceID int64, path string, opts agent.ListFilesOptions) (*agent.FileList, error)
 	ReadFile(ctx context.Context, userID, workspaceID int64, path string) ([]byte, error)
 	WriteFile(ctx context.Context, userID, workspaceID int64, path string, content []byte) error
 	DeleteFile(ctx context.Context, userID, workspaceID int64, path string) error

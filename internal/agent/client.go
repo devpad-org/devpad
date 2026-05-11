@@ -24,6 +24,19 @@ type FileEntry struct {
 	ModTime string `json:"modTime"`
 }
 
+// ListFilesOptions controls how directory listings are produced.
+type ListFilesOptions struct {
+	Recursive  bool
+	MaxDepth   int
+	MaxEntries int
+}
+
+// FileList is the response returned by the workspace agent file listing API.
+type FileList struct {
+	Entries   []FileEntry `json:"entries"`
+	Truncated bool        `json:"truncated,omitempty"`
+}
+
 // Client communicates with the devpad-agent running inside a workspace container.
 type Client struct {
 	baseURL string
@@ -137,8 +150,20 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 }
 
 // ListFiles lists the contents of a directory inside the workspace.
-func (c *Client) ListFiles(ctx context.Context, path string) ([]FileEntry, error) {
-	u := fmt.Sprintf("%s/api/files?path=%s", c.baseURL, url.QueryEscape(path))
+func (c *Client) ListFiles(ctx context.Context, path string, opts ListFilesOptions) (*FileList, error) {
+	values := url.Values{}
+	values.Set("path", path)
+	if opts.Recursive {
+		values.Set("recursive", "true")
+	}
+	if opts.MaxDepth > 0 {
+		values.Set("max_depth", fmt.Sprintf("%d", opts.MaxDepth))
+	}
+	if opts.MaxEntries > 0 {
+		values.Set("max_entries", fmt.Sprintf("%d", opts.MaxEntries))
+	}
+
+	u := fmt.Sprintf("%s/api/files?%s", c.baseURL, values.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -154,13 +179,11 @@ func (c *Client) ListFiles(ctx context.Context, path string) ([]FileEntry, error
 		return nil, parseError(resp)
 	}
 
-	var result struct {
-		Entries []FileEntry `json:"entries"`
-	}
+	var result FileList
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
-	return result.Entries, nil
+	return &result, nil
 }
 
 // ReadFile reads the contents of a file inside the workspace.

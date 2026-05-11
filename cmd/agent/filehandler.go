@@ -10,14 +10,6 @@ import (
 	"strings"
 )
 
-type fileEntry struct {
-	Name    string `json:"name"`
-	Path    string `json:"path"`
-	Type    string `json:"type"`
-	Size    int64  `json:"size"`
-	ModTime string `json:"modTime"`
-}
-
 // validatePath ensures the requested path is under the workspace root,
 // preventing path traversal attacks (including via symlinks).
 func validatePath(p string) (string, error) {
@@ -67,7 +59,13 @@ func handleListFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entries, err := os.ReadDir(dirPath)
+	opts, err := parseListFilesOptions(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	list, err := listFiles(dirPath, opts)
 	if err != nil {
 		if os.IsNotExist(err) {
 			writeErr(w, http.StatusNotFound, "directory not found")
@@ -77,26 +75,7 @@ func handleListFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	files := make([]fileEntry, 0, len(entries))
-	for _, e := range entries {
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		typ := "file"
-		if e.IsDir() {
-			typ = "directory"
-		}
-		files = append(files, fileEntry{
-			Name:    e.Name(),
-			Path:    filepath.Join(dirPath, e.Name()),
-			Type:    typ,
-			Size:    info.Size(),
-			ModTime: info.ModTime().UTC().Format("2006-01-02T15:04:05Z"),
-		})
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"entries": files})
+	writeJSON(w, http.StatusOK, list)
 }
 
 func handleReadFile(w http.ResponseWriter, r *http.Request) {

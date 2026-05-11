@@ -13,9 +13,12 @@ import (
 )
 
 const (
-	maxToolTextBytes       = 16 * 1024
-	maxReadFileLines       = 400
-	maxSearchFileResults   = 100
+	maxToolTextBytes     = 16 * 1024
+	maxReadFileLines     = 400
+	maxSearchFileResults = 100
+	// Keep recursive listings below the raw agent API caps to protect model context.
+	maxListFilesDepth      = 6
+	maxListFilesEntries    = 1000
 	truncationNoticeFormat = "\n\n[Output truncated to %d bytes. Use read_file_lines with a narrower range or search_files for more targeted context.]"
 )
 
@@ -120,11 +123,28 @@ func (e *WorkspaceExecutor) writeFile(ctx context.Context, userID, workspaceID i
 
 func (e *WorkspaceExecutor) listFiles(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
 	path, _ := params["path"].(string)
-	entries, err := e.ws.ListFiles(ctx, userID, workspaceID, path)
+	opts := agent.ListFilesOptions{}
+	if value, ok := params["recursive"].(bool); ok {
+		opts.Recursive = value
+	}
+	if value, ok := params["max_depth"].(float64); ok {
+		opts.MaxDepth = clamp(int(value), 1, maxListFilesDepth)
+	}
+	if value, ok := params["max_entries"].(float64); ok {
+		opts.MaxEntries = clamp(int(value), 1, maxListFilesEntries)
+	}
+
+	list, err := e.ws.ListFiles(ctx, userID, workspaceID, path, opts)
 	if err != nil {
 		return toolFailure("list_files", "Error: %v", err)
 	}
-	data, err := json.Marshal(formatFileEntries(entries))
+	if list == nil {
+		return toolFailure("list_files", "Error: empty file list response")
+	}
+	data, err := json.Marshal(map[string]any{
+		"entries":   formatFileEntries(list.Entries),
+		"truncated": list.Truncated,
+	})
 	if err != nil {
 		return toolFailure("list_files", "Error: %v", err)
 	}
@@ -310,10 +330,18 @@ func formatFileEntries(entries []agent.FileEntry) []map[string]any {
 	for _, entry := range entries {
 		result = append(result, map[string]any{
 			"name": entry.Name,
+			"path": trimWorkspacePath(entry.Path),
 			"type": entry.Type,
 			"size": entry.Size,
 		})
 	}
 
 	return result
+}
+
+func trimWorkspacePath(path string) string {
+	if path == "/workspace" {
+		return ""
+	}
+	return strings.TrimPrefix(path, "/workspace/")
 }

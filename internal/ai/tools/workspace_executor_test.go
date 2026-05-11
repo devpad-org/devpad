@@ -14,6 +14,7 @@ import (
 
 type stubWorkspaceOps struct {
 	readFileFn          func(ctx context.Context, userID, workspaceID int64, path string) ([]byte, error)
+	listFilesFn         func(ctx context.Context, userID, workspaceID int64, path string, opts agent.ListFilesOptions) (*agent.FileList, error)
 	searchFilesFn       func(ctx context.Context, userID, workspaceID int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error)
 	runCommandFn        func(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error)
 	startCommandFn      func(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
@@ -71,8 +72,11 @@ func (s *stubWorkspaceOps) WriteFile(context.Context, int64, int64, string, []by
 	return nil
 }
 
-func (s *stubWorkspaceOps) ListFiles(context.Context, int64, int64, string) ([]agent.FileEntry, error) {
-	return nil, nil
+func (s *stubWorkspaceOps) ListFiles(ctx context.Context, userID, workspaceID int64, path string, opts agent.ListFilesOptions) (*agent.FileList, error) {
+	if s.listFilesFn != nil {
+		return s.listFilesFn(ctx, userID, workspaceID, path, opts)
+	}
+	return &agent.FileList{}, nil
 }
 
 func (s *stubWorkspaceOps) DeleteFile(context.Context, int64, int64, string) error {
@@ -147,6 +151,48 @@ func TestWorkspaceExecutor_ReadFileReturnsStructuredWorkspaceError(t *testing.T)
 	}
 	if !strings.Contains(result.Content, "permission denied") {
 		t.Fatalf("expected workspace error in content, got %q", result.Content)
+	}
+}
+
+func TestWorkspaceExecutor_ListFilesPassesRecursiveOptions(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{listFilesFn: func(_ context.Context, userID, workspaceID int64, path string, opts agent.ListFilesOptions) (*agent.FileList, error) {
+		if userID != 7 || workspaceID != 9 || path != "" {
+			t.Fatalf("unexpected list files scope: user=%d workspace=%d path=%q", userID, workspaceID, path)
+		}
+		if !opts.Recursive || opts.MaxDepth != maxListFilesDepth || opts.MaxEntries != maxListFilesEntries {
+			t.Fatalf("unexpected list options: %+v", opts)
+		}
+		return &agent.FileList{
+			Entries: []agent.FileEntry{
+				{Name: "src", Path: "/workspace/src", Type: "directory"},
+				{Name: "main.go", Path: "/workspace/src/main.go", Type: "file", Size: 12},
+			},
+			Truncated: true,
+		}, nil
+	}})
+
+	result := executor.ExecuteTool(context.Background(), toolReq(7, 9, "list_files", []byte(`{"path":"","recursive":true,"max_depth":99,"max_entries":5000}`)))
+	if result.IsError {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+
+	var payload struct {
+		Entries []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+			Type string `json:"type"`
+			Size int64  `json:"size"`
+		} `json:"entries"`
+		Truncated bool `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("decoding list result: %v", err)
+	}
+	if !payload.Truncated || len(payload.Entries) != 2 {
+		t.Fatalf("unexpected list payload: %+v", payload)
+	}
+	if payload.Entries[1].Path != "src/main.go" {
+		t.Fatalf("expected workspace-relative path, got %+v", payload.Entries[1])
 	}
 }
 
