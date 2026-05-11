@@ -136,6 +136,8 @@ func TestBudgetFor_ReturnsProviderModelDefaults(t *testing.T) {
 		{name: "openai gpt 5.4 context", providerID: "openai", modelID: "gpt-5.4", wantBudget: 1050000},
 		{name: "openai gpt 5.5 context", providerID: "openai", modelID: "gpt-5.5", wantBudget: 1050000},
 		{name: "mistral devstral context", providerID: "mistral", modelID: "devstral-medium-latest", wantBudget: 256000},
+		{name: "mistral small context", providerID: "mistral", modelID: "mistral-small-latest", wantBudget: 256000},
+		{name: "mistral older small context", providerID: "mistral", modelID: "mistral-small-2506", wantBudget: 128000},
 		{name: "mistral medium context", providerID: "mistral", modelID: "mistral-medium-3-5", wantBudget: 256000},
 		{name: "mistral large context", providerID: "mistral", modelID: "mistral-large-latest", wantBudget: 256000},
 		{name: "moonshot kimi context", providerID: "moonshot", modelID: "kimi-k2.6", wantBudget: 256000},

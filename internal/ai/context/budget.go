@@ -79,6 +79,8 @@ func openAIInputBudget(model string) int {
 
 func mistralInputBudget(model string) int {
 	if strings.Contains(model, "devstral") ||
+		strings.Contains(model, "mistral-small-4") ||
+		strings.Contains(model, "mistral-small-2603") ||
 		strings.Contains(model, "mistral-medium-3") ||
 		strings.Contains(model, "mistral-large") {
 		return long256KInputBudgetTokens
@@ -108,6 +110,8 @@ func knownModelInputBudget(model string) (int, bool) {
 	case "devstral-medium-latest",
 		"devstral-latest",
 		"devstral-2512",
+		"mistral-small-latest",
+		"mistral-small-2603",
 		"mistral-medium-3-5",
 		"mistral-medium-3",
 		"mistral-large-latest",

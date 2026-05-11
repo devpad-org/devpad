@@ -41,7 +41,7 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 }
 
 func (a *Adapter) Models() []domain.Model {
-	mistralMediumThinking := domain.ThinkingCapability{
+	adjustableThinking := domain.ThinkingCapability{
 		Supported:        true,
 		EnabledByDefault: false,
 		CanDisable:       true,
@@ -51,7 +51,8 @@ func (a *Adapter) Models() []domain.Model {
 
 	return []domain.Model{
 		{ID: "devstral-medium-latest", Name: "Devstral", ProviderID: providerID},
-		{ID: "mistral-medium-3-5", Name: "Mistral Medium 3.5", ProviderID: providerID, Thinking: mistralMediumThinking},
+		{ID: "mistral-small-latest", Name: "Mistral Small 4", ProviderID: providerID, Thinking: adjustableThinking},
+		{ID: "mistral-medium-3-5", Name: "Mistral Medium 3.5", ProviderID: providerID, Thinking: adjustableThinking},
 		{ID: "mistral-large-latest", Name: "Mistral Large", ProviderID: providerID},
 	}
 }

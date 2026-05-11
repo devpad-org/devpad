@@ -22,7 +22,7 @@ func TestAdapterContract(t *testing.T) {
 		ExpectedProviderID:   "mistral",
 		ExpectedProviderName: "Mistral AI",
 		ExpectedProtocol:     aiprovider.ProtocolOpenAIChat,
-		ExpectedModelIDs:     []string{"devstral-medium-latest", "mistral-medium-3-5", "mistral-large-latest"},
+		ExpectedModelIDs:     []string{"devstral-medium-latest", "mistral-small-latest", "mistral-medium-3-5", "mistral-large-latest"},
 		Request: aiprovider.StreamRequest{
 			Model: "devstral-medium-latest",
 			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
@@ -30,46 +30,69 @@ func TestAdapterContract(t *testing.T) {
 	})
 }
 
-func TestMistralMediumThinkingMetadata(t *testing.T) {
+func TestAdjustableThinkingMetadata(t *testing.T) {
 	models := NewAdapter().Models()
-	model, ok := domain.ModelByID(models, "mistral-medium-3-5")
-	if !ok {
-		t.Fatal("expected mistral-medium-3-5 model")
+	tests := []struct {
+		modelID string
+		name    string
+	}{
+		{modelID: "mistral-small-latest", name: "Mistral Small 4"},
+		{modelID: "mistral-medium-3-5", name: "Mistral Medium 3.5"},
 	}
 
-	if model.Name != "Mistral Medium 3.5" {
-		t.Fatalf("expected model name Mistral Medium 3.5, got %q", model.Name)
-	}
-	if !model.Thinking.Supported {
-		t.Fatal("expected Mistral Medium 3.5 to support thinking")
-	}
-	if model.Thinking.EnabledByDefault {
-		t.Fatal("expected thinking to be opt-in by default")
-	}
-	if !model.Thinking.CanDisable {
-		t.Fatal("expected thinking to be disableable")
-	}
-	if model.Thinking.DefaultEffort != defaultReasoningEffort {
-		t.Fatalf("expected default effort %q, got %q", defaultReasoningEffort, model.Thinking.DefaultEffort)
-	}
+	for _, tt := range tests {
+		t.Run(tt.modelID, func(t *testing.T) {
+			model, ok := domain.ModelByID(models, tt.modelID)
+			if !ok {
+				t.Fatalf("expected %s model", tt.modelID)
+			}
 
-	expectedEfforts := []string{"high"}
-	if len(model.Thinking.SupportedEfforts) != len(expectedEfforts) {
-		t.Fatalf("expected %d supported efforts, got %d", len(expectedEfforts), len(model.Thinking.SupportedEfforts))
-	}
-	for i, expected := range expectedEfforts {
-		if model.Thinking.SupportedEfforts[i] != expected {
-			t.Fatalf("expected effort %d to be %q, got %q", i, expected, model.Thinking.SupportedEfforts[i])
-		}
+			if model.Name != tt.name {
+				t.Fatalf("expected model name %q, got %q", tt.name, model.Name)
+			}
+			if !model.Thinking.Supported {
+				t.Fatalf("expected %s to support thinking", tt.name)
+			}
+			if model.Thinking.EnabledByDefault {
+				t.Fatal("expected thinking to be opt-in by default")
+			}
+			if !model.Thinking.CanDisable {
+				t.Fatal("expected thinking to be disableable")
+			}
+			if model.Thinking.DefaultEffort != defaultReasoningEffort {
+				t.Fatalf("expected default effort %q, got %q", defaultReasoningEffort, model.Thinking.DefaultEffort)
+			}
+
+			expectedEfforts := []string{"high"}
+			if len(model.Thinking.SupportedEfforts) != len(expectedEfforts) {
+				t.Fatalf("expected %d supported efforts, got %d", len(expectedEfforts), len(model.Thinking.SupportedEfforts))
+			}
+			for i, expected := range expectedEfforts {
+				if model.Thinking.SupportedEfforts[i] != expected {
+					t.Fatalf("expected effort %d to be %q, got %q", i, expected, model.Thinking.SupportedEfforts[i])
+				}
+			}
+		})
 	}
 }
 
-func TestBuildChatRequest_MistralMediumReasoningEffort(t *testing.T) {
-	model, ok := domain.ModelByID(NewAdapter().Models(), "mistral-medium-3-5")
-	if !ok {
-		t.Fatal("expected mistral-medium-3-5 model")
-	}
+func TestBuildChatRequest_AdjustableReasoningEffort(t *testing.T) {
+	modelIDs := []string{"mistral-small-latest", "mistral-medium-3-5"}
 
+	for _, modelID := range modelIDs {
+		model, ok := domain.ModelByID(NewAdapter().Models(), modelID)
+		if !ok {
+			t.Fatalf("expected %s model", modelID)
+		}
+
+		t.Run(modelID, func(t *testing.T) {
+			assertAdjustableReasoningEffort(t, model)
+		})
+	}
+}
+
+func assertAdjustableReasoningEffort(t *testing.T, model domain.Model) {
+	t.Helper()
 	tests := []struct {
 		name        string
 		thinking    *domain.ThinkingConfig
@@ -110,7 +133,7 @@ func TestBuildChatRequest_MistralMediumReasoningEffort(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			body := buildChatRequest(aiprovider.StreamRequest{
-				Model:    "mistral-medium-3-5",
+				Model:    model.ID,
 				Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 				Thinking: tt.thinking,
 			}, model)
