@@ -65,10 +65,31 @@ interface DisplayMessage {
   segments: MessageSegment[]
 }
 
+interface SlashCommand {
+  name: string
+  description: string
+  prompt: string
+}
+
 const conversationStore = useConversationStore()
 const agentRunStore = useAgentRunStore()
 const aiAgentStore = useAiAgentStore()
 const DEFAULT_AI_MODEL_ID = 'mistral-medium-3-5'
+const slashCommands: SlashCommand[] = [
+  {
+    name: '/init',
+    description: 'Create or update AGENTS.md with project instructions',
+    prompt: `Initialize this repository for future AI coding agents by creating or updating AGENTS.md at the workspace root.
+
+Inspect the repository structure, README, package or build configuration, and any existing AGENTS.md first. Then write a concise AGENTS.md that captures:
+- Project overview and architecture
+- Common development, build, test, and lint commands that actually exist in the repository
+- Code conventions and workflow constraints useful to future agents
+- Any important notes about generated files or files that should not be edited manually
+
+If AGENTS.md already exists, preserve useful guidance and update stale or missing sections instead of replacing it blindly. Keep the file specific to this repository, avoid inventing commands, and briefly summarize what changed after writing it.`,
+  },
+]
 const activeConversationId = ref<number | null>(null)
 
 const messages = ref<DisplayMessage[]>([])
@@ -207,6 +228,27 @@ const thinkingRequest = computed(() => {
 
   return request
 })
+
+const slashCommandOptions = computed(() => {
+  const value = inputValue.value.trim()
+  if (!value.startsWith('/') || /\s/.test(value)) {
+    return []
+  }
+  return slashCommands.filter((command) => command.name.startsWith(value))
+})
+
+function resolveSlashCommand(text: string): SlashCommand | undefined {
+  const value = text.trim()
+  return slashCommands.find((command) => command.name === value)
+}
+
+function applySlashCommand(command: SlashCommand) {
+  inputValue.value = command.name
+  void nextTick(() => {
+    autoResize()
+    inputEl.value?.focus()
+  })
+}
 
 function autoResize() {
   const el = inputEl.value
@@ -770,6 +812,9 @@ async function ensureActiveConversation(): Promise<number | null> {
 async function sendMessage() {
   const text = inputValue.value.trim()
   if (!text || streaming.value) return
+  const slashCommand = resolveSlashCommand(text)
+  const displayText = slashCommand?.name ?? text
+  const requestText = slashCommand?.prompt ?? text
 
   if (!selectedModel.value) {
     messages.value.push({
@@ -795,8 +840,8 @@ async function sendMessage() {
   }
 
   // Push user message to display and raw arrays.
-  messages.value.push({ role: 'user', content: text, segments: [] })
-  rawMessages.value.push({ role: 'user', content: text })
+  messages.value.push({ role: 'user', content: displayText, segments: [] })
+  rawMessages.value.push({ role: 'user', content: displayText })
   inputValue.value = ''
   resetInputHeight()
 
@@ -814,6 +859,9 @@ async function sendMessage() {
 
   // Build the API payload from rawMessages (excludes the empty assistant placeholder).
   const chatMessages: ChatMessage[] = rawMessages.value.slice()
+  if (slashCommand && chatMessages.length > 0) {
+    chatMessages[chatMessages.length - 1] = { role: 'user', content: requestText }
+  }
 
   // Each LLM iteration is tracked as a "round" so we can reconstruct the correct
   // interleaved assistant/tool message sequence for rawMessages on completion.
@@ -1425,6 +1473,18 @@ function scrollToBottom() {
 
     <div v-else class="agent-input-area">
       <div class="input-shell" :class="{ focused: inputFocused }">
+        <div v-if="slashCommandOptions.length > 0" class="slash-command-menu">
+          <button
+            v-for="command in slashCommandOptions"
+            :key="command.name"
+            type="button"
+            class="slash-command-option"
+            @mousedown.prevent="applySlashCommand(command)"
+          >
+            <span class="slash-command-name">{{ command.name }}</span>
+            <span class="slash-command-description">{{ command.description }}</span>
+          </button>
+        </div>
         <div class="input-container" @click="inputEl?.focus()">
           <textarea
             v-model="inputValue"
@@ -1943,6 +2003,45 @@ function scrollToBottom() {
 .input-shell.focused {
   border-color: var(--accent-border);
   box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.slash-command-menu {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-2);
+  border-bottom: 0.5px solid var(--border-hairline);
+  background: color-mix(in srgb, var(--bg-void) 40%, transparent);
+}
+
+.slash-command-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  text-align: left;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.slash-command-option:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.slash-command-name {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--accent);
+}
+
+.slash-command-description {
+  overflow: hidden;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .input-container {
