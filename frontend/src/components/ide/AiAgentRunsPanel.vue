@@ -104,6 +104,12 @@ function focusRun(run: AgentRun): void {
   emit('focus', run)
 }
 
+async function cancelRun(run: AgentRun): Promise<void> {
+  if (!isAgentRunActiveStatus(run.status)) return
+
+  await runStore.cancelRun(run.id)
+}
+
 function formatStatus(status: AgentRun['status']): string {
   return status.replace('_', ' ')
 }
@@ -188,10 +194,9 @@ onUnmounted(stopRefreshTimer)
       No agent runs yet
     </div>
     <div v-else class="agent-runs-list">
-      <button
+      <div
         v-for="item in runListItems"
         :key="item.run.id"
-        type="button"
         class="agent-run-item"
         :class="[
           `agent-run-item--${item.run.status}`,
@@ -205,7 +210,11 @@ onUnmounted(stopRefreshTimer)
           },
         ]"
         :style="runItemStyle(item)"
+        role="button"
+        tabindex="0"
         @click="focusRun(item.run)"
+        @keydown.enter.prevent="focusRun(item.run)"
+        @keydown.space.prevent="focusRun(item.run)"
       >
         <span class="run-tree" aria-hidden="true">
           <span
@@ -232,8 +241,24 @@ onUnmounted(stopRefreshTimer)
           </span>
           <span v-if="item.run.error" class="run-error">{{ item.run.error }}</span>
         </span>
-        <span class="run-status">{{ formatStatus(item.run.status) }}</span>
-      </button>
+        <span class="run-actions">
+          <span class="run-status">{{ formatStatus(item.run.status) }}</span>
+          <button
+            v-if="isAgentRunActiveStatus(item.run.status)"
+            type="button"
+            class="run-stop-button"
+            :disabled="runStore.isRunCancelling(item.run.id)"
+            :aria-label="`Cancel ${formatRunTitle(item.run)}`"
+            title="Cancel run"
+            @click.stop="cancelRun(item.run)"
+            @keydown.stop
+          >
+            <svg aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+              <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" />
+            </svg>
+          </button>
+        </span>
+      </div>
     </div>
   </div>
 </template>
@@ -329,6 +354,7 @@ onUnmounted(stopRefreshTimer)
   border-radius: var(--radius-lg);
   background: transparent;
   color: var(--text-secondary);
+  cursor: pointer;
   text-align: left;
   transition:
     border-color var(--transition-fast),
@@ -347,6 +373,11 @@ onUnmounted(stopRefreshTimer)
   border-color: var(--border-default);
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.agent-run-item:focus-visible {
+  outline: 1px solid var(--accent-border);
+  outline-offset: -1px;
 }
 
 .agent-run-item.selected {
@@ -502,8 +533,16 @@ onUnmounted(stopRefreshTimer)
   white-space: nowrap;
 }
 
-.run-status {
+.run-actions {
   align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: end;
+  min-width: max-content;
+}
+
+.run-status {
   padding: 2px 7px;
   border: 0.5px solid var(--border-default);
   border-radius: 999px;
@@ -513,6 +552,41 @@ onUnmounted(stopRefreshTimer)
   line-height: 1.4;
   text-transform: capitalize;
   white-space: nowrap;
+}
+
+.run-stop-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0.5px solid var(--error-border);
+  border-radius: var(--radius-md);
+  background: var(--error-bg);
+  color: var(--accent-rose);
+  opacity: 0.72;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.agent-run-item:hover .run-stop-button,
+.agent-run-item:focus-within .run-stop-button,
+.run-stop-button:focus-visible {
+  opacity: 1;
+}
+
+.run-stop-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent-rose) 55%, var(--error-border));
+  background: color-mix(in srgb, var(--error-bg) 72%, var(--accent-rose));
+  color: var(--text-primary);
+}
+
+.run-stop-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 
 .agent-run-item.active .run-status {

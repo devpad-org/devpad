@@ -12,6 +12,7 @@ export const useAgentRunStore = defineStore('agentRuns', () => {
   const runs = ref<AgentRun[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const cancellingRunIds = ref<Set<number>>(new Set())
 
   const activeRuns = computed(() => runs.value.filter((run) => isAgentRunActiveStatus(run.status)))
 
@@ -23,6 +24,31 @@ export const useAgentRunStore = defineStore('agentRuns', () => {
     }
 
     runs.value = [run, ...runs.value]
+  }
+
+  function isRunCancelling(runId: number): boolean {
+    return cancellingRunIds.value.has(runId)
+  }
+
+  function setRunCancelling(runId: number, cancelling: boolean): void {
+    const next = new Set(cancellingRunIds.value)
+    if (cancelling) {
+      next.add(runId)
+    } else {
+      next.delete(runId)
+    }
+    cancellingRunIds.value = next
+  }
+
+  function markRunCancelled(runId: number): void {
+    const index = runs.value.findIndex((run) => run.id === runId)
+    if (index < 0) return
+
+    runs.value[index] = {
+      ...runs.value[index],
+      status: 'cancelled',
+      updatedAt: new Date().toISOString(),
+    }
   }
 
   async function fetchRuns(workspaceId: number): Promise<void> {
@@ -61,6 +87,27 @@ export const useAgentRunStore = defineStore('agentRuns', () => {
     }
   }
 
+  async function cancelRun(runId: number): Promise<boolean> {
+    if (runId <= 0) {
+      error.value = 'Agent run is required'
+      return false
+    }
+    if (isRunCancelling(runId)) return false
+
+    setRunCancelling(runId, true)
+    try {
+      await aiApi.cancelAgentRun(runId)
+      markRunCancelled(runId)
+      error.value = null
+      return true
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to cancel agent run'
+      return false
+    } finally {
+      setRunCancelling(runId, false)
+    }
+  }
+
   return {
     runs,
     loading,
@@ -69,5 +116,7 @@ export const useAgentRunStore = defineStore('agentRuns', () => {
     upsertRun,
     fetchRuns,
     refreshRun,
+    cancelRun,
+    isRunCancelling,
   }
 })
