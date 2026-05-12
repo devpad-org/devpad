@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/devpad-org/devpad/internal/ai/approval"
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -29,6 +30,11 @@ type AgentChatRequest struct {
 	AgentPrompt    string
 }
 
+// WorkspaceInstructionSource reads project-local agent instructions.
+type WorkspaceInstructionSource interface {
+	Instructions(ctx context.Context, userID, workspaceID int64) (string, error)
+}
+
 // ChatService owns the app-level chat entry points.
 type ChatService interface {
 	StreamSimple(ctx context.Context, req SimpleChatRequest) (<-chan domain.ClientEvent, error)
@@ -36,8 +42,9 @@ type ChatService interface {
 }
 
 type chatService struct {
-	simple *orchestrator.SimpleChatOrchestrator
-	agent  orchestrator.AgentChatOrchestrator
+	simple                *orchestrator.SimpleChatOrchestrator
+	agent                 orchestrator.AgentChatOrchestrator
+	workspaceInstructions WorkspaceInstructionSource
 }
 
 type providerChatBackend struct {
@@ -45,12 +52,13 @@ type providerChatBackend struct {
 }
 
 // NewChatService creates the app-level chat service for simple and agent chat.
-func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog, executor orchestrator.ToolExecutor, approvals approval.Broker) ChatService {
+func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog, executor orchestrator.ToolExecutor, approvals approval.Broker, workspaceInstructions WorkspaceInstructionSource) ChatService {
 	backend := &providerChatBackend{catalog: catalog}
 
 	return &chatService{
-		simple: orchestrator.NewSimpleChatOrchestrator(backend),
-		agent:  orchestrator.NewAgentChatOrchestrator(backend, toolCatalog, executor, approvals),
+		simple:                orchestrator.NewSimpleChatOrchestrator(backend),
+		agent:                 orchestrator.NewAgentChatOrchestrator(backend, toolCatalog, executor, approvals),
+		workspaceInstructions: workspaceInstructions,
 	}
 }
 
@@ -63,16 +71,32 @@ func (s *chatService) StreamSimple(ctx context.Context, req SimpleChatRequest) (
 }
 
 func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-chan domain.ClientEvent, error) {
+	workspaceInstructions, err := s.resolveWorkspaceInstructions(ctx, req.UserID, req.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
 	return s.agent.Stream(ctx, orchestrator.AgentChatRequest{
-		UserID:         req.UserID,
-		WorkspaceID:    req.WorkspaceID,
-		CurrentRunID:   req.CurrentRunID,
-		ConversationID: req.ConversationID,
-		Model:          req.Model,
-		Turns:          req.Turns,
-		Thinking:       req.Thinking,
-		AgentPrompt:    req.AgentPrompt,
+		UserID:                req.UserID,
+		WorkspaceID:           req.WorkspaceID,
+		CurrentRunID:          req.CurrentRunID,
+		ConversationID:        req.ConversationID,
+		Model:                 req.Model,
+		Turns:                 req.Turns,
+		Thinking:              req.Thinking,
+		AgentPrompt:           req.AgentPrompt,
+		WorkspaceInstructions: workspaceInstructions,
 	})
+}
+
+func (s *chatService) resolveWorkspaceInstructions(ctx context.Context, userID, workspaceID int64) (string, error) {
+	if s.workspaceInstructions == nil {
+		return "", nil
+	}
+	instructions, err := s.workspaceInstructions.Instructions(ctx, userID, workspaceID)
+	if err != nil {
+		return "", fmt.Errorf("loading workspace instructions: %w", err)
+	}
+	return instructions, nil
 }
 
 func (s *providerChatBackend) ChatStream(ctx context.Context, req domain.ChatRequest) (<-chan domain.ProviderEvent, error) {

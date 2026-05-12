@@ -27,14 +27,15 @@ type ToolExecutor interface {
 
 // AgentChatRequest contains the inputs needed to run the agent loop.
 type AgentChatRequest struct {
-	UserID         int64
-	WorkspaceID    int64
-	CurrentRunID   int64
-	ConversationID int64
-	Model          string
-	Turns          []domain.Turn
-	Thinking       *domain.ThinkingConfig
-	AgentPrompt    string
+	UserID                int64
+	WorkspaceID           int64
+	CurrentRunID          int64
+	ConversationID        int64
+	Model                 string
+	Turns                 []domain.Turn
+	Thinking              *domain.ThinkingConfig
+	AgentPrompt           string
+	WorkspaceInstructions string
 }
 
 // AgentChatOrchestrator owns the agent runtime state machine outside HTTP transport.

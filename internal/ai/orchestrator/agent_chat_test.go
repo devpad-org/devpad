@@ -79,6 +79,52 @@ func (fakeToolCatalog) SystemPrompt() string { return "system" }
 
 func (fakeToolCatalog) Definitions() []domain.ToolDefinition { return nil }
 
+func TestAgentChatOrchestrator_IncludesWorkspaceInstructionsBeforeSelectedAgent(t *testing.T) {
+	var captured domain.ChatRequest
+	orch := &agentChatOrchestrator{
+		service: &mockChatService{
+			chatStreamFn: func(_ context.Context, req domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+				captured = req
+				ch := make(chan domain.ProviderEvent, 1)
+				ch <- domain.ProviderEvent{Done: true}
+				close(ch)
+				return ch, nil
+			},
+		},
+		toolCatalog:       fakeToolCatalog{},
+		toolExecutor:      &mockToolExecutor{},
+		approvals:         &mockApprovalBroker{},
+		maxToolIterations: defaultMaxToolIterations,
+		approvalTimeout:   defaultApprovalTimeout,
+	}
+
+	stream, err := orch.Stream(context.Background(), AgentChatRequest{
+		UserID:                1,
+		WorkspaceID:           1,
+		Model:                 "test-model",
+		Turns:                 []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")},
+		WorkspaceInstructions: "Use make test.",
+		AgentPrompt:           "Be concise.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	collectEvents(t, stream)
+
+	if len(captured.Turns) == 0 || captured.Turns[0].Role != domain.RoleSystem {
+		t.Fatalf("expected first provider turn to be system prompt, got %+v", captured.Turns)
+	}
+	systemPrompt := captured.Turns[0].Text()
+	workspaceIdx := strings.Index(systemPrompt, "Workspace instructions from AGENTS.md:\nUse make test.")
+	agentIdx := strings.Index(systemPrompt, "Selected agent instructions:\nBe concise.")
+	if workspaceIdx == -1 || agentIdx == -1 {
+		t.Fatalf("expected workspace and selected agent instructions in system prompt, got %q", systemPrompt)
+	}
+	if workspaceIdx > agentIdx {
+		t.Fatalf("expected workspace instructions before selected agent instructions, got %q", systemPrompt)
+	}
+}
+
 func collectEvents(t *testing.T, stream <-chan domain.ClientEvent) []domain.ClientEvent {
 	t.Helper()
 

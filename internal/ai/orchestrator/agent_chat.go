@@ -63,6 +63,9 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 	defer close(out)
 
 	systemPrompt := o.toolCatalog.SystemPrompt()
+	if strings.TrimSpace(req.WorkspaceInstructions) != "" {
+		systemPrompt = systemPrompt + "\n\nWorkspace instructions from AGENTS.md:\n" + strings.TrimSpace(req.WorkspaceInstructions)
+	}
 	if strings.TrimSpace(req.AgentPrompt) != "" {
 		systemPrompt = systemPrompt + "\n\nSelected agent instructions:\n" + strings.TrimSpace(req.AgentPrompt)
 	}

@@ -50,7 +50,7 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	conversationService := app.NewConversationService(conversations)
 	toolExecutor := aitools.NewWorkspaceExecutor(workspaceOps)
 	approvalBroker := approval.NewMemoryBroker()
-	chatService := app.NewChatService(catalogService, aitools.NewCatalog(), toolExecutor, approvalBroker)
+	chatService := app.NewChatService(catalogService, aitools.NewCatalog(), toolExecutor, approvalBroker, app.NewAGENTSInstructionSource(workspaceOps))
 	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService))
 	agentRuns := storage.NewAgentRunRepository(db)
 	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService)
