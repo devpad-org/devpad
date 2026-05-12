@@ -348,11 +348,6 @@ onUnmounted(stopRefreshTimer)
   background: var(--bg-selected);
 }
 
-.agent-run-item.parent:not(.selected) {
-  border-color: color-mix(in srgb, var(--border-default) 70%, transparent);
-  background: color-mix(in srgb, var(--bg-raised) 28%, transparent);
-}
-
 .agent-run-item.active .run-title { color: var(--text-primary); }
 
 .run-tree {
