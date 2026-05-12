@@ -288,19 +288,21 @@ func TestAgentRunPromptPreview(t *testing.T) {
 		want  string
 	}{
 		{
-			name: "uses first non-empty user text",
+			name: "uses last non-empty user text",
 			turns: []domain.Turn{
 				domain.NewTextTurn(domain.RoleAssistant, "previous assistant output"),
 				domain.NewTextTurn(domain.RoleUser, "  build\n\tthe   feature  "),
 				domain.NewTextTurn(domain.RoleUser, "second user prompt"),
 			},
-			want: "build the feature",
+			want: "second user prompt",
 		},
 		{
 			name: "skips user turns without text",
 			turns: []domain.Turn{
+				domain.NewTextTurn(domain.RoleUser, "earlier prompt"),
 				domain.NewToolResultTurn("call-1", "tool", "result only", false),
 				domain.NewTextTurn(domain.RoleUser, "next real prompt"),
+				domain.NewToolResultTurn("call-2", "tool", "latest result only", false),
 			},
 			want: "next real prompt",
 		},

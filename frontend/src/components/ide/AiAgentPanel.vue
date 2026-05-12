@@ -401,9 +401,9 @@ function formatTokenCount(tokens: number): string {
 
 function contextSizeLabel(size: ContextSize): string {
   if (size.inputBudgetTokens > 0) {
-    return `Approx. context: ${formatTokenCount(size.nextRequestTokens)} / ${formatTokenCount(size.inputBudgetTokens)} tokens`
+    return `~${formatTokenCount(size.nextRequestTokens)} / ${formatTokenCount(size.inputBudgetTokens)} tokens`
   }
-  return `Approx. context: ${formatTokenCount(size.nextRequestTokens)} tokens`
+  return `~${formatTokenCount(size.nextRequestTokens)} tokens`
 }
 
 function contextSizeTitle(size: ContextSize): string {
@@ -1221,6 +1221,14 @@ function scrollToBottom() {
         </button>
       </div>
       <div v-else class="agent-header-actions">
+        <span
+          v-if="displayedContextSize"
+          class="context-size-badge"
+          :class="{ warning: displayedContextSize.warning }"
+          :title="contextSizeTitle(displayedContextSize)"
+        >
+          {{ contextSizeLabel(displayedContextSize) }}
+        </span>
         <button class="new-chat-btn" title="New Chat" @click="newChat">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 5v14" />
@@ -1457,14 +1465,6 @@ function scrollToBottom() {
             <select v-model="selectedModel" class="model-selector">
               <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
             </select>
-            <span
-              v-if="displayedContextSize"
-              class="context-size-badge"
-              :class="{ warning: displayedContextSize.warning }"
-              :title="contextSizeTitle(displayedContextSize)"
-            >
-              {{ contextSizeLabel(displayedContextSize) }}
-            </span>
             <button
               v-if="canToggleThinking"
               type="button"

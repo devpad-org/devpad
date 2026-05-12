@@ -386,10 +386,11 @@ func fromAgentRun(run *domain.AgentRun, includeInputTurns bool) AgentRunDTO {
 }
 
 // AgentRunPromptPreview returns a lightweight display title derived from the
-// first user-authored text turn in a run. It deliberately avoids exposing the
+// last user-authored text turn in a run. It deliberately avoids exposing the
 // full input conversation in list responses.
 func AgentRunPromptPreview(turns []domain.Turn) string {
-	for _, turn := range turns {
+	for i := len(turns) - 1; i >= 0; i-- {
+		turn := turns[i]
 		if turn.Role != domain.RoleUser {
 			continue
 		}

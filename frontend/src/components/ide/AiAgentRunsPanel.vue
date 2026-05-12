@@ -200,6 +200,7 @@ onUnmounted(stopRefreshTimer)
             active: isAgentRunActiveStatus(item.run.status),
             child: item.depth > 0,
             parent: item.hasChildren,
+            'has-error': Boolean(item.run.error),
             'last-child': item.isLastChild,
           },
         ]"
@@ -333,6 +334,11 @@ onUnmounted(stopRefreshTimer)
     border-color var(--transition-fast),
     background var(--transition-fast),
     box-shadow var(--transition-fast);
+}
+
+.agent-run-item.has-error {
+  min-height: 64px;
+  padding-block: 8px;
 }
 
 .agent-run-item + .agent-run-item { margin-top: 1px; }
@@ -475,6 +481,7 @@ onUnmounted(stopRefreshTimer)
   margin-top: 2px;
   color: var(--text-muted);
   font-size: 0.7rem;
+  line-height: 1.25;
 }
 
 .run-meta span:first-child {
@@ -490,6 +497,7 @@ onUnmounted(stopRefreshTimer)
   margin-top: 3px;
   color: var(--accent-rose);
   font-size: 0.7rem;
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
