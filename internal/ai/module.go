@@ -9,6 +9,7 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/app"
 	"github.com/devpad-org/devpad/internal/ai/approval"
 	"github.com/devpad-org/devpad/internal/ai/domain"
+	"github.com/devpad-org/devpad/internal/ai/filesummary"
 	aiprovider "github.com/devpad-org/devpad/internal/ai/provider"
 	"github.com/devpad-org/devpad/internal/ai/provider/anthropic"
 	"github.com/devpad-org/devpad/internal/ai/provider/minimax"
@@ -50,7 +51,7 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	toolExecutor := aitools.NewWorkspaceExecutor(workspaceOps)
 	approvalBroker := approval.NewMemoryBroker()
 	chatService := app.NewChatService(catalogService, aitools.NewCatalog(), toolExecutor, approvalBroker)
-	toolExecutor.SetFileSummarizer(chatFileSummarizer{chat: chatService})
+	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService))
 	agentRuns := storage.NewAgentRunRepository(db)
 	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService)
 	toolExecutor.SetChildAgentRunner(childAgentRunStarter{runs: agentRunService})

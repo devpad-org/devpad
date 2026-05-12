@@ -1,4 +1,4 @@
-package ai
+package filesummary
 
 import (
 	"context"
@@ -13,11 +13,21 @@ import (
 
 const fileSummaryModel = "mistral-small-latest"
 
-type chatFileSummarizer struct {
-	chat app.ChatService
+// SimpleChatStreamer is the narrow chat capability required to summarize files.
+type SimpleChatStreamer interface {
+	StreamSimple(ctx context.Context, req app.SimpleChatRequest) (<-chan domain.ClientEvent, error)
 }
 
-func (s chatFileSummarizer) SummarizeFile(ctx context.Context, req aitools.FileSummaryRequest) (string, error) {
+type chatSummarizer struct {
+	chat SimpleChatStreamer
+}
+
+// NewChatSummarizer adapts simple AI chat into the summarize_file tool contract.
+func NewChatSummarizer(chat SimpleChatStreamer) aitools.FileSummarizer {
+	return chatSummarizer{chat: chat}
+}
+
+func (s chatSummarizer) SummarizeFile(ctx context.Context, req aitools.FileSummaryRequest) (string, error) {
 	if s.chat == nil {
 		return "", errors.New("chat service is not configured")
 	}
