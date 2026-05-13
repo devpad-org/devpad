@@ -52,6 +52,8 @@ func main() {
 	authedMux.HandleFunc("GET /api/commands/{id}", handleCommandStatus)
 	authedMux.HandleFunc("GET /api/commands/{id}/output", handleReadCommandOutput)
 	authedMux.HandleFunc("POST /api/commands/{id}/stop", handleStopCommand)
+	authedMux.HandleFunc("GET /api/processes", handleListProcesses)
+	authedMux.HandleFunc("POST /api/processes/{pid}/kill", handleKillProcess)
 
 	// Git operations
 	authedMux.HandleFunc("GET /api/git/status", handleGitStatus)

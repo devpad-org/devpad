@@ -31,8 +31,37 @@ defineProps<{
       </span>
       <span class="tool-group-status">
         <span v-if="toolGroupState(group) === 'running'" class="tool-spinner" />
-        <span v-else-if="toolGroupState(group) === 'error'" class="tool-error">&#x2718;</span>
-        <span v-else class="tool-done">&#x2714;</span>
+        <svg
+          v-else-if="toolGroupState(group) === 'error'"
+          class="tool-status-icon tool-error"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-label="Tool call failed"
+          role="img"
+        >
+          <circle cx="12" cy="12" r="9" />
+          <path d="m15 9-6 6" />
+          <path d="m9 9 6 6" />
+        </svg>
+        <svg
+          v-else
+          class="tool-status-icon tool-done"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-label="Tool call completed"
+          role="img"
+        >
+          <circle cx="12" cy="12" r="9" />
+          <path d="M8 12.5 10.7 15 16 9" />
+        </svg>
       </span>
       <svg class="tool-group-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="6 9 12 15 18 9" />
@@ -250,13 +279,17 @@ defineProps<{
   white-space: pre-wrap;
 }
 
+.tool-status-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
 .tool-done {
-  font-size: 0.75rem;
   color: var(--accent-green);
 }
 
 .tool-error {
-  font-size: 0.75rem;
   color: var(--accent-rose);
 }
 

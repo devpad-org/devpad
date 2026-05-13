@@ -62,6 +62,12 @@ type CommandService interface {
 	StopCommand(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
 }
 
+// ProcessService defines workspace process inspection and termination.
+type ProcessService interface {
+	ListProcesses(ctx context.Context, userID, workspaceID int64) (*agent.ProcessList, error)
+	KillProcess(ctx context.Context, userID, workspaceID int64, pid int) error
+}
+
 // GitService defines workspace Git operations.
 type GitService interface {
 	GitStatus(ctx context.Context, userID, workspaceID int64) (*agent.GitStatus, error)
@@ -99,6 +105,7 @@ type Service interface {
 	AdminService
 	FileService
 	CommandService
+	ProcessService
 	GitService
 	AgentResolver
 	InfoService
@@ -111,6 +118,7 @@ type HandlerService interface {
 	AccessService
 	FileContentService
 	FileTreeService
+	ProcessService
 	GitService
 	AgentResolver
 	InfoService

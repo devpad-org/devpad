@@ -201,3 +201,77 @@ func TestGitActionDelegatesAgentRequest(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
+
+func TestListProcessesDelegatesAgentRequest(t *testing.T) {
+	var wantToken string
+	svc, ws := setupAgentBackedWorkspace(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/processes" {
+			t.Fatalf("unexpected agent path %q", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", r.Method)
+		}
+		if got := r.Header.Get("X-Devpad-Agent-Token"); got != wantToken {
+			t.Fatalf("expected agent token %q, got %q", wantToken, got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(agent.ProcessList{
+			Processes: []agent.ProcessInfo{
+				{PID: 42, PPID: 1, User: "dev", State: "S", Command: "node server.js", MemoryBytes: 1024, Killable: true},
+			},
+		})
+	})
+	wantToken = ws.AgentToken
+
+	handler := NewHandler(svc, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/1/processes", nil)
+	req.SetPathValue("id", strconv.FormatInt(ws.ID, 10))
+	req = authedRequest(req, testUser(1))
+	rec := httptest.NewRecorder()
+
+	handler.HandleListProcesses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp agent.ProcessList
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(resp.Processes) != 1 || resp.Processes[0].PID != 42 {
+		t.Fatalf("unexpected process list: %+v", resp.Processes)
+	}
+}
+
+func TestKillProcessDelegatesAgentRequest(t *testing.T) {
+	var wantToken string
+	svc, ws := setupAgentBackedWorkspace(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/processes/42/kill" {
+			t.Fatalf("unexpected agent path %q", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if got := r.Header.Get("X-Devpad-Agent-Token"); got != wantToken {
+			t.Fatalf("expected agent token %q, got %q", wantToken, got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "signaled"})
+	})
+	wantToken = ws.AgentToken
+
+	handler := NewHandler(svc, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/workspaces/1/processes/42/kill", nil)
+	req.SetPathValue("id", strconv.FormatInt(ws.ID, 10))
+	req.SetPathValue("pid", "42")
+	req = authedRequest(req, testUser(1))
+	rec := httptest.NewRecorder()
+
+	handler.HandleKillProcess(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

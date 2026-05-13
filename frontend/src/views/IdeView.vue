@@ -14,6 +14,7 @@ import PreviewNewTabModal from '@/components/ide/PreviewNewTabModal.vue'
 import GitPanel from '@/components/ide/GitPanel.vue'
 import GitStatusBar from '@/components/ide/GitStatusBar.vue'
 import WorkspaceInfoPanel from '@/components/ide/WorkspaceInfoPanel.vue'
+import WorkspaceProcessesPanel from '@/components/ide/WorkspaceProcessesPanel.vue'
 import ServicesPanel from '@/components/ide/ServicesPanel.vue'
 import { useServiceStore } from '@/stores/services'
 import { useResizable } from '@/composables/useResizable'
@@ -427,11 +428,16 @@ function handleBack() {
             />
           </div>
           <EditorPanel
-            v-show="activeActivity !== 'ai' && activeActivity !== 'git'"
+            v-show="activeActivity !== 'ai' && activeActivity !== 'git' && activeActivity !== 'info'"
             ref="editorPanel"
             :workspace-id="workspace?.id ?? 0"
             :file-path="activeFile"
             @active-change="(p: string | null) => activeFile = p"
+          />
+          <WorkspaceProcessesPanel
+            v-show="activeActivity === 'info'"
+            :workspace-id="workspace?.id ?? 0"
+            :active="activeActivity === 'info'"
           />
           <GitGraphPanel
             v-show="activeActivity === 'git'"

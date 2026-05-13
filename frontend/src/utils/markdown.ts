@@ -11,7 +11,7 @@ const emojiMap: Record<string, string> = {
   ':bulb:': '💡', ':gear:': '⚙️', ':file_folder:': '📁', ':memo:': '📝',
   ':sparkles:': '✨', ':tada:': '🎉', ':wrench:': '🔧', ':bug:': '🐛',
   ':zap:': '⚡', ':fire:': '🔥', ':thumbsup:': '👍', ':thumbsdown:': '👎',
-  ':eyes:': '👀', ':heavy_check_mark:': '✔️', ':arrow_right:': '➡️', ':star:': '⭐',
+  ':eyes:': '👀', ':heavy_check_mark:': '✅', ':arrow_right:': '➡️', ':star:': '⭐',
   ':package:': '📦', ':lock:': '🔒', ':key:': '🔑', ':hammer:': '🔨',
   ':link:': '🔗', ':clipboard:': '📋', ':mag:': '🔍', ':pencil:': '✏️',
   ':green_circle:': '🟢', ':red_circle:': '🔴', ':check:': '✅', ':x_mark:': '❌',

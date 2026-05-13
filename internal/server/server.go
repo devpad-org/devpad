@@ -339,6 +339,8 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/workspaces/{id}/start", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleStart)))
 	mux.Handle("POST /api/workspaces/{id}/stop", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleStop)))
 	mux.Handle("GET /api/workspaces/{id}/info", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleInfo)))
+	mux.Handle("GET /api/workspaces/{id}/processes", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleListProcesses)))
+	mux.Handle("POST /api/workspaces/{id}/processes/{pid}/kill", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleKillProcess)))
 	mux.Handle("GET /api/workspaces/{id}/terminal", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleTerminal)))
 	mux.Handle("GET /api/workspaces/{id}/watch", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleWatch)))
 

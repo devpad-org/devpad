@@ -36,6 +36,21 @@ export interface WorkspaceInfo {
   stats: ContainerStats | null
 }
 
+export interface ProcessInfo {
+  pid: number
+  ppid: number
+  user: string
+  state: string
+  command: string
+  memoryBytes: number
+  cpuTimeSeconds: number
+  killable: boolean
+}
+
+export interface ProcessListResponse {
+  processes: ProcessInfo[]
+}
+
 interface WorkspaceResponse {
   workspace: Workspace
 }
@@ -132,5 +147,13 @@ export const workspaceApi = {
 
   getInfo(id: number): Promise<WorkspaceInfo> {
     return apiClient.get<WorkspaceInfo>(`/api/workspaces/${id}/info`)
+  },
+
+  listProcesses(id: number): Promise<ProcessListResponse> {
+    return apiClient.get<ProcessListResponse>(`/api/workspaces/${id}/processes`)
+  },
+
+  killProcess(id: number, pid: number): Promise<void> {
+    return apiClient.post<void>(`/api/workspaces/${id}/processes/${pid}/kill`, {})
   },
 }
