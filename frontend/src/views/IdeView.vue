@@ -15,7 +15,8 @@ import GitPanel from '@/components/ide/GitPanel.vue'
 import GitStatusBar from '@/components/ide/GitStatusBar.vue'
 import WorkspaceInfoPanel from '@/components/ide/WorkspaceInfoPanel.vue'
 import WorkspaceProcessesPanel from '@/components/ide/WorkspaceProcessesPanel.vue'
-import ServicesPanel from '@/components/ide/ServicesPanel.vue'
+import ServiceCatalogPanel from '@/components/ide/ServiceCatalogPanel.vue'
+import WorkspaceServicesPanel from '@/components/ide/WorkspaceServicesPanel.vue'
 import { useServiceStore } from '@/stores/services'
 import { useResizable } from '@/composables/useResizable'
 import type { GitCommit, GitCommitFile } from '@/api/git'
@@ -404,7 +405,7 @@ function handleBack() {
           v-show="activeActivity === 'info'"
           :workspace-id="workspace?.id ?? 0"
         />
-        <ServicesPanel
+        <ServiceCatalogPanel
           v-show="activeActivity === 'services'"
           :workspace-id="workspace?.id ?? 0"
         />
@@ -418,7 +419,7 @@ function handleBack() {
       <!-- Center + Bottom -->
       <div class="ide-center">
         <section id="ide-primary-surface" class="ide-editor-area" aria-label="Primary IDE surface">
-          <div v-show="activeActivity === 'ai'" class="ide-ai-surface">
+          <div v-show="activeActivity === 'ai'" class="ide-surface-pane ide-ai-surface">
             <AiAgentPanel
               :workspace-id="workspace?.id ?? 0"
               :selected-agent-id="selectedAgentId"
@@ -427,27 +428,33 @@ function handleBack() {
               @select-agent="handleAgentSelect"
             />
           </div>
-          <EditorPanel
-            v-show="activeActivity !== 'ai' && activeActivity !== 'git' && activeActivity !== 'info'"
-            ref="editorPanel"
-            :workspace-id="workspace?.id ?? 0"
-            :file-path="activeFile"
-            @active-change="(p: string | null) => activeFile = p"
-          />
-          <WorkspaceProcessesPanel
-            v-show="activeActivity === 'info'"
-            :workspace-id="workspace?.id ?? 0"
-            :active="activeActivity === 'info'"
-          />
-          <GitGraphPanel
-            v-show="activeActivity === 'git'"
-            :workspace-id="workspace?.id ?? 0"
-            :active="activeActivity === 'git'"
-            :selected-commit-hash="selectedGitCommit?.hash ?? null"
-            :diff-request="gitDiffRequest"
-            @commit-select="handleGitCommitSelect"
-            @close-diff="closeGitDiff"
-          />
+          <div v-show="activeActivity !== 'ai' && activeActivity !== 'git' && activeActivity !== 'info' && activeActivity !== 'services'" class="ide-surface-pane">
+            <EditorPanel
+              ref="editorPanel"
+              :workspace-id="workspace?.id ?? 0"
+              :file-path="activeFile"
+              @active-change="(p: string | null) => activeFile = p"
+            />
+          </div>
+          <div v-show="activeActivity === 'info'" class="ide-surface-pane">
+            <WorkspaceProcessesPanel
+              :workspace-id="workspace?.id ?? 0"
+              :active="activeActivity === 'info'"
+            />
+          </div>
+          <div v-show="activeActivity === 'git'" class="ide-surface-pane">
+            <GitGraphPanel
+              :workspace-id="workspace?.id ?? 0"
+              :active="activeActivity === 'git'"
+              :selected-commit-hash="selectedGitCommit?.hash ?? null"
+              :diff-request="gitDiffRequest"
+              @commit-select="handleGitCommitSelect"
+              @close-diff="closeGitDiff"
+            />
+          </div>
+          <div v-show="activeActivity === 'services'" class="ide-surface-pane">
+            <WorkspaceServicesPanel :workspace-id="workspace?.id ?? 0" />
+          </div>
         </section>
         <div
           class="resize-handle resize-handle--vertical"
@@ -790,9 +797,12 @@ function handleBack() {
   min-height: 0;
 }
 
-.ide-ai-surface {
+.ide-surface-pane {
   height: 100%;
   overflow: hidden;
+}
+
+.ide-ai-surface {
   background: var(--bg-base);
 }
 
