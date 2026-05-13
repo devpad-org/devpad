@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { workspaceApi, type Workspace } from '@/api/workspaces'
 import FileExplorer from '@/components/ide/FileExplorer.vue'
@@ -10,16 +10,19 @@ import AiAgentPanel from '@/components/ide/AiAgentPanel.vue'
 import AiAgentsPanel from '@/components/ide/AiAgentsPanel.vue'
 import AiAgentRunsPanel from '@/components/ide/AiAgentRunsPanel.vue'
 import PreviewPanel from '@/components/ide/PreviewPanel.vue'
+import PreviewNewTabModal from '@/components/ide/PreviewNewTabModal.vue'
 import GitPanel from '@/components/ide/GitPanel.vue'
 import GitStatusBar from '@/components/ide/GitStatusBar.vue'
 import WorkspaceInfoPanel from '@/components/ide/WorkspaceInfoPanel.vue'
 import ServicesPanel from '@/components/ide/ServicesPanel.vue'
+import { useServiceStore } from '@/stores/services'
 import { useResizable } from '@/composables/useResizable'
 import type { GitCommit, GitCommitFile } from '@/api/git'
 import type { AgentRun } from '@/api/ai'
 
 const route = useRoute()
 const router = useRouter()
+const serviceStore = useServiceStore()
 
 const workspace = ref<Workspace | null>(null)
 const loading = ref(true)
@@ -33,6 +36,9 @@ const selectedGitCommit = ref<GitCommit | null>(null)
 const gitDiffRequest = ref<GitDiffRequest | null>(null)
 const focusedAgentRunId = ref<number | null>(null)
 const selectedAgentId = ref('default')
+const previewModalVisible = ref(false)
+const previewModalLoading = ref(false)
+const previewModalError = ref<string | null>(null)
 let gitDiffRequestId = 0
 
 type GitDiffRequest =
@@ -41,6 +47,7 @@ type GitDiffRequest =
 
 type ActivityTab = 'ai' | 'explorer' | 'git' | 'info' | 'services'
 const activeActivity = ref<ActivityTab>('ai')
+const serviceCount = computed(() => serviceStore.services.length)
 
 const sidebar = useResizable({
   direction: 'horizontal',
@@ -165,16 +172,40 @@ function closeGitDiff() {
   gitDiffRequest.value = null
 }
 
-async function openPreviewNewTab() {
-  const portStr = prompt('Enter port to preview:', '3000')
-  if (!portStr) return
-  const port = Number(portStr)
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return
+function showPreviewNewTabModal() {
+  previewModalError.value = null
+  previewModalVisible.value = true
+}
+
+function closePreviewNewTabModal() {
+  if (previewModalLoading.value) return
+
+  previewModalVisible.value = false
+  previewModalError.value = null
+}
+
+async function openPreviewNewTab(port: number) {
+  previewModalLoading.value = true
+  previewModalError.value = null
+
+  const previewWindow = window.open('about:blank', '_blank')
+  if (!previewWindow) {
+    previewModalLoading.value = false
+    previewModalError.value = 'Your browser blocked the preview tab. Allow pop-ups for Devpad and try again.'
+    return
+  }
+
+  previewWindow.opener = null
+
   try {
     const url = await workspaceApi.getPreviewURL(workspace.value!.id, port)
-    window.open(url, '_blank')
-  } catch {
-    // Silently fail — user can use the panel for error details
+    previewWindow.location.href = url
+    previewModalVisible.value = false
+  } catch (e) {
+    previewWindow.close()
+    previewModalError.value = e instanceof Error ? e.message : 'Failed to open preview'
+  } finally {
+    previewModalLoading.value = false
   }
 }
 
@@ -258,7 +289,7 @@ function handleBack() {
         </button>
         <button
           class="titlebar-btn"
-          @click="openPreviewNewTab"
+          @click="showPreviewNewTabModal"
           title="Open preview in new tab"
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -325,13 +356,20 @@ function handleBack() {
           class="activity-btn"
           :class="{ active: activeActivity === 'services' }"
           @click="activeActivity = 'services'"
-          title="Database Services"
+          :title="serviceCount > 0 ? `Database Services (${serviceCount})` : 'Database Services'"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <ellipse cx="12" cy="5" rx="9" ry="3" />
             <path d="M3 5v14a9 3 0 0 0 18 0V5" />
             <path d="M3 12a9 3 0 0 0 18 0" />
           </svg>
+          <span
+            v-if="serviceCount > 0"
+            class="activity-badge"
+            :aria-label="`${serviceCount} database services attached`"
+          >
+            {{ serviceCount }}
+          </span>
         </button>
       </nav>
 
@@ -459,6 +497,13 @@ function handleBack() {
     <GitStatusBar
       :workspace-id="workspace?.id ?? 0"
       @open-git="activeActivity = 'git'"
+    />
+    <PreviewNewTabModal
+      :show="previewModalVisible"
+      :loading="previewModalLoading"
+      :error="previewModalError"
+      @open="openPreviewNewTab"
+      @cancel="closePreviewNewTabModal"
     />
   </div>
 </template>
@@ -688,6 +733,25 @@ function handleBack() {
   width: 2px;
   background: var(--accent-blue);
   border-radius: 1px;
+}
+
+.activity-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent-blue);
+  color: var(--bg-void);
+  border: 1px solid var(--bg-surface);
+  font-family: var(--font-sans);
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
 }
 
 /* Body layout */
