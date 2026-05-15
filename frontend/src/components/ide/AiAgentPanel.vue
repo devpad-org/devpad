@@ -118,6 +118,7 @@ const focusedRunEventController = ref<AbortController | null>(null)
 const focusedRunOutputStarted = ref(false)
 const activeContextSize = ref<ContextSize | null>(null)
 const focusedRunContextSize = ref<ContextSize | null>(null)
+const autoScrollEnabled = ref(true)
 
 const currentModel = computed(() => models.value.find((model) => model.id === selectedModel.value) ?? null)
 
@@ -607,7 +608,7 @@ async function loadFocusedRun(runId: number | null) {
   }
   focusedRunMessages.value = reconstructDisplayMessages(loadedRun.inputMessages ?? [])
   await nextTick()
-  scrollToBottom()
+  scrollToBottom({ force: true })
 
   const controller = new AbortController()
   focusedRunEventController.value = controller
@@ -619,7 +620,7 @@ async function loadFocusedRun(runId: number | null) {
       (event) => {
         applyFocusedRunEvent(event)
         focusedRunLastSequence.value = Math.max(focusedRunLastSequence.value, event.sequence ?? 0)
-        void nextTick(scrollToBottom)
+        void nextTick(() => scrollToBottom())
       },
       focusedRunLastSequence.value,
       controller.signal,
@@ -762,7 +763,7 @@ async function loadConversation(convId: number) {
   continuationParentRunId.value = findContinuationParentRunId(convId)
   conversationStore.setActive(convId)
   await nextTick()
-  scrollToBottom()
+  scrollToBottom({ force: true })
 }
 
 async function saveCurrentConversation() {
@@ -823,7 +824,7 @@ async function sendMessage() {
       segments: [{ type: 'text', content: 'No AI model is configured. Ask an admin to set up an AI provider in Settings.' }],
     })
     await nextTick()
-    scrollToBottom()
+    scrollToBottom({ force: true })
     return
   }
 
@@ -835,7 +836,7 @@ async function sendMessage() {
       segments: [{ type: 'text', content: 'Unable to start the AI agent because the chat session could not be created.' }],
     })
     await nextTick()
-    scrollToBottom()
+    scrollToBottom({ force: true })
     return
   }
 
@@ -850,7 +851,7 @@ async function sendMessage() {
   const assistantIdx = messages.value.length - 1
 
   await nextTick()
-  scrollToBottom()
+  scrollToBottom({ force: true })
 
   streaming.value = true
   const controller = new AbortController()
@@ -1081,6 +1082,7 @@ function newChat() {
   continuationParentRunId.value = null
   activeContextSize.value = null
   focusedRunContextSize.value = null
+  autoScrollEnabled.value = true
   resetInputHeight()
   activeConversationId.value = null
   conversationStore.setActive(null)
@@ -1133,7 +1135,7 @@ async function continueFocusedRunConversation() {
     }
     emit('clear-focused-run')
     await nextTick()
-    scrollToBottom()
+    scrollToBottom({ force: true })
     inputEl.value?.focus()
   } catch (err) {
     focusedRunError.value = err instanceof Error ? err.message : 'Failed to load conversation for this run'
@@ -1212,13 +1214,32 @@ const planSummary = computed(() => {
 })
 
 let scrollRaf: number | null = null
+let scrollRafForce = false
+const AUTO_SCROLL_THRESHOLD_PX = 48
 
-function scrollToBottom() {
+function isNearChatBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= AUTO_SCROLL_THRESHOLD_PX
+}
+
+function handleChatScroll() {
+  const el = chatBody.value
+  if (!el) return
+  autoScrollEnabled.value = isNearChatBottom(el)
+}
+
+function scrollToBottom(options: { force?: boolean } = {}) {
+  const force = options.force === true
+  if (!force && !autoScrollEnabled.value) return
+  scrollRafForce = scrollRafForce || force
   if (scrollRaf !== null) return
   scrollRaf = requestAnimationFrame(() => {
     scrollRaf = null
-    if (chatBody.value) {
-      chatBody.value.scrollTop = chatBody.value.scrollHeight
+    const shouldForce = scrollRafForce
+    scrollRafForce = false
+    const el = chatBody.value
+    if (el && (shouldForce || autoScrollEnabled.value)) {
+      el.scrollTop = el.scrollHeight
+      autoScrollEnabled.value = true
     }
   })
 }
@@ -1286,7 +1307,7 @@ function scrollToBottom() {
       </div>
     </div>
 
-    <div ref="chatBody" class="agent-body">
+    <div ref="chatBody" class="agent-body" @scroll="handleChatScroll">
       <div v-if="viewingFocusedRun" class="run-focus-banner">
         <span class="run-focus-label">Focused background run</span>
         <span v-if="focusedRun?.model" class="run-focus-meta">{{ focusedRun.model }}</span>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -16,17 +16,30 @@ const emit = defineEmits<{
 
 const terminalRef = ref<HTMLElement | null>(null)
 const connected = ref(false)
+const reconnecting = ref(false)
 const error = ref<string | null>(null)
+const terminalStatus = computed(() => {
+  if (connected.value) return 'Connected'
+  if (reconnecting.value) return 'Reconnecting'
+  return 'Disconnected'
+})
 
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let ws: WebSocket | null = null
 let resizeObserver: ResizeObserver | null = null
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let reconnectAttempt = 0
+let closing = false
+
+const reconnectBaseDelayMs = 1_000
+const reconnectMaxDelayMs = 10_000
 
 function connect() {
   if (!terminalRef.value) return
 
   error.value = null
+  closing = false
 
   terminal = new Terminal({
     cursorBlink: true,
@@ -40,35 +53,6 @@ function connect() {
   terminal.loadAddon(fitAddon)
   terminal.open(terminalRef.value)
   fitAddon.fit()
-
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const wsUrl = `${proto}//${window.location.host}/api/workspaces/${props.workspaceId}/terminal`
-  ws = new WebSocket(wsUrl)
-  ws.binaryType = 'arraybuffer'
-
-  ws.onopen = () => {
-    connected.value = true
-    // Send initial terminal size
-    sendResize()
-  }
-
-  ws.onmessage = (event) => {
-    if (event.data instanceof ArrayBuffer) {
-      terminal?.write(new Uint8Array(event.data))
-    } else {
-      terminal?.write(event.data)
-    }
-  }
-
-  ws.onerror = () => {
-    error.value = 'Connection error'
-    connected.value = false
-  }
-
-  ws.onclose = () => {
-    connected.value = false
-    terminal?.write('\r\n\x1b[31m[Terminal disconnected]\x1b[0m\r\n')
-  }
 
   terminal.onData((data) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -88,6 +72,81 @@ function connect() {
       ws.send(JSON.stringify({ type: 'resize', cols, rows }))
     }
   })
+
+  connectSocket()
+}
+
+function connectSocket() {
+  if (closing) return
+
+  clearReconnectTimer()
+
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsUrl = `${proto}//${window.location.host}/api/workspaces/${props.workspaceId}/terminal`
+  const socket = new WebSocket(wsUrl)
+  ws = socket
+  socket.binaryType = 'arraybuffer'
+
+  socket.onopen = () => {
+    if (ws !== socket) return
+
+    connected.value = true
+    reconnecting.value = false
+    error.value = null
+
+    if (reconnectAttempt > 0) {
+      terminal?.write('\r\n\x1b[32m[Connected to a new terminal shell]\x1b[0m\r\n')
+    }
+    reconnectAttempt = 0
+    sendResize()
+  }
+
+  socket.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      terminal?.write(new Uint8Array(event.data))
+    } else {
+      terminal?.write(event.data)
+    }
+  }
+
+  socket.onerror = () => {
+    if (ws !== socket) return
+
+    error.value = 'Connection error. Reconnecting...'
+    connected.value = false
+  }
+
+  socket.onclose = () => {
+    if (ws !== socket) return
+
+    ws = null
+    connected.value = false
+    if (closing) return
+
+    terminal?.write('\r\n\x1b[31m[Terminal disconnected]\x1b[0m\r\n')
+    scheduleReconnect()
+  }
+}
+
+function scheduleReconnect() {
+  if (closing || reconnectTimer) return
+
+  reconnecting.value = true
+  reconnectAttempt += 1
+  const delay = Math.min(reconnectBaseDelayMs * 2 ** (reconnectAttempt - 1), reconnectMaxDelayMs)
+  terminal?.write(`\x1b[33m[Reconnecting in ${Math.round(delay / 1000)}s...]\x1b[0m\r\n`)
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    connectSocket()
+  }, delay)
+}
+
+function clearReconnectTimer() {
+  if (!reconnectTimer) return
+
+  clearTimeout(reconnectTimer)
+  reconnectTimer = null
 }
 
 function sendResize() {
@@ -97,6 +156,8 @@ function sendResize() {
 }
 
 function disconnect() {
+  closing = true
+  clearReconnectTimer()
   resizeObserver?.disconnect()
   resizeObserver = null
   ws?.close()
@@ -105,6 +166,8 @@ function disconnect() {
   terminal = null
   fitAddon = null
   connected.value = false
+  reconnecting.value = false
+  reconnectAttempt = 0
 }
 
 onMounted(() => {
@@ -141,9 +204,9 @@ watch(() => props.minimized, (isMinimized) => {
         Terminal
       </span>
       <div class="terminal-indicators">
-        <span class="terminal-status" :class="{ connected }">
+        <span class="terminal-status" :class="{ connected, reconnecting }">
           <span class="status-dot" />
-          {{ connected ? 'Connected' : 'Disconnected' }}
+          {{ terminalStatus }}
         </span>
         <button class="terminal-toggle-btn" @click="emit('toggle-minimize')" :title="minimized ? 'Expand terminal' : 'Minimize terminal'">
           <svg v-if="minimized" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -212,6 +275,10 @@ watch(() => props.minimized, (isMinimized) => {
 
 .terminal-status.connected .status-dot {
   background: var(--accent-green);
+}
+
+.terminal-status.reconnecting .status-dot {
+  background: var(--accent-amber);
 }
 
 .terminal-toggle-btn {

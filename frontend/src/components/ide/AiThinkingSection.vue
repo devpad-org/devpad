@@ -5,76 +5,62 @@ defineProps<{
 </script>
 
 <template>
-  <details class="thinking-content">
-    <summary class="thinking-summary">
-      <svg class="thinking-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="6 9 12 15 18 9" />
-      </svg>
+  <section class="thinking-content" aria-label="Thinking">
+    <div class="thinking-summary">
       <span class="thinking-title">Thinking</span>
-    </summary>
+    </div>
     <div class="thinking-text">{{ content }}</div>
-  </details>
+  </section>
 </template>
 
 <style scoped>
 .thinking-content {
   max-width: min(100%, 620px);
-  margin: 1px 0 var(--space-2);
-  color: var(--text-tertiary);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 0.5px solid var(--border-hairline);
+  border-left: 2px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-raised) 34%, transparent);
+  color: var(--text-muted);
 }
 
 .thinking-summary {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 0;
-  color: var(--text-muted);
-  cursor: pointer;
-  list-style: none;
+  gap: var(--space-1);
+  margin-bottom: var(--space-1);
+  color: var(--text-tertiary);
   user-select: none;
-  opacity: 0.74;
-  transition: color var(--transition-fast), opacity var(--transition-fast);
+  opacity: 0.78;
 }
 
-.thinking-summary:hover {
-  color: var(--text-secondary);
-  opacity: 1;
-}
-
-.thinking-summary::-webkit-details-marker {
-  display: none;
+.thinking-summary::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  opacity: 0.75;
 }
 
 .thinking-title {
   font-family: var(--font-mono);
-  font-size: 0.68rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-}
-
-.thinking-chevron {
-  flex-shrink: 0;
-  color: currentColor;
-  transition: transform var(--transition-fast), color var(--transition-fast);
-}
-
-.thinking-content[open] .thinking-chevron {
-  transform: rotate(180deg);
-  color: var(--text-secondary);
+  font-size: 0.67rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .thinking-text {
-  max-height: 180px;
-  margin: 2px 0 0 5px;
+  max-height: min(38vh, 280px);
   overflow: auto;
-  padding: 4px 0 4px var(--space-3);
-  border-left: 0.5px solid var(--border-subtle);
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.5;
-  opacity: 0.84;
+  line-height: 1.55;
+  opacity: 0.82;
 }
 </style>
