@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -123,18 +124,29 @@ func handleWriteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := io.ReadAll(io.LimitReader(r.Body, 10<<20)) // 10MB limit
+	dst, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to read request body")
+		writeErr(w, http.StatusInternalServerError, "failed to open file")
 		return
 	}
+	defer dst.Close()
 
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to write file")
+	if _, err := io.Copy(dst, http.MaxBytesReader(w, r.Body, 10<<20)); err != nil {
+		_ = os.Remove(filePath)
+		status, message := writeFileCopyErrorResponse(err)
+		writeErr(w, status, message)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeFileCopyErrorResponse(err error) (int, string) {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		return http.StatusRequestEntityTooLarge, "file exceeds 10MB limit"
+	}
+	return http.StatusInternalServerError, "failed to write file"
 }
 
 func handleDeleteFile(w http.ResponseWriter, r *http.Request) {

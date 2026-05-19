@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -92,6 +94,37 @@ func TestListFilesRecursiveSkipsUnreadableSubdirectory(t *testing.T) {
 	assertContainsPath(t, paths, filepath.Join(root, "accessible.txt"))
 	assertContainsPath(t, paths, blockedDir)
 	assertNotContainsPath(t, paths, filepath.Join(blockedDir, "hidden.txt"))
+}
+
+func TestWriteFileCopyErrorResponse(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantMsg    string
+	}{
+		{
+			name:       "max bytes",
+			err:        &http.MaxBytesError{Limit: 10 << 20},
+			wantStatus: http.StatusRequestEntityTooLarge,
+			wantMsg:    "file exceeds 10MB limit",
+		},
+		{
+			name:       "write failure",
+			err:        errors.New("disk full"),
+			wantStatus: http.StatusInternalServerError,
+			wantMsg:    "failed to write file",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotStatus, gotMsg := writeFileCopyErrorResponse(tt.err)
+			if gotStatus != tt.wantStatus || gotMsg != tt.wantMsg {
+				t.Fatalf("got (%d, %q), want (%d, %q)", gotStatus, gotMsg, tt.wantStatus, tt.wantMsg)
+			}
+		})
+	}
 }
 
 func writeTestFile(t *testing.T, path string) {

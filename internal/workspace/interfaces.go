@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"io"
 
 	"github.com/devpad-org/devpad/internal/agent"
 )
@@ -35,6 +36,11 @@ type FileContentService interface {
 	DeleteFile(ctx context.Context, userID, workspaceID int64, path string) error
 }
 
+// FileUploadService defines streamed workspace file uploads.
+type FileUploadService interface {
+	UploadFile(ctx context.Context, userID, workspaceID int64, path string, content io.Reader) error
+}
+
 // FileTreeService defines workspace file tree mutation operations.
 type FileTreeService interface {
 	CreateDirectory(ctx context.Context, userID, workspaceID int64, path string) error
@@ -49,6 +55,7 @@ type FileSearchService interface {
 // FileService defines all workspace file operations and search.
 type FileService interface {
 	FileContentService
+	FileUploadService
 	FileTreeService
 	FileSearchService
 }
@@ -117,6 +124,7 @@ type HandlerService interface {
 	LifecycleService
 	AccessService
 	FileContentService
+	FileUploadService
 	FileTreeService
 	ProcessService
 	GitService

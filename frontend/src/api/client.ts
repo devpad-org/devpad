@@ -40,6 +40,18 @@ class ApiClient {
     return res.json() as Promise<T>
   }
 
+  async postForm<T>(path: string, body: FormData): Promise<T> {
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method: 'POST',
+      body,
+    })
+    if (!res.ok) {
+      throw await this.errorFromResponse(res, 'POST', path)
+    }
+    if (res.status === 204) return undefined as T
+    return res.json() as Promise<T>
+  }
+
   async put<T>(path: string, body: unknown): Promise<T> {
     const res = await fetch(`${this.baseUrl}${path}`, {
       method: 'PUT',

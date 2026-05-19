@@ -21,6 +21,7 @@ const emit = defineEmits<{
   select: [node: FileNode]
   'create-file': [parentPath: string]
   'create-dir': [parentPath: string]
+  upload: [parentPath: string]
   delete: [node: FileNode]
   download: [node: FileNode]
   'update:creatingName': [value: string]
@@ -91,6 +92,11 @@ function focusInput(e: { el: HTMLElement }) {
         <button class="action-btn" title="New Folder" @click="stopPropagation($event, () => emit('create-dir', node.path))">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 10v6" /><path d="M9 13h6" /><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+          </svg>
+        </button>
+        <button class="action-btn" title="Upload File" @click="stopPropagation($event, () => emit('upload', node.path))">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
           </svg>
         </button>
         <button class="action-btn action-btn--danger" title="Delete" @click="stopPropagation($event, () => emit('delete', node))">
@@ -208,6 +214,7 @@ function focusInput(e: { el: HTMLElement }) {
         @select="emit('select', $event)"
         @create-file="emit('create-file', $event)"
         @create-dir="emit('create-dir', $event)"
+        @upload="emit('upload', $event)"
         @delete="emit('delete', $event)"
         @download="emit('download', $event)"
         @update:creating-name="emit('update:creatingName', $event)"

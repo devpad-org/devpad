@@ -25,6 +25,10 @@ const files = ref<FileNode[]>([])
 const loading = ref(true)
 const refreshing = ref(false)
 const selectedPath = ref<string | null>(null)
+const operationError = ref<string | null>(null)
+const uploadInput = ref<HTMLInputElement | null>(null)
+const uploadTargetDirectory = ref('/workspace')
+const uploading = ref(false)
 
 // Filesystem watcher
 const { connect: connectWatcher, onEvent } = useFileWatcher(() => props.workspaceId)
@@ -65,6 +69,10 @@ async function loadRootDirectory() {
   } catch {
     files.value = []
   }
+}
+
+function getErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback
 }
 
 async function refreshTree() {
@@ -216,14 +224,15 @@ async function confirmCreate() {
 
   const fullPath = `${creatingIn.value}/${name}`
   try {
+    operationError.value = null
     if (creatingType.value === 'directory') {
       await workspaceApi.mkdir(props.workspaceId, fullPath)
     } else {
       await workspaceApi.writeFile(props.workspaceId, fullPath, '')
     }
     await refreshDirectory(creatingIn.value)
-  } catch {
-    // Silently fail — fs watcher will catch up
+  } catch (err) {
+    operationError.value = getErrorMessage(err, `Failed to create ${creatingType.value}`)
   }
   cancelCreate()
 }
@@ -246,12 +255,13 @@ function requestDelete(node: FileNode) {
 async function confirmDelete() {
   if (!deleteTarget.value) return
   try {
+    operationError.value = null
     await workspaceApi.deleteFile(props.workspaceId, deleteTarget.value.path)
     // Refresh parent directory
     const parentPath = deleteTarget.value.path.substring(0, deleteTarget.value.path.lastIndexOf('/')) || '/workspace'
     await refreshDirectory(parentPath)
-  } catch {
-    // Silently fail
+  } catch (err) {
+    operationError.value = getErrorMessage(err, 'Failed to delete item')
   }
   showDeleteConfirm.value = false
   deleteTarget.value = null
@@ -268,15 +278,48 @@ function focusInput(e: { el: HTMLElement }) {
 
 // --- Download file ---
 async function downloadFile(node: FileNode) {
-  const res = await fetch(`/api/workspaces/${props.workspaceId}/file?path=${encodeURIComponent(node.path)}`)
-  if (!res.ok) return
-  const blob = await res.blob()
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = node.name
-  a.click()
-  URL.revokeObjectURL(url)
+  operationError.value = null
+  try {
+    const blob = await workspaceApi.downloadFile(props.workspaceId, node.path)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = node.name
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    operationError.value = getErrorMessage(err, 'Failed to download file')
+  }
+}
+
+// --- Upload file ---
+function requestUpload(directoryPath: string) {
+  uploadTargetDirectory.value = directoryPath
+  operationError.value = null
+  if (uploadInput.value) {
+    uploadInput.value.value = ''
+    uploadInput.value.click()
+  }
+}
+
+async function uploadSelectedFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  uploading.value = true
+  operationError.value = null
+  try {
+    const res = await workspaceApi.uploadFile(props.workspaceId, uploadTargetDirectory.value, file)
+    await refreshDirectory(uploadTargetDirectory.value)
+    selectedPath.value = res.path
+    emit('select', res.path)
+  } catch (err) {
+    operationError.value = getErrorMessage(err, 'Failed to upload file')
+  } finally {
+    uploading.value = false
+    input.value = ''
+  }
 }
 </script>
 
@@ -310,6 +353,16 @@ async function downloadFile(node: FileNode) {
         </button>
         <button
           class="header-btn"
+          :disabled="uploading"
+          title="Upload File"
+          @click="requestUpload('/workspace')"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+        </button>
+        <button
+          class="header-btn"
           :class="{ spinning: refreshing }"
           title="Refresh file tree"
           @click="refreshTree"
@@ -320,6 +373,16 @@ async function downloadFile(node: FileNode) {
           </svg>
         </button>
       </div>
+    </div>
+    <input
+      ref="uploadInput"
+      class="upload-input"
+      type="file"
+      @change="uploadSelectedFile"
+    />
+    <div v-if="operationError" class="explorer-error" role="alert">
+      <span>{{ operationError }}</span>
+      <button class="error-dismiss" title="Dismiss" @click="operationError = null">×</button>
     </div>
     <div class="file-tree">
       <!-- Root-level inline creation input -->
@@ -383,6 +446,7 @@ async function downloadFile(node: FileNode) {
             @select="selectFile"
             @create-file="startCreate($event, 'file')"
             @create-dir="startCreate($event, 'directory')"
+            @upload="requestUpload"
             @delete="requestDelete"
             @download="downloadFile"
             @update:creating-name="creatingName = $event"
@@ -469,6 +533,38 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
 .header-btn:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
+}
+
+.header-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.upload-input {
+  display: none;
+}
+
+.explorer-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 0.5px solid var(--border-default);
+  color: var(--accent-rose);
+  background: var(--bg-surface);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.error-dismiss {
+  margin-left: auto;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.error-dismiss:hover {
+  color: var(--text-primary);
 }
 
 .header-btn.spinning svg {

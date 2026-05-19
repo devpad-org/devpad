@@ -1,7 +1,9 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
+	"io"
 
 	"github.com/devpad-org/devpad/internal/agent"
 )
@@ -23,11 +25,15 @@ func (s *service) ReadFile(ctx context.Context, userID, workspaceID int64, path 
 }
 
 func (s *service) WriteFile(ctx context.Context, userID, workspaceID int64, path string, content []byte) error {
+	return s.UploadFile(ctx, userID, workspaceID, path, bytes.NewReader(content))
+}
+
+func (s *service) UploadFile(ctx context.Context, userID, workspaceID int64, path string, content io.Reader) error {
 	c, err := s.getAgent(ctx, userID, workspaceID)
 	if err != nil {
 		return err
 	}
-	return c.WriteFile(ctx, path, content)
+	return c.UploadFile(ctx, path, content)
 }
 
 func (s *service) DeleteFile(ctx context.Context, userID, workspaceID int64, path string) error {

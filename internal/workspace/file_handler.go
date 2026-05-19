@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path"
 	"strconv"
+	"strings"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/auth"
 )
+
+const maxWorkspaceUploadBytes = int64(10 << 20)
 
 // HandleListFiles lists files in a workspace directory.
 func (h *Handler) HandleListFiles(w http.ResponseWriter, r *http.Request) {
@@ -131,6 +135,84 @@ func (h *Handler) HandleWriteFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleUploadFile accepts a browser multipart upload and stores the file in a workspace directory.
+func (h *Handler) HandleUploadFile(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	if err := r.ParseMultipartForm(maxWorkspaceUploadBytes); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid multipart upload")
+		return
+	}
+
+	targetDir := r.FormValue("path")
+	if targetDir == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	targetDir, err = normalizeUploadDirectory(targetDir)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "file is required")
+		return
+	}
+	defer file.Close()
+
+	filename, err := sanitizeUploadFilename(header.Filename)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	targetPath := path.Join(targetDir, filename)
+
+	limited := http.MaxBytesReader(w, file, maxWorkspaceUploadBytes)
+	if err := h.service.UploadFile(r.Context(), user.ID, id, targetPath, limited); err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]string{"path": targetPath})
+}
+
+func normalizeUploadDirectory(dir string) (string, error) {
+	cleaned := strings.TrimSpace(dir)
+	if cleaned == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if !strings.HasPrefix(cleaned, "/") {
+		cleaned = path.Join("/workspace", cleaned)
+	}
+	cleaned = path.Clean(cleaned)
+	if cleaned != "/workspace" && !strings.HasPrefix(cleaned, "/workspace/") {
+		return "", fmt.Errorf("path must be under /workspace")
+	}
+	return cleaned, nil
+}
+
+func sanitizeUploadFilename(filename string) (string, error) {
+	name := strings.TrimSpace(filename)
+	if name == "" {
+		return "", fmt.Errorf("filename is required")
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("filename must not contain path separators")
+	}
+	if name == "." || name == ".." {
+		return "", fmt.Errorf("invalid filename")
+	}
+	return name, nil
 }
 
 // HandleDeleteFile deletes a file or directory from the workspace.

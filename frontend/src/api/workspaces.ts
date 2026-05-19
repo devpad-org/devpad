@@ -64,6 +64,10 @@ interface FileListResponse {
   truncated?: boolean
 }
 
+interface UploadFileResponse {
+  path: string
+}
+
 interface ListFilesOptions {
   recursive?: boolean
   maxDepth?: number
@@ -126,6 +130,22 @@ export const workspaceApi = {
 
   writeFile(id: number, path: string, content: string): Promise<void> {
     return apiClient.put(`/api/workspaces/${id}/file`, { path, content })
+  },
+
+  async uploadFile(id: number, directoryPath: string, file: File): Promise<UploadFileResponse> {
+    const form = new FormData()
+    form.set('path', directoryPath)
+    form.set('file', file)
+
+    return apiClient.postForm<UploadFileResponse>(`/api/workspaces/${id}/file/upload`, form)
+  },
+
+  async downloadFile(id: number, path: string): Promise<Blob> {
+    const res = await fetch(`/api/workspaces/${id}/file?path=${encodeURIComponent(path)}`)
+    if (!res.ok) {
+      throw new Error(`Failed to download file: ${res.status}`)
+    }
+    return res.blob()
   },
 
   deleteFile(id: number, path: string): Promise<void> {

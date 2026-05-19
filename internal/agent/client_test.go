@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,6 +28,46 @@ func TestWaitReady_ImmediateSuccess(t *testing.T) {
 
 	if err := c.WaitReady(ctx); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestUploadFileStreamsContentWithAuth(t *testing.T) {
+	const token = "agent-token"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/file" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if r.Method != http.MethodPut {
+			t.Fatalf("expected PUT, got %s", r.Method)
+		}
+		if got := r.URL.Query().Get("path"); got != "/workspace/docs/readme.md" {
+			t.Fatalf("path query = %q, want /workspace/docs/readme.md", got)
+		}
+		if got := r.Header.Get("X-Devpad-Agent-Token"); got != token {
+			t.Fatalf("auth token = %q, want %q", got, token)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/octet-stream" {
+			t.Fatalf("content type = %q, want application/octet-stream", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("reading body: %v", err)
+		}
+		if string(body) != "hello upload" {
+			t.Fatalf("body = %q", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := &Client{
+		baseURL: srv.URL,
+		token:   token,
+		http:    srv.Client(),
+	}
+
+	if err := client.UploadFile(context.Background(), "/workspace/docs/readme.md", strings.NewReader("hello upload")); err != nil {
+		t.Fatalf("uploading file: %v", err)
 	}
 }
 

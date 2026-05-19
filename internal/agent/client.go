@@ -213,8 +213,13 @@ func (c *Client) ReadFile(ctx context.Context, path string) ([]byte, error) {
 
 // WriteFile writes content to a file inside the workspace.
 func (c *Client) WriteFile(ctx context.Context, path string, content []byte) error {
+	return c.UploadFile(ctx, path, bytes.NewReader(content))
+}
+
+// UploadFile streams file content into a file inside the workspace.
+func (c *Client) UploadFile(ctx context.Context, path string, content io.Reader) error {
 	u := fmt.Sprintf("%s/api/file?path=%s", c.baseURL, url.QueryEscape(path))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(content))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, content)
 	if err != nil {
 		return err
 	}
@@ -222,7 +227,7 @@ func (c *Client) WriteFile(ctx context.Context, path string, content []byte) err
 
 	resp, err := c.do(req)
 	if err != nil {
-		return fmt.Errorf("writing file: %w", err)
+		return fmt.Errorf("uploading file: %w", err)
 	}
 	defer resp.Body.Close()
 

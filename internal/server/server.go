@@ -348,6 +348,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("GET /api/workspaces/{id}/files", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleListFiles)))
 	mux.Handle("GET /api/workspaces/{id}/file", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleReadFile)))
 	mux.Handle("PUT /api/workspaces/{id}/file", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleWriteFile)))
+	mux.Handle("POST /api/workspaces/{id}/file/upload", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleUploadFile)))
 	mux.Handle("DELETE /api/workspaces/{id}/file", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleDeleteFile)))
 	mux.Handle("POST /api/workspaces/{id}/file/mkdir", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleMkdir)))
 	mux.Handle("POST /api/workspaces/{id}/file/rename", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleRename)))
@@ -429,16 +430,20 @@ func hostRouter(appMux http.Handler, previewHandler *preview.Handler, previewDom
 	})
 }
 
-// requestBodyLimit applies body size limits: 10MB for conversation message saves
-// (which can carry large tool histories) and 1MB for all other endpoints.
+// requestBodyLimit applies body size limits: 10MB for conversation message saves,
+// 10MB plus multipart overhead for workspace file uploads, and 1MB for all other endpoints.
 func requestBodyLimit(next http.Handler) http.Handler {
 	const defaultLimit = int64(1 << 20)
-	const saveLimit = int64(10 << 20)
+	const largeBodyLimit = int64(10 << 20)
+	const multipartOverheadLimit = int64(1 << 20)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
 			limit := defaultLimit
 			if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/ai/conversations/") {
-				limit = saveLimit
+				limit = largeBodyLimit
+			}
+			if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/workspaces/") && strings.HasSuffix(r.URL.Path, "/file/upload") {
+				limit = largeBodyLimit + multipartOverheadLimit
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
