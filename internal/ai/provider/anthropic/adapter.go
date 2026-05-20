@@ -190,19 +190,19 @@ func buildAnthropicRequest(req aiprovider.StreamRequest, model domain.Model) map
 		body["tools"] = tools
 	}
 
-	if thinking, effort := buildThinkingConfig(req, model); thinking != nil {
+	if thinking := buildThinkingConfig(req, model); thinking != nil {
 		body["thinking"] = thinking
-		if effort != "" {
-			body["effort"] = effort
-		}
+	}
+	if effort := requestedEffort(model, req.Thinking); effort != "" {
+		body["output_config"] = map[string]any{"effort": effort}
 	}
 
 	return body
 }
 
-func buildThinkingConfig(req aiprovider.StreamRequest, model domain.Model) (map[string]any, string) {
+func buildThinkingConfig(req aiprovider.StreamRequest, model domain.Model) map[string]any {
 	if !model.Thinking.Supported {
-		return nil, ""
+		return nil
 	}
 
 	request := domain.ChatRequest{
@@ -212,19 +212,19 @@ func buildThinkingConfig(req aiprovider.StreamRequest, model domain.Model) (map[
 	}
 	if domain.ThinkingEnabledForRequest(model, request) {
 		if usesAdaptiveThinking(model.ID) {
-			return map[string]any{"type": "adaptive"}, requestedEffort(model, req.Thinking)
+			return map[string]any{"type": "adaptive"}
 		}
 		return map[string]any{
 			"type":          "enabled",
 			"budget_tokens": manualThinkingBudgetTokens,
-		}, ""
+		}
 	}
 
 	if req.Thinking != nil && req.Thinking.Enabled != nil && !*req.Thinking.Enabled && model.Thinking.CanDisable {
-		return map[string]any{"type": "disabled"}, ""
+		return map[string]any{"type": "disabled"}
 	}
 
-	return nil, ""
+	return nil
 }
 
 func usesAdaptiveThinking(modelID string) bool {
@@ -237,11 +237,14 @@ func usesAdaptiveThinking(modelID string) bool {
 }
 
 func requestedEffort(model domain.Model, thinking *domain.ThinkingConfig) string {
+	if !model.Thinking.SupportsEffortSelection() {
+		return ""
+	}
 	if thinking != nil && thinking.Effort != "" {
 		return thinking.Effort
 	}
-	if model.Thinking.DefaultEffort != "" {
+	if thinking != nil && thinking.Enabled != nil && *thinking.Enabled && model.Thinking.DefaultEffort != "" {
 		return model.Thinking.DefaultEffort
 	}
-	return "high"
+	return ""
 }

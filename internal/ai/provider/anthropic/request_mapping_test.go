@@ -221,8 +221,12 @@ func TestBuildAnthropicRequest_AdaptiveThinkingEnabled(t *testing.T) {
 	if _, ok := thinking["budget_tokens"]; ok {
 		t.Fatalf("expected adaptive thinking without budget_tokens, got %v", thinking["budget_tokens"])
 	}
-	if body["effort"] != "medium" {
-		t.Fatalf("expected default Sonnet effort medium, got %v", body["effort"])
+	if _, ok := body["effort"]; ok {
+		t.Fatalf("expected Anthropic request not to include top-level effort, got %v", body["effort"])
+	}
+	outputConfig := body["output_config"].(map[string]any)
+	if outputConfig["effort"] != "medium" {
+		t.Fatalf("expected output_config effort medium, got %v", outputConfig["effort"])
 	}
 	if body["max_tokens"] != maxTokens {
 		t.Fatalf("expected max_tokens %d, got %v", maxTokens, body["max_tokens"])
@@ -246,8 +250,12 @@ func TestBuildAnthropicRequest_OpusThinkingEffort(t *testing.T) {
 	if _, ok := thinking["budget_tokens"]; ok {
 		t.Fatalf("expected Opus 4.7 adaptive thinking without budget_tokens, got %v", thinking["budget_tokens"])
 	}
-	if body["effort"] != "max" {
-		t.Fatalf("expected requested effort max, got %v", body["effort"])
+	if _, ok := body["effort"]; ok {
+		t.Fatalf("expected Anthropic request not to include top-level effort, got %v", body["effort"])
+	}
+	outputConfig := body["output_config"].(map[string]any)
+	if outputConfig["effort"] != "max" {
+		t.Fatalf("expected output_config effort max, got %v", outputConfig["effort"])
 	}
 }
 
