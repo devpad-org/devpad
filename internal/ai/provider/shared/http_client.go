@@ -17,7 +17,10 @@ type StreamDecoder func(body io.ReadCloser, ch chan<- domain.ProviderEvent)
 
 // NewStreamingClient creates the default long-lived HTTP client used for streaming APIs.
 func NewStreamingClient() *http.Client {
-	return &http.Client{Timeout: 10 * time.Minute}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 2 * time.Minute
+
+	return &http.Client{Transport: transport}
 }
 
 // StartStreamRequest posts a JSON body to a streaming endpoint and delegates decoding.

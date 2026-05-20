@@ -111,6 +111,7 @@ func ReadSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	if err := scanner.Err(); err != nil {
 		log.Printf("error reading SSE stream: %v", err)
 		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
+		return
 	}
 
 	emitToolCalls(ch, toolCalls, toolCallArgs)
