@@ -33,8 +33,14 @@ func TestAgentRunRepository_PersistsRunsAndOrderedEvents(t *testing.T) {
 		WorkspaceID: workspaceID,
 		Model:       "gpt-5.4",
 		Status:      domain.AgentRunQueued,
-		InputTurns:  []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
-		Thinking:    &domain.ThinkingConfig{Enabled: &thinkingEnabled},
+		InputTurns: []domain.Turn{{
+			Role: domain.RoleUser,
+			Parts: []domain.Part{
+				{Kind: domain.PartText, Text: "hello"},
+				{Kind: domain.PartImage, Image: &domain.ImagePart{MIMEType: "image/png", Data: "aGk="}},
+			},
+		}},
+		Thinking: &domain.ThinkingConfig{Enabled: &thinkingEnabled},
 	}
 	if err := repo.CreateRun(ctx, run); err != nil {
 		t.Fatalf("create run: %v", err)
@@ -55,6 +61,9 @@ func TestAgentRunRepository_PersistsRunsAndOrderedEvents(t *testing.T) {
 	}
 	if len(stored.InputTurns) != 1 || stored.InputTurns[0].Text() != "hello" {
 		t.Fatalf("unexpected stored turns: %+v", stored.InputTurns)
+	}
+	if images := stored.InputTurns[0].Images(); len(images) != 1 || images[0].MIMEType != "image/png" || images[0].Data != "aGk=" {
+		t.Fatalf("unexpected stored images: %+v", images)
 	}
 	if stored.Thinking == nil || stored.Thinking.Enabled == nil || !*stored.Thinking.Enabled {
 		t.Fatalf("unexpected stored thinking config: %+v", stored.Thinking)

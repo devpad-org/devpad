@@ -143,9 +143,10 @@ func (r *ConversationRepository) SaveTurns(ctx context.Context, conversationID i
 
 	partStmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO ai_parts (turn_id, position, kind, text, thinking_state,
+		 image_mime_type, image_data,
 		 tool_call_id, tool_call_item_id, tool_call_name, tool_call_args,
 		 tool_result_call_id, tool_result_name, tool_result_content, tool_result_is_error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return fmt.Errorf("preparing part insert: %w", err)
@@ -179,6 +180,8 @@ func insertPart(ctx context.Context, stmt *sql.Stmt, turnID int64, position int,
 	var (
 		text              string
 		thinkingState     string
+		imageMIMEType     string
+		imageData         string
 		toolCallID        string
 		toolCallItemID    string
 		toolCallName      string
@@ -198,6 +201,11 @@ func insertPart(ctx context.Context, stmt *sql.Stmt, turnID int64, position int,
 			if len(part.Thinking.State) > 0 {
 				thinkingState = string(part.Thinking.State)
 			}
+		}
+	case domain.PartImage:
+		if part.Image != nil {
+			imageMIMEType = part.Image.MIMEType
+			imageData = domain.NormalizeImageData(part.Image.Data)
 		}
 	case domain.PartToolCall:
 		if part.ToolCall != nil {
@@ -220,6 +228,7 @@ func insertPart(ctx context.Context, stmt *sql.Stmt, turnID int64, position int,
 	_, err := stmt.ExecContext(ctx,
 		turnID, position, string(part.Kind),
 		text, thinkingState,
+		imageMIMEType, imageData,
 		toolCallID, toolCallItemID, toolCallName, toolCallArgs,
 		toolResultCallID, toolResultName, toolResultContent, toolResultIsError,
 	)
@@ -230,6 +239,7 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT t.id, t.position, t.role,
 		        p.position, p.kind, p.text, p.thinking_state,
+		        p.image_mime_type, p.image_data,
 		        p.tool_call_id, p.tool_call_item_id, p.tool_call_name, p.tool_call_args,
 		        p.tool_result_call_id, p.tool_result_name, p.tool_result_content, p.tool_result_is_error
 		 FROM ai_turns t
@@ -256,17 +266,19 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 
 	for rows.Next() {
 		var (
-			turnID, turnPos                                            int64
-			role                                                       string
-			partPos                                                    sql.NullInt64
-			kind, text, thinkingState                                  sql.NullString
-			toolCallID, toolCallItemID, toolCallName, toolCallArgs     sql.NullString
-			toolResultCallID, toolResultName, toolResultContent        sql.NullString
-			toolResultIsError                                          sql.NullInt64
+			turnID, turnPos                                        int64
+			role                                                   string
+			partPos                                                sql.NullInt64
+			kind, text, thinkingState                              sql.NullString
+			imageMIMEType, imageData                               sql.NullString
+			toolCallID, toolCallItemID, toolCallName, toolCallArgs sql.NullString
+			toolResultCallID, toolResultName, toolResultContent    sql.NullString
+			toolResultIsError                                      sql.NullInt64
 		)
 		if err := rows.Scan(
 			&turnID, &turnPos, &role,
 			&partPos, &kind, &text, &thinkingState,
+			&imageMIMEType, &imageData,
 			&toolCallID, &toolCallItemID, &toolCallName, &toolCallArgs,
 			&toolResultCallID, &toolResultName, &toolResultContent, &toolResultIsError,
 		); err != nil {
@@ -283,6 +295,7 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 		}
 
 		part, err := scanPart(kind.String, text.String, thinkingState.String,
+			imageMIMEType.String, imageData.String,
 			toolCallID.String, toolCallItemID.String, toolCallName.String, toolCallArgs.String,
 			toolResultCallID.String, toolResultName.String, toolResultContent.String, toolResultIsError.Int64 != 0)
 		if err != nil {
@@ -304,7 +317,7 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 	return turns, nil
 }
 
-func scanPart(kind, text, thinkingState,
+func scanPart(kind, text, thinkingState, imageMIMEType, imageData string,
 	toolCallID, toolCallItemID, toolCallName, toolCallArgs,
 	toolResultCallID, toolResultName, toolResultContent string,
 	toolResultIsError bool) (domain.Part, error) {
@@ -319,6 +332,15 @@ func scanPart(kind, text, thinkingState,
 			tp.State = json.RawMessage(thinkingState)
 		}
 		return domain.Part{Kind: domain.PartThinking, Thinking: tp}, nil
+
+	case domain.PartImage:
+		return domain.Part{
+			Kind: domain.PartImage,
+			Image: &domain.ImagePart{
+				MIMEType: imageMIMEType,
+				Data:     imageData,
+			},
+		}, nil
 
 	case domain.PartToolCall:
 		return domain.Part{

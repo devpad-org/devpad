@@ -18,6 +18,7 @@ type profile struct {
 	toolCallOverhead       int
 	toolResultOverhead     int
 	thinkingOverhead       int
+	imageOverhead          int
 }
 
 // Request is the provider-facing prompt shape to account for before streaming.
@@ -41,6 +42,7 @@ type Estimate struct {
 	ThinkingTokens         int
 	ToolCallArgumentTokens int
 	ToolResultTokens       int
+	ImageTokens            int
 	OverheadTokens         int
 	Turns                  []TurnEstimate
 	Tools                  []ToolEstimate
@@ -55,6 +57,7 @@ type TurnEstimate struct {
 	ThinkingTokens         int
 	ToolCallArgumentTokens int
 	ToolResultTokens       int
+	ImageTokens            int
 	OverheadTokens         int
 	Parts                  []PartEstimate
 }
@@ -140,6 +143,7 @@ func (Estimator) Estimate(req Request) Estimate {
 		estimate.ThinkingTokens += turnEstimate.ThinkingTokens
 		estimate.ToolCallArgumentTokens += turnEstimate.ToolCallArgumentTokens
 		estimate.ToolResultTokens += turnEstimate.ToolResultTokens
+		estimate.ImageTokens += turnEstimate.ImageTokens
 		estimate.OverheadTokens += turnEstimate.OverheadTokens
 	}
 
@@ -149,6 +153,7 @@ func (Estimator) Estimate(req Request) Estimate {
 		estimate.ThinkingTokens +
 		estimate.ToolCallArgumentTokens +
 		estimate.ToolResultTokens +
+		estimate.ImageTokens +
 		estimate.OverheadTokens
 
 	return estimate
@@ -186,6 +191,7 @@ func estimateTurn(p profile, turn domain.Turn) TurnEstimate {
 		estimate.ThinkingTokens +
 		estimate.ToolCallArgumentTokens +
 		estimate.ToolResultTokens +
+		estimate.ImageTokens +
 		estimate.OverheadTokens
 
 	return estimate
@@ -216,6 +222,19 @@ func estimatePart(p profile, role domain.Role, part domain.Part, turn *TurnEstim
 		}
 		overhead := p.partOverhead + p.thinkingOverhead
 		turn.ThinkingTokens += tokens
+		turn.OverheadTokens += overhead
+		return PartEstimate{Kind: part.Kind, Tokens: tokens + overhead}
+
+	case domain.PartImage:
+		if part.Image == nil || part.Image.Data == "" {
+			return PartEstimate{}
+		}
+		// A conservative fixed accounting for a pasted image. Providers bill image
+		// inputs by dimensions/detail rather than text tokens, neither of which is
+		// represented in chat history.
+		tokens := 1024 + tokenCount(p, part.Image.MIMEType)
+		overhead := p.partOverhead + p.imageOverhead
+		turn.ImageTokens += tokens
 		turn.OverheadTokens += overhead
 		return PartEstimate{Kind: part.Kind, Tokens: tokens + overhead}
 
@@ -262,6 +281,7 @@ func profileFor(providerID, modelID string) profile {
 		toolCallOverhead:       10,
 		toolResultOverhead:     10,
 		thinkingOverhead:       8,
+		imageOverhead:          8,
 	}
 
 	provider := strings.ToLower(strings.TrimSpace(providerID))

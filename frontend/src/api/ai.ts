@@ -17,6 +17,7 @@ export interface AIModel {
   providerName: string
   configured: boolean
   thinking: ThinkingCapability
+  vision: boolean
 }
 
 export interface ThinkingCapability {
@@ -83,10 +84,16 @@ export interface SaveAgentPayload {
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  images?: ChatImage[]
   reasoning_content?: string
   thinking_state?: unknown
   tool_calls?: ToolCall[]
   tool_call_id?: string
+}
+
+export interface ChatImage {
+  mimeType: string
+  data: string
 }
 
 export interface ToolCall {
@@ -163,6 +170,7 @@ interface PartDTO {
   kind: string
   text?: string
   thinking?: { text?: string; state?: unknown }
+  image?: { mimeType: string; data: string }
   toolCall?: { id: string; itemId?: string; name: string; arguments: string }
   toolResult?: { toolCallId: string; name: string; content: string; isError?: boolean }
 }
@@ -224,9 +232,16 @@ function messagesToTurns(messages: ChatMessage[]): TurnDTO[] {
       }
       turns.push({ role: 'assistant', parts })
     } else {
+      const parts: PartDTO[] = []
+      if (msg.content) {
+        parts.push({ kind: 'text', text: msg.content })
+      }
+      for (const image of msg.images ?? []) {
+        parts.push({ kind: 'image', image: { mimeType: image.mimeType, data: image.data } })
+      }
       turns.push({
         role: msg.role,
-        parts: msg.content ? [{ kind: 'text', text: msg.content }] : [],
+        parts,
       })
     }
   }
@@ -260,9 +275,12 @@ function turnsToMessages(turns: TurnDTO[]): ChatMessage[] {
       messages.push(msg)
     } else if (turn.role === 'user') {
       let userContent = ''
+      const images: ChatImage[] = []
       for (const part of turn.parts) {
         if (part.kind === 'text') {
           userContent += part.text ?? ''
+        } else if (part.kind === 'image' && part.image) {
+          images.push({ mimeType: part.image.mimeType, data: part.image.data })
         } else if (part.kind === 'tool_result' && part.toolResult) {
           messages.push({
             role: 'tool',
@@ -271,8 +289,10 @@ function turnsToMessages(turns: TurnDTO[]): ChatMessage[] {
           })
         }
       }
-      if (userContent) {
-        messages.push({ role: 'user', content: userContent })
+      if (userContent || images.length > 0) {
+        const msg: ChatMessage = { role: 'user', content: userContent }
+        if (images.length > 0) msg.images = images
+        messages.push(msg)
       }
     } else {
       const text = turn.parts.filter(p => p.kind === 'text').map(p => p.text ?? '').join('')

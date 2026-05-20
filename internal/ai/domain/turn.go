@@ -17,6 +17,7 @@ type PartKind string
 const (
 	PartText       PartKind = "text"
 	PartThinking   PartKind = "thinking"
+	PartImage      PartKind = "image"
 	PartToolCall   PartKind = "tool_call"
 	PartToolResult PartKind = "tool_result"
 )
@@ -32,8 +33,15 @@ type Part struct {
 	Kind       PartKind
 	Text       string          // PartText
 	Thinking   *ThinkingPart   // PartThinking
+	Image      *ImagePart      // PartImage
 	ToolCall   *ToolCall       // PartToolCall
 	ToolResult *ToolResultPart // PartToolResult
+}
+
+// ImagePart holds a base64-encoded image attachment.
+type ImagePart struct {
+	MIMEType string `json:"mimeType"`
+	Data     string `json:"data"`
 }
 
 // ThinkingPart holds reasoning output with an opaque provider state for round-trip.
@@ -131,6 +139,17 @@ func (t Turn) ToolResults() []ToolResultPart {
 		}
 	}
 	return results
+}
+
+// Images returns all image parts attached to the turn.
+func (t Turn) Images() []ImagePart {
+	images := make([]ImagePart, 0)
+	for _, part := range t.Parts {
+		if part.Kind == PartImage && part.Image != nil {
+			images = append(images, *part.Image)
+		}
+	}
+	return images
 }
 
 // ToolResult returns the first tool result part attached to the turn.

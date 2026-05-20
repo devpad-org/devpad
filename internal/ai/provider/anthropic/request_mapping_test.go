@@ -96,6 +96,37 @@ func TestBuildAnthropicRequest_ToolDefinitions(t *testing.T) {
 	}
 }
 
+func TestBuildAnthropicRequest_ImageContentBlock(t *testing.T) {
+	req := aiprovider.StreamRequest{
+		Model: "claude-opus-4-7",
+		Turns: []domain.Turn{{
+			Role: domain.RoleUser,
+			Parts: []domain.Part{
+				{Kind: domain.PartText, Text: "describe"},
+				{Kind: domain.PartImage, Image: &domain.ImagePart{MIMEType: "image/png", Data: "aGVsbG8="}},
+			},
+		}},
+	}
+
+	body := buildAnthropicRequest(req, mustAnthropicModel(t, req.Model))
+	messages := body["messages"].([]map[string]any)
+	content := messages[0]["content"].([]map[string]any)
+	if len(content) != 2 {
+		t.Fatalf("expected text and image blocks, got %+v", content)
+	}
+	if content[0]["type"] != "text" || content[0]["text"] != "describe" {
+		t.Fatalf("unexpected text block: %+v", content[0])
+	}
+	image := content[1]
+	if image["type"] != "image" {
+		t.Fatalf("expected image block, got %+v", image)
+	}
+	source := image["source"].(map[string]any)
+	if source["media_type"] != "image/png" || source["data"] != "aGVsbG8=" {
+		t.Fatalf("unexpected image source: %+v", source)
+	}
+}
+
 func TestBuildAnthropicRequest_ToolCallInAssistantMessage(t *testing.T) {
 	req := aiprovider.StreamRequest{
 		Model: "claude-opus-4-7",

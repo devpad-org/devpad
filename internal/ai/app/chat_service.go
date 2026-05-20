@@ -107,6 +107,9 @@ func (s *providerChatBackend) ChatStream(ctx context.Context, req domain.ChatReq
 	if err := domain.ValidateThinkingRequest(model, req); err != nil {
 		return nil, err
 	}
+	if err := domain.ValidateImageRequest(model, req); err != nil {
+		return nil, err
+	}
 
 	target, err := s.catalog.ResolveChatTarget(ctx, req.Model)
 	if err != nil {

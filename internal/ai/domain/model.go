@@ -6,6 +6,7 @@ type Model struct {
 	Name       string             `json:"name"`
 	ProviderID string             `json:"providerId"`
 	Thinking   ThinkingCapability `json:"thinking"`
+	Vision     bool               `json:"vision"`
 }
 
 // ThinkingCapability describes whether a model supports reasoning/thinking mode.

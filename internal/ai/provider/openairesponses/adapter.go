@@ -109,8 +109,8 @@ func (a *Adapter) Models() []domain.Model {
 	}
 
 	return []domain.Model{
-		{ID: "gpt-5.4", Name: "GPT-5.4", ProviderID: providerID, Thinking: gpt54Thinking},
-		{ID: "gpt-5.5", Name: "GPT-5.5", ProviderID: providerID, Thinking: gpt55Thinking},
+		{ID: "gpt-5.4", Name: "GPT-5.4", ProviderID: providerID, Thinking: gpt54Thinking, Vision: true},
+		{ID: "gpt-5.5", Name: "GPT-5.5", ProviderID: providerID, Thinking: gpt55Thinking, Vision: true},
 	}
 }
 
@@ -211,22 +211,46 @@ func buildInput(turns []domain.Turn) []any {
 						"output":  result.Content,
 					})
 				}
-				if text := turn.Text(); text != "" {
+				if content := buildUserContent(turn); content != nil {
 					input = append(input, map[string]any{
 						"role":    "user",
-						"content": text,
+						"content": content,
 					})
 				}
-			} else if text := turn.Text(); text != "" {
+			} else if content := buildUserContent(turn); content != nil {
 				input = append(input, map[string]any{
 					"role":    "user",
-					"content": text,
+					"content": content,
 				})
 			}
 		}
 	}
 
 	return input
+}
+
+func buildUserContent(turn domain.Turn) any {
+	var blocks []map[string]any
+	if text := turn.Text(); text != "" {
+		blocks = append(blocks, map[string]any{"type": "input_text", "text": text})
+	}
+	for _, image := range turn.Images() {
+		data := domain.NormalizeImageData(image.Data)
+		if data == "" {
+			continue
+		}
+		blocks = append(blocks, map[string]any{
+			"type":      "input_image",
+			"image_url": "data:" + image.MIMEType + ";base64," + data,
+		})
+	}
+	if len(blocks) == 0 {
+		return nil
+	}
+	if len(blocks) == 1 && blocks[0]["type"] == "input_text" {
+		return blocks[0]["text"]
+	}
+	return blocks
 }
 
 func appendReasoningItems(input *[]any, raw json.RawMessage) {

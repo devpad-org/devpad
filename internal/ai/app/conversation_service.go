@@ -19,6 +19,11 @@ type ConversationRepository interface {
 	GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error)
 }
 
+// ModelLookup resolves model capabilities needed when persisting rich chat turns.
+type ModelLookup interface {
+	FindModel(modelID string) (domain.Model, error)
+}
+
 // ConversationService defines business logic for managing chat conversations.
 type ConversationService interface {
 	CreateConversation(ctx context.Context, userID, workspaceID int64, model string) (*domain.Conversation, error)
@@ -31,11 +36,18 @@ type ConversationService interface {
 
 type conversationService struct {
 	convRepo ConversationRepository
+	models   ModelLookup
 }
 
 // NewConversationService creates a ConversationService backed by the given repository.
 func NewConversationService(convRepo ConversationRepository) ConversationService {
 	return &conversationService{convRepo: convRepo}
+}
+
+// NewConversationServiceWithModelLookup creates a ConversationService that can
+// validate persisted chat history against model capabilities.
+func NewConversationServiceWithModelLookup(convRepo ConversationRepository, models ModelLookup) ConversationService {
+	return &conversationService{convRepo: convRepo, models: models}
 }
 
 func (s *conversationService) CreateConversation(ctx context.Context, userID, workspaceID int64, model string) (*domain.Conversation, error) {
@@ -86,6 +98,18 @@ func (s *conversationService) SaveTurns(ctx context.Context, conversationID, use
 	if conv == nil {
 		return domain.ErrConversationNotFound
 	}
+	if hasImageParts(turns) {
+		if s.models == nil {
+			return domain.ErrModelNotFound
+		}
+		model, err := s.models.FindModel(conv.Model)
+		if err != nil {
+			return err
+		}
+		if err := domain.ValidateImageRequest(model, domain.ChatRequest{Model: conv.Model, Turns: turns}); err != nil {
+			return err
+		}
+	}
 
 	newTitle := conv.Title
 	if newTitle == "" {
@@ -119,4 +143,15 @@ func (s *conversationService) GetTurns(ctx context.Context, conversationID, user
 	}
 
 	return turns, nil
+}
+
+func hasImageParts(turns []domain.Turn) bool {
+	for _, turn := range turns {
+		for _, part := range turn.Parts {
+			if part.Kind == domain.PartImage {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -48,6 +48,7 @@ type PartDTO struct {
 	Kind       string           `json:"kind"`
 	Text       string           `json:"text,omitempty"`
 	Thinking   *ThinkingPartDTO `json:"thinking,omitempty"`
+	Image      *ImagePartDTO    `json:"image,omitempty"`
 	ToolCall   *ToolCallDTO     `json:"toolCall,omitempty"`
 	ToolResult *ToolResultDTO   `json:"toolResult,omitempty"`
 }
@@ -56,6 +57,12 @@ type PartDTO struct {
 type ThinkingPartDTO struct {
 	Text  string          `json:"text,omitempty"`
 	State json.RawMessage `json:"state,omitempty"`
+}
+
+// ImagePartDTO carries a base64-encoded pasted image.
+type ImagePartDTO struct {
+	MIMEType string `json:"mimeType"`
+	Data     string `json:"data"`
 }
 
 // ToolCallDTO is the transport representation of a requested tool call.
@@ -196,6 +203,17 @@ func toDomainPart(dto PartDTO) domain.Part {
 				State: domain.CloneRawMessage(dto.Thinking.State),
 			},
 		}
+	case domain.PartImage:
+		if dto.Image == nil {
+			return domain.Part{Kind: domain.PartImage}
+		}
+		return domain.Part{
+			Kind: domain.PartImage,
+			Image: &domain.ImagePart{
+				MIMEType: dto.Image.MIMEType,
+				Data:     domain.NormalizeImageData(dto.Image.Data),
+			},
+		}
 	case domain.PartToolCall:
 		if dto.ToolCall == nil {
 			return domain.Part{Kind: domain.PartToolCall}
@@ -254,6 +272,12 @@ func fromDomainPart(part domain.Part) PartDTO {
 				Text:  part.Thinking.Text,
 				State: domain.CloneRawMessage(part.Thinking.State),
 			}
+		}
+		return dto
+	case domain.PartImage:
+		dto := PartDTO{Kind: "image"}
+		if part.Image != nil {
+			dto.Image = &ImagePartDTO{MIMEType: part.Image.MIMEType, Data: part.Image.Data}
 		}
 		return dto
 	case domain.PartToolCall:

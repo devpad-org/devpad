@@ -17,6 +17,7 @@ func TestToDomainTurns(t *testing.T) {
 					Text:  "thinking",
 					State: json.RawMessage(`{"id":"r1"}`),
 				}},
+				{Kind: "image", Image: &ImagePartDTO{MIMEType: "image/png", Data: "aGVsbG8="}},
 				{Kind: "tool_call", ToolCall: &ToolCallDTO{
 					ID:        "call-1",
 					Name:      "list_files",
@@ -52,6 +53,10 @@ func TestToDomainTurns(t *testing.T) {
 	}
 	if string(assistant.ThinkingState()) != `{"id":"r1"}` {
 		t.Fatalf("unexpected thinking state: %s", assistant.ThinkingState())
+	}
+	images := assistant.Images()
+	if len(images) != 1 || images[0].MIMEType != "image/png" || images[0].Data != "aGVsbG8=" {
+		t.Fatalf("unexpected images: %+v", images)
 	}
 	toolCalls := assistant.ToolCalls()
 	if len(toolCalls) != 1 || toolCalls[0].Function.Name != "list_files" {
@@ -96,6 +101,7 @@ func TestFromDomainTurns(t *testing.T) {
 					State: json.RawMessage(`{"id":"s1"}`),
 				}},
 				{Kind: domain.PartText, Text: "hello"},
+				{Kind: domain.PartImage, Image: &domain.ImagePart{MIMEType: "image/jpeg", Data: "aGk="}},
 				{Kind: domain.PartToolCall, ToolCall: &domain.ToolCall{
 					ID:   "call-1",
 					Type: "function",
@@ -128,8 +134,8 @@ func TestFromDomainTurns(t *testing.T) {
 	if assistant.Role != "assistant" {
 		t.Fatalf("expected assistant role, got %q", assistant.Role)
 	}
-	if len(assistant.Parts) != 3 {
-		t.Fatalf("expected 3 parts, got %d", len(assistant.Parts))
+	if len(assistant.Parts) != 4 {
+		t.Fatalf("expected 4 parts, got %d", len(assistant.Parts))
 	}
 
 	thinkingPart := assistant.Parts[0]
@@ -148,7 +154,12 @@ func TestFromDomainTurns(t *testing.T) {
 		t.Fatalf("unexpected text part: %+v", textPart)
 	}
 
-	toolCallPart := assistant.Parts[2]
+	imagePart := assistant.Parts[2]
+	if imagePart.Kind != "image" || imagePart.Image == nil || imagePart.Image.MIMEType != "image/jpeg" || imagePart.Image.Data != "aGk=" {
+		t.Fatalf("unexpected image part: %+v", imagePart)
+	}
+
+	toolCallPart := assistant.Parts[3]
 	if toolCallPart.Kind != "tool_call" || toolCallPart.ToolCall == nil {
 		t.Fatalf("expected tool_call part, got %+v", toolCallPart)
 	}

@@ -43,6 +43,10 @@ func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "workspaceId is required")
 		return
 	}
+	turns := ToDomainTurns(req.Turns)
+	if !h.validateImageRequest(w, r, req.Model, turns) {
+		return
+	}
 
 	run, err := h.runs.StartRun(r.Context(), app.StartAgentRunRequest{
 		UserID:         user.ID,
@@ -51,7 +55,7 @@ func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 		ParentRunID:    req.ParentRunID,
 		AgentID:        req.AgentID,
 		Model:          req.Model,
-		Turns:          ToDomainTurns(req.Turns),
+		Turns:          turns,
 		Thinking:       ToDomainThinking(req.Thinking),
 	})
 	if err != nil {

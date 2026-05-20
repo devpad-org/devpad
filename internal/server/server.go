@@ -430,17 +430,21 @@ func hostRouter(appMux http.Handler, previewHandler *preview.Handler, previewDom
 	})
 }
 
-// requestBodyLimit applies body size limits: 10MB for conversation message saves,
+// requestBodyLimit applies body size limits: 32MB for AI image-capable requests,
 // 10MB plus multipart overhead for workspace file uploads, and 1MB for all other endpoints.
 func requestBodyLimit(next http.Handler) http.Handler {
 	const defaultLimit = int64(1 << 20)
 	const largeBodyLimit = int64(10 << 20)
+	const aiImageBodyLimit = int64(32 << 20)
 	const multipartOverheadLimit = int64(1 << 20)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
 			limit := defaultLimit
 			if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/ai/conversations/") {
-				limit = largeBodyLimit
+				limit = aiImageBodyLimit
+			}
+			if r.Method == http.MethodPost && (r.URL.Path == "/api/ai/chat" || r.URL.Path == "/api/ai/agent" || r.URL.Path == "/api/ai/agent/runs") {
+				limit = aiImageBodyLimit
 			}
 			if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/workspaces/") && strings.HasSuffix(r.URL.Path, "/file/upload") {
 				limit = largeBodyLimit + multipartOverheadLimit

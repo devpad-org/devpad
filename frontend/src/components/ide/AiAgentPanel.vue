@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult, type ContextSize } from '@/api/ai'
+import { aiApi, type AIModel, type ChatMessage, type ChatImage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult, type ContextSize } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
@@ -62,6 +62,7 @@ type MessageRenderItem = MessageSegment | ToolGroupDisplay
 interface DisplayMessage {
   role: 'user' | 'assistant'
   content: string
+  images?: ChatImage[]
   segments: MessageSegment[]
 }
 
@@ -98,6 +99,7 @@ const messages = ref<DisplayMessage[]>([])
 const rawMessages = ref<ChatMessage[]>([])
 
 const inputValue = ref('')
+const imageAttachments = ref<ChatImage[]>([])
 const chatBody = ref<HTMLElement | null>(null)
 const models = ref<AIModel[]>([])
 const selectedModel = ref('')
@@ -121,6 +123,7 @@ const focusedRunContextSize = ref<ContextSize | null>(null)
 const autoScrollEnabled = ref(true)
 
 const currentModel = computed(() => models.value.find((model) => model.id === selectedModel.value) ?? null)
+const canSend = computed(() => Boolean(inputValue.value.trim() || imageAttachments.value.length > 0))
 
 const viewingFocusedRun = computed(() => props.focusedRunId !== null && props.focusedRunId !== undefined)
 
@@ -262,6 +265,73 @@ function resetInputHeight() {
   const el = inputEl.value
   if (!el) return
   el.style.height = 'auto'
+}
+
+function imageSrc(image: ChatImage): string {
+  return `data:${image.mimeType};base64,${image.data}`
+}
+
+function addAssistantNotice(content: string): void {
+  messages.value.push({
+    role: 'assistant',
+    content,
+    segments: [{ type: 'text', content }],
+  })
+}
+
+async function handlePaste(event: ClipboardEvent) {
+  const files = clipboardImageFiles(event.clipboardData)
+  if (files.length === 0) return
+  event.preventDefault()
+
+  if (!currentModel.value?.vision) {
+    addAssistantNotice('The selected model does not support images. Choose a vision-capable model to paste screenshots.')
+    return
+  }
+
+  for (const file of files) {
+    try {
+      imageAttachments.value.push(await imageFromFile(file))
+    } catch (err) {
+      addAssistantNotice(err instanceof Error ? err.message : 'Unable to attach image.')
+    }
+  }
+}
+
+function clipboardImageFiles(data: DataTransfer | null): File[] {
+  if (!data) return []
+
+  const files = Array.from(data.files).filter((file) => file.type.startsWith('image/'))
+  if (files.length > 0) return files
+
+  return Array.from(data.items)
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null)
+}
+
+function imageFromFile(file: File): Promise<ChatImage> {
+  const maxBytes = 5 * 1024 * 1024
+  if (file.size > maxBytes) {
+    return Promise.reject(new Error('Image is too large. Maximum size is 5MB.'))
+  }
+  if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) {
+    return Promise.reject(new Error('Unsupported image type. Use PNG, JPEG, WebP, or GIF.'))
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('Unable to read pasted image.'))
+    reader.onload = () => {
+      const value = String(reader.result ?? '')
+      const data = value.includes(',') ? value.slice(value.indexOf(',') + 1) : value
+      resolve({ mimeType: file.type, data })
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+function removeImageAttachment(index: number) {
+  imageAttachments.value.splice(index, 1)
 }
 
 function toggleThinking() {
@@ -532,7 +602,7 @@ function reconstructDisplayMessages(rawMsgs: ChatMessage[]): DisplayMessage[] {
   for (let i = 0; i < rawMsgs.length;) {
     const msg = rawMsgs[i]
     if (msg.role === 'user') {
-      display.push({ role: 'user', content: msg.content, segments: [] })
+      display.push({ role: 'user', content: msg.content, images: msg.images, segments: [] })
       i++
       continue
     }
@@ -558,6 +628,7 @@ function cloneDisplayMessages(source: DisplayMessage[]): DisplayMessage[] {
   return source.map((msg) => ({
     role: msg.role,
     content: msg.content,
+    images: msg.images?.map((image) => ({ ...image })),
     segments: msg.segments.map(cloneMessageSegment),
   }))
 }
@@ -812,17 +883,20 @@ async function ensureActiveConversation(): Promise<number | null> {
 
 async function sendMessage() {
   const text = inputValue.value.trim()
-  if (!text || streaming.value) return
+  if ((!text && imageAttachments.value.length === 0) || streaming.value) return
   const slashCommand = resolveSlashCommand(text)
   const displayText = slashCommand?.name ?? text
   const requestText = slashCommand?.prompt ?? text
+  const images = imageAttachments.value.map((image) => ({ ...image }))
 
   if (!selectedModel.value) {
-    messages.value.push({
-      role: 'assistant',
-      content: 'No AI model is configured. Ask an admin to set up an AI provider in Settings.',
-      segments: [{ type: 'text', content: 'No AI model is configured. Ask an admin to set up an AI provider in Settings.' }],
-    })
+    addAssistantNotice('No AI model is configured. Ask an admin to set up an AI provider in Settings.')
+    await nextTick()
+    scrollToBottom({ force: true })
+    return
+  }
+  if (images.length > 0 && !currentModel.value?.vision) {
+    addAssistantNotice('The selected model does not support images. Choose a vision-capable model to send screenshots.')
     await nextTick()
     scrollToBottom({ force: true })
     return
@@ -830,20 +904,17 @@ async function sendMessage() {
 
   const conversationId = await ensureActiveConversation()
   if (conversationId === null) {
-    messages.value.push({
-      role: 'assistant',
-      content: 'Unable to start the AI agent because the chat session could not be created.',
-      segments: [{ type: 'text', content: 'Unable to start the AI agent because the chat session could not be created.' }],
-    })
+    addAssistantNotice('Unable to start the AI agent because the chat session could not be created.')
     await nextTick()
     scrollToBottom({ force: true })
     return
   }
 
   // Push user message to display and raw arrays.
-  messages.value.push({ role: 'user', content: displayText, segments: [] })
-  rawMessages.value.push({ role: 'user', content: displayText })
+  messages.value.push({ role: 'user', content: displayText, images, segments: [] })
+  rawMessages.value.push({ role: 'user', content: displayText, images })
   inputValue.value = ''
+  imageAttachments.value = []
   resetInputHeight()
 
   // Add empty assistant message for streaming.
@@ -861,7 +932,7 @@ async function sendMessage() {
   // Build the API payload from rawMessages (excludes the empty assistant placeholder).
   const chatMessages: ChatMessage[] = rawMessages.value.slice()
   if (slashCommand && chatMessages.length > 0) {
-    chatMessages[chatMessages.length - 1] = { role: 'user', content: requestText }
+    chatMessages[chatMessages.length - 1] = { role: 'user', content: requestText, images }
   }
 
   // Each LLM iteration is tracked as a "round" so we can reconstruct the correct
@@ -1077,6 +1148,7 @@ function newChat() {
   messages.value = []
   rawMessages.value = []
   inputValue.value = ''
+  imageAttachments.value = []
   planExpanded.value = false
   activeAgentRunId.value = null
   continuationParentRunId.value = null
@@ -1432,7 +1504,16 @@ function scrollToBottom(options: { force?: boolean } = {}) {
           :class="{ 'has-copy-action': messageMarkdown(msg) }"
         >
           <AiMessageCopyButton v-if="messageMarkdown(msg)" :markdown="messageMarkdown(msg)" />
-          <span class="msg-plain-text">{{ msg.content }}</span>
+          <div v-if="msg.images?.length" class="message-images">
+            <img
+              v-for="(image, imageIndex) in msg.images"
+              :key="imageIndex"
+              class="message-image"
+              :src="imageSrc(image)"
+              alt="Pasted image"
+            />
+          </div>
+          <span v-if="msg.content" class="msg-plain-text">{{ msg.content }}</span>
         </div>
       </div>
     </div>
@@ -1506,7 +1587,18 @@ function scrollToBottom(options: { force?: boolean } = {}) {
             <span class="slash-command-description">{{ command.description }}</span>
           </button>
         </div>
-        <div class="input-container" @click="inputEl?.focus()">
+        <div class="input-container" @click="inputEl?.focus()" @paste="handlePaste">
+          <div v-if="imageAttachments.length > 0" class="attachment-preview-row">
+            <div v-for="(image, index) in imageAttachments" :key="index" class="attachment-preview">
+              <img :src="imageSrc(image)" alt="Pasted image preview" />
+              <button type="button" class="attachment-remove" title="Remove image" @click.stop="removeImageAttachment(index)">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+          </div>
           <textarea
             v-model="inputValue"
             class="agent-input"
@@ -1524,7 +1616,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
               <rect x="6" y="6" width="12" height="12" rx="2" />
             </svg>
           </button>
-          <button v-else class="agent-send" :class="{ active: inputValue.trim() }" @click="sendMessage" title="Send">
+          <button v-else class="agent-send" :class="{ active: canSend }" @click="sendMessage" title="Send">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
               <path d="m22 2-7 20-4-9-9-4Z" />
               <path d="M22 2 11 13" />
@@ -1963,6 +2055,22 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   white-space: pre-wrap;
 }
 
+.message-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.message-image {
+  max-width: min(260px, 100%);
+  max-height: 220px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  object-fit: contain;
+  background: var(--bg-void);
+}
+
 .msg-assistant .msg-content {
   background: var(--bg-elevated);
   border-color: var(--border-hairline);
@@ -2068,10 +2176,56 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 .input-container {
   display: flex;
   align-items: flex-end;
+  flex-wrap: wrap;
   gap: var(--space-3);
   min-height: 54px;
   padding: 12px;
   cursor: text;
+}
+
+.attachment-preview-row {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.attachment-preview {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  overflow: hidden;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-void);
+}
+
+.attachment-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.attachment-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-void) 82%, transparent);
+  color: var(--text-primary);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.attachment-remove:hover {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: var(--accent-rose);
 }
 
 .input-toolbar {

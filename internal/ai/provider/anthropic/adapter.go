@@ -67,18 +67,21 @@ func (a *Adapter) Models() []domain.Model {
 			Name:       "Claude Opus 4.7",
 			ProviderID: providerID,
 			Thinking:   opus47Thinking,
+			Vision:     true,
 		},
 		{
 			ID:         "claude-sonnet-4-6",
 			Name:       "Claude Sonnet 4.6",
 			ProviderID: providerID,
 			Thinking:   sonnet46Thinking,
+			Vision:     true,
 		},
 		{
 			ID:         "claude-haiku-4-5",
 			Name:       "Claude Haiku 4.5",
 			ProviderID: providerID,
 			Thinking:   haiku45Thinking,
+			Vision:     true,
 		},
 	}
 }
@@ -120,6 +123,17 @@ func buildAnthropicRequest(req aiprovider.StreamRequest, model domain.Model) map
 					content = append(content, map[string]any{
 						"type": "text",
 						"text": part.Text,
+					})
+				}
+			case domain.PartImage:
+				if part.Image != nil && part.Image.Data != "" {
+					content = append(content, map[string]any{
+						"type": "image",
+						"source": map[string]any{
+							"type":       "base64",
+							"media_type": part.Image.MIMEType,
+							"data":       domain.NormalizeImageData(part.Image.Data),
+						},
 					})
 				}
 			case domain.PartToolCall:

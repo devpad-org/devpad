@@ -60,6 +60,35 @@ func TestAdapterMetadata(t *testing.T) {
 		if !models[index].Thinking.CanDisable {
 			t.Fatalf("expected model %q thinking to be disableable", models[index].ID)
 		}
+		if !models[index].Vision {
+			t.Fatalf("expected model %q to support vision", models[index].ID)
+		}
+	}
+}
+
+func TestBuildResponsesRequest_ImageInput(t *testing.T) {
+	body := buildResponsesRequest(aiprovider.StreamRequest{
+		Model: "gpt-5.4",
+		Turns: []domain.Turn{{
+			Role: domain.RoleUser,
+			Parts: []domain.Part{
+				{Kind: domain.PartText, Text: "describe"},
+				{Kind: domain.PartImage, Image: &domain.ImagePart{MIMEType: "image/png", Data: "aGVsbG8="}},
+			},
+		}},
+	}, NewAdapter().Models()[0])
+
+	input := body["input"].([]any)
+	msg := input[0].(map[string]any)
+	content := msg["content"].([]map[string]any)
+	if len(content) != 2 {
+		t.Fatalf("expected text and image blocks, got %+v", content)
+	}
+	if content[0]["type"] != "input_text" || content[0]["text"] != "describe" {
+		t.Fatalf("unexpected text block: %+v", content[0])
+	}
+	if content[1]["type"] != "input_image" || content[1]["image_url"] != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("unexpected image block: %+v", content[1])
 	}
 }
 

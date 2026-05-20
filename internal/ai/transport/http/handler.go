@@ -46,6 +46,12 @@ func isThinkingRequestError(err error) bool {
 		errors.Is(err, domain.ErrThinkingEffortRequiresThinking)
 }
 
+func isImageRequestError(err error) bool {
+	return errors.Is(err, domain.ErrImagesNotSupported) ||
+		errors.Is(err, domain.ErrImageTooLarge) ||
+		errors.Is(err, domain.ErrInvalidImage)
+}
+
 // HandleListModels returns all available AI models with their configuration status.
 func (h *Handler) HandleListModels(w http.ResponseWriter, r *http.Request) {
 	models, err := h.catalog.ListModels(r.Context())
@@ -117,11 +123,15 @@ func (h *Handler) HandleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "turns are required")
 		return
 	}
+	turns := ToDomainTurns(req.Turns)
+	if !h.validateImageRequest(w, r, req.Model, turns) {
+		return
+	}
 
 	stream, err := h.chat.StreamSimple(r.Context(), app.SimpleChatRequest{
 		UserID:   user.ID,
 		Model:    req.Model,
-		Turns:    ToDomainTurns(req.Turns),
+		Turns:    turns,
 		Thinking: ToDomainThinking(req.Thinking),
 	})
 	if err != nil {
@@ -133,6 +143,8 @@ func (h *Handler) HandleChat(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, domain.ErrNoAPIKey):
 			writeError(w, http.StatusBadRequest, "no API key configured for this provider")
 		case isThinkingRequestError(err):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case isImageRequestError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
 			log.Printf("failed to start chat: %v", err)
@@ -184,6 +196,10 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "workspaceId is required")
 		return
 	}
+	turns := ToDomainTurns(req.Turns)
+	if !h.validateImageRequest(w, r, req.Model, turns) {
+		return
+	}
 
 	agentPrompt := ""
 	if h.agents != nil {
@@ -199,7 +215,7 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: req.WorkspaceID,
 		AgentPrompt: agentPrompt,
 		Model:       req.Model,
-		Turns:       ToDomainTurns(req.Turns),
+		Turns:       turns,
 		Thinking:    ToDomainThinking(req.Thinking),
 	})
 	if err != nil {
@@ -207,6 +223,8 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, domain.ErrModelNotFound):
 			writeError(w, http.StatusBadRequest, "model not found")
 		case isThinkingRequestError(err):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case isImageRequestError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
 			writeError(w, http.StatusInternalServerError, "failed to start agent chat")
@@ -245,6 +263,41 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func (h *Handler) validateImageRequest(w http.ResponseWriter, r *http.Request, modelID string, turns []domain.Turn) bool {
+	if !hasImageParts(turns) {
+		return true
+	}
+	if h.catalog == nil {
+		writeError(w, http.StatusInternalServerError, "failed to validate model")
+		return false
+	}
+	model, err := h.catalog.FindModel(modelID)
+	if err != nil {
+		if errors.Is(err, domain.ErrModelNotFound) {
+			writeError(w, http.StatusBadRequest, "model not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to validate model")
+		}
+		return false
+	}
+	if err := domain.ValidateImageRequest(model, domain.ChatRequest{Model: modelID, Turns: turns}); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+	return true
+}
+
+func hasImageParts(turns []domain.Turn) bool {
+	for _, turn := range turns {
+		for _, part := range turn.Parts {
+			if part.Kind == domain.PartImage {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // HandleApproveCommand handles user approval or denial of a sudo command.
@@ -425,6 +478,14 @@ func (h *Handler) HandleSaveMessages(w http.ResponseWriter, r *http.Request) {
 	if err := h.convService.SaveTurns(r.Context(), conversationID, user.ID, ToDomainTurns(req.Turns)); err != nil {
 		if errors.Is(err, domain.ErrConversationNotFound) {
 			writeError(w, http.StatusNotFound, "conversation not found")
+			return
+		}
+		if errors.Is(err, domain.ErrModelNotFound) {
+			writeError(w, http.StatusBadRequest, "model not found")
+			return
+		}
+		if isImageRequestError(err) {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		log.Printf("failed to save messages for conversation %d: %v", conversationID, err)
