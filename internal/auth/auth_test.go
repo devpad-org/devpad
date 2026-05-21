@@ -192,6 +192,55 @@ func TestHandler_SetupCheck(t *testing.T) {
 	}
 }
 
+func TestHandler_SetupSetsSessionCookie(t *testing.T) {
+	svc, _ := setupTestService(t)
+	handler := NewHandler(svc, false)
+
+	body := `{"username":"admin","email":"admin@test.com","password":"password123"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	handler.HandleSetup(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	sessionCookie := findCookie(rec.Result().Cookies(), cookieName)
+	if sessionCookie == nil {
+		t.Fatal("expected session cookie to be set")
+	}
+	if sessionCookie.Value == "" {
+		t.Fatal("expected non-empty session cookie value")
+	}
+	if !sessionCookie.HttpOnly {
+		t.Error("expected HttpOnly cookie")
+	}
+	if sessionCookie.Path != "/" {
+		t.Errorf("expected cookie path '/', got %q", sessionCookie.Path)
+	}
+	if sessionCookie.SameSite != http.SameSiteLaxMode {
+		t.Errorf("expected SameSite=Lax, got %v", sessionCookie.SameSite)
+	}
+	if sessionCookie.Secure {
+		t.Error("expected insecure cookie for non-HTTPS handler")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	req.AddCookie(sessionCookie)
+	rec = httptest.NewRecorder()
+
+	middleware := NewMiddleware(svc)
+	middleware.RequireAuth(http.HandlerFunc(handler.HandleMe)).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"username":"admin"`) {
+		t.Errorf("expected admin user in response, got: %s", rec.Body.String())
+	}
+}
+
 func TestHandler_SetupAndLogin(t *testing.T) {
 	svc, _ := setupTestService(t)
 	handler := NewHandler(svc, false)
@@ -219,13 +268,7 @@ func TestHandler_SetupAndLogin(t *testing.T) {
 	}
 
 	// Check session cookie was set
-	cookies := rec.Result().Cookies()
-	var sessionCookie *http.Cookie
-	for _, c := range cookies {
-		if c.Name == cookieName {
-			sessionCookie = c
-		}
-	}
+	sessionCookie := findCookie(rec.Result().Cookies(), cookieName)
 	if sessionCookie == nil {
 		t.Fatal("expected session cookie to be set")
 	}
@@ -254,6 +297,15 @@ func TestHandler_SetupAndLogin(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"username":"admin"`) {
 		t.Errorf("expected admin user in response, got: %s", rec.Body.String())
 	}
+}
+
+func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, c := range cookies {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
 }
 
 func TestHandler_SetupValidation(t *testing.T) {

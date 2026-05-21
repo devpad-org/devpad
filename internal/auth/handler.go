@@ -63,6 +63,13 @@ func (h *Handler) HandleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	session, err := h.service.Login(r.Context(), req.Username, req.Password, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "admin user created but failed to create session")
+		return
+	}
+	h.setSessionCookie(w, session)
+
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"user": userResponse(user),
 	})
@@ -103,15 +110,7 @@ func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
-		Value:    session.Token,
-		Path:     "/",
-		Expires:  session.ExpiresAt,
-		HttpOnly: true,
-		Secure:   h.secureCookie,
-		SameSite: http.SameSiteLaxMode,
-	})
+	h.setSessionCookie(w, session)
 
 	user, err := h.service.ValidateSession(r.Context(), session.Token)
 	if err != nil || user == nil {
@@ -120,6 +119,18 @@ func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user": userResponse(user),
+	})
+}
+
+func (h *Handler) setSessionCookie(w http.ResponseWriter, session *Session) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    session.Token,
+		Path:     "/",
+		Expires:  session.ExpiresAt,
+		HttpOnly: true,
+		Secure:   h.secureCookie,
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 
