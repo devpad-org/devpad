@@ -2,11 +2,16 @@ package domain
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 )
 
-const MaxImageBytes = 5 * 1024 * 1024
+const (
+	MaxImageBytes    = 5 * 1024 * 1024
+	MaxImagesPerTurn = 4
+)
 
 // ThinkingConfig controls whether the selected model should use thinking mode.
 // A nil value uses the model's default behavior.
@@ -73,27 +78,42 @@ func ValidateThinkingRequest(model Model, req ChatRequest) error {
 func ValidateImageRequest(model Model, req ChatRequest) error {
 	hasImages := false
 	for _, turn := range req.Turns {
+		imagesInTurn := 0
 		for _, part := range turn.Parts {
 			if part.Kind != PartImage {
 				continue
 			}
 			hasImages = true
+			imagesInTurn++
+			if turn.Role != RoleUser {
+				return fmt.Errorf("%w: images are only allowed on user turns", ErrInvalidImage)
+			}
+			if imagesInTurn > MaxImagesPerTurn {
+				return fmt.Errorf("%w: too many images in one turn", ErrInvalidImage)
+			}
 			if part.Image == nil {
 				return ErrInvalidImage
 			}
-			if !isSupportedImageMIME(part.Image.MIMEType) {
+			mimeType, ok := normalizeSupportedImageMIME(part.Image.MIMEType)
+			if !ok {
 				return fmt.Errorf("%w: unsupported mime type", ErrInvalidImage)
 			}
-			data := NormalizeImageData(part.Image.Data)
+			data, err := normalizeImageDataForValidation(part.Image.Data, mimeType)
+			if err != nil {
+				return err
+			}
 			if data == "" {
 				return fmt.Errorf("%w: empty data", ErrInvalidImage)
 			}
-			size, err := decodedBase64Size(data)
+			decoded, err := decodeBase64Image(data)
 			if err != nil {
+				if errors.Is(err, ErrImageTooLarge) {
+					return ErrImageTooLarge
+				}
 				return fmt.Errorf("%w: invalid base64 data", ErrInvalidImage)
 			}
-			if size > MaxImageBytes {
-				return ErrImageTooLarge
+			if !imageContentTypeMatches(mimeType, decoded) {
+				return fmt.Errorf("%w: mime type does not match content", ErrInvalidImage)
 			}
 		}
 	}
@@ -122,12 +142,13 @@ func validateThinkingEffort(model Model, thinking *ThinkingConfig) error {
 	return nil
 }
 
-func isSupportedImageMIME(mimeType string) bool {
-	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+func normalizeSupportedImageMIME(mimeType string) (string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(mimeType))
+	switch normalized {
 	case "image/png", "image/jpeg", "image/webp", "image/gif":
-		return true
+		return normalized, true
 	default:
-		return false
+		return "", false
 	}
 }
 
@@ -135,22 +156,94 @@ func isSupportedImageMIME(mimeType string) bool {
 // whitespace, returning the base64 payload expected by provider adapters.
 func NormalizeImageData(data string) string {
 	value := strings.TrimSpace(data)
-	if comma := strings.Index(value, ","); strings.HasPrefix(value, "data:") && comma >= 0 {
-		return value[comma+1:]
+	if payload, _, ok := stripImageDataURL(value); ok {
+		return payload
 	}
 	return value
 }
 
-func decodedBase64Size(data string) (int, error) {
-	value := NormalizeImageData(data)
+func normalizeImageDataForValidation(data, mimeType string) (string, error) {
+	value := strings.TrimSpace(data)
+	if !hasDataURLPrefix(value) {
+		return value, nil
+	}
+
+	payload, dataURLMIME, ok := stripImageDataURL(value)
+	if !ok {
+		return "", fmt.Errorf("%w: invalid data URL", ErrInvalidImage)
+	}
+	if dataURLMIME != mimeType {
+		return "", fmt.Errorf("%w: data URL mime type mismatch", ErrInvalidImage)
+	}
+	return payload, nil
+}
+
+func stripImageDataURL(value string) (payload, mimeType string, ok bool) {
+	if !hasDataURLPrefix(value) {
+		return "", "", false
+	}
+	comma := strings.Index(value, ",")
+	if comma < 0 {
+		return "", "", false
+	}
+
+	metadata := value[len("data:"):comma]
+	semicolon := strings.LastIndex(metadata, ";")
+	if semicolon < 0 || !strings.EqualFold(metadata[semicolon+1:], "base64") {
+		return "", "", false
+	}
+	mimeType, supported := normalizeSupportedImageMIME(metadata[:semicolon])
+	if !supported {
+		return "", "", false
+	}
+
+	return strings.TrimSpace(value[comma+1:]), mimeType, true
+}
+
+func hasDataURLPrefix(value string) bool {
+	return len(value) >= len("data:") && strings.EqualFold(value[:len("data:")], "data:")
+}
+
+func decodeBase64Image(data string) ([]byte, error) {
+	value := strings.TrimSpace(data)
+	if len(value) > base64.StdEncoding.EncodedLen(MaxImageBytes) {
+		return nil, ErrImageTooLarge
+	}
 	decodedLen := base64.StdEncoding.DecodedLen(len(value))
-	if decodedLen > MaxImageBytes+2 {
-		return MaxImageBytes + 1, nil
+	if decodedLen-base64Padding(value) > MaxImageBytes {
+		return nil, ErrImageTooLarge
 	}
 	decoded := make([]byte, decodedLen)
 	n, err := base64.StdEncoding.Decode(decoded, []byte(value))
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return n, nil
+	decoded = decoded[:n]
+	if len(decoded) > MaxImageBytes {
+		return nil, ErrImageTooLarge
+	}
+	return decoded, nil
+}
+
+func base64Padding(value string) int {
+	switch {
+	case strings.HasSuffix(value, "=="):
+		return 2
+	case strings.HasSuffix(value, "="):
+		return 1
+	default:
+		return 0
+	}
+}
+
+func imageContentTypeMatches(mimeType string, data []byte) bool {
+	sample := data
+	if len(sample) > 512 {
+		sample = sample[:512]
+	}
+	detected := http.DetectContentType(sample)
+	if detected == mimeType {
+		return true
+	}
+	return mimeType == "image/jpeg" && detected == "image/jpg"
 }

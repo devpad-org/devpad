@@ -8,11 +8,13 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
+const validPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+
 func TestConversationServiceSaveTurnsValidatesImages(t *testing.T) {
 	repo := &fakeConversationRepository{
 		conversation: &domain.Conversation{ID: 10, UserID: 1, WorkspaceID: 2, Model: "gpt-5.4"},
 	}
-	service := NewConversationServiceWithModelLookup(repo, fakeModelLookup{model: domain.Model{ID: "gpt-5.4", Vision: true}})
+	service := NewConversationService(repo, fakeModelLookup{model: domain.Model{ID: "gpt-5.4", Vision: true}})
 
 	err := service.SaveTurns(context.Background(), 10, 1, []domain.Turn{{
 		Role: domain.RoleUser,
@@ -37,7 +39,32 @@ func TestConversationServiceSaveTurnsRejectsImagesForNonVisionModel(t *testing.T
 	repo := &fakeConversationRepository{
 		conversation: &domain.Conversation{ID: 10, UserID: 1, WorkspaceID: 2, Model: "mistral-medium-3-5"},
 	}
-	service := NewConversationServiceWithModelLookup(repo, fakeModelLookup{model: domain.Model{ID: "mistral-medium-3-5"}})
+	service := NewConversationService(repo, fakeModelLookup{model: domain.Model{ID: "mistral-medium-3-5"}})
+
+	err := service.SaveTurns(context.Background(), 10, 1, []domain.Turn{{
+		Role: domain.RoleUser,
+		Parts: []domain.Part{{
+			Kind: domain.PartImage,
+			Image: &domain.ImagePart{
+				MIMEType: "image/png",
+				Data:     validPNGBase64,
+			},
+		}},
+	}})
+
+	if !errors.Is(err, domain.ErrImagesNotSupported) {
+		t.Fatalf("expected images not supported error, got %v", err)
+	}
+	if repo.saved {
+		t.Fatal("expected non-vision image turns not to be persisted")
+	}
+}
+
+func TestConversationServiceSaveTurnsRequiresModelLookupForImages(t *testing.T) {
+	repo := &fakeConversationRepository{
+		conversation: &domain.Conversation{ID: 10, UserID: 1, WorkspaceID: 2, Model: "gpt-5.4"},
+	}
+	service := NewConversationService(repo, nil)
 
 	err := service.SaveTurns(context.Background(), 10, 1, []domain.Turn{{
 		Role: domain.RoleUser,
@@ -50,11 +77,14 @@ func TestConversationServiceSaveTurnsRejectsImagesForNonVisionModel(t *testing.T
 		}},
 	}})
 
-	if !errors.Is(err, domain.ErrImagesNotSupported) {
-		t.Fatalf("expected images not supported error, got %v", err)
+	if !errors.Is(err, ErrModelLookupNotConfigured) {
+		t.Fatalf("expected model lookup configuration error, got %v", err)
+	}
+	if errors.Is(err, domain.ErrModelNotFound) {
+		t.Fatalf("expected error not to masquerade as model not found, got %v", err)
 	}
 	if repo.saved {
-		t.Fatal("expected non-vision image turns not to be persisted")
+		t.Fatal("expected image turns not to be persisted without model lookup")
 	}
 }
 

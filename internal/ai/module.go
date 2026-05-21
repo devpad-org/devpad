@@ -47,7 +47,7 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 
 	catalogService := app.NewCatalogService(providerConfigs, registry)
 	agentService := app.NewAgentService(agents)
-	conversationService := app.NewConversationServiceWithModelLookup(conversations, catalogService)
+	conversationService := app.NewConversationService(conversations, catalogService)
 	toolExecutor := aitools.NewWorkspaceExecutor(workspaceOps)
 	approvalBroker := approval.NewMemoryBroker()
 	chatService := app.NewChatService(catalogService, aitools.NewCatalog(), toolExecutor, approvalBroker, app.NewAGENTSInstructionSource(workspaceOps))

@@ -211,7 +211,7 @@ func toDomainPart(dto PartDTO) domain.Part {
 			Kind: domain.PartImage,
 			Image: &domain.ImagePart{
 				MIMEType: dto.Image.MIMEType,
-				Data:     domain.NormalizeImageData(dto.Image.Data),
+				Data:     dto.Image.Data,
 			},
 		}
 	case domain.PartToolCall:

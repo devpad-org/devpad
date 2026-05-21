@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
+
+var ErrModelLookupNotConfigured = errors.New("model lookup is not configured")
 
 // ConversationRepository handles persistence of AI chat conversations and messages.
 type ConversationRepository interface {
@@ -39,14 +42,9 @@ type conversationService struct {
 	models   ModelLookup
 }
 
-// NewConversationService creates a ConversationService backed by the given repository.
-func NewConversationService(convRepo ConversationRepository) ConversationService {
-	return &conversationService{convRepo: convRepo}
-}
-
-// NewConversationServiceWithModelLookup creates a ConversationService that can
-// validate persisted chat history against model capabilities.
-func NewConversationServiceWithModelLookup(convRepo ConversationRepository, models ModelLookup) ConversationService {
+// NewConversationService creates a ConversationService that can validate
+// persisted chat history against model capabilities.
+func NewConversationService(convRepo ConversationRepository, models ModelLookup) ConversationService {
 	return &conversationService{convRepo: convRepo, models: models}
 }
 
@@ -100,7 +98,7 @@ func (s *conversationService) SaveTurns(ctx context.Context, conversationID, use
 	}
 	if hasImageParts(turns) {
 		if s.models == nil {
-			return domain.ErrModelNotFound
+			return ErrModelLookupNotConfigured
 		}
 		model, err := s.models.FindModel(conv.Model)
 		if err != nil {
