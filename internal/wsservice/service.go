@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"strings"
 
 	"github.com/devpad-org/devpad/internal/container"
 )
@@ -197,14 +196,7 @@ func (s *service) EnvVars(ctx context.Context, workspaceID int64, networkName st
 		// within the shared network.
 		host := sidecarContainerName(workspaceID, svc.ServiceType)
 
-		prefix := strings.ToUpper(string(svc.ServiceType))
-		envs = append(envs,
-			fmt.Sprintf("%s_HOST=%s", prefix, host),
-			fmt.Sprintf("%s_PORT=%d", prefix, cfg.Port),
-			fmt.Sprintf("%s_USER=%s", prefix, cfg.DefaultUser),
-			fmt.Sprintf("%s_PASSWORD=%s", prefix, cfg.DefaultPass),
-			fmt.Sprintf("%s_DATABASE=%s", prefix, cfg.DefaultDB),
-		)
+		envs = append(envs, serviceConnectionEnv(svc.ServiceType, host, cfg)...)
 	}
 	return envs, nil
 }
@@ -281,42 +273,6 @@ func (s *service) stopOne(ctx context.Context, svc *WorkspaceService) error {
 		return fmt.Errorf("updating service status: %w", err)
 	}
 	return nil
-}
-
-func sidecarContainerName(workspaceID int64, serviceType ServiceType) string {
-	return fmt.Sprintf("devpad-svc-%d-%s", workspaceID, serviceType)
-}
-
-func sidecarEnv(serviceType ServiceType, cfg ServiceConfig) []string {
-	switch serviceType {
-	case ServicePostgres:
-		return []string{
-			fmt.Sprintf("POSTGRES_USER=%s", cfg.DefaultUser),
-			fmt.Sprintf("POSTGRES_PASSWORD=%s", cfg.DefaultPass),
-			fmt.Sprintf("POSTGRES_DB=%s", cfg.DefaultDB),
-			"PGDATA=/data/pgdata",
-		}
-	case ServiceMongoDB:
-		return []string{
-			fmt.Sprintf("MONGO_INITDB_ROOT_USERNAME=%s", cfg.DefaultUser),
-			fmt.Sprintf("MONGO_INITDB_ROOT_PASSWORD=%s", cfg.DefaultPass),
-			fmt.Sprintf("MONGO_INITDB_DATABASE=%s", cfg.DefaultDB),
-		}
-	case ServiceMariaDB:
-		return []string{
-			fmt.Sprintf("MARIADB_USER=%s", cfg.DefaultUser),
-			fmt.Sprintf("MARIADB_PASSWORD=%s", cfg.DefaultPass),
-			fmt.Sprintf("MARIADB_DATABASE=%s", cfg.DefaultDB),
-			fmt.Sprintf("MARIADB_ROOT_PASSWORD=%s", cfg.DefaultPass),
-		}
-	case ServiceCouchDB:
-		return []string{
-			fmt.Sprintf("COUCHDB_USER=%s", cfg.DefaultUser),
-			fmt.Sprintf("COUCHDB_PASSWORD=%s", cfg.DefaultPass),
-		}
-	default:
-		return nil
-	}
 }
 
 // generatePassword returns a cryptographically random alphanumeric string of

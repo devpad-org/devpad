@@ -48,7 +48,7 @@ async function deployService(service: ServiceCatalogItem) {
     </div>
 
     <p class="catalog-copy">
-      Browse database services and deploy one into this workspace.
+      Browse workspace services and deploy one into this workspace.
     </p>
 
     <div v-if="addError" class="catalog-error">{{ addError }}</div>
@@ -226,4 +226,3 @@ async function deployService(service: ServiceCatalogItem) {
   to { transform: rotate(360deg); }
 }
 </style>
-

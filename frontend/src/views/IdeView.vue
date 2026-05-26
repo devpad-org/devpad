@@ -368,7 +368,7 @@ function handleBack() {
           <span
             v-if="serviceCount > 0"
             class="activity-badge"
-            :aria-label="`${serviceCount} database services attached`"
+            :aria-label="`${serviceCount} services attached`"
           >
             {{ serviceCount }}
           </span>

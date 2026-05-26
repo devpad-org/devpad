@@ -50,7 +50,7 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 		fmt.Sprintf("AGENT_AUTH_TOKEN=%s", agentToken),
 	}
 
-	// Inject sidecar service env vars (database connection info) if any
+	// Inject sidecar service env vars (connection info) if any
 	// services are already attached.
 	if s.sidecar != nil {
 		svcEnv, err := s.sidecar.EnvVars(ctx, ws.ID, networkName)
@@ -117,7 +117,7 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 		}
 	}
 
-	// Delete all attached sidecar services (databases) and their resources.
+	// Delete all attached sidecar services and their resources.
 	if s.sidecar != nil {
 		if err := s.sidecar.DeleteAll(ctx, ws.ID); err != nil {
 			log.Printf("workspace %d: sidecar delete failed: %v", ws.ID, err)
@@ -192,7 +192,7 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 		log.Printf("workspace %d: SSH key injection failed: %v", ws.ID, err)
 	}
 
-	// Start attached sidecar services (databases). Best-effort.
+	// Start attached sidecar services. Best-effort.
 	if s.sidecar != nil {
 		if err := s.sidecar.StartAll(ctx, ws.ID, ws.NetworkName); err != nil {
 			log.Printf("workspace %d: sidecar start failed: %v", ws.ID, err)
@@ -217,7 +217,7 @@ func (s *service) Stop(ctx context.Context, userID, workspaceID int64) (*Workspa
 		return nil, fmt.Errorf("stopping container: %w", err)
 	}
 
-	// Stop attached sidecar services (databases). Best-effort.
+	// Stop attached sidecar services. Best-effort.
 	if s.sidecar != nil {
 		if err := s.sidecar.StopAll(ctx, ws.ID); err != nil {
 			log.Printf("workspace %d: sidecar stop failed: %v", ws.ID, err)

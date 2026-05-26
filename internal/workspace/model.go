@@ -21,7 +21,7 @@ const (
 )
 
 // SidecarService defines the lifecycle interface for workspace sidecar
-// services (databases). Implemented by the wsservice package; injected into
+// services. Implemented by the wsservice package; injected into
 // the workspace service via SetSidecarService to break the import cycle.
 type SidecarService interface {
 	StartAll(ctx context.Context, workspaceID int64, networkName string) error

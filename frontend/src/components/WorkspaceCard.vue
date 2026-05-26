@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import type { Workspace } from '@/api/workspaces'
 import { serviceApi, type WorkspaceService } from '@/api/services'
 import { useWorkspaceStore } from '@/stores/workspaces'
+import { serviceTypeIcon } from '@/components/ide/serviceCatalog'
 
 const props = defineProps<{
   workspace: Workspace
@@ -21,11 +22,6 @@ const services = ref<WorkspaceService[]>([])
 const loadingServices = ref(false)
 
 const transition = computed(() => store.transitioning.get(props.workspace.id) ?? null)
-
-const serviceIcons: Record<string, string> = {
-  postgres: '🐘',
-  mongodb: '🍃',
-}
 
 async function fetchServices() {
   loadingServices.value = true
@@ -106,7 +102,7 @@ function formatDate(dateStr: string) {
           ]"
           :title="`${svc.serviceType} — ${svc.status}`"
         >
-          <span class="service-badge-icon">{{ serviceIcons[svc.serviceType] || '📦' }}</span>
+          <span class="service-badge-icon">{{ serviceTypeIcon(svc.serviceType) }}</span>
           <svg v-if="svc.status === 'stopped' && workspace.status === 'running' && loadingServices" class="badge-spinner" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
           </svg>

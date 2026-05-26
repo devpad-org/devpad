@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { WorkspaceService } from '@/api/services'
 import ServiceCopyButton from './ServiceCopyButton.vue'
-import { connectionString, serviceHost } from './serviceConnection'
+import { connectionString, serviceCredentialFields, serviceHost } from './serviceConnection'
 import { serviceTypeIcon, serviceTypeLabel } from './serviceCatalog'
 
 defineProps<{
@@ -52,25 +52,11 @@ const emit = defineEmits<{
           <ServiceCopyButton :value="service.config.port" label="service port" />
         </dd>
       </div>
-      <div class="info-row">
-        <dt>User</dt>
+      <div v-for="field in serviceCredentialFields(service)" :key="field.label" class="info-row">
+        <dt>{{ field.label }}</dt>
         <dd>
-          <span class="mono">{{ service.config.defaultUser }}</span>
-          <ServiceCopyButton :value="service.config.defaultUser" label="service user" />
-        </dd>
-      </div>
-      <div class="info-row">
-        <dt>Password</dt>
-        <dd>
-          <span class="mono">{{ service.config.defaultPass }}</span>
-          <ServiceCopyButton :value="service.config.defaultPass" label="service password" />
-        </dd>
-      </div>
-      <div class="info-row">
-        <dt>Database</dt>
-        <dd>
-          <span class="mono">{{ service.config.defaultDb }}</span>
-          <ServiceCopyButton :value="service.config.defaultDb" label="service database" />
+          <span class="mono">{{ field.value }}</span>
+          <ServiceCopyButton :value="field.value" :label="field.copyLabel" />
         </dd>
       </div>
     </dl>

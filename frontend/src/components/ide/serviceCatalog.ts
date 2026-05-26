@@ -32,6 +32,12 @@ export const serviceCatalog: ServiceCatalogItem[] = [
     icon: '🛋️',
     description: 'HTTP document database with built-in JSON storage.',
   },
+  {
+    value: 'meilisearch',
+    label: 'Meilisearch',
+    icon: '🔎',
+    description: 'Fast full-text search engine with a workspace-local master key.',
+  },
 ]
 
 export function serviceTypeLabel(type: WorkspaceService['serviceType'] | string) {
@@ -41,4 +47,3 @@ export function serviceTypeLabel(type: WorkspaceService['serviceType'] | string)
 export function serviceTypeIcon(type: WorkspaceService['serviceType'] | string) {
   return serviceCatalog.find((service) => service.value === type)?.icon ?? '📦'
 }
-

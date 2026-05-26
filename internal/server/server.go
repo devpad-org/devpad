@@ -88,7 +88,7 @@ func New(cfg Config) (*Server, error) {
 	workspaceRepo := workspace.NewRepository(db.Conn())
 	workspaceService := workspace.NewService(workspaceRepo, containerManager, userRepo, cipher)
 
-	// Workspace services layer (database sidecars)
+	// Workspace services layer (sidecars)
 	wsServiceRepo := wsservice.NewRepository(db.Conn())
 	wsServiceService := wsservice.NewService(wsServiceRepo, containerManager)
 	workspaceService.SetSidecarService(wsServiceService)
@@ -367,7 +367,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	// Workspace preview route
 	mux.Handle("POST /api/workspaces/{id}/preview", authMiddleware.RequireAuth(http.HandlerFunc(previewHandler.HandleGenerateURL)))
 
-	// Workspace service routes (database sidecars)
+	// Workspace service routes (sidecars)
 	mux.Handle("GET /api/workspaces/{id}/services", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleList)))
 	mux.Handle("POST /api/workspaces/{id}/services", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleCreate)))
 	mux.Handle("POST /api/workspaces/{id}/services/{serviceId}/start", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleStart)))

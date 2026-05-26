@@ -2,14 +2,15 @@ package wsservice
 
 import "time"
 
-// ServiceType identifies the kind of database service.
+// ServiceType identifies the kind of sidecar service.
 type ServiceType string
 
 const (
-	ServicePostgres ServiceType = "postgres"
-	ServiceMongoDB  ServiceType = "mongodb"
-	ServiceMariaDB  ServiceType = "mariadb"
-	ServiceCouchDB  ServiceType = "couchdb"
+	ServicePostgres    ServiceType = "postgres"
+	ServiceMongoDB     ServiceType = "mongodb"
+	ServiceMariaDB     ServiceType = "mariadb"
+	ServiceCouchDB     ServiceType = "couchdb"
+	ServiceMeilisearch ServiceType = "meilisearch"
 )
 
 // ServiceStatus represents the lifecycle state of a service.
@@ -55,6 +56,10 @@ var DefaultConfigs = map[ServiceType]ServiceConfig{
 		DefaultUser: "devpad",
 		DefaultDB:   "devpad",
 	},
+	ServiceMeilisearch: {
+		Image: "getmeili/meilisearch:v1.45",
+		Port:  7700,
+	},
 }
 
 // ValidServiceType returns true if the given type is supported.
@@ -63,7 +68,7 @@ func ValidServiceType(t ServiceType) bool {
 	return ok
 }
 
-// WorkspaceService represents a database sidecar attached to a workspace.
+// WorkspaceService represents a sidecar service attached to a workspace.
 type WorkspaceService struct {
 	ID          int64
 	WorkspaceID int64

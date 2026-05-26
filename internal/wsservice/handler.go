@@ -257,7 +257,7 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, ErrInvalidType) {
-		writeError(w, http.StatusBadRequest, "unsupported service type; supported: postgres, mongodb")
+		writeError(w, http.StatusBadRequest, "unsupported service type; supported: postgres, mongodb, mariadb, couchdb, meilisearch")
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "internal server error")

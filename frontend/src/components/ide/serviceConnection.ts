@@ -20,7 +20,45 @@ export function connectionString(service: WorkspaceService): string {
   if (service.serviceType === 'couchdb') {
     return `http://${config.defaultUser}:${config.defaultPass}@${host}:${config.port}/${config.defaultDb}`
   }
+  if (service.serviceType === 'meilisearch') {
+    return `http://${host}:${config.port}`
+  }
 
   return ''
 }
 
+export interface ServiceCredentialField {
+  label: string
+  value: string | number
+  copyLabel: string
+}
+
+export function serviceCredentialFields(service: WorkspaceService): ServiceCredentialField[] {
+  if (service.serviceType === 'meilisearch') {
+    return [
+      {
+        label: 'Master key',
+        value: service.config.defaultPass,
+        copyLabel: 'Meilisearch master key',
+      },
+    ]
+  }
+
+  return [
+    {
+      label: 'User',
+      value: service.config.defaultUser,
+      copyLabel: 'service user',
+    },
+    {
+      label: 'Password',
+      value: service.config.defaultPass,
+      copyLabel: 'service password',
+    },
+    {
+      label: 'Database',
+      value: service.config.defaultDb,
+      copyLabel: 'service database',
+    },
+  ]
+}
