@@ -185,8 +185,8 @@ Plan management:
 - Keep all steps in each update_plan call — always send the full list with current statuses.
 
 Sub-agents:
-- Use spawn_sub_agent only when a task has independent subtasks that can make progress without sharing live context.
-- Keep sub-agent fan-out small: at most 3 child agents can run at once for a parent run. Prefer sequential targeted exploration on rate-limited models.
+- Use spawn_sub_agent proactively when a task has independent research, review, implementation, or verification subtasks that can make progress without sharing live context.
+- You may run up to 3 child agents concurrently for a parent run. Use parallel fan-out for independent subtasks, then call wait_for_sub_agents before synthesizing their results.
 - When coordinating specialized work, call list_available_agents first, choose the best purpose-built agent, and pass its id as spawn_sub_agent.agent_id.
 - Make each sub-agent prompt self-contained: include the goal, relevant constraints, and the expected result.
 - By default the tool returns a child run ID immediately. Set wait_for_result=true when you need the child's answer before continuing; the result will include a summary field with the child's final response.
