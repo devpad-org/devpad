@@ -251,45 +251,31 @@ func TestParseGitRemoteNames(t *testing.T) {
 	}
 }
 
-func TestIsRemoteBranch(t *testing.T) {
-	tests := []struct {
-		name     string
-		branch   string
-		remotes  []string
-		expected bool
-	}{
-		{
-			name:     "origin branch",
-			branch:   "origin/main",
-			remotes:  []string{"origin"},
-			expected: true,
-		},
-		{
-			name:     "non-origin branch",
-			branch:   "upstream/main",
-			remotes:  []string{"origin", "upstream"},
-			expected: true,
-		},
-		{
-			name:     "local branch matching remote suffix",
-			branch:   "main",
-			remotes:  []string{"origin"},
-			expected: false,
-		},
-		{
-			name:     "unknown prefix",
-			branch:   "fork/main",
-			remotes:  []string{"origin", "upstream"},
-			expected: false,
-		},
+func TestParseGitBranchRefs(t *testing.T) {
+	input := strings.Join([]string{
+		"refs/heads/main\tmain\tabc123\torigin/main",
+		"refs/heads/origin/local\torigin/local\tdef456\t",
+		"refs/remotes/origin/HEAD\torigin/HEAD\tabc123\t",
+		"refs/remotes/origin/main\torigin/main\tabc123\t",
+		"refs/remotes/upstream/feature/api\tupstream/feature/api\tfed789\t",
+	}, "\n")
+
+	got := parseGitBranchRefs(input, "main", []string{"origin", "upstream"})
+	if len(got) != 4 {
+		t.Fatalf("expected 4 branches, got %d: %+v", len(got), got)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isRemoteBranch(tt.branch, tt.remotes); got != tt.expected {
-				t.Fatalf("isRemoteBranch(%q, %+v) = %v, want %v", tt.branch, tt.remotes, got, tt.expected)
-			}
-		})
+	if got[0].Name != "main" || !got[0].Current || got[0].Remote || got[0].Upstream != "origin/main" {
+		t.Fatalf("unexpected local main branch: %+v", got[0])
+	}
+	if got[1].Name != "origin/local" || got[1].Remote {
+		t.Fatalf("local branch with remote-like prefix should stay local: %+v", got[1])
+	}
+	if got[2].Name != "origin/main" || !got[2].Remote || got[2].RemoteName != "origin" || got[2].RemoteBranch != "main" {
+		t.Fatalf("unexpected origin remote branch: %+v", got[2])
+	}
+	if got[3].Name != "upstream/feature/api" || !got[3].Remote || got[3].RemoteName != "upstream" || got[3].RemoteBranch != "feature/api" {
+		t.Fatalf("unexpected upstream remote branch: %+v", got[3])
 	}
 }
 

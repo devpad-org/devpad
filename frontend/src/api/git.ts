@@ -50,6 +50,8 @@ export interface GitBranch {
   upstream: string
   current: boolean
   remote: boolean
+  remoteName?: string
+  remoteBranch?: string
 }
 
 export interface GitBranches {
@@ -156,7 +158,19 @@ export const gitApi = {
   action(
     workspaceId: number,
     action: string,
-    opts: { files?: string[]; message?: string; branch?: string; remote?: string; url?: string; newName?: string; userName?: string; userEmail?: string; host?: string; keyType?: string; fingerprint?: string } = {}
+    opts: {
+      files?: string[]
+      message?: string
+      branch?: string
+      remote?: string
+      url?: string
+      newName?: string
+      userName?: string
+      userEmail?: string
+      host?: string
+      keyType?: string
+      fingerprint?: string
+    } = {}
   ): Promise<GitActionResult> {
     return apiClient.post<GitActionResult>(
       `/api/workspaces/${workspaceId}/git/action`,
