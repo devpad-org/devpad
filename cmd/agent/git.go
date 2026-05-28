@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,10 +29,11 @@ var sshHostAuthenticityRE = regexp.MustCompile(`(?is)The authenticity of host '(
 // gitActionTimeout returns the context timeout appropriate for a given action.
 // Network-heavy actions (clone, push, pull) get a longer timeout.
 var longRunningActions = map[string]bool{
-	"clone": true,
-	"push":  true,
-	"pull":  true,
-	"fetch": true,
+	"clone":         true,
+	"push":          true,
+	"pull":          true,
+	"fetch":         true,
+	"delete-branch": true,
 }
 
 func gitActionTimeout(action string) time.Duration {
@@ -96,15 +98,6 @@ func parseGitRemoteNames(out string) []string {
 		}
 	}
 	return remotes
-}
-
-func isRemoteBranch(name string, remotes []string) bool {
-	for _, remote := range remotes {
-		if strings.HasPrefix(name, remote+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // gitStatusEntry represents a single file in git status output.
@@ -658,6 +651,15 @@ func sshHostTargetForGitAction(ctx context.Context, req gitActionRequest) (*sshH
 			return nil, false
 		}
 		return parseGitSSHRemoteTarget(strings.TrimSpace(out))
+	case "delete-branch":
+		if req.Remote == "" {
+			return nil, false
+		}
+		out, err := gitOutput(ctx, "remote", "get-url", req.Remote)
+		if err != nil {
+			return nil, false
+		}
+		return parseGitSSHRemoteTarget(strings.TrimSpace(out))
 	default:
 		return nil, false
 	}
@@ -734,32 +736,88 @@ func handleGitBranches(w http.ResponseWriter, r *http.Request) {
 		remotes = parseGitRemoteNames(out)
 	}
 
-	branches := []map[string]any{}
-	if out, err := gitOutput(ctx, "branch", "-a", "--format=%(refname:short)%09%(objectname:short)%09%(upstream:short)"); err == nil {
-		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, "\t", 3)
-			name := parts[0]
-			shortHash := ""
-			upstream := ""
-			if len(parts) > 1 {
-				shortHash = parts[1]
-			}
-			if len(parts) > 2 {
-				upstream = parts[2]
-			}
-			branches = append(branches, map[string]any{
-				"name":     name,
-				"hash":     shortHash,
-				"upstream": upstream,
-				"current":  name == current,
-				"remote":   isRemoteBranch(name, remotes),
-			})
-		}
+	branches := []gitBranchEntry{}
+	if out, err := gitOutput(ctx, "for-each-ref", "--format=%(refname)%09%(refname:short)%09%(objectname:short)%09%(upstream:short)", "refs/heads", "refs/remotes"); err == nil {
+		branches = parseGitBranchRefs(out, current, remotes)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"branches": branches, "current": current})
+}
+
+type gitBranchEntry struct {
+	Name         string `json:"name"`
+	Hash         string `json:"hash"`
+	Upstream     string `json:"upstream"`
+	Current      bool   `json:"current"`
+	Remote       bool   `json:"remote"`
+	RemoteName   string `json:"remoteName,omitempty"`
+	RemoteBranch string `json:"remoteBranch,omitempty"`
+}
+
+func parseGitBranchRefs(out, current string, remotes []string) []gitBranchEntry {
+	branches := []gitBranchEntry{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 4)
+		if len(parts) < 2 {
+			continue
+		}
+
+		fullRef := parts[0]
+		name := parts[1]
+		shortHash := ""
+		upstream := ""
+		if len(parts) > 2 {
+			shortHash = parts[2]
+		}
+		if len(parts) > 3 {
+			upstream = parts[3]
+		}
+
+		remoteName, remoteBranch, remote := remoteBranchFromRef(fullRef, remotes)
+		if remote && (remoteBranch == "" || remoteBranch == "HEAD") {
+			continue
+		}
+
+		branches = append(branches, gitBranchEntry{
+			Name:         name,
+			Hash:         shortHash,
+			Upstream:     upstream,
+			Current:      !remote && name == current,
+			Remote:       remote,
+			RemoteName:   remoteName,
+			RemoteBranch: remoteBranch,
+		})
+	}
+	return branches
+}
+
+func remoteBranchFromRef(fullRef string, remotes []string) (string, string, bool) {
+	const prefix = "refs/remotes/"
+	remoteRef, ok := strings.CutPrefix(fullRef, prefix)
+	if !ok {
+		return "", "", false
+	}
+
+	sortedRemotes := append([]string(nil), remotes...)
+	sort.SliceStable(sortedRemotes, func(i, j int) bool {
+		return len(sortedRemotes[i]) > len(sortedRemotes[j])
+	})
+	for _, remote := range sortedRemotes {
+		if remoteRef == remote {
+			return remote, "", true
+		}
+		if branch, ok := strings.CutPrefix(remoteRef, remote+"/"); ok {
+			return remote, branch, true
+		}
+	}
+
+	remoteName, branch, ok := strings.Cut(remoteRef, "/")
+	if !ok {
+		return remoteRef, "", true
+	}
+	return remoteName, branch, true
 }
 
 // gitRemoteEntry represents a single git remote with its fetch/push URLs.
@@ -895,6 +953,8 @@ var gitActions = map[string]gitActionFunc{
 	"fetch":               actionFetch,
 	"checkout":            actionCheckout,
 	"checkout-new":        actionCheckoutNew,
+	"merge":               actionMerge,
+	"delete-branch":       actionDeleteBranch,
 	"discard":             actionDiscard,
 	"init":                actionInit,
 	"clone":               actionClone,
@@ -1081,6 +1141,12 @@ func actionCheckout(ctx context.Context, req gitActionRequest) (string, error) {
 	if req.Branch == "" {
 		return "", &gitActionError{"branch is required"}
 	}
+	if req.Remote != "" {
+		if gitExec(ctx, "show-ref", "--verify", "--quiet", "refs/heads/"+req.Branch) == nil {
+			return gitOutput(ctx, "checkout", req.Branch)
+		}
+		return gitOutput(ctx, "checkout", "--track", req.Remote+"/"+req.Branch)
+	}
 	return gitOutput(ctx, "checkout", req.Branch)
 }
 
@@ -1089,6 +1155,27 @@ func actionCheckoutNew(ctx context.Context, req gitActionRequest) (string, error
 		return "", &gitActionError{"branch is required"}
 	}
 	return gitOutput(ctx, "checkout", "-b", req.Branch)
+}
+
+func actionMerge(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.Branch == "" {
+		return "", &gitActionError{"branch is required"}
+	}
+	target := req.Branch
+	if req.Remote != "" {
+		target = req.Remote + "/" + req.Branch
+	}
+	return gitOutput(ctx, "merge", "--no-edit", target)
+}
+
+func actionDeleteBranch(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.Branch == "" {
+		return "", &gitActionError{"branch is required"}
+	}
+	if req.Remote != "" {
+		return gitOutput(ctx, "push", req.Remote, "--delete", req.Branch)
+	}
+	return gitOutput(ctx, "branch", "-d", req.Branch)
 }
 
 func actionDiscard(ctx context.Context, req gitActionRequest) (string, error) {

@@ -10,6 +10,7 @@ import {
 } from '@/api/git'
 import { useFileWatcher } from '@/composables/useFileWatcher'
 import { useGitSshHostKey } from '@/composables/useGitSshHostKey'
+import ConfirmModal from '@/components/ConfirmModal.vue'
 import GitConfigModal from './GitConfigModal.vue'
 import GitSshHostKeyModal from './GitSshHostKeyModal.vue'
 
@@ -40,6 +41,9 @@ const branches = ref<GitBranch[]>([])
 const currentBranch = ref('')
 const newBranchName = ref('')
 const showNewBranch = ref(false)
+const branchAction = ref<string | null>(null)
+const deleteBranchTarget = ref<GitBranch | null>(null)
+const deletingBranch = ref(false)
 
 // Commit selection
 const commitFiles = ref<GitCommitFile[]>([])
@@ -85,6 +89,25 @@ const canCommit = computed(() => stagedFiles.value.length > 0 && commitMsg.value
 const changesTabCount = computed(() =>
   viewingCommit.value ? commitFiles.value.length : (status.value?.files?.length ?? 0)
 )
+const localBranches = computed(() => branches.value.filter((branch) => !branch.remote))
+const remoteBranchGroups = computed(() => {
+  const groups = new Map<string, GitBranch[]>()
+  for (const branch of branches.value.filter((item) => item.remote)) {
+    const remote = branch.remoteName || branch.name.split('/')[0] || 'remote'
+    const group = groups.get(remote) ?? []
+    group.push(branch)
+    groups.set(remote, group)
+  }
+  return Array.from(groups, ([remote, groupBranches]) => ({ remote, branches: groupBranches }))
+})
+const deleteBranchMessage = computed(() => {
+  const branch = deleteBranchTarget.value
+  if (!branch) return ''
+  const label = branchDisplayName(branch)
+  return branch.remote
+    ? `Delete remote branch '${label}' from '${branch.remoteName || 'remote'}'? This cannot be undone.`
+    : `Delete local branch '${label}'? Git will refuse if it has unmerged commits.`
+})
 
 // --- Actions ---
 function gitError(result: GitActionResult): string {
@@ -231,13 +254,59 @@ async function cloneRepo() {
   }
 }
 
-async function checkoutBranch(name: string) {
+function branchDisplayName(branch: GitBranch): string {
+  if (!branch.remote) return branch.name
+  return branch.remoteBranch || branch.name.split('/').slice(1).join('/') || branch.name
+}
+
+function branchSubtitle(branch: GitBranch): string {
+  const parts: string[] = []
+  if (branch.remote) {
+    parts.push(branch.remoteName ? `Remote: ${branch.remoteName}` : 'Remote branch')
+  } else {
+    parts.push(branch.upstream ? `Tracks ${branch.upstream}` : 'Local branch')
+  }
+  if (branch.hash) parts.push(branch.hash)
+  return parts.join(' · ')
+}
+
+function branchActionPayload(branch: GitBranch): { branch: string; remote?: string } {
+  if (!branch.remote) return { branch: branch.name }
+  const remote = branch.remoteName || branch.name.split('/')[0]
+  return {
+    branch: branch.remoteBranch || branch.name.split('/').slice(1).join('/'),
+    remote,
+  }
+}
+
+function branchActionKey(action: string, branch: GitBranch): string {
+  return `${action}:${branch.name}`
+}
+
+function isBranchActionRunning(action: string, branch: GitBranch): boolean {
+  return branchAction.value === branchActionKey(action, branch)
+}
+
+function branchErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback
+}
+
+async function checkoutBranch(branch: GitBranch) {
+  if (branch.current) return
+  const key = branchActionKey('checkout', branch)
   actionOutput.value = ''
-  // Strip "origin/" prefix for remote branch checkout
-  const branchName = name.startsWith('origin/') ? name.slice(7) : name
-  const result = await gitApi.action(props.workspaceId, 'checkout', { branch: branchName })
-  if (!result.success) actionOutput.value = gitError(result)
-  await refresh()
+  branchAction.value = key
+  try {
+    const result = await gitApi.action(props.workspaceId, 'checkout', branchActionPayload(branch))
+    if (promptFromActionResult(result, () => checkoutBranch(branch))) return
+    actionOutput.value = result.success ? `Checked out ${branchDisplayName(branch)}` : gitError(result)
+    await refresh()
+  } catch (err) {
+    if (promptFromError(err, () => checkoutBranch(branch))) return
+    actionOutput.value = branchErrorMessage(err, 'Failed to checkout branch')
+  } finally {
+    if (branchAction.value === key) branchAction.value = null
+  }
 }
 
 async function createBranch() {
@@ -252,6 +321,73 @@ async function createBranch() {
     actionOutput.value = gitError(result)
   }
   await refresh()
+}
+
+async function mergeBranch(branch: GitBranch) {
+  if (branch.current || !currentBranch.value || currentBranch.value === 'HEAD') return
+  const key = branchActionKey('merge', branch)
+  actionOutput.value = ''
+  branchAction.value = key
+  try {
+    const result = await gitApi.action(props.workspaceId, 'merge', branchActionPayload(branch))
+    if (promptFromActionResult(result, () => mergeBranch(branch))) return
+    actionOutput.value = result.success
+      ? `Merged ${branchDisplayName(branch)} into ${currentBranch.value}`
+      : gitError(result)
+    await refresh()
+  } catch (err) {
+    if (promptFromError(err, () => mergeBranch(branch))) return
+    actionOutput.value = branchErrorMessage(err, 'Failed to merge branch')
+  } finally {
+    if (branchAction.value === key) branchAction.value = null
+  }
+}
+
+function requestDeleteBranch(branch: GitBranch) {
+  if (branch.current) return
+  deleteBranchTarget.value = branch
+}
+
+async function deleteBranch(branch: GitBranch): Promise<boolean> {
+  const key = branchActionKey('delete', branch)
+  actionOutput.value = ''
+  branchAction.value = key
+  try {
+    const result = await gitApi.action(props.workspaceId, 'delete-branch', branchActionPayload(branch))
+    if (promptFromActionResult(result, async () => {
+      const deleted = await deleteBranch(branch)
+      if (deleted) cancelDeleteBranch()
+    })) {
+      return false
+    }
+    actionOutput.value = result.success ? `Deleted ${branchDisplayName(branch)}` : gitError(result)
+    await refresh()
+    return result.success
+  } catch (err) {
+    if (promptFromError(err, async () => {
+      const deleted = await deleteBranch(branch)
+      if (deleted) cancelDeleteBranch()
+    })) {
+      return false
+    }
+    actionOutput.value = branchErrorMessage(err, 'Failed to delete branch')
+    return false
+  } finally {
+    if (branchAction.value === key) branchAction.value = null
+  }
+}
+
+async function confirmDeleteBranch() {
+  if (!deleteBranchTarget.value || deletingBranch.value) return
+  deletingBranch.value = true
+  const deleted = await deleteBranch(deleteBranchTarget.value)
+  deletingBranch.value = false
+  if (deleted) cancelDeleteBranch()
+}
+
+function cancelDeleteBranch() {
+  if (deletingBranch.value) return
+  deleteBranchTarget.value = null
 }
 
 function viewDiff(path: string, staged: boolean) {
@@ -578,24 +714,150 @@ onUnmounted(() => {
             Create
           </button>
         </div>
+        <div v-if="localBranches.length === 0 && remoteBranchGroups.length === 0" class="git-empty-small">
+          No branches found
+        </div>
+
+        <div v-if="localBranches.length" class="git-branch-group">
+          <div class="git-branch-group-title">Local</div>
+          <div
+            v-for="b in localBranches"
+            :key="b.name"
+            class="git-branch-entry"
+            :class="{ current: b.current }"
+          >
+            <svg v-if="b.current" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+            <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="6" x2="6" y1="3" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
+            </svg>
+            <div class="git-branch-main">
+              <span class="git-branch-name">{{ branchDisplayName(b) }}</span>
+              <span class="git-branch-subtitle">{{ branchSubtitle(b) }}</span>
+            </div>
+            <span v-if="b.current" class="git-current-pill">Current</span>
+            <div v-else class="git-branch-actions">
+              <button
+                class="git-branch-action"
+                :disabled="b.current || branchAction !== null"
+                title="Checkout branch"
+                :aria-label="`Checkout ${branchDisplayName(b)}`"
+                @click="checkoutBranch(b)"
+              >
+                <span v-if="isBranchActionRunning('checkout', b)" class="git-action-spinner" />
+                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M15 3h4a2 2 0 0 1 2 2v4" />
+                  <path d="m10 14 5-5-5-5" />
+                  <path d="M15 9H3" />
+                  <path d="M21 15v4a2 2 0 0 1-2 2h-4" />
+                </svg>
+              </button>
+              <button
+                class="git-branch-action"
+                :disabled="b.current || !currentBranch || currentBranch === 'HEAD' || branchAction !== null"
+                title="Merge into current branch"
+                :aria-label="`Merge ${branchDisplayName(b)} into ${currentBranch}`"
+                @click="mergeBranch(b)"
+              >
+                <span v-if="isBranchActionRunning('merge', b)" class="git-action-spinner" />
+                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="18" cy="18" r="3" />
+                  <circle cx="6" cy="6" r="3" />
+                  <path d="M6 21V9a9 9 0 0 0 9 9" />
+                </svg>
+              </button>
+              <button
+                class="git-branch-action git-branch-action--danger"
+                :disabled="b.current || branchAction !== null"
+                title="Delete branch"
+                :aria-label="`Delete ${branchDisplayName(b)}`"
+                @click="requestDeleteBranch(b)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  <path d="m19 6-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                  <path d="M10 11v6" />
+                  <path d="M14 11v6" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div
-          v-for="b in branches"
-          :key="b.name"
-          class="git-branch-entry"
-          :class="{ current: b.current, remote: b.remote }"
-          @click="!b.current && checkoutBranch(b.name)"
+          v-for="group in remoteBranchGroups"
+          :key="group.remote"
+          class="git-branch-group"
         >
-          <svg v-if="b.current" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M20 6 9 17l-5-5" />
-          </svg>
-          <svg v-else-if="b.remote" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10" /><path d="M2 12h20" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-          </svg>
-          <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="6" x2="6" y1="3" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
-          </svg>
-          <span class="git-branch-name">{{ b.name }}</span>
-          <span v-if="b.hash" class="git-branch-hash">{{ b.hash }}</span>
+          <div class="git-branch-group-title">
+            <span>Remote</span>
+            <span class="git-remote-label">{{ group.remote }}</span>
+          </div>
+          <div
+            v-for="b in group.branches"
+            :key="b.name"
+            class="git-branch-entry remote"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" /><path d="M2 12h20" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>
+            <div class="git-branch-main">
+              <span class="git-branch-name">{{ branchDisplayName(b) }}</span>
+              <span class="git-branch-subtitle">{{ branchSubtitle(b) }}</span>
+            </div>
+            <div class="git-branch-actions">
+              <button
+                class="git-branch-action"
+                :disabled="branchAction !== null"
+                title="Checkout remote branch"
+                :aria-label="`Checkout ${branchDisplayName(b)} from ${b.remoteName || 'remote'}`"
+                @click="checkoutBranch(b)"
+              >
+                <span v-if="isBranchActionRunning('checkout', b)" class="git-action-spinner" />
+                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M15 3h4a2 2 0 0 1 2 2v4" />
+                  <path d="m10 14 5-5-5-5" />
+                  <path d="M15 9H3" />
+                  <path d="M21 15v4a2 2 0 0 1-2 2h-4" />
+                </svg>
+              </button>
+              <button
+                class="git-branch-action"
+                :disabled="!currentBranch || currentBranch === 'HEAD' || branchAction !== null"
+                title="Merge into current branch"
+                :aria-label="`Merge ${branchDisplayName(b)} into ${currentBranch}`"
+                @click="mergeBranch(b)"
+              >
+                <span v-if="isBranchActionRunning('merge', b)" class="git-action-spinner" />
+                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="18" cy="18" r="3" />
+                  <circle cx="6" cy="6" r="3" />
+                  <path d="M6 21V9a9 9 0 0 0 9 9" />
+                </svg>
+              </button>
+              <button
+                class="git-branch-action git-branch-action--danger"
+                :disabled="branchAction !== null"
+                title="Delete remote branch"
+                :aria-label="`Delete ${branchDisplayName(b)} from ${b.remoteName || 'remote'}`"
+                @click="requestDeleteBranch(b)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  <path d="m19 6-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                  <path d="M10 11v6" />
+                  <path d="M14 11v6" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="actionOutput" class="git-output git-output--branches">
+          <pre>{{ actionOutput }}</pre>
         </div>
       </div>
 
@@ -618,6 +880,16 @@ onUnmounted(() => {
       @accept="acceptSshHostKey"
       @cancel="cancelSshHostKey"
     />
+    <ConfirmModal
+      :show="deleteBranchTarget !== null"
+      title="Delete Branch"
+      :message="deleteBranchMessage"
+      confirm-label="Delete"
+      variant="danger"
+      :loading="deletingBranch"
+      @confirm="confirmDeleteBranch"
+      @cancel="cancelDeleteBranch"
+    />
   </div>
 </template>
 
@@ -628,6 +900,7 @@ onUnmounted(() => {
   height: 100%;
   overflow: hidden;
   position: relative;
+  container-type: inline-size;
 }
 
 .git-header {
@@ -1033,13 +1306,59 @@ onUnmounted(() => {
   border-color: var(--accent-blue);
 }
 
-.git-branch-entry {
+.git-branch-group {
+  border-bottom: 0.5px solid var(--border-subtle);
+}
+
+.git-branch-group:last-child {
+  border-bottom: 0;
+}
+
+.git-branch-group-title {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px var(--space-3);
-  cursor: pointer;
-  transition: background var(--transition-fast);
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.git-remote-label {
+  max-width: 120px;
+  padding: 1px 5px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent-blue);
+  background: var(--accent-glow);
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.git-branch-entry {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 7px;
+  min-height: 40px;
+  padding: 5px var(--space-2) 5px var(--space-3);
+  border-left: 2px solid transparent;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.git-branch-entry > svg {
+  grid-column: 1;
+  width: 13px;
+  height: 13px;
+  justify-self: center;
 }
 
 .git-branch-entry:hover {
@@ -1048,16 +1367,32 @@ onUnmounted(() => {
 
 .git-branch-entry.current {
   cursor: default;
+  border-left-color: var(--accent-green);
+  background: color-mix(in srgb, var(--accent-green) 8%, transparent);
 }
 
 .git-branch-entry.remote {
-  opacity: 0.7;
+  background: color-mix(in srgb, var(--bg-raised) 35%, transparent);
+}
+
+.git-branch-entry.remote:hover {
+  background: var(--bg-hover);
+}
+
+.git-branch-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .git-branch-name {
   font-size: 0.75rem;
   font-family: var(--font-mono);
   color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .git-branch-entry.current .git-branch-name {
@@ -1065,11 +1400,104 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-.git-branch-hash {
-  font-size: 0.72rem;
-  font-family: var(--font-mono);
+.git-branch-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-muted);
-  margin-left: auto;
+  font-size: 0.68rem;
+}
+
+.git-current-pill {
+  padding: 1px 5px;
+  border: 0.5px solid color-mix(in srgb, var(--accent-green) 40%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--accent-green);
+  background: color-mix(in srgb, var(--accent-green) 12%, transparent);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.git-branch-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  opacity: 0.78;
+  transition: opacity var(--transition-fast);
+}
+
+.git-branch-entry:hover .git-branch-actions,
+.git-branch-entry:focus-within .git-branch-actions {
+  opacity: 1;
+}
+
+.git-branch-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-surface-alt);
+  transition: all var(--transition-fast);
+}
+
+.git-branch-action:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent-blue);
+  background: var(--accent-glow);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-blue) 18%, transparent);
+}
+
+.git-branch-action--danger:hover:not(:disabled) {
+  color: var(--accent-rose);
+  border-color: var(--accent-rose);
+  background: color-mix(in srgb, var(--accent-rose) 12%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-rose) 18%, transparent);
+}
+
+.git-branch-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.git-action-spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--spinner-track);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+.git-output--branches {
+  border-top: 0.5px solid var(--border-default);
+}
+
+@container (max-width: 280px) {
+  .git-branch-entry {
+    grid-template-columns: 12px minmax(0, 1fr) auto;
+    column-gap: 5px;
+    padding-right: var(--space-1);
+  }
+
+  .git-branch-actions {
+    gap: 2px;
+  }
+
+  .git-branch-action {
+    width: 20px;
+    height: 20px;
+  }
+
+  .git-current-pill {
+    display: none;
+  }
 }
 
 /* Error */

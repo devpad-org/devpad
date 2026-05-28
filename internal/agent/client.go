@@ -581,11 +581,13 @@ type GitBranches struct {
 
 // GitBranch represents a single git branch.
 type GitBranch struct {
-	Name     string `json:"name"`
-	Hash     string `json:"hash"`
-	Upstream string `json:"upstream"`
-	Current  bool   `json:"current"`
-	Remote   bool   `json:"remote"`
+	Name         string `json:"name"`
+	Hash         string `json:"hash"`
+	Upstream     string `json:"upstream"`
+	Current      bool   `json:"current"`
+	Remote       bool   `json:"remote"`
+	RemoteName   string `json:"remoteName,omitempty"`
+	RemoteBranch string `json:"remoteBranch,omitempty"`
 }
 
 // GitRemote represents a single git remote with fetch and push URLs.
