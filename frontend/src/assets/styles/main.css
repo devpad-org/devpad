@@ -73,6 +73,10 @@
   /* Typography */
   --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'Geist Mono', 'JetBrains Mono', Menlo, monospace;
+  --font-terminal: ui-monospace, 'SFMono-Regular', Menlo, Monaco, 'Cascadia Mono', 'DejaVu Sans Mono', 'Liberation Mono', Consolas, 'Courier New', monospace;
+
+  /* Terminal */
+  --terminal-bg: var(--gruvbox-bg0-hard);
 
   /* Spacing */
   --space-1: 4px;

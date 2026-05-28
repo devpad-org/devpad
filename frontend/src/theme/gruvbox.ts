@@ -1,6 +1,8 @@
 import type * as MonacoType from 'monaco-editor'
 import type { ITheme } from '@xterm/xterm'
 
+export const terminalFontFamily = "ui-monospace, 'SFMono-Regular', Menlo, Monaco, 'Cascadia Mono', 'DejaVu Sans Mono', 'Liberation Mono', Consolas, 'Courier New', monospace"
+
 export const gruvboxTerminalTheme: ITheme = {
   background: '#1d2021',
   foreground: '#ebdbb2',

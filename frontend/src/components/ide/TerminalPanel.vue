@@ -3,7 +3,7 @@ import { computed, ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { gruvboxTerminalTheme } from '@/theme/gruvbox'
+import { gruvboxTerminalTheme, terminalFontFamily } from '@/theme/gruvbox'
 
 const props = defineProps<{
   workspaceId: number
@@ -45,7 +45,10 @@ function connect() {
     cursorBlink: true,
     fontSize: 13,
     lineHeight: 1.2,
-    fontFamily: "'Geist Mono', 'JetBrains Mono', Menlo, monospace",
+    fontFamily: terminalFontFamily,
+    fontWeight: '400',
+    fontWeightBold: '700',
+    letterSpacing: 0,
     theme: gruvboxTerminalTheme,
   })
 
@@ -228,7 +231,7 @@ watch(() => props.minimized, (isMinimized) => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg-base);
+  background: var(--terminal-bg);
 }
 
 .terminal-header {
@@ -299,12 +302,33 @@ watch(() => props.minimized, (isMinimized) => {
 
 .terminal-body {
   flex: 1;
+  min-height: 0;
   overflow: hidden;
   padding: var(--space-1) var(--space-2);
+  background: var(--terminal-bg);
 }
 
 .terminal-body :deep(.xterm) {
   height: 100%;
+  width: 100%;
+  background: var(--terminal-bg);
+  font-family: var(--font-terminal);
+  font-synthesis: none;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  text-rendering: geometricPrecision;
+}
+
+.terminal-body :deep(.xterm-screen),
+.terminal-body :deep(.xterm-viewport) {
+  background-color: var(--terminal-bg);
+}
+
+.terminal-body :deep(.xterm-rows) {
+  font-family: var(--font-terminal);
+  font-synthesis: none;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
 }
 
 .terminal-body :deep(.xterm-viewport) {
