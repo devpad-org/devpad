@@ -39,6 +39,15 @@ export const useWorkspaceStore = defineStore('workspaces', () => {
     return response.workspace
   }
 
+  async function setDefaultAgent(id: number, agentId: string) {
+    const response = await workspaceApi.setDefaultAgent(id, agentId)
+    const index = workspaces.value.findIndex((w) => w.id === id)
+    if (index !== -1) {
+      workspaces.value[index] = response.workspace
+    }
+    return response.workspace
+  }
+
   async function deleteWorkspace(id: number) {
     await workspaceApi.delete(id)
     workspaces.value = workspaces.value.filter((w) => w.id !== id)
@@ -80,6 +89,7 @@ export const useWorkspaceStore = defineStore('workspaces', () => {
     fetchWorkspaces,
     createWorkspace,
     updateWorkspace,
+    setDefaultAgent,
     deleteWorkspace,
     startWorkspace,
     stopWorkspace,

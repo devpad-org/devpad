@@ -50,6 +50,35 @@ func (s *service) Update(ctx context.Context, userID, workspaceID int64, name, d
 	return ws, nil
 }
 
+func (s *service) SetDefaultAgent(ctx context.Context, userID, workspaceID int64, agentID string) (*Workspace, error) {
+	agentID = defaultAgentID(agentID)
+	updatedDefault, err := s.repo.SetDefaultAgentID(ctx, userID, workspaceID, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("setting workspace default agent: %w", err)
+	}
+	if !updatedDefault {
+		ws, err := s.repo.GetByID(ctx, workspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("getting workspace: %w", err)
+		}
+		if ws == nil || ws.UserID != userID {
+			if ws == nil {
+				return nil, ErrNotFound
+			}
+			return nil, ErrForbidden
+		}
+		return nil, ErrDefaultAgentNotFound
+	}
+	updated, err := s.repo.GetByID(ctx, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("getting updated workspace: %w", err)
+	}
+	if updated == nil {
+		return nil, ErrNotFound
+	}
+	return updated, nil
+}
+
 func (s *service) UpdateResourceLimits(ctx context.Context, workspaceID, memoryLimit, nanoCPUs int64) (*Workspace, error) {
 	ws, err := s.repo.GetByID(ctx, workspaceID)
 	if err != nil {

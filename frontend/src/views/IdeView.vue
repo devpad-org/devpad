@@ -41,6 +41,8 @@ const selectedAgentId = ref('default')
 const previewModalVisible = ref(false)
 const previewModalLoading = ref(false)
 const previewModalError = ref<string | null>(null)
+const defaultAgentSavingId = ref<string | null>(null)
+const defaultAgentError = ref<string | null>(null)
 let gitDiffRequestId = 0
 
 type GitDiffRequest =
@@ -117,6 +119,7 @@ onMounted(async () => {
       ws = startRes.workspace
     }
     workspace.value = ws
+    selectedAgentId.value = ws.defaultAgentId || 'default'
   } catch {
     error.value = 'Failed to load workspace'
   } finally {
@@ -163,6 +166,30 @@ function handleAgentRunFocus(run: AgentRun) {
 function handleAgentSelect(agentId: string) {
   selectedAgentId.value = agentId
   focusedAgentRunId.value = null
+}
+
+async function handleDefaultAgentSet(agentId: string) {
+  if (!workspace.value) return
+  if ((workspace.value.defaultAgentId || 'default') === agentId) {
+    handleAgentSelect(agentId)
+    return
+  }
+
+  const previousAgentId = workspace.value.defaultAgentId || 'default'
+  defaultAgentSavingId.value = agentId
+  defaultAgentError.value = null
+  selectedAgentId.value = agentId
+  focusedAgentRunId.value = null
+  try {
+    const res = await workspaceApi.setDefaultAgent(workspace.value.id, agentId)
+    workspace.value = res.workspace
+    selectedAgentId.value = res.workspace.defaultAgentId || 'default'
+  } catch (e) {
+    selectedAgentId.value = previousAgentId
+    defaultAgentError.value = e instanceof Error ? e.message : 'Failed to set default agent'
+  } finally {
+    defaultAgentSavingId.value = null
+  }
 }
 
 function clearSelectedGitCommit() {
@@ -385,7 +412,11 @@ function handleBack() {
           v-show="activeActivity === 'ai'"
           :workspace-id="workspace?.id ?? 0"
           :selected-agent-id="selectedAgentId"
+          :default-agent-id="workspace?.defaultAgentId ?? 'default'"
+          :default-agent-error="defaultAgentError"
+          :default-agent-saving-id="defaultAgentSavingId"
           @select="handleAgentSelect"
+          @set-default="handleDefaultAgentSet"
         />
         <FileExplorer
           v-show="activeActivity === 'explorer'"

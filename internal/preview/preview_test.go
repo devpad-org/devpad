@@ -95,6 +95,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		volume_name TEXT NOT NULL DEFAULT '',
 		network_name TEXT NOT NULL DEFAULT '',
 		agent_token TEXT NOT NULL DEFAULT '',
+		default_agent_id TEXT NOT NULL DEFAULT 'default',
 		memory_limit INTEGER NOT NULL DEFAULT 2147483648,
 		nano_cpus INTEGER NOT NULL DEFAULT 2000000000,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

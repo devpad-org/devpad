@@ -117,6 +117,32 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"workspace": workspaceResponse(ws)})
 }
 
+// HandleSetDefaultAgent updates the AI agent selected by default for a workspace.
+func (h *Handler) HandleSetDefaultAgent(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, err := parseID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
+
+	var req struct {
+		AgentID string `json:"agentId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	ws, err := h.service.SetDefaultAgent(r.Context(), user.ID, id, req.AgentID)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"workspace": workspaceResponse(ws)})
+}
+
 // HandleDelete deletes a workspace.
 func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
@@ -187,6 +213,10 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "workspace is not running")
 		return
 	}
+	if errors.Is(err, ErrDefaultAgentNotFound) {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
 	var agentErr *agent.AgentError
 	if errors.As(err, &agentErr) {
 		if agentErr.SSHHostKey != nil {
@@ -204,15 +234,16 @@ func handleServiceError(w http.ResponseWriter, err error) {
 
 func workspaceResponse(ws *Workspace) map[string]any {
 	return map[string]any{
-		"id":          ws.ID,
-		"name":        ws.Name,
-		"description": ws.Description,
-		"status":      ws.Status,
-		"containerId": ws.ContainerID,
-		"memoryLimit": ws.MemoryLimit,
-		"nanoCpus":    ws.NanoCPUs,
-		"createdAt":   ws.CreatedAt,
-		"updatedAt":   ws.UpdatedAt,
+		"id":             ws.ID,
+		"name":           ws.Name,
+		"description":    ws.Description,
+		"status":         ws.Status,
+		"containerId":    ws.ContainerID,
+		"defaultAgentId": ws.DefaultAgentID,
+		"memoryLimit":    ws.MemoryLimit,
+		"nanoCpus":       ws.NanoCPUs,
+		"createdAt":      ws.CreatedAt,
+		"updatedAt":      ws.UpdatedAt,
 	}
 }
 

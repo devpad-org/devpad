@@ -12,6 +12,7 @@ type LifecycleService interface {
 	Create(ctx context.Context, userID int64, name, description string) (*Workspace, error)
 	List(ctx context.Context, userID int64) ([]*Workspace, error)
 	Update(ctx context.Context, userID, workspaceID int64, name, description string) (*Workspace, error)
+	SetDefaultAgent(ctx context.Context, userID, workspaceID int64, agentID string) (*Workspace, error)
 	Delete(ctx context.Context, userID, workspaceID int64) error
 	Start(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
 	Stop(ctx context.Context, userID, workspaceID int64) (*Workspace, error)

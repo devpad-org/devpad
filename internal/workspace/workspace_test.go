@@ -102,10 +102,23 @@ func setupTestDB(t *testing.T) *sql.DB {
 		volume_name TEXT NOT NULL DEFAULT '',
 		network_name TEXT NOT NULL DEFAULT '',
 		agent_token TEXT NOT NULL DEFAULT '',
+		default_agent_id TEXT NOT NULL DEFAULT 'default',
 		memory_limit INTEGER NOT NULL DEFAULT 2147483648,
 		nano_cpus INTEGER NOT NULL DEFAULT 2000000000,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE ai_agents (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		workspace_id INTEGER REFERENCES workspaces(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		purpose TEXT NOT NULL DEFAULT '',
+		instructions TEXT NOT NULL,
+		is_global INTEGER NOT NULL DEFAULT 0 CHECK(is_global IN (0, 1)),
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		CHECK ((is_global = 1 AND workspace_id IS NULL) OR (is_global = 0 AND workspace_id IS NOT NULL))
 	);
 	INSERT INTO users (id, username, email, password) VALUES (1, 'testuser', 'test@test.com', 'hashed');
 	INSERT INTO users (id, username, email, password) VALUES (2, 'otheruser', 'other@test.com', 'hashed');`
@@ -183,6 +196,9 @@ func TestService_CreateAndGet(t *testing.T) {
 	if ws.ID == 0 {
 		t.Error("expected non-zero ID")
 	}
+	if ws.DefaultAgentID != "default" {
+		t.Errorf("expected default agent ID, got %q", ws.DefaultAgentID)
+	}
 
 	got, err := svc.Get(ctx, 1, ws.ID)
 	if err != nil {
@@ -191,6 +207,127 @@ func TestService_CreateAndGet(t *testing.T) {
 	if got.Name != ws.Name {
 		t.Errorf("expected name %q, got %q", ws.Name, got.Name)
 	}
+}
+
+func TestService_SetDefaultAgent(t *testing.T) {
+	svc, db := setupTestService(t)
+	ctx := context.Background()
+
+	ws, err := svc.Create(ctx, 1, "Agent Project", "")
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	agentID := insertTestAgent(t, db, 1, ws.ID, false)
+
+	updated, err := svc.SetDefaultAgent(ctx, 1, ws.ID, agentID)
+	if err != nil {
+		t.Fatalf("set default agent: %v", err)
+	}
+	if updated.DefaultAgentID != agentID {
+		t.Fatalf("expected default agent %q, got %q", agentID, updated.DefaultAgentID)
+	}
+
+	got, err := svc.Get(ctx, 1, ws.ID)
+	if err != nil {
+		t.Fatalf("get workspace: %v", err)
+	}
+	if got.DefaultAgentID != agentID {
+		t.Fatalf("expected persisted default agent %q, got %q", agentID, got.DefaultAgentID)
+	}
+}
+
+func TestService_SetDefaultAgentRejectsUnavailableAgent(t *testing.T) {
+	svc, db := setupTestService(t)
+	ctx := context.Background()
+
+	ws, err := svc.Create(ctx, 1, "Agent Project", "")
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	otherWorkspace, err := svc.Create(ctx, 1, "Other Project", "")
+	if err != nil {
+		t.Fatalf("create other workspace: %v", err)
+	}
+	otherWorkspaceAgentID := insertTestAgent(t, db, 1, otherWorkspace.ID, false)
+
+	_, err = svc.SetDefaultAgent(ctx, 1, ws.ID, otherWorkspaceAgentID)
+	if err != ErrDefaultAgentNotFound {
+		t.Fatalf("expected ErrDefaultAgentNotFound, got %v", err)
+	}
+}
+
+func TestService_SetDefaultAgentRejectsDeletedAgent(t *testing.T) {
+	svc, db := setupTestService(t)
+	ctx := context.Background()
+
+	ws, err := svc.Create(ctx, 1, "Agent Project", "")
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	agentID := insertTestAgent(t, db, 1, ws.ID, false)
+	if _, err := db.ExecContext(ctx, `DELETE FROM ai_agents WHERE id = ?`, agentID); err != nil {
+		t.Fatalf("delete agent: %v", err)
+	}
+
+	_, err = svc.SetDefaultAgent(ctx, 1, ws.ID, agentID)
+	if err != ErrDefaultAgentNotFound {
+		t.Fatalf("expected ErrDefaultAgentNotFound, got %v", err)
+	}
+
+	got, err := svc.Get(ctx, 1, ws.ID)
+	if err != nil {
+		t.Fatalf("get workspace: %v", err)
+	}
+	if got.DefaultAgentID != DefaultAgentID {
+		t.Fatalf("expected default agent to remain %q, got %q", DefaultAgentID, got.DefaultAgentID)
+	}
+}
+
+func TestService_SetDefaultAgentAllowsGlobalAgent(t *testing.T) {
+	svc, db := setupTestService(t)
+	ctx := context.Background()
+
+	ws, err := svc.Create(ctx, 1, "Agent Project", "")
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	globalAgentID := insertTestAgent(t, db, 1, 0, true)
+
+	updated, err := svc.SetDefaultAgent(ctx, 1, ws.ID, globalAgentID)
+	if err != nil {
+		t.Fatalf("set global default agent: %v", err)
+	}
+	if updated.DefaultAgentID != globalAgentID {
+		t.Fatalf("expected global default agent %q, got %q", globalAgentID, updated.DefaultAgentID)
+	}
+}
+
+func insertTestAgent(t *testing.T, db *sql.DB, userID, workspaceID int64, isGlobal bool) string {
+	t.Helper()
+	var workspaceValue any
+	if workspaceID > 0 {
+		workspaceValue = workspaceID
+	}
+	globalValue := 0
+	if isGlobal {
+		globalValue = 1
+	}
+	result, err := db.Exec(
+		`INSERT INTO ai_agents (user_id, workspace_id, name, instructions, is_global) VALUES (?, ?, ?, ?, ?)`,
+		userID,
+		workspaceValue,
+		"Test Agent",
+		"Help with tests.",
+		globalValue,
+	)
+	if err != nil {
+		t.Fatalf("insert agent: %v", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("get agent id: %v", err)
+	}
+	return strconv.FormatInt(id, 10)
 }
 
 func TestService_GetNotFound(t *testing.T) {
