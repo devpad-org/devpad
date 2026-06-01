@@ -15,7 +15,8 @@ import (
 var Version = "dev"
 
 const defaultPort = "9100"
-const workspaceRoot = "/workspace"
+
+var workspaceRoot = "/workspace"
 
 func main() {
 	port := os.Getenv("AGENT_PORT")
