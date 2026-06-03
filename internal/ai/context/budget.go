@@ -10,6 +10,7 @@ const (
 	anthropicHaikuInputBudgetTokens = 200000
 	openAIReasoningInputTokens      = 1050000
 	long256KInputBudgetTokens       = 256000
+	minimaxM3InputBudgetTokens      = 1000000
 	minimaxM27InputBudgetTokens     = 204800
 )
 
@@ -89,6 +90,9 @@ func mistralInputBudget(model string) int {
 }
 
 func minimaxInputBudget(model string) int {
+	if strings.Contains(model, "m3") {
+		return minimaxM3InputBudgetTokens
+	}
 	if strings.Contains(model, "m2.7") {
 		return minimaxM27InputBudgetTokens
 	}
@@ -118,6 +122,8 @@ func knownModelInputBudget(model string) (int, bool) {
 		"mistral-large-2512",
 		"kimi-k2.6":
 		return long256KInputBudgetTokens, true
+	case "minimax-m3":
+		return minimaxM3InputBudgetTokens, true
 	case "minimax-m2.7":
 		return minimaxM27InputBudgetTokens, true
 	default:
