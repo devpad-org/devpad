@@ -109,7 +109,7 @@ func (r *fakeAgentRunRepository) UpdateStatus(_ context.Context, runID int64, st
 	run.Status = status
 	run.Error = errorMessage
 	run.UpdatedAt = now
-	if (status == domain.AgentRunRunning || status == domain.AgentRunWaitingApproval) && run.StartedAt == nil {
+	if (status == domain.AgentRunRunning || status == domain.AgentRunWaitingApproval || status == domain.AgentRunWaitingUser) && run.StartedAt == nil {
 		run.StartedAt = &now
 	}
 	if domain.AgentRunStatusTerminal(status) {

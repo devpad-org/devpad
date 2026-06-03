@@ -21,6 +21,8 @@ type ClientEvent struct {
 	ToolResult     *ToolResultPart
 	Approval       *ApprovalRequest
 	ApprovalResult *ApprovalResult
+	Question       *UserQuestionRequest
+	QuestionResult *UserQuestionResult
 	Plan           []PlanStep
 	ContextSize    *ContextSize
 	Done           bool

@@ -8,6 +8,7 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	"github.com/devpad-org/devpad/internal/ai/orchestrator"
 	aiprovider "github.com/devpad-org/devpad/internal/ai/provider"
+	"github.com/devpad-org/devpad/internal/ai/question"
 )
 
 // SimpleChatRequest contains the inputs for non-agent chat.
@@ -52,12 +53,12 @@ type providerChatBackend struct {
 }
 
 // NewChatService creates the app-level chat service for simple and agent chat.
-func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog, executor orchestrator.ToolExecutor, approvals approval.Broker, workspaceInstructions WorkspaceInstructionSource) ChatService {
+func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog, executor orchestrator.ToolExecutor, approvals approval.Broker, questions question.Broker, workspaceInstructions WorkspaceInstructionSource) ChatService {
 	backend := &providerChatBackend{catalog: catalog}
 
 	return &chatService{
 		simple:                orchestrator.NewSimpleChatOrchestrator(backend),
-		agent:                 orchestrator.NewAgentChatOrchestrator(backend, toolCatalog, executor, approvals),
+		agent:                 orchestrator.NewAgentChatOrchestrator(backend, toolCatalog, executor, approvals, questions),
 		workspaceInstructions: workspaceInstructions,
 	}
 }

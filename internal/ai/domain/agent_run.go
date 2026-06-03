@@ -9,6 +9,7 @@ const (
 	AgentRunQueued          AgentRunStatus = "queued"
 	AgentRunRunning         AgentRunStatus = "running"
 	AgentRunWaitingApproval AgentRunStatus = "waiting_approval"
+	AgentRunWaitingUser     AgentRunStatus = "waiting_user"
 	AgentRunCompleted       AgentRunStatus = "completed"
 	AgentRunFailed          AgentRunStatus = "failed"
 	AgentRunCancelled       AgentRunStatus = "cancelled"

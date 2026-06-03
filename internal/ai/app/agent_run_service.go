@@ -346,9 +346,23 @@ func (s *agentRunService) consumeRun(ctx context.Context, runID int64, stream <-
 					status = domain.AgentRunWaitingApproval
 				}
 			}
-			if event.Approval == nil && status == domain.AgentRunWaitingApproval && !event.Done {
+			if event.Question != nil && status != domain.AgentRunWaitingUser {
+				if err := s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunWaitingUser, ""); err != nil {
+					log.Printf("failed to mark agent run %d waiting for user: %v", runID, err)
+				} else {
+					status = domain.AgentRunWaitingUser
+				}
+			}
+			if event.ApprovalResult != nil && status == domain.AgentRunWaitingApproval && !event.Done {
 				if err := s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunRunning, ""); err != nil {
 					log.Printf("failed to mark agent run %d running after approval: %v", runID, err)
+				} else {
+					status = domain.AgentRunRunning
+				}
+			}
+			if event.QuestionResult != nil && status == domain.AgentRunWaitingUser && !event.Done {
+				if err := s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunRunning, ""); err != nil {
+					log.Printf("failed to mark agent run %d running after user answer: %v", runID, err)
 				} else {
 					status = domain.AgentRunRunning
 				}

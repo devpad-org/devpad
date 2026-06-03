@@ -5,7 +5,7 @@ import { aiApi, type AgentRun, type AgentRunStatus } from '@/api/ai'
 export { type AgentRun, type AgentRunStatus }
 
 export function isAgentRunActiveStatus(status: AgentRunStatus): boolean {
-  return status === 'queued' || status === 'running' || status === 'waiting_approval'
+  return status === 'queued' || status === 'running' || status === 'waiting_approval' || status === 'waiting_user'
 }
 
 export const useAgentRunStore = defineStore('agentRuns', () => {

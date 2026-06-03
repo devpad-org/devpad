@@ -471,7 +471,8 @@ onUnmounted(stopRefreshTimer)
 
 .agent-run-item--queued .run-status-dot,
 .agent-run-item--running .run-status-dot,
-.agent-run-item--waiting_approval .run-status-dot {
+.agent-run-item--waiting_approval .run-status-dot,
+.agent-run-item--waiting_user .run-status-dot {
   background: var(--accent-green);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--bg-void) 70%, transparent),

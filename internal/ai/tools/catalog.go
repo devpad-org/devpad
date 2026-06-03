@@ -142,6 +142,14 @@ func AgentTools() []domain.ToolDefinition {
 		{
 			Type: "function",
 			Function: domain.ToolFunction{
+				Name:        "ask_user",
+				Description: "Ask the user one or more concise clarification questions and wait for their answers. Use only when ambiguity materially affects the next action. The UI always lets the user type a custom answer if none of the provided choices fit.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"title":{"type":"string","description":"Optional short title for the question card."},"questions":{"type":"array","minItems":1,"maxItems":5,"items":{"type":"object","properties":{"id":{"type":"string","description":"Stable short identifier for this question."},"prompt":{"type":"string","description":"The question to show the user."},"type":{"type":"string","enum":["single_choice","multiple_choice","text"],"description":"Expected answer shape. Defaults to single_choice."},"options":{"type":"array","description":"Suggested choices for single_choice or multiple_choice questions.","items":{"type":"object","properties":{"value":{"type":"string","description":"Machine-readable option value."},"label":{"type":"string","description":"Human-readable option label."}},"required":["value","label"]}},"allow_custom":{"type":"boolean","description":"Whether to explicitly invite a custom answer. Defaults to true; the UI still allows custom answers for safety."},"placeholder":{"type":"string","description":"Optional placeholder for the custom answer field."}},"required":["id","prompt"]}}},"required":["questions"]}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: domain.ToolFunction{
 				Name:        "spawn_sub_agent",
 				Description: "Start a child AI agent run for an independent subtask. The child appears nested under this run in the Agent Runs sidebar. Use agent_id from list_available_agents to assign the best purpose-built agent. Use wait_for_result only when you need this single child's final answer before continuing; otherwise keep the returned runId and call wait_for_sub_agents later.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"Complete instructions for the child agent, including all necessary context, scope, and expected output."},"agent_id":{"type":"string","description":"Optional agent ID from list_available_agents. Defaults to the baked-in default agent."},"model":{"type":"string","description":"Optional model ID. Defaults to the current model."},"wait_for_result":{"type":"boolean","description":"When true, wait for the child run to finish and return its final text in the summary field. Defaults to false."},"timeout_seconds":{"type":"integer","description":"Maximum seconds to wait when wait_for_result is true. Defaults to 120 and is capped at 600."}},"required":["prompt"]}`),
@@ -183,6 +191,12 @@ Plan management:
 - When you do use a plan, mark the current step as "in_progress" before starting it.
 - Mark it "completed" (or "failed") immediately after, then move to the next step.
 - Keep all steps in each update_plan call — always send the full list with current statuses.
+
+Clarifying questions:
+- Use ask_user when a missing answer would materially change what you build, run, delete, or configure.
+- Prefer making reasonable defaults yourself for routine choices; do not ask questions just to avoid deciding.
+- Keep question prompts short and provide a few useful choices when possible.
+- The user can always enter a custom answer if none of your choices fit, so treat custom answers as authoritative.
 
 Sub-agents:
 - Use spawn_sub_agent proactively when a task has independent research, review, implementation, or verification subtasks that can make progress without sharing live context.

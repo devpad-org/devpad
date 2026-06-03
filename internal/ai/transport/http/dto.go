@@ -85,6 +85,8 @@ type StreamEventDTO struct {
 	ToolResult       *StreamToolResultDTO `json:"toolResult,omitempty"`
 	ApprovalRequired *ApprovalRequestDTO  `json:"approvalRequired,omitempty"`
 	ApprovalResolved *ApprovalResultDTO   `json:"approvalResolved,omitempty"`
+	QuestionRequired *QuestionRequestDTO  `json:"questionRequired,omitempty"`
+	QuestionResolved *QuestionResultDTO   `json:"questionResolved,omitempty"`
 	Plan             []PlanStepDTO        `json:"plan,omitempty"`
 	ContextSize      *ContextSizeDTO      `json:"contextSize,omitempty"`
 	Done             bool                 `json:"done,omitempty"`
@@ -124,6 +126,7 @@ type StreamToolResultDTO struct {
 	ToolCallID string `json:"toolCallId"`
 	Name       string `json:"name"`
 	Content    string `json:"content"`
+	IsError    bool   `json:"isError,omitempty"`
 }
 
 // ApprovalRequestDTO asks the client to approve a command.
@@ -137,6 +140,44 @@ type ApprovalResultDTO struct {
 	ID      string `json:"id"`
 	Command string `json:"command"`
 	Status  string `json:"status"`
+}
+
+// QuestionRequestDTO asks the frontend to collect answers from the user.
+type QuestionRequestDTO struct {
+	ID        string            `json:"id"`
+	Title     string            `json:"title,omitempty"`
+	Questions []QuestionItemDTO `json:"questions"`
+}
+
+// QuestionItemDTO carries one question for the frontend.
+type QuestionItemDTO struct {
+	ID          string              `json:"id"`
+	Prompt      string              `json:"prompt"`
+	Type        string              `json:"type"`
+	Options     []QuestionOptionDTO `json:"options,omitempty"`
+	AllowCustom bool                `json:"allowCustom"`
+	Placeholder string              `json:"placeholder,omitempty"`
+}
+
+// QuestionOptionDTO carries one selectable answer.
+type QuestionOptionDTO struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// QuestionAnswerDTO carries one user answer.
+type QuestionAnswerDTO struct {
+	QuestionID string   `json:"questionId"`
+	Values     []string `json:"values,omitempty"`
+	Custom     string   `json:"custom,omitempty"`
+	Skipped    bool     `json:"skipped,omitempty"`
+}
+
+// QuestionResultDTO reports that a pending user question was resolved.
+type QuestionResultDTO struct {
+	ID      string              `json:"id"`
+	Status  string              `json:"status"`
+	Answers []QuestionAnswerDTO `json:"answers,omitempty"`
 }
 
 // PlanStepDTO is the frontend transport representation of an execution plan step.
@@ -310,6 +351,7 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 			ToolCallID: event.ToolResult.ToolCallID,
 			Name:       event.ToolResult.Name,
 			Content:    event.ToolResult.Content,
+			IsError:    event.ToolResult.IsError,
 		}
 	}
 	if event.Approval != nil {
@@ -324,6 +366,12 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 			Command: event.ApprovalResult.Command,
 			Status:  event.ApprovalResult.Status,
 		}
+	}
+	if event.Question != nil {
+		dto.QuestionRequired = FromQuestionRequest(event.Question)
+	}
+	if event.QuestionResult != nil {
+		dto.QuestionResolved = FromQuestionResult(event.QuestionResult)
 	}
 	if len(event.Plan) > 0 {
 		dto.Plan = make([]PlanStepDTO, 0, len(event.Plan))
@@ -346,6 +394,68 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 		}
 	}
 
+	return dto
+}
+
+// FromQuestionRequest converts a domain question request into a transport DTO.
+func FromQuestionRequest(request *domain.UserQuestionRequest) *QuestionRequestDTO {
+	if request == nil {
+		return nil
+	}
+	dto := &QuestionRequestDTO{
+		ID:        request.ID,
+		Title:     request.Title,
+		Questions: make([]QuestionItemDTO, 0, len(request.Questions)),
+	}
+	for _, question := range request.Questions {
+		item := QuestionItemDTO{
+			ID:          question.ID,
+			Prompt:      question.Prompt,
+			Type:        string(question.Type),
+			AllowCustom: question.AllowCustom,
+			Placeholder: question.Placeholder,
+			Options:     make([]QuestionOptionDTO, 0, len(question.Options)),
+		}
+		for _, option := range question.Options {
+			item.Options = append(item.Options, QuestionOptionDTO{Value: option.Value, Label: option.Label})
+		}
+		dto.Questions = append(dto.Questions, item)
+	}
+	return dto
+}
+
+// ToDomainQuestionAnswers converts transport answers to domain answers.
+func ToDomainQuestionAnswers(dtos []QuestionAnswerDTO) []domain.UserQuestionAnswer {
+	answers := make([]domain.UserQuestionAnswer, 0, len(dtos))
+	for _, dto := range dtos {
+		answers = append(answers, domain.UserQuestionAnswer{
+			QuestionID: dto.QuestionID,
+			Values:     append([]string(nil), dto.Values...),
+			Custom:     dto.Custom,
+			Skipped:    dto.Skipped,
+		})
+	}
+	return answers
+}
+
+// FromQuestionResult converts a domain question result into a transport DTO.
+func FromQuestionResult(result *domain.UserQuestionResult) *QuestionResultDTO {
+	if result == nil {
+		return nil
+	}
+	dto := &QuestionResultDTO{
+		ID:      result.ID,
+		Status:  result.Status,
+		Answers: make([]QuestionAnswerDTO, 0, len(result.Answers)),
+	}
+	for _, answer := range result.Answers {
+		dto.Answers = append(dto.Answers, QuestionAnswerDTO{
+			QuestionID: answer.QuestionID,
+			Values:     append([]string(nil), answer.Values...),
+			Custom:     answer.Custom,
+			Skipped:    answer.Skipped,
+		})
+	}
 	return dto
 }
 

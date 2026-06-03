@@ -87,6 +87,17 @@ func TestAgentRunRepository_PersistsRunsAndOrderedEvents(t *testing.T) {
 		t.Fatalf("unexpected listed events: %+v", events)
 	}
 
+	if err := repo.UpdateStatus(ctx, run.ID, domain.AgentRunWaitingUser, ""); err != nil {
+		t.Fatalf("update waiting user status: %v", err)
+	}
+	waiting, err := repo.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("get waiting user run: %v", err)
+	}
+	if waiting.Status != domain.AgentRunWaitingUser || waiting.StartedAt == nil {
+		t.Fatalf("expected waiting user run with started timestamp, got %+v", waiting)
+	}
+
 	if err := repo.UpdateStatus(ctx, run.ID, domain.AgentRunCompleted, ""); err != nil {
 		t.Fatalf("update status: %v", err)
 	}

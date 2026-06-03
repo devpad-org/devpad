@@ -5,6 +5,7 @@ import (
 
 	"github.com/devpad-org/devpad/internal/ai/approval"
 	"github.com/devpad-org/devpad/internal/ai/domain"
+	"github.com/devpad-org/devpad/internal/ai/question"
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 )
 
@@ -44,6 +45,7 @@ type AgentChatOrchestrator interface {
 }
 
 var _ approval.Broker
+var _ question.Broker
 
 func emitEvent(ctx context.Context, out chan<- domain.ClientEvent, event domain.ClientEvent) bool {
 	select {
