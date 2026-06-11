@@ -476,10 +476,12 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
 
 <style scoped>
 .file-explorer {
+  --ide-header-icon: var(--accent-blue);
   display: flex;
   flex-direction: column;
   height: 100%;
   font-size: 0.8rem;
+  background: var(--ide-panel-bg);
 }
 
 .explorer-header {
@@ -488,6 +490,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
   justify-content: space-between;
   padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
+  background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
 }
@@ -496,16 +499,13 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.75rem;
+  font-size: var(--ide-header-title-size);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .panel-icon {
-  color: var(--accent-blue);
-  opacity: 0.7;
+  color: var(--ide-header-icon);
   flex-shrink: 0;
 }
 

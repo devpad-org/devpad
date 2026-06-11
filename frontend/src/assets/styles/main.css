@@ -30,6 +30,11 @@
   --bg-selected: rgba(250, 189, 47, 0.13);
   --bg-overlay: rgba(29, 32, 33, 0.74);
   --bg-neutral: rgba(168, 153, 132, 0.13);
+  --ide-surface-bg: var(--bg-void);
+  --ide-panel-bg: var(--bg-base);
+  --ide-header-bg: var(--bg-elevated);
+  --ide-header-icon: var(--accent);
+  --ide-header-title-size: 0.76rem;
 
   /* Borders */
   --border-hairline: rgba(235, 219, 178, 0.06);

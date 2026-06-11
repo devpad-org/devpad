@@ -227,10 +227,11 @@ async function deleteEditingAgent(): Promise<void> {
 
 <style scoped>
 .agents-panel {
+  --ide-header-icon: var(--accent);
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg-surface);
+  background: var(--ide-panel-bg);
   color: var(--text-secondary);
 }
 
@@ -241,6 +242,7 @@ async function deleteEditingAgent(): Promise<void> {
   gap: var(--space-2);
   padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
+  background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
 }
@@ -249,16 +251,13 @@ async function deleteEditingAgent(): Promise<void> {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.75rem;
+  font-size: var(--ide-header-title-size);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .panel-icon {
-  color: var(--accent-purple);
-  opacity: 0.7;
+  color: var(--ide-header-icon);
   flex-shrink: 0;
 }
 

@@ -1764,9 +1764,11 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 
 <style scoped>
 .agent-panel {
+  --ide-header-icon: var(--accent);
   display: flex;
   flex-direction: column;
   height: 100%;
+  background: var(--ide-surface-bg);
 }
 
 .agent-header {
@@ -1775,6 +1777,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   justify-content: space-between;
   padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
+  background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
 }
@@ -1791,13 +1794,11 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   justify-content: center;
   width: 16px;
   height: 16px;
-  border-radius: var(--radius-sm);
-  background: var(--accent);
-  color: var(--bg-base);
+  color: var(--ide-header-icon);
 }
 
 .agent-title {
-  font-size: 0.8rem;
+  font-size: var(--ide-header-title-size);
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -2018,6 +2019,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  background: var(--ide-surface-bg);
 }
 
 .run-focus-banner,
@@ -2164,7 +2166,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   padding: var(--space-3);
   border-top: 0.5px solid var(--border-default);
   flex-shrink: 0;
-  background: var(--bg-base);
+  background: var(--ide-surface-bg);
 }
 
 .run-focus-footer {
