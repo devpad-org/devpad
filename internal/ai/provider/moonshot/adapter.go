@@ -58,16 +58,28 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 }
 
 func (a *Adapter) Models() []domain.Model {
-	return []domain.Model{{
-		ID:         "kimi-k2.6",
-		Name:       "Kimi K2.6",
-		ProviderID: providerID,
-		Thinking: domain.ThinkingCapability{
-			Supported:        true,
-			EnabledByDefault: true,
-			CanDisable:       true,
+	return []domain.Model{
+		{
+			ID:         "kimi-k2.7-code",
+			Name:       "Kimi K2.7 Code",
+			ProviderID: providerID,
+			Thinking: domain.ThinkingCapability{
+				Supported:        true,
+				EnabledByDefault: true,
+				CanDisable:       false,
+			},
 		},
-	}}
+		{
+			ID:         "kimi-k2.6",
+			Name:       "Kimi K2.6",
+			ProviderID: providerID,
+			Thinking: domain.ThinkingCapability{
+				Supported:        true,
+				EnabledByDefault: true,
+				CanDisable:       true,
+			},
+		},
+	}
 }
 
 func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req aiprovider.StreamRequest) (<-chan domain.ProviderEvent, error) {

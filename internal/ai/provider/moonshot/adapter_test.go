@@ -22,7 +22,7 @@ func TestAdapterContract(t *testing.T) {
 		ExpectedProviderID:   "moonshot",
 		ExpectedProviderName: "Moonshot AI",
 		ExpectedProtocol:     aiprovider.ProtocolOpenAIChat,
-		ExpectedModelIDs:     []string{"kimi-k2.6"},
+		ExpectedModelIDs:     []string{"kimi-k2.7-code", "kimi-k2.6"},
 		Request: aiprovider.StreamRequest{
 			Model: "kimi-k2.6",
 			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
@@ -30,8 +30,17 @@ func TestAdapterContract(t *testing.T) {
 	})
 }
 
+func modelByID(t *testing.T, id string) domain.Model {
+	t.Helper()
+	model, ok := domain.ModelByID(NewAdapter().Models(), id)
+	if !ok {
+		t.Fatalf("model %q not found", id)
+	}
+	return model
+}
+
 func TestBuildChatRequest_PreservesReasoningContentWhenThinkingEnabled(t *testing.T) {
-	model := NewAdapter().Models()[0]
+	model := modelByID(t, "kimi-k2.6")
 	req := aiprovider.StreamRequest{
 		Model:    "kimi-k2.6",
 		Thinking: &domain.ThinkingConfig{Enabled: boolPtr(true)},
@@ -84,7 +93,7 @@ func TestBuildChatRequest_PreservesReasoningContentWhenThinkingEnabled(t *testin
 }
 
 func TestBuildChatRequest_DisablesThinkingWhenRequested(t *testing.T) {
-	model := NewAdapter().Models()[0]
+	model := modelByID(t, "kimi-k2.6")
 	req := aiprovider.StreamRequest{
 		Model:    "kimi-k2.6",
 		Thinking: &domain.ThinkingConfig{Enabled: boolPtr(false)},
@@ -101,6 +110,23 @@ func TestBuildChatRequest_DisablesThinkingWhenRequested(t *testing.T) {
 	}
 	if body.Thinking.Keep != "" {
 		t.Fatalf("expected keep to be omitted when thinking is disabled, got %q", body.Thinking.Keep)
+	}
+}
+
+// kimi-k2.7-code requires thinking; it must never emit a "disabled" config even
+// if a caller asks to turn thinking off.
+func TestBuildChatRequest_K27CodeKeepsThinkingEnabled(t *testing.T) {
+	model := modelByID(t, "kimi-k2.7-code")
+	req := aiprovider.StreamRequest{
+		Model:    "kimi-k2.7-code",
+		Thinking: &domain.ThinkingConfig{Enabled: boolPtr(false)},
+		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
+	}
+
+	body := buildChatRequest(req, model)
+
+	if body.Thinking != nil && body.Thinking.Type == "disabled" {
+		t.Fatal("kimi-k2.7-code must not send a disabled thinking config")
 	}
 }
 

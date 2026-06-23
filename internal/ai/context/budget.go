@@ -116,6 +116,7 @@ func knownModelInputBudget(model string) (int, bool) {
 		"mistral-medium-3",
 		"mistral-large-latest",
 		"mistral-large-2512",
+		"kimi-k2.7-code",
 		"kimi-k2.6":
 		return long256KInputBudgetTokens, true
 	case "minimax-m2.7":
