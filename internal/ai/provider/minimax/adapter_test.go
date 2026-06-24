@@ -3,12 +3,35 @@ package minimax
 import (
 	"encoding/json"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	aiprovider "github.com/devpad-org/devpad/internal/ai/provider"
+	"github.com/devpad-org/devpad/internal/ai/testkit"
 )
+
+func TestAdapterContract(t *testing.T) {
+	testkit.RunAdapterContract(t, testkit.AdapterContract{
+		NewAdapter: func() aiprovider.Adapter {
+			return NewAdapter()
+		},
+		Configure: func(adapter aiprovider.Adapter, serverURL string, client *http.Client) {
+			tested := adapter.(*Adapter)
+			tested.baseURL = serverURL
+			tested.client = client
+		},
+		ExpectedProviderID:   "minimax",
+		ExpectedProviderName: "MiniMax",
+		ExpectedProtocol:     aiprovider.ProtocolOpenAIChat,
+		ExpectedModelIDs:     []string{"MiniMax-M3", "MiniMax-M2.7"},
+		Request: aiprovider.StreamRequest{
+			Model: "MiniMax-M3",
+			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+		},
+	})
+}
 
 func TestBuildChatRequest_UsesReasoningSplitAndReasoningDetails(t *testing.T) {
 	thinkingState := json.RawMessage(`[
@@ -21,7 +44,11 @@ func TestBuildChatRequest_UsesReasoningSplitAndReasoningDetails(t *testing.T) {
 		}
 	]`)
 
-	model := NewAdapter().Models()[0]
+	model, ok := domain.ModelByID(NewAdapter().Models(), "MiniMax-M2.7")
+	if !ok {
+		t.Fatal("expected MiniMax-M2.7 model")
+	}
+
 	req := aiprovider.StreamRequest{
 		Model: "MiniMax-M2.7",
 		Turns: []domain.Turn{
@@ -56,6 +83,9 @@ func TestBuildChatRequest_UsesReasoningSplitAndReasoningDetails(t *testing.T) {
 	if !body.ReasoningSplit {
 		t.Fatal("expected reasoning_split to be enabled for MiniMax")
 	}
+	if body.Thinking != nil {
+		t.Fatalf("expected MiniMax M2.7 to omit thinking configuration, got %+v", body.Thinking)
+	}
 	if len(body.Messages) != 3 {
 		t.Fatalf("expected 3 messages, got %d", len(body.Messages))
 	}
@@ -80,6 +110,51 @@ func TestBuildChatRequest_UsesReasoningSplitAndReasoningDetails(t *testing.T) {
 	}
 	if body.Messages[1].ToolCalls[0].Function.Name != "read_file" {
 		t.Fatalf("expected tool call name read_file, got %q", body.Messages[1].ToolCalls[0].Function.Name)
+	}
+}
+
+func TestBuildChatRequest_M3AdaptiveThinking(t *testing.T) {
+	model, ok := domain.ModelByID(NewAdapter().Models(), "MiniMax-M3")
+	if !ok {
+		t.Fatal("expected MiniMax-M3 model")
+	}
+
+	body := buildChatRequest(aiprovider.StreamRequest{
+		Model: "MiniMax-M3",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+	}, model)
+
+	if !body.ReasoningSplit {
+		t.Fatal("expected reasoning_split to be enabled for MiniMax M3")
+	}
+	if body.Thinking == nil {
+		t.Fatal("expected MiniMax M3 thinking configuration")
+	}
+	if body.Thinking.Type != "adaptive" {
+		t.Fatalf("expected adaptive thinking, got %q", body.Thinking.Type)
+	}
+}
+
+func TestBuildChatRequest_M3DisabledThinking(t *testing.T) {
+	model, ok := domain.ModelByID(NewAdapter().Models(), "MiniMax-M3")
+	if !ok {
+		t.Fatal("expected MiniMax-M3 model")
+	}
+
+	body := buildChatRequest(aiprovider.StreamRequest{
+		Model:    "MiniMax-M3",
+		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+		Thinking: &domain.ThinkingConfig{Enabled: boolPtr(false)},
+	}, model)
+
+	if body.ReasoningSplit {
+		t.Fatal("expected reasoning_split to be disabled when MiniMax M3 thinking is disabled")
+	}
+	if body.Thinking == nil {
+		t.Fatal("expected MiniMax M3 thinking configuration")
+	}
+	if body.Thinking.Type != "disabled" {
+		t.Fatalf("expected disabled thinking, got %q", body.Thinking.Type)
 	}
 }
 
@@ -146,3 +221,5 @@ func TestReadSSEStream_ToolCallsStillAccumulate(t *testing.T) {
 		t.Fatal("expected final Done event")
 	}
 }
+
+func boolPtr(v bool) *bool { return &v }

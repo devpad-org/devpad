@@ -195,7 +195,7 @@ func (r *AgentRunRepository) UpdateStatus(ctx context.Context, runID int64, stat
 	now := time.Now().UTC()
 	var startedAt any
 	var completedAt any
-	if status == domain.AgentRunRunning || status == domain.AgentRunWaitingApproval {
+	if status == domain.AgentRunRunning || status == domain.AgentRunWaitingApproval || status == domain.AgentRunWaitingUser {
 		startedAt = now
 	}
 	if domain.AgentRunStatusTerminal(status) {
@@ -237,7 +237,7 @@ func (r *AgentRunRepository) MarkActiveRunsFailed(ctx context.Context, message s
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE ai_agent_runs
 		 SET status = ?, error = ?, updated_at = ?, completed_at = ?
-		 WHERE status IN (?, ?, ?)`,
+		 WHERE status IN (?, ?, ?, ?)`,
 		string(domain.AgentRunFailed),
 		message,
 		now,
@@ -245,6 +245,7 @@ func (r *AgentRunRepository) MarkActiveRunsFailed(ctx context.Context, message s
 		string(domain.AgentRunQueued),
 		string(domain.AgentRunRunning),
 		string(domain.AgentRunWaitingApproval),
+		string(domain.AgentRunWaitingUser),
 	)
 	if err != nil {
 		return fmt.Errorf("marking active agent runs failed: %w", err)

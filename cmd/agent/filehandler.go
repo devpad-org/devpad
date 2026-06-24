@@ -14,6 +14,14 @@ import (
 // validatePath ensures the requested path is under the workspace root,
 // preventing path traversal attacks (including via symlinks).
 func validatePath(p string) (string, error) {
+	return validateWorkspacePath(p, false)
+}
+
+func validateWritablePath(p string) (string, error) {
+	return validateWorkspacePath(p, true)
+}
+
+func validateWorkspacePath(p string, allowMissingParents bool) (string, error) {
 	if p == "" {
 		return workspaceRoot, nil
 	}
@@ -37,11 +45,18 @@ func validatePath(p string) (string, error) {
 			return "", fmt.Errorf("resolving path: %w", err)
 		}
 	} else if os.IsNotExist(err) {
-		parentResolved, err := filepath.EvalSymlinks(filepath.Dir(cleaned))
-		if err != nil {
-			return "", fmt.Errorf("resolving parent path: %w", err)
+		if allowMissingParents {
+			resolved, err = resolveWritableMissingPath(cleaned)
+			if err != nil {
+				return "", err
+			}
+		} else {
+			parentResolved, err := filepath.EvalSymlinks(filepath.Dir(cleaned))
+			if err != nil {
+				return "", fmt.Errorf("resolving parent path: %w", err)
+			}
+			resolved = filepath.Join(parentResolved, filepath.Base(cleaned))
 		}
-		resolved = filepath.Join(parentResolved, filepath.Base(cleaned))
 	} else {
 		return "", fmt.Errorf("checking path: %w", err)
 	}
@@ -51,6 +66,43 @@ func validatePath(p string) (string, error) {
 	}
 
 	return resolved, nil
+}
+
+func resolveWritableMissingPath(cleaned string) (string, error) {
+	ancestor := filepath.Dir(cleaned)
+	for {
+		if _, err := os.Lstat(ancestor); err == nil {
+			ancestorResolved, err := filepath.EvalSymlinks(ancestor)
+			if err != nil {
+				return "", fmt.Errorf("resolving parent path: %w", err)
+			}
+
+			info, err := os.Stat(ancestorResolved)
+			if err != nil {
+				return "", fmt.Errorf("checking parent path: %w", err)
+			}
+			if !info.IsDir() {
+				return "", fmt.Errorf("parent path is not a directory")
+			}
+
+			rel, err := filepath.Rel(ancestor, cleaned)
+			if err != nil {
+				return "", fmt.Errorf("resolving relative path: %w", err)
+			}
+			return filepath.Join(ancestorResolved, rel), nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("checking parent path: %w", err)
+		}
+		if ancestor == workspaceRoot {
+			return "", fmt.Errorf("workspace root does not exist")
+		}
+
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return "", fmt.Errorf("resolving parent path: path does not exist")
+		}
+		ancestor = parent
+	}
 }
 
 func handleListFiles(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +164,7 @@ func handleReadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleWriteFile(w http.ResponseWriter, r *http.Request) {
-	filePath, err := validatePath(r.URL.Query().Get("path"))
+	filePath, err := validateWritablePath(r.URL.Query().Get("path"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -121,6 +173,11 @@ func handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to create parent directory")
+		return
+	}
+	filePath, err = validatePath(filePath)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -170,7 +227,7 @@ func handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleMkdir(w http.ResponseWriter, r *http.Request) {
-	dirPath, err := validatePath(r.URL.Query().Get("path"))
+	dirPath, err := validateWritablePath(r.URL.Query().Get("path"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

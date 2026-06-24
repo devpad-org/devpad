@@ -11,6 +11,7 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/app"
 	"github.com/devpad-org/devpad/internal/ai/approval"
 	"github.com/devpad-org/devpad/internal/ai/domain"
+	"github.com/devpad-org/devpad/internal/ai/question"
 	"github.com/devpad-org/devpad/internal/auth"
 )
 
@@ -24,10 +25,11 @@ type Handler struct {
 	runs        app.AgentRunService
 	convService app.ConversationService
 	approvals   approval.Broker
+	questions   question.Broker
 }
 
 // NewHandler creates a new AI handler.
-func NewHandler(catalog app.CatalogService, agents app.AgentService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, approvals approval.Broker) *Handler {
+func NewHandler(catalog app.CatalogService, agents app.AgentService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, approvals approval.Broker, questions question.Broker) *Handler {
 	return &Handler{
 		catalog:     catalog,
 		agents:      agents,
@@ -35,6 +37,7 @@ func NewHandler(catalog app.CatalogService, agents app.AgentService, chat app.Ch
 		runs:        runs,
 		convService: convService,
 		approvals:   approvals,
+		questions:   questions,
 	}
 }
 
@@ -279,6 +282,48 @@ func (h *Handler) HandleApproveCommand(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "approval has already been resolved")
 		default:
 			writeError(w, http.StatusInternalServerError, "failed to resolve approval")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// HandleAnswerQuestion resolves a pending AI question with the user's answers.
+func (h *Handler) HandleAnswerQuestion(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	if h.questions == nil {
+		writeError(w, http.StatusServiceUnavailable, "question broker is not available")
+		return
+	}
+
+	var req struct {
+		ID      string              `json:"id"`
+		Answers []QuestionAnswerDTO `json:"answers"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, "question ID is required")
+		return
+	}
+
+	if err := h.questions.Resolve(r.Context(), user.ID, req.ID, ToDomainQuestionAnswers(req.Answers)); err != nil {
+		switch {
+		case errors.Is(err, question.ErrQuestionNotFound):
+			writeError(w, http.StatusNotFound, "no pending question with this ID")
+		case errors.Is(err, question.ErrQuestionForbidden):
+			writeError(w, http.StatusForbidden, "question does not belong to the authenticated user")
+		case errors.Is(err, question.ErrQuestionResolved):
+			writeError(w, http.StatusConflict, "question has already been resolved")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to resolve question")
 		}
 		return
 	}

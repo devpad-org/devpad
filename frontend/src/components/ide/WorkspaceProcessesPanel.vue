@@ -188,11 +188,12 @@ onUnmounted(stopPolling)
 
 <style scoped>
 .process-panel {
+  --ide-header-icon: var(--accent-green);
   display: flex;
   flex-direction: column;
   height: 100%;
   min-width: 0;
-  background: var(--bg-base);
+  background: var(--ide-surface-bg);
   color: var(--text-primary);
 }
 
@@ -203,7 +204,7 @@ onUnmounted(stopPolling)
   height: 38px;
   padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
-  background: var(--bg-elevated);
+  background: var(--ide-header-bg);
   flex-shrink: 0;
 }
 
@@ -214,11 +215,11 @@ onUnmounted(stopPolling)
   flex: 1;
   min-width: 0;
   color: var(--text-primary);
-  font-size: 0.74rem;
+  font-size: var(--ide-header-title-size);
 }
 
 .process-title-icon {
-  color: var(--accent-blue);
+  color: var(--ide-header-icon);
   line-height: 0;
   flex-shrink: 0;
 }

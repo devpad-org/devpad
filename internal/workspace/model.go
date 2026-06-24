@@ -14,6 +14,10 @@ const (
 	StatusStopped  Status = "stopped"
 )
 
+// DefaultAgentID is the baked-in AI agent identifier used when a workspace has
+// no custom default agent selected.
+const DefaultAgentID = "default"
+
 // Default resource limits for new workspaces.
 const (
 	DefaultMemoryLimit int64 = 2 * 1024 * 1024 * 1024 // 2 GB
@@ -32,17 +36,18 @@ type SidecarService interface {
 
 // Workspace represents a user's development workspace.
 type Workspace struct {
-	ID          int64
-	UserID      int64
-	Name        string
-	Description string
-	Status      Status
-	ContainerID string
-	VolumeName  string
-	NetworkName string
-	AgentToken  string
-	MemoryLimit int64 // bytes; 0 means use default
-	NanoCPUs    int64 // billionths of a CPU; 0 means use default
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID             int64
+	UserID         int64
+	Name           string
+	Description    string
+	Status         Status
+	ContainerID    string
+	VolumeName     string
+	NetworkName    string
+	AgentToken     string
+	DefaultAgentID string
+	MemoryLimit    int64 // bytes; 0 means use default
+	NanoCPUs       int64 // billionths of a CPU; 0 means use default
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }

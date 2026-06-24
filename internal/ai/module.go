@@ -16,6 +16,7 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/provider/mistral"
 	"github.com/devpad-org/devpad/internal/ai/provider/moonshot"
 	"github.com/devpad-org/devpad/internal/ai/provider/openairesponses"
+	"github.com/devpad-org/devpad/internal/ai/question"
 	"github.com/devpad-org/devpad/internal/ai/storage"
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 	httptransport "github.com/devpad-org/devpad/internal/ai/transport/http"
@@ -50,7 +51,8 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	conversationService := app.NewConversationService(conversations)
 	toolExecutor := aitools.NewWorkspaceExecutor(workspaceOps)
 	approvalBroker := approval.NewMemoryBroker()
-	chatService := app.NewChatService(catalogService, aitools.NewCatalog(), toolExecutor, approvalBroker, app.NewAGENTSInstructionSource(workspaceOps))
+	questionBroker := question.NewMemoryBroker()
+	chatService := app.NewChatService(catalogService, aitools.NewCatalog(), toolExecutor, approvalBroker, questionBroker, app.NewAGENTSInstructionSource(workspaceOps))
 	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService))
 	agentRuns := storage.NewAgentRunRepository(db)
 	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService)
@@ -64,7 +66,7 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 		AgentRunService:     agentRunService,
 		ConversationService: conversationService,
 		ToolExecutor:        toolExecutor,
-		Handler:             httptransport.NewHandler(catalogService, agentService, chatService, agentRunService, conversationService, approvalBroker),
+		Handler:             httptransport.NewHandler(catalogService, agentService, chatService, agentRunService, conversationService, approvalBroker, questionBroker),
 	}
 }
 

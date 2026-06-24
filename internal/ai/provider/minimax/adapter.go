@@ -19,6 +19,9 @@ const (
 	providerID   = "minimax"
 	providerName = "MiniMax"
 	baseURL      = "https://api.minimax.io/v1"
+
+	minimaxM3ModelID  = "MiniMax-M3"
+	minimaxM27ModelID = "MiniMax-M2.7"
 )
 
 // Adapter streams chat completions from MiniMax.
@@ -33,6 +36,7 @@ type chatRequest struct {
 	Stream         bool                    `json:"stream"`
 	Tools          []domain.ToolDefinition `json:"tools,omitempty"`
 	ReasoningSplit bool                    `json:"reasoning_split,omitempty"`
+	Thinking       *thinking               `json:"thinking,omitempty"`
 }
 
 type message struct {
@@ -51,6 +55,10 @@ type reasoningDetail struct {
 	Text   string `json:"text"`
 }
 
+type thinking struct {
+	Type string `json:"type"`
+}
+
 // NewAdapter creates a new MiniMax adapter.
 func NewAdapter() *Adapter {
 	return &Adapter{
@@ -67,16 +75,28 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 }
 
 func (a *Adapter) Models() []domain.Model {
-	return []domain.Model{{
-		ID:         "MiniMax-M2.7",
-		Name:       "MiniMax M2.7",
-		ProviderID: providerID,
-		Thinking: domain.ThinkingCapability{
-			Supported:        true,
-			EnabledByDefault: true,
-			CanDisable:       false,
+	return []domain.Model{
+		{
+			ID:         minimaxM3ModelID,
+			Name:       "MiniMax M3",
+			ProviderID: providerID,
+			Thinking: domain.ThinkingCapability{
+				Supported:        true,
+				EnabledByDefault: true,
+				CanDisable:       true,
+			},
 		},
-	}}
+		{
+			ID:         minimaxM27ModelID,
+			Name:       "MiniMax M2.7",
+			ProviderID: providerID,
+			Thinking: domain.ThinkingCapability{
+				Supported:        true,
+				EnabledByDefault: true,
+				CanDisable:       false,
+			},
+		},
+	}
 }
 
 func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req aiprovider.StreamRequest) (<-chan domain.ProviderEvent, error) {
@@ -129,8 +149,25 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 	if thinkingEnabled {
 		body.ReasoningSplit = true
 	}
+	if thinking := thinkingConfig(model, thinkingEnabled); thinking != nil {
+		body.Thinking = thinking
+	}
 
 	return body
+}
+
+func thinkingConfig(model domain.Model, thinkingEnabled bool) *thinking {
+	if !model.Thinking.Supported || !strings.EqualFold(model.ID, minimaxM3ModelID) {
+		return nil
+	}
+	if thinkingEnabled {
+		return &thinking{Type: "adaptive"}
+	}
+	if model.Thinking.CanDisable {
+		return &thinking{Type: "disabled"}
+	}
+
+	return nil
 }
 
 func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {

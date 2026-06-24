@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	ErrNotFound   = errors.New("workspace not found")
-	ErrForbidden  = errors.New("access denied")
-	ErrNotRunning = errors.New("workspace is not running")
+	ErrNotFound             = errors.New("workspace not found")
+	ErrForbidden            = errors.New("access denied")
+	ErrNotRunning           = errors.New("workspace is not running")
+	ErrDefaultAgentNotFound = errors.New("default agent not found")
 )
 
 type service struct {

@@ -88,10 +88,12 @@ async function deployService(service: ServiceCatalogItem) {
 
 <style scoped>
 .service-catalog-panel {
+  --ide-header-icon: var(--gruvbox-aqua);
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow-y: auto;
+  background: var(--ide-panel-bg);
 }
 
 .catalog-header {
@@ -99,6 +101,7 @@ async function deployService(service: ServiceCatalogItem) {
   align-items: center;
   padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
+  background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
 }
@@ -107,16 +110,13 @@ async function deployService(service: ServiceCatalogItem) {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.75rem;
+  font-size: var(--ide-header-title-size);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .panel-icon {
-  color: var(--accent-purple);
-  opacity: 0.7;
+  color: var(--ide-header-icon);
   flex-shrink: 0;
 }
 
@@ -148,7 +148,7 @@ async function deployService(service: ServiceCatalogItem) {
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-3);
-  background: var(--bg-primary);
+  background: var(--bg-elevated);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   transition: border-color var(--transition-fast), background var(--transition-fast);

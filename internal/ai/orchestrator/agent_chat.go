@@ -10,12 +10,14 @@ import (
 
 	"github.com/devpad-org/devpad/internal/ai/approval"
 	"github.com/devpad-org/devpad/internal/ai/domain"
+	"github.com/devpad-org/devpad/internal/ai/question"
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 )
 
 const (
 	defaultMaxToolIterations = 100
 	defaultApprovalTimeout   = 60 * time.Second
+	defaultQuestionTimeout   = 10 * time.Minute
 )
 
 type agentChatOrchestrator struct {
@@ -23,19 +25,23 @@ type agentChatOrchestrator struct {
 	toolCatalog       ToolCatalog
 	toolExecutor      ToolExecutor
 	approvals         approval.Broker
+	questions         question.Broker
 	maxToolIterations int
 	approvalTimeout   time.Duration
+	questionTimeout   time.Duration
 }
 
 // NewAgentChatOrchestrator creates the phase-2 agent orchestrator.
-func NewAgentChatOrchestrator(service ChatService, toolCatalog ToolCatalog, toolExecutor ToolExecutor, approvals approval.Broker) AgentChatOrchestrator {
+func NewAgentChatOrchestrator(service ChatService, toolCatalog ToolCatalog, toolExecutor ToolExecutor, approvals approval.Broker, questions question.Broker) AgentChatOrchestrator {
 	return &agentChatOrchestrator{
 		service:           service,
 		toolCatalog:       toolCatalog,
 		toolExecutor:      toolExecutor,
 		approvals:         approvals,
+		questions:         questions,
 		maxToolIterations: defaultMaxToolIterations,
 		approvalTimeout:   defaultApprovalTimeout,
+		questionTimeout:   defaultQuestionTimeout,
 	}
 }
 
@@ -209,6 +215,10 @@ func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentCha
 		}
 	}
 
+	if toolCall.Function.Name == "ask_user" {
+		return o.handleUserQuestion(ctx, req, toolCall, turns, out)
+	}
+
 	if aitools.ToolCallNeedsSudoApproval(toolCall.Function.Name, toolCall.Function.Arguments) {
 		result, approved, ok := o.awaitApproval(ctx, req.UserID, toolCall.Function.Arguments, out)
 		if !ok {
@@ -243,6 +253,87 @@ func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentCha
 	}
 
 	return o.emitToolResult(ctx, result, turns, out)
+}
+
+func (o *agentChatOrchestrator) handleUserQuestion(ctx context.Context, req AgentChatRequest, toolCall domain.ToolCall, turns *[]domain.Turn, out chan<- domain.ClientEvent) bool {
+	if o.questions == nil {
+		return o.emitToolResult(ctx, domain.ToolResultPart{
+			ToolCallID: toolCall.ID,
+			Name:       toolCall.Function.Name,
+			Content:    "User question failed: question broker is not configured.",
+			IsError:    true,
+		}, turns, out)
+	}
+
+	questionRequest, err := parseUserQuestionArgs(toolCall.Function.Arguments)
+	if err != nil {
+		return o.emitToolResult(ctx, domain.ToolResultPart{
+			ToolCallID: toolCall.ID,
+			Name:       toolCall.Function.Name,
+			Content:    fmt.Sprintf("User question failed: %v", err),
+			IsError:    true,
+		}, turns, out)
+	}
+
+	opened, err := o.questions.Open(ctx, req.UserID, questionRequest)
+	if err != nil {
+		return o.emitToolResult(ctx, domain.ToolResultPart{
+			ToolCallID: toolCall.ID,
+			Name:       toolCall.Function.Name,
+			Content:    fmt.Sprintf("User question failed: %v", err),
+			IsError:    true,
+		}, turns, out)
+	}
+
+	if !emitEvent(ctx, out, domain.ClientEvent{Question: &opened}) {
+		return false
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, o.questionTimeout)
+	defer cancel()
+	answers, err := o.questions.Await(waitCtx, opened.ID)
+	if err == nil {
+		result := domain.UserQuestionResult{ID: opened.ID, Status: "answered", Answers: answers}
+		if !emitQuestionResult(ctx, out, result) {
+			return false
+		}
+		content, marshalErr := json.Marshal(result)
+		if marshalErr != nil {
+			return o.emitToolResult(ctx, domain.ToolResultPart{
+				ToolCallID: toolCall.ID,
+				Name:       toolCall.Function.Name,
+				Content:    fmt.Sprintf("User question failed: %v", marshalErr),
+				IsError:    true,
+			}, turns, out)
+		}
+		return o.emitToolResult(ctx, domain.ToolResultPart{
+			ToolCallID: toolCall.ID,
+			Name:       toolCall.Function.Name,
+			Content:    string(content),
+		}, turns, out)
+	}
+
+	status := "failed"
+	message := "User question failed."
+	switch {
+	case errors.Is(err, context.Canceled):
+		status = "expired"
+		message = "User question was cancelled before the user answered."
+	case errors.Is(err, context.DeadlineExceeded):
+		status = "expired"
+		message = "User question timed out before the user answered."
+	default:
+		message = fmt.Sprintf("User question failed: %v", err)
+	}
+	if !emitQuestionResult(ctx, out, domain.UserQuestionResult{ID: opened.ID, Status: status}) {
+		return false
+	}
+	return o.emitToolResult(ctx, domain.ToolResultPart{
+		ToolCallID: toolCall.ID,
+		Name:       toolCall.Function.Name,
+		Content:    message,
+		IsError:    true,
+	}, turns, out)
 }
 
 func (o *agentChatOrchestrator) emitToolResult(ctx context.Context, result domain.ToolResultPart, turns *[]domain.Turn, out chan<- domain.ClientEvent) bool {
@@ -315,4 +406,9 @@ func emitApprovalResult(ctx context.Context, out chan<- domain.ClientEvent, requ
 		Command: request.Command,
 		Status:  status,
 	}})
+}
+
+func emitQuestionResult(ctx context.Context, out chan<- domain.ClientEvent, result domain.UserQuestionResult) bool {
+	resultCopy := result
+	return emitEvent(ctx, out, domain.ClientEvent{QuestionResult: &resultCopy})
 }

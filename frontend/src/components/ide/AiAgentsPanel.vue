@@ -5,10 +5,14 @@ import { useAiAgentStore, type AIAgent } from '@/stores/aiAgents'
 const props = defineProps<{
   workspaceId: number
   selectedAgentId: string
+  defaultAgentId: string
+  defaultAgentError?: string | null
+  defaultAgentSavingId?: string | null
 }>()
 
 const emit = defineEmits<{
   (e: 'select', agentId: string): void
+  (e: 'set-default', agentId: string): void
 }>()
 
 const store = useAiAgentStore()
@@ -24,6 +28,7 @@ const form = reactive({
 })
 
 const modalTitle = computed(() => editingAgent.value ? 'Edit Agent' : 'Create Agent')
+const panelError = computed(() => props.defaultAgentError || store.error)
 
 watch(() => props.workspaceId, (workspaceId) => {
   if (workspaceId > 0) void store.fetchAgents(workspaceId)
@@ -36,6 +41,12 @@ watch(() => props.selectedAgentId, (agentId) => {
 function selectAgent(agent: AIAgent): void {
   store.setSelectedAgent(agent.id)
   emit('select', agent.id)
+}
+
+function setDefaultAgent(agent: AIAgent): void {
+  if (props.defaultAgentSavingId || agent.id === props.defaultAgentId) return
+  store.setSelectedAgent(agent.id)
+  emit('set-default', agent.id)
 }
 
 function openCreateModal(): void {
@@ -88,8 +99,14 @@ async function deleteEditingAgent(): Promise<void> {
   const deleted = await store.deleteAgent(editingAgent.value.id)
   saving.value = false
   if (deleted) {
+    const deletedDefaultAgent = editingAgent.value.id === props.defaultAgentId
     modalOpen.value = false
-    emit('select', store.selectedAgentId)
+    if (deletedDefaultAgent) {
+      emit('set-default', 'default')
+      emit('select', 'default')
+    } else {
+      emit('select', store.selectedAgentId)
+    }
   }
 }
 </script>
@@ -111,7 +128,7 @@ async function deleteEditingAgent(): Promise<void> {
       </button>
     </header>
 
-    <div v-if="store.error" class="agents-error">{{ store.error }}</div>
+    <div v-if="panelError" class="agents-error">{{ panelError }}</div>
     <div v-if="store.loading" class="agents-empty">Loading agents…</div>
     <div v-else class="agents-list">
       <div
@@ -129,8 +146,23 @@ async function deleteEditingAgent(): Promise<void> {
           <span class="agent-card-copy">
             <span class="agent-card-title">{{ agent.name }}</span>
             <span class="agent-card-purpose">{{ agent.purpose || 'Custom Devpad agent' }}</span>
-            <span class="agent-card-scope">{{ agent.isDefault ? 'Baked in' : agent.isGlobal ? 'Global' : 'Workspace' }}</span>
+            <span class="agent-card-scope">
+              {{ agent.id === props.defaultAgentId ? 'Default' : agent.isDefault ? 'Baked in' : agent.isGlobal ? 'Global' : 'Workspace' }}
+            </span>
           </span>
+        </button>
+        <button
+          type="button"
+          class="agent-default"
+          :class="{ active: agent.id === props.defaultAgentId }"
+          :title="agent.id === props.defaultAgentId ? 'Workspace default agent' : 'Set as workspace default'"
+          :aria-pressed="agent.id === props.defaultAgentId"
+          :disabled="Boolean(props.defaultAgentSavingId)"
+          @click="setDefaultAgent(agent)"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" :fill="agent.id === props.defaultAgentId ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+          </svg>
         </button>
         <button
           v-if="!agent.isDefault"
@@ -195,10 +227,11 @@ async function deleteEditingAgent(): Promise<void> {
 
 <style scoped>
 .agents-panel {
+  --ide-header-icon: var(--accent);
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg-surface);
+  background: var(--ide-panel-bg);
   color: var(--text-secondary);
 }
 
@@ -209,6 +242,7 @@ async function deleteEditingAgent(): Promise<void> {
   gap: var(--space-2);
   padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
+  background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
 }
@@ -217,16 +251,13 @@ async function deleteEditingAgent(): Promise<void> {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.75rem;
+  font-size: var(--ide-header-title-size);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .panel-icon {
-  color: var(--accent-purple);
-  opacity: 0.7;
+  color: var(--ide-header-icon);
   flex-shrink: 0;
 }
 
@@ -238,6 +269,7 @@ async function deleteEditingAgent(): Promise<void> {
 }
 
 .agents-add,
+.agent-default,
 .agent-edit,
 .agent-modal-close {
   display: inline-flex;
@@ -256,11 +288,23 @@ async function deleteEditingAgent(): Promise<void> {
 }
 
 .agents-add:hover,
+.agent-default:hover,
 .agent-edit:hover,
 .agent-modal-close:hover {
   border-color: var(--border-active);
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.agent-default.active {
+  border-color: var(--accent-border);
+  background: var(--accent-glow);
+  color: var(--accent);
+}
+
+.agent-default:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .agents-error,
@@ -285,7 +329,7 @@ async function deleteEditingAgent(): Promise<void> {
 
 .agent-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: start;
   gap: var(--space-2);
   width: 100%;
@@ -359,6 +403,7 @@ async function deleteEditingAgent(): Promise<void> {
   text-transform: uppercase;
 }
 
+.agent-default,
 .agent-edit {
   width: 24px;
   height: 24px;

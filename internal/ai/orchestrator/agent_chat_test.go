@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -73,6 +74,35 @@ func (m *mockApprovalBroker) Resolve(ctx context.Context, userID int64, approval
 	return nil
 }
 
+type mockQuestionBroker struct {
+	openFn    func(ctx context.Context, userID int64, request domain.UserQuestionRequest) (domain.UserQuestionRequest, error)
+	awaitFn   func(ctx context.Context, questionID string) ([]domain.UserQuestionAnswer, error)
+	resolveFn func(ctx context.Context, userID int64, questionID string, answers []domain.UserQuestionAnswer) error
+}
+
+func (m *mockQuestionBroker) Open(ctx context.Context, userID int64, request domain.UserQuestionRequest) (domain.UserQuestionRequest, error) {
+	if m.openFn != nil {
+		return m.openFn(ctx, userID, request)
+	}
+	request.ID = "question-1"
+	return request, nil
+}
+
+func (m *mockQuestionBroker) Await(ctx context.Context, questionID string) ([]domain.UserQuestionAnswer, error) {
+	if m.awaitFn != nil {
+		return m.awaitFn(ctx, questionID)
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (m *mockQuestionBroker) Resolve(ctx context.Context, userID int64, questionID string, answers []domain.UserQuestionAnswer) error {
+	if m.resolveFn != nil {
+		return m.resolveFn(ctx, userID, questionID, answers)
+	}
+	return nil
+}
+
 type fakeToolCatalog struct{}
 
 func (fakeToolCatalog) SystemPrompt() string { return "system" }
@@ -94,8 +124,10 @@ func TestAgentChatOrchestrator_IncludesWorkspaceInstructionsBeforeSelectedAgent(
 		toolCatalog:       fakeToolCatalog{},
 		toolExecutor:      &mockToolExecutor{},
 		approvals:         &mockApprovalBroker{},
+		questions:         &mockQuestionBroker{},
 		maxToolIterations: defaultMaxToolIterations,
 		approvalTimeout:   defaultApprovalTimeout,
+		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
@@ -178,8 +210,10 @@ func TestAgentChatOrchestrator_EmitsContextTelemetryBeforeProviderRequest(t *tes
 		toolCatalog:       fakeToolCatalog{},
 		toolExecutor:      &mockToolExecutor{},
 		approvals:         &mockApprovalBroker{},
+		questions:         &mockQuestionBroker{},
 		maxToolIterations: defaultMaxToolIterations,
 		approvalTimeout:   defaultApprovalTimeout,
+		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
@@ -240,8 +274,10 @@ func TestAgentChatOrchestrator_MultiToolCallOrdering(t *testing.T) {
 			return domain.ToolResultPart{Name: req.ToolName, Content: "result-" + req.ToolName}
 		}},
 		approvals:         &mockApprovalBroker{awaitFn: func(context.Context, string) (bool, error) { return true, nil }},
+		questions:         &mockQuestionBroker{},
 		maxToolIterations: defaultMaxToolIterations,
 		approvalTimeout:   defaultApprovalTimeout,
+		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
@@ -353,6 +389,8 @@ func TestAgentChatOrchestrator_ApprovalWaitAndDenial(t *testing.T) {
 		},
 		maxToolIterations: defaultMaxToolIterations,
 		approvalTimeout:   defaultApprovalTimeout,
+		questions:         &mockQuestionBroker{},
+		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
@@ -404,6 +442,110 @@ func TestAgentChatOrchestrator_ApprovalWaitAndDenial(t *testing.T) {
 	}
 }
 
+func TestAgentChatOrchestrator_AskUserWaitsAndReturnsAnswers(t *testing.T) {
+	answersCh := make(chan []domain.UserQuestionAnswer, 1)
+	callCount := 0
+	toolCalls := 0
+	orch := &agentChatOrchestrator{
+		service: &mockChatService{
+			chatStreamFn: func(_ context.Context, _ domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+				ch := make(chan domain.ProviderEvent, 2)
+				callCount++
+				if callCount == 1 {
+					ch <- domain.ProviderEvent{ToolCalls: []domain.ToolCall{{
+						ID:   "tc-question",
+						Type: "function",
+						Function: domain.ToolCallFunction{
+							Name:      "ask_user",
+							Arguments: `{"title":"Choose stack","questions":[{"id":"stack","prompt":"Which stack should I use?","type":"single_choice","options":[{"value":"go","label":"Go"},{"value":"node","label":"Node.js"}]}]}`,
+						},
+					}}}
+					ch <- domain.ProviderEvent{Done: true}
+				} else {
+					ch <- domain.ProviderEvent{TextDelta: "I'll use Go."}
+					ch <- domain.ProviderEvent{Done: true}
+				}
+				close(ch)
+				return ch, nil
+			},
+		},
+		toolCatalog: fakeToolCatalog{},
+		toolExecutor: &mockToolExecutor{executeToolFn: func(_ context.Context, _ aitools.ExecutionRequest) domain.ToolResultPart {
+			toolCalls++
+			return domain.ToolResultPart{Name: "ask_user", Content: "should-not-run"}
+		}},
+		approvals: &mockApprovalBroker{},
+		questions: &mockQuestionBroker{
+			openFn: func(_ context.Context, userID int64, request domain.UserQuestionRequest) (domain.UserQuestionRequest, error) {
+				if userID != 1 {
+					t.Fatalf("expected user id 1, got %d", userID)
+				}
+				if request.Title != "Choose stack" || len(request.Questions) != 1 {
+					t.Fatalf("unexpected question request: %+v", request)
+				}
+				request.ID = "question-1"
+				return request, nil
+			},
+			awaitFn: func(_ context.Context, questionID string) ([]domain.UserQuestionAnswer, error) {
+				if questionID != "question-1" {
+					t.Fatalf("expected question-1, got %q", questionID)
+				}
+				return <-answersCh, nil
+			},
+		},
+		maxToolIterations: defaultMaxToolIterations,
+		approvalTimeout:   defaultApprovalTimeout,
+		questionTimeout:   defaultQuestionTimeout,
+	}
+
+	stream, err := orch.Stream(context.Background(), AgentChatRequest{
+		UserID:      1,
+		WorkspaceID: 1,
+		Model:       "test-model",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	toolCallEvent := nextEvent(t, stream)
+	if len(toolCallEvent.ToolCalls) != 1 || toolCallEvent.ToolCalls[0].Function.Name != "ask_user" {
+		t.Fatalf("expected ask_user ToolCalls event, got %+v", toolCallEvent)
+	}
+
+	questionEvent := nextEvent(t, stream)
+	if questionEvent.Question == nil || questionEvent.Question.ID != "question-1" {
+		t.Fatalf("expected question request, got %+v", questionEvent)
+	}
+
+	answersCh <- []domain.UserQuestionAnswer{{QuestionID: "stack", Values: []string{"go"}}}
+
+	questionResultEvent := nextEvent(t, stream)
+	if questionResultEvent.QuestionResult == nil || questionResultEvent.QuestionResult.Status != "answered" {
+		t.Fatalf("expected answered question result, got %+v", questionResultEvent)
+	}
+
+	toolResultEvent := nextEvent(t, stream)
+	if toolResultEvent.ToolResult == nil || toolResultEvent.ToolResult.Name != "ask_user" {
+		t.Fatalf("expected ask_user tool result, got %+v", toolResultEvent)
+	}
+	var result domain.UserQuestionResult
+	if err := json.Unmarshal([]byte(toolResultEvent.ToolResult.Content), &result); err != nil {
+		t.Fatalf("unmarshal tool result: %v", err)
+	}
+	if result.ID != "question-1" || len(result.Answers) != 1 || result.Answers[0].Values[0] != "go" {
+		t.Fatalf("unexpected tool result content: %+v", result)
+	}
+	if toolCalls != 0 {
+		t.Fatalf("expected workspace executor not to run, got %d calls", toolCalls)
+	}
+
+	contentEvent := nextEvent(t, stream)
+	if contentEvent.TextDelta != "I'll use Go." {
+		t.Fatalf("expected follow-up content, got %+v", contentEvent)
+	}
+}
+
 func TestAgentChatOrchestrator_CancellationStopsToolExecution(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -430,8 +572,10 @@ func TestAgentChatOrchestrator_CancellationStopsToolExecution(t *testing.T) {
 			return domain.ToolResultPart{Name: "read_file", Content: ctx.Err().Error(), IsError: true}
 		}},
 		approvals:         &mockApprovalBroker{},
+		questions:         &mockQuestionBroker{},
 		maxToolIterations: defaultMaxToolIterations,
 		approvalTimeout:   defaultApprovalTimeout,
+		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(ctx, AgentChatRequest{
@@ -485,8 +629,10 @@ func TestAgentChatOrchestrator_MaxIterationsEmitsWarning(t *testing.T) {
 		toolCatalog:       fakeToolCatalog{},
 		toolExecutor:      &mockToolExecutor{},
 		approvals:         &mockApprovalBroker{awaitFn: func(context.Context, string) (bool, error) { return true, nil }},
+		questions:         &mockQuestionBroker{},
 		maxToolIterations: 2,
 		approvalTimeout:   defaultApprovalTimeout,
+		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
@@ -532,8 +678,10 @@ func TestAgentChatOrchestrator_StreamValidatesModelErrors(t *testing.T) {
 		toolCatalog:       fakeToolCatalog{},
 		toolExecutor:      &mockToolExecutor{},
 		approvals:         &mockApprovalBroker{},
+		questions:         &mockQuestionBroker{},
 		maxToolIterations: defaultMaxToolIterations,
 		approvalTimeout:   defaultApprovalTimeout,
+		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	_, err := orch.Stream(context.Background(), AgentChatRequest{Model: "test-model"})

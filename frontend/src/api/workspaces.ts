@@ -6,6 +6,7 @@ export interface Workspace {
   description: string
   status: 'creating' | 'running' | 'stopped'
   containerId: string
+  defaultAgentId: string
   createdAt: string
   updatedAt: string
 }
@@ -89,6 +90,10 @@ export const workspaceApi = {
 
   update(id: number, name: string, description: string): Promise<WorkspaceResponse> {
     return apiClient.put<WorkspaceResponse>(`/api/workspaces/${id}`, { name, description })
+  },
+
+  setDefaultAgent(id: number, agentId: string): Promise<WorkspaceResponse> {
+    return apiClient.put<WorkspaceResponse>(`/api/workspaces/${id}/default-agent`, { agentId })
   },
 
   delete(id: number): Promise<void> {

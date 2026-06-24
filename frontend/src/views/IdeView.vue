@@ -41,6 +41,8 @@ const selectedAgentId = ref('default')
 const previewModalVisible = ref(false)
 const previewModalLoading = ref(false)
 const previewModalError = ref<string | null>(null)
+const defaultAgentSavingId = ref<string | null>(null)
+const defaultAgentError = ref<string | null>(null)
 let gitDiffRequestId = 0
 
 type GitDiffRequest =
@@ -117,6 +119,7 @@ onMounted(async () => {
       ws = startRes.workspace
     }
     workspace.value = ws
+    selectedAgentId.value = ws.defaultAgentId || 'default'
   } catch {
     error.value = 'Failed to load workspace'
   } finally {
@@ -163,6 +166,30 @@ function handleAgentRunFocus(run: AgentRun) {
 function handleAgentSelect(agentId: string) {
   selectedAgentId.value = agentId
   focusedAgentRunId.value = null
+}
+
+async function handleDefaultAgentSet(agentId: string) {
+  if (!workspace.value) return
+  if ((workspace.value.defaultAgentId || 'default') === agentId) {
+    handleAgentSelect(agentId)
+    return
+  }
+
+  const previousAgentId = workspace.value.defaultAgentId || 'default'
+  defaultAgentSavingId.value = agentId
+  defaultAgentError.value = null
+  selectedAgentId.value = agentId
+  focusedAgentRunId.value = null
+  try {
+    const res = await workspaceApi.setDefaultAgent(workspace.value.id, agentId)
+    workspace.value = res.workspace
+    selectedAgentId.value = res.workspace.defaultAgentId || 'default'
+  } catch (e) {
+    selectedAgentId.value = previousAgentId
+    defaultAgentError.value = e instanceof Error ? e.message : 'Failed to set default agent'
+  } finally {
+    defaultAgentSavingId.value = null
+  }
 }
 
 function clearSelectedGitCommit() {
@@ -307,7 +334,7 @@ function handleBack() {
     <div class="ide-body">
       <nav id="ide-activity-bar" class="activity-bar" aria-label="Activity bar">
         <button
-          class="activity-btn"
+          class="activity-btn activity-btn--ai"
           :class="{ active: activeActivity === 'ai' }"
           @click="activeActivity = 'ai'"
           title="AI"
@@ -321,7 +348,7 @@ function handleBack() {
           </svg>
         </button>
         <button
-          class="activity-btn"
+          class="activity-btn activity-btn--explorer"
           :class="{ active: activeActivity === 'explorer' }"
           @click="activeActivity = 'explorer'"
           title="Explorer"
@@ -331,7 +358,7 @@ function handleBack() {
           </svg>
         </button>
         <button
-          class="activity-btn"
+          class="activity-btn activity-btn--git"
           :class="{ active: activeActivity === 'git' }"
           @click="activeActivity = 'git'"
           title="Source Control"
@@ -343,7 +370,7 @@ function handleBack() {
           </svg>
         </button>
         <button
-          class="activity-btn"
+          class="activity-btn activity-btn--info"
           :class="{ active: activeActivity === 'info' }"
           @click="activeActivity = 'info'"
           title="Workspace Info"
@@ -355,7 +382,7 @@ function handleBack() {
           </svg>
         </button>
         <button
-          class="activity-btn"
+          class="activity-btn activity-btn--services"
           :class="{ active: activeActivity === 'services' }"
           @click="activeActivity = 'services'"
           :title="serviceCount > 0 ? `Database Services (${serviceCount})` : 'Database Services'"
@@ -385,7 +412,11 @@ function handleBack() {
           v-show="activeActivity === 'ai'"
           :workspace-id="workspace?.id ?? 0"
           :selected-agent-id="selectedAgentId"
+          :default-agent-id="workspace?.defaultAgentId ?? 'default'"
+          :default-agent-error="defaultAgentError"
+          :default-agent-saving-id="defaultAgentSavingId"
           @select="handleAgentSelect"
+          @set-default="handleDefaultAgentSet"
         />
         <FileExplorer
           v-show="activeActivity === 'explorer'"
@@ -716,25 +747,46 @@ function handleBack() {
 }
 
 .activity-btn {
+  --activity-accent: var(--text-muted);
   display: flex;
   align-items: center;
   justify-content: center;
   width: 40px;
   height: 40px;
   border-radius: var(--radius-md);
-  color: var(--text-muted);
+  color: color-mix(in srgb, var(--activity-accent) 58%, var(--text-muted));
   transition: all var(--transition-fast);
   position: relative;
 }
 
+.activity-btn--ai {
+  --activity-accent: var(--accent);
+}
+
+.activity-btn--explorer {
+  --activity-accent: var(--accent-blue);
+}
+
+.activity-btn--git {
+  --activity-accent: var(--accent-purple);
+}
+
+.activity-btn--info {
+  --activity-accent: var(--accent-green);
+}
+
+.activity-btn--services {
+  --activity-accent: var(--gruvbox-aqua);
+}
+
 .activity-btn:hover {
   background: var(--bg-hover);
-  color: var(--text-secondary);
+  color: var(--activity-accent);
 }
 
 .activity-btn.active {
   background: var(--bg-selected);
-  color: var(--text-primary);
+  color: var(--activity-accent);
 }
 
 .activity-btn.active::before {
@@ -744,7 +796,7 @@ function handleBack() {
   top: 8px;
   bottom: 8px;
   width: 2px;
-  background: var(--accent-blue);
+  background: var(--activity-accent);
   border-radius: 1px;
 }
 
@@ -756,8 +808,8 @@ function handleBack() {
   height: 16px;
   padding: 0 4px;
   border-radius: 999px;
-  background: var(--accent-blue);
-  color: var(--bg-void);
+  background: var(--activity-accent);
+  color: var(--text-on-accent);
   border: 1px solid var(--bg-surface);
   font-family: var(--font-sans);
   font-size: 0.65rem;
@@ -795,15 +847,17 @@ function handleBack() {
   flex: 1;
   overflow: hidden;
   min-height: 0;
+  background: var(--ide-surface-bg);
 }
 
 .ide-surface-pane {
   height: 100%;
   overflow: hidden;
+  background: var(--ide-surface-bg);
 }
 
 .ide-ai-surface {
-  background: var(--bg-base);
+  background: var(--ide-surface-bg);
 }
 
 .ide-terminal-area {

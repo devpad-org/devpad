@@ -15,10 +15,12 @@ import (
 // StreamDecoder consumes a provider response body and emits domain stream events.
 type StreamDecoder func(body io.ReadCloser, ch chan<- domain.ProviderEvent)
 
+const streamingResponseHeaderTimeout = 10 * time.Minute
+
 // NewStreamingClient creates the default long-lived HTTP client used for streaming APIs.
 func NewStreamingClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = 2 * time.Minute
+	transport.ResponseHeaderTimeout = streamingResponseHeaderTimeout
 
 	return &http.Client{Transport: transport}
 }

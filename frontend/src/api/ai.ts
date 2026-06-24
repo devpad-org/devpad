@@ -32,7 +32,7 @@ export interface ThinkingConfig {
   effort?: string
 }
 
-export type AgentRunStatus = 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled'
+export type AgentRunStatus = 'queued' | 'running' | 'waiting_approval' | 'waiting_user' | 'completed' | 'failed' | 'cancelled'
 
 export interface AgentRun {
   id: number
@@ -103,6 +103,7 @@ export interface ToolResult {
   toolCallId: string
   name: string
   content: string
+  isError?: boolean
 }
 
 export interface ApprovalRequest {
@@ -114,6 +115,41 @@ export interface ApprovalResult {
   id: string
   command: string
   status: 'approved' | 'denied' | 'expired' | 'failed'
+}
+
+export type UserQuestionType = 'single_choice' | 'multiple_choice' | 'text'
+
+export interface UserQuestionOption {
+  value: string
+  label: string
+}
+
+export interface UserQuestion {
+  id: string
+  prompt: string
+  type: UserQuestionType
+  options?: UserQuestionOption[]
+  allowCustom: boolean
+  placeholder?: string
+}
+
+export interface UserQuestionRequest {
+  id: string
+  title?: string
+  questions: UserQuestion[]
+}
+
+export interface UserQuestionAnswer {
+  questionId: string
+  values?: string[]
+  custom?: string
+  skipped?: boolean
+}
+
+export interface UserQuestionResult {
+  id: string
+  status: 'answered' | 'expired' | 'failed'
+  answers?: UserQuestionAnswer[]
 }
 
 export interface PlanStep {
@@ -152,6 +188,8 @@ export interface StreamEvent {
   toolResult?: ToolResult
   approvalRequired?: ApprovalRequest
   approvalResolved?: ApprovalResult
+  questionRequired?: UserQuestionRequest
+  questionResolved?: UserQuestionResult
   plan?: PlanStep[]
   contextSize?: ContextSize
   done?: boolean
@@ -358,6 +396,10 @@ export const aiApi = {
 
   approveCommand(id: string, approved: boolean): Promise<void> {
     return apiClient.post<void>('/api/ai/agent/approve', { id, approved })
+  },
+
+  answerQuestion(id: string, answers: UserQuestionAnswer[]): Promise<void> {
+    return apiClient.post<void>('/api/ai/agent/questions/answer', { id, answers })
   },
 
   async listAgentRuns(workspaceId: number): Promise<{ runs: AgentRun[] }> {

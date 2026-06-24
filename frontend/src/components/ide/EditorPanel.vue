@@ -234,14 +234,14 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg-void);
+  background: var(--ide-surface-bg);
 }
 
 /* Tabs */
 .editor-tabs {
   display: flex;
   align-items: stretch;
-  background: var(--bg-elevated);
+  background: var(--ide-header-bg);
   border-bottom: 0.5px solid var(--border-hairline);
   height: 38px;
   flex-shrink: 0;
@@ -275,7 +275,7 @@ onUnmounted(() => {
 .editor-tab.active {
   color: var(--text-primary);
   font-weight: 500;
-  background: var(--bg-void);
+  background: var(--ide-surface-bg);
   border-top-color: var(--accent);
 }
 
@@ -321,16 +321,16 @@ onUnmounted(() => {
    so that horizontally-scrolled content doesn't bleed through the minimap or
    overview ruler area on the right side of the editor. */
 .editor-container :deep(.monaco-editor .minimap) {
-  background-color: var(--bg-void);
+  background-color: var(--ide-surface-bg);
 }
 .editor-container :deep(.monaco-editor .minimap-gutter) {
-  background-color: var(--bg-void);
+  background-color: var(--ide-surface-bg);
 }
 .editor-container :deep(.monaco-editor .decorationsOverviewRuler) {
-  background-color: var(--bg-void);
+  background-color: var(--ide-surface-bg);
 }
 .editor-container :deep(.monaco-editor .monaco-scrollable-element > .scrollbar.vertical) {
-  background-color: var(--bg-void);
+  background-color: var(--ide-surface-bg);
 }
 
 /* Empty state */

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult, type ContextSize } from '@/api/ai'
+import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
@@ -8,6 +8,7 @@ import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
 import AiMessageCopyButton from '@/components/ide/AiMessageCopyButton.vue'
+import AiQuestionCard from '@/components/ide/AiQuestionCard.vue'
 import {
   hasToolResult,
   planStepsFromToolArgs,
@@ -45,6 +46,16 @@ interface ApprovalSegment {
   error?: string
 }
 
+interface QuestionSegment {
+  type: 'question'
+  request: UserQuestionRequest
+  status: 'pending' | UserQuestionResult['status']
+  answers: UserQuestionAnswer[]
+  selections: Record<string, string[]>
+  customAnswers: Record<string, string>
+  error?: string
+}
+
 interface PlanSegment {
   type: 'plan'
   steps: PlanStep[]
@@ -55,7 +66,7 @@ interface ThinkingSegment {
   content: string
 }
 
-type MessageSegment = TextSegment | ToolSegment | ApprovalSegment | PlanSegment | ThinkingSegment
+type MessageSegment = TextSegment | ToolSegment | ApprovalSegment | QuestionSegment | PlanSegment | ThinkingSegment
 
 type MessageRenderItem = MessageSegment | ToolGroupDisplay
 
@@ -435,6 +446,123 @@ function applyApprovalResolved(segments: MessageSegment[], result: ApprovalResul
   })
 }
 
+function createQuestionSegment(request: UserQuestionRequest, result?: UserQuestionResult): QuestionSegment {
+  const selections: Record<string, string[]> = {}
+  const customAnswers: Record<string, string> = {}
+  const answers = result?.answers ?? []
+
+  for (const question of request.questions) {
+    const answer = answers.find((candidate) => candidate.questionId === question.id)
+    selections[question.id] = answer?.values ? [...answer.values] : []
+    customAnswers[question.id] = answer?.custom ?? ''
+  }
+
+  return {
+    type: 'question',
+    request,
+    status: result?.status ?? 'pending',
+    answers,
+    selections,
+    customAnswers,
+  }
+}
+
+function parseQuestionFromToolArgs(toolCallId: string, args: string, result?: string): QuestionSegment | null {
+  try {
+    const parsed = JSON.parse(args) as Record<string, unknown>
+    const rawQuestions = Array.isArray(parsed.questions) ? parsed.questions : []
+    if (rawQuestions.length === 0) return null
+    const request: UserQuestionRequest = {
+      id: toolCallId,
+      title: typeof parsed.title === 'string' ? parsed.title : undefined,
+      questions: rawQuestions.flatMap((question): UserQuestion[] => {
+        if (!question || typeof question !== 'object' || Array.isArray(question)) return []
+        const record = question as Record<string, unknown>
+        const id = typeof record.id === 'string' ? record.id : ''
+        const prompt = typeof record.prompt === 'string' ? record.prompt : ''
+        if (!id || !prompt) return []
+        const rawType = record.type
+        const type = rawType === 'multiple_choice' || rawType === 'text' ? rawType : 'single_choice'
+        const rawOptions = Array.isArray(record.options) ? record.options : []
+        const options = rawOptions.flatMap((option): UserQuestionOption[] => {
+          if (!option || typeof option !== 'object' || Array.isArray(option)) return []
+          const optionRecord = option as Record<string, unknown>
+          const value = typeof optionRecord.value === 'string' ? optionRecord.value : ''
+          if (!value) return []
+          const label = typeof optionRecord.label === 'string' && optionRecord.label ? optionRecord.label : value
+          return [{ value, label }]
+        })
+        return [{
+          id,
+          prompt,
+          type,
+          options,
+          allowCustom: record.allow_custom !== false,
+          placeholder: typeof record.placeholder === 'string' ? record.placeholder : undefined,
+        }]
+      }),
+    }
+    if (request.questions.length === 0) return null
+
+    let parsedResult: UserQuestionResult | undefined
+    if (result) {
+      try {
+        const resultValue = JSON.parse(result) as UserQuestionResult
+        if (resultValue && typeof resultValue === 'object' && resultValue.status) {
+          parsedResult = resultValue
+        }
+      } catch {
+        parsedResult = undefined
+      }
+    }
+    return createQuestionSegment(request, parsedResult)
+  } catch {
+    return null
+  }
+}
+
+function findQuestionSegment(segments: MessageSegment[], id: string): QuestionSegment | undefined {
+  return segments.find((seg): seg is QuestionSegment => seg.type === 'question' && seg.request.id === id)
+}
+
+function applyQuestionRequired(segments: MessageSegment[], request: UserQuestionRequest): void {
+  const existing = findQuestionSegment(segments, request.id)
+  if (existing) {
+    existing.request = request
+    existing.status = 'pending'
+    return
+  }
+
+  segments.push(createQuestionSegment(request))
+}
+
+function applyQuestionResolved(segments: MessageSegment[], result: UserQuestionResult): void {
+  const existing = findQuestionSegment(segments, result.id)
+  if (!existing) return
+
+  existing.status = result.status
+  existing.answers = result.answers ?? []
+  existing.error = undefined
+  for (const answer of existing.answers) {
+    existing.selections[answer.questionId] = answer.values ? [...answer.values] : []
+    existing.customAnswers[answer.questionId] = answer.custom ?? ''
+  }
+}
+
+function markQuestionAnswered(seg: QuestionSegment, answers: UserQuestionAnswer[]): void {
+  seg.status = 'answered'
+  seg.answers = answers
+  seg.error = undefined
+  for (const answer of answers) {
+    seg.selections[answer.questionId] = answer.values ? [...answer.values] : []
+    seg.customAnswers[answer.questionId] = answer.custom ?? ''
+  }
+}
+
+function markQuestionError(seg: QuestionSegment, message: string): void {
+  seg.error = message
+}
+
 function formatTokenCount(tokens: number): string {
   if (tokens >= 1000) {
     return `${(tokens / 1000).toFixed(1).replace(/\.0$/, '')}k`
@@ -509,6 +637,13 @@ function reconstructAssistantDisplay(rawMsgs: ChatMessage[], start: number, end:
           upsertPlanSegment(display.segments, planStepsFromToolArgs(tc.function.arguments))
           continue
         }
+        if (tc.function.name === 'ask_user') {
+          const questionSegment = parseQuestionFromToolArgs(tc.id, tc.function.arguments, toolResults.get(tc.id))
+          if (questionSegment) {
+            display.segments.push(questionSegment)
+          }
+          continue
+        }
 
         display.segments.push({
           type: 'tool',
@@ -570,6 +705,22 @@ function cloneMessageSegment(seg: MessageSegment): MessageSegment {
       return { type: 'tool', toolCallId: seg.toolCallId, name: seg.name, args: seg.args, result: seg.result }
     case 'approval':
       return { type: 'approval', id: seg.id, command: seg.command, status: seg.status, error: seg.error }
+    case 'question':
+      return {
+        type: 'question',
+        request: {
+          ...seg.request,
+          questions: seg.request.questions.map((question) => ({
+            ...question,
+            options: question.options?.map((option) => ({ ...option })),
+          })),
+        },
+        status: seg.status,
+        answers: seg.answers.map((answer) => ({ ...answer, values: answer.values ? [...answer.values] : undefined })),
+        selections: Object.fromEntries(Object.entries(seg.selections).map(([key, values]) => [key, [...values]])),
+        customAnswers: { ...seg.customAnswers },
+        error: seg.error,
+      }
     case 'plan':
       return { type: 'plan', steps: seg.steps.map((step) => ({ ...step })) }
     case 'thinking':
@@ -700,6 +851,16 @@ function applyFocusedRunEvent(event: StreamEvent) {
     refreshRunForEvent(event)
   }
 
+  if (event.questionRequired) {
+    applyQuestionRequired(msg.segments, event.questionRequired)
+    refreshRunForEvent(event)
+  }
+
+  if (event.questionResolved) {
+    applyQuestionResolved(msg.segments, event.questionResolved)
+    refreshRunForEvent(event)
+  }
+
   if (event.plan) {
     upsertPlanSegment(msg.segments, event.plan)
   }
@@ -725,6 +886,8 @@ function hasDisplayableRunEventContent(event: StreamEvent): boolean {
     event.toolResult ||
     event.approvalRequired ||
     event.approvalResolved ||
+    event.questionRequired ||
+    event.questionResolved ||
     event.plan?.length,
   )
 }
@@ -996,6 +1159,16 @@ async function sendMessage() {
           refreshRunForEvent(event)
         }
 
+        if (event.questionRequired) {
+          applyQuestionRequired(messages.value[assistantIdx].segments, event.questionRequired)
+          refreshRunForEvent(event)
+        }
+
+        if (event.questionResolved) {
+          applyQuestionResolved(messages.value[assistantIdx].segments, event.questionResolved)
+          refreshRunForEvent(event)
+        }
+
         if (event.plan) {
           upsertPlanSegment(messages.value[assistantIdx].segments, event.plan)
         }
@@ -1167,6 +1340,10 @@ const displayActivityStatus = computed<string | null>(() => {
   // Waiting for user approval
   if (lastSeg.type === 'approval' && (lastSeg as ApprovalSegment).status === 'pending') {
     return 'Waiting for approval…'
+  }
+
+  if (lastSeg.type === 'question' && (lastSeg as QuestionSegment).status === 'pending') {
+    return 'Waiting for your answer…'
   }
 
   // Last segment is a completed tool or has a result — the LLM is generating the next response
@@ -1413,6 +1590,15 @@ function scrollToBottom(options: { force?: boolean } = {}) {
                 {{ (item as ApprovalSegment).error }}
               </div>
             </div>
+            <AiQuestionCard
+              v-else-if="item.type === 'question'"
+              :request="(item as QuestionSegment).request"
+              :status="(item as QuestionSegment).status"
+              :answers="(item as QuestionSegment).answers"
+              :error="(item as QuestionSegment).error"
+              @answered="markQuestionAnswered(item as QuestionSegment, $event)"
+              @error="markQuestionError(item as QuestionSegment, $event)"
+            />
             <template v-else-if="item.type === 'plan'" />
             <MarkdownMessage v-else-if="item.type === 'text' && item.content" :content="item.content" />
           </template>
@@ -1578,9 +1764,11 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 
 <style scoped>
 .agent-panel {
+  --ide-header-icon: var(--accent);
   display: flex;
   flex-direction: column;
   height: 100%;
+  background: var(--ide-surface-bg);
 }
 
 .agent-header {
@@ -1589,6 +1777,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   justify-content: space-between;
   padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
+  background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
 }
@@ -1605,13 +1794,11 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   justify-content: center;
   width: 16px;
   height: 16px;
-  border-radius: var(--radius-sm);
-  background: var(--accent);
-  color: var(--bg-base);
+  color: var(--ide-header-icon);
 }
 
 .agent-title {
-  font-size: 0.8rem;
+  font-size: var(--ide-header-title-size);
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -1832,6 +2019,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  background: var(--ide-surface-bg);
 }
 
 .run-focus-banner,
@@ -1978,7 +2166,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   padding: var(--space-3);
   border-top: 0.5px solid var(--border-default);
   flex-shrink: 0;
-  background: var(--bg-base);
+  background: var(--ide-surface-bg);
 }
 
 .run-focus-footer {

@@ -139,12 +139,13 @@ onUnmounted(() => {
 
 <style scoped>
 .workspace-services-panel {
+  --ide-header-icon: var(--gruvbox-aqua);
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
   overflow-y: auto;
-  background: var(--bg-base);
+  background: var(--ide-surface-bg);
 }
 
 .services-surface-header {
@@ -155,7 +156,7 @@ onUnmounted(() => {
   height: 38px;
   padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
-  background: var(--bg-surface);
+  background: var(--ide-header-bg);
   flex-shrink: 0;
 }
 
@@ -164,16 +165,13 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  color: var(--text-secondary);
-  font-size: 0.75rem;
+  color: var(--text-primary);
+  font-size: var(--ide-header-title-size);
   font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
 }
 
 .panel-icon {
-  color: var(--accent-purple);
-  opacity: 0.7;
+  color: var(--ide-header-icon);
   flex-shrink: 0;
 }
 

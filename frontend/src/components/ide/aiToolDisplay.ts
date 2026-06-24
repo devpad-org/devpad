@@ -58,7 +58,7 @@ export function hasToolResult(seg: ToolDisplaySegment): seg is ToolDisplaySegmen
 }
 
 export function shouldRenderToolCall(name: string): boolean {
-  return name !== 'update_plan'
+  return name !== 'update_plan' && name !== 'ask_user'
 }
 
 export function planStepsFromToolArgs(args: string): PlanStep[] {

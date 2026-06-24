@@ -13,6 +13,7 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/app"
 	"github.com/devpad-org/devpad/internal/ai/approval"
 	"github.com/devpad-org/devpad/internal/ai/domain"
+	"github.com/devpad-org/devpad/internal/ai/question"
 	"github.com/devpad-org/devpad/internal/auth"
 )
 
@@ -151,6 +152,53 @@ func TestHandleApproveCommand_ResolvesPendingRequest(t *testing.T) {
 	}
 	if !approved {
 		t.Fatal("expected approval decision to be true")
+	}
+}
+
+func TestHandleAnswerQuestion_ResolvesPendingQuestion(t *testing.T) {
+	questions := question.NewMemoryBroker()
+	request, err := questions.Open(context.Background(), 1, domain.UserQuestionRequest{
+		Questions: []domain.UserQuestion{{
+			ID:     "stack",
+			Prompt: "Which stack?",
+			Type:   domain.UserQuestionSingleChoice,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	h := &Handler{questions: questions}
+
+	body, err := json.Marshal(map[string]any{
+		"id": request.ID,
+		"answers": []map[string]any{{
+			"questionId": "stack",
+			"values":     []string{"go"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/agent/questions/answer", bytes.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 1}))
+	w := httptest.NewRecorder()
+
+	h.HandleAnswerQuestion(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	answers, err := questions.Await(ctx, request.ID)
+	if err != nil {
+		t.Fatalf("unexpected await error: %v", err)
+	}
+	if len(answers) != 1 || answers[0].QuestionID != "stack" || len(answers[0].Values) != 1 || answers[0].Values[0] != "go" {
+		t.Fatalf("unexpected answers: %+v", answers)
 	}
 }
 

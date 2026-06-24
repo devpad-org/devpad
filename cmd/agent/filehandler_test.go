@@ -3,8 +3,10 @@ package main
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -127,6 +129,41 @@ func TestWriteFileCopyErrorResponse(t *testing.T) {
 	}
 }
 
+func TestHandleWriteFileCreatesMissingParentDirectories(t *testing.T) {
+	root := t.TempDir()
+	withWorkspaceRoot(t, root)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/file?path=src/generated/file.txt", strings.NewReader("hello"))
+	rec := httptest.NewRecorder()
+
+	handleWriteFile(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+
+	got, err := os.ReadFile(filepath.Join(root, "src", "generated", "file.txt"))
+	if err != nil {
+		t.Fatalf("reading written file: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("content = %q, want %q", got, "hello")
+	}
+}
+
+func TestValidateWritablePathRejectsEscapingSymlinkAncestor(t *testing.T) {
+	root := t.TempDir()
+	withWorkspaceRoot(t, root)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "outside")); err != nil {
+		t.Fatalf("creating symlink: %v", err)
+	}
+
+	if _, err := validateWritablePath("outside/generated/file.txt"); err == nil {
+		t.Fatalf("expected escaping symlink ancestor to be rejected")
+	}
+}
+
 func writeTestFile(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -135,6 +172,15 @@ func writeTestFile(t *testing.T, path string) {
 	if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
 		t.Fatalf("writing test file: %v", err)
 	}
+}
+
+func withWorkspaceRoot(t *testing.T, root string) {
+	t.Helper()
+	previous := workspaceRoot
+	workspaceRoot = root
+	t.Cleanup(func() {
+		workspaceRoot = previous
+	})
 }
 
 func entryPaths(entries []fileEntry) map[string]bool {

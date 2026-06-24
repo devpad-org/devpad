@@ -265,6 +265,7 @@ onUnmounted(stopRefreshTimer)
 
 <style scoped>
 .agent-runs-panel {
+  --ide-header-icon: var(--accent);
   --tree-step: 18px;
   --tree-node-size: 14px;
   --tree-node-center: calc(var(--tree-node-size) / 2);
@@ -274,7 +275,7 @@ onUnmounted(stopRefreshTimer)
   flex-direction: column;
   height: 100%;
   min-width: 0;
-  background: var(--bg-surface);
+  background: var(--ide-panel-bg);
 }
 
 .agent-runs-header {
@@ -284,6 +285,7 @@ onUnmounted(stopRefreshTimer)
   gap: var(--space-2);
   padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
+  background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
 }
@@ -292,16 +294,13 @@ onUnmounted(stopRefreshTimer)
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.75rem;
+  font-size: var(--ide-header-title-size);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .panel-icon {
-  color: var(--accent-purple);
-  opacity: 0.7;
+  color: var(--ide-header-icon);
   flex-shrink: 0;
 }
 
@@ -471,7 +470,8 @@ onUnmounted(stopRefreshTimer)
 
 .agent-run-item--queued .run-status-dot,
 .agent-run-item--running .run-status-dot,
-.agent-run-item--waiting_approval .run-status-dot {
+.agent-run-item--waiting_approval .run-status-dot,
+.agent-run-item--waiting_user .run-status-dot {
   background: var(--accent-green);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--bg-void) 70%, transparent),
