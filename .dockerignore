@@ -1,0 +1,31 @@
+# VCS
+.git/
+.github/
+
+# Build outputs (rebuilt inside the image)
+bin/
+web/dist/
+frontend/dist/
+dist/
+internal/agentbin/devpad-agent
+internal/dockerfile/Dockerfile
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Local data / secrets
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.local
+.env.*.local
+
+# Misc
+*.log
+coverage.out
+*.out
+*.test
+.claude/
+.DS_Store

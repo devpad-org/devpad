@@ -1,0 +1,31 @@
+services:
+  devpad:
+    build:
+      context: .
+      args:
+        # Stamps the binary version; falls back to "dev" if unset.
+        VERSION: ${VERSION:-dev}
+    image: devpad:latest
+    container_name: devpad
+    restart: unless-stopped
+    ports:
+      - "${DEVPAD_PORT:-8080}:8080"
+      # HTTPS/domain mode: uncomment and set DEVPAD_DOMAIN + DEVPAD_CF_API_TOKEN.
+      # - "443:443"
+    environment:
+      # Required: hex-encoded 32-byte key for encrypting secrets.
+      # Generate once with: openssl rand -hex 32
+      DEVPAD_ENCRYPTION_KEY: ${DEVPAD_ENCRYPTION_KEY:?set DEVPAD_ENCRYPTION_KEY (openssl rand -hex 32)}
+      # HTTPS via Let's Encrypt (DNS-01). Leave unset for plain HTTP on 8080.
+      # DEVPAD_DOMAIN: ${DEVPAD_DOMAIN:-}
+      # DEVPAD_CF_API_TOKEN: ${DEVPAD_CF_API_TOKEN:-}
+      # DEVPAD_PREVIEW_DOMAIN: ${DEVPAD_PREVIEW_DOMAIN:-}
+    volumes:
+      # Persists the SQLite DB and ACME/CertMagic certificates.
+      - devpad-data:/data
+      # Devpad drives Docker via the SDK to build/run workspace containers.
+      # Workspaces run as siblings on the host daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  devpad-data:
