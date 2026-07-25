@@ -49,6 +49,8 @@ func (m *mockContainerManager) Stats(_ context.Context, _ string) (*container.Co
 func (m *mockContainerManager) CreateNetwork(_ context.Context, _ string) error       { return nil }
 func (m *mockContainerManager) RemoveNetwork(_ context.Context, _ string) error       { return nil }
 func (m *mockContainerManager) ConnectToNetwork(_ context.Context, _, _ string) error { return nil }
+func (m *mockContainerManager) EnsureSelfAttached(_ context.Context, _ string) error  { return nil }
+func (m *mockContainerManager) DetachSelf(_ context.Context, _ string) error          { return nil }
 func (m *mockContainerManager) CreateVolume(_ context.Context, _ string) error        { return nil }
 func (m *mockContainerManager) RemoveVolume(_ context.Context, _ string) error        { return nil }
 func (m *mockContainerManager) Exec(_ context.Context, _ string, _ []string) (string, error) {

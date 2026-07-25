@@ -182,6 +182,14 @@ func (m *fakeContainerManager) ConnectToNetwork(_ context.Context, _, _ string) 
 	return nil
 }
 
+func (m *fakeContainerManager) EnsureSelfAttached(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *fakeContainerManager) DetachSelf(_ context.Context, _ string) error {
+	return nil
+}
+
 func (m *fakeContainerManager) CreateVolume(_ context.Context, _ string) error {
 	return nil
 }

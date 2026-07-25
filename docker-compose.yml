@@ -16,6 +16,10 @@ services:
       # Required: hex-encoded 32-byte key for encrypting secrets.
       # Generate once with: openssl rand -hex 32
       DEVPAD_ENCRYPTION_KEY: ${DEVPAD_ENCRYPTION_KEY:?set DEVPAD_ENCRYPTION_KEY (openssl rand -hex 32)}
+      # Devpad joins each workspace's Docker network to reach its agent, which
+      # requires knowing its own container. Autodetected from /proc or the
+      # hostname; uncomment if the startup logs report detection failed.
+      # DEVPAD_CONTAINER_ID: devpad
       # HTTPS via Let's Encrypt (DNS-01). Leave unset for plain HTTP on 8080.
       # DEVPAD_DOMAIN: ${DEVPAD_DOMAIN:-}
       # DEVPAD_CF_API_TOKEN: ${DEVPAD_CF_API_TOKEN:-}

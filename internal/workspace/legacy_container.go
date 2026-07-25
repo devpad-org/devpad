@@ -86,6 +86,11 @@ func (s *service) ensureNetwork(ctx context.Context, ws *Workspace) error {
 		return fmt.Errorf("connecting container to network: %w", err)
 	}
 
+	if err := s.container.EnsureSelfAttached(ctx, networkName); err != nil {
+		_ = s.container.RemoveNetwork(ctx, networkName)
+		return fmt.Errorf("joining workspace network: %w", err)
+	}
+
 	ws.NetworkName = networkName
 	if err := s.repo.Update(ctx, ws); err != nil {
 		return fmt.Errorf("updating workspace with network: %w", err)

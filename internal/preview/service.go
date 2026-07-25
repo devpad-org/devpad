@@ -109,6 +109,12 @@ func (s *service) ResolveContainerAddr(ctx context.Context, workspaceID int64) (
 		return "", "", ErrWorkspaceDown
 	}
 
+	// Previews are proxied to the container IP, so devpad must be on the
+	// workspace network. No-op when devpad runs on the host.
+	if err := s.container.EnsureSelfAttached(ctx, ws.NetworkName); err != nil {
+		return "", "", fmt.Errorf("joining workspace network: %w", err)
+	}
+
 	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
 	if err != nil {
 		return "", "", fmt.Errorf("getting container IP: %w", err)

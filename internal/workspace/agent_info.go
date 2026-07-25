@@ -11,6 +11,20 @@ import (
 	"github.com/devpad-org/devpad/internal/container"
 )
 
+// containerIP resolves a workspace container's IP on its private network,
+// making sure devpad can actually route to that network first. Attaching is a
+// no-op when devpad runs on the host and cached when it runs in a container.
+func (s *service) containerIP(ctx context.Context, ws *Workspace) (string, error) {
+	if err := s.container.EnsureSelfAttached(ctx, ws.NetworkName); err != nil {
+		return "", fmt.Errorf("joining workspace network: %w", err)
+	}
+	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
+	if err != nil {
+		return "", fmt.Errorf("getting container IP: %w", err)
+	}
+	return ip, nil
+}
+
 func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*agent.Client, error) {
 	ws, err := s.Get(ctx, userID, workspaceID)
 	if err != nil {
@@ -19,9 +33,9 @@ func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*age
 	if ws.ContainerID == "" || ws.Status != StatusRunning {
 		return nil, ErrNotRunning
 	}
-	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
+	ip, err := s.containerIP(ctx, ws)
 	if err != nil {
-		return nil, fmt.Errorf("getting container IP: %w", err)
+		return nil, err
 	}
 	return agent.NewClient(ip, s.agentPort, ws.AgentToken), nil
 }
@@ -30,9 +44,9 @@ func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*age
 // to accept requests. It uses a 30-second timeout to avoid hanging forever if
 // the container is broken.
 func (s *service) waitForAgent(ctx context.Context, ws *Workspace) error {
-	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
+	ip, err := s.containerIP(ctx, ws)
 	if err != nil {
-		return fmt.Errorf("getting container IP: %w", err)
+		return err
 	}
 	c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
 
@@ -54,9 +68,9 @@ func (s *service) ensureAgentUpdated(ctx context.Context, ws *Workspace) error {
 		return nil
 	}
 
-	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
+	ip, err := s.containerIP(ctx, ws)
 	if err != nil {
-		return fmt.Errorf("getting container IP for update check: %w", err)
+		return fmt.Errorf("resolving container address for update check: %w", err)
 	}
 
 	c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
@@ -98,9 +112,9 @@ func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (str
 	if ws.ContainerID == "" || ws.Status != StatusRunning {
 		return "", "", ErrNotRunning
 	}
-	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
+	ip, err := s.containerIP(ctx, ws)
 	if err != nil {
-		return "", "", fmt.Errorf("getting container IP: %w", err)
+		return "", "", err
 	}
 	return fmt.Sprintf("%s:%d", ip, s.agentPort), ws.AgentToken, nil
 }
@@ -126,7 +140,7 @@ func (s *service) Info(ctx context.Context, userID, workspaceID int64) (*Workspa
 	}
 
 	// Fetch agent version
-	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
+	ip, err := s.containerIP(ctx, ws)
 	if err == nil {
 		c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
 		if v, verr := c.Version(ctx); verr == nil {

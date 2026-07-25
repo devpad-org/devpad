@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -49,6 +50,8 @@ type Manager interface {
 	CreateNetwork(ctx context.Context, name string) error
 	RemoveNetwork(ctx context.Context, name string) error
 	ConnectToNetwork(ctx context.Context, networkName, containerID string) error
+	EnsureSelfAttached(ctx context.Context, networkName string) error
+	DetachSelf(ctx context.Context, networkName string) error
 	CreateVolume(ctx context.Context, name string) error
 	RemoveVolume(ctx context.Context, name string) error
 	Exec(ctx context.Context, containerID string, cmd []string) (execID string, err error)
@@ -68,6 +71,16 @@ type HijackedResponse struct {
 
 type manager struct {
 	cli *client.Client
+
+	// selfID identifies the container devpad itself runs in, empty when it runs
+	// on the host. See self.go; resolved once, guarded by selfMu.
+	selfMu       sync.Mutex
+	selfID       string
+	selfResolved bool
+
+	// attached caches the workspace networks devpad has already joined.
+	attachMu sync.Mutex
+	attached map[string]bool
 }
 
 // NewManager creates a new container Manager using the default Docker client.
@@ -76,7 +89,7 @@ func NewManager() (Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating docker client: %w", err)
 	}
-	return &manager{cli: cli}, nil
+	return &manager{cli: cli, attached: make(map[string]bool)}, nil
 }
 
 func (m *manager) Create(ctx context.Context, name, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {

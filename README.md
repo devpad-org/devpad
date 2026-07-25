@@ -27,6 +27,20 @@ Devpad is configured via command-line flags and/or environment variables. Flags 
 | `--db-path` | `DEVPAD_DB_PATH` | `devpad.db` | Path to the SQLite database file |
 | `--preview-domain` | `DEVPAD_PREVIEW_DOMAIN` | — | Domain for workspace previews (e.g. `preview.example.com`) |
 | `--encryption-key` | `DEVPAD_ENCRYPTION_KEY` | — | Hex-encoded 32-byte key for encrypting secrets (SSH private keys). Auto-generated if not set |
+| — | `DEVPAD_CONTAINER_ID` | autodetected | ID or name of devpad's own container. Only needed when devpad runs in a container and cannot detect it (see below) |
+
+### Running devpad in a container
+
+Each workspace gets its own Docker bridge network, and devpad reaches the
+in-container agent over that network. Docker isolates bridge networks from one
+another, so when devpad itself runs in a container it joins each workspace
+network on demand — otherwise every agent request fails with an i/o timeout.
+
+This needs devpad to know its own container, which it detects from `/proc` or
+its hostname. If detection fails, devpad logs a warning at workspace start; set
+`DEVPAD_CONTAINER_ID` to the container's ID or name (`devpad` in the bundled
+`docker-compose.yml`). Running devpad directly on the host needs no
+configuration — it already routes to workspace networks.
 
 ### Examples
 

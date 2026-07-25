@@ -39,6 +39,14 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 		return nil, fmt.Errorf("creating network: %w", err)
 	}
 
+	// When devpad runs in a container it must join the workspace network to
+	// reach the agent; on the host this is a no-op.
+	if err := s.container.EnsureSelfAttached(ctx, networkName); err != nil {
+		_ = s.container.RemoveNetwork(ctx, networkName)
+		_ = s.repo.Delete(ctx, ws.ID)
+		return nil, fmt.Errorf("joining workspace network: %w", err)
+	}
+
 	volumeName := fmt.Sprintf("devpad-vol-%d", ws.ID)
 	if err := s.container.CreateVolume(ctx, volumeName); err != nil {
 		_ = s.container.RemoveNetwork(ctx, networkName)
@@ -131,8 +139,12 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 		}
 	}
 
-	// Remove the workspace network
+	// Remove the workspace network. Docker refuses to remove a network that
+	// still has endpoints, so drop devpad's own attachment first.
 	if ws.NetworkName != "" {
+		if err := s.container.DetachSelf(ctx, ws.NetworkName); err != nil {
+			log.Printf("workspace %d: detaching devpad from network failed: %v", ws.ID, err)
+		}
 		if err := s.container.RemoveNetwork(ctx, ws.NetworkName); err != nil {
 			return fmt.Errorf("removing network: %w", err)
 		}
