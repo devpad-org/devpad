@@ -3,6 +3,7 @@ package moonshot
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	aiprovider "github.com/devpad-org/devpad/internal/ai/provider"
@@ -13,6 +14,11 @@ const (
 	providerID   = "moonshot"
 	providerName = "Moonshot AI"
 	baseURL      = "https://api.moonshot.ai/v1"
+
+	// kimi-k3 always reasons and replaces the K2.x "thinking" object with a
+	// top-level reasoning_effort field.
+	k3ModelID              = "kimi-k3"
+	defaultReasoningEffort = "max"
 )
 
 // Adapter streams chat completions from Moonshot's Kimi API.
@@ -22,11 +28,12 @@ type Adapter struct {
 }
 
 type chatRequest struct {
-	Model    string                  `json:"model"`
-	Messages []message               `json:"messages"`
-	Stream   bool                    `json:"stream"`
-	Tools    []domain.ToolDefinition `json:"tools,omitempty"`
-	Thinking *thinking               `json:"thinking,omitempty"`
+	Model           string                  `json:"model"`
+	Messages        []message               `json:"messages"`
+	Stream          bool                    `json:"stream"`
+	Tools           []domain.ToolDefinition `json:"tools,omitempty"`
+	Thinking        *thinking               `json:"thinking,omitempty"`
+	ReasoningEffort string                  `json:"reasoning_effort,omitempty"`
 }
 
 type message struct {
@@ -60,6 +67,18 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 func (a *Adapter) Models() []domain.Model {
 	return []domain.Model{
 		{
+			ID:         k3ModelID,
+			Name:       "Kimi K3",
+			ProviderID: providerID,
+			Thinking: domain.ThinkingCapability{
+				Supported:        true,
+				EnabledByDefault: true,
+				CanDisable:       false,
+				SupportedEfforts: []string{"low", "high", "max"},
+				DefaultEffort:    defaultReasoningEffort,
+			},
+		},
+		{
 			ID:         "kimi-k2.7-code",
 			Name:       "Kimi K2.7 Code",
 			ProviderID: providerID,
@@ -90,6 +109,9 @@ func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req 
 
 func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequest {
 	thinkingEnabled := domain.ThinkingEnabledForRequest(model, domain.ChatRequest{Model: req.Model, Turns: req.Turns, Thinking: req.Thinking})
+	// Models that cannot turn thinking off always expect their reasoning
+	// history back; K3 in particular degrades badly without it.
+	preserveReasoning := model.Thinking.Supported && (thinkingEnabled || !model.Thinking.CanDisable)
 	messages := make([]message, 0, len(req.Turns))
 	for _, turn := range req.Turns {
 		if turn.Role == domain.RoleUser {
@@ -116,7 +138,7 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 		}
 
 		thinkingText := turn.ThinkingText()
-		if thinkingEnabled {
+		if preserveReasoning {
 			switch {
 			case thinkingText != "":
 				reasoningContent := thinkingText
@@ -136,7 +158,10 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 		Stream:   true,
 		Tools:    req.Tools,
 	}
-	if model.Thinking.Supported {
+	switch {
+	case usesReasoningEffort(model):
+		body.ReasoningEffort = requestedReasoningEffort(model, req.Thinking)
+	case model.Thinking.Supported:
 		cfg := &thinking{}
 		if thinkingEnabled {
 			cfg.Type = "enabled"
@@ -150,4 +175,23 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 	}
 
 	return body
+}
+
+// usesReasoningEffort reports whether the model takes a top-level
+// reasoning_effort field instead of the K2.x thinking object.
+func usesReasoningEffort(model domain.Model) bool {
+	return strings.EqualFold(model.ID, k3ModelID)
+}
+
+func requestedReasoningEffort(model domain.Model, thinkingCfg *domain.ThinkingConfig) string {
+	if thinkingCfg != nil {
+		if effort := strings.TrimSpace(thinkingCfg.Effort); effort != "" {
+			return effort
+		}
+	}
+	if model.Thinking.DefaultEffort != "" {
+		return model.Thinking.DefaultEffort
+	}
+
+	return defaultReasoningEffort
 }

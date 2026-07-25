@@ -12,6 +12,7 @@ const (
 	long256KInputBudgetTokens       = 256000
 	minimaxM3InputBudgetTokens      = 1000000
 	minimaxM27InputBudgetTokens     = 204800
+	moonshotK3InputBudgetTokens     = 1000000
 )
 
 // Budget describes the current approximate provider-facing input budget used
@@ -40,7 +41,7 @@ func BudgetFor(providerID, modelID string) Budget {
 		case provider == "mistral" || strings.Contains(model, "mistral") || strings.Contains(model, "devstral"):
 			inputTokens = mistralInputBudget(model)
 		case provider == "moonshot" || strings.Contains(model, "kimi"):
-			inputTokens = long256KInputBudgetTokens
+			inputTokens = moonshotInputBudget(model)
 		case provider == "minimax" || strings.Contains(model, "minimax"):
 			inputTokens = minimaxInputBudget(model)
 		}
@@ -89,6 +90,13 @@ func mistralInputBudget(model string) int {
 	return 128000
 }
 
+func moonshotInputBudget(model string) int {
+	if strings.Contains(model, "k3") {
+		return moonshotK3InputBudgetTokens
+	}
+	return long256KInputBudgetTokens
+}
+
 func minimaxInputBudget(model string) int {
 	if strings.Contains(model, "m3") {
 		return minimaxM3InputBudgetTokens
@@ -119,8 +127,11 @@ func knownModelInputBudget(model string) (int, bool) {
 		"mistral-medium-3-5",
 		"mistral-medium-3",
 		"mistral-large-latest",
-		"mistral-large-2512",
-		"kimi-k2.7-code",
+		"mistral-large-2512":
+		return long256KInputBudgetTokens, true
+	case "kimi-k3":
+		return moonshotK3InputBudgetTokens, true
+	case "kimi-k2.7-code",
 		"kimi-k2.6":
 		return long256KInputBudgetTokens, true
 	case "minimax-m3":
