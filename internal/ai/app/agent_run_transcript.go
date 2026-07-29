@@ -57,6 +57,7 @@ func buildAgentRunConversationTurns(inputTurns []domain.Turn, events []domain.Ag
 	}
 
 	for _, round := range rounds {
+		round = round.withAnsweredToolCallsOnly()
 		if round.hasAssistantTurn() {
 			turns = append(turns, round.assistantTurn())
 		}
@@ -66,6 +67,31 @@ func buildAgentRunConversationTurns(inputTurns []domain.Turn, events []domain.Ag
 	}
 
 	return turns
+}
+
+// withAnsweredToolCallsOnly drops tool calls that never produced a result, which
+// happens when a run ends mid-iteration. Providers reject an assistant message
+// whose tool calls have no matching tool results, so keeping them would make
+// every later request in the conversation fail.
+func (r agentRunTranscriptRound) withAnsweredToolCallsOnly() agentRunTranscriptRound {
+	if len(r.toolCalls) == 0 {
+		return r
+	}
+
+	answered := make(map[string]struct{}, len(r.toolResults))
+	for _, result := range r.toolResults {
+		answered[result.ToolCallID] = struct{}{}
+	}
+
+	kept := make([]domain.ToolCall, 0, len(r.toolCalls))
+	for _, toolCall := range r.toolCalls {
+		if _, ok := answered[toolCall.ID]; ok {
+			kept = append(kept, toolCall)
+		}
+	}
+	r.toolCalls = kept
+
+	return r
 }
 
 func (r agentRunTranscriptRound) hasAssistantTurn() bool {

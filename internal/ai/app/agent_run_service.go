@@ -399,9 +399,12 @@ func (s *agentRunService) finishRun(runID int64, currentStatus domain.AgentRunSt
 	if errorMessage != "" || currentStatus == domain.AgentRunFailed {
 		status = domain.AgentRunFailed
 	}
-	if status == domain.AgentRunCompleted {
-		if err := s.persistCompletedRunConversation(context.Background(), runID); err != nil {
-			log.Printf("failed to persist completed agent run %d conversation: %v", runID, err)
+	// Failed runs persist their transcript too. A provider error such as a 429
+	// mid-conversation would otherwise discard the user's message and everything
+	// the agent had already done, leaving the next request with no history.
+	if err := s.persistRunConversation(context.Background(), runID); err != nil {
+		log.Printf("failed to persist agent run %d conversation: %v", runID, err)
+		if status == domain.AgentRunCompleted {
 			status = domain.AgentRunFailed
 			errorMessage = fmt.Sprintf("saving completed conversation transcript: %v", err)
 		}
@@ -411,7 +414,7 @@ func (s *agentRunService) finishRun(runID int64, currentStatus domain.AgentRunSt
 	}
 }
 
-func (s *agentRunService) persistCompletedRunConversation(ctx context.Context, runID int64) error {
+func (s *agentRunService) persistRunConversation(ctx context.Context, runID int64) error {
 	run, err := s.repo.GetRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("getting agent run: %w", err)
@@ -454,6 +457,13 @@ func (s *agentRunService) cancelRun(runID int64, message string) error {
 	}
 	if err := s.appendAndPublish(runID, domain.ClientEvent{Done: true}); err != nil {
 		return err
+	}
+	// Cancelled runs persist for the same reason failed ones do, and often with no browser
+	// attached at all: a run cancelled from the runs panel or by a server shutdown has no
+	// SSE consumer to save it, and "Continue" reloads the conversation from the database.
+	// A persistence failure must not stop the run from being marked cancelled.
+	if err := s.persistRunConversation(context.Background(), runID); err != nil {
+		log.Printf("failed to persist cancelled agent run %d conversation: %v", runID, err)
 	}
 	return s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunCancelled, message)
 }

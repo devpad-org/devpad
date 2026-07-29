@@ -197,6 +197,12 @@ func (s *fakeConversationService) GetTurns(context.Context, int64, int64) ([]dom
 	return nil, nil
 }
 
+func (s *fakeConversationService) failSaves(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.saveErr = err
+}
+
 func (s *fakeConversationService) saveCalls() []conversationSaveCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -319,6 +325,180 @@ func TestAgentRunService_PersistsLinkedConversationFromRunLifecycle(t *testing.T
 	assertAssistantTurn(t, finalSave.turns[1], "thinking", `{"state":"one"}`, "I'll do it", "call-1")
 	assertToolResultTurn(t, finalSave.turns[2], "call-1", "read_file", "README contents")
 	assertAssistantTurn(t, finalSave.turns[3], "", "", "done", "")
+}
+
+func TestAgentRunService_PersistsConversationWhenRunFails(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	conversations := &fakeConversationService{}
+	events := make(chan domain.ClientEvent, 8)
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			return events, nil
+		},
+	}, conversations)
+	defer shutdownRunner(t, service)
+
+	run, err := service.StartRun(context.Background(), StartAgentRunRequest{
+		UserID:         7,
+		WorkspaceID:    9,
+		ConversationID: 33,
+		Model:          "kimi-k3",
+		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, "build it")},
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events <- domain.ClientEvent{TextDelta: "starting work"}
+	events <- domain.ClientEvent{ToolCalls: []domain.ToolCall{{
+		ID:       "call-1",
+		Type:     "function",
+		Function: domain.ToolCallFunction{Name: "read_file", Arguments: `{"path":"README.md"}`},
+	}}}
+	events <- domain.ClientEvent{ToolResult: &domain.ToolResultPart{
+		ToolCallID: "call-1",
+		Name:       "read_file",
+		Content:    "README contents",
+	}}
+	events <- domain.ClientEvent{ErrorMessage: "moonshot API error (status 429): engine_overloaded_error"}
+	events <- domain.ClientEvent{Done: true}
+	close(events)
+
+	waitForRunStatus(t, repo, run.ID, domain.AgentRunFailed)
+	saves := conversations.saveCalls()
+	if len(saves) != 2 {
+		t.Fatalf("expected the failed run to persist its transcript, got %d saves", len(saves))
+	}
+	finalSave := saves[1]
+	assertSavedConversationTurn(t, finalSave, 33, 7, 3)
+	if got := finalSave.turns[0].Text(); got != "build it" {
+		t.Fatalf("expected the user prompt to survive the failure, got %q", got)
+	}
+	assertAssistantTurn(t, finalSave.turns[1], "", "", "starting work", "call-1")
+	assertToolResultTurn(t, finalSave.turns[2], "call-1", "read_file", "README contents")
+}
+
+func TestAgentRunService_DropsUnansweredToolCallsFromFailedTranscript(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	conversations := &fakeConversationService{}
+	events := make(chan domain.ClientEvent, 8)
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			return events, nil
+		},
+	}, conversations)
+	defer shutdownRunner(t, service)
+
+	run, err := service.StartRun(context.Background(), StartAgentRunRequest{
+		UserID:         7,
+		WorkspaceID:    9,
+		ConversationID: 33,
+		Model:          "kimi-k3",
+		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, "build it")},
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	// The run dies after requesting a tool but before the result comes back.
+	events <- domain.ClientEvent{TextDelta: "reading files"}
+	events <- domain.ClientEvent{ToolCalls: []domain.ToolCall{{
+		ID:       "call-1",
+		Type:     "function",
+		Function: domain.ToolCallFunction{Name: "read_file", Arguments: `{"path":"README.md"}`},
+	}}}
+	events <- domain.ClientEvent{ErrorMessage: "moonshot API error (status 429): engine_overloaded_error"}
+	events <- domain.ClientEvent{Done: true}
+	close(events)
+
+	waitForRunStatus(t, repo, run.ID, domain.AgentRunFailed)
+	saves := conversations.saveCalls()
+	if len(saves) != 2 {
+		t.Fatalf("expected the failed run to persist its transcript, got %d saves", len(saves))
+	}
+	finalSave := saves[1]
+	assertSavedConversationTurn(t, finalSave, 33, 7, 2)
+	assertAssistantTurn(t, finalSave.turns[1], "", "", "reading files", "")
+	if calls := finalSave.turns[1].ToolCalls(); len(calls) != 0 {
+		t.Fatalf("expected the unanswered tool call to be dropped, got %+v", calls)
+	}
+}
+
+func TestAgentRunService_PersistsConversationWhenRunIsCancelled(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	conversations := &fakeConversationService{}
+	events := make(chan domain.ClientEvent, 8)
+	streaming := make(chan struct{})
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			close(streaming)
+			return events, nil
+		},
+	}, conversations)
+	defer shutdownRunner(t, service)
+
+	run, err := service.StartRun(context.Background(), StartAgentRunRequest{
+		UserID:         7,
+		WorkspaceID:    9,
+		ConversationID: 33,
+		Model:          "kimi-k3",
+		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, "build it")},
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	<-streaming
+
+	events <- domain.ClientEvent{TextDelta: "partial progress"}
+	waitForRunEventCount(t, repo, run.ID, 1)
+
+	if err := service.CancelRun(context.Background(), 7, run.ID); err != nil {
+		t.Fatalf("cancel run: %v", err)
+	}
+
+	waitForRunStatus(t, repo, run.ID, domain.AgentRunCancelled)
+	saves := conversations.saveCalls()
+	if len(saves) != 2 {
+		t.Fatalf("expected the cancelled run to persist its transcript, got %d saves", len(saves))
+	}
+	finalSave := saves[1]
+	assertSavedConversationTurn(t, finalSave, 33, 7, 2)
+	if got := finalSave.turns[0].Text(); got != "build it" {
+		t.Fatalf("expected the user prompt to survive cancellation, got %q", got)
+	}
+	assertAssistantTurn(t, finalSave.turns[1], "", "", "partial progress", "")
+}
+
+func TestAgentRunService_CancelStillMarksRunCancelledWhenPersistenceFails(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	conversations := &fakeConversationService{}
+	streaming := make(chan struct{})
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			close(streaming)
+			return make(chan domain.ClientEvent), nil
+		},
+	}, conversations)
+	defer shutdownRunner(t, service)
+
+	run, err := service.StartRun(context.Background(), StartAgentRunRequest{
+		UserID:         7,
+		WorkspaceID:    9,
+		ConversationID: 33,
+		Model:          "kimi-k3",
+		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, "build it")},
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	<-streaming
+	conversations.failSaves(errors.New("database is locked"))
+
+	if err := service.CancelRun(context.Background(), 7, run.ID); err != nil {
+		t.Fatalf("cancel run: %v", err)
+	}
+
+	waitForRunStatus(t, repo, run.ID, domain.AgentRunCancelled)
 }
 
 func TestAgentRunService_DoesNotPersistChildRunConversation(t *testing.T) {
@@ -567,6 +747,22 @@ func receiveRunEvent(t *testing.T, stream <-chan domain.AgentRunEvent) domain.Ag
 		t.Fatal("timed out waiting for run event")
 		return domain.AgentRunEvent{}
 	}
+}
+
+func waitForRunEventCount(t *testing.T, repo *fakeAgentRunRepository, runID int64, count int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := repo.ListEvents(context.Background(), runID, 0)
+		if err != nil {
+			t.Fatalf("list events: %v", err)
+		}
+		if len(events) >= count {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d events on run %d", count, runID)
 }
 
 func assertSavedConversationTurn(t *testing.T, call conversationSaveCall, conversationID, userID int64, turnCount int) {

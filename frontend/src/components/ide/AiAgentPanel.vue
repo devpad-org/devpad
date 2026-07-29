@@ -1038,6 +1038,7 @@ async function sendMessage() {
   }
   const rounds: Round[] = [{ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] }]
   let streamFailed = false
+  let streamDetached = false
   let createdRun: AgentRun | null = null
   const parentRunId = continuationParentRunId.value
 
@@ -1179,26 +1180,34 @@ async function sendMessage() {
     )
   } catch (err: any) {
     streamFailed = true
-    if (err.name !== 'AbortError') {
+    // Aborting only detaches this panel from the SSE stream — newChat() has already reset
+    // the panel and the run keeps going server-side, so this turn owns no state to persist.
+    streamDetached = isAbortError(err)
+    if (!streamDetached) {
       messages.value[assistantIdx].content =
         messages.value[assistantIdx].content || `Error: ${err.message}`
     }
   } finally {
-    if (!streamFailed) {
-      // Flush each LLM round to rawMessages: assistant message followed by its tool results.
-      // This preserves the exact interleaved structure the provider saw across iterations.
+    // Flush each LLM round to rawMessages: assistant message followed by its tool results.
+    // This preserves the exact interleaved structure the provider saw across iterations.
+    // Failed streams flush too: dropping the exchange would erase the user's message along
+    // with everything the agent already did, so the next request would start with no history
+    // even though the panel still shows the conversation.
+    if (!streamDetached) {
       for (const round of rounds) {
+        // A round interrupted mid-iteration can hold tool calls that never ran. Providers
+        // reject tool calls without matching results, so only keep the answered ones.
+        const toolCalls = streamFailed
+          ? round.toolCalls.filter((call) => round.toolResults.some((result) => result.tool_call_id === call.id))
+          : round.toolCalls
+        if (streamFailed && !round.content && !round.reasoningContent && toolCalls.length === 0) continue
+
         const assistantRaw: ChatMessage = { role: 'assistant', content: round.content }
         if (round.reasoningContent) assistantRaw.reasoning_content = round.reasoningContent
         if (round.thinkingState !== undefined) assistantRaw.thinking_state = round.thinkingState
-        if (round.toolCalls.length > 0) assistantRaw.tool_calls = round.toolCalls
+        if (toolCalls.length > 0) assistantRaw.tool_calls = toolCalls
         rawMessages.value.push(assistantRaw)
         for (const toolMsg of round.toolResults) rawMessages.value.push(toolMsg)
-      }
-    } else {
-      // Revert the user message pushed at the start — don't persist incomplete turns.
-      if (rawMessages.value.length > 0 && rawMessages.value[rawMessages.value.length - 1].role === 'user') {
-        rawMessages.value.pop()
       }
     }
 
@@ -1209,9 +1218,10 @@ async function sendMessage() {
     await nextTick()
     scrollToBottom()
 
-    // Auto-save on clean completion. Await it before refreshing the run status so that
-    // the "Continue" button only becomes available after the conversation is persisted.
-    if (!streamFailed) {
+    // Auto-save whatever the turn produced, including after a failure — a transient
+    // provider error must not cost the user their history. Await it before refreshing the
+    // run status so that the "Continue" button only becomes available once persisted.
+    if (!streamDetached) {
       await saveCurrentConversation().catch((err) => {
         console.error('Auto-save failed:', err)
       })
