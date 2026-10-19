@@ -22,6 +22,11 @@ const (
 
 	minimaxM3ModelID  = "MiniMax-M3"
 	minimaxM27ModelID = "MiniMax-M2.7"
+
+	// M3.1 Flash always reasons, takes a top-level reasoning_effort, and
+	// returns its thinking as reasoning_content instead of reasoning_details.
+	minimaxM31FlashModelID = "MiniMax-M3.1-Flash"
+	defaultReasoningEffort = "high"
 )
 
 // Adapter streams chat completions from MiniMax.
@@ -31,12 +36,13 @@ type Adapter struct {
 }
 
 type chatRequest struct {
-	Model          string                  `json:"model"`
-	Messages       []message               `json:"messages"`
-	Stream         bool                    `json:"stream"`
-	Tools          []domain.ToolDefinition `json:"tools,omitempty"`
-	ReasoningSplit bool                    `json:"reasoning_split,omitempty"`
-	Thinking       *thinking               `json:"thinking,omitempty"`
+	Model           string                  `json:"model"`
+	Messages        []message               `json:"messages"`
+	Stream          bool                    `json:"stream"`
+	Tools           []domain.ToolDefinition `json:"tools,omitempty"`
+	ReasoningSplit  bool                    `json:"reasoning_split,omitempty"`
+	Thinking        *thinking               `json:"thinking,omitempty"`
+	ReasoningEffort string                  `json:"reasoning_effort,omitempty"`
 }
 
 type message struct {
@@ -45,6 +51,7 @@ type message struct {
 	ToolCalls        []domain.ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string            `json:"tool_call_id,omitempty"`
 	ReasoningDetails []reasoningDetail `json:"reasoning_details,omitempty"`
+	ReasoningContent string            `json:"reasoning_content,omitempty"`
 }
 
 type reasoningDetail struct {
@@ -76,6 +83,18 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 
 func (a *Adapter) Models() []domain.Model {
 	return []domain.Model{
+		{
+			ID:         minimaxM31FlashModelID,
+			Name:       "MiniMax M3.1 Flash",
+			ProviderID: providerID,
+			Thinking: domain.ThinkingCapability{
+				Supported:        true,
+				EnabledByDefault: true,
+				CanDisable:       false,
+				SupportedEfforts: []string{"low", "medium", "high", "xhigh", "max"},
+				DefaultEffort:    defaultReasoningEffort,
+			},
+		},
 		{
 			ID:         minimaxM3ModelID,
 			Name:       "MiniMax M3",
@@ -134,7 +153,11 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 		}
 
 		if thinkingEnabled && turn.Role == domain.RoleAssistant {
-			minimaxMsg.ReasoningDetails = reasoningDetailsFromTurn(turn)
+			if usesReasoningContent(model) {
+				minimaxMsg.ReasoningContent = turn.ThinkingText()
+			} else {
+				minimaxMsg.ReasoningDetails = reasoningDetailsFromTurn(turn)
+			}
 		}
 
 		messages = append(messages, minimaxMsg)
@@ -152,12 +175,35 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 	if thinking := thinkingConfig(model, thinkingEnabled); thinking != nil {
 		body.Thinking = thinking
 	}
+	if usesReasoningContent(model) {
+		body.ReasoningEffort = requestedReasoningEffort(model, req.Thinking)
+	}
 
 	return body
 }
 
+// usesReasoningContent reports whether the model exchanges reasoning through
+// reasoning_content and accepts reasoning_effort, rather than reasoning_details.
+func usesReasoningContent(model domain.Model) bool {
+	return strings.EqualFold(model.ID, minimaxM31FlashModelID)
+}
+
+func requestedReasoningEffort(model domain.Model, thinkingCfg *domain.ThinkingConfig) string {
+	if thinkingCfg != nil {
+		if effort := strings.TrimSpace(thinkingCfg.Effort); effort != "" {
+			return effort
+		}
+	}
+	if model.Thinking.DefaultEffort != "" {
+		return model.Thinking.DefaultEffort
+	}
+
+	return defaultReasoningEffort
+}
+
 func thinkingConfig(model domain.Model, thinkingEnabled bool) *thinking {
-	if !model.Thinking.Supported || !strings.EqualFold(model.ID, minimaxM3ModelID) {
+	if !model.Thinking.Supported ||
+		(!strings.EqualFold(model.ID, minimaxM3ModelID) && !strings.EqualFold(model.ID, minimaxM31FlashModelID)) {
 		return nil
 	}
 	if thinkingEnabled {
@@ -200,6 +246,7 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 				Delta struct {
 					Content          string            `json:"content"`
 					ReasoningDetails []reasoningDetail `json:"reasoning_details"`
+					ReasoningContent string            `json:"reasoning_content"`
 					ToolCalls        []struct {
 						Index    int    `json:"index"`
 						ID       string `json:"id"`
@@ -228,6 +275,10 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			if newReasoning != "" {
 				ch <- domain.ProviderEvent{ReasoningDelta: newReasoning, ReasoningState: thinkingState(choice.Delta.ReasoningDetails)}
 			}
+		} else if choice.Delta.ReasoningContent != "" {
+			// reasoning_content arrives as incremental fragments, unlike the
+			// cumulative reasoning_details payloads.
+			ch <- domain.ProviderEvent{ReasoningDelta: choice.Delta.ReasoningContent}
 		}
 
 		if choice.Delta.Content != "" {

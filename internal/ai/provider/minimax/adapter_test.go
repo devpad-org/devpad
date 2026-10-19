@@ -25,7 +25,7 @@ func TestAdapterContract(t *testing.T) {
 		ExpectedProviderID:   "minimax",
 		ExpectedProviderName: "MiniMax",
 		ExpectedProtocol:     aiprovider.ProtocolOpenAIChat,
-		ExpectedModelIDs:     []string{"MiniMax-M3", "MiniMax-M2.7"},
+		ExpectedModelIDs:     []string{"MiniMax-M3.1-Flash", "MiniMax-M3", "MiniMax-M2.7"},
 		Request: aiprovider.StreamRequest{
 			Model: "MiniMax-M3",
 			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
@@ -155,6 +155,101 @@ func TestBuildChatRequest_M3DisabledThinking(t *testing.T) {
 	}
 	if body.Thinking.Type != "disabled" {
 		t.Fatalf("expected disabled thinking, got %q", body.Thinking.Type)
+	}
+}
+
+func TestBuildChatRequest_M31FlashUsesReasoningContentAndEffort(t *testing.T) {
+	model, ok := domain.ModelByID(NewAdapter().Models(), "MiniMax-M3.1-Flash")
+	if !ok {
+		t.Fatal("expected MiniMax-M3.1-Flash model")
+	}
+	if model.Thinking.CanDisable {
+		t.Fatal("expected MiniMax M3.1 Flash thinking to be always on")
+	}
+
+	req := aiprovider.StreamRequest{
+		Model: "MiniMax-M3.1-Flash",
+		Turns: []domain.Turn{
+			domain.NewTextTurn(domain.RoleUser, "Check the repo."),
+			{
+				Role: domain.RoleAssistant,
+				Parts: []domain.Part{
+					{Kind: domain.PartThinking, Thinking: &domain.ThinkingPart{Text: "Inspect files first."}},
+					{Kind: domain.PartText, Text: "Looking now."},
+				},
+			},
+			domain.NewTextTurn(domain.RoleUser, "Thanks."),
+		},
+	}
+
+	body := buildChatRequest(req, model)
+
+	if !body.ReasoningSplit {
+		t.Fatal("expected reasoning_split to be enabled for MiniMax M3.1 Flash")
+	}
+	if body.Thinking == nil || body.Thinking.Type != "adaptive" {
+		t.Fatalf("expected adaptive thinking, got %+v", body.Thinking)
+	}
+	if body.ReasoningEffort != "high" {
+		t.Fatalf("expected default reasoning_effort high, got %q", body.ReasoningEffort)
+	}
+	if body.Messages[1].ReasoningContent != "Inspect files first." {
+		t.Fatalf("expected assistant reasoning_content to be preserved, got %q", body.Messages[1].ReasoningContent)
+	}
+	if len(body.Messages[1].ReasoningDetails) != 0 {
+		t.Fatal("expected MiniMax M3.1 Flash to omit reasoning_details")
+	}
+
+	req.Thinking = &domain.ThinkingConfig{Effort: "low"}
+	if effort := buildChatRequest(req, model).ReasoningEffort; effort != "low" {
+		t.Fatalf("expected requested reasoning_effort low, got %q", effort)
+	}
+}
+
+func TestBuildChatRequest_M3OmitsReasoningEffort(t *testing.T) {
+	model, ok := domain.ModelByID(NewAdapter().Models(), "MiniMax-M3")
+	if !ok {
+		t.Fatal("expected MiniMax-M3 model")
+	}
+
+	body := buildChatRequest(aiprovider.StreamRequest{
+		Model: "MiniMax-M3",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+	}, model)
+
+	if body.ReasoningEffort != "" {
+		t.Fatalf("expected MiniMax M3 to omit reasoning_effort, got %q", body.ReasoningEffort)
+	}
+}
+
+func TestReadSSEStream_ReasoningContentUsesIncrementalDeltas(t *testing.T) {
+	sse := "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Plan\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Plan more\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	ch := make(chan domain.ProviderEvent, 64)
+	go readSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+
+	var events []domain.ProviderEvent
+	for event := range ch {
+		events = append(events, event)
+	}
+
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events, got %d", len(events))
+	}
+	if events[0].ReasoningDelta != "Plan" {
+		t.Fatalf("expected first reasoning fragment Plan, got %q", events[0].ReasoningDelta)
+	}
+	if events[1].ReasoningDelta != "Plan more" {
+		t.Fatalf("expected second reasoning fragment to pass through unchanged, got %q", events[1].ReasoningDelta)
+	}
+	if events[2].TextDelta != "Hello" {
+		t.Fatalf("expected content delta Hello, got %q", events[2].TextDelta)
+	}
+	if !events[3].Done {
+		t.Fatal("expected final Done event")
 	}
 }
 

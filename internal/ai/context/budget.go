@@ -134,7 +134,8 @@ func knownModelInputBudget(model string) (int, bool) {
 	case "kimi-k2.7-code",
 		"kimi-k2.6":
 		return long256KInputBudgetTokens, true
-	case "minimax-m3":
+	case "minimax-m3",
+		"minimax-m3.1-flash":
 		return minimaxM3InputBudgetTokens, true
 	case "minimax-m2.7":
 		return minimaxM27InputBudgetTokens, true
