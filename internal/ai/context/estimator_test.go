@@ -130,6 +130,8 @@ func TestBudgetFor_ReturnsProviderModelDefaults(t *testing.T) {
 		modelID    string
 		wantBudget int
 	}{
+		{name: "anthropic opus 5.5 context", providerID: "anthropic", modelID: "claude-opus-5-5", wantBudget: 1000000},
+		{name: "anthropic sonnet 5.5 context", providerID: "anthropic", modelID: "claude-sonnet-5-5", wantBudget: 1000000},
 		{name: "anthropic opus long context", providerID: "anthropic", modelID: "claude-opus-4-7", wantBudget: 1000000},
 		{name: "anthropic sonnet long context", providerID: "anthropic", modelID: "claude-sonnet-4-6", wantBudget: 1000000},
 		{name: "anthropic haiku context", providerID: "anthropic", modelID: "claude-haiku-4-5", wantBudget: 200000},

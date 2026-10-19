@@ -105,7 +105,9 @@ func minimaxInputBudget(model string) int {
 
 func knownModelInputBudget(model string) (int, bool) {
 	switch model {
-	case "claude-opus-4-7",
+	case "claude-opus-5-5",
+		"claude-sonnet-5-5",
+		"claude-opus-4-7",
 		"claude-opus-4-7-20260416",
 		"claude-sonnet-4-6":
 		return anthropicLongInputBudgetTokens, true

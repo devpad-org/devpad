@@ -16,7 +16,7 @@ import (
 )
 
 // startAnthropicStream initiates an Anthropic Messages API streaming request.
-func startAnthropicStream(ctx context.Context, client *http.Client, url, apiKey string, payload map[string]any) (<-chan domain.ProviderEvent, error) {
+func startAnthropicStream(ctx context.Context, client *http.Client, url, apiKey string, payload map[string]any, betas []string) (<-chan domain.ProviderEvent, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshalling request: %w", err)
@@ -31,6 +31,9 @@ func startAnthropicStream(ctx context.Context, client *http.Client, url, apiKey 
 	httpReq.Header.Set("x-api-key", apiKey)
 	httpReq.Header.Set("anthropic-version", apiVersion)
 	httpReq.Header.Set("Accept", "text/event-stream")
+	if len(betas) > 0 {
+		httpReq.Header.Set("anthropic-beta", strings.Join(betas, ","))
+	}
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -47,6 +50,20 @@ func startAnthropicStream(ctx context.Context, client *http.Client, url, apiKey 
 	go readAnthropicStream(resp.Body, ch)
 	return ch, nil
 }
+
+// The reasoning state saved with an assistant turn is a JSON array of the
+// turn's content blocks in the order the model produced them. Thinking blocks
+// are stored in full; text and tool_use blocks are stored as references to the
+// turn's own text and tool calls, so they aren't duplicated. Replaying the turn
+// in its original order keeps the thinking blocks valid on models that bind
+// them to the conversation.
+const (
+	// layoutTextRefType marks a text block holding the next "bytes" bytes of
+	// the turn's text.
+	layoutTextRefType = "devpad_text_ref"
+	// layoutToolUseRefType marks the tool_use block for the tool call "id".
+	layoutToolUseRefType = "devpad_tool_use_ref"
+)
 
 type pendingThinkingBlock struct {
 	blockType string // "thinking" or "redacted_thinking"
@@ -66,7 +83,8 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	var toolCalls []domain.ToolCall
 	toolCallArgs := make(map[int]*strings.Builder)
 	pendingThinking := make(map[int]*pendingThinkingBlock)
-	var completedThinkingBlocks []map[string]any
+	pendingTextBytes := make(map[int]int)
+	var layout []map[string]any
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -77,11 +95,7 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		if strings.HasPrefix(line, "event: ") {
 			eventType := strings.TrimPrefix(line, "event: ")
 			if eventType == "message_stop" {
-				if len(completedThinkingBlocks) > 0 {
-					if raw, err := json.Marshal(completedThinkingBlocks); err == nil {
-						ch <- domain.ProviderEvent{ReasoningState: raw}
-					}
-				}
+				emitAnthropicReasoningState(ch, layout)
 				emitAnthropicToolCalls(ch, toolCalls, toolCallArgs)
 				ch <- domain.ProviderEvent{Done: true}
 				return
@@ -106,6 +120,17 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 				continue
 			}
 			switch event.ContentBlock.Type {
+			case "fallback":
+				// A safety classifier declined the request part-way and a
+				// fallback model continues on the same stream. Thinking and
+				// tool_use blocks before the boundary must not be echoed back
+				// or executed; streamed text is kept as continuation context.
+				toolCalls = nil
+				clear(toolCallArgs)
+				clear(pendingThinking)
+				layout = textRefsOnly(layout)
+			case "text":
+				pendingTextBytes[*event.Index] = 0
 			case "thinking":
 				pendingThinking[*event.Index] = &pendingThinkingBlock{blockType: "thinking"}
 			case "redacted_thinking":
@@ -136,6 +161,11 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			case "text_delta":
 				if event.Delta.Text != "" {
 					ch <- domain.ProviderEvent{TextDelta: event.Delta.Text}
+					if event.Index != nil {
+						if _, ok := pendingTextBytes[*event.Index]; ok {
+							pendingTextBytes[*event.Index] += len(event.Delta.Text)
+						}
+					}
 				}
 			case "thinking_delta":
 				if event.Delta.Thinking != "" {
@@ -165,7 +195,17 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			if event.Index == nil {
 				continue
 			}
-			if block, ok := pendingThinking[*event.Index]; ok {
+			index := *event.Index
+			if n, ok := pendingTextBytes[index]; ok {
+				if n > 0 {
+					layout = append(layout, map[string]any{"type": layoutTextRefType, "bytes": n})
+				}
+				delete(pendingTextBytes, index)
+			}
+			if _, ok := toolCallArgs[index]; ok && index < len(toolCalls) && toolCalls[index].ID != "" {
+				layout = append(layout, map[string]any{"type": layoutToolUseRefType, "id": toolCalls[index].ID})
+			}
+			if block, ok := pendingThinking[index]; ok {
 				var thinkingBlock map[string]any
 				if block.blockType == "redacted_thinking" {
 					thinkingBlock = map[string]any{
@@ -179,8 +219,14 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 						"signature": block.signature,
 					}
 				}
-				completedThinkingBlocks = append(completedThinkingBlocks, thinkingBlock)
-				delete(pendingThinking, *event.Index)
+				layout = append(layout, thinkingBlock)
+				delete(pendingThinking, index)
+			}
+
+		case "message_delta":
+			if event.Delta != nil && event.Delta.StopReason == "refusal" {
+				ch <- domain.ProviderEvent{Err: refusalError(event.Delta.StopDetails)}
+				return
 			}
 
 		case "error":
@@ -196,13 +242,40 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
 	}
 
-	if len(completedThinkingBlocks) > 0 {
-		if raw, err := json.Marshal(completedThinkingBlocks); err == nil {
-			ch <- domain.ProviderEvent{ReasoningState: raw}
-		}
-	}
+	emitAnthropicReasoningState(ch, layout)
 	emitAnthropicToolCalls(ch, toolCalls, toolCallArgs)
 	ch <- domain.ProviderEvent{Done: true}
+}
+
+// emitAnthropicReasoningState sends the turn's layout when it holds thinking
+// blocks; without them there is nothing to replay.
+func emitAnthropicReasoningState(ch chan<- domain.ProviderEvent, layout []map[string]any) {
+	hasThinking := false
+	for _, block := range layout {
+		if block["type"] == "thinking" || block["type"] == "redacted_thinking" {
+			hasThinking = true
+			break
+		}
+	}
+	if !hasThinking {
+		return
+	}
+	if raw, err := json.Marshal(layout); err == nil {
+		ch <- domain.ProviderEvent{ReasoningState: raw}
+	}
+}
+
+// textRefsOnly keeps the text written before a fallback boundary, which the
+// fallback model continues from; earlier thinking and tool_use blocks are
+// discarded.
+func textRefsOnly(layout []map[string]any) []map[string]any {
+	var kept []map[string]any
+	for _, block := range layout {
+		if block["type"] == layoutTextRefType {
+			kept = append(kept, block)
+		}
+	}
+	return kept
 }
 
 func emitAnthropicToolCalls(ch chan<- domain.ProviderEvent, toolCalls []domain.ToolCall, toolCallArgs map[int]*strings.Builder) {
@@ -254,6 +327,24 @@ type anthropicDelta struct {
 	Signature   string `json:"signature,omitempty"`
 	PartialJSON string `json:"partial_json,omitempty"`
 	StopReason  string `json:"stop_reason,omitempty"`
+	// StopDetails is only populated when StopReason is "refusal".
+	StopDetails *anthropicStopDetails `json:"stop_details,omitempty"`
+}
+
+type anthropicStopDetails struct {
+	Category    string `json:"category,omitempty"`
+	Explanation string `json:"explanation,omitempty"`
+}
+
+func refusalError(details *anthropicStopDetails) error {
+	msg := "Claude declined to respond to this request"
+	if details != nil && details.Category != "" {
+		msg += fmt.Sprintf(" (category: %s)", details.Category)
+	}
+	if details != nil && details.Explanation != "" {
+		msg += ": " + details.Explanation
+	}
+	return errors.New(msg)
 }
 
 type anthropicError struct {

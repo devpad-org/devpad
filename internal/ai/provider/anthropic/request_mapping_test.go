@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -294,6 +295,107 @@ func TestBuildAnthropicRequest_ThinkingDisabled(t *testing.T) {
 	thinking := body["thinking"].(map[string]any)
 	if thinking["type"] != "disabled" {
 		t.Fatalf("expected thinking type disabled, got %v", thinking["type"])
+	}
+}
+
+var claude55AdaptiveThinking = map[string]any{
+	"type":          "adaptive",
+	"display":       "summarized",
+	"block_binding": map[string]any{"prefix_mismatch_behavior": "drop_block"},
+}
+
+func TestBuildAnthropicRequest_Claude55Thinking(t *testing.T) {
+	enabled := true
+	disabled := false
+	tests := []struct {
+		name         string
+		model        string
+		thinking     *domain.ThinkingConfig
+		wantThinking map[string]any
+		wantEffort   string
+	}{
+		{
+			name:         "opus default",
+			model:        "claude-opus-5-5",
+			wantThinking: claude55AdaptiveThinking,
+			wantEffort:   "medium",
+		},
+		{
+			name:         "opus selected effort",
+			model:        "claude-opus-5-5",
+			thinking:     &domain.ThinkingConfig{Enabled: &enabled, Effort: "xhigh"},
+			wantThinking: claude55AdaptiveThinking,
+			wantEffort:   "xhigh",
+		},
+		{
+			name:         "sonnet default",
+			model:        "claude-sonnet-5-5",
+			wantThinking: claude55AdaptiveThinking,
+			wantEffort:   "medium",
+		},
+		{
+			name:         "sonnet enabled without effort",
+			model:        "claude-sonnet-5-5",
+			thinking:     &domain.ThinkingConfig{Enabled: &enabled},
+			wantThinking: claude55AdaptiveThinking,
+			wantEffort:   "medium",
+		},
+		{
+			name:         "sonnet disabled uses between_tools",
+			model:        "claude-sonnet-5-5",
+			thinking:     &domain.ThinkingConfig{Enabled: &disabled},
+			wantThinking: map[string]any{"type": "between_tools"},
+		},
+		{
+			name:  "opus never sends disabled",
+			model: "claude-opus-5-5",
+			// Rejected by domain validation; the adapter still must not send
+			// a payload the API would reject.
+			thinking:   &domain.ThinkingConfig{Enabled: &disabled},
+			wantEffort: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := aiprovider.StreamRequest{
+				Model:    tt.model,
+				Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
+				Thinking: tt.thinking,
+			}
+
+			body := buildAnthropicRequest(req, mustAnthropicModel(t, req.Model))
+
+			thinking, _ := body["thinking"].(map[string]any)
+			if !reflect.DeepEqual(thinking, tt.wantThinking) {
+				t.Fatalf("expected thinking %v, got %v", tt.wantThinking, body["thinking"])
+			}
+			outputConfig, _ := body["output_config"].(map[string]any)
+			if got, _ := outputConfig["effort"].(string); got != tt.wantEffort {
+				t.Fatalf("expected effort %q, got %v", tt.wantEffort, body["output_config"])
+			}
+			if body["fallbacks"] != "default" {
+				t.Fatalf("expected fallbacks default, got %v", body["fallbacks"])
+			}
+			if body["max_tokens"] != claude55MaxTokens {
+				t.Fatalf("expected max_tokens %d, got %v", claude55MaxTokens, body["max_tokens"])
+			}
+		})
+	}
+}
+
+func TestBuildAnthropicRequest_OlderModelsOmitFallbacks(t *testing.T) {
+	req := aiprovider.StreamRequest{
+		Model: "claude-opus-4-7",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
+	}
+
+	body := buildAnthropicRequest(req, mustAnthropicModel(t, req.Model))
+
+	if _, ok := body["fallbacks"]; ok {
+		t.Fatalf("expected no fallbacks for Opus 4.7, got %v", body["fallbacks"])
+	}
+	if _, ok := body["thinking"]; ok {
+		t.Fatalf("expected Opus 4.7 to omit thinking by default, got %v", body["thinking"])
 	}
 }
 

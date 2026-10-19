@@ -17,6 +17,19 @@ const (
 	apiVersion                 = "2023-06-01"
 	maxTokens                  = 16000
 	manualThinkingBudgetTokens = 10000
+
+	// Claude 5.5 models always think, and thinking counts toward max_tokens,
+	// so they get more room than the default to avoid truncated replies.
+	claude55MaxTokens = 64000
+
+	// serverSideFallbackBeta enables `fallbacks: "default"`, which re-runs a
+	// request declined by a safety classifier on Anthropic's recommended model.
+	serverSideFallbackBeta = "server-side-fallback-2026-07-01"
+
+	// thinkingBindingBeta allows `thinking.block_binding`, which tells the API to
+	// drop thinking blocks invalidated by a history edit instead of rejecting
+	// the request.
+	thinkingBindingBeta = "thinking-binding-controls-2026-08-01"
 )
 
 // Adapter streams chat completions from Anthropic's Messages API.
@@ -41,6 +54,25 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 }
 
 func (a *Adapter) Models() []domain.Model {
+	// Opus 5.5 always thinks: disabling it is rejected by the API, so effort is
+	// the only control. The API defaults to medium effort.
+	opus55Thinking := domain.ThinkingCapability{
+		Supported:        true,
+		EnabledByDefault: true,
+		CanDisable:       false,
+		SupportedEfforts: []string{"low", "medium", "high", "xhigh", "max"},
+		DefaultEffort:    "medium",
+	}
+	// Sonnet 5.5 thinks by default and is turned off with `between_tools`
+	// rather than `disabled`. Medium is the recommended starting effort for
+	// agentic coding.
+	sonnet55Thinking := domain.ThinkingCapability{
+		Supported:        true,
+		EnabledByDefault: true,
+		CanDisable:       true,
+		SupportedEfforts: []string{"low", "medium", "high", "xhigh", "max"},
+		DefaultEffort:    "medium",
+	}
 	opus47Thinking := domain.ThinkingCapability{
 		Supported:        true,
 		EnabledByDefault: false,
@@ -62,6 +94,18 @@ func (a *Adapter) Models() []domain.Model {
 	}
 
 	return []domain.Model{
+		{
+			ID:         "claude-opus-5-5",
+			Name:       "Claude Opus 5.5",
+			ProviderID: providerID,
+			Thinking:   opus55Thinking,
+		},
+		{
+			ID:         "claude-sonnet-5-5",
+			Name:       "Claude Sonnet 5.5",
+			ProviderID: providerID,
+			Thinking:   sonnet55Thinking,
+		},
 		{
 			ID:         "claude-opus-4-7",
 			Name:       "Claude Opus 4.7",
@@ -86,7 +130,7 @@ func (a *Adapter) Models() []domain.Model {
 func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req aiprovider.StreamRequest) (<-chan domain.ProviderEvent, error) {
 	model, _ := domain.ModelByID(a.Models(), req.Model)
 	body := buildAnthropicRequest(req, model)
-	return startAnthropicStream(ctx, a.client, a.baseURL+"/messages", creds.APIKey, body)
+	return startAnthropicStream(ctx, a.client, a.baseURL+"/messages", creds.APIKey, body, requestBetas(body))
 }
 
 // buildAnthropicRequest converts the provider StreamRequest into an Anthropic-specific payload.
@@ -103,53 +147,9 @@ func buildAnthropicRequest(req aiprovider.StreamRequest, model domain.Model) map
 			continue
 		}
 
-		var content []map[string]any
-
-		for _, part := range turn.Parts {
-			switch part.Kind {
-			case domain.PartThinking:
-				// Re-inject prior thinking blocks verbatim for multi-turn continuity.
-				if part.Thinking != nil && len(part.Thinking.State) > 0 {
-					var blocks []map[string]any
-					if err := json.Unmarshal(part.Thinking.State, &blocks); err == nil {
-						content = append(content, blocks...)
-					}
-				}
-			case domain.PartText:
-				if part.Text != "" {
-					content = append(content, map[string]any{
-						"type": "text",
-						"text": part.Text,
-					})
-				}
-			case domain.PartToolCall:
-				if part.ToolCall == nil {
-					continue
-				}
-				var input any
-				if part.ToolCall.Function.Arguments != "" {
-					if err := json.Unmarshal([]byte(part.ToolCall.Function.Arguments), &input); err != nil {
-						input = map[string]any{}
-					}
-				} else {
-					input = map[string]any{}
-				}
-				content = append(content, map[string]any{
-					"type":  "tool_use",
-					"id":    part.ToolCall.ID,
-					"name":  part.ToolCall.Function.Name,
-					"input": input,
-				})
-			case domain.PartToolResult:
-				if part.ToolResult == nil || part.ToolResult.ToolCallID == "" {
-					continue
-				}
-				content = append(content, map[string]any{
-					"type":        "tool_result",
-					"tool_use_id": part.ToolResult.ToolCallID,
-					"content":     part.ToolResult.Content,
-				})
-			}
+		content, ok := contentFromLayout(turn)
+		if !ok {
+			content = contentFromParts(turn)
 		}
 
 		if len(content) == 0 {
@@ -159,7 +159,7 @@ func buildAnthropicRequest(req aiprovider.StreamRequest, model domain.Model) map
 		anthropicMsg := map[string]any{"role": string(turn.Role)}
 		// Simplify to plain string when there is exactly one text block.
 		if len(content) == 1 && content[0]["type"] == "text" {
-			anthropicMsg["content"] = turn.Text()
+			anthropicMsg["content"] = content[0]["text"]
 		} else {
 			anthropicMsg["content"] = content
 		}
@@ -169,8 +169,11 @@ func buildAnthropicRequest(req aiprovider.StreamRequest, model domain.Model) map
 	body := map[string]any{
 		"model":      req.Model,
 		"messages":   messages,
-		"max_tokens": maxTokens,
+		"max_tokens": maxTokensFor(req.Model),
 		"stream":     true,
+	}
+	if usesServerSideFallback(req.Model) {
+		body["fallbacks"] = "default"
 	}
 
 	if systemPrompt != "" {
@@ -200,6 +203,149 @@ func buildAnthropicRequest(req aiprovider.StreamRequest, model domain.Model) map
 	return body
 }
 
+// contentFromLayout rebuilds an assistant turn's content blocks in the order
+// the model produced them, using the layout the decoder recorded alongside the
+// thinking blocks. Models that bind thinking blocks to the conversation reject
+// or drop them when an earlier turn comes back reordered or merged. It reports
+// false when the turn has no layout or the layout no longer matches the turn.
+func contentFromLayout(turn domain.Turn) ([]map[string]any, bool) {
+	if turn.Role != domain.RoleAssistant {
+		return nil, false
+	}
+	state := turn.ThinkingState()
+	if len(state) == 0 {
+		return nil, false
+	}
+	var blocks []map[string]any
+	if err := json.Unmarshal(state, &blocks); err != nil || !hasLayoutRefs(blocks) {
+		return nil, false
+	}
+
+	toolCalls := make(map[string]domain.ToolCall)
+	for _, part := range turn.Parts {
+		if part.Kind == domain.PartToolCall && part.ToolCall != nil {
+			toolCalls[part.ToolCall.ID] = *part.ToolCall
+		}
+	}
+
+	remaining := turn.Text()
+	used := make(map[string]bool)
+	var content []map[string]any
+	for _, block := range blocks {
+		switch block["type"] {
+		case "thinking", "redacted_thinking":
+			content = append(content, block)
+		case layoutTextRefType:
+			n, ok := block["bytes"].(float64)
+			if !ok || n < 0 || int(n) > len(remaining) {
+				return nil, false
+			}
+			segment := remaining[:int(n)]
+			remaining = remaining[int(n):]
+			if segment != "" {
+				content = append(content, map[string]any{"type": "text", "text": segment})
+			}
+		case layoutToolUseRefType:
+			id, _ := block["id"].(string)
+			call, ok := toolCalls[id]
+			if !ok || used[id] {
+				// Tool calls that never got a result are removed from the
+				// turn before it is saved, so skip them here too.
+				continue
+			}
+			used[id] = true
+			content = append(content, map[string]any{
+				"type":  "tool_use",
+				"id":    call.ID,
+				"name":  call.Function.Name,
+				"input": rawToolInput(call.Function.Arguments),
+			})
+		default:
+			return nil, false
+		}
+	}
+	if remaining != "" || len(used) != len(toolCalls) {
+		return nil, false
+	}
+	return content, true
+}
+
+func hasLayoutRefs(blocks []map[string]any) bool {
+	for _, block := range blocks {
+		if block["type"] == layoutTextRefType || block["type"] == layoutToolUseRefType {
+			return true
+		}
+	}
+	return false
+}
+
+// rawToolInput keeps the model's own JSON bytes so key order survives replay.
+func rawToolInput(arguments string) any {
+	if arguments != "" && json.Valid([]byte(arguments)) {
+		return json.RawMessage(arguments)
+	}
+	return map[string]any{}
+}
+
+// contentFromParts builds content blocks from the turn's parts, with any
+// thinking blocks placed where the thinking part sits.
+func contentFromParts(turn domain.Turn) []map[string]any {
+	var content []map[string]any
+
+	for _, part := range turn.Parts {
+		switch part.Kind {
+		case domain.PartThinking:
+			// Re-inject prior thinking blocks verbatim for multi-turn continuity.
+			if part.Thinking != nil && len(part.Thinking.State) > 0 {
+				var blocks []map[string]any
+				if err := json.Unmarshal(part.Thinking.State, &blocks); err == nil {
+					for _, block := range blocks {
+						if block["type"] == "thinking" || block["type"] == "redacted_thinking" {
+							content = append(content, block)
+						}
+					}
+				}
+			}
+		case domain.PartText:
+			if part.Text != "" {
+				content = append(content, map[string]any{
+					"type": "text",
+					"text": part.Text,
+				})
+			}
+		case domain.PartToolCall:
+			if part.ToolCall == nil {
+				continue
+			}
+			var input any
+			if part.ToolCall.Function.Arguments != "" {
+				if err := json.Unmarshal([]byte(part.ToolCall.Function.Arguments), &input); err != nil {
+					input = map[string]any{}
+				}
+			} else {
+				input = map[string]any{}
+			}
+			content = append(content, map[string]any{
+				"type":  "tool_use",
+				"id":    part.ToolCall.ID,
+				"name":  part.ToolCall.Function.Name,
+				"input": input,
+			})
+		case domain.PartToolResult:
+			if part.ToolResult == nil || part.ToolResult.ToolCallID == "" {
+				continue
+			}
+			content = append(content, map[string]any{
+				"type":        "tool_result",
+				"tool_use_id": part.ToolResult.ToolCallID,
+				"content":     part.ToolResult.Content,
+			})
+		}
+	}
+
+	return content
+}
+
 func buildThinkingConfig(req aiprovider.StreamRequest, model domain.Model) map[string]any {
 	if !model.Thinking.Supported {
 		return nil
@@ -211,6 +357,17 @@ func buildThinkingConfig(req aiprovider.StreamRequest, model domain.Model) map[s
 		Thinking: req.Thinking,
 	}
 	if domain.ThinkingEnabledForRequest(model, request) {
+		if isClaude55(model.ID) {
+			// These models return empty thinking blocks by default, which would
+			// hide both their reasoning and the progress notes they now write
+			// between tool calls. If an earlier turn no longer matches what the
+			// model produced, drop the stale thinking rather than fail.
+			return map[string]any{
+				"type":          "adaptive",
+				"display":       "summarized",
+				"block_binding": map[string]any{"prefix_mismatch_behavior": "drop_block"},
+			}
+		}
 		if usesAdaptiveThinking(model.ID) {
 			return map[string]any{"type": "adaptive"}
 		}
@@ -221,6 +378,12 @@ func buildThinkingConfig(req aiprovider.StreamRequest, model domain.Model) map[s
 	}
 
 	if req.Thinking != nil && req.Thinking.Enabled != nil && !*req.Thinking.Enabled && model.Thinking.CanDisable {
+		if model.ID == "claude-sonnet-5-5" {
+			// `disabled` is rejected on Sonnet 5.5. `between_tools` is its
+			// lowest setting and is only valid at effort high or below, which
+			// holds because disabled requests never carry an effort.
+			return map[string]any{"type": "between_tools"}
+		}
 		return map[string]any{"type": "disabled"}
 	}
 
@@ -229,11 +392,39 @@ func buildThinkingConfig(req aiprovider.StreamRequest, model domain.Model) map[s
 
 func usesAdaptiveThinking(modelID string) bool {
 	switch modelID {
-	case "claude-opus-4-7", "claude-sonnet-4-6":
+	case "claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-4-7", "claude-sonnet-4-6":
 		return true
 	default:
 		return false
 	}
+}
+
+func isClaude55(modelID string) bool {
+	return modelID == "claude-opus-5-5" || modelID == "claude-sonnet-5-5"
+}
+
+func usesServerSideFallback(modelID string) bool {
+	return isClaude55(modelID)
+}
+
+func maxTokensFor(modelID string) int {
+	if isClaude55(modelID) {
+		return claude55MaxTokens
+	}
+	return maxTokens
+}
+
+func requestBetas(body map[string]any) []string {
+	var betas []string
+	if _, ok := body["fallbacks"]; ok {
+		betas = append(betas, serverSideFallbackBeta)
+	}
+	if thinking, ok := body["thinking"].(map[string]any); ok {
+		if _, ok := thinking["block_binding"]; ok {
+			betas = append(betas, thinkingBindingBeta)
+		}
+	}
+	return betas
 }
 
 func requestedEffort(model domain.Model, thinking *domain.ThinkingConfig) string {
@@ -243,7 +434,18 @@ func requestedEffort(model domain.Model, thinking *domain.ThinkingConfig) string
 	if thinking != nil && thinking.Effort != "" {
 		return thinking.Effort
 	}
-	if thinking != nil && thinking.Enabled != nil && *thinking.Enabled && model.Thinking.DefaultEffort != "" {
+	if model.Thinking.DefaultEffort == "" {
+		return ""
+	}
+	if thinking != nil && thinking.Enabled != nil {
+		if *thinking.Enabled {
+			return model.Thinking.DefaultEffort
+		}
+		return ""
+	}
+	// Models that think by default use the app's default effort rather than
+	// the API's, which differs per model.
+	if model.Thinking.EnabledByDefault {
 		return model.Thinking.DefaultEffort
 	}
 	return ""
