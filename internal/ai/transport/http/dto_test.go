@@ -169,6 +169,18 @@ func TestFromDomainTurns(t *testing.T) {
 	}
 }
 
+func TestFromDomainTurnsEncodesEmptyPartsAsArray(t *testing.T) {
+	dtos := FromDomainTurns([]domain.Turn{{Role: domain.RoleAssistant}})
+
+	encoded, err := json.Marshal(dtos)
+	if err != nil {
+		t.Fatalf("marshal turn DTOs: %v", err)
+	}
+	if got, want := string(encoded), `[{"role":"assistant","parts":[]}]`; got != want {
+		t.Fatalf("expected %s, got %s", want, got)
+	}
+}
+
 func TestFromClientEvent(t *testing.T) {
 	event := domain.ClientEvent{
 		TextDelta:      "hello",

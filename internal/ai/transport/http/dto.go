@@ -275,7 +275,9 @@ func toDomainPart(dto PartDTO) domain.Part {
 func FromDomainTurns(turns []domain.Turn) []TurnDTO {
 	dtos := make([]TurnDTO, 0, len(turns))
 	for _, turn := range turns {
-		dto := TurnDTO{Role: string(turn.Role)}
+		// A turn with no parts must still encode as an empty array, not null:
+		// the frontend iterates parts directly.
+		dto := TurnDTO{Role: string(turn.Role), Parts: make([]PartDTO, 0, len(turn.Parts))}
 		for _, part := range turn.Parts {
 			dto.Parts = append(dto.Parts, fromDomainPart(part))
 		}
