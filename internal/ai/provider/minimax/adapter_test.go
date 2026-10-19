@@ -25,7 +25,7 @@ func TestAdapterContract(t *testing.T) {
 		ExpectedProviderID:   "minimax",
 		ExpectedProviderName: "MiniMax",
 		ExpectedProtocol:     aiprovider.ProtocolOpenAIChat,
-		ExpectedModelIDs:     []string{"MiniMax-M3.1-Flash", "MiniMax-M3", "MiniMax-M2.7"},
+		ExpectedModelIDs:     []string{"MiniMax-M3.1-Flash", "MiniMax-M3"},
 		Request: aiprovider.StreamRequest{
 			Model: "MiniMax-M3",
 			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
@@ -44,13 +44,13 @@ func TestBuildChatRequest_UsesReasoningSplitAndReasoningDetails(t *testing.T) {
 		}
 	]`)
 
-	model, ok := domain.ModelByID(NewAdapter().Models(), "MiniMax-M2.7")
+	model, ok := domain.ModelByID(NewAdapter().Models(), "MiniMax-M3")
 	if !ok {
-		t.Fatal("expected MiniMax-M2.7 model")
+		t.Fatal("expected MiniMax-M3 model")
 	}
 
 	req := aiprovider.StreamRequest{
-		Model: "MiniMax-M2.7",
+		Model: "MiniMax-M3",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleUser, "Check the repo."),
 			{
@@ -82,9 +82,6 @@ func TestBuildChatRequest_UsesReasoningSplitAndReasoningDetails(t *testing.T) {
 
 	if !body.ReasoningSplit {
 		t.Fatal("expected reasoning_split to be enabled for MiniMax")
-	}
-	if body.Thinking != nil {
-		t.Fatalf("expected MiniMax M2.7 to omit thinking configuration, got %+v", body.Thinking)
 	}
 	if len(body.Messages) != 3 {
 		t.Fatalf("expected 3 messages, got %d", len(body.Messages))

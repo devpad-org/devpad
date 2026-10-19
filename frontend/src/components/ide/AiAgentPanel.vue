@@ -4,6 +4,7 @@ import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep,
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
+import { useAiModelStore } from '@/stores/aiModels'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
@@ -85,6 +86,7 @@ interface SlashCommand {
 const conversationStore = useConversationStore()
 const agentRunStore = useAgentRunStore()
 const aiAgentStore = useAiAgentStore()
+const aiModelStore = useAiModelStore()
 const DEFAULT_AI_MODEL_ID = 'mistral-medium-3-5'
 const slashCommands: SlashCommand[] = [
   {
@@ -110,7 +112,7 @@ const rawMessages = ref<ChatMessage[]>([])
 
 const inputValue = ref('')
 const chatBody = ref<HTMLElement | null>(null)
-const models = ref<AIModel[]>([])
+const models = computed(() => aiModelStore.models)
 const selectedModel = ref('')
 const thinkingPreferences = ref<Record<string, boolean>>({})
 const thinkingEffortPreferences = ref<Record<string, string>>({})
@@ -309,15 +311,10 @@ function handleAgentSelectorChange(event: Event) {
 }
 
 onMounted(async () => {
-  try {
-    const res = await aiApi.listModels()
-    models.value = res.models.filter((m) => m.configured)
-    const defaultModel = defaultAIModel(models.value)
-    if (defaultModel) {
-      selectedModel.value = defaultModel.id
-    }
-  } catch {
-    // models will remain empty
+  await aiModelStore.fetchModels()
+  const defaultModel = defaultAIModel(models.value)
+  if (defaultModel) {
+    selectedModel.value = defaultModel.id
   }
   // Fetch conversation metadata for internal thread tracking (non-blocking).
   conversationStore.fetchConversations(props.workspaceId)
@@ -1497,7 +1494,14 @@ function scrollToBottom(options: { force?: boolean } = {}) {
     <div ref="chatBody" class="agent-body" @scroll="handleChatScroll">
       <div v-if="viewingFocusedRun" class="run-focus-banner">
         <span class="run-focus-label">Focused background run</span>
-        <span v-if="focusedRun?.model" class="run-focus-meta">{{ focusedRun.model }}</span>
+        <span v-if="focusedRun?.model" class="run-focus-meta">
+          {{ focusedRun.model }}
+          <span
+            v-if="!aiModelStore.isModelAvailable(focusedRun.model)"
+            class="model-unavailable"
+            title="This model is no longer available."
+          >(unavailable)</span>
+        </span>
       </div>
       <div v-if="focusedRunError" class="run-focus-error">
         {{ focusedRunError }}
@@ -2067,6 +2071,11 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   font-size: 0.7rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.model-unavailable {
+  color: var(--accent-amber);
+  font-family: var(--font-sans);
 }
 
 .run-focus-error {

@@ -11,7 +11,6 @@ const (
 	openAIReasoningInputTokens      = 1050000
 	long256KInputBudgetTokens       = 256000
 	minimaxM3InputBudgetTokens      = 1000000
-	minimaxM27InputBudgetTokens     = 204800
 	moonshotK3InputBudgetTokens     = 1000000
 )
 
@@ -101,9 +100,6 @@ func minimaxInputBudget(model string) int {
 	if strings.Contains(model, "m3") {
 		return minimaxM3InputBudgetTokens
 	}
-	if strings.Contains(model, "m2.7") {
-		return minimaxM27InputBudgetTokens
-	}
 	return 128000
 }
 
@@ -137,8 +133,6 @@ func knownModelInputBudget(model string) (int, bool) {
 	case "minimax-m3",
 		"minimax-m3.1-flash":
 		return minimaxM3InputBudgetTokens, true
-	case "minimax-m2.7":
-		return minimaxM27InputBudgetTokens, true
 	default:
 		return 0, false
 	}

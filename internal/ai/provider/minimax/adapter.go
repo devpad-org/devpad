@@ -20,8 +20,7 @@ const (
 	providerName = "MiniMax"
 	baseURL      = "https://api.minimax.io/v1"
 
-	minimaxM3ModelID  = "MiniMax-M3"
-	minimaxM27ModelID = "MiniMax-M2.7"
+	minimaxM3ModelID = "MiniMax-M3"
 
 	// M3.1 Flash always reasons, takes a top-level reasoning_effort, and
 	// returns its thinking as reasoning_content instead of reasoning_details.
@@ -103,16 +102,6 @@ func (a *Adapter) Models() []domain.Model {
 				Supported:        true,
 				EnabledByDefault: true,
 				CanDisable:       true,
-			},
-		},
-		{
-			ID:         minimaxM27ModelID,
-			Name:       "MiniMax M2.7",
-			ProviderID: providerID,
-			Thinking: domain.ThinkingCapability{
-				Supported:        true,
-				EnabledByDefault: true,
-				CanDisable:       false,
 			},
 		},
 	}

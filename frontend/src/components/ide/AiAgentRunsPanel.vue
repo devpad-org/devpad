@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { type AgentRun, useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
+import { useAiModelStore } from '@/stores/aiModels'
 
 const treeStepPx = 18
 const treeNodeSizePx = 14
@@ -23,6 +24,7 @@ interface RunListItem {
 }
 
 const runStore = useAgentRunStore()
+const modelStore = useAiModelStore()
 let refreshTimer: number | null = null
 
 const workspaceRuns = computed(() =>
@@ -165,7 +167,10 @@ watch(activeCount, (count, prevCount) => {
   }
 })
 
-onMounted(startRefreshTimer)
+onMounted(() => {
+  if (!modelStore.loaded) void modelStore.fetchModels()
+  startRefreshTimer()
+})
 onUnmounted(stopRefreshTimer)
 </script>
 
@@ -236,6 +241,11 @@ onUnmounted(stopRefreshTimer)
           <span class="run-title">{{ formatRunTitle(item.run) }}</span>
           <span class="run-meta">
             <span>{{ item.run.model }}</span>
+            <span
+              v-if="!modelStore.isModelAvailable(item.run.model)"
+              class="model-unavailable"
+              title="This model is no longer available."
+            >(unavailable)</span>
             <span class="run-meta-sep">&middot;</span>
             <span>{{ formatRelativeTime(item.run.updatedAt) }}</span>
           </span>
@@ -522,6 +532,11 @@ onUnmounted(stopRefreshTimer)
 }
 
 .run-meta-sep { color: var(--text-dim); }
+
+.model-unavailable {
+  flex-shrink: 0;
+  color: var(--accent-amber);
+}
 
 .run-error {
   overflow: hidden;
