@@ -10,6 +10,7 @@ import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
 import AiMessageCopyButton from '@/components/ide/AiMessageCopyButton.vue'
 import AiQuestionCard from '@/components/ide/AiQuestionCard.vue'
+import ComposerSelect, { type ComposerSelectOption } from '@/components/ide/ComposerSelect.vue'
 import {
   hasToolResult,
   planStepsFromToolArgs,
@@ -182,6 +183,18 @@ const canSelectThinkingEffort = computed(() => {
   return Boolean(model?.thinking.supported && (model.thinking.supportedEfforts?.length ?? 0) > 0)
 })
 
+const agentOptions = computed<ComposerSelectOption[]>(() =>
+  aiAgentStore.agents.map((agent) => ({ value: agent.id, label: agent.name, description: agent.purpose || undefined })),
+)
+
+const modelOptions = computed<ComposerSelectOption[]>(() =>
+  models.value.map((model) => ({ value: model.id, label: model.name, description: model.providerName })),
+)
+
+const thinkingEffortOptions = computed<ComposerSelectOption[]>(() =>
+  (currentModel.value?.thinking.supportedEfforts ?? []).map((effort) => ({ value: effort, label: thinkingEffortLabel(effort) })),
+)
+
 const thinkingEnabled = computed(() => {
   const model = currentModel.value
   if (!model?.thinking.supported) {
@@ -304,8 +317,7 @@ function thinkingEffortLabel(effort: string): string {
   }
 }
 
-function handleAgentSelectorChange(event: Event) {
-  const agentId = (event.target as HTMLSelectElement).value
+function selectAgent(agentId: string) {
   aiAgentStore.setSelectedAgent(agentId)
   emit('select-agent', agentId)
 }
@@ -1733,19 +1745,19 @@ function scrollToBottom(options: { force?: boolean } = {}) {
         </div>
         <div class="input-toolbar">
           <template v-if="models.length > 0">
-            <select
-              :value="props.selectedAgentId"
-              class="model-selector agent-selector"
-              title="Select AI agent"
-              @change="handleAgentSelectorChange"
-            >
-              <option v-for="agent in aiAgentStore.agents" :key="agent.id" :value="agent.id">
-                {{ agent.name }}
-              </option>
-            </select>
-            <select v-model="selectedModel" class="model-selector">
-              <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
-            </select>
+            <ComposerSelect
+              class="toolbar-select toolbar-select--agent"
+              :model-value="props.selectedAgentId"
+              :options="agentOptions"
+              title="Agent"
+              @update:model-value="selectAgent"
+            />
+            <ComposerSelect
+              v-model="selectedModel"
+              class="toolbar-select toolbar-select--model"
+              :options="modelOptions"
+              title="Model"
+            />
             <button
               v-if="canToggleThinking"
               type="button"
@@ -1758,16 +1770,14 @@ function scrollToBottom(options: { force?: boolean } = {}) {
               <span class="thinking-toggle-label">Thinking</span>
               <span class="thinking-toggle-state">{{ thinkingEnabled ? 'On' : 'Off' }}</span>
             </button>
-            <select
+            <ComposerSelect
               v-if="canSelectThinkingEffort && thinkingEnabled"
               v-model="thinkingEffort"
-              class="model-selector thinking-effort-selector"
-              title="Select reasoning level"
-            >
-              <option v-for="effort in currentModel?.thinking.supportedEfforts ?? []" :key="effort" :value="effort">
-                {{ thinkingEffortLabel(effort) }}
-              </option>
-            </select>
+              class="toolbar-select toolbar-select--effort"
+              :options="thinkingEffortOptions"
+              title="Reasoning effort"
+              prefix="Effort"
+            />
           </template>
           <span v-else class="agent-badge">No Models</span>
         </div>
@@ -1945,34 +1955,18 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   border-color: var(--accent-border);
 }
 
-.model-selector {
-  font-size: 0.75rem;
-  min-height: 23px;
-  padding: 2px 26px 2px 8px;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--bg-raised) 70%, var(--bg-elevated));
-  border: 0.5px solid var(--border-default);
-  color: var(--text-secondary);
-  outline: none;
-  cursor: pointer;
-  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
-}
-
-.thinking-effort-selector {
-  min-width: 126px;
-}
-
-.model-selector:focus {
-  border-color: var(--accent-border);
-  color: var(--text-primary);
+.toolbar-select--agent,
+.toolbar-select--model {
+  max-width: 14rem;
 }
 
 .thinking-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 23px;
+  min-height: 24px;
   padding: 2px 8px;
+  line-height: 1.3;
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--bg-raised) 70%, var(--bg-elevated));
   border: 0.5px solid var(--border-default);
@@ -2810,6 +2804,84 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 @media (hover: none) {
   .msg-copy-btn {
     opacity: 1;
+  }
+}
+
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts. The textarea stays at the
+   global 16px touch size (anything smaller makes iOS zoom on focus), so the
+   rest of the composer is tightened around it. */
+@media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  .agent-input-area {
+    padding: var(--space-2);
+  }
+
+  .input-container {
+    gap: var(--space-2);
+    min-height: 0;
+    padding: 8px 8px 8px 14px;
+  }
+
+  .agent-input {
+    line-height: 1.375;
+    min-height: 36px;
+    padding: 7px 0;
+  }
+
+  .agent-send {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-lg);
+  }
+
+  .agent-send svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  /* One swipeable row of chips instead of wrapping onto several lines. */
+  .input-toolbar {
+    flex-wrap: nowrap;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 6px 8px;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+  }
+
+  .input-toolbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .input-toolbar > * {
+    flex-shrink: 0;
+  }
+
+  .toolbar-select--agent,
+  .toolbar-select--model {
+    flex-shrink: 1;
+    min-width: 5.5rem;
+    max-width: 11rem;
+  }
+
+  .thinking-toggle {
+    min-height: 30px;
+    padding: 4px 10px;
+    border-radius: var(--radius-lg);
+    font-size: 0.86rem;
+  }
+
+  .thinking-toggle-state {
+    font-size: 0.78rem;
+  }
+
+  .slash-command-option {
+    min-height: 44px;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .slash-command-name,
+  .slash-command-description {
+    font-size: 0.9rem;
   }
 }
 </style>
