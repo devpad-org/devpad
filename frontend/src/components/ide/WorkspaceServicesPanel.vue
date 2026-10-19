@@ -262,7 +262,7 @@ onUnmounted(() => {
 
 .services-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
   gap: var(--space-4);
   padding: var(--space-6);
 }

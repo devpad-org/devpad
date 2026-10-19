@@ -647,6 +647,7 @@ function openRegenerateConfirm() {
 
 .mfa-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: var(--space-2);
 }
@@ -783,7 +784,18 @@ function openRegenerateConfirm() {
 
 .ssh-key-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 
+
+@media (max-width: 768px) {
+  .settings-page {
+    padding: var(--space-4) var(--space-3);
+  }
+
+  .settings-section {
+    padding: var(--space-4);
+  }
+}
 </style>

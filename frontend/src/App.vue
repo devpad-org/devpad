@@ -112,4 +112,31 @@ async function handleLogout() {
   flex: 1;
   overflow: auto;
 }
+
+@media (max-width: 768px) {
+  .app-header {
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .header-left {
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  .nav-link,
+  .btn-logout {
+    padding: var(--space-2) var(--space-3);
+  }
+}
+
+@media (max-width: 480px) {
+  .header-username {
+    display: none;
+  }
+
+  .nav-link {
+    padding: var(--space-2);
+  }
+}
 </style>

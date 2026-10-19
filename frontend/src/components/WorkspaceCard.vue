@@ -308,6 +308,8 @@ function formatDate(dateStr: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
   padding-top: var(--space-3);
   border-top: 0.5px solid var(--border-default);
 }

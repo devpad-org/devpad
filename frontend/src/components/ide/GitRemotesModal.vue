@@ -784,4 +784,20 @@ async function saveRename(oldName: string) {
 .remotes-modal-leave-to .modal {
   transform: scale(0.95);
 }
+
+@media (hover: none) {
+  .remote-actions {
+    opacity: 1;
+  }
+}
+
+/* Keep the modal off the screen edges and scrollable on short viewports. */
+.modal-overlay {
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.modal {
+  margin: auto;
+}
 </style>

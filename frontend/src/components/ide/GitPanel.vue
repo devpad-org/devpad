@@ -1506,4 +1506,10 @@ onUnmounted(() => {
   font-size: 0.75rem;
   color: var(--accent-rose);
 }
+
+@media (hover: none) {
+  .git-file-actions {
+    opacity: 1;
+  }
+}
 </style>

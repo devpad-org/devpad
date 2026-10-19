@@ -107,5 +107,11 @@ async function copyValue(): Promise<void> {
   color: var(--accent-rose);
   opacity: 1;
 }
+
+@media (hover: none) {
+  .service-copy-btn {
+    opacity: 1;
+  }
+}
 </style>
 

@@ -1,6 +1,7 @@
 import { ref, shallowRef, reactive, computed, onBeforeUnmount, watch, type Ref } from 'vue'
 import type * as MonacoType from 'monaco-editor'
 import { gruvboxMonacoTheme } from '@/theme/gruvbox'
+import { isMobileViewport } from '@/composables/useMediaQuery'
 
 let monaco: typeof MonacoType | null = null
 let monacoPromise: Promise<typeof MonacoType> | null = null
@@ -122,7 +123,7 @@ export function useMonacoEditor(
       readOnly: options?.readOnly ?? false,
       automaticLayout: true,
       minimap: {
-        enabled: true,
+        enabled: !isMobileViewport(),
         scale: 1,
         showSlider: 'mouseover',
         renderCharacters: false,

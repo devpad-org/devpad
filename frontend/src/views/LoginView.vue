@@ -100,12 +100,13 @@ async function handleSubmit() {
 <style scoped>
 .login-page {
   display: flex;
-  align-items: center;
   justify-content: center;
-  height: 100%;
+  min-height: 100%;
+  padding: var(--space-4);
 }
 
 .login-form {
+  margin: auto 0;
   width: 100%;
   max-width: 380px;
   padding: var(--space-8);
@@ -217,5 +218,11 @@ async function handleSubmit() {
   margin-top: var(--space-1);
   font-size: 0.75rem;
   color: var(--text-muted);
+}
+
+@media (max-width: 480px) {
+  .login-form {
+    padding: var(--space-6) var(--space-4);
+  }
 }
 </style>

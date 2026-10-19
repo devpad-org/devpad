@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { workspaceApi, type Workspace } from '@/api/workspaces'
 import FileExplorer from '@/components/ide/FileExplorer.vue'
@@ -19,6 +19,7 @@ import ServiceCatalogPanel from '@/components/ide/ServiceCatalogPanel.vue'
 import WorkspaceServicesPanel from '@/components/ide/WorkspaceServicesPanel.vue'
 import { useServiceStore } from '@/stores/services'
 import { useResizable } from '@/composables/useResizable'
+import { useIsMobile, isMobileViewport } from '@/composables/useMediaQuery'
 import type { GitCommit, GitCommitFile } from '@/api/git'
 import type { AgentRun } from '@/api/ai'
 
@@ -52,6 +53,46 @@ type GitDiffRequest =
 type ActivityTab = 'ai' | 'explorer' | 'git' | 'info' | 'services'
 const activeActivity = ref<ActivityTab>('ai')
 const serviceCount = computed(() => serviceStore.services.length)
+
+// On narrow screens the side panels become slide-over drawers and the activity
+// bar moves to the bottom, leaving the primary surface the full width.
+const isMobile = useIsMobile()
+const mobileSidebarOpen = ref(false)
+const mobileRunsOpen = ref(false)
+
+watch(isMobile, (mobile) => {
+  if (!mobile) closeMobilePanels()
+})
+
+function closeMobilePanels() {
+  mobileSidebarOpen.value = false
+  mobileRunsOpen.value = false
+}
+
+function selectActivity(tab: ActivityTab) {
+  if (!isMobile.value) {
+    activeActivity.value = tab
+    return
+  }
+  mobileRunsOpen.value = false
+  if (activeActivity.value === tab) {
+    mobileSidebarOpen.value = !mobileSidebarOpen.value
+    return
+  }
+  activeActivity.value = tab
+  // The explorer surface is empty until a file is chosen, so lead with the tree.
+  mobileSidebarOpen.value = tab === 'explorer' && !activeFile.value
+}
+
+function toggleMobileSidebar() {
+  mobileRunsOpen.value = false
+  mobileSidebarOpen.value = !mobileSidebarOpen.value
+}
+
+function toggleMobileRuns() {
+  mobileSidebarOpen.value = false
+  mobileRunsOpen.value = !mobileRunsOpen.value
+}
 
 const sidebar = useResizable({
   direction: 'horizontal',
@@ -104,6 +145,7 @@ function handleGlobalKeydown(e: KeyboardEvent) {
 
 onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
+  if (isMobileViewport()) terminalMinimized.value = true
 
   const id = Number(route.params.id)
   if (isNaN(id)) {
@@ -133,6 +175,7 @@ onUnmounted(() => {
 
 function handleFileSelect(path: string) {
   activeFile.value = path
+  mobileSidebarOpen.value = false
 }
 
 function handleGitCommitSelect(commit: GitCommit) {
@@ -142,6 +185,7 @@ function handleGitCommitSelect(commit: GitCommit) {
 
 function handleGitCommitFileSelect(payload: { commit: GitCommit; file: GitCommitFile }) {
   selectedGitCommit.value = payload.commit
+  mobileSidebarOpen.value = false
   gitDiffRequest.value = {
     kind: 'commit',
     ...payload,
@@ -151,6 +195,7 @@ function handleGitCommitFileSelect(payload: { commit: GitCommit; file: GitCommit
 
 function handleGitWorkingFileSelect(payload: { path: string; staged: boolean }) {
   selectedGitCommit.value = null
+  mobileSidebarOpen.value = false
   gitDiffRequest.value = {
     kind: 'working',
     ...payload,
@@ -161,11 +206,13 @@ function handleGitWorkingFileSelect(payload: { path: string; staged: boolean }) 
 function handleAgentRunFocus(run: AgentRun) {
   focusedAgentRunId.value = run.id
   activeActivity.value = 'ai'
+  closeMobilePanels()
 }
 
 function handleAgentSelect(agentId: string) {
   selectedAgentId.value = agentId
   focusedAgentRunId.value = null
+  mobileSidebarOpen.value = false
 }
 
 async function handleDefaultAgentSet(agentId: string) {
@@ -238,6 +285,14 @@ async function openPreviewNewTab(port: number) {
   }
 }
 
+function openGitPanel() {
+  activeActivity.value = 'git'
+  if (isMobile.value) {
+    mobileRunsOpen.value = false
+    mobileSidebarOpen.value = true
+  }
+}
+
 function handleBack() {
   router.push({ name: 'home' })
 }
@@ -252,7 +307,7 @@ function handleBack() {
     <p>{{ error }}</p>
     <button class="ide-back-btn" @click="handleBack">Back to Workspaces</button>
   </div>
-  <div v-else class="ide-layout">
+  <div v-else class="ide-layout" :class="{ 'is-mobile': isMobile }">
     <!--
       IDE panel IDs:
       - ide-toolbar: top toolbar/title bar
@@ -269,10 +324,24 @@ function handleBack() {
           <path d="m15 18-6-6 6-6" />
         </svg>
       </button>
+      <button
+        v-if="isMobile"
+        class="titlebar-toggle"
+        :class="{ active: mobileSidebarOpen }"
+        @click="toggleMobileSidebar"
+        title="Toggle side panel"
+        aria-label="Toggle side panel"
+        :aria-expanded="mobileSidebarOpen"
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect width="18" height="18" x="3" y="3" rx="2" />
+          <path d="M9 3v18" />
+        </svg>
+      </button>
       <span class="titlebar-name">{{ workspace?.name }}</span>
-      <span class="titlebar-status" :class="`status-${workspace?.status}`">
+      <span class="titlebar-status" :class="`status-${workspace?.status}`" :title="workspace?.status">
         <span class="status-dot" />
-        {{ workspace?.status }}
+        <span class="titlebar-status-text">{{ workspace?.status }}</span>
       </span>
       <div class="titlebar-actions">
         <button
@@ -327,6 +396,19 @@ function handleBack() {
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
           </svg>
         </button>
+        <button
+          v-if="isMobile"
+          class="titlebar-toggle"
+          :class="{ active: mobileRunsOpen }"
+          @click="toggleMobileRuns"
+          title="Agent runs"
+          aria-label="Agent runs"
+          :aria-expanded="mobileRunsOpen"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12h4l3-9 4 18 3-9h4" />
+          </svg>
+        </button>
       </div>
     </div>
 
@@ -336,7 +418,7 @@ function handleBack() {
         <button
           class="activity-btn activity-btn--ai"
           :class="{ active: activeActivity === 'ai' }"
-          @click="activeActivity = 'ai'"
+          @click="selectActivity('ai')"
           title="AI"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -350,7 +432,7 @@ function handleBack() {
         <button
           class="activity-btn activity-btn--explorer"
           :class="{ active: activeActivity === 'explorer' }"
-          @click="activeActivity = 'explorer'"
+          @click="selectActivity('explorer')"
           title="Explorer"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -360,7 +442,7 @@ function handleBack() {
         <button
           class="activity-btn activity-btn--git"
           :class="{ active: activeActivity === 'git' }"
-          @click="activeActivity = 'git'"
+          @click="selectActivity('git')"
           title="Source Control"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -372,7 +454,7 @@ function handleBack() {
         <button
           class="activity-btn activity-btn--info"
           :class="{ active: activeActivity === 'info' }"
-          @click="activeActivity = 'info'"
+          @click="selectActivity('info')"
           title="Workspace Info"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -384,7 +466,7 @@ function handleBack() {
         <button
           class="activity-btn activity-btn--services"
           :class="{ active: activeActivity === 'services' }"
-          @click="activeActivity = 'services'"
+          @click="selectActivity('services')"
           :title="serviceCount > 0 ? `Database Services (${serviceCount})` : 'Database Services'"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -402,11 +484,19 @@ function handleBack() {
         </button>
       </nav>
 
+      <div
+        v-if="isMobile && (mobileSidebarOpen || mobileRunsOpen)"
+        class="mobile-backdrop"
+        aria-hidden="true"
+        @click="closeMobilePanels"
+      />
+
       <aside
         id="ide-left-panel"
         class="ide-sidebar"
+        :class="{ open: mobileSidebarOpen }"
         aria-label="Left side panel"
-        :style="{ width: sidebar.size.value + 'px' }"
+        :style="isMobile ? undefined : { width: sidebar.size.value + 'px' }"
       >
         <AiAgentsPanel
           v-show="activeActivity === 'ai'"
@@ -516,7 +606,7 @@ function handleBack() {
             :class="{ active: preview.isDragging.value }"
             @pointerdown="preview.onPointerDown"
           />
-          <aside class="ide-preview" :style="{ width: preview.size.value + 'px' }">
+          <aside class="ide-preview" :style="isMobile ? undefined : { width: preview.size.value + 'px' }">
             <PreviewPanel
               :workspace-id="workspace?.id ?? 0"
               @close="previewVisible = false"
@@ -529,7 +619,12 @@ function handleBack() {
           :class="{ active: aiSidePanel.isDragging.value }"
           @pointerdown="aiSidePanel.onPointerDown"
         />
-        <aside class="ide-ai-side-panel" :style="{ width: aiSidePanel.size.value + 'px' }" aria-label="AI agent runs">
+        <aside
+          class="ide-ai-side-panel"
+          :class="{ open: mobileRunsOpen }"
+          :style="isMobile ? undefined : { width: aiSidePanel.size.value + 'px' }"
+          aria-label="AI agent runs"
+        >
           <AiAgentRunsPanel
             :workspace-id="workspace?.id ?? 0"
             :selected-run-id="focusedAgentRunId"
@@ -540,7 +635,7 @@ function handleBack() {
     </div>
     <GitStatusBar
       :workspace-id="workspace?.id ?? 0"
-      @open-git="activeActivity = 'git'"
+      @open-git="openGitPanel"
     />
     <PreviewNewTabModal
       :show="previewModalVisible"
@@ -639,12 +734,17 @@ function handleBack() {
 }
 
 .titlebar-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .titlebar-status {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -671,6 +771,7 @@ function handleBack() {
 }
 
 .titlebar-actions {
+  flex-shrink: 0;
   margin-left: auto;
   display: flex;
   align-items: center;
@@ -889,6 +990,7 @@ function handleBack() {
 /* Resize handles */
 .resize-handle {
   flex-shrink: 0;
+  touch-action: none;
   position: relative;
   z-index: 10;
 }
@@ -937,5 +1039,119 @@ function handleBack() {
 
 .resize-handle.active {
   background: var(--accent-blue);
+}
+
+/* Mobile layout: bottom activity bar, slide-over side panels, full-screen preview */
+.mobile-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: var(--bg-overlay);
+}
+
+.is-mobile .ide-titlebar {
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  min-height: 44px;
+}
+
+.is-mobile .titlebar-back,
+.is-mobile .titlebar-btn,
+.is-mobile .titlebar-toggle {
+  width: 36px;
+  height: 36px;
+}
+
+.is-mobile .titlebar-actions {
+  gap: 0;
+}
+
+.is-mobile .titlebar-status-text {
+  display: none;
+}
+
+.is-mobile .ide-body {
+  position: relative;
+  flex-direction: column;
+}
+
+.is-mobile .activity-bar {
+  order: 1;
+  flex-direction: row;
+  justify-content: space-around;
+  width: 100%;
+  height: 52px;
+  padding: 0 var(--space-1);
+  border-right: none;
+  border-top: 0.5px solid var(--border-default);
+}
+
+.is-mobile .activity-btn {
+  flex: 1;
+  max-width: 72px;
+  height: 44px;
+}
+
+.is-mobile .activity-btn.active::before {
+  left: 25%;
+  right: 25%;
+  top: -4px;
+  bottom: auto;
+  width: auto;
+  height: 2px;
+}
+
+.is-mobile .resize-handle--horizontal {
+  display: none;
+}
+
+.is-mobile .resize-handle--vertical::after {
+  top: -10px;
+  height: 21px;
+}
+
+.is-mobile .ide-terminal-area:not(.minimized) {
+  max-height: 50dvh;
+}
+
+.is-mobile .ide-sidebar,
+.is-mobile .ide-ai-side-panel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 50;
+  width: min(88vw, 380px);
+  box-shadow: var(--shadow-strong);
+  visibility: hidden;
+  transition: transform var(--transition-normal), visibility 0s linear 200ms;
+}
+
+.is-mobile .ide-sidebar {
+  left: 0;
+  transform: translateX(-100%);
+  border-right: 0.5px solid var(--border-default);
+}
+
+.is-mobile .ide-ai-side-panel {
+  right: 0;
+  transform: translateX(100%);
+  border-left: 0.5px solid var(--border-default);
+}
+
+.is-mobile .ide-sidebar.open,
+.is-mobile .ide-ai-side-panel.open {
+  transform: none;
+  visibility: visible;
+  transition: transform var(--transition-normal), visibility 0s;
+}
+
+.is-mobile .ide-right-panel {
+  display: contents;
+}
+
+.is-mobile .ide-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
 }
 </style>

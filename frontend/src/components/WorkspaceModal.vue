@@ -199,4 +199,14 @@ function handleSubmit() {
 .btn-primary:hover {
   background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
 }
+
+/* Keep the modal off the screen edges and scrollable on short viewports. */
+.modal-overlay {
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.modal {
+  margin: auto;
+}
 </style>

@@ -595,6 +595,8 @@ function isSelf(user: AdminUser): boolean {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
   margin-bottom: var(--space-6);
 }
 
@@ -648,7 +650,7 @@ function isSelf(user: AdminUser): boolean {
   background: var(--bg-surface);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 .users-table {
@@ -975,6 +977,8 @@ function isSelf(user: AdminUser): boolean {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 .toggle-label {
@@ -1075,5 +1079,27 @@ function isSelf(user: AdminUser): boolean {
   outline: none;
   border-color: var(--accent-border);
   box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+/* Keep the modal off the screen edges and scrollable on short viewports. */
+.modal-overlay {
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.modal {
+  margin: auto;
+}
+
+@media (max-width: 768px) {
+  .admin-page {
+    padding: var(--space-4) var(--space-3);
+  }
+
+  .users-table th,
+  .users-table td {
+    padding: var(--space-2) var(--space-3);
+    white-space: nowrap;
+  }
 }
 </style>

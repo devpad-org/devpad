@@ -1785,6 +1785,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-2);
   padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
   background: var(--ide-header-bg);
@@ -1796,6 +1797,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .agent-avatar {
@@ -1808,6 +1810,9 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 }
 
 .agent-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--ide-header-title-size);
   font-weight: 600;
   color: var(--text-primary);
@@ -1815,6 +1820,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 
 .agent-header-actions {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: var(--space-2, 8px);
 }
@@ -2789,6 +2795,12 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (hover: none) {
+  .msg-copy-btn {
+    opacity: 1;
   }
 }
 </style>

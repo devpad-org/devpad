@@ -108,12 +108,13 @@ async function handleSubmit() {
 <style scoped>
 .setup-page {
   display: flex;
-  align-items: center;
   justify-content: center;
-  height: 100%;
+  min-height: 100%;
+  padding: var(--space-4);
 }
 
 .setup-form {
+  margin: auto 0;
   width: 100%;
   max-width: 420px;
   padding: var(--space-8);
@@ -209,5 +210,11 @@ async function handleSubmit() {
 .btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+@media (max-width: 480px) {
+  .setup-form {
+    padding: var(--space-6) var(--space-4);
+  }
 }
 </style>
