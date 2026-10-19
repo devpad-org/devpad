@@ -568,11 +568,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
 }
 
 .header-btn.spinning svg {
-  animation: spin-refresh 0.6s linear infinite;
-}
-
-@keyframes spin-refresh {
-  to { transform: rotate(360deg); }
+  animation: spin 0.6s linear infinite;
 }
 
 .tree-item {

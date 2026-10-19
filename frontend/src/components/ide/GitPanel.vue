@@ -976,10 +976,6 @@ onUnmounted(() => {
   color: var(--accent-rose) !important;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 .spinning {
   animation: spin 0.8s linear infinite;
 }

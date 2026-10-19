@@ -196,12 +196,6 @@ const emit = defineEmits<{
   animation: spin 0.6s linear infinite;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* Transition */
 .confirm-modal-enter-active,
 .confirm-modal-leave-active {

@@ -397,10 +397,6 @@ function formatDate(dateStr: string) {
   animation: spin 1s linear infinite;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 /* Divider between primary and secondary actions */
 .action-divider {
   width: 1px;
@@ -470,11 +466,7 @@ function formatDate(dateStr: string) {
 }
 
 .badge-spinner {
-  animation: badge-spin 1s linear infinite;
+  animation: spin 1s linear infinite;
   color: var(--accent-amber);
-}
-
-@keyframes badge-spin {
-  to { transform: rotate(360deg); }
 }
 </style>

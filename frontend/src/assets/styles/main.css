@@ -203,6 +203,11 @@ pre {
   background: var(--text-muted);
 }
 
+/* Shared spinner rotation; components reference it as `animation: spin ...`. */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 /*
  * Shared modal overlay. Auto margins center the dialog when it fits and let the
  * overlay scroll from the top when it doesn't (e.g. a short phone viewport).

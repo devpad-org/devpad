@@ -208,12 +208,6 @@ const emit = defineEmits<{
   animation: spin 0.6s linear infinite;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .ssh-key-modal-enter-active,
 .ssh-key-modal-leave-active {
   transition: opacity var(--transition-fast);

@@ -2797,12 +2797,6 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   font-style: italic;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 @media (hover: none) {
   .msg-copy-btn {
     opacity: 1;

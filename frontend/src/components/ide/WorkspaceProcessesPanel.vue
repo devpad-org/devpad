@@ -307,10 +307,6 @@ onUnmounted(stopPolling)
   animation: spin 0.8s linear infinite;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 .process-table-wrap {
   flex: 1;
   min-height: 0;

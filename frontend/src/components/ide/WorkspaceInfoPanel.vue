@@ -222,10 +222,6 @@ onUnmounted(() => {
   animation: spin 0.8s linear infinite;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 .info-error {
   padding: var(--space-3);
   color: var(--accent-rose);

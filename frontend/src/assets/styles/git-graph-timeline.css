@@ -149,10 +149,6 @@
   max-width: 420px;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 /* Ghost / uncommitted working-tree row */
 .commit-row--ghost {
   pointer-events: none;

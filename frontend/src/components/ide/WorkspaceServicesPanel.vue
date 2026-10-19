@@ -266,8 +266,4 @@ onUnmounted(() => {
   gap: var(--space-4);
   padding: var(--space-6);
 }
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
 </style>
