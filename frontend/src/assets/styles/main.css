@@ -60,6 +60,7 @@
   --success: var(--gruvbox-green);
   --warning: var(--gruvbox-yellow);
   --error: var(--gruvbox-red);
+  --attention: var(--gruvbox-orange);
 
   /* Semantic tints — for filled backgrounds and borders */
   --error-bg: rgba(251, 73, 52, 0.12);
@@ -68,6 +69,8 @@
   --success-border: rgba(184, 187, 38, 0.28);
   --warning-bg: rgba(250, 189, 47, 0.12);
   --warning-border: rgba(250, 189, 47, 0.28);
+  --attention-bg: rgba(254, 128, 25, 0.12);
+  --attention-border: rgba(254, 128, 25, 0.28);
 
   /* Effects */
   --shadow-strong: 0 16px 48px rgba(29, 32, 33, 0.55);
