@@ -1211,7 +1211,7 @@ async function sendMessage() {
           : round.toolCalls
         // A round that produced nothing would be saved as an assistant turn with no parts,
         // which providers reject on the next request.
-        if (!round.content && !round.reasoningContent && toolCalls.length === 0) continue
+        if (!round.content && !round.reasoningContent && round.thinkingState === undefined && toolCalls.length === 0) continue
 
         const assistantRaw: ChatMessage = { role: 'assistant', content: round.content }
         if (round.reasoningContent) assistantRaw.reasoning_content = round.reasoningContent

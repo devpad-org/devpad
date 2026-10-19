@@ -245,7 +245,9 @@ function messagesToTurns(messages: ChatMessage[]): TurnDTO[] {
       })
     } else if (msg.role === 'assistant') {
       const parts: PartDTO[] = []
-      if (msg.reasoning_content) {
+      // Redacted or encrypted reasoning arrives as state with no readable text; it must
+      // still go back to the provider.
+      if (msg.reasoning_content || msg.thinking_state != null) {
         parts.push({
           kind: 'thinking',
           thinking: { text: msg.reasoning_content, state: msg.thinking_state },
