@@ -260,7 +260,9 @@ function messagesToTurns(messages: ChatMessage[]): TurnDTO[] {
           toolCall: { id: tc.id, itemId: tc.itemId, name: tc.function.name, arguments: tc.function.arguments },
         })
       }
-      turns.push({ role: 'assistant', parts })
+      // Conversations saved before empty rounds were dropped can still hold empty
+      // assistant messages; providers reject a turn with no parts.
+      if (parts.length > 0) turns.push({ role: 'assistant', parts })
     } else {
       turns.push({
         role: msg.role,

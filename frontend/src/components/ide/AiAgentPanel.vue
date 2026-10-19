@@ -1209,7 +1209,9 @@ async function sendMessage() {
         const toolCalls = streamFailed
           ? round.toolCalls.filter((call) => round.toolResults.some((result) => result.tool_call_id === call.id))
           : round.toolCalls
-        if (streamFailed && !round.content && !round.reasoningContent && toolCalls.length === 0) continue
+        // A round that produced nothing would be saved as an assistant turn with no parts,
+        // which providers reject on the next request.
+        if (!round.content && !round.reasoningContent && toolCalls.length === 0) continue
 
         const assistantRaw: ChatMessage = { role: 'assistant', content: round.content }
         if (round.reasoningContent) assistantRaw.reasoning_content = round.reasoningContent
