@@ -1569,7 +1569,11 @@ function scrollToBottom(options: { force?: boolean } = {}) {
           <template v-for="(item, si) in messageRenderItems(msg)" :key="`${item.type}-${si}`">
             <AiThinkingSection v-if="item.type === 'thinking'" :content="(item as ThinkingSegment).content" />
             <AiToolGroup v-else-if="item.type === 'tool-group'" :group="item as ToolGroupDisplay" />
-            <div v-else-if="item.type === 'approval'" class="approval-prompt">
+            <div
+              v-else-if="item.type === 'approval'"
+              class="approval-prompt"
+              :class="{ pending: (item as ApprovalSegment).status === 'pending' }"
+            >
               <div class="approval-header">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" />
@@ -2475,20 +2479,30 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 
 /* Sudo approval prompt */
 .approval-prompt {
-  background: var(--warning-bg);
-  border: 0.5px solid var(--warning-border);
+  background: color-mix(in srgb, var(--bg-void) 24%, transparent);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   padding: 10px 12px;
   margin: 6px 0;
+}
+
+/* Attention colors only while the approval is waiting on the user. */
+.approval-prompt.pending {
+  background: var(--attention-bg);
+  border-color: var(--attention-border);
 }
 
 .approval-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--accent-amber);
+  color: var(--text-secondary);
   font-size: 0.75rem;
   font-weight: 600;
+}
+
+.approval-prompt.pending .approval-header {
+  color: var(--attention);
 }
 
 .approval-title {
