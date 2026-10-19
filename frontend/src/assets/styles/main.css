@@ -203,6 +203,24 @@ pre {
   background: var(--text-muted);
 }
 
+/*
+ * Shared modal overlay. Auto margins center the dialog when it fits and let the
+ * overlay scroll from the top when it doesn't (e.g. a short phone viewport).
+ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  padding: var(--space-4);
+  overflow-y: auto;
+  background: var(--bg-overlay);
+}
+
+.modal-overlay > .modal {
+  margin: auto;
+}
+
 /* Touch devices: iOS zooms the page when focusing a field under 16px. */
 @media (pointer: coarse) {
   input:not([type='checkbox']):not([type='radio']):not([type='range']),

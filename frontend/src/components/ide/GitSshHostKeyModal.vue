@@ -69,13 +69,7 @@ const emit = defineEmits<{
 
 <style scoped>
 .modal-overlay {
-  position: fixed;
-  inset: 0;
   background: color-mix(in srgb, var(--bg-secondary) 70%, transparent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
 }
 
 .modal {
@@ -238,15 +232,5 @@ const emit = defineEmits<{
 .ssh-key-modal-enter-from .modal,
 .ssh-key-modal-leave-to .modal {
   transform: scale(0.95);
-}
-
-/* Keep the modal off the screen edges and scrollable on short viewports. */
-.modal-overlay {
-  padding: var(--space-4);
-  overflow-y: auto;
-}
-
-.modal {
-  margin: auto;
 }
 </style>

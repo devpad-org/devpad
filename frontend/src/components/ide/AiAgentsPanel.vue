@@ -180,8 +180,8 @@ async function deleteEditingAgent(): Promise<void> {
     </div>
 
     <Teleport to="body">
-      <div v-if="modalOpen" class="agent-modal-backdrop" @click.self="closeModal">
-        <form class="agent-modal" @submit.prevent="saveAgent">
+      <div v-if="modalOpen" class="modal-overlay" @click.self="closeModal">
+        <form class="modal agent-modal" @submit.prevent="saveAgent">
           <header class="agent-modal-header">
             <h3>{{ modalTitle }}</h3>
             <button type="button" class="agent-modal-close" @click="closeModal">×</button>
@@ -407,17 +407,6 @@ async function deleteEditingAgent(): Promise<void> {
 .agent-edit {
   width: 24px;
   height: 24px;
-}
-
-.agent-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-4);
-  background: var(--bg-overlay);
 }
 
 .agent-modal {

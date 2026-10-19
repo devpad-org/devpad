@@ -19,7 +19,7 @@ import ServiceCatalogPanel from '@/components/ide/ServiceCatalogPanel.vue'
 import WorkspaceServicesPanel from '@/components/ide/WorkspaceServicesPanel.vue'
 import { useServiceStore } from '@/stores/services'
 import { useResizable } from '@/composables/useResizable'
-import { useIsMobile, isMobileViewport } from '@/composables/useMediaQuery'
+import { useIsMobile } from '@/composables/useMediaQuery'
 import type { GitCommit, GitCommitFile } from '@/api/git'
 import type { AgentRun } from '@/api/ai'
 
@@ -145,7 +145,7 @@ function handleGlobalKeydown(e: KeyboardEvent) {
 
 onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown)
-  if (isMobileViewport()) terminalMinimized.value = true
+  if (isMobile.value) terminalMinimized.value = true
 
   const id = Number(route.params.id)
   if (isNaN(id)) {
@@ -1041,10 +1041,13 @@ function handleBack() {
   background: var(--accent-blue);
 }
 
-/* Mobile layout: bottom activity bar, slide-over side panels, full-screen preview */
+/*
+ * Mobile layout: bottom activity bar, slide-over side panels, full-screen preview.
+ * The drawers and their backdrop stop above the activity bar so it stays tappable.
+ */
 .mobile-backdrop {
   position: absolute;
-  inset: 0;
+  inset: 0 0 var(--mobile-activity-bar-height);
   z-index: 40;
   background: var(--bg-overlay);
 }
@@ -1071,6 +1074,7 @@ function handleBack() {
 }
 
 .is-mobile .ide-body {
+  --mobile-activity-bar-height: 52px;
   position: relative;
   flex-direction: column;
 }
@@ -1080,7 +1084,7 @@ function handleBack() {
   flex-direction: row;
   justify-content: space-around;
   width: 100%;
-  height: 52px;
+  height: var(--mobile-activity-bar-height);
   padding: 0 var(--space-1);
   border-right: none;
   border-top: 0.5px solid var(--border-default);
@@ -1118,7 +1122,7 @@ function handleBack() {
 .is-mobile .ide-ai-side-panel {
   position: absolute;
   top: 0;
-  bottom: 0;
+  bottom: var(--mobile-activity-bar-height);
   z-index: 50;
   width: min(88vw, 380px);
   box-shadow: var(--shadow-strong);

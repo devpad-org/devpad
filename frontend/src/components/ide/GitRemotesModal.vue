@@ -396,16 +396,6 @@ async function saveRename(oldName: string) {
 </template>
 
 <style scoped>
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
 .modal {
   background: var(--bg-surface);
   border: 0.5px solid var(--border-default);
@@ -789,15 +779,5 @@ async function saveRename(oldName: string) {
   .remote-actions {
     opacity: 1;
   }
-}
-
-/* Keep the modal off the screen edges and scrollable on short viewports. */
-.modal-overlay {
-  padding: var(--space-4);
-  overflow-y: auto;
-}
-
-.modal {
-  margin: auto;
 }
 </style>

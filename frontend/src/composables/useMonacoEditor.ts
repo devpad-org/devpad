@@ -1,7 +1,6 @@
-import { ref, shallowRef, reactive, computed, onBeforeUnmount, watch, type Ref } from 'vue'
+import { ref, shallowRef, reactive, computed, onBeforeUnmount, watch, toValue, type Ref, type MaybeRefOrGetter } from 'vue'
 import type * as MonacoType from 'monaco-editor'
 import { gruvboxMonacoTheme } from '@/theme/gruvbox'
-import { isMobileViewport } from '@/composables/useMediaQuery'
 
 let monaco: typeof MonacoType | null = null
 let monacoPromise: Promise<typeof MonacoType> | null = null
@@ -87,6 +86,7 @@ export function useMonacoEditor(
   container: Ref<HTMLElement | null>,
   options?: {
     readOnly?: boolean
+    minimap?: MaybeRefOrGetter<boolean>
   },
 ) {
   const editorInstance = shallowRef<MonacoType.editor.IStandaloneCodeEditor | null>(null)
@@ -123,7 +123,7 @@ export function useMonacoEditor(
       readOnly: options?.readOnly ?? false,
       automaticLayout: true,
       minimap: {
-        enabled: !isMobileViewport(),
+        enabled: toValue(options?.minimap ?? true),
         scale: 1,
         showSlider: 'mouseover',
         renderCharacters: false,
@@ -285,6 +285,11 @@ export function useMonacoEditor(
       createEditor()
     }
   })
+
+  watch(
+    () => toValue(options?.minimap ?? true),
+    (enabled) => editorInstance.value?.updateOptions({ minimap: { enabled } }),
+  )
 
   onBeforeUnmount(() => {
     dispose()

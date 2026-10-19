@@ -91,16 +91,6 @@ function handleSubmit() {
 </template>
 
 <style scoped>
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
 .modal {
   background: var(--bg-surface);
   border: 0.5px solid var(--border-default);
@@ -246,15 +236,5 @@ function handleSubmit() {
 
 .git-config-modal-leave-to .modal {
   transform: scale(0.95);
-}
-
-/* Keep the modal off the screen edges and scrollable on short viewports. */
-.modal-overlay {
-  padding: var(--space-4);
-  overflow-y: auto;
-}
-
-.modal {
-  margin: auto;
 }
 </style>

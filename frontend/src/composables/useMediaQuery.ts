@@ -1,11 +1,9 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 
-// Layout breakpoint below which the UI switches to its single-column mobile layout.
-export const MOBILE_MEDIA_QUERY = '(max-width: 768px)'
-
-export function isMobileViewport(): boolean {
-  return typeof window !== 'undefined' && window.matchMedia(MOBILE_MEDIA_QUERY).matches
-}
+// Below this the UI switches to its single-column mobile layout: narrow screens,
+// plus phones in landscape, which are wide but too short for side panels.
+// Page-level CSS media queries repeat the 768px width; keep them in sync.
+export const MOBILE_MEDIA_QUERY = '(max-width: 768px), (pointer: coarse) and (max-height: 500px)'
 
 export function useMediaQuery(query: string) {
   const mql = window.matchMedia(query)

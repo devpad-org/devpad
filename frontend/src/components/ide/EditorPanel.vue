@@ -2,6 +2,7 @@
 import { ref, reactive, watch, nextTick, onUnmounted } from 'vue'
 import { workspaceApi } from '@/api/workspaces'
 import { useMonacoEditor } from '@/composables/useMonacoEditor'
+import { useIsMobile } from '@/composables/useMediaQuery'
 
 interface Tab {
   path: string
@@ -25,6 +26,7 @@ const editorContainer = ref<HTMLElement | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const saving = ref(false)
+const isMobile = useIsMobile()
 
 const {
   editor,
@@ -38,7 +40,7 @@ const {
   getContent,
   getFileContent,
   getDirtyFiles,
-} = useMonacoEditor(editorContainer)
+} = useMonacoEditor(editorContainer, { minimap: () => !isMobile.value })
 
 function tabName(path: string): string {
   return path.split('/').pop() ?? path

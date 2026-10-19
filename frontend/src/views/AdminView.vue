@@ -776,13 +776,6 @@ function isSelf(user: AdminUser): boolean {
 
 /* Modal styles */
 .modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
   backdrop-filter: blur(4px);
 }
 
@@ -1079,16 +1072,6 @@ function isSelf(user: AdminUser): boolean {
   outline: none;
   border-color: var(--accent-border);
   box-shadow: 0 0 0 3px var(--accent-glow);
-}
-
-/* Keep the modal off the screen edges and scrollable on short viewports. */
-.modal-overlay {
-  padding: var(--space-4);
-  overflow-y: auto;
-}
-
-.modal {
-  margin: auto;
 }
 
 @media (max-width: 768px) {
