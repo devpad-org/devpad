@@ -75,6 +75,11 @@ export const mergeRequestApi = {
     return apiClient.get(`/api/projects/${projectId}/merge-requests`)
   },
 
+  // Opens a merge request for a published branch into the default branch.
+  create(projectId: number, input: { title: string; description: string; sourceBranch: string }): Promise<{ mergeRequest: MergeRequest }> {
+    return apiClient.post(`/api/projects/${projectId}/merge-requests`, input)
+  },
+
   get(projectId: number, id: number): Promise<{ mergeRequest: MergeRequestDetail }> {
     return apiClient.get(`/api/projects/${projectId}/merge-requests/${id}`)
   },

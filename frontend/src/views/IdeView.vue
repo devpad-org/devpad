@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
+import { computed, nextTick, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { workspaceApi, type Workspace } from '@/api/workspaces'
+import { projectApi } from '@/api/projects'
+import type { Task } from '@/api/tasks'
 import FileExplorer from '@/components/ide/FileExplorer.vue'
 import EditorPanel from '@/components/ide/EditorPanel.vue'
 import GitGraphPanel from '@/components/ide/GitGraphPanel.vue'
@@ -17,19 +19,65 @@ import WorkspaceInfoPanel from '@/components/ide/WorkspaceInfoPanel.vue'
 import WorkspaceProcessesPanel from '@/components/ide/WorkspaceProcessesPanel.vue'
 import ServiceCatalogPanel from '@/components/ide/ServiceCatalogPanel.vue'
 import WorkspaceServicesPanel from '@/components/ide/WorkspaceServicesPanel.vue'
+import WorkspaceGate, { type WorkspaceGateState } from '@/components/ide/WorkspaceGate.vue'
+import ProjectAgentsPanel from '@/components/project/ProjectAgentsPanel.vue'
+import ProjectBoard from '@/components/project/ProjectBoard.vue'
+import ProjectBranchActions from '@/components/project/ProjectBranchActions.vue'
+import ProjectMergeRequestsPanel from '@/components/project/ProjectMergeRequestsPanel.vue'
+import ProjectPanel from '@/components/project/ProjectPanel.vue'
+import ProjectTasksPanel from '@/components/project/ProjectTasksPanel.vue'
+import TaskModal from '@/components/project/TaskModal.vue'
 import { useServiceStore } from '@/stores/services'
+import { useActiveProjectStore } from '@/stores/activeProject'
 import { useResizable } from '@/composables/useResizable'
 import { useIsMobile } from '@/composables/useMediaQuery'
 import type { GitCommit, GitCommitFile } from '@/api/git'
 import type { AgentRun } from '@/api/ai'
 
+const WORKSPACE_POLL_INTERVAL_MS = 4000
+const BOARD_TAB = 'board'
+
 const route = useRoute()
 const router = useRouter()
 const serviceStore = useServiceStore()
+const projectStore = useActiveProjectStore()
+
+// The shell runs in one of two modes. At /projects/:id it is the project's
+// IDE: project panels always work, and workspace panels wait for the project
+// workspace to exist and run. At /workspace/:id it opens a single workspace,
+// such as a standalone one or an agent's sandbox being debugged.
+const projectId = computed(() => (route.name === 'project' ? Number(route.params.id) : null))
+const isProjectMode = computed(() => projectId.value !== null)
 
 const workspace = ref<Workspace | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
+const workspaceAction = ref<'' | 'creating' | 'starting'>('')
+const workspaceError = ref('')
+// Bumped when the workspace's branch moves, to reload the git panels.
+const gitRevision = ref(0)
+let workspacePollTimer: ReturnType<typeof setInterval> | null = null
+
+// Workspace panels need a running container. Outside project mode the
+// workspace is started on open, as before.
+const workspaceLive = computed(() =>
+  !!workspace.value && (!isProjectMode.value || workspace.value.status === 'running'),
+)
+
+const gateState = computed<WorkspaceGateState>(() => {
+  if (workspaceAction.value) return workspaceAction.value
+  const project = projectStore.project
+  if (project?.status === 'error') return 'error'
+  if (!projectStore.ready) return 'not-ready'
+  if (!workspace.value) return 'none'
+  if (workspace.value.status === 'creating') return 'creating'
+  if (workspace.value.status === 'stopped') return 'stopped'
+  return 'error'
+})
+const gateError = computed(() =>
+  workspaceError.value || (projectStore.project?.status === 'error' ? projectStore.project.error : ''),
+)
+const workspaceStatusLabel = computed(() => workspace.value?.status ?? 'none')
 
 const activeFile = ref<string | null>(null)
 const terminalMinimized = ref(false)
@@ -50,9 +98,15 @@ type GitDiffRequest =
   | { kind: 'commit'; commit: GitCommit; file: GitCommitFile; requestId: number }
   | { kind: 'working'; path: string; staged: boolean; requestId: number }
 
-type ActivityTab = 'ai' | 'explorer' | 'git' | 'info' | 'services'
+type ActivityTab = 'ai' | 'explorer' | 'git' | 'info' | 'services' | ProjectActivity
+type ProjectActivity = 'tasks' | 'merge-requests' | 'agents' | 'project'
+const PROJECT_ACTIVITIES: ActivityTab[] = ['tasks', 'merge-requests', 'agents', 'project']
 const activeActivity = ref<ActivityTab>('ai')
 const serviceCount = computed(() => serviceStore.services.length)
+const isProjectActivity = computed(() => PROJECT_ACTIVITIES.includes(activeActivity.value))
+// The editor and its tabs, including the board, sit behind the explorer and
+// the project panels.
+const editorSurfaceVisible = computed(() => activeActivity.value === 'explorer' || isProjectActivity.value)
 
 // On narrow screens the side panels become slide-over drawers and the activity
 // bar moves to the bottom, leaving the primary surface the full width.
@@ -80,8 +134,9 @@ function selectActivity(tab: ActivityTab) {
     return
   }
   activeActivity.value = tab
-  // The explorer surface is empty until a file is chosen, so lead with the tree.
-  mobileSidebarOpen.value = tab === 'explorer' && !activeFile.value
+  // The explorer surface is empty until a file is chosen, so lead with the
+  // tree; the project panels are lists, so lead with those too.
+  mobileSidebarOpen.value = (tab === 'explorer' && !activeFile.value) || PROJECT_ACTIVITIES.includes(tab)
 }
 
 function toggleMobileSidebar() {
@@ -143,34 +198,216 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   }
 }
 
-onMounted(async () => {
-  window.addEventListener('keydown', handleGlobalKeydown)
-  if (isMobile.value) terminalMinimized.value = true
+function setWorkspace(ws: Workspace | null) {
+  workspace.value = ws
+  if (ws) selectedAgentId.value = ws.defaultAgentId || 'default'
+}
 
-  const id = Number(route.params.id)
-  if (isNaN(id)) {
-    router.push({ name: 'home' })
-    return
-  }
+// Bumped by each load, so a load superseded by navigation stops quietly.
+let loadSeq = 0
+
+async function loadWorkspace(id: number, seq: number) {
   try {
     const res = await workspaceApi.get(id)
+    if (seq !== loadSeq) return
     let ws = res.workspace
+    // A project's own workspace opens as its project; the route watcher
+    // loads it.
+    if (ws.projectId && ws.kind === 'interactive') {
+      void router.replace({ name: 'project', params: { id: ws.projectId }, query: route.query })
+      return
+    }
     // Auto-start the container if it's stopped
     if (ws.status === 'stopped') {
       const startRes = await workspaceApi.start(id)
       ws = startRes.workspace
     }
-    workspace.value = ws
-    selectedAgentId.value = ws.defaultAgentId || 'default'
+    if (seq !== loadSeq) return
+    setWorkspace(ws)
   } catch {
+    if (seq !== loadSeq) return
     error.value = 'Failed to load workspace'
-  } finally {
-    loading.value = false
   }
+  loading.value = false
+}
+
+async function loadProject(id: number, seq: number) {
+  await projectStore.open(id)
+  if (seq !== loadSeq) return
+  if (!projectStore.project) {
+    error.value = projectStore.loadError || 'Failed to load project'
+    loading.value = false
+    return
+  }
+  await loadProjectWorkspace(id)
+  if (seq !== loadSeq) return
+  applyTaskQuery()
+  activeActivity.value = workspaceLive.value ? 'ai' : 'tasks'
+  loading.value = false
+  startWorkspacePolling()
+  await nextTick()
+  openBoard()
+}
+
+// Finds the project workspace without creating it.
+async function loadProjectWorkspace(id: number) {
+  try {
+    const pws = await projectApi.getWorkspace(id)
+    setWorkspace(pws ? (await workspaceApi.get(pws.id)).workspace : null)
+    workspaceError.value = ''
+  } catch (e) {
+    workspaceError.value = e instanceof Error ? e.message : 'Failed to load the workspace'
+  }
+}
+
+async function load() {
+  const seq = ++loadSeq
+  loading.value = true
+  error.value = null
+  workspaceError.value = ''
+  stopWorkspacePolling()
+  setWorkspace(null)
+
+  if (projectId.value !== null) {
+    if (isNaN(projectId.value)) {
+      router.push({ name: 'projects' })
+      return
+    }
+    await loadProject(projectId.value, seq)
+    return
+  }
+
+  projectStore.close()
+  const id = Number(route.params.id)
+  if (isNaN(id)) {
+    router.push({ name: 'home' })
+    return
+  }
+  await loadWorkspace(id, seq)
+}
+
+async function createWorkspace() {
+  if (projectId.value === null || workspaceAction.value) return
+  workspaceAction.value = 'creating'
+  workspaceError.value = ''
+  try {
+    const { workspace: pws } = await projectApi.openWorkspace(projectId.value)
+    let ws = (await workspaceApi.get(pws.id)).workspace
+    if (ws.status === 'stopped') {
+      workspaceAction.value = 'starting'
+      ws = (await workspaceApi.start(ws.id)).workspace
+    }
+    setWorkspace(ws)
+  } catch (e) {
+    workspaceError.value = e instanceof Error ? e.message : 'Failed to create the workspace'
+  } finally {
+    workspaceAction.value = ''
+  }
+}
+
+async function startWorkspace() {
+  if (!workspace.value || workspaceAction.value) return
+  workspaceAction.value = 'starting'
+  workspaceError.value = ''
+  try {
+    setWorkspace((await workspaceApi.start(workspace.value.id)).workspace)
+  } catch (e) {
+    workspaceError.value = e instanceof Error ? e.message : 'Failed to start the workspace'
+  } finally {
+    workspaceAction.value = ''
+  }
+}
+
+// Keeps the project workspace's status current, so the panels follow it
+// being created, started or stopped elsewhere.
+async function pollWorkspace() {
+  const id = projectId.value
+  if (id === null || workspaceAction.value || document.visibilityState !== 'visible') return
+  try {
+    const pws = await projectApi.getWorkspace(id)
+    if (projectId.value !== id || workspaceAction.value) return
+    if (!pws) {
+      if (workspace.value) setWorkspace(null)
+    } else if (!workspace.value || workspace.value.id !== pws.id || workspace.value.status !== pws.status) {
+      setWorkspace((await workspaceApi.get(pws.id)).workspace)
+    }
+  } catch {
+    // Keep the last known state; the next poll tries again.
+  }
+}
+
+function startWorkspacePolling() {
+  stopWorkspacePolling()
+  workspacePollTimer = setInterval(() => void pollWorkspace(), WORKSPACE_POLL_INTERVAL_MS)
+}
+
+function stopWorkspacePolling() {
+  if (workspacePollTimer !== null) {
+    clearInterval(workspacePollTimer)
+    workspacePollTimer = null
+  }
+}
+
+function openBoard() {
+  editorPanel.value?.openView(BOARD_TAB, 'Board')
+}
+
+function showBoard() {
+  openBoard()
+  mobileSidebarOpen.value = false
+}
+
+// A merge request links to its task with ?task=.
+function applyTaskQuery() {
+  const task = Number(route.query.task)
+  if (task) projectStore.selectedTaskId = task
+}
+
+function closeTask() {
+  projectStore.selectedTaskId = null
+  if (route.query.task) void router.replace({ query: { ...route.query, task: undefined } })
+}
+
+function taskChanged(task: Task) {
+  projectStore.upsertTask(task)
+  void projectStore.refresh()
+}
+
+function taskDeleted(id: number) {
+  projectStore.removeTask(id)
+  closeTask()
+  void projectStore.refresh()
+}
+
+function branchChanged() {
+  gitRevision.value++
+}
+
+function checkedOut() {
+  branchChanged()
+  openGitPanel()
+}
+
+// Both routes render this view, so moving between them reuses it.
+watch(() => [route.name, route.params.id], (next, prev) => {
+  const [name, id] = next
+  if (name !== 'project' && name !== 'ide') return
+  if (name !== prev[0] || id !== prev[1]) void load()
+})
+watch(() => route.query.task, () => {
+  if (isProjectMode.value) applyTaskQuery()
+})
+
+onMounted(() => {
+  window.addEventListener('keydown', handleGlobalKeydown)
+  if (isMobile.value) terminalMinimized.value = true
+  void load()
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
+  stopWorkspacePolling()
+  projectStore.close()
 })
 
 function handleFileSelect(path: string) {
@@ -293,22 +530,32 @@ function openGitPanel() {
   }
 }
 
-// A project sandbox goes back to its project.
+// A project goes back to the projects list, and an agent's sandbox to its
+// project.
 function handleBack() {
-  const projectId = workspace.value?.projectId
-  if (projectId) router.push({ name: 'project', params: { id: projectId } })
+  if (isProjectMode.value) {
+    router.push({ name: 'projects' })
+    return
+  }
+  const sandboxProject = workspace.value?.projectId
+  if (sandboxProject) router.push({ name: 'project', params: { id: sandboxProject } })
   else router.push({ name: 'home' })
 }
+
+const backLabel = computed(() => {
+  if (isProjectMode.value) return 'Back to projects'
+  return workspace.value?.projectId ? 'Back to project' : 'Back to workspaces'
+})
 </script>
 
 <template>
   <div v-if="loading" class="ide-loading">
     <div class="ide-spinner" />
-    <span>Loading workspace…</span>
+    <span>{{ isProjectMode ? 'Loading project…' : 'Loading workspace…' }}</span>
   </div>
   <div v-else-if="error" class="ide-error">
     <p>{{ error }}</p>
-    <button class="ide-back-btn" @click="handleBack">Back to Workspaces</button>
+    <button class="ide-back-btn" @click="handleBack">{{ backLabel }}</button>
   </div>
   <div v-else class="ide-layout" :class="{ 'is-mobile': isMobile }">
     <!--
@@ -322,7 +569,7 @@ function handleBack() {
       - ide-status-bar: bottom status bar (declared in GitStatusBar.vue)
     -->
     <div id="ide-toolbar" class="ide-titlebar" role="toolbar" aria-label="IDE toolbar">
-      <button class="titlebar-back" @click="handleBack" :title="workspace?.projectId ? 'Back to project' : 'Back to workspaces'">
+      <button class="titlebar-back" @click="handleBack" :title="backLabel">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="m15 18-6-6 6-6" />
         </svg>
@@ -341,12 +588,16 @@ function handleBack() {
           <path d="M9 3v18" />
         </svg>
       </button>
-      <span class="titlebar-name">{{ workspace?.name }}</span>
-      <span class="titlebar-status" :class="`status-${workspace?.status}`" :title="workspace?.status">
+      <span class="titlebar-name">{{ isProjectMode ? projectStore.project?.name : workspace?.name }}</span>
+      <span
+        class="titlebar-status"
+        :class="`status-${workspaceStatusLabel}`"
+        :title="isProjectMode ? `Workspace ${workspaceStatusLabel === 'none' ? 'not created' : workspaceStatusLabel}` : workspaceStatusLabel"
+      >
         <span class="status-dot" />
-        <span class="titlebar-status-text">{{ workspace?.status }}</span>
+        <span class="titlebar-status-text">{{ workspaceStatusLabel === 'none' ? 'no workspace' : workspaceStatusLabel }}</span>
       </span>
-      <div class="titlebar-actions">
+      <div v-if="workspaceLive" class="titlebar-actions">
         <button
           class="titlebar-btn"
           :disabled="!editorPanel?.isDirty"
@@ -454,6 +705,66 @@ function handleBack() {
             <path d="M6 21V9a9 9 0 0 0 9 9" />
           </svg>
         </button>
+        <template v-if="isProjectMode">
+          <div class="activity-separator" aria-hidden="true" />
+          <button
+            class="activity-btn activity-btn--tasks"
+            :class="{ active: activeActivity === 'tasks' }"
+            @click="selectActivity('tasks')"
+            title="Tasks"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m3 17 2 2 4-4" />
+              <path d="m3 7 2 2 4-4" />
+              <path d="M13 6h8" />
+              <path d="M13 12h8" />
+              <path d="M13 18h8" />
+            </svg>
+          </button>
+          <button
+            class="activity-btn activity-btn--merge-requests"
+            :class="{ active: activeActivity === 'merge-requests' }"
+            @click="selectActivity('merge-requests')"
+            :title="projectStore.openMergeRequests.length > 0 ? `Merge requests (${projectStore.openMergeRequests.length} open)` : 'Merge requests'"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="18" cy="18" r="3" />
+              <circle cx="6" cy="6" r="3" />
+              <path d="M13 6h3a2 2 0 0 1 2 2v7" />
+              <path d="M6 9v12" />
+            </svg>
+            <span
+              v-if="projectStore.openMergeRequests.length > 0"
+              class="activity-badge"
+              :aria-label="`${projectStore.openMergeRequests.length} open merge requests`"
+            >
+              {{ projectStore.openMergeRequests.length }}
+            </span>
+          </button>
+          <button
+            class="activity-btn activity-btn--agents"
+            :class="{ active: activeActivity === 'agents' }"
+            @click="selectActivity('agents')"
+            :title="projectStore.activeSandboxes > 0 ? `Agents (${projectStore.activeSandboxes} running)` : 'Agents'"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 8V4H8" />
+              <rect width="16" height="12" x="4" y="8" rx="2" />
+              <path d="M2 14h2" />
+              <path d="M20 14h2" />
+              <path d="M15 13v2" />
+              <path d="M9 13v2" />
+            </svg>
+            <span
+              v-if="projectStore.activeSandboxes > 0"
+              class="activity-badge"
+              :aria-label="`${projectStore.activeSandboxes} sandboxes running`"
+            >
+              {{ projectStore.activeSandboxes }}
+            </span>
+          </button>
+          <div class="activity-separator" aria-hidden="true" />
+        </template>
         <button
           class="activity-btn activity-btn--info"
           :class="{ active: activeActivity === 'info' }"
@@ -485,6 +796,17 @@ function handleBack() {
             {{ serviceCount }}
           </span>
         </button>
+        <button
+          v-if="isProjectMode"
+          class="activity-btn activity-btn--project"
+          :class="{ active: activeActivity === 'project' }"
+          @click="selectActivity('project')"
+          title="Project"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+          </svg>
+        </button>
       </nav>
 
       <div
@@ -501,38 +823,69 @@ function handleBack() {
         aria-label="Left side panel"
         :style="isMobile ? undefined : { width: sidebar.size.value + 'px' }"
       >
-        <AiAgentsPanel
-          v-show="activeActivity === 'ai'"
-          :workspace-id="workspace?.id ?? 0"
-          :selected-agent-id="selectedAgentId"
-          :default-agent-id="workspace?.defaultAgentId ?? 'default'"
-          :default-agent-error="defaultAgentError"
-          :default-agent-saving-id="defaultAgentSavingId"
-          @select="handleAgentSelect"
-          @set-default="handleDefaultAgentSet"
+        <template v-if="workspaceLive">
+          <AiAgentsPanel
+            v-show="activeActivity === 'ai'"
+            :workspace-id="workspace?.id ?? 0"
+            :selected-agent-id="selectedAgentId"
+            :default-agent-id="workspace?.defaultAgentId ?? 'default'"
+            :default-agent-error="defaultAgentError"
+            :default-agent-saving-id="defaultAgentSavingId"
+            @select="handleAgentSelect"
+            @set-default="handleDefaultAgentSet"
+          />
+          <FileExplorer
+            v-show="activeActivity === 'explorer'"
+            :workspace-id="workspace?.id ?? 0"
+            :workspace-name="workspace?.name ?? ''"
+            @select="handleFileSelect"
+          />
+          <div v-show="activeActivity === 'git'" class="git-sidebar">
+            <ProjectBranchActions
+              v-if="isProjectMode"
+              :workspace-id="workspace?.id ?? 0"
+              :active="activeActivity === 'git'"
+              :revision="gitRevision"
+              @changed="branchChanged"
+            />
+            <GitPanel
+              :key="`git-${gitRevision}`"
+              class="git-sidebar-panel"
+              :workspace-id="workspace?.id ?? 0"
+              :selected-commit="selectedGitCommit"
+              @commit-file-select="handleGitCommitFileSelect"
+              @working-file-select="handleGitWorkingFileSelect"
+              @clear-commit="clearSelectedGitCommit"
+            />
+          </div>
+          <WorkspaceInfoPanel
+            v-show="activeActivity === 'info'"
+            :workspace-id="workspace?.id ?? 0"
+          />
+          <ServiceCatalogPanel
+            v-show="activeActivity === 'services'"
+            :workspace-id="workspace?.id ?? 0"
+          />
+        </template>
+        <WorkspaceGate
+          v-else-if="!isProjectActivity"
+          compact
+          :state="gateState"
+          :error="gateError"
+          :default-branch="projectStore.project?.defaultBranch"
+          @create="createWorkspace"
+          @start="startWorkspace"
         />
-        <FileExplorer
-          v-show="activeActivity === 'explorer'"
-          :workspace-id="workspace?.id ?? 0"
-          :workspace-name="workspace?.name ?? ''"
-          @select="handleFileSelect"
-        />
-        <GitPanel
-          v-show="activeActivity === 'git'"
-          :workspace-id="workspace?.id ?? 0"
-          :selected-commit="selectedGitCommit"
-          @commit-file-select="handleGitCommitFileSelect"
-          @working-file-select="handleGitWorkingFileSelect"
-          @clear-commit="clearSelectedGitCommit"
-        />
-        <WorkspaceInfoPanel
-          v-show="activeActivity === 'info'"
-          :workspace-id="workspace?.id ?? 0"
-        />
-        <ServiceCatalogPanel
-          v-show="activeActivity === 'services'"
-          :workspace-id="workspace?.id ?? 0"
-        />
+        <template v-if="isProjectMode">
+          <ProjectTasksPanel v-show="activeActivity === 'tasks'" @open-board="showBoard" />
+          <ProjectMergeRequestsPanel v-show="activeActivity === 'merge-requests'" />
+          <ProjectAgentsPanel
+            v-show="activeActivity === 'agents'"
+            :workspace-live="workspaceLive"
+            @checked-out="checkedOut"
+          />
+          <ProjectPanel v-show="activeActivity === 'project'" :workspace-status="workspaceStatusLabel" />
+        </template>
       </aside>
       <div
         class="resize-handle resize-handle--horizontal"
@@ -545,41 +898,77 @@ function handleBack() {
         <section id="ide-primary-surface" class="ide-editor-area" aria-label="Primary IDE surface">
           <div v-show="activeActivity === 'ai'" class="ide-surface-pane ide-ai-surface">
             <AiAgentPanel
+              v-if="workspaceLive"
               :workspace-id="workspace?.id ?? 0"
               :selected-agent-id="selectedAgentId"
               :focused-run-id="focusedAgentRunId"
               @clear-focused-run="focusedAgentRunId = null"
               @select-agent="handleAgentSelect"
             />
+            <WorkspaceGate
+              v-else
+              :state="gateState"
+              :error="gateError"
+              :default-branch="projectStore.project?.defaultBranch"
+              @create="createWorkspace"
+              @start="startWorkspace"
+            />
           </div>
-          <div v-show="activeActivity !== 'ai' && activeActivity !== 'git' && activeActivity !== 'info' && activeActivity !== 'services'" class="ide-surface-pane">
+          <div v-show="editorSurfaceVisible" class="ide-surface-pane">
             <EditorPanel
               ref="editorPanel"
               :workspace-id="workspace?.id ?? 0"
               :file-path="activeFile"
               @active-change="(p: string | null) => activeFile = p"
-            />
+            >
+              <template #view="{ id }">
+                <ProjectBoard v-if="id === BOARD_TAB" />
+              </template>
+              <template #view-icon="{ id }">
+                <svg v-if="id === BOARD_TAB" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect width="18" height="18" x="3" y="3" rx="2" />
+                  <path d="M9 3v18" />
+                  <path d="M15 3v18" />
+                </svg>
+              </template>
+            </EditorPanel>
           </div>
-          <div v-show="activeActivity === 'info'" class="ide-surface-pane">
-            <WorkspaceProcessesPanel
-              :workspace-id="workspace?.id ?? 0"
-              :active="activeActivity === 'info'"
+          <template v-if="workspaceLive">
+            <div v-show="activeActivity === 'info'" class="ide-surface-pane">
+              <WorkspaceProcessesPanel
+                :workspace-id="workspace?.id ?? 0"
+                :active="activeActivity === 'info'"
+              />
+            </div>
+            <div v-show="activeActivity === 'git'" class="ide-surface-pane">
+              <GitGraphPanel
+                :key="`graph-${gitRevision}`"
+                :workspace-id="workspace?.id ?? 0"
+                :active="activeActivity === 'git'"
+                :selected-commit-hash="selectedGitCommit?.hash ?? null"
+                :diff-request="gitDiffRequest"
+                @commit-select="handleGitCommitSelect"
+                @close-diff="closeGitDiff"
+              />
+            </div>
+            <div v-show="activeActivity === 'services'" class="ide-surface-pane">
+              <WorkspaceServicesPanel :workspace-id="workspace?.id ?? 0" />
+            </div>
+          </template>
+          <div
+            v-else-if="activeActivity === 'info' || activeActivity === 'git' || activeActivity === 'services'"
+            class="ide-surface-pane"
+          >
+            <WorkspaceGate
+              :state="gateState"
+              :error="gateError"
+              :default-branch="projectStore.project?.defaultBranch"
+              @create="createWorkspace"
+              @start="startWorkspace"
             />
-          </div>
-          <div v-show="activeActivity === 'git'" class="ide-surface-pane">
-            <GitGraphPanel
-              :workspace-id="workspace?.id ?? 0"
-              :active="activeActivity === 'git'"
-              :selected-commit-hash="selectedGitCommit?.hash ?? null"
-              :diff-request="gitDiffRequest"
-              @commit-select="handleGitCommitSelect"
-              @close-diff="closeGitDiff"
-            />
-          </div>
-          <div v-show="activeActivity === 'services'" class="ide-surface-pane">
-            <WorkspaceServicesPanel :workspace-id="workspace?.id ?? 0" />
           </div>
         </section>
+        <template v-if="workspaceLive">
         <div
           class="resize-handle resize-handle--vertical"
           :class="{ active: terminal.isDragging.value, hidden: terminalMinimized }"
@@ -599,9 +988,10 @@ function handleBack() {
             @toggle-minimize="terminalMinimized = !terminalMinimized"
           />
         </div>
+        </template>
       </div>
 
-      <div id="ide-right-panel" class="ide-right-panel" role="region" aria-label="Right side panel">
+      <div v-if="workspaceLive" id="ide-right-panel" class="ide-right-panel" role="region" aria-label="Right side panel">
         <!-- Right panel: Preview -->
         <template v-if="previewVisible">
           <div
@@ -637,8 +1027,19 @@ function handleBack() {
       </div>
     </div>
     <GitStatusBar
+      v-if="workspaceLive"
+      :key="`status-${gitRevision}`"
       :workspace-id="workspace?.id ?? 0"
       @open-git="openGitPanel"
+    />
+    <TaskModal
+      v-if="isProjectMode && projectId !== null"
+      :task="projectStore.selectedTask"
+      :project-id="projectId"
+      :merge-request="projectStore.selectedTask ? projectStore.mergeRequestByTask.get(projectStore.selectedTask.id) : undefined"
+      @close="closeTask"
+      @changed="taskChanged"
+      @deleted="taskDeleted"
     />
     <PreviewNewTabModal
       :show="previewModalVisible"
@@ -879,6 +1280,30 @@ function handleBack() {
   --activity-accent: var(--gruvbox-aqua);
 }
 
+.activity-btn--tasks {
+  --activity-accent: var(--accent-amber);
+}
+
+.activity-btn--merge-requests {
+  --activity-accent: var(--accent-blue);
+}
+
+.activity-btn--agents {
+  --activity-accent: var(--gruvbox-orange);
+}
+
+.activity-btn--project {
+  --activity-accent: var(--gruvbox-yellow);
+}
+
+.activity-separator {
+  width: 24px;
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--border-default);
+  flex-shrink: 0;
+}
+
 .activity-btn:hover {
   background: var(--bg-hover);
   color: var(--activity-accent);
@@ -933,6 +1358,19 @@ function handleBack() {
   background: var(--bg-surface);
   display: flex;
   flex-direction: column;
+}
+
+.git-sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.git-sidebar > .git-sidebar-panel {
+  flex: 1;
+  min-height: 0;
+  height: auto;
 }
 
 .ide-center {
@@ -1093,6 +1531,10 @@ function handleBack() {
   flex: 1;
   max-width: 72px;
   height: 44px;
+}
+
+.is-mobile .activity-separator {
+  display: none;
 }
 
 .is-mobile .activity-btn.active::before {

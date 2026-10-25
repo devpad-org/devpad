@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { ref, reactive, watch, nextTick, onUnmounted } from 'vue'
+import { computed, ref, reactive, watch, nextTick, onUnmounted } from 'vue'
 import { workspaceApi } from '@/api/workspaces'
 import { useMonacoEditor } from '@/composables/useMonacoEditor'
 import { useIsMobile } from '@/composables/useMediaQuery'
 
+// A tab is a workspace file, or a view the parent renders through the `view`
+// slot, such as a project board. A file tab's id is its path.
 interface Tab {
-  path: string
+  id: string
+  kind: 'file' | 'view'
   name: string
 }
 
@@ -21,6 +24,9 @@ const emit = defineEmits<{
 
 const openTabs = reactive<Tab[]>([])
 const activeTab = ref<string | null>(null)
+
+const activeIsFile = computed(() => openTabs.some((t) => t.id === activeTab.value && t.kind === 'file'))
+const viewTabs = computed(() => openTabs.filter((t) => t.kind === 'view'))
 
 const editorContainer = ref<HTMLElement | null>(null)
 const loading = ref(false)
@@ -46,36 +52,65 @@ function tabName(path: string): string {
   return path.split('/').pop() ?? path
 }
 
-function selectTab(path: string) {
-  if (activeTab.value === path) return
-  activeTab.value = path
-  switchToFile(path)
-  emit('activeChange', path)
+function isFileTab(tab: Tab | undefined | null): tab is Tab {
+  return tab?.kind === 'file'
 }
 
-function closeTab(path: string, event?: MouseEvent) {
+// Activates a tab. The parent hears about file tabs only; a view tab reports
+// no active file.
+function activate(tab: Tab) {
+  activeTab.value = tab.id
+  error.value = null
+  if (isFileTab(tab)) switchToFile(tab.id)
+  emit('activeChange', isFileTab(tab) ? tab.id : null)
+}
+
+function selectTab(id: string) {
+  // Clicking the active tab again clears a failed file load.
+  if (activeTab.value === id && !error.value) return
+  const tab = openTabs.find((t) => t.id === id)
+  if (tab) activate(tab)
+}
+
+function closeTab(id: string, event?: MouseEvent) {
   event?.stopPropagation()
 
-  const idx = openTabs.findIndex((t) => t.path === path)
+  const idx = openTabs.findIndex((t) => t.id === id)
   if (idx === -1) return
 
-  openTabs.splice(idx, 1)
-  closeFile(path)
+  const [closed] = openTabs.splice(idx, 1)
+  if (isFileTab(closed)) closeFile(id)
 
-  if (activeTab.value === path) {
+  if (activeTab.value === id) {
     // Switch to an adjacent tab, preferring the one to the left
     const nextTab = openTabs[Math.min(idx, openTabs.length - 1)] ?? null
-    activeTab.value = nextTab?.path ?? null
-
     if (nextTab) {
-      switchToFile(nextTab.path)
+      activate(nextTab)
+    } else {
+      activeTab.value = null
+      emit('activeChange', null)
     }
-    emit('activeChange', activeTab.value)
   }
 }
 
+// Opens a view tab, or focuses it if it is already open.
+function openView(id: string, name: string) {
+  let tab = openTabs.find((t) => t.id === id)
+  if (!tab) {
+    tab = { id, kind: 'view', name }
+    openTabs.push(tab)
+  } else {
+    tab.name = name
+  }
+  if (activeTab.value !== id) activate(tab)
+}
+
+function closeView(id: string) {
+  if (openTabs.some((t) => t.id === id && t.kind === 'view')) closeTab(id)
+}
+
 async function saveActiveFile() {
-  if (!activeTab.value || !isDirty.value || saving.value) return
+  if (!activeTab.value || !activeIsFile.value || !isDirty.value || saving.value) return
   saving.value = true
   try {
     const content = getContent()
@@ -107,10 +142,14 @@ async function saveAllFiles() {
   }
 }
 
+const activeFileDirty = computed(() => activeIsFile.value && isDirty.value)
+
 defineExpose({
   saveActiveFile,
   saveAllFiles,
-  isDirty,
+  openView,
+  closeView,
+  isDirty: activeFileDirty,
   hasDirtyFiles,
 })
 
@@ -130,7 +169,7 @@ watch(() => props.filePath, async (newPath) => {
   if (!newPath) return
 
   // If already open, just switch to it
-  const existing = openTabs.find((t) => t.path === newPath)
+  const existing = openTabs.find((t) => t.id === newPath && t.kind === 'file')
   if (existing) {
     selectTab(newPath)
     return
@@ -147,7 +186,7 @@ watch(() => props.filePath, async (newPath) => {
   try {
     const content = await workspaceApi.readFile(props.workspaceId, newPath, signal)
     if (signal.aborted) return
-    openTabs.push({ path: newPath, name: tabName(newPath) })
+    openTabs.push({ id: newPath, kind: 'file', name: tabName(newPath) })
     activeTab.value = newPath
     await nextTick()
     setContent(content, newPath)
@@ -173,19 +212,20 @@ onUnmounted(() => {
     <div class="editor-tabs">
       <div
         v-for="tab in openTabs"
-        :key="tab.path"
+        :key="tab.id"
         class="editor-tab"
-        :class="{ active: tab.path === activeTab }"
-        @click="selectTab(tab.path)"
+        :class="{ active: tab.id === activeTab, 'editor-tab--view': tab.kind === 'view' }"
+        @click="selectTab(tab.id)"
       >
         <span class="tab-icon">
-          <span v-if="isFileDirty(tab.path)" class="dot-modified" />
+          <slot v-if="tab.kind === 'view'" name="view-icon" :id="tab.id" />
+          <span v-else-if="isFileDirty(tab.id)" class="dot-modified" />
         </span>
         <span class="tab-name">{{ tab.name }}</span>
         <button
           class="tab-close"
           title="Close"
-          @click="closeTab(tab.path, $event)"
+          @click="closeTab(tab.id, $event)"
         >×</button>
       </div>
       <div v-if="openTabs.length === 0" class="editor-tab-empty" />
@@ -193,10 +233,20 @@ onUnmounted(() => {
 
     <!-- Monaco editor container -->
     <div
-      v-show="activeTab && !loading && !error"
+      v-show="activeIsFile && !loading && !error"
       ref="editorContainer"
       class="editor-container"
     />
+
+    <!-- View tabs stay mounted so they keep their state between visits -->
+    <div
+      v-for="tab in viewTabs"
+      v-show="tab.id === activeTab && !loading && !error"
+      :key="tab.id"
+      class="editor-view"
+    >
+      <slot name="view" :id="tab.id" />
+    </div>
 
     <!-- Loading state -->
     <div v-if="loading" class="editor-empty">
@@ -287,6 +337,15 @@ onUnmounted(() => {
   width: 6px;
 }
 
+.editor-tab--view .tab-icon {
+  width: auto;
+  color: var(--text-muted);
+}
+
+.editor-tab--view.active .tab-icon {
+  color: var(--accent);
+}
+
 .dot-modified {
   display: block;
   width: 6px;
@@ -316,6 +375,12 @@ onUnmounted(() => {
 /* Monaco container */
 .editor-container {
   flex: 1;
+  overflow: hidden;
+}
+
+.editor-view {
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 

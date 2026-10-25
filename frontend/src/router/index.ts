@@ -7,7 +7,6 @@ import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 const IdeView = () => import('@/views/IdeView.vue')
 const ProjectsView = () => import('@/views/ProjectsView.vue')
-const ProjectView = () => import('@/views/ProjectView.vue')
 const MergeRequestView = () => import('@/views/MergeRequestView.vue')
 const InboxView = () => import('@/views/InboxView.vue')
 
@@ -32,11 +31,12 @@ export const router = createRouter({
       component: ProjectsView,
       meta: { requiresAuth: true },
     },
+    // A project opens as its IDE: project panels plus the project workspace.
     {
       path: '/projects/:id',
       name: 'project',
-      component: ProjectView,
-      meta: { requiresAuth: true },
+      component: IdeView,
+      meta: { requiresAuth: true, hideChrome: true },
     },
     {
       path: '/projects/:id/merge-requests/:mrId',

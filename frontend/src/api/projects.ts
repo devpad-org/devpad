@@ -1,4 +1,4 @@
-import { apiClient } from './client'
+import { ApiError, apiClient } from './client'
 
 export type ProjectStatus = 'creating' | 'ready' | 'error'
 
@@ -127,6 +127,17 @@ export const projectApi = {
 
   push(id: number): Promise<PushResult> {
     return apiClient.post(`/api/projects/${id}/push`, {})
+  },
+
+  // Returns the project workspace, or null before it is first opened.
+  async getWorkspace(id: number): Promise<ProjectWorkspace | null> {
+    try {
+      const res = await apiClient.get<{ workspace: ProjectWorkspace }>(`/api/projects/${id}/workspace`)
+      return res.workspace
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null
+      throw e
+    }
   },
 
   // Returns the project workspace, creating it on first use.
