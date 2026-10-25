@@ -47,6 +47,7 @@ Devpad is a Go web server that serves an embedded Vue 3 IDE frontend and manages
 - Routes use Go's standard `net/http` method-pattern syntax (`mux.Handle("GET /api/workspaces/{id}", ...)`); read path params with `r.PathValue`.
 - HTTP handlers return JSON through package-local `writeJSON`/`writeError` helpers and map domain errors to status codes near the handler boundary.
 - Auth is session-cookie based (`devpad_session`). Use `auth.UserFromContext` in authenticated handlers; wrap protected routes with `RequireAuth` or `RequireAdmin` in the central route registration.
+- `internal/server/origin.go` refuses state-changing requests and WebSocket upgrades from any origin but the app's own (preview subdomains are same-site, so SameSite cookies don't stop them), and requires JSON bodies under `/api/`. A new non-JSON endpoint must be exempted there explicitly.
 - Wrap lower-level errors with `%w`; do not discard errors except for existing best-effort cleanup paths around Docker resources, SSH injection, sidecars, and agent readiness.
 - Database repositories use `context.Context`, parameterized SQL, and `database/sql`; SQLite is opened with WAL, foreign keys, busy timeout, a single open connection, and immediate transactions.
 - Tests are Go `testing` tests colocated as `*_test.go`; use table-style subtests where useful, `t.Helper()` for setup helpers, and in-memory SQLite for repository/service tests.

@@ -102,23 +102,8 @@ func New(cfg Config) (*Server, error) {
 	adminService := admin.NewService(userRepo, workspaceService)
 	adminHandler := admin.NewHandler(adminService)
 
-	// Build allowed WebSocket origins from configuration.
-	var wsOrigins []string
-	if cfg.Domain != "" {
-		scheme := "https"
-		origin := scheme + "://" + cfg.Domain
-		if cfg.Port != 443 {
-			origin = fmt.Sprintf("%s://%s:%d", scheme, cfg.Domain, cfg.Port)
-		}
-		wsOrigins = append(wsOrigins, origin)
-	} else {
-		// Development mode: allow localhost on the configured port.
-		wsOrigins = append(wsOrigins,
-			fmt.Sprintf("http://localhost:%d", cfg.Port),
-			fmt.Sprintf("http://127.0.0.1:%d", cfg.Port),
-		)
-	}
-	workspaceHandler := workspace.NewHandler(workspaceService, wsOrigins)
+	origins := appOrigins(cfg)
+	workspaceHandler := workspace.NewHandler(workspaceService, origins)
 	wsServiceHandler := wsservice.NewHandler(wsServiceService, workspaceService)
 
 	// Project layer (canonical repos and the sandboxes seeded from them)
@@ -160,8 +145,10 @@ func New(cfg Config) (*Server, error) {
 	mux := http.NewServeMux()
 	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectHandler, taskHandler, mrHandler, aiModule.Handler, previewHandler)
 
-	// Wrap the mux with host-based routing to intercept preview subdomain requests.
-	handler := hostRouter(mux, previewHandler, cfg.PreviewDomain)
+	// Refuse state-changing requests and WebSocket upgrades from other origins,
+	// then route preview subdomain requests to the preview proxy so they never
+	// reach the app.
+	handler := hostRouter(sameOriginGuard(mux, origins), http.HandlerFunc(previewHandler.HandleProxy), cfg.PreviewDomain)
 
 	// Apply per-route body size limits to prevent memory exhaustion.
 	// Conversation message saves get 10MB; everything else gets 1MB.
@@ -500,19 +487,23 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // hostRouter returns a handler that routes preview subdomain requests to the
-// preview proxy and everything else to the main application mux.
-func hostRouter(appMux http.Handler, previewHandler *preview.Handler, previewDomain string) http.Handler {
+// preview proxy and everything else to the main application mux. The preview
+// domain itself counts as a preview host, so the app and its API are never
+// served on any host under it.
+func hostRouter(appMux http.Handler, previewHandler http.Handler, previewDomain string) http.Handler {
 	if previewDomain == "" {
 		return appMux
 	}
+	previewDomain = strings.ToLower(strings.TrimSuffix(previewDomain, "."))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		// Strip port if present.
 		if idx := strings.LastIndex(host, ":"); idx != -1 {
 			host = host[:idx]
 		}
-		if strings.HasSuffix(host, "."+previewDomain) {
-			previewHandler.HandleProxy(w, r)
+		host = strings.ToLower(strings.TrimSuffix(host, "."))
+		if host == previewDomain || strings.HasSuffix(host, "."+previewDomain) {
+			previewHandler.ServeHTTP(w, r)
 			return
 		}
 		appMux.ServeHTTP(w, r)

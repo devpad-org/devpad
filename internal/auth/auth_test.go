@@ -219,8 +219,8 @@ func TestHandler_SetupSetsSessionCookie(t *testing.T) {
 	if sessionCookie.Path != "/" {
 		t.Errorf("expected cookie path '/', got %q", sessionCookie.Path)
 	}
-	if sessionCookie.SameSite != http.SameSiteLaxMode {
-		t.Errorf("expected SameSite=Lax, got %v", sessionCookie.SameSite)
+	if sessionCookie.SameSite != http.SameSiteStrictMode {
+		t.Errorf("expected SameSite=Strict, got %v", sessionCookie.SameSite)
 	}
 	if sessionCookie.Secure {
 		t.Error("expected insecure cookie for non-HTTPS handler")

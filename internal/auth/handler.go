@@ -130,7 +130,11 @@ func (h *Handler) setSessionCookie(w http.ResponseWriter, session *Session) {
 		Expires:  session.ExpiresAt,
 		HttpOnly: true,
 		Secure:   h.secureCookie,
-		SameSite: http.SameSiteLaxMode,
+		// Strict costs nothing for this SPA: the HTML is public and every
+		// authenticated call is a same-site fetch made after the page loads.
+		// It does not stop sibling subdomains (they are the same site); the
+		// server's same-origin guard covers those.
+		SameSite: http.SameSiteStrictMode,
 	})
 }
 
@@ -151,7 +155,7 @@ func (h *Handler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		Expires:  time.Unix(0, 0),
 		HttpOnly: true,
 		Secure:   h.secureCookie,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
