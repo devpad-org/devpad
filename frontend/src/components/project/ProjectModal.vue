@@ -105,7 +105,7 @@ function handleSubmit() {
           <div class="form-group">
             <label class="form-label" for="project-setup">Setup script</label>
             <textarea id="project-setup" v-model="setupScript" class="form-input form-textarea form-mono" rows="4" placeholder="npm ci" />
-            <p class="form-hint">Runs in your project workspace and each new agent sandbox after the repo is checked out.</p>
+            <p class="form-hint">Runs in your project workspace and each new agent sandbox after the repo is checked out. Agents start once it finishes and are told if it failed.</p>
           </div>
           <div class="form-group">
             <label class="form-label" for="project-max">Concurrent sandboxes</label>

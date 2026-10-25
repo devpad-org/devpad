@@ -419,6 +419,53 @@ func (h *Handler) HandleSyncWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// HandleWorkspaceSetup returns the latest setup run in the project
+// workspace, or null when none has run there.
+func (h *Handler) HandleWorkspaceSetup(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	st, err := h.service.WorkspaceSetup(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"setup": setupResponse(st)})
+}
+
+// HandleRunWorkspaceSetup runs the project's setup script in the project
+// workspace again.
+func (h *Handler) HandleRunWorkspaceSetup(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	st, err := h.service.RunWorkspaceSetup(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"setup": setupResponse(st)})
+}
+
+func setupResponse(st *Setup) map[string]any {
+	if st == nil {
+		return nil
+	}
+	return map[string]any{
+		"script":     st.Script,
+		"status":     st.Status,
+		"exitCode":   st.ExitCode,
+		"output":     st.Output,
+		"error":      st.Error,
+		"startedAt":  st.StartedAt,
+		"finishedAt": st.FinishedAt,
+	}
+}
+
 func workspaceBranchRequest(w http.ResponseWriter, r *http.Request) (int64, string, bool) {
 	id, ok := pathID(w, r, "id")
 	if !ok {
@@ -472,7 +519,7 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrNotReady), errors.Is(err, workspace.ErrNotRunning),
 		errors.Is(err, ErrSandboxLimit), errors.Is(err, ErrBranchInUse), errors.Is(err, ErrBranchPublishing),
-		errors.Is(err, ErrDeleting), errors.Is(err, ErrBusy):
+		errors.Is(err, ErrDeleting), errors.Is(err, ErrBusy), errors.Is(err, ErrSetupRunning):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		var agentErr *agent.AgentError

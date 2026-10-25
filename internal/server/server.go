@@ -456,6 +456,8 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/projects/{id}/workspace/publish", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandlePublishWorkspaceBranch)))
 	mux.Handle("POST /api/projects/{id}/workspace/sync", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleSyncWorkspace)))
 	mux.Handle("GET /api/projects/{id}/workspace/branch-status", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleWorkspaceBranchStatus)))
+	mux.Handle("GET /api/projects/{id}/workspace/setup", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleWorkspaceSetup)))
+	mux.Handle("POST /api/projects/{id}/workspace/setup", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleRunWorkspaceSetup)))
 	mux.Handle("GET /api/projects/{id}/git-activity", authMiddleware.RequireAuth(http.HandlerFunc(gitBridgeHandler.HandleActivity)))
 	mux.Handle("GET /api/workspaces/{id}/conversion", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDiscoverConversion)))
 	mux.Handle("POST /api/workspaces/{id}/convert", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleConvertWorkspace)))

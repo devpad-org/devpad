@@ -81,6 +81,21 @@ export interface WorkspaceBranchStatus {
   sandboxOwned: boolean
 }
 
+// The latest run of the project's setup script in a workspace. Its output
+// is the end of what the script printed.
+export interface WorkspaceSetup {
+  // The script as it was when the run started.
+  script: string
+  status: 'running' | 'succeeded' | 'failed'
+  // Set once the script has exited.
+  exitCode: number | null
+  output: string
+  // Why a run failed without exiting, such as being stopped.
+  error: string
+  startedAt: string
+  finishedAt: string | null
+}
+
 export interface CheckoutResult {
   branch: string
   // The local branch's commit; it differs from upstreamSha when an existing
@@ -340,6 +355,23 @@ export const projectApi = {
   // refreshing the workspace's copy of the project's branch.
   workspaceBranchStatus(id: number, branch: string): Promise<WorkspaceBranchStatus> {
     return apiClient.get(`/api/projects/${id}/workspace/branch-status?branch=${encodeURIComponent(branch)}`)
+  },
+
+  // The latest setup run in the project workspace; null when none has run
+  // or the workspace doesn't exist yet.
+  async workspaceSetup(id: number): Promise<WorkspaceSetup | null> {
+    try {
+      const res = await apiClient.get<{ setup: WorkspaceSetup | null }>(`/api/projects/${id}/workspace/setup`)
+      return res.setup
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null
+      throw e
+    }
+  },
+
+  // Runs the project's current setup script in the project workspace again.
+  runWorkspaceSetup(id: number): Promise<{ setup: WorkspaceSetup }> {
+    return apiClient.post(`/api/projects/${id}/workspace/setup`, {})
   },
 
   // Pushes made through the devpad remote after `after` in `epoch`. Without

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -116,10 +115,8 @@ func (s *service) OpenWorkspace(ctx context.Context, userID, projectID int64) (w
 		return nil, false, fmt.Errorf("seeding workspace: %w", err)
 	}
 	ws.RepoSeeded = true
-	if strings.TrimSpace(p.SetupScript) != "" {
-		if _, err := s.workspaces.StartCommand(ctx, userID, ws.ID, p.SetupScript, ""); err != nil {
-			log.Printf("project %d: starting setup script in workspace %d: %v", p.ID, ws.ID, err)
-		}
+	if _, err := s.startSetup(ctx, p, ws); err != nil {
+		log.Printf("project %d: starting setup script in workspace %d: %v", p.ID, ws.ID, err)
 	}
 	return ws, true, nil
 }

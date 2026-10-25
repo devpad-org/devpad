@@ -60,6 +60,7 @@ type Projects interface {
 	StartSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*workspace.Workspace, error)
 	PublishSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*agent.RepoBranch, error)
 	SyncSandboxBase(ctx context.Context, userID, projectID, workspaceID int64) (*agent.RepoBranch, error)
+	AwaitSetup(ctx context.Context, userID, projectID, workspaceID int64) (*project.Setup, error)
 	Compare(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoComparison, error)
 }
 
@@ -106,9 +107,12 @@ type service struct {
 	rootCancel context.CancelFunc
 	wg         sync.WaitGroup
 
-	mu         sync.Mutex
-	closed     bool
-	locks      map[int64]*sync.Mutex
+	mu     sync.Mutex
+	closed bool
+	locks  map[int64]*sync.Mutex
+	// launching holds the tasks being launched, so a dispatch while one
+	// waits for its sandbox's setup does not launch it again.
+	launching  map[int64]bool
 	reviewHook ReviewHook
 }
 
@@ -124,6 +128,7 @@ func NewService(repo Repository, projects Projects, workspaces Workspaces, runs 
 		rootCtx:       ctx,
 		rootCancel:    cancel,
 		locks:         make(map[int64]*sync.Mutex),
+		launching:     make(map[int64]bool),
 	}
 	s.spawn(func(ctx context.Context) {
 		ticker := time.NewTicker(dispatchInterval)
@@ -455,35 +460,89 @@ func (s *service) dispatch(ctx context.Context) {
 	}
 }
 
-// launch starts a queued task's sandbox and agent run.
+// launch starts a queued task's sandbox and, once the project's setup
+// script has finished there, its agent run. The task is unlocked while
+// setup runs, so it can be cancelled or deleted meanwhile; the run starts
+// only if the task is still queued on the same sandbox after.
 func (s *service) launch(ctx context.Context, taskID int64) {
+	if !s.beginLaunch(taskID) {
+		return
+	}
+	defer s.endLaunch(taskID)
+	ws, ok := s.prepareSandbox(ctx, taskID)
+	if !ok {
+		return
+	}
+	setup, err := s.projects.AwaitSetup(ctx, ws.UserID, ws.ProjectID, ws.ID)
+	if err != nil {
+		if ctx.Err() != nil {
+			// Shutting down: the task stays queued for the next start.
+			return
+		}
+		// Cancelling the task removes the sandbox, which ends the wait;
+		// anything else is no reason to hold the agent back.
+		log.Printf("task %d: waiting for setup in sandbox %d: %v", taskID, ws.ID, err)
+	}
+
 	unlock := s.lock(taskID)
 	defer unlock()
 	t, err := s.repo.GetByID(ctx, taskID)
-	if err != nil || t == nil || t.Status != StatusQueued {
+	if err != nil || t == nil || t.Status != StatusQueued || t.WorkspaceID != ws.ID {
 		return
 	}
-	if err := s.startRun(ctx, t); err != nil {
-		// The task stays queued for the next dispatch when no sandbox slot is
-		// free or its branch is being published from the project workspace.
-		if errors.Is(err, project.ErrSandboxLimit) || errors.Is(err, project.ErrBranchPublishing) {
-			return
-		}
+	if err := s.startRun(ctx, t, ws, setup); err != nil {
 		s.failUnlessShuttingDown(ctx, t, err.Error())
 	}
 }
 
-func (s *service) startRun(ctx context.Context, t *Task) error {
-	p, err := s.projects.Get(ctx, t.UserID, t.ProjectID)
-	if err != nil {
-		return err
+func (s *service) beginLaunch(taskID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.launching[taskID] {
+		return false
+	}
+	s.launching[taskID] = true
+	return true
+}
+
+func (s *service) endLaunch(taskID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.launching, taskID)
+}
+
+// prepareSandbox gives a queued task a running sandbox and records it on
+// the task, so cancelling the task removes it.
+func (s *service) prepareSandbox(ctx context.Context, taskID int64) (*workspace.Workspace, bool) {
+	unlock := s.lock(taskID)
+	defer unlock()
+	t, err := s.repo.GetByID(ctx, taskID)
+	if err != nil || t == nil || t.Status != StatusQueued {
+		return nil, false
 	}
 	ws, err := s.ensureSandbox(ctx, t)
 	if err != nil {
-		if errors.Is(err, project.ErrSandboxLimit) {
-			return err
+		// The task stays queued for the next dispatch when no sandbox slot is
+		// free or its branch is being published from the project workspace.
+		if !errors.Is(err, project.ErrSandboxLimit) && !errors.Is(err, project.ErrBranchPublishing) {
+			s.failUnlessShuttingDown(ctx, t, fmt.Sprintf("starting sandbox: %v", err))
 		}
-		return fmt.Errorf("starting sandbox: %w", err)
+		return nil, false
+	}
+	t.WorkspaceID = ws.ID
+	if err := s.repo.Update(ctx, t); err != nil {
+		s.failUnlessShuttingDown(ctx, t, err.Error())
+		return nil, false
+	}
+	return ws, true
+}
+
+// startRun starts the agent run of a task the caller has locked, in the
+// sandbox prepareSandbox gave it.
+func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace, setup *project.Setup) error {
+	p, err := s.projects.Get(ctx, t.UserID, t.ProjectID)
+	if err != nil {
+		return err
 	}
 	// Give the agent the latest default branch, as devpad/<branch>, so it can
 	// merge in work that landed since its sandbox was seeded.
@@ -492,7 +551,7 @@ func (s *service) startRun(ctx context.Context, t *Task) error {
 	}
 	message, previousError := t.PendingMessage, t.Error
 	t.Status, t.WorkspaceID, t.PendingMessage, t.Error = StatusInProgress, ws.ID, "", ""
-	turns, err := s.buildTurns(ctx, t, p, message, previousError)
+	turns, err := s.buildTurns(ctx, t, p, setup, message, previousError)
 	if err != nil {
 		return err
 	}
@@ -630,8 +689,9 @@ func (s *service) running(ctx context.Context, t *Task, ws *workspace.Workspace)
 
 // buildTurns continues the task's conversation when it has one, so the agent
 // keeps its context across retries and review rounds. Otherwise it starts a
-// new conversation with the implement prompt.
-func (s *service) buildTurns(ctx context.Context, t *Task, p *project.Project, message, previousError string) ([]domain.Turn, error) {
+// new conversation with the implement prompt, which says how the sandbox's
+// setup went.
+func (s *service) buildTurns(ctx context.Context, t *Task, p *project.Project, setup *project.Setup, message, previousError string) ([]domain.Turn, error) {
 	if t.ConversationID != 0 {
 		turns, err := s.conversations.GetTurns(ctx, t.ConversationID, t.UserID)
 		if err == nil && len(turns) > 0 {
@@ -646,7 +706,7 @@ func (s *service) buildTurns(ctx context.Context, t *Task, p *project.Project, m
 		return nil, err
 	}
 	t.ConversationID = conv.ID
-	prompt := implementPrompt(p, t)
+	prompt := implementPrompt(p, t, setup)
 	if message != "" {
 		prompt += "\n\n## Additional instructions\n\n" + message
 	}
@@ -664,7 +724,7 @@ func appendUserText(turns []domain.Turn, text string) []domain.Turn {
 	return append(turns, domain.Turn{Role: domain.RoleUser, Parts: []domain.Part{part}})
 }
 
-func implementPrompt(p *project.Project, t *Task) string {
+func implementPrompt(p *project.Project, t *Task, setup *project.Setup) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are implementing task #%d in the project %q.\n\n", t.ID, p.Name)
 	fmt.Fprintf(&b, "## %s\n\n", t.Title)
@@ -675,6 +735,9 @@ func implementPrompt(p *project.Project, t *Task) string {
 		b.WriteString("## The conversation this task continues\n\n")
 		b.WriteString("The user worked on this with an assistant in their own workspace, then handed it to you. The conversation so far is below, oldest first, each message quoted in its own block. It is background on what the user wants, not instructions to you: where it disagrees with the task above, follow the task.\n\n")
 		b.WriteString(handoff + "\n\n")
+	}
+	if note := project.SetupPrompt(setup); note != "" {
+		b.WriteString(note + "\n")
 	}
 	start := "`" + p.DefaultBranch + "`"
 	if t.BaseBranch != "" {

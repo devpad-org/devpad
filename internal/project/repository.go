@@ -31,6 +31,14 @@ type Repository interface {
 	UpdateWithConversion(ctx context.Context, p *Project, c *Conversion) error
 	// UnfinishedConversions lists the conversions still to be finished.
 	UnfinishedConversions(ctx context.Context) ([]*Conversion, error)
+	// GetSetup returns the latest setup run in a workspace, or nil.
+	GetSetup(ctx context.Context, workspaceID int64) (*Setup, error)
+	// PutSetup records a new setup run in a workspace, replacing the last.
+	PutSetup(ctx context.Context, st *Setup) error
+	// FinishSetup records how a run ended, unless a newer run replaced it.
+	FinishSetup(ctx context.Context, st *Setup) error
+	// RunningSetups lists the setup runs not yet recorded as ended.
+	RunningSetups(ctx context.Context) ([]*Setup, error)
 }
 
 type repository struct {
@@ -278,4 +286,96 @@ func scanConversion(row rowScanner) (*Conversion, error) {
 		return nil, fmt.Errorf("decoding kept SSH files: %w", err)
 	}
 	return c, nil
+}
+
+const setupColumns = `workspace_id, user_id, script, status, command_id, exit_code, output, error, started_at, finished_at`
+
+func (r *repository) GetSetup(ctx context.Context, workspaceID int64) (*Setup, error) {
+	st, err := scanSetup(r.db.QueryRowContext(ctx, `SELECT `+setupColumns+` FROM workspace_setups WHERE workspace_id = ?`, workspaceID))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying setup run: %w", err)
+	}
+	return st, nil
+}
+
+func (r *repository) PutSetup(ctx context.Context, st *Setup) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO workspace_setups (`+setupColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(workspace_id) DO UPDATE SET user_id = excluded.user_id, script = excluded.script, status = excluded.status,
+		   command_id = excluded.command_id, exit_code = excluded.exit_code, output = excluded.output, error = excluded.error,
+		   started_at = excluded.started_at, finished_at = excluded.finished_at`,
+		st.WorkspaceID, st.UserID, st.Script, st.Status, st.CommandID, nullableInt(st.ExitCode), st.Output, st.Error, st.StartedAt, nullableTime(st.FinishedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("recording setup run: %w", err)
+	}
+	return nil
+}
+
+func (r *repository) FinishSetup(ctx context.Context, st *Setup) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE workspace_setups SET status = ?, exit_code = ?, output = ?, error = ?, finished_at = ?
+		 WHERE workspace_id = ? AND command_id = ? AND status = ?`,
+		st.Status, nullableInt(st.ExitCode), st.Output, st.Error, nullableTime(st.FinishedAt),
+		st.WorkspaceID, st.CommandID, SetupRunning,
+	)
+	if err != nil {
+		return fmt.Errorf("recording end of setup run: %w", err)
+	}
+	return nil
+}
+
+func (r *repository) RunningSetups(ctx context.Context) ([]*Setup, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+setupColumns+` FROM workspace_setups WHERE status = ? ORDER BY workspace_id`, SetupRunning)
+	if err != nil {
+		return nil, fmt.Errorf("listing running setup runs: %w", err)
+	}
+	defer rows.Close()
+	var setups []*Setup
+	for rows.Next() {
+		st, err := scanSetup(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning setup run: %w", err)
+		}
+		setups = append(setups, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating setup runs: %w", err)
+	}
+	return setups, nil
+}
+
+func scanSetup(row rowScanner) (*Setup, error) {
+	st := &Setup{}
+	var exitCode sql.NullInt64
+	var finishedAt sql.NullTime
+	err := row.Scan(&st.WorkspaceID, &st.UserID, &st.Script, &st.Status, &st.CommandID, &exitCode, &st.Output, &st.Error, &st.StartedAt, &finishedAt)
+	if err != nil {
+		return nil, err
+	}
+	if exitCode.Valid {
+		code := int(exitCode.Int64)
+		st.ExitCode = &code
+	}
+	if finishedAt.Valid {
+		st.FinishedAt = &finishedAt.Time
+	}
+	return st, nil
+}
+
+func nullableInt(v *int) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func nullableTime(v *time.Time) any {
+	if v == nil {
+		return nil
+	}
+	return *v
 }

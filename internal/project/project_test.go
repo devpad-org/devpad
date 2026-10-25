@@ -3,6 +3,7 @@ package project
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/agentbin"
@@ -235,13 +237,21 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // fakeWorkspaces is an in-memory workspace service for sandboxes.
 type fakeWorkspaces struct {
-	mu            sync.Mutex
-	nextID        int64
-	byID          map[int64]*workspace.Workspace
-	seeds         map[int64]string // workspace ID -> base branch + bundle seen
-	seedErr       error
-	deleteErr     error
-	commands      map[int64]string
+	mu        sync.Mutex
+	nextID    int64
+	byID      map[int64]*workspace.Workspace
+	seeds     map[int64]string // workspace ID -> base branch + bundle seen
+	seedErr   error
+	deleteErr error
+	commands  map[int64]string
+	startErr  error
+	// commandOutput answers reads of a workspace's command output; unset,
+	// every command has exited with status 0.
+	commandOutput func(id, cursor int64) (*agent.CommandOutput, error)
+	stopped       []int64
+	// db, when set, mirrors deletes into the workspaces table, so rows
+	// that reference a workspace go with it.
+	db            *sql.DB
 	deleted       []int64
 	sandboxBundle string
 	bundled       []string // project workspace branches bundled
@@ -407,6 +417,11 @@ func (f *fakeWorkspaces) Delete(_ context.Context, _, id int64) error {
 	}
 	delete(f.byID, id)
 	f.deleted = append(f.deleted, id)
+	if f.db != nil {
+		if _, err := f.db.Exec(`DELETE FROM workspaces WHERE id = ?`, id); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -426,8 +441,32 @@ func (f *fakeWorkspaces) setStatus(id int64, status workspace.Status) {
 func (f *fakeWorkspaces) StartCommand(_ context.Context, _, id int64, command, _ string) (*agent.ManagedCommand, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.startErr != nil {
+		return nil, f.startErr
+	}
 	f.commands[id] = command
-	return &agent.ManagedCommand{}, nil
+	return &agent.ManagedCommand{CommandID: fmt.Sprintf("cmd-%d", id), Status: "running"}, nil
+}
+
+func (f *fakeWorkspaces) ReadCommandOutput(_ context.Context, _, id int64, _ string, cursor int64, _, _ int) (*agent.CommandOutput, error) {
+	f.mu.Lock()
+	read := f.commandOutput
+	f.mu.Unlock()
+	if read != nil {
+		return read(id, cursor)
+	}
+	code := 0
+	if cursor > 0 {
+		return &agent.CommandOutput{Status: "exited", Cursor: cursor, NextCursor: cursor, ExitCode: &code}, nil
+	}
+	return &agent.CommandOutput{Status: "exited", Output: "ok\n", NextCursor: 3, ExitCode: &code}, nil
+}
+
+func (f *fakeWorkspaces) StopCommand(_ context.Context, _, id int64, _ string) (*agent.ManagedCommand, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = append(f.stopped, id)
+	return &agent.ManagedCommand{Status: "stopped"}, nil
 }
 
 type testEnv struct {
@@ -486,8 +525,13 @@ func setupTest(t *testing.T) *testEnv {
 	containers := newFakeContainers(host)
 	workspaces := newFakeWorkspaces()
 	keys := &fakeKeys{}
+	workspaces.db = db.Conn()
 	svc := NewService(NewRepository(db.Conn()), containers, workspaces, auth.NewUserRepository(db.Conn()), nil, keys).(*service)
 	svc.agentPort = port
+	svc.setupPoll = time.Millisecond
+	// Setup runs are followed in the background; let them finish before
+	// the database closes.
+	t.Cleanup(svc.background.Wait)
 
 	return &testEnv{
 		svc: svc, db: db, containers: containers, repoAgent: ra, workspaces: workspaces, keys: keys,
@@ -509,7 +553,7 @@ func insertUser(t *testing.T, db *appdb.DB, name string) int64 {
 // token the service generated.
 func (e *testEnv) createProject(t *testing.T, in CreateInput) *Project {
 	t.Helper()
-	e.svc.repo = &tokenCapturingRepo{Repository: NewRepository(e.db.Conn()), agent: e.repoAgent}
+	e.svc.repo = &tokenCapturingRepo{Repository: NewRepository(e.db.Conn()), agent: e.repoAgent, db: e.db.Conn()}
 	p, err := e.svc.Create(context.Background(), e.userID, in)
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -522,6 +566,7 @@ func (e *testEnv) createProject(t *testing.T, in CreateInput) *Project {
 type tokenCapturingRepo struct {
 	Repository
 	agent *fakeRepoAgent
+	db    *sql.DB
 }
 
 func (r *tokenCapturingRepo) Create(ctx context.Context, p *Project) error {
@@ -529,6 +574,22 @@ func (r *tokenCapturingRepo) Create(ctx context.Context, p *Project) error {
 	r.agent.token = p.RepoAgentToken
 	r.agent.mu.Unlock()
 	return r.Repository.Create(ctx, p)
+}
+
+// PutSetup stands in for the workspace row the fake workspace service never
+// writes, which a setup run references.
+func (r *tokenCapturingRepo) PutSetup(ctx context.Context, st *Setup) error {
+	if r.db != nil {
+		if err := ensureWorkspaceRow(ctx, r.db, st.WorkspaceID, st.UserID); err != nil {
+			return err
+		}
+	}
+	return r.Repository.PutSetup(ctx, st)
+}
+
+func ensureWorkspaceRow(ctx context.Context, db *sql.DB, id, userID int64) error {
+	_, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO workspaces (id, user_id, name) VALUES (?, ?, 'test')`, id, userID)
+	return err
 }
 
 func (r *tokenCapturingRepo) CreateConverting(ctx context.Context, p *Project, c *Conversion) error {

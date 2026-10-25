@@ -37,6 +37,34 @@ type fakeProjects struct {
 	mergeErr  error
 	pushes    int
 	pushErr   error
+	// setup is what AwaitSetup reports; while setupGate is open (non-nil
+	// and not closed) it waits. awaited records each wait's sandbox.
+	setup     *project.Setup
+	setupGate chan struct{}
+	awaited   []int64
+}
+
+func (f *fakeProjects) AwaitSetup(ctx context.Context, _, _, workspaceID int64) (*project.Setup, error) {
+	f.mu.Lock()
+	f.awaited = append(f.awaited, workspaceID)
+	gate := f.setupGate
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.setup, nil
+}
+
+func (f *fakeProjects) awaitedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.awaited)
 }
 
 func (f *fakeProjects) Get(_ context.Context, userID, projectID int64) (*project.Project, error) {
@@ -758,4 +786,72 @@ func TestHandler(t *testing.T) {
 func itoa(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+func TestAgentReviewStartsOnceSetupFinishes(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	gate := make(chan struct{})
+	e.projects.mu.Lock()
+	e.projects.setupGate = gate
+	e.projects.setup = &project.Setup{Script: "go mod download", Status: project.SetupSucceeded}
+	e.projects.mu.Unlock()
+
+	rv, err := e.svc.StartAgentReview(ctx, e.owner, e.pid(), mr.ID, AgentReviewInput{})
+	if err != nil {
+		t.Fatalf("start agent review: %v", err)
+	}
+	waitFor(t, "the wait for setup", func() bool { return e.projects.awaitedCount() == 1 })
+	got, _ := e.svc.repo.GetReview(ctx, rv.ID)
+	if got.Status != ReviewPending || got.WorkspaceID == 0 || got.RunID != 0 || len(e.runs.started()) != 0 {
+		t.Fatalf("expected the review waiting on its sandbox, got %+v", got)
+	}
+
+	close(gate)
+	waitFor(t, "the review run", func() bool { return len(e.runs.started()) == 1 })
+	prompt := e.runs.started()[0].Turns[0].Text()
+	for _, want := range []string{"## Setup", "go mod download", "It succeeded.", "## How to review"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestCloseWhileReviewSetupRunsDoesNotWaitForIt(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	gate := make(chan struct{})
+	e.projects.mu.Lock()
+	e.projects.setupGate = gate
+	e.projects.mu.Unlock()
+
+	rv, err := e.svc.StartAgentReview(ctx, e.owner, e.pid(), mr.ID, AgentReviewInput{})
+	if err != nil {
+		t.Fatalf("start agent review: %v", err)
+	}
+	waitFor(t, "the wait for setup", func() bool { return e.projects.awaitedCount() == 1 })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.svc.Close(ctx, e.owner, e.pid(), mr.ID)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("closing waited for the review's setup script")
+	}
+	close(gate)
+	time.Sleep(20 * time.Millisecond)
+	if len(e.runs.started()) != 0 {
+		t.Fatal("a review agent started for a closed merge request")
+	}
+	if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.Status != ReviewFailed || got.WorkspaceID != 0 {
+		t.Fatalf("expected the review ended with its sandbox removed, got %+v", got)
+	}
 }

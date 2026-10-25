@@ -53,6 +53,7 @@ type Projects interface {
 	Compare(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoComparison, error)
 	Diff(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoDiff, error)
 	CreateSandbox(ctx context.Context, userID, projectID int64, in project.SandboxInput) (*workspace.Workspace, error)
+	AwaitSetup(ctx context.Context, userID, projectID, workspaceID int64) (*project.Setup, error)
 	Merge(ctx context.Context, userID, projectID int64, in project.MergeInput) (*agent.RepoMergeResult, error)
 	Push(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
 }
@@ -468,30 +469,69 @@ func orDefault(value, fallback string) string {
 	return fallback
 }
 
+// launchReview starts a pending review's sandbox and, once the project's
+// setup script has finished there, its agent run. The review is unlocked
+// while setup runs, so closing or merging the merge request meanwhile is
+// not held up; the run starts only if the review is still pending on the
+// same sandbox after.
 func (s *service) launchReview(ctx context.Context, reviewID int64) {
+	ws, diff, ok := s.prepareReview(ctx, reviewID)
+	if !ok {
+		return
+	}
+	setup, err := s.projects.AwaitSetup(ctx, ws.UserID, ws.ProjectID, ws.ID)
+	if err != nil {
+		if ctx.Err() != nil {
+			// Shutting down: Reconcile settles the review on the next start.
+			return
+		}
+		// Closing the merge request removes the sandbox, which ends the
+		// wait; anything else is no reason to hold the review back.
+		log.Printf("review %d: waiting for setup in sandbox %d: %v", reviewID, ws.ID, err)
+	}
+
 	unlock := s.lock("review", reviewID)
 	defer unlock()
 	rv, err := s.repo.GetReview(ctx, reviewID)
-	if err != nil || rv == nil || rv.Status != ReviewPending {
+	if err != nil || rv == nil || rv.Status != ReviewPending || rv.WorkspaceID != ws.ID {
 		return
 	}
 	mr, err := s.repo.GetByID(ctx, rv.MergeRequestID)
 	if err != nil || mr == nil {
 		return
 	}
-	if err := s.startReviewRun(ctx, mr, rv); err != nil && s.rootCtx.Err() == nil {
+	if err := s.startReviewRun(ctx, mr, rv, ws, diff, setup); err != nil && s.rootCtx.Err() == nil {
 		s.failReview(ctx, mr, rv, err.Error())
 	}
 }
 
-func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Review) error {
-	p, err := s.projects.Get(ctx, mr.UserID, mr.ProjectID)
-	if err != nil {
-		return err
+// prepareReview reads the change a pending review is of and gives the
+// review a sandbox at its head.
+func (s *service) prepareReview(ctx context.Context, reviewID int64) (*workspace.Workspace, *agent.RepoDiff, bool) {
+	unlock := s.lock("review", reviewID)
+	defer unlock()
+	rv, err := s.repo.GetReview(ctx, reviewID)
+	if err != nil || rv == nil || rv.Status != ReviewPending {
+		return nil, nil, false
 	}
+	mr, err := s.repo.GetByID(ctx, rv.MergeRequestID)
+	if err != nil || mr == nil {
+		return nil, nil, false
+	}
+	ws, diff, err := s.startReviewSandbox(ctx, mr, rv)
+	if err != nil {
+		if s.rootCtx.Err() == nil {
+			s.failReview(ctx, mr, rv, err.Error())
+		}
+		return nil, nil, false
+	}
+	return ws, diff, true
+}
+
+func (s *service) startReviewSandbox(ctx context.Context, mr *MergeRequest, rv *Review) (*workspace.Workspace, *agent.RepoDiff, error) {
 	diff, err := s.projects.Diff(ctx, mr.UserID, mr.ProjectID, mr.TargetBranch, rv.HeadSHA)
 	if err != nil {
-		return fmt.Errorf("reading the change: %w", err)
+		return nil, nil, fmt.Errorf("reading the change: %w", err)
 	}
 	ws, err := s.projects.CreateSandbox(ctx, mr.UserID, mr.ProjectID, project.SandboxInput{
 		Name:   fmt.Sprintf("Review of !%d: %s", mr.ID, mr.Title),
@@ -500,12 +540,22 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 		Base:   mr.SourceBranch,
 	})
 	if err != nil {
-		return fmt.Errorf("starting review sandbox: %w", err)
+		return nil, nil, fmt.Errorf("starting review sandbox: %w", err)
 	}
 	// Record the sandbox before the run starts: the review tools find the
-	// review through it.
+	// review through it, and closing the merge request removes it.
 	rv.WorkspaceID = ws.ID
 	if err := s.repo.UpdateReview(ctx, rv); err != nil {
+		return nil, nil, err
+	}
+	return ws, diff, nil
+}
+
+// startReviewRun starts the agent run of a review the caller has locked, in
+// the sandbox startReviewSandbox gave it.
+func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Review, ws *workspace.Workspace, diff *agent.RepoDiff, setup *project.Setup) error {
+	p, err := s.projects.Get(ctx, mr.UserID, mr.ProjectID)
+	if err != nil {
 		return err
 	}
 	conv, err := s.conversations.CreateConversation(ctx, mr.UserID, ws.ID, rv.Model)
@@ -526,7 +576,7 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 		ConversationID: conv.ID,
 		AgentID:        rv.AgentID,
 		Model:          rv.Model,
-		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, reviewPrompt(p, mr, t, rv, ws.Branch, diff))},
+		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, reviewPrompt(p, mr, t, rv, ws.Branch, diff, setup))},
 		Thinking:       thinking,
 	})
 	if err != nil {
@@ -542,7 +592,7 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 	return nil
 }
 
-func reviewPrompt(p *project.Project, mr *MergeRequest, t *task.Task, rv *Review, branch string, diff *agent.RepoDiff) string {
+func reviewPrompt(p *project.Project, mr *MergeRequest, t *task.Task, rv *Review, branch string, diff *agent.RepoDiff, setup *project.Setup) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are reviewing merge request !%d in the project %q: %s\n\n", mr.ID, p.Name, mr.Title)
 	if d := strings.TrimSpace(mr.Description); d != "" {
@@ -571,6 +621,9 @@ func reviewPrompt(p *project.Project, mr *MergeRequest, t *task.Task, rv *Review
 		}
 	}
 	fmt.Fprintf(&b, "\nRun `git diff %[1]s HEAD` to read the change and `git log %[1]s..HEAD` for its commits.\n\n", diff.MergeBase)
+	if note := project.SetupPrompt(setup); note != "" {
+		b.WriteString(note + "\n")
+	}
 	b.WriteString(`## How to review
 
 - Check correctness, edge cases, error handling, tests, security and readability. Run the project's tests or checks where they exist.

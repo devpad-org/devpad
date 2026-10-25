@@ -48,6 +48,13 @@ type Service interface {
 	// copies of canonical branches, for git fetch through the devpad remote.
 	FetchWorkspaceBranches(ctx context.Context, userID, projectID int64, branches []string) error
 	WorkspaceBranchStatus(ctx context.Context, userID, projectID int64, branch string) (*WorkspaceBranchStatus, error)
+	// WorkspaceSetup returns the latest setup run in the project workspace,
+	// or nil; RunWorkspaceSetup runs the setup script there again.
+	WorkspaceSetup(ctx context.Context, userID, projectID int64) (*Setup, error)
+	RunWorkspaceSetup(ctx context.Context, userID, projectID int64) (*Setup, error)
+	// AwaitSetup waits for the setup run in a sandbox to finish and returns
+	// it, or nil when none runs there.
+	AwaitSetup(ctx context.Context, userID, projectID, workspaceID int64) (*Setup, error)
 	// DiscoverConversion lists what a standalone workspace holds that could
 	// become a project.
 	DiscoverConversion(ctx context.Context, userID, workspaceID int64) (*agent.RepoDiscovery, error)
@@ -86,6 +93,8 @@ type Workspaces interface {
 	Delete(ctx context.Context, userID, workspaceID int64) error
 	Start(ctx context.Context, userID, workspaceID int64) (*workspace.Workspace, error)
 	StartCommand(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
+	ReadCommandOutput(ctx context.Context, userID, workspaceID int64, commandID string, cursor int64, maxBytes, waitMS int) (*agent.CommandOutput, error)
+	StopCommand(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
 }
 
 type service struct {
@@ -98,6 +107,9 @@ type service struct {
 	agentPort  int
 	// convertTimeout bounds converting a workspace into a project.
 	convertTimeout time.Duration
+	// setupTimeout bounds a setup run; setupPoll paces reads of its output.
+	setupTimeout time.Duration
+	setupPoll    time.Duration
 
 	// pending holds, per project, the branches of sandboxes being created or
 	// started, so concurrent requests cannot overshoot MaxSandboxes while
@@ -115,8 +127,12 @@ type service struct {
 	converting map[int64]bool
 	// workspaceLocks serialize opening each project's workspace.
 	workspaceLocks map[int64]*sync.Mutex
-	publishHook    PublishHook
-	// background tracks conversions being finished in the background.
+	// setupWatches holds, per workspace, the setup run being followed,
+	// closed once it is no longer.
+	setupWatches map[int64]chan struct{}
+	publishHook  PublishHook
+	// background tracks conversions being finished and setup runs being
+	// followed in the background.
 	background sync.WaitGroup
 }
 
@@ -132,12 +148,15 @@ func NewService(repo Repository, cm container.Manager, workspaces Workspaces, us
 		agentPort:  agent.DefaultPort,
 
 		convertTimeout: workspaceOpenTimeout,
+		setupTimeout:   defaultSetupTimeout,
+		setupPoll:      defaultSetupPoll,
 		pending:        make(map[int64]map[string]bool),
 
 		publishing:     make(map[int64]map[string]bool),
 		deleting:       make(map[int64]bool),
 		converting:     make(map[int64]bool),
 		workspaceLocks: make(map[int64]*sync.Mutex),
+		setupWatches:   make(map[int64]chan struct{}),
 	}
 }
 
@@ -426,8 +445,8 @@ func (s *service) ListSandboxes(ctx context.Context, userID, projectID int64) ([
 
 // CreateSandbox starts a sandbox that owns one branch of the project. A
 // branch that already exists in the canonical repo is resumed; otherwise it
-// starts from the default branch. The setup script, if any, starts as a
-// background command once the repo is seeded.
+// starts from the default branch. The setup script, if any, starts once the
+// repo is seeded; AwaitSetup waits for it to finish.
 func (s *service) CreateSandbox(ctx context.Context, userID, projectID int64, in SandboxInput) (*workspace.Workspace, error) {
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
@@ -508,10 +527,8 @@ func (s *service) CreateSandbox(ctx context.Context, userID, projectID int64, in
 		return nil, fmt.Errorf("seeding sandbox: %w", err)
 	}
 
-	if strings.TrimSpace(p.SetupScript) != "" {
-		if _, err := s.workspaces.StartCommand(ctx, userID, ws.ID, p.SetupScript, ""); err != nil {
-			log.Printf("project %d: starting setup script in sandbox %d: %v", p.ID, ws.ID, err)
-		}
+	if _, err := s.startSetup(ctx, p, ws); err != nil {
+		log.Printf("project %d: starting setup script in sandbox %d: %v", p.ID, ws.ID, err)
 	}
 	return ws, nil
 }

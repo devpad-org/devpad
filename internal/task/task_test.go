@@ -117,6 +117,11 @@ type fakeSandboxes struct {
 	// compared records each compare's base.
 	aheadOf  map[string]int
 	compared []string
+	// setup is what AwaitSetup reports; while setupGate is open (non-nil
+	// and not closed) it waits. awaited records each wait's sandbox.
+	setup     *project.Setup
+	setupGate chan struct{}
+	awaited   []int64
 }
 
 func newFakeSandboxes(owner int64) *fakeSandboxes {
@@ -210,6 +215,26 @@ func (f *fakeSandboxes) StartSandbox(_ context.Context, _, _, workspaceID int64)
 	return &clone, nil
 }
 
+func (f *fakeSandboxes) AwaitSetup(ctx context.Context, _, _, workspaceID int64) (*project.Setup, error) {
+	f.mu.Lock()
+	f.awaited = append(f.awaited, workspaceID)
+	gate := f.setupGate
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lookup(workspaceID) == nil {
+		return nil, project.ErrNotFound
+	}
+	return f.setup, nil
+}
+
 func (f *fakeSandboxes) full() bool {
 	if f.limit == 0 {
 		return false
@@ -270,8 +295,8 @@ func (f *fakeSandboxes) set(fn func(f *fakeSandboxes)) {
 }
 
 type sandboxCalls struct {
-	created                                      []project.SandboxInput
-	started, stopped, deleted, published, synced []int64
+	created                                               []project.SandboxInput
+	started, stopped, deleted, published, synced, awaited []int64
 }
 
 func (f *fakeSandboxes) snapshot() sandboxCalls {
@@ -284,6 +309,7 @@ func (f *fakeSandboxes) snapshot() sandboxCalls {
 		deleted:   append([]int64(nil), f.deleted...),
 		published: append([]int64(nil), f.published...),
 		synced:    append([]int64(nil), f.synced...),
+		awaited:   append([]int64(nil), f.awaited...),
 	}
 }
 
@@ -1235,5 +1261,105 @@ func TestRepositoryAgainstMigratedSchema(t *testing.T) {
 	mustExec(`DELETE FROM projects WHERE id = ?`, projectID)
 	if got, _ := repo.GetByID(ctx, task.ID); got != nil {
 		t.Fatalf("expected task removed with its project: %+v", got)
+	}
+}
+
+func TestRunStartsOnceSetupFinishesAndIsToldHowItWent(t *testing.T) {
+	e := setup(t)
+	gate := make(chan struct{})
+	code := 1
+	e.sandboxes.set(func(f *fakeSandboxes) {
+		f.setupGate = gate
+		f.setup = &project.Setup{Script: "npm ci", Status: project.SetupFailed, ExitCode: &code, Output: "npm ERR! lockfile out of date\n"}
+	})
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+
+	waiting := waitSandbox(t, e, func(c sandboxCalls) bool { return len(c.awaited) == 1 })
+	queued, _ := e.repo.GetByID(context.Background(), task.ID)
+	if queued.Status != StatusQueued || queued.WorkspaceID != waiting.awaited[0] || queued.RunID != 0 {
+		t.Fatalf("expected the task queued on its sandbox while setup runs, got %+v", queued)
+	}
+	if len(e.runs.startedRequests()) != 0 {
+		t.Fatal("the agent started before setup finished")
+	}
+	// A dispatch meanwhile must not launch the task a second time.
+	e.svc.dispatch(context.Background())
+	time.Sleep(20 * time.Millisecond)
+	if c := e.sandboxes.snapshot(); len(c.awaited) != 1 || len(c.created) != 1 {
+		t.Fatalf("the task was launched again while waiting: %+v", c)
+	}
+
+	close(gate)
+	running := e.waitTask(t, task.ID, hasRun)
+	if running.Status != StatusInProgress {
+		t.Fatalf("unexpected running task: %+v", running)
+	}
+	prompt := e.runs.startedRequests()[0].Turns[0].Text()
+	for _, want := range []string{"## Setup", "npm ci", "it exited with status 1", "npm ERR! lockfile out of date", "## How to work"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestCancelWhileSetupRunsDoesNotWaitForIt(t *testing.T) {
+	e := setup(t)
+	gate := make(chan struct{})
+	e.sandboxes.set(func(f *fakeSandboxes) { f.setupGate = gate })
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	waiting := waitSandbox(t, e, func(c sandboxCalls) bool { return len(c.awaited) == 1 })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.svc.Cancel(context.Background(), owner, 1, task.ID)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("cancel: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancel waited for the setup script")
+	}
+	if c := e.sandboxes.snapshot(); len(c.deleted) != 1 || c.deleted[0] != waiting.awaited[0] {
+		t.Fatalf("expected the sandbox removed, got %v", c.deleted)
+	}
+
+	close(gate)
+	time.Sleep(20 * time.Millisecond)
+	if len(e.runs.startedRequests()) != 0 {
+		t.Fatal("an agent started for a cancelled task")
+	}
+	if got, _ := e.repo.GetByID(context.Background(), task.ID); got.Status != StatusCancelled {
+		t.Fatalf("expected the task to stay cancelled, got %+v", got)
+	}
+}
+
+func TestPromptWithoutSetupHasNoSetupSection(t *testing.T) {
+	e := setup(t)
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	e.waitTask(t, task.ID, hasRun)
+	if prompt := e.runs.startedRequests()[0].Turns[0].Text(); strings.Contains(prompt, "## Setup") {
+		t.Fatalf("unexpected setup section:\n%s", prompt)
+	}
+}
+
+// waitSandbox polls the fake's calls until cond holds.
+func waitSandbox(t *testing.T, e *env, cond func(sandboxCalls) bool) sandboxCalls {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		c := e.sandboxes.snapshot()
+		if cond(c) {
+			return c
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sandbox calls never reached the expected state: %+v", c)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

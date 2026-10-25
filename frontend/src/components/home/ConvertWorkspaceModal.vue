@@ -470,7 +470,7 @@ function formatBytes(bytes: number): string {
           <div class="form-group">
             <label class="form-label" for="convert-setup">Setup script</label>
             <textarea id="convert-setup" v-model="setupScript" class="form-input form-textarea form-mono" rows="3" placeholder="npm ci" />
-            <p class="form-hint">Runs in each new sandbox. It doesn't run here; this workspace is already set up.</p>
+            <p class="form-hint">Runs in each new sandbox before its agent starts. It doesn't run here; this workspace is already set up.</p>
           </div>
           <div class="form-group">
             <label class="form-label" for="convert-max">Concurrent sandboxes</label>

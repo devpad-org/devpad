@@ -7,6 +7,7 @@ import { useProjectStore } from '@/stores/projects'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import ConversionNotice from './ConversionNotice.vue'
 import ProjectModal from './ProjectModal.vue'
+import ProjectSetup from './ProjectSetup.vue'
 import StatusBadge from './StatusBadge.vue'
 
 // The project's details and settings in the IDE side bar.
@@ -122,6 +123,8 @@ async function push() {
           <dd>{{ workspaceStatus === 'none' ? 'not created' : workspaceStatus }}</dd>
         </dl>
       </div>
+
+      <ProjectSetup :workspace-status="workspaceStatus" />
 
       <div class="side-section actions">
         <button
