@@ -141,10 +141,12 @@ func (f *fakeSandboxes) ListSandboxes(_ context.Context, _, _ int64) ([]*workspa
 	defer f.mu.Unlock()
 	var out []*workspace.Workspace
 	for _, ws := range f.byID {
-		out = append(out, ws)
+		clone := *ws
+		out = append(out, &clone)
 	}
 	if f.hiddenSandbox != nil {
-		out = append(out, f.hiddenSandbox)
+		clone := *f.hiddenSandbox
+		out = append(out, &clone)
 	}
 	return out, nil
 }
@@ -162,7 +164,8 @@ func (f *fakeSandboxes) CreateSandbox(_ context.Context, userID, projectID int64
 	f.nextID++
 	ws := &workspace.Workspace{ID: f.nextID, UserID: userID, ProjectID: projectID, Kind: workspace.Kind(in.Kind), Branch: in.Branch, Name: in.Name, Status: workspace.StatusRunning}
 	f.byID[ws.ID] = ws
-	return ws, nil
+	clone := *ws
+	return &clone, nil
 }
 
 func (f *fakeSandboxes) StartSandbox(_ context.Context, _, _, workspaceID int64) (*workspace.Workspace, error) {
@@ -174,7 +177,8 @@ func (f *fakeSandboxes) StartSandbox(_ context.Context, _, _, workspaceID int64)
 		return nil, project.ErrSandboxLimit
 	}
 	ws.Status = workspace.StatusRunning
-	return ws, nil
+	clone := *ws
+	return &clone, nil
 }
 
 func (f *fakeSandboxes) full() bool {
@@ -263,7 +267,8 @@ func (w workspaceLifecycle) Get(_ context.Context, userID, workspaceID int64) (*
 	if ws.UserID != userID {
 		return nil, workspace.ErrForbidden
 	}
-	return ws, nil
+	clone := *ws
+	return &clone, nil
 }
 
 func (w workspaceLifecycle) Stop(_ context.Context, _, workspaceID int64) (*workspace.Workspace, error) {
@@ -272,7 +277,8 @@ func (w workspaceLifecycle) Stop(_ context.Context, _, workspaceID int64) (*work
 	w.stopped = append(w.stopped, workspaceID)
 	ws := w.lookup(workspaceID)
 	ws.Status = workspace.StatusStopped
-	return ws, nil
+	clone := *ws
+	return &clone, nil
 }
 
 func (w workspaceLifecycle) Delete(_ context.Context, _, workspaceID int64) error {
@@ -937,12 +943,19 @@ func TestReconcileSettlesInterruptedTasks(t *testing.T) {
 	}
 	e.sandboxes.byID[101] = &workspace.Workspace{ID: 101, UserID: owner, ProjectID: 1, Branch: "task/x", Status: workspace.StatusRunning}
 	e.runs.runs[7] = &domain.AgentRun{ID: 7, UserID: owner, Status: domain.AgentRunCompleted}
-	e.runs.runs[8] = &domain.AgentRun{ID: 8, UserID: owner, Status: domain.AgentRunFailed, Error: "agent run stopped because the server restarted or shut down"}
+	e.runs.runs[8] = &domain.AgentRun{ID: 8, UserID: owner, Status: domain.AgentRunFailed, Error: domain.AgentRunInterruptedError}
+	e.runs.runs[10] = &domain.AgentRun{ID: 10, UserID: owner, Status: domain.AgentRunFailed, Error: "provider overloaded"}
 
 	neverStarted := add(0)
 	completed := add(7)
 	interrupted := add(8)
 	missing := add(9)
+	broken := add(10)
+	// The interrupted run's transcript was saved by the agent runner.
+	it, _ := e.repo.GetByID(ctx, interrupted)
+	it.ConversationID = 77
+	e.repo.Update(ctx, it)
+	e.convs.save(77, domain.NewTextTurn(domain.RoleUser, "implement"), domain.NewTextTurn(domain.RoleAssistant, "halfway"))
 
 	if err := e.svc.Reconcile(ctx); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -952,10 +965,24 @@ func TestReconcileSettlesInterruptedTasks(t *testing.T) {
 		t.Fatalf("expected the interrupted launch relaunched, got %+v", got)
 	}
 	e.waitTask(t, completed, status(StatusInReview))
-	if got := e.waitTask(t, interrupted, status(StatusFailed)); !strings.Contains(got.Error, "server restarted") {
-		t.Fatalf("unexpected error: %q", got.Error)
+	// A task whose run the restart interrupted resumes its conversation.
+	resumed := e.waitTask(t, interrupted, func(t *Task) bool { return t.RunID != 8 && t.RunID != 0 })
+	if resumed.Status != StatusInProgress || resumed.ConversationID != 77 {
+		t.Fatalf("expected the interrupted task resumed in its conversation, got %+v", resumed)
+	}
+	var resumeTurns []domain.Turn
+	for _, req := range e.runs.startedRequests() {
+		if req.ConversationID == 77 {
+			resumeTurns = req.Turns
+		}
+	}
+	if len(resumeTurns) != 3 || !strings.Contains(lastText(resumeTurns), "the server restarted while the agent was working") {
+		t.Fatalf("unexpected resume turns: %+v", resumeTurns)
 	}
 	e.waitTask(t, missing, status(StatusFailed))
+	if got := e.waitTask(t, broken, status(StatusFailed)); got.Error != "provider overloaded" {
+		t.Fatalf("a real failure must still fail the task, got %q", got.Error)
+	}
 }
 
 func TestShutdownLeavesInterruptedLaunchesForReconcile(t *testing.T) {

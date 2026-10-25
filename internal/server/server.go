@@ -329,6 +329,7 @@ type aiRouteHandler interface {
 	HandleGetAgentRun(http.ResponseWriter, *http.Request)
 	HandleAgentRunEvents(http.ResponseWriter, *http.Request)
 	HandleCancelAgentRun(http.ResponseWriter, *http.Request)
+	HandleListAttention(http.ResponseWriter, *http.Request)
 	HandleListConversations(http.ResponseWriter, *http.Request)
 	HandleCreateConversation(http.ResponseWriter, *http.Request)
 	HandleDeleteConversation(http.ResponseWriter, *http.Request)
@@ -466,6 +467,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("GET /api/ai/agent/runs/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetAgentRun)))
 	mux.Handle("GET /api/ai/agent/runs/{id}/events", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleAgentRunEvents)))
 	mux.Handle("POST /api/ai/agent/runs/{id}/cancel", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleCancelAgentRun)))
+	mux.Handle("GET /api/ai/agent/attention", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListAttention)))
 
 	// AI conversation history routes
 	mux.Handle("GET /api/ai/conversations", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListConversations)))

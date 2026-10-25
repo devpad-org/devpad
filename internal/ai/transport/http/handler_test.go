@@ -68,6 +68,14 @@ type stubAgentRunService struct {
 	listRunsFn        func(ctx context.Context, userID, workspaceID int64) ([]domain.AgentRun, error)
 	subscribeEventsFn func(ctx context.Context, userID, runID, afterSequence int64) (<-chan domain.AgentRunEvent, error)
 	cancelRunFn       func(ctx context.Context, userID, runID int64) error
+	listAttentionFn   func(ctx context.Context, userID int64) ([]app.AttentionItem, error)
+}
+
+func (s stubAgentRunService) ListAttention(ctx context.Context, userID int64) ([]app.AttentionItem, error) {
+	if s.listAttentionFn != nil {
+		return s.listAttentionFn(ctx, userID)
+	}
+	return nil, nil
 }
 
 func (s stubAgentRunService) StartRun(ctx context.Context, req app.StartAgentRunRequest) (*domain.AgentRun, error) {
@@ -391,5 +399,40 @@ func TestHandleAgentRunEvents_ReplaysRunEvents(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, `"sequence":2`) || !strings.Contains(body, `"content":"hello"`) || !strings.Contains(body, `"sequence":3`) || !strings.Contains(body, `"done":true`) {
 		t.Fatalf("unexpected SSE body: %s", body)
+	}
+}
+
+func TestHandleListAttention_ReturnsPendingPrompts(t *testing.T) {
+	runs := stubAgentRunService{listAttentionFn: func(_ context.Context, userID int64) ([]app.AttentionItem, error) {
+		if userID != 5 {
+			t.Fatalf("expected user id 5, got %d", userID)
+		}
+		return []app.AttentionItem{
+			{Run: domain.AgentRun{ID: 1, WorkspaceID: 9, Status: domain.AgentRunWaitingApproval}, Approval: &domain.ApprovalRequest{ID: "a1", Command: "sudo reboot"}},
+			{Run: domain.AgentRun{ID: 2, WorkspaceID: 9, Status: domain.AgentRunWaitingUser}, Question: &domain.UserQuestionRequest{ID: "q1", Title: "Which DB?"}},
+		}, nil
+	}}
+	h := &Handler{runs: runs}
+	req := httptest.NewRequest(http.MethodGet, "/api/ai/agent/attention", nil)
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 5}))
+	w := httptest.NewRecorder()
+	h.HandleListAttention(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body)
+	}
+	var body struct {
+		Items []struct {
+			Run      AgentRunDTO         `json:"run"`
+			Approval *ApprovalRequestDTO `json:"approval"`
+			Question *QuestionRequestDTO `json:"question"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(body.Items) != 2 || body.Items[0].Approval == nil || body.Items[0].Approval.Command != "sudo reboot" || body.Items[0].Question != nil ||
+		body.Items[1].Question == nil || body.Items[1].Question.Title != "Which DB?" || body.Items[1].Approval != nil {
+		t.Fatalf("unexpected items: %s", w.Body)
 	}
 }

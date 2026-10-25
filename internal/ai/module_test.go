@@ -53,6 +53,10 @@ func (s fakeAgentRunService) CancelRun(context.Context, int64, int64) error {
 	return nil
 }
 
+func (s fakeAgentRunService) ListAttention(context.Context, int64) ([]app.AttentionItem, error) {
+	return nil, nil
+}
+
 func (s fakeAgentRunService) Shutdown(context.Context) error {
 	return nil
 }

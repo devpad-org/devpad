@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -101,6 +102,44 @@ func (r *AgentRunRepository) ListRuns(ctx context.Context, userID, workspaceID i
 		run, err := scanAgentRun(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scanning agent run list item: %w", err)
+		}
+		runs = append(runs, *run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating agent runs: %w", err)
+	}
+	return runs, nil
+}
+
+// ListRunsByStatus returns runs in any of the statuses, oldest first. A zero
+// userID lists every user's runs.
+func (r *AgentRunRepository) ListRunsByStatus(ctx context.Context, userID int64, statuses ...domain.AgentRunStatus) ([]domain.AgentRun, error) {
+	if len(statuses) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(statuses)+1)
+	for _, status := range statuses {
+		args = append(args, string(status))
+	}
+	query := `SELECT id, parent_run_id, user_id, workspace_id, conversation_id, agent_id, model, status, error,
+	                 input_turns, thinking, created_at, updated_at, started_at, completed_at
+	          FROM ai_agent_runs
+	          WHERE status IN (?` + strings.Repeat(", ?", len(statuses)-1) + `)`
+	if userID != 0 {
+		query += ` AND user_id = ?`
+		args = append(args, userID)
+	}
+	rows, err := r.db.QueryContext(ctx, query+` ORDER BY created_at ASC, id ASC`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying agent runs by status: %w", err)
+	}
+	defer rows.Close()
+
+	runs := make([]domain.AgentRun, 0)
+	for rows.Next() {
+		run, err := scanAgentRun(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning agent run: %w", err)
 		}
 		runs = append(runs, *run)
 	}

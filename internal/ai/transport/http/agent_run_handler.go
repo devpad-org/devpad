@@ -93,6 +93,40 @@ func (h *Handler) HandleListAgentRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"runs": runDTOs})
 }
 
+// HandleListAttention returns the user's runs, in any workspace, that are
+// waiting for an approval or an answer.
+func (h *Handler) HandleListAttention(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	if h.runs == nil {
+		writeError(w, http.StatusServiceUnavailable, "agent runner is not available")
+		return
+	}
+	items, err := h.runs.ListAttention(r.Context(), user.ID)
+	if err != nil {
+		h.writeAgentRunError(w, err)
+		return
+	}
+	type attentionDTO struct {
+		Run      AgentRunDTO         `json:"run"`
+		Approval *ApprovalRequestDTO `json:"approval,omitempty"`
+		Question *QuestionRequestDTO `json:"question,omitempty"`
+	}
+	out := make([]attentionDTO, 0, len(items))
+	for _, item := range items {
+		item := item
+		dto := attentionDTO{Run: FromAgentRunSummary(&item.Run), Question: FromQuestionRequest(item.Question)}
+		if item.Approval != nil {
+			dto.Approval = &ApprovalRequestDTO{ID: item.Approval.ID, Command: item.Approval.Command}
+		}
+		out = append(out, dto)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+}
+
 // HandleGetAgentRun returns metadata for a background agent run owned by the user.
 func (h *Handler) HandleGetAgentRun(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())

@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	runnerShutdownMessage       = "agent run stopped because the server restarted or shut down"
+	runnerShutdownMessage       = domain.AgentRunInterruptedError
 	maxActiveChildRunsPerParent = 3
 )
 
@@ -25,6 +25,7 @@ type AgentRunRepository interface {
 	AppendEvent(ctx context.Context, runID int64, event domain.ClientEvent) (domain.AgentRunEvent, error)
 	UpdateStatus(ctx context.Context, runID int64, status domain.AgentRunStatus, errorMessage string) error
 	MarkActiveRunsFailed(ctx context.Context, message string) error
+	ListRunsByStatus(ctx context.Context, userID int64, statuses ...domain.AgentRunStatus) ([]domain.AgentRun, error)
 }
 
 // StartAgentRunRequest contains all inputs needed to start a background run.
@@ -48,7 +49,17 @@ type AgentRunService interface {
 	ListEvents(ctx context.Context, userID, runID, afterSequence int64) ([]domain.AgentRunEvent, error)
 	SubscribeEvents(ctx context.Context, userID, runID, afterSequence int64) (<-chan domain.AgentRunEvent, error)
 	CancelRun(ctx context.Context, userID, runID int64) error
+	// ListAttention returns the user's runs that are waiting for an approval
+	// or an answer, across all workspaces.
+	ListAttention(ctx context.Context, userID int64) ([]AttentionItem, error)
 	Shutdown(ctx context.Context) error
+}
+
+// AttentionItem is a run waiting on the user and what it is waiting for.
+type AttentionItem struct {
+	Run      domain.AgentRun
+	Approval *domain.ApprovalRequest
+	Question *domain.UserQuestionRequest
 }
 
 type agentEventBroker interface {
@@ -89,10 +100,28 @@ func NewAgentRunService(ctx context.Context, repo AgentRunRepository, chat ChatS
 		rootCancel:    cancel,
 		cancels:       make(map[int64]context.CancelFunc),
 	}
-	if err := service.repo.MarkActiveRunsFailed(context.Background(), runnerShutdownMessage); err != nil {
+	service.reconcileInterruptedRuns()
+	return service
+}
+
+// reconcileInterruptedRuns ends runs a previous server process left active.
+// Each keeps the transcript of what it did, rebuilt from its events, so it
+// can be continued.
+func (s *agentRunService) reconcileInterruptedRuns() {
+	ctx := context.Background()
+	runs, err := s.repo.ListRunsByStatus(ctx, 0, domain.AgentRunQueued, domain.AgentRunRunning, domain.AgentRunWaitingApproval, domain.AgentRunWaitingUser)
+	if err != nil {
+		log.Printf("failed to list interrupted agent runs: %v", err)
+	}
+	for _, run := range runs {
+		if err := s.interruptRun(run.ID); err != nil {
+			log.Printf("failed to reconcile interrupted agent run %d: %v", run.ID, err)
+		}
+	}
+	// Anything the loop could not end is still marked failed.
+	if err := s.repo.MarkActiveRunsFailed(ctx, runnerShutdownMessage); err != nil {
 		log.Printf("failed to reconcile active agent runs: %v", err)
 	}
-	return service
 }
 
 // WithAgentService configures the agent lookup dependency.
@@ -366,6 +395,12 @@ func (s *agentRunService) consumeRun(ctx context.Context, runID int64, stream <-
 		select {
 		case event, ok := <-stream:
 			if !ok {
+				// The orchestrator closes the stream when the run's context is
+				// cancelled, so a closed stream is not proof of completion.
+				if ctx.Err() != nil {
+					s.endCancelledRun(runID, ctx.Err())
+					return
+				}
 				s.finishRun(runID, status, errorMessage)
 				return
 			}
@@ -411,17 +446,87 @@ func (s *agentRunService) consumeRun(ctx context.Context, runID int64, stream <-
 				return
 			}
 		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.Canceled) {
-				if err := s.cancelRun(runID, "agent run cancelled"); err != nil {
-					log.Printf("failed to mark agent run %d cancelled: %v", runID, err)
-				}
-				return
-			}
-			errorMessage = ctx.Err().Error()
-			s.finishRun(runID, domain.AgentRunFailed, errorMessage)
+			s.endCancelledRun(runID, ctx.Err())
 			return
 		}
 	}
+}
+
+// endCancelledRun records why a run's context ended: a cancel from the
+// user, the server shutting down, or a deadline.
+func (s *agentRunService) endCancelledRun(runID int64, cause error) {
+	switch {
+	case s.rootCtx.Err() != nil:
+		if err := s.interruptRun(runID); err != nil {
+			log.Printf("failed to mark agent run %d interrupted: %v", runID, err)
+		}
+	case errors.Is(cause, context.Canceled):
+		if err := s.cancelRun(runID, "agent run cancelled"); err != nil {
+			log.Printf("failed to mark agent run %d cancelled: %v", runID, err)
+		}
+	default:
+		s.finishRun(runID, domain.AgentRunFailed, cause.Error())
+	}
+}
+
+// interruptRun ends a run cut short by a server shutdown or restart. It
+// fails with domain.AgentRunInterruptedError, so its owner can tell it apart
+// from a real failure and continue it, and it keeps its transcript.
+func (s *agentRunService) interruptRun(runID int64) error {
+	if err := s.appendAndPublish(runID, domain.ClientEvent{ErrorMessage: runnerShutdownMessage}); err != nil {
+		return err
+	}
+	if err := s.appendAndPublish(runID, domain.ClientEvent{Done: true}); err != nil {
+		return err
+	}
+	if err := s.persistRunConversation(context.Background(), runID); err != nil {
+		log.Printf("failed to persist interrupted agent run %d conversation: %v", runID, err)
+	}
+	if err := s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunFailed, runnerShutdownMessage); err != nil {
+		return err
+	}
+	s.notifyFinished(runID)
+	return nil
+}
+
+func (s *agentRunService) ListAttention(ctx context.Context, userID int64) ([]AttentionItem, error) {
+	runs, err := s.repo.ListRunsByStatus(ctx, userID, domain.AgentRunWaitingApproval, domain.AgentRunWaitingUser)
+	if err != nil {
+		return nil, fmt.Errorf("listing waiting agent runs: %w", err)
+	}
+	items := make([]AttentionItem, 0, len(runs))
+	for _, run := range runs {
+		events, err := s.repo.ListEvents(ctx, run.ID, 0)
+		if err != nil {
+			return nil, fmt.Errorf("listing agent run events: %w", err)
+		}
+		item := AttentionItem{Run: run}
+		item.Approval, item.Question = pendingPrompts(events)
+		if item.Approval != nil || item.Question != nil {
+			items = append(items, item)
+		}
+	}
+	return items, nil
+}
+
+// pendingPrompts finds the approval and question a run is still waiting on.
+func pendingPrompts(events []domain.AgentRunEvent) (*domain.ApprovalRequest, *domain.UserQuestionRequest) {
+	var approval *domain.ApprovalRequest
+	var question *domain.UserQuestionRequest
+	for _, stored := range events {
+		e := stored.Event
+		switch {
+		case e.Approval != nil:
+			approval = e.Approval
+		case e.ApprovalResult != nil && approval != nil && e.ApprovalResult.ID == approval.ID:
+			approval = nil
+		case e.Question != nil:
+			question = e.Question
+		case e.QuestionResult != nil && question != nil && e.QuestionResult.ID == question.ID:
+			question = nil
+		}
+	}
+	return approval, question
 }
 
 func (s *agentRunService) finishRun(runID int64, currentStatus domain.AgentRunStatus, errorMessage string) {

@@ -43,6 +43,16 @@ type AgentRunEvent struct {
 	CreatedAt time.Time
 }
 
+// AgentRunInterruptedError is the error of a run that stopped because the
+// server shut down or restarted, rather than failing on its own.
+const AgentRunInterruptedError = "agent run stopped because the server restarted or shut down"
+
+// Interrupted reports whether the run was cut short by a server restart or
+// shutdown, so whoever started it can continue it.
+func (r AgentRun) Interrupted() bool {
+	return r.Status == AgentRunFailed && r.Error == AgentRunInterruptedError
+}
+
 // AgentRunStatusTerminal reports whether the run has reached a final state.
 func AgentRunStatusTerminal(status AgentRunStatus) bool {
 	switch status {

@@ -118,6 +118,25 @@ func (r *fakeAgentRunRepository) UpdateStatus(_ context.Context, runID int64, st
 	return nil
 }
 
+func (r *fakeAgentRunRepository) ListRunsByStatus(_ context.Context, userID int64, statuses ...domain.AgentRunStatus) ([]domain.AgentRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var runs []domain.AgentRun
+	for id := int64(1); id < r.nextRunID; id++ {
+		run := r.runs[id]
+		if run == nil || (userID != 0 && run.UserID != userID) {
+			continue
+		}
+		for _, status := range statuses {
+			if run.Status == status {
+				runs = append(runs, *cloneRun(run))
+			}
+		}
+	}
+	return runs, nil
+}
+
 func (r *fakeAgentRunRepository) MarkActiveRunsFailed(_ context.Context, message string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -900,5 +919,164 @@ func TestAgentRunService_NotifiesListenersWhenRunsFinish(t *testing.T) {
 	case run := <-finished:
 		t.Fatalf("unexpected extra notification for run %d", run.ID)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestAgentRunService_StartupInterruptsLeftoverRunsAndKeepsTranscript(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	ctx := context.Background()
+	left := &domain.AgentRun{UserID: 3, WorkspaceID: 4, ConversationID: 21, Model: "m", Status: domain.AgentRunRunning, InputTurns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "build it")}}
+	repo.CreateRun(ctx, left)
+	repo.AppendEvent(ctx, left.ID, domain.ClientEvent{TextDelta: "halfway there"})
+	done := &domain.AgentRun{UserID: 3, WorkspaceID: 4, Model: "m", Status: domain.AgentRunCompleted}
+	repo.CreateRun(ctx, done)
+
+	conversations := &fakeConversationService{}
+	service := NewAgentRunService(ctx, repo, fakeRunnerChatService{}, conversations)
+	defer shutdownRunner(t, service)
+
+	got, _ := repo.GetRun(ctx, left.ID)
+	if !got.Interrupted() {
+		t.Fatalf("leftover run should be interrupted, got %s %q", got.Status, got.Error)
+	}
+	if other, _ := repo.GetRun(ctx, done.ID); other.Status != domain.AgentRunCompleted {
+		t.Fatalf("finished runs must be left alone, got %s", other.Status)
+	}
+	events, _ := repo.ListEvents(ctx, left.ID, 0)
+	if n := len(events); n != 3 || events[1].Event.ErrorMessage != domain.AgentRunInterruptedError || !events[2].Event.Done {
+		t.Fatalf("expected the event log to end with the interruption, got %+v", events)
+	}
+	saves := conversations.saveCalls()
+	if len(saves) != 1 || saves[0].conversationID != 21 || len(saves[0].turns) != 2 || saves[0].turns[1].Text() != "halfway there" {
+		t.Fatalf("expected the transcript rebuilt from events, got %+v", saves)
+	}
+}
+
+func TestAgentRunService_ShutdownInterruptsActiveRuns(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	conversations := &fakeConversationService{}
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(ctx context.Context, _ AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			events := make(chan domain.ClientEvent)
+			go func() {
+				<-ctx.Done()
+				close(events)
+			}()
+			return events, nil
+		},
+	}, conversations)
+	finished := make(chan domain.AgentRun, 1)
+	service.OnRunFinished(func(run domain.AgentRun) { finished <- run })
+
+	run, err := service.StartRun(context.Background(), StartAgentRunRequest{
+		UserID: 1, WorkspaceID: 2, ConversationID: 5, Model: "m",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")},
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	shutdownRunner(t, service)
+
+	got, _ := repo.GetRun(context.Background(), run.ID)
+	if !got.Interrupted() {
+		t.Fatalf("a run stopped by shutdown should be interrupted, not %s %q", got.Status, got.Error)
+	}
+	select {
+	case run := <-finished:
+		if !run.Interrupted() {
+			t.Fatalf("listener got %s %q", run.Status, run.Error)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("listener was not told about the interruption")
+	}
+	if len(conversations.saveCalls()) < 2 {
+		t.Fatal("an interrupted run should persist its transcript")
+	}
+}
+
+// The orchestrator closes its stream when a run's context ends; a cancelled
+// run must never be recorded as completed when the closed stream wins the
+// race with ctx.Done.
+func TestAgentRunService_CancelledRunIsNeverRecordedAsCompleted(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		repo := newFakeAgentRunRepository()
+		service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+			streamAgentFn: func(ctx context.Context, _ AgentChatRequest) (<-chan domain.ClientEvent, error) {
+				events := make(chan domain.ClientEvent)
+				go func() {
+					<-ctx.Done()
+					close(events)
+				}()
+				return events, nil
+			},
+		}, nil)
+		run, err := service.StartRun(context.Background(), StartAgentRunRequest{
+			UserID: 1, WorkspaceID: 2, Model: "m",
+			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")},
+		})
+		if err != nil {
+			t.Fatalf("start run: %v", err)
+		}
+		waitForRunStatus(t, repo, run.ID, domain.AgentRunRunning)
+		if err := service.CancelRun(context.Background(), 1, run.ID); err != nil {
+			t.Fatalf("cancel: %v", err)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			got, _ := repo.GetRun(context.Background(), run.ID)
+			if domain.AgentRunStatusTerminal(got.Status) {
+				if got.Status != domain.AgentRunCancelled {
+					t.Fatalf("iteration %d: cancelled run recorded as %s", i, got.Status)
+				}
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("run never finished")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		shutdownRunner(t, service)
+	}
+}
+
+func TestAgentRunService_ListAttentionReturnsPendingPrompts(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	ctx := context.Background()
+	service := NewAgentRunService(ctx, repo, fakeRunnerChatService{}, nil)
+	defer shutdownRunner(t, service)
+
+	add := func(userID int64, status domain.AgentRunStatus, events ...domain.ClientEvent) int64 {
+		run := &domain.AgentRun{UserID: userID, WorkspaceID: 9, Model: "m", Status: status}
+		repo.CreateRun(ctx, run)
+		for _, e := range events {
+			repo.AppendEvent(ctx, run.ID, e)
+		}
+		return run.ID
+	}
+	approval := add(1, domain.AgentRunWaitingApproval,
+		domain.ClientEvent{Approval: &domain.ApprovalRequest{ID: "a1", Command: "sudo apt install jq"}},
+		domain.ClientEvent{ApprovalResult: &domain.ApprovalResult{ID: "a1", Status: "approved"}},
+		domain.ClientEvent{Approval: &domain.ApprovalRequest{ID: "a2", Command: "sudo reboot"}},
+	)
+	question := add(1, domain.AgentRunWaitingUser, domain.ClientEvent{Question: &domain.UserQuestionRequest{ID: "q1", Title: "Which DB?"}})
+	add(1, domain.AgentRunWaitingUser,
+		domain.ClientEvent{Question: &domain.UserQuestionRequest{ID: "q2"}},
+		domain.ClientEvent{QuestionResult: &domain.UserQuestionResult{ID: "q2", Status: "answered"}},
+	)
+	add(1, domain.AgentRunRunning, domain.ClientEvent{Approval: &domain.ApprovalRequest{ID: "a3"}})
+	add(2, domain.AgentRunWaitingApproval, domain.ClientEvent{Approval: &domain.ApprovalRequest{ID: "a4"}})
+
+	items, err := service.ListAttention(ctx, 1)
+	if err != nil {
+		t.Fatalf("list attention: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 waiting runs, got %+v", items)
+	}
+	if items[0].Run.ID != approval || items[0].Approval == nil || items[0].Approval.ID != "a2" {
+		t.Fatalf("expected the unresolved approval, got %+v", items[0])
+	}
+	if items[1].Run.ID != question || items[1].Question == nil || items[1].Question.Title != "Which DB?" {
+		t.Fatalf("expected the open question, got %+v", items[1])
 	}
 }

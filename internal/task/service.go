@@ -571,12 +571,14 @@ func (s *service) settle(ctx context.Context, t *Task, run *domain.AgentRun) {
 	if t.Status != StatusInProgress || t.RunID != run.ID {
 		return
 	}
-	switch run.Status {
-	case domain.AgentRunCompleted:
+	switch {
+	case run.Interrupted():
+		s.requeueInterrupted(ctx, t)
+	case run.Status == domain.AgentRunCompleted:
 		if err := s.collect(ctx, t); err != nil {
 			s.failUnlessShuttingDown(ctx, t, err.Error())
 		}
-	case domain.AgentRunCancelled:
+	case run.Status == domain.AgentRunCancelled:
 		s.fail(ctx, t, "the agent run was cancelled")
 	default:
 		msg := run.Error
@@ -585,6 +587,18 @@ func (s *service) settle(ctx context.Context, t *Task, run *domain.AgentRun) {
 		}
 		s.fail(ctx, t, msg)
 	}
+}
+
+// requeueInterrupted puts a task whose run was cut short by a server restart
+// back in the queue. Its next run continues the same conversation, told why
+// it stopped, in the same sandbox.
+func (s *service) requeueInterrupted(ctx context.Context, t *Task) {
+	t.Status, t.RunID, t.Error = StatusQueued, 0, "the server restarted while the agent was working"
+	if err := s.repo.Update(context.Background(), t); err != nil {
+		log.Printf("task %d: requeueing after an interrupted run: %v", t.ID, err)
+		return
+	}
+	s.kick()
 }
 
 // collect publishes the task branch from the sandbox into the canonical repo
@@ -747,9 +761,9 @@ func (s *service) waitForRun(ctx context.Context, userID, runID int64) {
 
 // Reconcile settles tasks that were in progress when the server last
 // stopped and resumes dispatching queued ones. A task whose run had not
-// started goes back to the queue. The agent runner marks interrupted runs
-// failed at startup, so every other task either collects a run that completed
-// before the restart or fails with the run's error and can be restarted.
+// started, or whose run the restart interrupted, goes back to the queue and
+// picks up where it left off. Any other task collects a run that completed
+// before the restart, or fails with the run's error.
 func (s *service) Reconcile(ctx context.Context) error {
 	tasks, err := s.repo.ListByStatus(ctx, StatusInProgress)
 	if err != nil {
