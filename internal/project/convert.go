@@ -2,9 +2,9 @@ package project
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
-	"net/url"
 	"path"
 	"slices"
 	"strings"
@@ -39,6 +39,54 @@ import (
 // has its own deadline, so a conversion that ran out of time still cleans up.
 const conversionCleanupTimeout = 5 * time.Minute
 
+// conversionFinishTimeout bounds the steps after a workspace is attached:
+// making the project ready, restarting the container and rotating the key.
+// They get a deadline of their own, so a conversion that used most of its
+// time still finishes them.
+const conversionFinishTimeout = 10 * time.Minute
+
+// ConversionState is how far a conversion got.
+type ConversionState string
+
+const (
+	// ConversionImporting is a conversion whose workspace is not attached
+	// yet; it can still be undone.
+	ConversionImporting ConversionState = "importing"
+	// ConversionAttached is a conversion whose workspace is the project's
+	// workspace, with steps that may still be pending.
+	ConversionAttached ConversionState = "attached"
+	ConversionDone     ConversionState = "done"
+)
+
+// Conversion records a workspace's conversion into a project, so the steps
+// after the workspace is attached survive a crash or a lost response, and so
+// the user sees what was done, until they dismiss it. Stripped credentials
+// are kept by kind and location, never value.
+type Conversion struct {
+	ProjectID   int64
+	UserID      int64
+	WorkspaceID int64
+	InPlace     bool
+	// InitSHA is the commit of a repo made from the workspace's files, to
+	// undo if the conversion stops before attaching.
+	InitSHA  string
+	State    ConversionState
+	Stripped []agent.CredentialItem
+	// SSHKept lists SSH files left in place because they differ from what
+	// devpad wrote.
+	SSHKept         []string
+	RestartPending  bool
+	RestartError    string
+	RotationPending bool
+	KeyRotated      bool
+	// PublicKey is the user's new devpad SSH key once rotated.
+	PublicKey     string
+	RotationError string
+	Dismissed     bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
 // ConvertInput describes the project to make from a standalone workspace.
 type ConvertInput struct {
 	// RepoPath picks a repo found in the workspace, relative to /workspace.
@@ -62,9 +110,11 @@ type ConvertInput struct {
 // ConvertResult is a converted workspace's new project.
 type ConvertResult struct {
 	Project *Project
-	// Workspace is the converted workspace once it is the project's
-	// workspace; nil when its repo was in a subdirectory and it was left
-	// as it was. The fields below are only set in that case.
+	// InPlace is set when the workspace became the project's workspace;
+	// otherwise its repo was in a subdirectory and it was left as it was.
+	// The fields below are only set in place.
+	InPlace bool
+	// Workspace is the converted workspace, when it could be read back.
 	Workspace *workspace.Workspace
 	// SSH reports which of devpad's SSH files were removed.
 	SSH *agent.SSHCleanup
@@ -89,7 +139,9 @@ func (s *service) DiscoverConversion(ctx context.Context, userID, workspaceID in
 // and its repo container, and a repo made from the workspace's files, so
 // the workspace is left as it was, apart from credentials already stripped
 // with the user's consent. Once the workspace is attached, the conversion
-// stands: a failed restart or key rotation is reported, not undone.
+// stands, and the steps after it always run: a failed restart or key
+// rotation is recorded and reported, not undone, and one cut short by a
+// crash is finished when devpad starts.
 func (s *service) ConvertWorkspace(ctx context.Context, userID, workspaceID int64, in ConvertInput) (*ConvertResult, error) {
 	// Like opening a project workspace, conversion outlives the request, so
 	// a client that goes away cannot leave a half-made project behind.
@@ -108,6 +160,7 @@ func (s *service) ConvertWorkspace(ctx context.Context, userID, workspaceID int6
 	}
 	defer release()
 
+	var consented []agent.CredentialItem
 	if inPlace {
 		found, err := s.workspaces.DiscoverRepos(ctx, userID, workspaceID)
 		if err != nil {
@@ -122,7 +175,9 @@ func (s *service) ConvertWorkspace(ctx context.Context, userID, workspaceID int6
 		}
 		var unconsented []agent.CredentialItem
 		for _, item := range found.Credentials {
-			if !slices.Contains(in.StripCredentials, item.ID) {
+			if slices.Contains(in.StripCredentials, item.ID) {
+				consented = append(consented, item)
+			} else {
 				unconsented = append(unconsented, item)
 			}
 		}
@@ -159,7 +214,8 @@ func (s *service) ConvertWorkspace(ctx context.Context, userID, workspaceID int6
 	// The project stays "creating" until the workspace is attached, so
 	// nothing else can open its workspace or start a sandbox meanwhile, and
 	// it is marked as converting as it is created, so Delete refuses it.
-	if err := s.createConverting(ctx, p); err != nil {
+	conv := &Conversion{WorkspaceID: workspaceID, InPlace: inPlace, InitSHA: initSHA, State: ConversionImporting}
+	if err := s.createConverting(ctx, p, conv); err != nil {
 		undoInit()
 		return nil, fmt.Errorf("creating project: %w", err)
 	}
@@ -189,68 +245,279 @@ func (s *service) ConvertWorkspace(ctx context.Context, userID, workspaceID int6
 		return fail(err)
 	}
 
-	result := &ConvertResult{Project: p}
-	if inPlace {
-		attached, err := s.workspaces.AttachToProject(ctx, userID, workspaceID, p.ID, in.StripCredentials)
-		if err != nil {
-			return fail(err)
-		}
-		result.SSH, result.Stripped = attached.SSH, attached.Stripped
-	}
-
-	p.Status, p.Error = StatusReady, ""
-	if err := s.repo.Update(ctx, p); err != nil {
-		return nil, fmt.Errorf("updating project: %w", err)
-	}
 	if !inPlace {
-		return result, nil
+		p.Status, p.Error = StatusReady, ""
+		if err := s.repo.Update(ctx, p); err != nil {
+			return fail(fmt.Errorf("updating project: %w", err))
+		}
+		// Nothing was taken from the workspace, so there is nothing to show.
+		conv.State, conv.Dismissed = ConversionDone, true
+		s.saveConversion(ctx, conv)
+		return &ConvertResult{Project: p}, nil
 	}
 
-	if err := s.workspaces.RestartConverted(ctx, userID, workspaceID); err != nil {
-		log.Printf("workspace %d: restarting after conversion: %v", workspaceID, err)
-		result.RestartError = err.Error()
+	// Record what follows attaching before it happens: once attached, the
+	// conversion stands, and these steps must run even if devpad stops.
+	conv.Stripped, conv.RestartPending, conv.RotationPending = consented, true, true
+	if err := s.repo.UpdateConversion(ctx, conv); err != nil {
+		return fail(err)
 	}
-	ws, err := s.workspaces.Get(ctx, userID, workspaceID)
+	attached, err := s.workspaces.AttachToProject(ctx, userID, workspaceID, p.ID, in.StripCredentials)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
-	result.Workspace = ws
-	s.rotateKey(ctx, userID, result)
+
+	// The conversion stands from here, on a context of its own.
+	fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), conversionFinishTimeout)
+	defer fcancel()
+	conv.State = ConversionAttached
+	if attached.Stripped != nil {
+		conv.Stripped = attached.Stripped
+	}
+	if attached.SSH != nil {
+		conv.SSHKept = attached.SSH.Kept
+	}
+	s.saveConversion(fctx, conv)
+	s.finishAttached(fctx, p, conv)
+
+	result := &ConvertResult{
+		Project:       p,
+		InPlace:       true,
+		SSH:           attached.SSH,
+		Stripped:      conv.Stripped,
+		RestartError:  conv.RestartError,
+		KeyRotated:    conv.KeyRotated,
+		PublicKey:     conv.PublicKey,
+		RotationError: conv.RotationError,
+	}
+	if ws, err := s.workspaces.Get(fctx, userID, workspaceID); err == nil {
+		result.Workspace = ws
+	} else {
+		log.Printf("workspace %d: reading back after conversion: %v", workspaceID, err)
+	}
 	return result, nil
+}
+
+// finishAttached completes a conversion whose workspace is attached: it
+// makes the project ready, restarts the container and rotates the key. Each
+// step is recorded as done once it ran, so none runs twice; failures are
+// recorded for the user, not returned. A project that could not be made
+// ready keeps the conversion unfinished, to be retried.
+func (s *service) finishAttached(ctx context.Context, p *Project, conv *Conversion) {
+	ready := p.Status == StatusReady
+	if !ready {
+		p.Status, p.Error = StatusReady, ""
+		if err := s.repo.Update(ctx, p); err != nil {
+			log.Printf("project %d: marking ready after conversion: %v", p.ID, err)
+			p.Status = StatusCreating
+		} else {
+			ready = true
+		}
+	}
+	if conv.RestartPending {
+		conv.RestartError = ""
+		if err := s.workspaces.RestartConverted(ctx, conv.UserID, conv.WorkspaceID); err != nil {
+			log.Printf("workspace %d: restarting after conversion: %v", conv.WorkspaceID, err)
+			conv.RestartError = err.Error()
+		}
+		conv.RestartPending = false
+		s.saveConversion(ctx, conv)
+	}
+	if conv.RotationPending {
+		s.rotateKey(ctx, conv)
+		conv.RotationPending = false
+		s.saveConversion(ctx, conv)
+	}
+	if ready {
+		conv.State = ConversionDone
+		s.saveConversion(ctx, conv)
+	}
+}
+
+// saveConversion records a conversion's progress. A failed write is logged:
+// the steps it records have run either way.
+func (s *service) saveConversion(ctx context.Context, conv *Conversion) {
+	if err := s.repo.UpdateConversion(ctx, conv); err != nil {
+		log.Printf("project %d: recording conversion: %v", conv.ProjectID, err)
+	}
 }
 
 // rotateKey replaces the user's devpad SSH key, which the converted
 // workspace held while an AI could read it. It runs once the workspace is
 // attached, so a failure leaves the old key working and the conversion
 // standing; the user is told to rotate it from Settings.
-func (s *service) rotateKey(ctx context.Context, userID int64, result *ConvertResult) {
-	user, err := s.users.GetByID(ctx, userID)
+func (s *service) rotateKey(ctx context.Context, conv *Conversion) {
+	conv.KeyRotated, conv.PublicKey, conv.RotationError = false, "", ""
+	user, err := s.users.GetByID(ctx, conv.UserID)
 	if err != nil {
-		result.RotationError = "looking up your SSH key: " + err.Error()
+		conv.RotationError = "looking up your SSH key: " + err.Error()
 		return
 	}
 	if user == nil || user.SSHPrivateKey == "" {
 		return // no key was ever put in the workspace
 	}
 	if s.keys == nil {
-		result.RotationError = "key rotation is not available"
+		conv.RotationError = "key rotation is not available"
 		return
 	}
-	publicKey, err := s.keys.GenerateSSHKey(ctx, userID)
+	publicKey, err := s.keys.GenerateSSHKey(ctx, conv.UserID)
 	if err != nil {
-		log.Printf("user %d: rotating SSH key after a conversion: %v", userID, err)
-		result.RotationError = err.Error()
+		log.Printf("user %d: rotating SSH key after a conversion: %v", conv.UserID, err)
+		conv.RotationError = err.Error()
 		return
 	}
-	result.KeyRotated, result.PublicKey = true, publicKey
+	conv.KeyRotated, conv.PublicKey = true, publicKey
 }
 
-// createConverting inserts a project being converted and marks it so under
-// the same lock Delete checks, leaving no moment where it can be deleted.
-func (s *service) createConverting(ctx context.Context, p *Project) error {
+// resumeConversion finishes a conversion that devpad stopped part way
+// through. One whose workspace was attached finishes its pending steps; one
+// whose workspace was not is undone, as a failed conversion would have been.
+// The caller holds the project's converting mark.
+func (s *service) resumeConversion(ctx context.Context, p *Project, conv *Conversion) {
+	if conv.State == ConversionImporting {
+		attached, known := s.conversionAttached(ctx, conv)
+		if !known {
+			return // try again later
+		}
+		if !attached {
+			log.Printf("project %d: undoing a conversion that stopped before its workspace was attached", p.ID)
+			s.discardProject(ctx, p)
+			if conv.InitSHA != "" {
+				if err := s.workspaces.UndoInitRepoFromContents(ctx, conv.UserID, conv.WorkspaceID, conv.InitSHA); err != nil {
+					log.Printf("workspace %d: removing the repo made for a stopped conversion: %v", conv.WorkspaceID, err)
+				}
+			}
+			return
+		}
+		conv.State = ConversionAttached
+		s.saveConversion(ctx, conv)
+	}
+	if conv.State == ConversionAttached {
+		s.finishAttached(ctx, p, conv)
+	}
+}
+
+// conversionAttached reports whether a conversion's workspace became the
+// project's workspace; known is false when that cannot be told yet.
+func (s *service) conversionAttached(ctx context.Context, conv *Conversion) (attached, known bool) {
+	if !conv.InPlace {
+		return false, true
+	}
+	ws, err := s.workspaces.Get(ctx, conv.UserID, conv.WorkspaceID)
+	if errors.Is(err, workspace.ErrNotFound) {
+		return false, true
+	}
+	if err != nil {
+		log.Printf("workspace %d: checking a stopped conversion: %v", conv.WorkspaceID, err)
+		return false, false
+	}
+	return ws.ProjectID == conv.ProjectID, true
+}
+
+// Reconcile finishes, in the background, the conversions devpad stopped
+// part way through, such as by a crash between attaching a workspace and
+// rotating the key. Each project is marked as converting meanwhile, so it
+// cannot be deleted under it.
+func (s *service) Reconcile(ctx context.Context) error {
+	conversions, err := s.repo.UnfinishedConversions(ctx)
+	if err != nil {
+		return err
+	}
+	for _, conv := range conversions {
+		s.resumeInBackground(conv)
+	}
+	return nil
+}
+
+// resumeInBackground resumes one conversion unless it is already running or
+// its project is being deleted. It reports whether it started.
+func (s *service) resumeInBackground(conv *Conversion) bool {
+	s.mu.Lock()
+	if s.converting[conv.ProjectID] || s.deleting[conv.ProjectID] {
+		s.mu.Unlock()
+		return false
+	}
+	s.converting[conv.ProjectID] = true
+	s.mu.Unlock()
+
+	s.background.Add(1)
+	go func() {
+		defer s.background.Done()
+		defer s.endConverting(conv.ProjectID)
+		ctx, cancel := context.WithTimeout(context.Background(), conversionFinishTimeout)
+		defer cancel()
+		unlock := s.lockWorkspace(conv.ProjectID)
+		defer unlock()
+		p, err := s.repo.GetByID(ctx, conv.ProjectID)
+		if err != nil || p == nil {
+			if err != nil {
+				log.Printf("project %d: resuming conversion: %v", conv.ProjectID, err)
+			}
+			return
+		}
+		// Read it afresh: it may have moved on since it was listed.
+		if fresh, err := s.repo.GetConversion(ctx, conv.ProjectID); err == nil && fresh != nil {
+			conv = fresh
+		}
+		s.resumeConversion(ctx, p, conv)
+	}()
+	return true
+}
+
+// healConversion resumes the conversion of a project left "creating" by a
+// step that failed, such as the write marking it ready.
+func (s *service) healConversion(ctx context.Context, p *Project) {
+	conv, err := s.repo.GetConversion(ctx, p.ID)
+	if err != nil {
+		log.Printf("project %d: reading conversion: %v", p.ID, err)
+		return
+	}
+	if conv != nil && conv.State != ConversionDone {
+		s.resumeInBackground(conv)
+	}
+}
+
+// ConversionNotice returns what converting a workspace into the project did,
+// until the user dismisses it; nil when there is nothing to show.
+func (s *service) ConversionNotice(ctx context.Context, userID, projectID int64) (*Conversion, error) {
+	p, err := s.Get(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	conv, err := s.repo.GetConversion(ctx, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	if conv == nil || !conv.InPlace || conv.Dismissed {
+		return nil, nil
+	}
+	if conv.State != ConversionDone {
+		s.resumeInBackground(conv)
+	}
+	return conv, nil
+}
+
+// DismissConversionNotice stops showing what converting a workspace did.
+func (s *service) DismissConversionNotice(ctx context.Context, userID, projectID int64) error {
+	p, err := s.Get(ctx, userID, projectID)
+	if err != nil {
+		return err
+	}
+	conv, err := s.repo.GetConversion(ctx, p.ID)
+	if err != nil || conv == nil {
+		return err
+	}
+	conv.Dismissed = true
+	return s.repo.UpdateConversion(ctx, conv)
+}
+
+// createConverting inserts a project being converted, with its conversion
+// record, and marks it so under the same lock Delete checks, leaving no
+// moment where it can be deleted.
+func (s *service) createConverting(ctx context.Context, p *Project, conv *Conversion) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.repo.Create(ctx, p); err != nil {
+	if err := s.repo.CreateConverting(ctx, p, conv); err != nil {
 		return err
 	}
 	s.converting[p.ID] = true
@@ -342,15 +609,18 @@ func (s *service) discardProject(ctx context.Context, p *Project) {
 }
 
 // hasURLCredentials reports whether an upstream URL embeds a password or
-// token. A bare SSH user, as in ssh://git@host/repo, is not one.
+// token. A bare SSH user, as in ssh://git@host/repo, is not one. The URL is
+// split by hand, so one Go cannot parse still counts.
 func hasURLCredentials(raw string) bool {
-	if !strings.Contains(raw, "://") {
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok {
 		return false
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.User == nil {
+	authority, _, _ := strings.Cut(rest, "/")
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
 		return false
 	}
-	_, hasPassword := u.User.Password()
-	return hasPassword || strings.HasPrefix(u.Scheme, "http")
+	_, _, hasPassword := strings.Cut(authority[:at], ":")
+	return hasPassword || strings.HasPrefix(strings.ToLower(scheme), "http")
 }

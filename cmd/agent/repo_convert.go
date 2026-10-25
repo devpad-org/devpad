@@ -10,7 +10,6 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -103,6 +102,10 @@ type repoDiscovery struct {
 	// Credentials lists what a converted workspace must not keep, with no
 	// secret values.
 	Credentials []credentialItem `json:"credentials"`
+	// CredentialIncludes names the config includes searched as well, and
+	// CredentialScanIncomplete says the search for repos hit its limit.
+	CredentialIncludes       []string `json:"credentialIncludes"`
+	CredentialScanIncomplete bool     `json:"credentialScanIncomplete"`
 }
 
 // handleRepoDiscover lists the git repos in the workspace, or previews a repo
@@ -121,9 +124,12 @@ func handleRepoDiscover(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	creds := detectCredentials(ctx, root)
 	result := repoDiscovery{
-		Repos:       []discoveredRepo{},
-		Credentials: detectCredentials(ctx, root, dirs),
+		Repos:                    []discoveredRepo{},
+		Credentials:              creds.Items,
+		CredentialIncludes:       creds.Includes,
+		CredentialScanIncomplete: creds.Incomplete,
 	}
 	for _, dir := range dirs {
 		repo, err := describeRepo(ctx, root, dir)
@@ -261,20 +267,34 @@ func describeRepo(ctx context.Context, root, dir string) (*discoveredRepo, error
 }
 
 // stripURLCredentials removes a password or token from a URL. A bare user
-// name, as in ssh://git@host/repo, is not a credential and stays.
+// name, as in ssh://git@host/repo, is not a credential and stays, and a
+// non-HTTP URL keeps its user name when only the password goes. The URL is
+// split by hand rather than parsed, so one Go cannot parse, such as a
+// password with a stray % or #, is still caught.
 func stripURLCredentials(raw string) (string, bool) {
-	if !strings.Contains(raw, "://") {
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok || scheme == "" {
 		return raw, false
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.User == nil {
+	authority, path := rest, ""
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		authority, path = rest[:i], rest[i:]
+	}
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
 		return raw, false
 	}
-	if _, hasPassword := u.User.Password(); !hasPassword && !strings.HasPrefix(u.Scheme, "http") {
+	userinfo, host := authority[:at], authority[at+1:]
+	user, _, hasPassword := strings.Cut(userinfo, ":")
+	isHTTP := strings.HasPrefix(strings.ToLower(scheme), "http")
+	switch {
+	case isHTTP:
+		return scheme + "://" + host + path, true
+	case hasPassword:
+		return scheme + "://" + user + "@" + host + path, true
+	default:
 		return raw, false
 	}
-	u.User = nil
-	return u.String(), true
 }
 
 func nonEmptyLines(s string) []string {

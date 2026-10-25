@@ -131,6 +131,9 @@ type fakeRepoAgent struct {
 	// initialImports records each initial import's default branch and bundle.
 	initialImports []string
 	initialErr     string
+	// commands records commands run in the repo container, such as writing
+	// SSH keys before a push.
+	commands []string
 }
 
 func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -185,6 +188,13 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(agent.RepoMergeResult{Target: req.Target, SHA: "merged", Strategy: req.Strategy})
+	case "/api/command":
+		var req struct {
+			Command string `json:"command"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		a.commands = append(a.commands, req.Command)
+		json.NewEncoder(w).Encode(map[string]any{"output": "", "exit_code": 0})
 	case "/api/repo/push":
 		a.pushed = append(a.pushed, r.URL.Query().Get("branch"))
 		json.NewEncoder(w).Encode(agent.RepoBranch{Branch: r.URL.Query().Get("branch"), SHA: "pushed"})
@@ -488,6 +498,13 @@ func (r *tokenCapturingRepo) Create(ctx context.Context, p *Project) error {
 	r.agent.token = p.RepoAgentToken
 	r.agent.mu.Unlock()
 	return r.Repository.Create(ctx, p)
+}
+
+func (r *tokenCapturingRepo) CreateConverting(ctx context.Context, p *Project, c *Conversion) error {
+	r.agent.mu.Lock()
+	r.agent.token = p.RepoAgentToken
+	r.agent.mu.Unlock()
+	return r.Repository.CreateConverting(ctx, p, c)
 }
 
 func TestCreateProvisionsIsolatedRepoContainer(t *testing.T) {

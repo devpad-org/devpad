@@ -134,6 +134,9 @@ func New(cfg Config) (*Server, error) {
 	aiModule.AddToolProvider(mrService)
 	mrHandler := mergerequest.NewHandler(mrService)
 
+	if err := projectService.Reconcile(context.Background()); err != nil {
+		log.Printf("finishing interrupted workspace conversions: %v", err)
+	}
 	if err := taskService.Reconcile(context.Background()); err != nil {
 		log.Printf("reconciling in-progress tasks: %v", err)
 	}
@@ -431,6 +434,8 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/projects/{id}/workspace/sync", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleSyncWorkspace)))
 	mux.Handle("GET /api/workspaces/{id}/conversion", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDiscoverConversion)))
 	mux.Handle("POST /api/workspaces/{id}/convert", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleConvertWorkspace)))
+	mux.Handle("GET /api/projects/{id}/conversion", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleConversionNotice)))
+	mux.Handle("POST /api/projects/{id}/conversion/dismiss", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDismissConversionNotice)))
 	mux.Handle("GET /api/projects/{id}/tasks", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleList)))
 	mux.Handle("POST /api/projects/{id}/tasks", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleCreate)))
 	mux.Handle("GET /api/projects/{id}/tasks/{taskId}", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleGet)))

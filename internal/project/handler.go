@@ -431,8 +431,16 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	var credErr *workspace.CredentialsError
 	switch {
 	case errors.As(err, &credErr):
-		// The client lists them again, for the user to agree to strip.
-		writeJSON(w, http.StatusConflict, map[string]any{"error": credErr.Error(), "credentials": credErr.Items})
+		// The client lists them again, for the user to agree to strip, and
+		// those that could not be stripped, with why.
+		items, failed := credErr.Items, credErr.Failed
+		if items == nil {
+			items = []agent.CredentialItem{}
+		}
+		if failed == nil {
+			failed = []workspace.CredentialFailure{}
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{"error": credErr.Error(), "credentials": items, "failed": failed})
 	case errors.Is(err, ErrNoWorkspace):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrNotFound), errors.Is(err, workspace.ErrNotFound):
@@ -444,7 +452,7 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrDefaultBranch), errors.Is(err, ErrPublishDefault):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrNotStandalone), errors.Is(err, workspace.ErrConverting),
-		errors.Is(err, workspace.ErrAgentOutdated):
+		errors.Is(err, workspace.ErrAgentOutdated), errors.Is(err, workspace.ErrLifecycleBusy):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrNotReady), errors.Is(err, workspace.ErrNotRunning),
 		errors.Is(err, ErrSandboxLimit), errors.Is(err, ErrBranchInUse), errors.Is(err, ErrBranchPublishing),
@@ -564,6 +572,7 @@ func (h *Handler) HandleConvertWorkspace(w http.ResponseWriter, r *http.Request)
 	}
 	body := map[string]any{
 		"project":       projectResponse(result.Project),
+		"inPlace":       result.InPlace,
 		"workspace":     nil,
 		"ssh":           result.SSH,
 		"stripped":      stripped,
@@ -576,4 +585,57 @@ func (h *Handler) HandleConvertWorkspace(w http.ResponseWriter, r *http.Request)
 		body["workspace"] = sandboxResponse(result.Workspace)
 	}
 	writeJSON(w, http.StatusCreated, body)
+}
+
+// HandleConversionNotice returns what converting a workspace into the
+// project did, until the user dismisses it.
+func (h *Handler) HandleConversionNotice(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	conv, err := h.service.ConversionNotice(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	if conv == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"conversion": nil})
+		return
+	}
+	stripped := conv.Stripped
+	if stripped == nil {
+		stripped = []agent.CredentialItem{}
+	}
+	sshKept := conv.SSHKept
+	if sshKept == nil {
+		sshKept = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conversion": map[string]any{
+		"finished":        conv.State == ConversionDone,
+		"stripped":        stripped,
+		"sshKept":         sshKept,
+		"restartPending":  conv.RestartPending,
+		"restartError":    conv.RestartError,
+		"rotationPending": conv.RotationPending,
+		"keyRotated":      conv.KeyRotated,
+		"publicKey":       conv.PublicKey,
+		"rotationError":   conv.RotationError,
+		"createdAt":       conv.CreatedAt,
+	}})
+}
+
+// HandleDismissConversionNotice stops showing what a conversion did.
+func (h *Handler) HandleDismissConversionNotice(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := h.service.DismissConversionNotice(r.Context(), user.ID, id); err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"dismissed": true})
 }

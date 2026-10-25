@@ -5,6 +5,7 @@ import { projectApi, type ProjectInput } from '@/api/projects'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useProjectStore } from '@/stores/projects'
 import ConfirmModal from '@/components/ConfirmModal.vue'
+import ConversionNotice from './ConversionNotice.vue'
 import ProjectModal from './ProjectModal.vue'
 import StatusBadge from './StatusBadge.vue'
 
@@ -55,6 +56,15 @@ async function deleteProject() {
   }
 }
 
+async function dismissConversion() {
+  actionError.value = ''
+  try {
+    await store.dismissConversion()
+  } catch (e) {
+    actionError.value = e instanceof Error ? e.message : 'Failed to dismiss'
+  }
+}
+
 async function push() {
   if (store.projectId === null) return
   pushing.value = true
@@ -96,6 +106,8 @@ async function push() {
       <p v-if="store.loadError" class="notice notice-error side-notice">{{ store.loadError }}</p>
       <p v-if="actionError" class="notice notice-error side-notice">{{ actionError }}</p>
       <p v-if="notice" class="notice notice-success side-notice">{{ notice }}</p>
+
+      <ConversionNotice v-if="store.conversion" :conversion="store.conversion" @dismiss="dismissConversion" />
 
       <div class="side-section">
         <div class="side-section-title">Repository</div>

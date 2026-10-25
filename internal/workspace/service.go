@@ -25,9 +25,12 @@ type service struct {
 	agentPort int
 	sidecar   SidecarService
 
-	// converting holds the workspaces being converted into a project.
+	// converting holds the workspaces being converted into a project, and
+	// busy counts the starts, stops and deletes in flight for each; one
+	// excludes the other.
 	convertMu  sync.Mutex
 	converting map[int64]bool
+	busy       map[int64]int
 }
 
 // NewService creates a new workspace Service.

@@ -250,8 +250,9 @@ func TestCredentialsStripRemovesExactlyWhatWasNamed(t *testing.T) {
 	if got := runGit(t, home, "config", "--global", "url.https://github.com/.insteadOf"); got != "gh:" {
 		t.Fatalf("a rewrite without credentials was removed: %q", got)
 	}
-	if got := runGit(t, home, "config", "--file", system, "--get-all", "http.https://example.com/.extraHeader"); got != "X-Trace: on" {
-		t.Fatalf("extra headers = %q", got)
+	// Any extra header may carry a token, so all of them go.
+	if out, err := gitCommandIn(t.Context(), home, "config", "--file", system, "--get-all", "http.https://example.com/.extraHeader").Output(); err == nil {
+		t.Fatalf("extra headers left: %q", out)
 	}
 }
 
@@ -275,6 +276,11 @@ func TestStripURLCredentials(t *testing.T) {
 		{"ssh://git@github.com/r.git", "ssh://git@github.com/r.git", false},
 		{"git@github.com:o/r.git", "git@github.com:o/r.git", false},
 		{"https://example.com/r.git", "https://example.com/r.git", false},
+		// Go cannot parse these, but they still hold a password.
+		{"https://user:pa%zzss@github.com/a.git", "https://github.com/a.git", true},
+		{"https://user:p#ss@github.com/a.git", "https://github.com/a.git", true},
+		// An SSH URL keeps its user; only the password goes.
+		{"ssh://git:tok@github.com/a", "ssh://git@github.com/a", true},
 	}
 	for _, c := range cases {
 		got, stripped := stripURLCredentials(c.in)

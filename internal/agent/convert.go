@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 )
 
 // DiscoveredRepo describes a git repo found in a standalone workspace.
@@ -64,6 +65,10 @@ type RepoDiscovery struct {
 	Repos       []DiscoveredRepo `json:"repos"`
 	Contents    *ContentsPreview `json:"contents,omitempty"`
 	Credentials []CredentialItem `json:"credentials"`
+	// CredentialIncludes names the git config includes searched as well;
+	// CredentialScanIncomplete says the search for repos hit its limit.
+	CredentialIncludes       []string `json:"credentialIncludes"`
+	CredentialScanIncomplete bool     `json:"credentialScanIncomplete"`
 }
 
 // RepoDiscover finds the git repos in the workspace.
@@ -208,10 +213,11 @@ func (c *Client) SSHRemoveManaged(ctx context.Context, files []ManagedSSHFile) (
 	return &result, nil
 }
 
-// CredentialFailure is a credential the agent could not strip.
+// CredentialFailure is a credential the agent could not strip, with why;
+// the reason holds no secret value.
 type CredentialFailure struct {
 	CredentialItem
-	Error string `json:"error"`
+	Reason string `json:"reason"`
 }
 
 // CredentialStrip reports what the agent stripped and what it still finds.
@@ -242,4 +248,13 @@ func (c *Client) StripCredentials(ctx context.Context, ids []string) (*Credentia
 		return nil, err
 	}
 	return &result, nil
+}
+
+// urlUserinfo matches the userinfo of a URL anywhere in a string.
+var urlUserinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^/\s]*@`)
+
+// RedactURLCredentials removes the userinfo of every URL in s, so text from
+// a workspace can be logged or shown without a token in it.
+func RedactURLCredentials(s string) string {
+	return urlUserinfo.ReplaceAllString(s, "$1")
 }

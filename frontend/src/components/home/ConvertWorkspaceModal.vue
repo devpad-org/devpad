@@ -5,10 +5,12 @@ import { ApiError } from '@/api/client'
 import {
   projectApi,
   type ConvertResult,
+  type CredentialFailure,
   type CredentialItem,
   type DiscoveredRepo,
   type RepoDiscovery,
 } from '@/api/projects'
+import { credentialKind, REVOKE_REMINDER } from '@/components/project/credentials'
 
 // Turns a standalone workspace into a project. A repo at /workspace stays
 // where it is and the workspace becomes the project's workspace; a repo in a
@@ -39,22 +41,13 @@ const FROM_FILES = ''
 // Branches and tags named before the rest are summarised.
 const REFS_SHOWN = 12
 
-const CREDENTIAL_KINDS: Record<string, string> = {
-  'ssh-key': 'SSH private key',
-  'gh-token': 'GitHub CLI token',
-  'git-credentials': 'Git credential store',
-  netrc: 'netrc credentials',
-  'credential-helper': 'Git credential helper',
-  'url-rewrite': 'URL rewrite with a token',
-  'http-header': 'Authorization header',
-  'remote-url': 'Remote URL with a token',
-}
-
 const discovery = ref<RepoDiscovery | null>(null)
 const loading = ref(false)
 const loadError = ref('')
 const converting = ref(false)
 const convertError = ref('')
+// Credentials the user agreed to strip that devpad could not, with why.
+const stripFailures = ref<CredentialFailure[]>([])
 // A conversion in place, shown until the user has read what to do next.
 const result = ref<ConvertResult | null>(null)
 const copied = ref(false)
@@ -86,6 +79,7 @@ const contentsBytes = computed(() => {
 const contentsTooBig = computed(() => !!contents.value && contentsBytes.value > contents.value.maxBytes)
 
 const credentials = computed<CredentialItem[]>(() => discovery.value?.credentials ?? [])
+const credentialIncludes = computed(() => discovery.value?.credentialIncludes ?? [])
 
 const blocker = computed(() => {
   if (repoPath.value === null) return 'Pick a repository.'
@@ -124,10 +118,6 @@ function listSome(items: string[], total = items.length): string {
   return total > REFS_SHOWN ? `${shown} and ${total - REFS_SHOWN} more` : shown
 }
 
-function credentialKind(kind: string): string {
-  return CREDENTIAL_KINDS[kind] ?? kind
-}
-
 // The branch merges land on: origin's default, else a conventional name,
 // else whatever is checked out.
 function suggestDefaultBranch(repo: DiscoveredRepo | null): string {
@@ -160,6 +150,7 @@ function resetForm() {
   discovery.value = null
   loadError.value = ''
   convertError.value = ''
+  stripFailures.value = []
   result.value = null
   copied.value = false
   repoPath.value = null
@@ -177,6 +168,7 @@ async function load() {
   const ws = props.workspace
   if (!ws) return
   loading.value = true
+  stripFailures.value = []
   try {
     const found = await projectApi.discoverConversion(ws.id)
     if (props.workspace?.id !== ws.id) return
@@ -220,14 +212,18 @@ async function convert() {
       maxSandboxes: max,
     })
     // Converting in place leaves the user something to do upstream.
-    if (res.workspace) result.value = res
+    if (res.inPlace) result.value = res
     else emit('converted', res)
   } catch (e) {
-    const found = credentialsFrom(e)
-    if (found && discovery.value) {
-      discovery.value = { ...discovery.value, credentials: found }
+    const refused = credentialsFrom(e)
+    if (refused && discovery.value) {
+      discovery.value = { ...discovery.value, credentials: [...refused.failed, ...refused.credentials] }
+      stripFailures.value = refused.failed
       stripConsent.value = false
-      convertError.value = 'The workspace holds credentials you have not agreed to strip. Review the list and try again.'
+      convertError.value =
+        refused.failed.length > 0
+          ? "Some credentials couldn't be stripped (see above). Remove them yourself, then look again."
+          : 'The workspace holds credentials you have not agreed to strip. Review the list and try again.'
     } else {
       convertError.value = e instanceof Error ? e.message : 'Conversion failed'
     }
@@ -236,11 +232,13 @@ async function convert() {
   }
 }
 
-// A refused conversion lists the credentials found since the user looked.
-function credentialsFrom(e: unknown): CredentialItem[] | null {
+// A refused conversion lists the credentials found since the user looked,
+// and those it agreed to strip but could not.
+function credentialsFrom(e: unknown): { credentials: CredentialItem[]; failed: CredentialFailure[] } | null {
   if (!(e instanceof ApiError) || e.status !== 409) return null
-  const body = e.body as { credentials?: CredentialItem[] } | null
-  return Array.isArray(body?.credentials) ? body.credentials : null
+  const body = e.body as { credentials?: CredentialItem[]; failed?: CredentialFailure[] } | null
+  if (!Array.isArray(body?.credentials)) return null
+  return { credentials: body.credentials, failed: Array.isArray(body.failed) ? body.failed : [] }
 }
 
 async function copyKey() {
@@ -307,6 +305,7 @@ function formatBytes(bytes: number): string {
             Revoke these tokens and keys where they were issued. Stripping them can't undo that the assistant could
             read them.
           </div>
+          <p class="notice notice-warning">{{ REVOKE_REMINDER }}</p>
 
           <p v-if="result.restartError" class="notice notice-error">
             Devpad couldn't restart the workspace ({{ result.restartError }}). Stop and start it yourself, so no
@@ -318,6 +317,7 @@ function formatBytes(bytes: number): string {
             Left in place because {{ result.ssh.kept.length > 1 ? "they don't" : "it doesn't" }} match what devpad
             wrote: <span class="mono">{{ result.ssh.kept.join(', ') }}</span>.
           </p>
+          <p class="form-hint">This stays on the project's panel until you dismiss it there.</p>
           <div class="modal-actions">
             <button type="button" class="btn btn-primary" @click="close">Open project</button>
           </div>
@@ -469,6 +469,14 @@ function formatBytes(bytes: number): string {
               </ul>
               Deleting the project later deletes this workspace and its volume, untracked files included.
             </div>
+            <div v-if="stripFailures.length > 0" class="notice notice-error">
+              Couldn't strip:
+              <ul class="warning-list">
+                <li v-for="item in stripFailures" :key="item.id">
+                  {{ credentialKind(item.kind) }}: <span class="mono">{{ item.location }}</span> ({{ item.reason }})
+                </li>
+              </ul>
+            </div>
             <div v-if="credentials.length > 0" class="form-group credentials">
               <p class="form-hint">This workspace holds credentials the assistant could read:</p>
               <ul class="file-list">
@@ -478,10 +486,17 @@ function formatBytes(bytes: number): string {
               </ul>
               <label class="form-check">
                 <input v-model="stripConsent" type="checkbox" />
-                Strip these from the workspace. Revoke them where they were issued afterwards; stripping can't undo
-                that they were readable.
+                Strip these from the workspace. Stripping is permanent, even if the conversion then fails. Revoke
+                them where they were issued afterwards; stripping can't undo that they were readable.
               </label>
             </div>
+            <p v-if="credentialIncludes.length > 0" class="form-hint">
+              Also searched, as included git config: <span class="mono">{{ credentialIncludes.join('; ') }}</span>.
+            </p>
+            <p v-if="discovery.credentialScanIncomplete" class="form-hint warning-text">
+              The workspace is too large to search fully for repositories, so some credentials may not be listed.
+            </p>
+            <p class="form-hint">{{ REVOKE_REMINDER }}</p>
           </template>
 
           <p v-if="blocker && repoPath !== null" class="form-error">{{ blocker }}</p>

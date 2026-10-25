@@ -157,12 +157,22 @@ export interface ContentsPreview {
   maxBytes: number
 }
 
+// A credential devpad agreed to strip but could not, with why; the reason
+// holds no secret.
+export interface CredentialFailure extends CredentialItem {
+  reason: string
+}
+
 export interface RepoDiscovery {
   repos: DiscoveredRepo[]
   // Only set when the workspace has no repo at all.
   contents?: ContentsPreview
   // What a workspace converted in place must not keep.
   credentials: CredentialItem[]
+  // Git config includes that were searched too.
+  credentialIncludes: string[]
+  // The search for repos stopped at its limit, so some may be unchecked.
+  credentialScanIncomplete: boolean
 }
 
 export interface ConvertInput extends ProjectInput {
@@ -185,6 +195,8 @@ export interface SSHCleanup {
 
 export interface ConvertResult {
   project: Project
+  // The workspace became the project's workspace.
+  inPlace: boolean
   // The converted workspace, now the project's; null when its repo was in a
   // subdirectory and the workspace was left as it was.
   workspace: ProjectWorkspace | null
@@ -196,6 +208,23 @@ export interface ConvertResult {
   keyRotated: boolean
   publicKey: string
   rotationError: string
+}
+
+// What converting a workspace in place did, kept on the project until the
+// user dismisses it, so a lost response loses nothing. Steps still pending
+// are finished by devpad.
+export interface ConversionNotice {
+  finished: boolean
+  stripped: CredentialItem[]
+  // SSH files left in place because they differ from what devpad wrote.
+  sshKept: string[]
+  restartPending: boolean
+  restartError: string
+  rotationPending: boolean
+  keyRotated: boolean
+  publicKey: string
+  rotationError: string
+  createdAt: string
 }
 
 export const projectApi = {
@@ -279,6 +308,15 @@ export const projectApi = {
   // Makes a project from a standalone workspace.
   convertWorkspace(workspaceId: number, input: ConvertInput): Promise<ConvertResult> {
     return apiClient.post(`/api/workspaces/${workspaceId}/convert`, input)
+  },
+
+  // What converting a workspace into the project did, until dismissed.
+  conversionNotice(id: number): Promise<{ conversion: ConversionNotice | null }> {
+    return apiClient.get(`/api/projects/${id}/conversion`)
+  },
+
+  dismissConversionNotice(id: number): Promise<void> {
+    return apiClient.post(`/api/projects/${id}/conversion/dismiss`, {})
   },
 
   // Returns null for a file that does not exist at rev, such as one a

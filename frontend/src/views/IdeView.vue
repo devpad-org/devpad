@@ -266,7 +266,9 @@ async function loadProject(id: number, seq: number) {
   await loadProjectWorkspace(id, seq)
   if (seq !== loadSeq) return
   applyTaskQuery()
-  activeActivity.value = workspaceLive.value ? 'ai' : 'tasks'
+  // A conversion leaves the user something to do upstream, so its notice
+  // comes first.
+  activeActivity.value = projectStore.conversion ? 'project' : workspaceLive.value ? 'ai' : 'tasks'
   applyViewQuery(route.query)
   // Open files don't survive a reload, so a view takes the editor instead.
   if (!activeView.value) activeView.value = viewTabs.value[0]?.id ?? null
@@ -1091,11 +1093,12 @@ const backLabel = computed(() => {
           class="activity-btn activity-btn--project"
           :class="{ active: activeActivity === 'project' }"
           @click="selectActivity('project')"
-          title="Project"
+          :title="projectStore.conversion ? 'Project (conversion notice)' : 'Project'"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
           </svg>
+          <span v-if="projectStore.conversion" class="activity-badge" aria-label="Conversion notice">!</span>
         </button>
       </nav>
 

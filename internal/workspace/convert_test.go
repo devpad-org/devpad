@@ -35,6 +35,10 @@ type convertAgent struct {
 	// credentials are what the workspace holds; stripping removes those named.
 	credentials []agent.CredentialItem
 	stripFails  map[string]bool
+	// failReason is the reason a failed strip gives; removeFails makes
+	// removing devpad's SSH files fail.
+	failReason  string
+	removeFails bool
 }
 
 func (a *convertAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +61,10 @@ func (a *convertAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"output": "", "exit_code": 0})
 	case "/api/ssh/remove-managed":
 		json.NewDecoder(r.Body).Decode(&a.removeReq)
+		if a.removeFails {
+			http.Error(w, `{"error":"disk full"}`, http.StatusInternalServerError)
+			return
+		}
 		json.NewEncoder(w).Encode(agent.SSHCleanup{Removed: []string{"~/.ssh/id_ed25519"}, Kept: []string{"~/.ssh/config"}})
 	case "/api/credentials/strip":
 		var req struct {
@@ -71,7 +79,11 @@ func (a *convertAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case !slices.Contains(req.IDs, item.ID):
 				kept = append(kept, item)
 			case a.stripFails[item.ID]:
-				result.Failed = append(result.Failed, agent.CredentialFailure{CredentialItem: item, Error: "permission denied"})
+				reason := a.failReason
+				if reason == "" {
+					reason = "permission denied"
+				}
+				result.Failed = append(result.Failed, agent.CredentialFailure{CredentialItem: item, Reason: reason})
 				kept = append(kept, item)
 			default:
 				result.Stripped = append(result.Stripped, item)
@@ -369,15 +381,26 @@ func TestAttachToProjectRefusesCredentialsLeftBehind(t *testing.T) {
 			ca.mu.Lock()
 			ca.credentials = []agent.CredentialItem{gh}
 			ca.stripFails = map[string]bool{gh.ID: c.fails}
+			ca.failReason = "git config https://u:ghp_secret@example.com failed"
 			ca.mu.Unlock()
 			ca.reset()
 
 			_, err = svc.AttachToProject(ctx, 1, ws.ID, 7, c.strip)
 			var credErr *CredentialsError
-			if !errors.As(err, &credErr) || !errors.Is(err, ErrCredentialsPresent) || !slices.Equal(credErr.Items, []agent.CredentialItem{gh}) {
-				t.Fatalf("expected a CredentialsError naming the gh token, got %v", err)
+			if !errors.As(err, &credErr) || !errors.Is(err, ErrCredentialsPresent) {
+				t.Fatalf("expected a CredentialsError, got %v", err)
 			}
-			if strings.Contains(err.Error(), "oauth") || !strings.Contains(err.Error(), gh.Location) {
+			// A failed strip is told apart from a missing consent, with a
+			// reason that carries no token.
+			if c.fails {
+				if len(credErr.Items) != 0 || len(credErr.Failed) != 1 || credErr.Failed[0].ID != gh.ID ||
+					credErr.Failed[0].Reason != "git config https://example.com failed" {
+					t.Fatalf("expected the gh token reported as not stripped, got %+v", credErr)
+				}
+			} else if !slices.Equal(credErr.Items, []agent.CredentialItem{gh}) || len(credErr.Failed) != 0 {
+				t.Fatalf("expected the gh token reported as unconsented, got %+v", credErr)
+			}
+			if strings.Contains(err.Error(), "ghp_") || !strings.Contains(err.Error(), gh.Location) {
 				t.Fatalf("unexpected message: %v", err)
 			}
 			if slices.Contains(ca.paths(), "/api/ssh/remove-managed") {
@@ -424,5 +447,62 @@ func TestRestartConverted(t *testing.T) {
 	}
 	if !slices.Equal(mock.restarted, []string{ws.ContainerID}) {
 		t.Fatalf("restarted %v, want %v", mock.restarted, ws.ContainerID)
+	}
+}
+
+func TestAttachToProjectPutsKeysBackWhenRemovingThemFails(t *testing.T) {
+	svc, ca := setupConvertService(t)
+	ctx := context.Background()
+	ws, err := svc.Create(ctx, 1, "mine", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ca.mu.Lock()
+	ca.removeFails = true
+	ca.mu.Unlock()
+	ca.reset()
+
+	if _, err := svc.AttachToProject(ctx, 1, ws.ID, 7, nil); err == nil {
+		t.Fatal("expected attach to fail")
+	}
+	// The removal may have got partway, so the keys are written back.
+	paths := ca.paths()
+	if len(paths) < 3 || paths[1] != "/api/ssh/remove-managed" || !slices.Contains(paths[2:], "/api/command") {
+		t.Fatalf("expected keys written back, got %v", paths)
+	}
+	if got, _ := svc.Get(ctx, 1, ws.ID); got.ProjectID != 0 {
+		t.Fatalf("the workspace was attached: %+v", got)
+	}
+}
+
+func TestConversionAndLifecycleExcludeEachOther(t *testing.T) {
+	svc, _ := setupConvertService(t)
+	ctx := context.Background()
+	ws, err := svc.Create(ctx, 1, "mine", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// A stop, start or delete in flight holds off a conversion...
+	done, err := svc.beginLifecycle(ws.ID)
+	if err != nil {
+		t.Fatalf("begin lifecycle: %v", err)
+	}
+	if _, err := svc.BeginConversion(ctx, 1, ws.ID); !errors.Is(err, ErrLifecycleBusy) {
+		t.Fatalf("expected ErrLifecycleBusy, got %v", err)
+	}
+	done()
+
+	// ...and a conversion holds off each of them.
+	release, err := svc.BeginConversion(ctx, 1, ws.ID)
+	if err != nil {
+		t.Fatalf("begin conversion: %v", err)
+	}
+	if _, err := svc.beginLifecycle(ws.ID); !errors.Is(err, ErrConverting) {
+		t.Fatalf("expected ErrConverting, got %v", err)
+	}
+	release()
+	if _, err := svc.Stop(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("stop after the conversion: %v", err)
 	}
 }

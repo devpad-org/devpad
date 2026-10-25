@@ -140,10 +140,16 @@ func TestConvertWorkspaceCleansUpOnFailure(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			e := setupTest(t)
 			ws := e.standalone()
+			e.giveUserKey(t)
 			c.setup(e)
 
 			if _, err := e.convert(ws.ID, ConvertInput{RepoPath: c.repoPath, Name: "App"}); err == nil {
 				t.Fatal("expected the conversion to fail")
+			}
+			// A conversion that did not stand neither restarts the workspace
+			// nor replaces the key.
+			if len(e.keys.rotated) != 0 || len(e.workspaces.restarted) != 0 {
+				t.Fatalf("rotated=%v restarted=%v after a failed conversion", e.keys.rotated, e.workspaces.restarted)
 			}
 			if n := e.projectCount(t); n != 0 {
 				t.Fatalf("%d projects left behind", n)
@@ -193,6 +199,8 @@ func TestConvertWorkspaceRefusals(t *testing.T) {
 		{RepoPath: ".", Name: "App", DefaultBranch: "bad..branch"},
 		{RepoPath: ".", Name: "App", UpstreamURL: "https://user:token@github.com/o/r.git"},
 		{RepoPath: ".", Name: "App", UpstreamURL: "https://ghp_x@github.com/o/r.git"},
+		{RepoPath: ".", Name: "App", UpstreamURL: "https://user:p#ss@github.com/o/r.git"},
+		{RepoPath: ".", Name: "App", UpstreamURL: "ssh://git:tok@github.com/o/r.git"},
 		{RepoPath: ".", Name: "App", UpstreamURL: "--upload-pack=x"},
 		{RepoPath: "../elsewhere", Name: "App"},
 		{RepoPath: "/etc", Name: "App"},

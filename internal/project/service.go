@@ -48,6 +48,12 @@ type Service interface {
 	// become a project.
 	DiscoverConversion(ctx context.Context, userID, workspaceID int64) (*agent.RepoDiscovery, error)
 	ConvertWorkspace(ctx context.Context, userID, workspaceID int64, in ConvertInput) (*ConvertResult, error)
+	// ConversionNotice returns what converting a workspace into the project
+	// did, until dismissed; nil when there is nothing to show.
+	ConversionNotice(ctx context.Context, userID, projectID int64) (*Conversion, error)
+	DismissConversionNotice(ctx context.Context, userID, projectID int64) error
+	// Reconcile finishes conversions devpad stopped part way through.
+	Reconcile(ctx context.Context) error
 	// SetPublishHook registers who is told when a branch is published from
 	// the project workspace.
 	SetPublishHook(h PublishHook)
@@ -106,6 +112,8 @@ type service struct {
 	// workspaceLocks serialize opening each project's workspace.
 	workspaceLocks map[int64]*sync.Mutex
 	publishHook    PublishHook
+	// background tracks conversions being finished in the background.
+	background sync.WaitGroup
 }
 
 // NewService creates a new project Service.
@@ -270,6 +278,11 @@ func (s *service) Get(ctx context.Context, userID, projectID int64) (*Project, e
 	}
 	if p.UserID != userID {
 		return nil, ErrForbidden
+	}
+	// A converted project left "creating" by a failed step is finished in
+	// the background; the caller sees it ready on a later read.
+	if p.Status == StatusCreating {
+		s.healConversion(ctx, p)
 	}
 	return p, nil
 }

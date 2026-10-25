@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { projectApi, type Project, type RepoBranch, type Sandbox } from '@/api/projects'
+import { projectApi, type ConversionNotice, type Project, type RepoBranch, type Sandbox } from '@/api/projects'
 import { taskApi, type Task, type TaskStatus } from '@/api/tasks'
 import { mergeRequestApi, type MergeRequest } from '@/api/mergeRequests'
 
@@ -26,6 +26,9 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   const branches = ref<RepoBranch[]>([])
   const loadError = ref('')
   const selectedTaskId = ref<number | null>(null)
+  // What converting a workspace into this project did, until dismissed.
+  const conversion = ref<ConversionNotice | null>(null)
+  let conversionLoaded = false
 
   // Bumped whenever the open project changes, so responses for the previous
   // one are dropped.
@@ -89,6 +92,13 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
         mergeRequests.value = m.mergeRequests ?? []
         sandboxes.value = s.sandboxes ?? []
       }
+      // Load the notice once, then follow it while devpad finishes it.
+      if (!conversionLoaded || (conversion.value && !conversion.value.finished)) {
+        const res = await projectApi.conversionNotice(id)
+        if (gen !== generation) return
+        conversion.value = res.conversion
+        conversionLoaded = true
+      }
       loadError.value = ''
     } catch (e) {
       if (gen === generation) loadError.value = e instanceof Error ? e.message : 'Failed to load project'
@@ -126,6 +136,8 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     branches.value = []
     loadError.value = ''
     selectedTaskId.value = null
+    conversion.value = null
+    conversionLoaded = false
   }
 
   // Opens a project and polls it until close.
@@ -148,6 +160,13 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     project.value = p
   }
 
+  async function dismissConversion() {
+    const id = projectId.value
+    if (id === null) return
+    await projectApi.dismissConversionNotice(id)
+    if (projectId.value === id) conversion.value = null
+  }
+
   function upsertTask(task: Task) {
     const index = tasks.value.findIndex((t) => t.id === task.id)
     if (index === -1) tasks.value.unshift(task)
@@ -168,6 +187,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     branches,
     loadError,
     selectedTaskId,
+    conversion,
     ready,
     selectedTask,
     openMergeRequests,
@@ -182,6 +202,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     open,
     close,
     setProject,
+    dismissConversion,
     upsertTask,
     removeTask,
   }

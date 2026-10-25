@@ -154,9 +154,11 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 	if err != nil {
 		return err
 	}
-	if s.isConverting(ws.ID) {
-		return ErrConverting
+	done, err := s.beginLifecycle(ws.ID)
+	if err != nil {
+		return err
 	}
+	defer done()
 
 	// Remove the Docker container
 	if ws.ContainerID != "" {
@@ -202,9 +204,11 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 	if err != nil {
 		return nil, err
 	}
-	if s.isConverting(ws.ID) {
-		return nil, ErrConverting
+	done, err := s.beginLifecycle(ws.ID)
+	if err != nil {
+		return nil, err
 	}
+	defer done()
 	if ws.Status == StatusRunning {
 		return ws, nil
 	}
@@ -261,9 +265,11 @@ func (s *service) Stop(ctx context.Context, userID, workspaceID int64) (*Workspa
 		return nil, err
 	}
 	// Stopping mid-conversion would leave devpad unable to undo its work.
-	if s.isConverting(ws.ID) {
-		return nil, ErrConverting
+	done, err := s.beginLifecycle(ws.ID)
+	if err != nil {
+		return nil, err
 	}
+	defer done()
 	if ws.Status == StatusStopped {
 		return ws, nil
 	}
