@@ -63,7 +63,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const projectColumns = `id, user_id, name, description, default_branch, upstream_url, setup_script, environment, environment_image, max_sandboxes, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at`
+const projectColumns = `id, user_id, name, description, default_branch, upstream_url, setup_script, environment, environment_image, max_sandboxes, auto_review, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at`
 
 // execer is a database or a transaction.
 type execer interface {
@@ -77,8 +77,8 @@ func (r *repository) Create(ctx context.Context, p *Project) error {
 func insertProject(ctx context.Context, db execer, p *Project) error {
 	now := time.Now()
 	result, err := db.ExecContext(ctx,
-		`INSERT INTO projects (user_id, name, description, default_branch, upstream_url, setup_script, environment, max_sandboxes, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.UserID, p.Name, p.Description, p.DefaultBranch, p.UpstreamURL, p.SetupScript, p.Environment, p.MaxSandboxes, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, p.RepoAgentToken, now, now,
+		`INSERT INTO projects (user_id, name, description, default_branch, upstream_url, setup_script, environment, max_sandboxes, auto_review, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.UserID, p.Name, p.Description, p.DefaultBranch, p.UpstreamURL, p.SetupScript, p.Environment, p.MaxSandboxes, p.AutoReview, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, p.RepoAgentToken, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting project: %w", err)
@@ -132,8 +132,8 @@ func (r *repository) Update(ctx context.Context, p *Project) error {
 func updateProject(ctx context.Context, db execer, p *Project) error {
 	now := time.Now()
 	_, err := db.ExecContext(ctx,
-		`UPDATE projects SET name = ?, description = ?, setup_script = ?, environment = ?, max_sandboxes = ?, status = ?, error = ?, repo_container_id = ?, repo_volume_name = ?, repo_network_name = ?, updated_at = ? WHERE id = ?`,
-		p.Name, p.Description, p.SetupScript, p.Environment, p.MaxSandboxes, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, now, p.ID,
+		`UPDATE projects SET name = ?, description = ?, setup_script = ?, environment = ?, max_sandboxes = ?, auto_review = ?, status = ?, error = ?, repo_container_id = ?, repo_volume_name = ?, repo_network_name = ?, updated_at = ? WHERE id = ?`,
+		p.Name, p.Description, p.SetupScript, p.Environment, p.MaxSandboxes, p.AutoReview, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, now, p.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("updating project: %w", err)
@@ -155,7 +155,7 @@ type rowScanner interface {
 
 func scanProject(row rowScanner) (*Project, error) {
 	p := &Project{}
-	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Description, &p.DefaultBranch, &p.UpstreamURL, &p.SetupScript, &p.Environment, &p.EnvironmentImage, &p.MaxSandboxes, &p.Status, &p.Error, &p.RepoContainerID, &p.RepoVolumeName, &p.RepoNetworkName, &p.RepoAgentToken, &p.CreatedAt, &p.UpdatedAt)
+	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Description, &p.DefaultBranch, &p.UpstreamURL, &p.SetupScript, &p.Environment, &p.EnvironmentImage, &p.MaxSandboxes, &p.AutoReview, &p.Status, &p.Error, &p.RepoContainerID, &p.RepoVolumeName, &p.RepoNetworkName, &p.RepoAgentToken, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

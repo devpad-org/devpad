@@ -60,6 +60,7 @@ type Project struct {
 	Environment      string
 	EnvironmentImage string
 	MaxSandboxes     int
+	AutoReview       bool
 	Status           Status
 	Error            string
 	RepoContainerID  string
@@ -79,6 +80,8 @@ type CreateInput struct {
 	SetupScript   string
 	Environment   string
 	MaxSandboxes  int
+	// AutoReview starts a review agent on each new merge request.
+	AutoReview bool
 }
 
 // UpdateInput holds the editable project fields. The default branch and
@@ -89,6 +92,7 @@ type UpdateInput struct {
 	SetupScript  string
 	Environment  string
 	MaxSandboxes int
+	AutoReview   bool
 }
 
 // SandboxInput describes a sandbox to start. Empty fields get defaults.

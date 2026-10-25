@@ -24,6 +24,7 @@ const upstreamUrl = ref('')
 const setupScript = ref('')
 const environment = ref('')
 const maxSandboxes = ref(DEFAULT_MAX_SANDBOXES)
+const autoReview = ref(true)
 const localError = ref('')
 
 watch(
@@ -38,6 +39,7 @@ watch(
     setupScript.value = p?.setupScript ?? ''
     environment.value = p?.environment ?? ''
     maxSandboxes.value = p?.maxSandboxes ?? DEFAULT_MAX_SANDBOXES
+    autoReview.value = p?.autoReview ?? true
     localError.value = ''
   },
   { immediate: true },
@@ -60,6 +62,7 @@ function handleSubmit() {
     setupScript: setupScript.value,
     environment: environment.value,
     maxSandboxes: max,
+    autoReview: autoReview.value,
   }
   if (!props.project) {
     input.defaultBranch = defaultBranch.value.trim() || undefined
@@ -126,6 +129,13 @@ function handleSubmit() {
             <label class="form-label" for="project-max">Concurrent sandboxes</label>
             <input id="project-max" v-model.number="maxSandboxes" class="form-input" type="number" min="1" :max="MAX_SANDBOXES_LIMIT" />
             <p class="form-hint">Tasks beyond this wait in the queue.</p>
+          </div>
+          <div class="form-group">
+            <label class="form-check">
+              <input v-model="autoReview" type="checkbox" />
+              Review new merge requests automatically
+            </label>
+            <p class="form-hint">Starts the review agent on each merge request as it opens, with the model an admin set for it, else the task's. Changes it requests wait for you to send them to the task's agent.</p>
           </div>
           <p v-if="localError || error" class="form-error">{{ localError || error }}</p>
           <div class="modal-actions">

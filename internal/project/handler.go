@@ -81,6 +81,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		SetupScript   string `json:"setupScript"`
 		Environment   string `json:"environment"`
 		MaxSandboxes  int    `json:"maxSandboxes"`
+		AutoReview    bool   `json:"autoReview"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -122,6 +123,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		SetupScript  string `json:"setupScript"`
 		Environment  string `json:"environment"`
 		MaxSandboxes int    `json:"maxSandboxes"`
+		AutoReview   bool   `json:"autoReview"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -628,6 +630,7 @@ func projectResponse(p *Project) map[string]any {
 		"setupScript":   p.SetupScript,
 		"environment":   p.Environment,
 		"maxSandboxes":  p.MaxSandboxes,
+		"autoReview":    p.AutoReview,
 		"status":        p.Status,
 		"error":         p.Error,
 		"createdAt":     p.CreatedAt,

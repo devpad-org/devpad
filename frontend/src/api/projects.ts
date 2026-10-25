@@ -13,6 +13,8 @@ export interface Project {
   // project's workspaces; empty for devpad's image as it is.
   environment: string
   maxSandboxes: number
+  // Starts a review agent on each new merge request.
+  autoReview: boolean
   status: ProjectStatus
   error: string
   createdAt: string
@@ -27,6 +29,7 @@ export interface ProjectInput {
   setupScript: string
   environment?: string
   maxSandboxes: number
+  autoReview?: boolean
 }
 
 // Sandbox is a project workspace an agent works in on one branch.

@@ -65,7 +65,7 @@ export function reviewIcon(review: Review): MrIconName {
 }
 
 export function reviewAction(review: Review): string {
-  if (review.status === 'pending') return 'is reviewing the change'
+  if (review.status === 'pending') return review.workspaceId ? 'is reviewing the change' : 'is waiting for a sandbox'
   if (review.status === 'failed') return 'could not finish the review'
   if (review.verdict === 'approve') return 'approved these changes'
   if (review.verdict === 'request_changes') return 'requested changes'

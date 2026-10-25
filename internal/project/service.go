@@ -252,6 +252,7 @@ func (s *service) Create(ctx context.Context, userID int64, in CreateInput) (*Pr
 		SetupScript:    in.SetupScript,
 		Environment:    in.Environment,
 		MaxSandboxes:   maxSandboxes,
+		AutoReview:     in.AutoReview,
 		Status:         StatusCreating,
 		RepoAgentToken: token,
 	}
@@ -374,6 +375,7 @@ func (s *service) Update(ctx context.Context, userID, projectID int64, in Update
 	p.SetupScript = in.SetupScript
 	p.Environment = in.Environment
 	p.MaxSandboxes = maxSandboxes
+	p.AutoReview = in.AutoReview
 	if err := s.repo.Update(ctx, p); err != nil {
 		return nil, fmt.Errorf("updating project: %w", err)
 	}

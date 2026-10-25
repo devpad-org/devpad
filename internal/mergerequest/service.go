@@ -95,6 +95,10 @@ type AgentDefaults interface {
 // to stop before removing its sandbox.
 const cancelWait = 15 * time.Second
 
+// sandboxRetry is how often a pending review tries again for a sandbox while
+// the project has as many running as it allows.
+var sandboxRetry = 15 * time.Second
+
 type service struct {
 	repo          Repository
 	projects      Projects
@@ -230,7 +234,36 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 		}
 		return nil, err
 	}
+	s.autoReview(ctx, p, mr)
 	return mr, nil
+}
+
+// autoReview starts the review agent on a new merge request when its
+// project reviews them automatically, with the agent's default model. Its
+// requested changes wait for the user rather than starting the task's
+// agent. A review that cannot start is recorded as failed, so the merge
+// request shows why.
+func (s *service) autoReview(ctx context.Context, p *project.Project, mr *MergeRequest) {
+	if !p.AutoReview {
+		return
+	}
+	_, err := s.StartAgentReview(ctx, mr.UserID, mr.ProjectID, mr.ID, AgentReviewInput{})
+	if err == nil || s.rootCtx.Err() != nil {
+		// A review left pending by a shutdown starts again with the server.
+		return
+	}
+	log.Printf("merge request %d: starting automatic review: %v", mr.ID, err)
+	msg := "The automatic review could not start: " + err.Error()
+	if errors.Is(err, errNoModel) {
+		msg = "The automatic review could not start: the review agent has no default model. Start a review with a model picked, or ask an admin to set one for the agent."
+	}
+	rv := &Review{
+		MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewFailed, HeadSHA: mr.HeadSHA,
+		AgentID: domain.ReviewAgentID, Error: msg,
+	}
+	if err := s.repo.CreateReview(ctx, rv); err != nil {
+		log.Printf("merge request %d: recording automatic review failure: %v", mr.ID, err)
+	}
 }
 
 func (s *service) TaskReadyForReview(ctx context.Context, t *task.Task, summary string) {
@@ -253,10 +286,15 @@ func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary 
 		return err
 	}
 	if mr == nil {
-		return s.repo.Create(ctx, &MergeRequest{
+		mr = &MergeRequest{
 			ProjectID: t.ProjectID, UserID: t.UserID, TaskID: t.ID, Title: t.Title, Description: summary,
 			SourceBranch: t.Branch, TargetBranch: p.DefaultBranch, Status: StatusOpen, HeadSHA: t.HeadSHA,
-		})
+		}
+		if err := s.repo.Create(ctx, mr); err != nil {
+			return err
+		}
+		s.autoReview(ctx, p, mr)
+		return nil
 	}
 	unlockMR := s.lock("mr", mr.ID)
 	defer unlockMR()
@@ -464,7 +502,7 @@ func (s *service) StartAgentReview(ctx context.Context, userID, projectID, mrID 
 		}
 	}
 	if in.Model == "" {
-		return nil, invalid("model is required")
+		return nil, errNoModel
 	}
 
 	rv := &Review{
@@ -481,6 +519,10 @@ func (s *service) StartAgentReview(ctx context.Context, userID, projectID, mrID 
 	return rv, nil
 }
 
+// errNoModel refuses a review agent without a model: none was picked, the
+// agent has no default, and there is no task to take one from.
+var errNoModel = fmt.Errorf("%w: model is required", ErrInvalidInput)
+
 func orDefault(value, fallback string) string {
 	if value != "" {
 		return value
@@ -490,16 +532,16 @@ func orDefault(value, fallback string) string {
 
 // launchReview starts a pending review's sandbox and, once the project's
 // setup script has finished there, its agent run. The sandbox first waits
-// for a build of the project's environment in progress. The review is
-// unlocked while either runs, so closing or merging the merge request
-// meanwhile is not held up; the run starts only if the review is still
-// pending on the same sandbox after.
+// for a build of the project's environment in progress, then for a free
+// sandbox slot. The review is unlocked while any of them runs, so closing
+// or merging the merge request meanwhile is not held up; the run starts
+// only if the review is still pending on the same sandbox after.
 func (s *service) launchReview(ctx context.Context, reviewID int64) {
 	env, ok := s.awaitEnvironment(ctx, reviewID)
 	if !ok {
 		return
 	}
-	ws, diff, ok := s.prepareReview(ctx, reviewID)
+	ws, diff, ok := s.awaitSandbox(ctx, reviewID)
 	if !ok {
 		return
 	}
@@ -553,9 +595,28 @@ func (s *service) awaitEnvironment(ctx context.Context, reviewID int64) (*projec
 	return env, true
 }
 
+// awaitSandbox gives a pending review its sandbox, trying again while the
+// project has no sandbox slot free. It reports false when the review is no
+// longer pending, failed, or the service is shutting down.
+func (s *service) awaitSandbox(ctx context.Context, reviewID int64) (*workspace.Workspace, *agent.RepoDiff, bool) {
+	for {
+		ws, diff, wait := s.prepareReview(ctx, reviewID)
+		if !wait {
+			return ws, diff, ws != nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil, false
+		case <-time.After(sandboxRetry):
+		}
+	}
+}
+
 // prepareReview reads the change a pending review is of and gives the
-// review a sandbox at its head.
-func (s *service) prepareReview(ctx context.Context, reviewID int64) (*workspace.Workspace, *agent.RepoDiff, bool) {
+// review a sandbox at its head. It reports wait, leaving the review
+// pending, when no sandbox slot is free or the review's branch is being
+// published from the project workspace.
+func (s *service) prepareReview(ctx context.Context, reviewID int64) (ws *workspace.Workspace, diff *agent.RepoDiff, wait bool) {
 	unlock := s.lock("review", reviewID)
 	defer unlock()
 	rv, err := s.repo.GetReview(ctx, reviewID)
@@ -566,14 +627,17 @@ func (s *service) prepareReview(ctx context.Context, reviewID int64) (*workspace
 	if err != nil || mr == nil {
 		return nil, nil, false
 	}
-	ws, diff, err := s.startReviewSandbox(ctx, mr, rv)
+	ws, diff, err = s.startReviewSandbox(ctx, mr, rv)
+	if errors.Is(err, project.ErrSandboxLimit) || errors.Is(err, project.ErrBranchPublishing) {
+		return nil, nil, true
+	}
 	if err != nil {
 		if s.rootCtx.Err() == nil {
 			s.failReview(ctx, mr, rv, err.Error())
 		}
 		return nil, nil, false
 	}
-	return ws, diff, true
+	return ws, diff, false
 }
 
 func (s *service) startReviewSandbox(ctx context.Context, mr *MergeRequest, rv *Review) (*workspace.Workspace, *agent.RepoDiff, error) {
@@ -904,7 +968,7 @@ func (s *service) ResolveConflicts(ctx context.Context, userID, projectID, mrID 
 
 // Reconcile settles agent reviews that were pending when the server last
 // stopped: the agent runner fails interrupted runs at startup, so they
-// cannot submit any more.
+// cannot submit any more. Reviews still waiting for a sandbox start again.
 func (s *service) Reconcile(ctx context.Context) error {
 	reviews, err := s.repo.ListPendingReviews(ctx)
 	if err != nil {
@@ -913,6 +977,11 @@ func (s *service) Reconcile(ctx context.Context) error {
 	for _, rv := range reviews {
 		mr, err := s.repo.GetByID(ctx, rv.MergeRequestID)
 		if err != nil || mr == nil {
+			continue
+		}
+		if rv.WorkspaceID == 0 && mr.Status == StatusOpen {
+			id := rv.ID
+			s.spawn(func(ctx context.Context) { s.launchReview(ctx, id) })
 			continue
 		}
 		if rv.RunID == 0 {

@@ -44,6 +44,8 @@ type fakeProjects struct {
 	awaited   []int64
 	// environment is what AwaitEnvironment reports.
 	environment *project.Environment
+	// sandboxErr, when set, is what CreateSandbox fails with.
+	sandboxErr error
 }
 
 func (f *fakeProjects) AwaitSetup(ctx context.Context, _, _, workspaceID int64) (*project.Setup, error) {
@@ -104,6 +106,9 @@ func (f *fakeProjects) Diff(_ context.Context, _, _ int64, base, head string) (*
 func (f *fakeProjects) CreateSandbox(_ context.Context, userID, projectID int64, in project.SandboxInput) (*workspace.Workspace, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.sandboxErr != nil {
+		return nil, f.sandboxErr
+	}
 	f.sandboxes = append(f.sandboxes, in)
 	res, err := f.db.Exec(`INSERT INTO workspaces (user_id, name, status, project_id, kind, branch) VALUES (?, ?, 'running', ?, ?, ?)`, userID, in.Name, projectID, in.Kind, in.Branch)
 	if err != nil {
@@ -721,26 +726,34 @@ func TestCloseRemovesReviewSandboxesButLeavesTheTask(t *testing.T) {
 	}
 }
 
-func TestReconcileFailsInterruptedReviews(t *testing.T) {
+// Reconcile fails reviews whose agent the restart interrupted, and starts
+// again the ones that were still waiting for a sandbox.
+func TestReconcileSettlesInterruptedReviews(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	mr := e.openTaskMR(t)
 	rv := e.startAgentReview(t, mr, AgentReviewInput{})
-	never := &Review{MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewPending, Model: "m"}
-	e.svc.repo.CreateReview(ctx, never)
+	stranded := &Review{MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewPending, Model: "m", WorkspaceID: rv.WorkspaceID}
+	e.svc.repo.CreateReview(ctx, stranded)
+	waiting := &Review{MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewPending, HeadSHA: mr.HeadSHA, AgentID: domain.ReviewAgentID, Model: "m"}
+	e.svc.repo.CreateReview(ctx, waiting)
 	e.db.Exec(`UPDATE ai_agent_runs SET status = 'failed', error = 'agent run stopped because the server restarted or shut down' WHERE id = ?`, rv.RunID)
 
 	if err := e.svc.Reconcile(ctx); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	waitFor(t, "both reviews to fail", func() bool {
+	waitFor(t, "the interrupted reviews to fail and the waiting one to start", func() bool {
 		a, _ := e.svc.repo.GetReview(ctx, rv.ID)
-		b, _ := e.svc.repo.GetReview(ctx, never.ID)
-		return a.Status == ReviewFailed && b.Status == ReviewFailed
+		b, _ := e.svc.repo.GetReview(ctx, stranded.ID)
+		c, _ := e.svc.repo.GetReview(ctx, waiting.ID)
+		return a.Status == ReviewFailed && b.Status == ReviewFailed && c.RunID != 0
 	})
 	got, _ := e.svc.repo.GetReview(ctx, rv.ID)
 	if !strings.Contains(got.Error, "server restarted") {
 		t.Fatalf("unexpected error: %q", got.Error)
+	}
+	if got, _ := e.svc.repo.GetReview(ctx, waiting.ID); got.Status != ReviewPending || got.WorkspaceID == 0 {
+		t.Fatalf("expected the waiting review running in a sandbox, got %+v", got)
 	}
 }
 
@@ -927,4 +940,94 @@ func TestAgentReviewKeepsAPickedModel(t *testing.T) {
 	if rv.Model != "picked" || rv.Effort != "low" {
 		t.Fatalf("expected the picked model, got %+v", rv)
 	}
+}
+
+// A project that reviews automatically starts the review agent on each new
+// merge request, once, and its requested changes wait for the user.
+func TestAutoReviewStartsOnNewMergeRequests(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.projects.project.AutoReview = true
+	mr := e.openTaskMR(t)
+	waitFor(t, "the automatic review run", func() bool { return len(e.runs.started()) == 1 })
+	reviews, _ := e.svc.repo.ListReviews(ctx, mr.ID)
+	if len(reviews) != 1 || reviews[0].Author != AuthorAgent || reviews[0].AgentID != domain.ReviewAgentID || reviews[0].Model != "claude-opus-5-5" || reviews[0].AutoFix {
+		t.Fatalf("expected one review agent on the task's model without auto-fix, got %+v", reviews)
+	}
+
+	// New commits on the same merge request are not a new merge request.
+	tk, _ := e.tasks.Get(ctx, e.owner, e.pid(), e.taskID)
+	tk.HeadSHA = "head2"
+	e.svc.TaskReadyForReview(ctx, tk, "")
+	if reviews, _ := e.svc.repo.ListReviews(ctx, mr.ID); len(reviews) != 1 {
+		t.Fatalf("expected no second review for new commits, got %d", len(reviews))
+	}
+
+	e.defaults[domain.ReviewAgentID] = domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: "admin-review"}
+	e.projects.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "feature", SHA: "f1"}}
+	created, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Feature", SourceBranch: "feature"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	waitFor(t, "the second automatic review run", func() bool { return len(e.runs.started()) == 2 })
+	if reviews, _ := e.svc.repo.ListReviews(ctx, created.ID); len(reviews) != 1 || reviews[0].Model != "admin-review" {
+		t.Fatalf("expected the review agent on the admin's model, got %+v", reviews)
+	}
+}
+
+func TestNoAutoReviewUnlessTheProjectAsks(t *testing.T) {
+	e := setup(t)
+	mr := e.openTaskMR(t)
+	time.Sleep(20 * time.Millisecond)
+	if reviews, _ := e.svc.repo.ListReviews(context.Background(), mr.ID); len(reviews) != 0 || len(e.runs.started()) != 0 {
+		t.Fatalf("expected no review, got %+v", reviews)
+	}
+}
+
+// An automatic review with no model to run is recorded as failed, so the
+// merge request says why it was not reviewed.
+func TestAutoReviewWithoutAModelSaysWhy(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.projects.project.AutoReview = true
+	e.projects.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "feature", SHA: "f1"}}
+	mr, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Feature", SourceBranch: "feature"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	reviews, _ := e.svc.repo.ListReviews(ctx, mr.ID)
+	if len(reviews) != 1 || reviews[0].Status != ReviewFailed || !strings.Contains(reviews[0].Error, "no default model") {
+		t.Fatalf("expected a failed review saying there is no model, got %+v", reviews)
+	}
+	if _, err := e.svc.StartAgentReview(ctx, e.owner, e.pid(), mr.ID, AgentReviewInput{Model: "picked"}); err != nil {
+		t.Fatalf("a failed automatic review should not block starting one: %v", err)
+	}
+}
+
+// A review started while the project has no sandbox slot free waits for one
+// instead of failing.
+func TestAgentReviewWaitsForAFreeSandbox(t *testing.T) {
+	retry := sandboxRetry
+	sandboxRetry = 10 * time.Millisecond
+	t.Cleanup(func() { sandboxRetry = retry })
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	e.projects.mu.Lock()
+	e.projects.sandboxErr = project.ErrSandboxLimit
+	e.projects.mu.Unlock()
+
+	rv, err := e.svc.StartAgentReview(ctx, e.owner, e.pid(), mr.ID, AgentReviewInput{})
+	if err != nil {
+		t.Fatalf("start agent review: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.Status != ReviewPending || got.WorkspaceID != 0 {
+		t.Fatalf("expected the review waiting for a sandbox, got %+v", got)
+	}
+
+	e.projects.mu.Lock()
+	e.projects.sandboxErr = nil
+	e.projects.mu.Unlock()
+	waitFor(t, "the review run", func() bool { return len(e.runs.started()) == 1 })
 }

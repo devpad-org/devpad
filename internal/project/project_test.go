@@ -1379,3 +1379,18 @@ func (f *fakeWorkspaces) RestartConverted(_ context.Context, _, id int64) error 
 	f.restarted = append(f.restarted, id)
 	return nil
 }
+
+func TestAutoReviewIsKeptAndEditable(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj", AutoReview: true})
+	if got, err := e.svc.Get(ctx, e.userID, p.ID); err != nil || !got.AutoReview {
+		t.Fatalf("expected the new project to review automatically: %+v %v", got, err)
+	}
+	if _, err := e.svc.Update(ctx, e.userID, p.ID, UpdateInput{Name: "proj"}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if got, err := e.svc.Get(ctx, e.userID, p.ID); err != nil || got.AutoReview {
+		t.Fatalf("expected automatic review turned off: %+v %v", got, err)
+	}
+}
