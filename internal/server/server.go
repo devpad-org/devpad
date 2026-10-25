@@ -115,7 +115,7 @@ func New(cfg Config) (*Server, error) {
 
 	// Project layer (canonical repos and the sandboxes seeded from them)
 	projectRepo := project.NewRepository(db.Conn())
-	projectService := project.NewService(projectRepo, containerManager, workspaceService, userRepo, cipher)
+	projectService := project.NewService(projectRepo, containerManager, workspaceService, userRepo, cipher, settingsService)
 	projectHandler := project.NewHandler(projectService)
 
 	// AI layer

@@ -13,17 +13,36 @@ import (
 // DiscoveredRepo describes a git repo found in a standalone workspace.
 type DiscoveredRepo struct {
 	// Path is relative to /workspace; "." is /workspace itself.
-	Path        string `json:"path"`
-	Branch      string `json:"branch"`
-	BranchCount int    `json:"branchCount"`
-	Dirty       bool   `json:"dirty"`
+	Path        string   `json:"path"`
+	Branch      string   `json:"branch"`
+	BranchCount int      `json:"branchCount"`
+	Branches    []string `json:"branches"`
+	TagCount    int      `json:"tagCount"`
+	Tags        []string `json:"tags"`
+	Dirty       bool     `json:"dirty"`
 	// OriginURL has any embedded credentials removed.
-	OriginURL              string   `json:"originUrl"`
-	OriginHadCredentials   bool     `json:"originHadCredentials"`
-	OriginDefaultBranch    string   `json:"originDefaultBranch"`
-	RemotesWithCredentials []string `json:"remotesWithCredentials"`
-	CredentialHelpers      []string `json:"credentialHelpers"`
-	HasDevpadRemote        bool     `json:"hasDevpadRemote"`
+	OriginURL            string `json:"originUrl"`
+	OriginHadCredentials bool   `json:"originHadCredentials"`
+	OriginDefaultBranch  string `json:"originDefaultBranch"`
+	// RemoteOnlyBranches exist only as origin/<name>, so they are not
+	// imported; BehindBranches are local branches behind origin's copy.
+	RemoteOnlyBranches []string    `json:"remoteOnlyBranches"`
+	BehindBranches     []BranchLag `json:"behindBranches"`
+	HasDevpadRemote    bool        `json:"hasDevpadRemote"`
+}
+
+// BranchLag is how many commits a local branch is behind origin's.
+type BranchLag struct {
+	Name   string `json:"name"`
+	Behind int    `json:"behind"`
+}
+
+// CredentialItem is a credential found in a workspace: its kind and where it
+// is, never its value. ID names it when asking the agent to strip it.
+type CredentialItem struct {
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	Location string `json:"location"`
 }
 
 // ContentsPreview describes a repo that would be made from a workspace's
@@ -42,10 +61,9 @@ type ContentsPreview struct {
 // RepoDiscovery lists a workspace's repos, or previews a repo made from its
 // files when it has none, along with credentials found in it.
 type RepoDiscovery struct {
-	Repos             []DiscoveredRepo `json:"repos"`
-	Contents          *ContentsPreview `json:"contents,omitempty"`
-	CredentialFiles   []string         `json:"credentialFiles"`
-	CredentialHelpers []string         `json:"credentialHelpers"`
+	Repos       []DiscoveredRepo `json:"repos"`
+	Contents    *ContentsPreview `json:"contents,omitempty"`
+	Credentials []CredentialItem `json:"credentials"`
 }
 
 // RepoDiscover finds the git repos in the workspace.
@@ -185,6 +203,42 @@ func (c *Client) SSHRemoveManaged(ctx context.Context, files []ManagedSSHFile) (
 	req.Header.Set("Content-Type", "application/json")
 	var result SSHCleanup
 	if err := c.doRepoJSON(req, "ssh remove managed", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// CredentialFailure is a credential the agent could not strip.
+type CredentialFailure struct {
+	CredentialItem
+	Error string `json:"error"`
+}
+
+// CredentialStrip reports what the agent stripped and what it still finds.
+type CredentialStrip struct {
+	Stripped  []CredentialItem    `json:"stripped"`
+	Failed    []CredentialFailure `json:"failed"`
+	Remaining []CredentialItem    `json:"remaining"`
+}
+
+// StripCredentials asks the agent to remove the credentials named by ids and
+// list what is left; with no ids it only lists them. The agent runs in the
+// workspace, so its report cannot be verified.
+func (c *Client) StripCredentials(ctx context.Context, ids []string) (*CredentialStrip, error) {
+	if ids == nil {
+		ids = []string{}
+	}
+	payload, err := json.Marshal(map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/credentials/strip", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var result CredentialStrip
+	if err := c.doRepoJSON(req, "strip credentials", &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

@@ -49,11 +49,36 @@ func discover(t *testing.T, root string) repoDiscovery {
 	return got
 }
 
+// isolateGitConfig points HOME, and git's system and global config, at
+// empty test locations, returning the home directory and the system file.
+func isolateGitConfig(t *testing.T) (home, system string) {
+	t.Helper()
+	home = t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("GIT_CONFIG_GLOBAL", "")
+	os.Unsetenv("GIT_CONFIG_GLOBAL")
+	system = filepath.Join(t.TempDir(), "gitconfig")
+	writeFile(t, filepath.Dir(system), "gitconfig", "")
+	t.Setenv("GIT_CONFIG_SYSTEM", system)
+	return home, system
+}
+
+func credentialIDs(items []credentialItem) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
 func TestRepoDiscoverFindsRepos(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateGitConfig(t)
 	root := t.TempDir()
 	app := newWorkRepo(t, root, "src/app")
 	runGit(t, app, "branch", "feature")
+	runGit(t, app, "tag", "v1")
 	runGit(t, app, "remote", "add", "origin", "https://user:secret@example.com/app.git")
 	runGit(t, app, "remote", "add", "devpad", "https://example.com/other.git")
 	writeFile(t, app, "dirty.txt", "x")
@@ -68,31 +93,175 @@ func TestRepoDiscoverFindsRepos(t *testing.T) {
 	if repo.Path != "src/app" || repo.Branch != "main" || repo.BranchCount != 2 || !repo.Dirty {
 		t.Fatalf("unexpected repo: %+v", repo)
 	}
-	if repo.OriginURL != "https://example.com/app.git" || !repo.OriginHadCredentials {
-		t.Fatalf("origin credentials not stripped: %+v", repo)
+	if !slices.Equal(repo.Branches, []string{"feature", "main"}) || repo.TagCount != 1 || !slices.Equal(repo.Tags, []string{"v1"}) {
+		t.Fatalf("unexpected refs: %+v", repo)
 	}
-	if !slices.Equal(repo.RemotesWithCredentials, []string{"origin"}) || !repo.HasDevpadRemote {
+	if repo.OriginURL != "https://example.com/app.git" || !repo.OriginHadCredentials || !repo.HasDevpadRemote {
 		t.Fatalf("unexpected remote findings: %+v", repo)
+	}
+	want := []string{"remote-url:the repository at /workspace/src/app: remote.origin.url"}
+	if ids := credentialIDs(got.Credentials); !slices.Equal(ids, want) {
+		t.Fatalf("credentials = %v, want %v", ids, want)
 	}
 	if got.Contents != nil {
 		t.Fatalf("no contents preview expected when a repo exists")
 	}
 }
 
-func TestRepoDiscoverReportsCredentialStores(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeFile(t, home, ".git-credentials", "https://u:p@example.com")
+func TestRepoDiscoverComparesBranchesWithOrigin(t *testing.T) {
+	isolateGitConfig(t)
+	upstream := newWorkRepo(t, t.TempDir(), "up")
+	runGit(t, upstream, "branch", "remote-only")
+	root := t.TempDir()
+	runGit(t, root, "clone", "--quiet", upstream, "app")
+	work := filepath.Join(root, "app")
+	commitFile(t, upstream, "new.txt", "newer")
+	commitFile(t, upstream, "newer.txt", "newest")
+	runGit(t, work, "fetch", "--quiet", "origin")
+
+	repo := discover(t, root).Repos[0]
+	if repo.OriginDefaultBranch != "main" {
+		t.Fatalf("origin default = %q", repo.OriginDefaultBranch)
+	}
+	if !slices.Equal(repo.RemoteOnlyBranches, []string{"remote-only"}) {
+		t.Fatalf("remote-only branches = %v", repo.RemoteOnlyBranches)
+	}
+	if !slices.Equal(repo.BehindBranches, []branchLag{{Name: "main", Behind: 2}}) {
+		t.Fatalf("behind branches = %v", repo.BehindBranches)
+	}
+}
+
+// plantCredentials puts one of every kind of credential devpad looks for in
+// a workspace with a repo at its root, returning the root.
+func plantCredentials(t *testing.T, home, system string) string {
+	t.Helper()
+	writeFile(t, home, ".ssh/id_rsa", "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n")
+	writeFile(t, home, ".ssh/id_rsa.pub", "ssh-rsa AAAA user")
+	writeFile(t, home, ".ssh/id_ed25519", "-----BEGIN OPENSSH PRIVATE KEY-----\ndevpad\n")
+	writeFile(t, home, ".ssh/config", "Host *\n")
+	writeFile(t, home, ".config/gh/hosts.yml", "github.com:\n  oauth_token: gho_secret\n")
+	writeFile(t, home, ".git-credentials", "https://u:hunter2@example.com")
+	writeFile(t, home, ".netrc", "machine example.com password hunter2")
+	runGit(t, home, "config", "--global", "credential.helper", "!f(){ echo password=TOKEN; }; f")
+	runGit(t, home, "config", "--global", "url.https://x-access-token:ghs_secret@github.com/.insteadOf", "https://github.com/")
+	runGit(t, home, "config", "--global", "url.https://github.com/.insteadOf", "gh:")
+	runGit(t, home, "config", "--file", system, "http.https://example.com/.extraHeader", "Authorization: Bearer secret")
+	runGit(t, home, "config", "--file", system, "--add", "http.https://example.com/.extraHeader", "X-Trace: on")
 	root := t.TempDir()
 	dir := newWorkRepo(t, root, ".")
-	runGit(t, dir, "config", "credential.helper", "store")
+	runGit(t, dir, "config", "credential.https://example.com.helper", "store")
+	runGit(t, dir, "remote", "add", "origin", "https://user:ghp_secret@github.com/o/app.git")
+	runGit(t, dir, "remote", "set-url", "--add", "origin", "https://mirror.example.com/app.git")
+	runGit(t, dir, "remote", "add", "plain", "git@github.com:o/app.git")
+	return root
+}
 
-	got := discover(t, root)
-	if !slices.Equal(got.CredentialFiles, []string{"~/.git-credentials"}) {
-		t.Fatalf("credential files = %v", got.CredentialFiles)
+var plantedCredentialIDs = []string{
+	"credential-helper:the repository at /workspace: credential.https://example.com.helper",
+	"credential-helper:~/.gitconfig: credential.helper",
+	"gh-token:~/.config/gh/hosts.yml",
+	"git-credentials:~/.git-credentials",
+	"http-header:system git config: http.https://example.com/.extraheader",
+	"netrc:~/.netrc",
+	"remote-url:the repository at /workspace: remote.origin.url",
+	"ssh-key:~/.ssh/id_rsa",
+	"url-rewrite:~/.gitconfig: url.https://github.com/.insteadof",
+}
+
+func TestRepoDiscoverReportsCredentialsWithoutSecrets(t *testing.T) {
+	home, system := isolateGitConfig(t)
+	root := plantCredentials(t, home, system)
+
+	rec := repoRequest(t, root, handleRepoDiscover, http.MethodGet, "/api/repo/discover", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("discover status %d: %s", rec.Code, rec.Body)
 	}
-	if len(got.Repos) != 1 || got.Repos[0].Path != "." || !slices.Equal(got.Repos[0].CredentialHelpers, []string{"store"}) {
-		t.Fatalf("unexpected repos: %+v", got.Repos)
+	for _, secret := range []string{"secret", "hunter2", "TOKEN", "ghp_", "ghs_", "gho_", "Bearer"} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Fatalf("discovery leaked %q: %s", secret, rec.Body)
+		}
+	}
+	var got repoDiscovery
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if ids := credentialIDs(got.Credentials); !slices.Equal(ids, plantedCredentialIDs) {
+		t.Fatalf("credentials =\n%s\nwant\n%s", strings.Join(ids, "\n"), strings.Join(plantedCredentialIDs, "\n"))
+	}
+}
+
+func stripCredentials(t *testing.T, root string, ids []string) (stripped, remaining []credentialItem, failed []credentialFailure) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"ids": ids})
+	rec := repoRequest(t, root, handleCredentialsStrip, http.MethodPost, "/api/credentials/strip", bytes.NewReader(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("strip status %d: %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Stripped  []credentialItem    `json:"stripped"`
+		Remaining []credentialItem    `json:"remaining"`
+		Failed    []credentialFailure `json:"failed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	return got.Stripped, got.Remaining, got.Failed
+}
+
+func TestCredentialsStripRemovesExactlyWhatWasNamed(t *testing.T) {
+	home, system := isolateGitConfig(t)
+	root := plantCredentials(t, home, system)
+
+	keep := "netrc:~/.netrc"
+	var ids []string
+	for _, id := range plantedCredentialIDs {
+		if id != keep {
+			ids = append(ids, id)
+		}
+	}
+	stripped, remaining, failed := stripCredentials(t, root, append(ids, "netrc:~/.not-there"))
+	if len(failed) != 0 {
+		t.Fatalf("failed: %+v", failed)
+	}
+	if got := credentialIDs(stripped); !slices.Equal(got, ids) {
+		t.Fatalf("stripped %v, want %v", got, ids)
+	}
+	if got := credentialIDs(remaining); !slices.Equal(got, []string{keep}) {
+		t.Fatalf("remaining %v", got)
+	}
+
+	for _, gone := range []string{".ssh/id_rsa", ".config/gh/hosts.yml", ".git-credentials"} {
+		if _, err := os.Lstat(filepath.Join(home, gone)); err == nil {
+			t.Errorf("%s was not removed", gone)
+		}
+	}
+	// Files that are not credentials, and devpad's own key, are not touched
+	// here; devpad's key goes with the SSH cleanup.
+	for _, kept := range []string{".ssh/id_rsa.pub", ".ssh/config", ".ssh/id_ed25519", ".netrc"} {
+		if _, err := os.Lstat(filepath.Join(home, kept)); err != nil {
+			t.Errorf("%s was removed", kept)
+		}
+	}
+	// The remote keeps both URLs without the token; other config stays.
+	if got := runGit(t, root, "config", "--get-all", "remote.origin.url"); got != "https://github.com/o/app.git\nhttps://mirror.example.com/app.git" {
+		t.Fatalf("origin urls = %q", got)
+	}
+	if got := runGit(t, root, "config", "remote.plain.url"); got != "git@github.com:o/app.git" {
+		t.Fatalf("plain remote changed: %q", got)
+	}
+	if got := runGit(t, home, "config", "--global", "url.https://github.com/.insteadOf"); got != "gh:" {
+		t.Fatalf("a rewrite without credentials was removed: %q", got)
+	}
+	if got := runGit(t, home, "config", "--file", system, "--get-all", "http.https://example.com/.extraHeader"); got != "X-Trace: on" {
+		t.Fatalf("extra headers = %q", got)
+	}
+}
+
+func TestCredentialsStripWithNoIDsOnlyLists(t *testing.T) {
+	home, system := isolateGitConfig(t)
+	root := plantCredentials(t, home, system)
+
+	stripped, remaining, _ := stripCredentials(t, root, nil)
+	if len(stripped) != 0 || !slices.Equal(credentialIDs(remaining), plantedCredentialIDs) {
+		t.Fatalf("stripped=%v remaining=%v", credentialIDs(stripped), credentialIDs(remaining))
 	}
 }
 
@@ -350,11 +519,11 @@ func TestRepoBundleAllStaysInsideWorkspace(t *testing.T) {
 	}
 }
 
-func TestSSHRemoveManagedOnlyRemovesDevpadFiles(t *testing.T) {
+func TestSSHRemoveManagedAlwaysRemovesDevpadKeyAndOnlyMatchingOthers(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	sshDir := filepath.Join(home, ".ssh")
-	writeFile(t, sshDir, "id_ed25519", "devpad key\n")
+	writeFile(t, sshDir, "id_ed25519", "devpad key, rotated or tampered with\n")
 	writeFile(t, sshDir, "known_hosts", "devpad hosts\n")
 	writeFile(t, sshDir, "config", "the user's own config\n")
 	writeFile(t, sshDir, "id_rsa", "the user's own key\n")
@@ -389,5 +558,81 @@ func TestSSHRemoveManagedOnlyRemovesDevpadFiles(t *testing.T) {
 	bad, _ := json.Marshal(map[string]any{"files": []map[string]string{{"name": "../.bashrc", "sha256": "x"}}})
 	if rec := repoRequest(t, t.TempDir(), handleSSHRemoveManaged, http.MethodPost, "/api/ssh/remove-managed", bytes.NewReader(bad)); rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for a file devpad does not manage, got %d", rec.Code)
+	}
+}
+
+// hostileBundle bundles refs made directly in a repo with one commit on
+// main, the way a process inside a workspace could, past git's own checks.
+func hostileBundle(t *testing.T, refs func(dir, head string)) []byte {
+	t.Helper()
+	dir := newWorkRepo(t, t.TempDir(), "evil")
+	head := runGit(t, dir, "rev-parse", "HEAD")
+	refs(dir, head)
+	path := filepath.Join(t.TempDir(), "evil.bundle")
+	runGit(t, dir, "bundle", "create", path, "--all")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestRepoImportInitialRefusesHostileBundles(t *testing.T) {
+	writeRef := func(dir, ref, sha string) {
+		writeFile(t, filepath.Join(dir, ".git"), ref, sha+"\n")
+	}
+	cases := []struct {
+		name string
+		refs func(dir, head string)
+	}{
+		{"branch pointing at a blob", func(dir, _ string) {
+			blob := runGit(t, dir, "hash-object", "-w", "README.md")
+			writeRef(dir, "refs/heads/blobby", blob)
+		}},
+		{"branch pointing at a tree", func(dir, head string) {
+			writeRef(dir, "refs/heads/tree", runGit(t, dir, "rev-parse", head+"^{tree}"))
+		}},
+		{"tag with a leading dash", func(dir, head string) { writeRef(dir, "refs/tags/-bad", head) }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			canonical := initEmptyCanonical(t, "")
+			if code, body := importInitial(t, canonical, "main", hostileBundle(t, c.refs)); code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", code, body)
+			}
+			if refs := runGit(t, canonical, "for-each-ref"); refs != "" {
+				t.Fatalf("a refused import left refs: %s", refs)
+			}
+		})
+	}
+
+	t.Run("refs outside branches and tags are dropped", func(t *testing.T) {
+		canonical := initEmptyCanonical(t, "")
+		bundle := hostileBundle(t, func(dir, head string) {
+			writeRef(dir, "refs/notes/commits", head)
+			writeRef(dir, "refs/remotes/origin/main", head)
+			writeRef(dir, "refs/devpad-quarantine/x/heads/main", head)
+		})
+		if code, body := importInitial(t, canonical, "main", bundle); code != http.StatusOK {
+			t.Fatalf("import status %d: %s", code, body)
+		}
+		if refs := runGit(t, canonical, "for-each-ref", "--format=%(refname)"); refs != "refs/heads/main" {
+			t.Fatalf("canonical refs = %q", refs)
+		}
+	})
+}
+
+func TestRepoImportInitialRefusesARepoWithOnlyTags(t *testing.T) {
+	canonical := initEmptyCanonical(t, "")
+	tree := runGit(t, canonical, "hash-object", "-t", "tree", "-w", "--stdin")
+	commit := runGit(t, canonical, "commit-tree", tree, "-m", "planted")
+	runGit(t, canonical, "update-ref", "refs/tags/planted", commit)
+
+	_, bundle := bundleAll(t, func() string { root := t.TempDir(); newWorkRepo(t, root, "."); return root }(), ".")
+	if code, body := importInitial(t, canonical, "main", bundle); code != http.StatusConflict {
+		t.Fatalf("expected 409 for a repo that has a tag, got %d: %s", code, body)
+	}
+	if refs := runGit(t, canonical, "for-each-ref", "--format=%(refname)"); refs != "refs/tags/planted" {
+		t.Fatalf("canonical refs = %q", refs)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -30,6 +31,8 @@ const (
 	discoverMaxEntries = 20000
 	// maxSensitiveListed caps the sensitive paths a preview names.
 	maxSensitiveListed = 50
+	// maxRefsListed caps the branches and tags a discovered repo names.
+	maxRefsListed = 200
 )
 
 // discoverSkipDirs are never searched for repos.
@@ -55,20 +58,29 @@ var sensitivePatterns = []string{
 
 type discoveredRepo struct {
 	// Path is relative to the workspace root; "." is the root itself.
-	Path        string `json:"path"`
-	Branch      string `json:"branch"`
-	BranchCount int    `json:"branchCount"`
-	Dirty       bool   `json:"dirty"`
+	Path        string   `json:"path"`
+	Branch      string   `json:"branch"`
+	BranchCount int      `json:"branchCount"`
+	Branches    []string `json:"branches"`
+	TagCount    int      `json:"tagCount"`
+	Tags        []string `json:"tags"`
+	Dirty       bool     `json:"dirty"`
 	// OriginURL has any credentials removed; OriginHadCredentials says so.
 	OriginURL            string `json:"originUrl"`
 	OriginHadCredentials bool   `json:"originHadCredentials"`
 	OriginDefaultBranch  string `json:"originDefaultBranch"`
-	// RemotesWithCredentials names remotes whose URL embeds a credential.
-	RemotesWithCredentials []string `json:"remotesWithCredentials"`
-	CredentialHelpers      []string `json:"credentialHelpers"`
+	// RemoteOnlyBranches exist as origin/<name> but not locally, so they are
+	// not imported; BehindBranches are local branches behind origin's.
+	RemoteOnlyBranches []string    `json:"remoteOnlyBranches"`
+	BehindBranches     []branchLag `json:"behindBranches"`
 	// HasDevpadRemote is set when a remote is named "devpad", which devpad
 	// needs for its own copies of project branches.
 	HasDevpadRemote bool `json:"hasDevpadRemote"`
+}
+
+type branchLag struct {
+	Name   string `json:"name"`
+	Behind int    `json:"behind"`
 }
 
 type contentsPreview struct {
@@ -88,10 +100,9 @@ type repoDiscovery struct {
 	// Contents previews a repo made from the workspace's files; it is only
 	// set when the workspace has no repo at all.
 	Contents *contentsPreview `json:"contents,omitempty"`
-	// CredentialFiles lists credential stores in the home directory.
-	CredentialFiles []string `json:"credentialFiles"`
-	// CredentialHelpers lists globally configured git credential helpers.
-	CredentialHelpers []string `json:"credentialHelpers"`
+	// Credentials lists what a converted workspace must not keep, with no
+	// secret values.
+	Credentials []credentialItem `json:"credentials"`
 }
 
 // handleRepoDiscover lists the git repos in the workspace, or previews a repo
@@ -111,9 +122,8 @@ func handleRepoDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := repoDiscovery{
-		Repos:             []discoveredRepo{},
-		CredentialFiles:   homeCredentialFiles(),
-		CredentialHelpers: configValues(ctx, root, "--global", "credential.helper"),
+		Repos:       []discoveredRepo{},
+		Credentials: detectCredentials(ctx, root, dirs),
 	}
 	for _, dir := range dirs {
 		repo, err := describeRepo(ctx, root, dir)
@@ -181,12 +191,31 @@ func describeRepo(ctx context.Context, root, dir string) (*discoveredRepo, error
 	if err != nil {
 		return nil, err
 	}
-	repo := &discoveredRepo{Path: filepath.ToSlash(rel), RemotesWithCredentials: []string{}}
+	repo := &discoveredRepo{
+		Path: filepath.ToSlash(rel), Branches: []string{}, Tags: []string{},
+		RemoteOnlyBranches: []string{}, BehindBranches: []branchLag{},
+	}
 	if out, err := gitOutputIn(ctx, dir, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
 		repo.Branch = strings.TrimSpace(out)
 	}
-	if out, err := gitOutputIn(ctx, dir, "for-each-ref", "--format=%(refname)", "refs/heads/"); err == nil {
-		repo.BranchCount = len(nonEmptyLines(out))
+	local := map[string]string{}
+	if out, err := gitOutputIn(ctx, dir, "for-each-ref", "--format=%(refname:strip=2) %(objectname)", "refs/heads/"); err == nil {
+		for _, line := range nonEmptyLines(out) {
+			name, sha, _ := strings.Cut(line, " ")
+			local[name] = sha
+			repo.BranchCount++
+			if len(repo.Branches) < maxRefsListed {
+				repo.Branches = append(repo.Branches, name)
+			}
+		}
+	}
+	if out, err := gitOutputIn(ctx, dir, "for-each-ref", "--format=%(refname:strip=2)", "refs/tags/"); err == nil {
+		for _, name := range nonEmptyLines(out) {
+			repo.TagCount++
+			if len(repo.Tags) < maxRefsListed {
+				repo.Tags = append(repo.Tags, name)
+			}
+		}
 	}
 	if out, err := gitOutputIn(ctx, dir, "status", "--porcelain"); err == nil {
 		repo.Dirty = strings.TrimSpace(out) != ""
@@ -194,23 +223,40 @@ func describeRepo(ctx context.Context, root, dir string) (*discoveredRepo, error
 	if out, err := gitOutputIn(ctx, dir, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
 		repo.OriginDefaultBranch = strings.TrimPrefix(strings.TrimSpace(out), "origin/")
 	}
+	// Only local branches are imported, so say which of origin's are missing
+	// or newer than the local copy.
+	if out, err := gitOutputIn(ctx, dir, "for-each-ref", "--format=%(refname:strip=3) %(objectname)", "refs/remotes/origin/"); err == nil {
+		for _, line := range nonEmptyLines(out) {
+			name, sha, _ := strings.Cut(line, " ")
+			if name == "HEAD" {
+				continue
+			}
+			localSHA, ok := local[name]
+			switch {
+			case !ok:
+				if len(repo.RemoteOnlyBranches) < maxRefsListed {
+					repo.RemoteOnlyBranches = append(repo.RemoteOnlyBranches, name)
+				}
+			case localSHA != sha && len(repo.BehindBranches) < maxRefsListed:
+				count, err := gitOutputIn(ctx, dir, "rev-list", "--count", "refs/heads/"+name+"..refs/remotes/origin/"+name)
+				if n, convErr := strconv.Atoi(strings.TrimSpace(count)); err == nil && convErr == nil && n > 0 {
+					repo.BehindBranches = append(repo.BehindBranches, branchLag{Name: name, Behind: n})
+				}
+			}
+		}
+	}
 
 	out, _ := gitOutputIn(ctx, dir, "config", "--local", "--get-regexp", `^remote\..*\.url$`)
 	for _, line := range nonEmptyLines(out) {
 		key, value, _ := strings.Cut(line, " ")
 		name := strings.TrimSuffix(strings.TrimPrefix(key, "remote."), ".url")
-		clean, hadCredentials := stripURLCredentials(value)
-		if hadCredentials {
-			repo.RemotesWithCredentials = append(repo.RemotesWithCredentials, name)
-		}
 		if name == "origin" {
-			repo.OriginURL, repo.OriginHadCredentials = clean, hadCredentials
+			repo.OriginURL, repo.OriginHadCredentials = stripURLCredentials(value)
 		}
 		if name == sandboxBaseRemote {
 			repo.HasDevpadRemote = true
 		}
 	}
-	repo.CredentialHelpers = configValues(ctx, dir, "--local", "credential.helper")
 	return repo, nil
 }
 
@@ -229,28 +275,6 @@ func stripURLCredentials(raw string) (string, bool) {
 	}
 	u.User = nil
 	return u.String(), true
-}
-
-func configValues(ctx context.Context, dir, scope, key string) []string {
-	out, err := gitOutputIn(ctx, dir, "config", scope, "--get-all", key)
-	if err != nil {
-		return []string{}
-	}
-	return nonEmptyLines(out)
-}
-
-func homeCredentialFiles() []string {
-	files := []string{}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return files
-	}
-	for _, name := range []string{".git-credentials", ".netrc"} {
-		if _, err := os.Lstat(filepath.Join(home, name)); err == nil {
-			files = append(files, "~/"+name)
-		}
-	}
-	return files
 }
 
 func nonEmptyLines(s string) []string {
@@ -578,14 +602,16 @@ var managedSSHFileNames = []string{"id_ed25519", "id_ed25519.pub", "known_hosts"
 type sshCleanupResult struct {
 	Removed []string `json:"removed"`
 	// Kept lists files that exist but differ from what devpad wrote, so they
-	// may be the user's own and are left alone.
+	// may be the user's own and are left alone. Devpad's key is never kept.
 	Kept   []string `json:"kept"`
 	Absent []string `json:"absent"`
 }
 
-// handleSSHRemoveManaged removes the SSH files devpad put in the workspace,
-// each only if its contents still hash to what devpad wrote, so a file the
-// user changed or made themselves is kept.
+// handleSSHRemoveManaged removes the SSH files devpad put in the workspace.
+// Devpad's key pair (devpadSSHFiles) is removed whatever it holds: devpad
+// overwrites it on every start, so a file there is devpad's key, stale or
+// tampered with. known_hosts and config are only removed if they still hash
+// to what devpad wrote, so a file the user changed or made is kept.
 func handleSSHRemoveManaged(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxGitRequestBody)
 	var req struct {
@@ -616,19 +642,29 @@ func handleSSHRemoveManaged(w http.ResponseWriter, r *http.Request) {
 			result.Absent = append(result.Absent, display)
 			continue
 		}
-		if err != nil || !info.Mode().IsRegular() {
+		always := slices.Contains(devpadSSHFiles, f.Name)
+		switch {
+		case err != nil:
 			result.Kept = append(result.Kept, display)
 			continue
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "reading "+display+": "+err.Error())
+		case always && info.IsDir():
+			writeErr(w, http.StatusConflict, display+" is a directory")
 			return
-		}
-		sum := sha256.Sum256(content)
-		if hex.EncodeToString(sum[:]) != strings.ToLower(f.SHA256) {
-			result.Kept = append(result.Kept, display)
-			continue
+		case !always:
+			if !info.Mode().IsRegular() {
+				result.Kept = append(result.Kept, display)
+				continue
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, "reading "+display+": "+err.Error())
+				return
+			}
+			sum := sha256.Sum256(content)
+			if hex.EncodeToString(sum[:]) != strings.ToLower(f.SHA256) {
+				result.Kept = append(result.Kept, display)
+				continue
+			}
 		}
 		if err := os.Remove(path); err != nil {
 			writeErr(w, http.StatusInternalServerError, "removing "+display+": "+err.Error())

@@ -202,6 +202,9 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 	if err != nil {
 		return nil, err
 	}
+	if s.isConverting(ws.ID) {
+		return nil, ErrConverting
+	}
 	if ws.Status == StatusRunning {
 		return ws, nil
 	}
@@ -256,6 +259,10 @@ func (s *service) Stop(ctx context.Context, userID, workspaceID int64) (*Workspa
 	ws, err := s.Get(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
+	}
+	// Stopping mid-conversion would leave devpad unable to undo its work.
+	if s.isConverting(ws.ID) {
+		return nil, ErrConverting
 	}
 	if ws.Status == StatusStopped {
 		return ws, nil

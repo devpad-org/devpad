@@ -128,7 +128,8 @@ type ConversionService interface {
 	InitRepoFromContents(ctx context.Context, userID, workspaceID int64, branch string, includeSensitive bool) (*agent.RepoContentsInit, error)
 	UndoInitRepoFromContents(ctx context.Context, userID, workspaceID int64, sha string) error
 	BundleAllBranches(ctx context.Context, userID, workspaceID int64, dir string) (io.ReadCloser, error)
-	AttachToProject(ctx context.Context, userID, workspaceID, projectID int64) (*agent.SSHCleanup, error)
+	AttachToProject(ctx context.Context, userID, workspaceID, projectID int64, strip []string) (*AttachResult, error)
+	RestartConverted(ctx context.Context, userID, workspaceID int64) error
 }
 
 // SidecarBinder injects the sidecar service lifecycle dependency.

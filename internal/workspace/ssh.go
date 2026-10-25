@@ -104,11 +104,14 @@ func sshFiles(user *auth.User, cipher *encrypt.Cipher) ([]sshFile, error) {
 	}, nil
 }
 
-// managedSSHFiles hashes the files WriteSSHKeys would write for user, so
-// they can be removed only where they still hold exactly that. Without a key
-// on record, only the fixed known_hosts and config can be recognised.
+// managedSSHFiles lists the files WriteSSHKeys writes, hashed so known_hosts
+// and config are only removed where they still hold exactly that. Devpad's
+// key pair is always removed whatever it holds, so it is listed even when
+// the user has no key on record.
 func managedSSHFiles(user *auth.User, cipher *encrypt.Cipher) ([]agent.ManagedSSHFile, error) {
 	files := []sshFile{
+		{name: "id_ed25519"},
+		{name: "id_ed25519.pub"},
 		{name: "known_hosts", content: knownHosts},
 		{name: "config", content: sshConfig},
 	}

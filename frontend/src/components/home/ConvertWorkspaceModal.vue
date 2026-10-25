@@ -1,18 +1,24 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { Workspace } from '@/api/workspaces'
+import { ApiError } from '@/api/client'
 import {
   projectApi,
   type ConvertResult,
+  type CredentialItem,
   type DiscoveredRepo,
   type RepoDiscovery,
-  type SSHCleanup,
 } from '@/api/projects'
 
 // Turns a standalone workspace into a project. A repo at /workspace stays
 // where it is and the workspace becomes the project's workspace; a repo in a
 // subdirectory seeds a new project that gets a fresh workspace; a workspace
 // with no repo can have one made from its files.
+//
+// Converting in place makes the workspace one where no credential may stay,
+// though the IDE assistant could read everything it held: the user agrees to
+// strip what devpad finds, devpad restarts the container and replaces the
+// user's devpad SSH key, and the user revokes what was exposed.
 
 const props = defineProps<{
   show: boolean
@@ -30,18 +36,32 @@ const MAX_SANDBOXES_LIMIT = 20
 // The root repo, or a repo made from the workspace's files.
 const ROOT = '.'
 const FROM_FILES = ''
+// Branches and tags named before the rest are summarised.
+const REFS_SHOWN = 12
+
+const CREDENTIAL_KINDS: Record<string, string> = {
+  'ssh-key': 'SSH private key',
+  'gh-token': 'GitHub CLI token',
+  'git-credentials': 'Git credential store',
+  netrc: 'netrc credentials',
+  'credential-helper': 'Git credential helper',
+  'url-rewrite': 'URL rewrite with a token',
+  'http-header': 'Authorization header',
+  'remote-url': 'Remote URL with a token',
+}
 
 const discovery = ref<RepoDiscovery | null>(null)
 const loading = ref(false)
 const loadError = ref('')
 const converting = ref(false)
 const convertError = ref('')
-// Set when devpad kept SSH files it did not write; shown before leaving.
-const keptSSH = ref<SSHCleanup | null>(null)
+// A conversion in place, shown until the user has read what to do next.
 const result = ref<ConvertResult | null>(null)
+const copied = ref(false)
 
 const repoPath = ref<string | null>(null)
 const includeSensitive = ref(false)
+const stripConsent = ref(false)
 const name = ref('')
 const description = ref('')
 const defaultBranch = ref('')
@@ -65,8 +85,13 @@ const contentsBytes = computed(() => {
 })
 const contentsTooBig = computed(() => !!contents.value && contentsBytes.value > contents.value.maxBytes)
 
+const credentials = computed<CredentialItem[]>(() => discovery.value?.credentials ?? [])
+
 const blocker = computed(() => {
   if (repoPath.value === null) return 'Pick a repository.'
+  if (inPlace.value && credentials.value.length > 0 && !stripConsent.value) {
+    return 'Agree to strip the credentials listed above, or remove them yourself and look again.'
+  }
   if (selectedRepo.value?.hasDevpadRemote && inPlace.value) {
     return 'This repository has a remote named "devpad", which devpad needs for its own copies of project branches. Rename it (git remote rename devpad something-else) and try again.'
   }
@@ -75,21 +100,44 @@ const blocker = computed(() => {
   return ''
 })
 
-// Credentials devpad found and left in place. The IDE assistant can read
-// anything in the workspace, so the user should know they are there.
-const credentialWarnings = computed(() => {
+// What a repo's import leaves out or takes from behind origin.
+const refWarnings = computed(() => {
+  const repo = selectedRepo.value
   const warnings: string[] = []
-  const d = discovery.value
-  if (!d) return warnings
-  for (const file of d.credentialFiles) warnings.push(`${file} holds git credentials.`)
-  const helpers = [...d.credentialHelpers, ...(selectedRepo.value?.credentialHelpers ?? [])]
-  if (helpers.length > 0) warnings.push(`Git is set up with a credential helper (${helpers.join(', ')}).`)
-  const remotes = selectedRepo.value?.remotesWithCredentials ?? []
-  if (remotes.length > 0) {
-    warnings.push(`The ${remotes.join(', ')} remote URL${remotes.length > 1 ? 's embed' : ' embeds'} a password or token.`)
+  if (!repo) return warnings
+  if (repo.remoteOnlyBranches.length > 0) {
+    warnings.push(
+      `Only on origin, so not imported: ${listSome(repo.remoteOnlyBranches)}. Check them out locally first to include them.`,
+    )
+  }
+  if (repo.behindBranches.length > 0) {
+    const behind = repo.behindBranches.map((b) => `${b.name} (${b.behind} commit${b.behind === 1 ? '' : 's'})`)
+    warnings.push(
+      `Behind origin: ${listSome(behind)}. The project starts from your local copies; pull first for the latest.`,
+    )
   }
   return warnings
 })
+
+function listSome(items: string[], total = items.length): string {
+  const shown = items.slice(0, REFS_SHOWN).join(', ')
+  return total > REFS_SHOWN ? `${shown} and ${total - REFS_SHOWN} more` : shown
+}
+
+function credentialKind(kind: string): string {
+  return CREDENTIAL_KINDS[kind] ?? kind
+}
+
+// The branch merges land on: origin's default, else a conventional name,
+// else whatever is checked out.
+function suggestDefaultBranch(repo: DiscoveredRepo | null): string {
+  if (!repo) return 'main'
+  const has = (b: string) => !!b && repo.branches.includes(b)
+  for (const candidate of [repo.originDefaultBranch, 'main', 'master', repo.branch]) {
+    if (has(candidate)) return candidate
+  }
+  return repo.branch || repo.branches[0] || 'main'
+}
 
 watch(
   () => [props.show, props.workspace?.id, props.workspace?.status] as const,
@@ -104,7 +152,7 @@ watch(
 // Picking a repo fills in the branch and upstream it suggests.
 watch(repoPath, () => {
   const repo = selectedRepo.value
-  defaultBranch.value = repo?.originDefaultBranch || repo?.branch || 'main'
+  defaultBranch.value = suggestDefaultBranch(repo)
   upstreamUrl.value = repo?.originUrl ?? ''
 })
 
@@ -112,10 +160,11 @@ function resetForm() {
   discovery.value = null
   loadError.value = ''
   convertError.value = ''
-  keptSSH.value = null
   result.value = null
+  copied.value = false
   repoPath.value = null
   includeSensitive.value = false
+  stripConsent.value = false
   name.value = props.workspace?.name ?? ''
   description.value = props.workspace?.description ?? ''
   defaultBranch.value = 'main'
@@ -162,6 +211,7 @@ async function convert() {
     const res = await projectApi.convertWorkspace(ws.id, {
       repoPath: repoPath.value,
       includeSensitive: fromFiles.value && includeSensitive.value,
+      stripCredentials: inPlace.value && stripConsent.value ? credentials.value.map((c) => c.id) : [],
       name: name.value.trim(),
       description: description.value.trim(),
       defaultBranch: defaultBranch.value.trim() || undefined,
@@ -169,16 +219,37 @@ async function convert() {
       setupScript: setupScript.value,
       maxSandboxes: max,
     })
-    if (res.ssh && res.ssh.kept.length > 0) {
-      keptSSH.value = res.ssh
-      result.value = res
-    } else {
-      emit('converted', res)
-    }
+    // Converting in place leaves the user something to do upstream.
+    if (res.workspace) result.value = res
+    else emit('converted', res)
   } catch (e) {
-    convertError.value = e instanceof Error ? e.message : 'Conversion failed'
+    const found = credentialsFrom(e)
+    if (found && discovery.value) {
+      discovery.value = { ...discovery.value, credentials: found }
+      stripConsent.value = false
+      convertError.value = 'The workspace holds credentials you have not agreed to strip. Review the list and try again.'
+    } else {
+      convertError.value = e instanceof Error ? e.message : 'Conversion failed'
+    }
   } finally {
     converting.value = false
+  }
+}
+
+// A refused conversion lists the credentials found since the user looked.
+function credentialsFrom(e: unknown): CredentialItem[] | null {
+  if (!(e instanceof ApiError) || e.status !== 409) return null
+  const body = e.body as { credentials?: CredentialItem[] } | null
+  return Array.isArray(body?.credentials) ? body.credentials : null
+}
+
+async function copyKey() {
+  if (!result.value?.publicKey) return
+  try {
+    await navigator.clipboard.writeText(result.value.publicKey)
+    copied.value = true
+  } catch {
+    copied.value = false
   }
 }
 
@@ -204,14 +275,48 @@ function formatBytes(bytes: number): string {
           <button class="modal-close" aria-label="Close" :disabled="converting" @click="close">&times;</button>
         </div>
 
-        <div v-if="keptSSH" class="modal-body">
+        <div v-if="result" class="modal-body">
           <p class="notice notice-success">The project is ready, and this workspace is now its workspace.</p>
-          <p class="notice notice-warning">
-            Devpad removed the SSH keys it had put in this workspace, but left
-            <span class="mono">{{ keptSSH.kept.join(', ') }}</span>
-            because {{ keptSSH.kept.length > 1 ? "they don't" : "it doesn't" }} match what devpad wrote, so
-            {{ keptSSH.kept.length > 1 ? 'they may be' : 'it may be' }} yours. The IDE assistant can read
-            anything in the workspace; remove any keys you don't want it to have.
+
+          <div v-if="result.keyRotated" class="form-group">
+            <p class="form-hint">
+              Your devpad SSH key was replaced, because this workspace held it where the IDE assistant could read
+              it. Add the new public key to GitHub (or wherever your upstream is), then remove the old one there.
+            </p>
+            <textarea class="form-input form-textarea form-mono" rows="3" readonly :value="result.publicKey" />
+            <div class="key-actions">
+              <button type="button" class="btn btn-secondary" @click="copyKey">{{ copied ? 'Copied' : 'Copy key' }}</button>
+            </div>
+            <p class="form-hint">
+              Projects push with the new key. Other workspaces without a project get it on their next start; running
+              ones keep the old key until restarted.
+            </p>
+          </div>
+          <p v-else-if="result.rotationError" class="notice notice-error">
+            Devpad couldn't replace your SSH key ({{ result.rotationError }}). This workspace held it, so generate a
+            new one in Settings, add it upstream, and remove the old one there.
+          </p>
+
+          <div v-if="result.stripped.length > 0" class="notice notice-warning">
+            Stripped from the workspace:
+            <ul class="warning-list">
+              <li v-for="item in result.stripped" :key="item.id">
+                {{ credentialKind(item.kind) }}: <span class="mono">{{ item.location }}</span>
+              </li>
+            </ul>
+            Revoke these tokens and keys where they were issued. Stripping them can't undo that the assistant could
+            read them.
+          </div>
+
+          <p v-if="result.restartError" class="notice notice-error">
+            Devpad couldn't restart the workspace ({{ result.restartError }}). Stop and start it yourself, so no
+            process started before the conversion keeps a credential.
+          </p>
+          <p v-else class="form-hint">The workspace was restarted, so terminals and commands start fresh.</p>
+
+          <p v-if="result.ssh && result.ssh.kept.length > 0" class="form-hint">
+            Left in place because {{ result.ssh.kept.length > 1 ? "they don't" : "it doesn't" }} match what devpad
+            wrote: <span class="mono">{{ result.ssh.kept.join(', ') }}</span>.
           </p>
           <div class="modal-actions">
             <button type="button" class="btn btn-primary" @click="close">Open project</button>
@@ -251,6 +356,7 @@ function formatBytes(bytes: number): string {
                   <span class="meta-row">
                     <span v-if="repo.branch">on <span class="mono">{{ repo.branch }}</span></span>
                     <span>{{ repo.branchCount }} branch{{ repo.branchCount === 1 ? '' : 'es' }}</span>
+                    <span v-if="repo.tagCount > 0">{{ repo.tagCount }} tag{{ repo.tagCount === 1 ? '' : 's' }}</span>
                     <span v-if="repo.dirty" class="tag tag-warning">uncommitted changes</span>
                   </span>
                   <span v-if="repo.originUrl" class="choice-sub mono">{{ repo.originUrl }}</span>
@@ -303,6 +409,17 @@ function formatBytes(bytes: number): string {
             them.
           </p>
 
+          <div v-if="selectedRepo" class="form-group">
+            <span class="form-label">Imported</span>
+            <p class="form-hint">
+              Branches: <span class="mono">{{ listSome(selectedRepo.branches, selectedRepo.branchCount) }}</span>
+              <template v-if="selectedRepo.tagCount > 0">
+                <br />Tags: <span class="mono">{{ listSome(selectedRepo.tags, selectedRepo.tagCount) }}</span>
+              </template>
+            </p>
+            <p v-for="warning in refWarnings" :key="warning" class="form-hint warning-text">{{ warning }}</p>
+          </div>
+
           <div class="form-group">
             <label class="form-label" for="convert-name">Project name</label>
             <input id="convert-name" v-model="name" class="form-input" type="text" autocomplete="off" />
@@ -335,17 +452,37 @@ function formatBytes(bytes: number): string {
             <input id="convert-max" v-model.number="maxSandboxes" class="form-input" type="number" min="1" :max="MAX_SANDBOXES_LIMIT" />
           </div>
 
-          <div v-if="inPlace" class="notice notice-warning">
-            After converting, this workspace no longer holds your SSH keys: devpad removes the ones it put in
-            <span class="mono">~/.ssh</span>, since the IDE assistant runs here too. Pushing upstream happens from
-            the project's Push button, not from the terminal.
-          </div>
-          <div v-if="credentialWarnings.length > 0" class="notice notice-warning">
-            Devpad leaves these in place, where the IDE assistant can read them:
-            <ul class="warning-list">
-              <li v-for="warning in credentialWarnings" :key="warning">{{ warning }}</li>
-            </ul>
-          </div>
+          <template v-if="inPlace">
+            <div class="notice notice-warning">
+              This workspace becomes the project's workspace, where the IDE assistant runs and no credential may
+              stay. Converting:
+              <ul class="warning-list">
+                <li>removes the SSH key devpad put in <span class="mono">~/.ssh</span>;</li>
+                <li>
+                  restarts the workspace, so terminals and running commands restart, ending any process that kept
+                  a credential;
+                </li>
+                <li>
+                  replaces your devpad SSH key, since the assistant could read it here: you'll add the new key
+                  upstream afterwards. Pushing upstream then happens from the project's Push button.
+                </li>
+              </ul>
+              Deleting the project later deletes this workspace and its volume, untracked files included.
+            </div>
+            <div v-if="credentials.length > 0" class="form-group credentials">
+              <p class="form-hint">This workspace holds credentials the assistant could read:</p>
+              <ul class="file-list">
+                <li v-for="item in credentials" :key="item.id">
+                  {{ credentialKind(item.kind) }}: <span class="mono">{{ item.location }}</span>
+                </li>
+              </ul>
+              <label class="form-check">
+                <input v-model="stripConsent" type="checkbox" />
+                Strip these from the workspace. Revoke them where they were issued afterwards; stripping can't undo
+                that they were readable.
+              </label>
+            </div>
+          </template>
 
           <p v-if="blocker && repoPath !== null" class="form-error">{{ blocker }}</p>
           <p v-if="convertError" class="form-error">{{ convertError }}</p>
@@ -464,7 +601,14 @@ function formatBytes(bytes: number): string {
   background: var(--warning-bg);
 }
 
-.sensitive {
+.sensitive,
+.credentials {
+  margin-top: var(--space-2);
+}
+
+.key-actions {
+  display: flex;
+  justify-content: flex-end;
   margin-top: var(--space-2);
 }
 

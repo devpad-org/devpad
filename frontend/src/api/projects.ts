@@ -120,15 +120,28 @@ export interface DiscoveredRepo {
   path: string
   branch: string
   branchCount: number
+  // At most 200 of each are named.
+  branches: string[]
+  tagCount: number
+  tags: string[]
   dirty: boolean
   // Any credentials embedded in origin's URL are removed.
   originUrl: string
   originHadCredentials: boolean
   originDefaultBranch: string
-  remotesWithCredentials: string[]
-  credentialHelpers: string[]
+  // Only local branches are imported: these exist only on origin, or are
+  // behind origin's copy.
+  remoteOnlyBranches: string[]
+  behindBranches: { name: string; behind: number }[]
   // devpad needs the "devpad" remote name for its copies of project branches.
   hasDevpadRemote: boolean
+}
+
+// A credential found in a workspace: what it is and where, never its value.
+export interface CredentialItem {
+  id: string
+  kind: string
+  location: string
 }
 
 // What a repo made from a workspace's files would hold.
@@ -148,18 +161,22 @@ export interface RepoDiscovery {
   repos: DiscoveredRepo[]
   // Only set when the workspace has no repo at all.
   contents?: ContentsPreview
-  credentialFiles: string[]
-  credentialHelpers: string[]
+  // What a workspace converted in place must not keep.
+  credentials: CredentialItem[]
 }
 
 export interface ConvertInput extends ProjectInput {
   // A repo from discovery; empty makes a repo from the workspace's files.
   repoPath: string
   includeSensitive: boolean
+  // IDs of the credentials the user agreed to strip; converting in place
+  // must name every one the workspace holds.
+  stripCredentials: string[]
 }
 
 // Which of devpad's SSH files were removed from a converted workspace. Kept
-// files differ from what devpad wrote, so they were left alone.
+// files (known_hosts, config) differ from what devpad wrote, so they were
+// left alone; devpad's key pair is always removed.
 export interface SSHCleanup {
   removed: string[]
   kept: string[]
@@ -172,6 +189,13 @@ export interface ConvertResult {
   // subdirectory and the workspace was left as it was.
   workspace: ProjectWorkspace | null
   ssh: SSHCleanup | null
+  // Set for a workspace converted in place.
+  stripped: CredentialItem[]
+  restartError: string
+  // The devpad SSH key the workspace held was replaced by publicKey.
+  keyRotated: boolean
+  publicKey: string
+  rotationError: string
 }
 
 export const projectApi = {

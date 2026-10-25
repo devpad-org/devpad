@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/auth"
@@ -59,6 +60,12 @@ type PublishHook interface {
 	BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string)
 }
 
+// KeyRotator replaces a user's devpad SSH key, returning the new public key.
+// Converting a workspace in place rotates the key the workspace held.
+type KeyRotator interface {
+	GenerateSSHKey(ctx context.Context, userID int64) (publicKey string, err error)
+}
+
 // Workspaces is the workspace service surface projects need to run sandboxes
 // and the project workspace.
 type Workspaces interface {
@@ -77,7 +84,10 @@ type service struct {
 	workspaces Workspaces
 	users      auth.UserRepository
 	cipher     *encrypt.Cipher
+	keys       KeyRotator
 	agentPort  int
+	// convertTimeout bounds converting a workspace into a project.
+	convertTimeout time.Duration
 
 	// pending holds, per project, the branches of sandboxes being created or
 	// started, so concurrent requests cannot overshoot MaxSandboxes while
@@ -90,24 +100,31 @@ type service struct {
 	// deleting holds the projects being deleted, which take no new
 	// sandboxes, publishes or project workspace.
 	deleting map[int64]bool
+	// converting holds the projects being made from a workspace, which
+	// cannot be deleted until the conversion settles.
+	converting map[int64]bool
 	// workspaceLocks serialize opening each project's workspace.
 	workspaceLocks map[int64]*sync.Mutex
 	publishHook    PublishHook
 }
 
 // NewService creates a new project Service.
-func NewService(repo Repository, cm container.Manager, workspaces Workspaces, users auth.UserRepository, cipher *encrypt.Cipher) Service {
+func NewService(repo Repository, cm container.Manager, workspaces Workspaces, users auth.UserRepository, cipher *encrypt.Cipher, keys KeyRotator) Service {
 	return &service{
 		repo:       repo,
 		container:  cm,
 		workspaces: workspaces,
 		users:      users,
 		cipher:     cipher,
+		keys:       keys,
 		agentPort:  agent.DefaultPort,
-		pending:    make(map[int64]map[string]bool),
+
+		convertTimeout: workspaceOpenTimeout,
+		pending:        make(map[int64]map[string]bool),
 
 		publishing:     make(map[int64]map[string]bool),
 		deleting:       make(map[int64]bool),
+		converting:     make(map[int64]bool),
 		workspaceLocks: make(map[int64]*sync.Mutex),
 	}
 }
@@ -308,6 +325,11 @@ func (s *service) Delete(ctx context.Context, userID, projectID int64) error {
 	defer s.endDelete(p.ID)
 	unlock := s.lockWorkspace(p.ID)
 	defer unlock()
+	// Re-read under the lock: an open or conversion that held it may have
+	// changed the project, such as recording its repo container.
+	if p, err = s.Get(ctx, userID, projectID); err != nil {
+		return err
+	}
 
 	sandboxes, err := s.workspaces.ListByProject(ctx, userID, p.ID)
 	if err != nil {
@@ -334,6 +356,9 @@ func (s *service) beginDelete(projectID int64) error {
 	defer s.mu.Unlock()
 	if s.deleting[projectID] {
 		return ErrDeleting
+	}
+	if s.converting[projectID] {
+		return fmt.Errorf("%w: wait for the workspace conversion to finish", ErrBusy)
 	}
 	if len(s.pending[projectID]) > 0 || len(s.publishing[projectID]) > 0 {
 		return fmt.Errorf("%w: wait for sandboxes being created and branches being published", ErrBusy)
@@ -726,6 +751,15 @@ func (s *service) Push(ctx context.Context, userID, projectID int64) (*agent.Rep
 	c, err := s.repoAgent(ctx, p)
 	if err != nil {
 		return nil, err
+	}
+	// The key is written on every push, so a rotated key takes effect in
+	// every project's repo container.
+	user, err := s.users.GetByID(ctx, p.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("looking up user: %w", err)
+	}
+	if err := workspace.WriteSSHKeys(ctx, c, user, s.cipher); err != nil {
+		return nil, fmt.Errorf("injecting SSH keys into repo container: %w", err)
 	}
 	return c.RepoPush(ctx, p.DefaultBranch)
 }

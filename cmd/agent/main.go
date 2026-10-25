@@ -86,6 +86,7 @@ func main() {
 	authedMux.HandleFunc("POST /api/repo/init-contents/undo", handleRepoUndoInitContents)
 	authedMux.HandleFunc("POST /api/repo/import-initial", handleRepoImportInitial)
 	authedMux.HandleFunc("POST /api/ssh/remove-managed", handleSSHRemoveManaged)
+	authedMux.HandleFunc("POST /api/credentials/strip", handleCredentialsStrip)
 
 	// Terminal WebSocket
 	authedMux.HandleFunc("GET /ws/terminal", handleTerminal)

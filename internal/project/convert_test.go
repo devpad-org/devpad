@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/auth"
@@ -291,5 +292,214 @@ func TestConvertHandlers(t *testing.T) {
 	}
 	if body.Project["status"] != "ready" || body.Workspace["id"] != float64(ws.ID) || body.SSH == nil {
 		t.Fatalf("unexpected response: %s", rec.Body)
+	}
+}
+
+func (e *testEnv) giveUserKey(t *testing.T) {
+	t.Helper()
+	if _, err := e.db.Conn().Exec(`UPDATE users SET ssh_private_key = 'encrypted', ssh_public_key = 'ssh-ed25519 OLDKEY' WHERE id = ?`, e.userID); err != nil {
+		t.Fatalf("setting key: %v", err)
+	}
+}
+
+var (
+	ghToken = agent.CredentialItem{ID: "gh-token:~/.config/gh/hosts.yml", Kind: "gh-token", Location: "~/.config/gh/hosts.yml"}
+	netrc   = agent.CredentialItem{ID: "netrc:~/.netrc", Kind: "netrc", Location: "~/.netrc"}
+)
+
+func TestConvertWorkspaceRefusesCredentialsWithoutConsent(t *testing.T) {
+	for _, repoPath := range []string{".", ""} {
+		t.Run("repo "+repoPath, func(t *testing.T) {
+			e := setupTest(t)
+			ws := e.standalone()
+			e.workspaces.discovery = &agent.RepoDiscovery{
+				Repos:       []agent.DiscoveredRepo{{Path: ".", Branch: "main"}},
+				Credentials: []agent.CredentialItem{ghToken, netrc},
+			}
+			if repoPath == "" {
+				e.workspaces.discovery.Repos = nil
+			}
+
+			_, err := e.convert(ws.ID, ConvertInput{RepoPath: repoPath, Name: "App", StripCredentials: []string{ghToken.ID}})
+			var credErr *workspace.CredentialsError
+			if !errors.As(err, &credErr) || !slices.Equal(credErr.Items, []agent.CredentialItem{netrc}) {
+				t.Fatalf("expected the unconsented netrc refused, got %v", err)
+			}
+			if e.projectCount(t) != 0 || len(e.containers.created) != 0 || len(e.workspaces.initCalls) != 0 || len(e.workspaces.stripped) != 0 {
+				t.Fatal("a refused conversion changed something")
+			}
+			if e.workspaces.converting[ws.ID] {
+				t.Fatal("the workspace is still marked as converting")
+			}
+		})
+	}
+}
+
+func TestConvertWorkspaceSubdirectoryIgnoresCredentials(t *testing.T) {
+	e := setupTest(t)
+	ws := e.standalone()
+	e.giveUserKey(t)
+	e.workspaces.discovery = &agent.RepoDiscovery{
+		Repos:       []agent.DiscoveredRepo{{Path: "src/app", Branch: "main"}},
+		Credentials: []agent.CredentialItem{netrc},
+	}
+
+	result, err := e.convert(ws.ID, ConvertInput{RepoPath: "src/app", Name: "App"})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	// The old workspace stays standalone, so nothing is stripped, restarted
+	// or rotated.
+	if len(e.workspaces.stripped) != 0 || len(e.workspaces.restarted) != 0 || len(e.keys.rotated) != 0 || result.KeyRotated {
+		t.Fatalf("stripped=%v restarted=%v rotated=%v", e.workspaces.stripped, e.workspaces.restarted, e.keys.rotated)
+	}
+}
+
+func TestConvertWorkspaceStripsRestartsAndRotates(t *testing.T) {
+	e := setupTest(t)
+	ws := e.standalone()
+	e.giveUserKey(t)
+	e.workspaces.discovery = &agent.RepoDiscovery{
+		Repos:       []agent.DiscoveredRepo{{Path: ".", Branch: "main"}},
+		Credentials: []agent.CredentialItem{ghToken, netrc},
+	}
+	var during error
+	e.keys.onRotate = func() {
+		// The key is rotated last: the workspace is attached and restarted
+		// and the project is ready.
+		got, _ := e.workspaces.Get(context.Background(), e.userID, ws.ID)
+		projects, _ := e.svc.List(context.Background(), e.userID)
+		if got.ProjectID == 0 || len(e.workspaces.restarted) != 1 || len(projects) != 1 || projects[0].Status != StatusReady {
+			during = fmt.Errorf("rotated too early: workspace=%+v restarted=%v projects=%+v", got, e.workspaces.restarted, projects)
+		}
+	}
+
+	consent := []string{ghToken.ID, netrc.ID}
+	result, err := e.convert(ws.ID, ConvertInput{RepoPath: ".", Name: "App", StripCredentials: consent})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if during != nil {
+		t.Fatal(during)
+	}
+	if len(e.workspaces.stripped) != 1 || !slices.Equal(e.workspaces.stripped[0], consent) || len(result.Stripped) != 2 {
+		t.Fatalf("stripped %v, result %+v", e.workspaces.stripped, result.Stripped)
+	}
+	if !slices.Equal(e.workspaces.steps, []string{"attach", "restart"}) || !slices.Equal(e.workspaces.restarted, []int64{ws.ID}) {
+		t.Fatalf("steps = %v, restarted = %v", e.workspaces.steps, e.workspaces.restarted)
+	}
+	if !result.KeyRotated || result.PublicKey != "ssh-ed25519 NEWKEY devpad-owner" || !slices.Equal(e.keys.rotated, []int64{e.userID}) {
+		t.Fatalf("key not rotated: %+v", result)
+	}
+}
+
+func TestConvertWorkspaceWithoutKeyDoesNotRotate(t *testing.T) {
+	e := setupTest(t)
+	ws := e.standalone()
+
+	result, err := e.convert(ws.ID, ConvertInput{RepoPath: ".", Name: "App"})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if result.KeyRotated || result.RotationError != "" || len(e.keys.rotated) != 0 {
+		t.Fatalf("rotated a key the workspace never held: %+v", result)
+	}
+	if !slices.Equal(e.workspaces.restarted, []int64{ws.ID}) {
+		t.Fatalf("restarted %v", e.workspaces.restarted)
+	}
+}
+
+func TestConvertWorkspaceReportsRestartAndRotationFailures(t *testing.T) {
+	e := setupTest(t)
+	ws := e.standalone()
+	e.giveUserKey(t)
+	e.workspaces.restartErr = errors.New("docker gone")
+	e.keys.err = errors.New("disk full")
+
+	result, err := e.convert(ws.ID, ConvertInput{RepoPath: ".", Name: "App"})
+	if err != nil {
+		t.Fatalf("a failed restart or rotation must not undo the conversion: %v", err)
+	}
+	if result.Workspace == nil || result.Project.Status != StatusReady {
+		t.Fatalf("conversion did not stand: %+v", result)
+	}
+	if result.RestartError != "docker gone" || result.KeyRotated || result.RotationError != "disk full" {
+		t.Fatalf("failures not reported: %+v", result)
+	}
+}
+
+func TestConvertWorkspaceCleansUpAfterItsDeadline(t *testing.T) {
+	e := setupTest(t)
+	ws := e.standalone()
+	e.svc.convertTimeout = 100 * time.Millisecond
+	e.workspaces.convertErr["bundle"] = errors.New("agent stalled")
+	e.workspaces.onBundleAll = func() { time.Sleep(200 * time.Millisecond) }
+
+	if _, err := e.convert(ws.ID, ConvertInput{Name: "Site"}); err == nil {
+		t.Fatal("expected the conversion to fail")
+	}
+	if n := e.projectCount(t); n != 0 {
+		t.Fatalf("%d projects left behind after the deadline", n)
+	}
+	if len(e.containers.removed) != 1 || len(e.containers.volumes) != 0 {
+		t.Fatalf("repo container left behind: removed=%v volumes=%v", e.containers.removed, e.containers.volumes)
+	}
+	if !slices.Equal(e.workspaces.undone, []string{"init-sha"}) {
+		t.Fatalf("repo made from files not undone: %v", e.workspaces.undone)
+	}
+}
+
+func TestConvertWorkspaceRecordsRepoContainerAndHoldsOffDelete(t *testing.T) {
+	e := setupTest(t)
+	ws := e.standalone()
+	var during error
+	e.workspaces.onBundleAll = func() {
+		projects, _ := e.svc.List(context.Background(), e.userID)
+		if len(projects) != 1 || projects[0].RepoContainerID == "" {
+			during = fmt.Errorf("repo container not recorded during conversion: %+v", projects)
+			return
+		}
+		if err := e.svc.Delete(context.Background(), e.userID, projects[0].ID); !errors.Is(err, ErrBusy) {
+			during = fmt.Errorf("delete during conversion: %v", err)
+		}
+	}
+
+	result, err := e.convert(ws.ID, ConvertInput{RepoPath: ".", Name: "App"})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if during != nil {
+		t.Fatal(during)
+	}
+	// Once converted, Delete removes the repo container it reads afresh.
+	if err := e.svc.Delete(context.Background(), e.userID, result.Project.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if !slices.Equal(e.containers.removed, []string{result.Project.RepoContainerID}) {
+		t.Fatalf("removed %v, want the repo container %q", e.containers.removed, result.Project.RepoContainerID)
+	}
+}
+
+func TestConvertHandlerListsCredentialsToStrip(t *testing.T) {
+	e := setupTest(t)
+	e.svc.repo = &tokenCapturingRepo{Repository: NewRepository(e.db.Conn()), agent: e.repoAgent}
+	ws := e.standalone()
+	e.workspaces.discovery = &agent.RepoDiscovery{
+		Repos:       []agent.DiscoveredRepo{{Path: ".", Branch: "main"}},
+		Credentials: []agent.CredentialItem{netrc},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"repoPath":".","name":"App"}`))
+	req.SetPathValue("id", fmt.Sprint(ws.ID))
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: e.userID}))
+	rec := httptest.NewRecorder()
+	NewHandler(e.svc).HandleConvertWorkspace(rec, req)
+
+	var body struct {
+		Error       string                 `json:"error"`
+		Credentials []agent.CredentialItem `json:"credentials"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != http.StatusConflict || !slices.Equal(body.Credentials, []agent.CredentialItem{netrc}) || !strings.Contains(body.Error, "~/.netrc") {
+		t.Fatalf("unexpected response %d: %s", rec.Code, rec.Body)
 	}
 }

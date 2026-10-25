@@ -23,16 +23,20 @@ import (
 type mockContainerManager struct {
 	lastCreatedID string
 	ipOverride    string // if set, GetIP returns this instead of the default
+	restarted     []string
 }
 
 func (m *mockContainerManager) Create(_ context.Context, name, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
 	m.lastCreatedID = "mock-container-" + name
 	return m.lastCreatedID, nil
 }
-func (m *mockContainerManager) Start(_ context.Context, _ string) error   { return nil }
-func (m *mockContainerManager) Stop(_ context.Context, _ string) error    { return nil }
-func (m *mockContainerManager) Restart(_ context.Context, _ string) error { return nil }
-func (m *mockContainerManager) Remove(_ context.Context, _ string) error  { return nil }
+func (m *mockContainerManager) Start(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) Stop(_ context.Context, _ string) error  { return nil }
+func (m *mockContainerManager) Restart(_ context.Context, id string) error {
+	m.restarted = append(m.restarted, id)
+	return nil
+}
+func (m *mockContainerManager) Remove(_ context.Context, _ string) error { return nil }
 func (m *mockContainerManager) UpdateResources(_ context.Context, _ string, _, _ int64) error {
 	return nil
 }

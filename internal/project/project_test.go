@@ -244,6 +244,11 @@ type fakeWorkspaces struct {
 	bundledAll  []string
 	undone      []string
 	onBundleAll func()
+	stripped    [][]string
+	restarted   []int64
+	restartErr  error
+	// steps records the conversion steps in order.
+	steps []string
 }
 
 func newFakeWorkspaces() *fakeWorkspaces {
@@ -390,8 +395,34 @@ type testEnv struct {
 	containers *fakeContainers
 	repoAgent  *fakeRepoAgent
 	workspaces *fakeWorkspaces
+	keys       *fakeKeys
 	userID     int64
 	otherID    int64
+}
+
+// fakeKeys stands in for the settings service that rotates SSH keys.
+type fakeKeys struct {
+	mu      sync.Mutex
+	rotated []int64
+	err     error
+	// onRotate runs before rotating, to observe the conversion's state.
+	onRotate func()
+}
+
+func (k *fakeKeys) GenerateSSHKey(_ context.Context, userID int64) (string, error) {
+	k.mu.Lock()
+	hook := k.onRotate
+	k.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.err != nil {
+		return "", k.err
+	}
+	k.rotated = append(k.rotated, userID)
+	return "ssh-ed25519 NEWKEY devpad-owner", nil
 }
 
 func setupTest(t *testing.T) *testEnv {
@@ -413,11 +444,12 @@ func setupTest(t *testing.T) *testEnv {
 
 	containers := newFakeContainers(host)
 	workspaces := newFakeWorkspaces()
-	svc := NewService(NewRepository(db.Conn()), containers, workspaces, auth.NewUserRepository(db.Conn()), nil).(*service)
+	keys := &fakeKeys{}
+	svc := NewService(NewRepository(db.Conn()), containers, workspaces, auth.NewUserRepository(db.Conn()), nil, keys).(*service)
 	svc.agentPort = port
 
 	return &testEnv{
-		svc: svc, db: db, containers: containers, repoAgent: ra, workspaces: workspaces,
+		svc: svc, db: db, containers: containers, repoAgent: ra, workspaces: workspaces, keys: keys,
 		userID: insertUser(t, db, "owner"), otherID: insertUser(t, db, "other"),
 	}
 }
@@ -1094,9 +1126,10 @@ func (f *fakeWorkspaces) BundleAllBranches(_ context.Context, userID, id int64, 
 	return io.NopCloser(strings.NewReader("all-of-" + dir)), nil
 }
 
-func (f *fakeWorkspaces) AttachToProject(_ context.Context, userID, id, projectID int64) (*agent.SSHCleanup, error) {
+func (f *fakeWorkspaces) AttachToProject(_ context.Context, userID, id, projectID int64, strip []string) (*workspace.AttachResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.stripped = append(f.stripped, strip)
 	if err := f.convertErr["attach"]; err != nil {
 		return nil, err
 	}
@@ -1105,5 +1138,24 @@ func (f *fakeWorkspaces) AttachToProject(_ context.Context, userID, id, projectI
 		return nil, err
 	}
 	ws.ProjectID, ws.RepoSeeded = projectID, true
-	return &agent.SSHCleanup{Removed: []string{"~/.ssh/id_ed25519"}, Kept: []string{}, Absent: []string{}}, nil
+	f.steps = append(f.steps, "attach")
+	var stripped []agent.CredentialItem
+	for _, id := range strip {
+		stripped = append(stripped, agent.CredentialItem{ID: id})
+	}
+	return &workspace.AttachResult{
+		SSH:      &agent.SSHCleanup{Removed: []string{"~/.ssh/id_ed25519"}, Kept: []string{}, Absent: []string{}},
+		Stripped: stripped,
+	}, nil
+}
+
+func (f *fakeWorkspaces) RestartConverted(_ context.Context, _, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.steps = append(f.steps, "restart")
+	if f.restartErr != nil {
+		return f.restartErr
+	}
+	f.restarted = append(f.restarted, id)
+	return nil
 }

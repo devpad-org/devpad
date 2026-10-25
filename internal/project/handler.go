@@ -428,7 +428,11 @@ func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 }
 
 func handleServiceError(w http.ResponseWriter, err error) {
+	var credErr *workspace.CredentialsError
 	switch {
+	case errors.As(err, &credErr):
+		// The client lists them again, for the user to agree to strip.
+		writeJSON(w, http.StatusConflict, map[string]any{"error": credErr.Error(), "credentials": credErr.Items})
 	case errors.Is(err, ErrNoWorkspace):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrNotFound), errors.Is(err, workspace.ErrNotFound):
@@ -535,14 +539,15 @@ func (h *Handler) HandleConvertWorkspace(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var req struct {
-		RepoPath         string `json:"repoPath"`
-		IncludeSensitive bool   `json:"includeSensitive"`
-		Name             string `json:"name"`
-		Description      string `json:"description"`
-		DefaultBranch    string `json:"defaultBranch"`
-		UpstreamURL      string `json:"upstreamUrl"`
-		SetupScript      string `json:"setupScript"`
-		MaxSandboxes     int    `json:"maxSandboxes"`
+		RepoPath         string   `json:"repoPath"`
+		IncludeSensitive bool     `json:"includeSensitive"`
+		StripCredentials []string `json:"stripCredentials"`
+		Name             string   `json:"name"`
+		Description      string   `json:"description"`
+		DefaultBranch    string   `json:"defaultBranch"`
+		UpstreamURL      string   `json:"upstreamUrl"`
+		SetupScript      string   `json:"setupScript"`
+		MaxSandboxes     int      `json:"maxSandboxes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -553,7 +558,20 @@ func (h *Handler) HandleConvertWorkspace(w http.ResponseWriter, r *http.Request)
 		handleServiceError(w, err)
 		return
 	}
-	body := map[string]any{"project": projectResponse(result.Project), "workspace": nil, "ssh": result.SSH}
+	stripped := result.Stripped
+	if stripped == nil {
+		stripped = []agent.CredentialItem{}
+	}
+	body := map[string]any{
+		"project":       projectResponse(result.Project),
+		"workspace":     nil,
+		"ssh":           result.SSH,
+		"stripped":      stripped,
+		"restartError":  result.RestartError,
+		"keyRotated":    result.KeyRotated,
+		"publicKey":     result.PublicKey,
+		"rotationError": result.RotationError,
+	}
 	if result.Workspace != nil {
 		body["workspace"] = sandboxResponse(result.Workspace)
 	}

@@ -31,6 +31,10 @@ type convertAgent struct {
 	removeReq struct {
 		Files []agent.ManagedSSHFile `json:"files"`
 	}
+	stripIDs []string
+	// credentials are what the workspace holds; stripping removes those named.
+	credentials []agent.CredentialItem
+	stripFails  map[string]bool
 }
 
 func (a *convertAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +58,32 @@ func (a *convertAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/ssh/remove-managed":
 		json.NewDecoder(r.Body).Decode(&a.removeReq)
 		json.NewEncoder(w).Encode(agent.SSHCleanup{Removed: []string{"~/.ssh/id_ed25519"}, Kept: []string{"~/.ssh/config"}})
+	case "/api/credentials/strip":
+		var req struct {
+			IDs []string `json:"ids"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		a.stripIDs = req.IDs
+		result := agent.CredentialStrip{Stripped: []agent.CredentialItem{}, Failed: []agent.CredentialFailure{}, Remaining: []agent.CredentialItem{}}
+		var kept []agent.CredentialItem
+		for _, item := range a.credentials {
+			switch {
+			case !slices.Contains(req.IDs, item.ID):
+				kept = append(kept, item)
+			case a.stripFails[item.ID]:
+				result.Failed = append(result.Failed, agent.CredentialFailure{CredentialItem: item, Error: "permission denied"})
+				kept = append(kept, item)
+			default:
+				result.Stripped = append(result.Stripped, item)
+			}
+		}
+		a.credentials = kept
+		for _, item := range kept {
+			if !a.stripFails[item.ID] {
+				result.Remaining = append(result.Remaining, item)
+			}
+		}
+		json.NewEncoder(w).Encode(result)
 	case "/api/repo/discover":
 		json.NewEncoder(w).Encode(agent.RepoDiscovery{Repos: []agent.DiscoveredRepo{{Path: ".", Branch: "main"}}})
 	case "/api/repo/bundle-all":
@@ -118,10 +148,11 @@ func TestAttachToProjectRemovesDevpadKeys(t *testing.T) {
 	}
 	ca.reset()
 
-	cleanup, err := svc.AttachToProject(ctx, 1, ws.ID, 7)
+	result, err := svc.AttachToProject(ctx, 1, ws.ID, 7, nil)
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
+	cleanup := result.SSH
 	if !slices.Equal(cleanup.Removed, []string{"~/.ssh/id_ed25519"}) || !slices.Equal(cleanup.Kept, []string{"~/.ssh/config"}) {
 		t.Fatalf("unexpected cleanup: %+v", cleanup)
 	}
@@ -156,7 +187,7 @@ func TestAttachToProjectRemovesDevpadKeys(t *testing.T) {
 		t.Fatalf("keys injected into a converted workspace: %v", ca.paths())
 	}
 
-	if _, err := svc.AttachToProject(ctx, 1, ws.ID, 8); !errors.Is(err, ErrNotStandalone) {
+	if _, err := svc.AttachToProject(ctx, 1, ws.ID, 8, nil); !errors.Is(err, ErrNotStandalone) {
 		t.Fatalf("expected ErrNotStandalone attaching twice, got %v", err)
 	}
 }
@@ -180,11 +211,11 @@ func TestAttachToProjectPutsKeysBackOnFailure(t *testing.T) {
 	svc.repo = failingAttachRepo{svc.repo}
 	ca.reset()
 
-	if _, err := svc.AttachToProject(ctx, 1, ws.ID, 7); err == nil {
+	if _, err := svc.AttachToProject(ctx, 1, ws.ID, 7, nil); err == nil {
 		t.Fatal("expected attach to fail")
 	}
 	paths := ca.paths()
-	if len(paths) < 2 || paths[0] != "/api/ssh/remove-managed" || !slices.Contains(paths[1:], "/api/command") {
+	if len(paths) < 3 || paths[0] != "/api/credentials/strip" || paths[1] != "/api/ssh/remove-managed" || !slices.Contains(paths[2:], "/api/command") {
 		t.Fatalf("expected keys removed then written back, got %v", paths)
 	}
 }
@@ -229,7 +260,7 @@ func TestConversionRefusals(t *testing.T) {
 	if _, err := svc.DiscoverRepos(ctx, 1, ws.ID); !errors.Is(err, ErrAgentOutdated) {
 		t.Fatalf("expected ErrAgentOutdated, got %v", err)
 	}
-	if _, err := svc.AttachToProject(ctx, 1, ws.ID, 7); !errors.Is(err, ErrAgentOutdated) {
+	if _, err := svc.AttachToProject(ctx, 1, ws.ID, 7, nil); !errors.Is(err, ErrAgentOutdated) {
 		t.Fatalf("expected ErrAgentOutdated attaching, got %v", err)
 	}
 	if _, err := svc.BeginConversion(ctx, 2, ws.ID); !errors.Is(err, ErrForbidden) {
@@ -254,6 +285,12 @@ func TestConversionLocksTheWorkspace(t *testing.T) {
 	}
 	if err := svc.Delete(ctx, 1, ws.ID); !errors.Is(err, ErrConverting) {
 		t.Fatalf("expected ErrConverting deleting mid-conversion, got %v", err)
+	}
+	if _, err := svc.Stop(ctx, 1, ws.ID); !errors.Is(err, ErrConverting) {
+		t.Fatalf("expected ErrConverting stopping mid-conversion, got %v", err)
+	}
+	if _, err := svc.Start(ctx, 1, ws.ID); !errors.Is(err, ErrConverting) {
+		t.Fatalf("expected ErrConverting starting mid-conversion, got %v", err)
 	}
 	release()
 	if err := svc.Delete(ctx, 1, ws.ID); err != nil {
@@ -283,5 +320,109 @@ func TestDiscoverAndBundleAllBranches(t *testing.T) {
 	}
 	if !slices.Contains(ca.paths(), "/api/repo/bundle-all") {
 		t.Fatalf("no bundle request: %v", ca.paths())
+	}
+}
+
+func TestAttachToProjectStripsConsentedCredentials(t *testing.T) {
+	svc, ca := setupConvertService(t)
+	ctx := context.Background()
+	ws, err := svc.Create(ctx, 1, "mine", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	netrc := agent.CredentialItem{ID: "netrc:~/.netrc", Kind: "netrc", Location: "~/.netrc"}
+	ca.mu.Lock()
+	ca.credentials = []agent.CredentialItem{netrc}
+	ca.mu.Unlock()
+	ca.reset()
+
+	result, err := svc.AttachToProject(ctx, 1, ws.ID, 7, []string{netrc.ID})
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if !slices.Equal(ca.stripIDs, []string{netrc.ID}) || !slices.Equal(result.Stripped, []agent.CredentialItem{netrc}) {
+		t.Fatalf("strip ids=%v stripped=%+v", ca.stripIDs, result.Stripped)
+	}
+	if paths := ca.paths(); len(paths) < 2 || paths[0] != "/api/credentials/strip" || paths[1] != "/api/ssh/remove-managed" {
+		t.Fatalf("expected credentials stripped before keys removed, got %v", paths)
+	}
+}
+
+func TestAttachToProjectRefusesCredentialsLeftBehind(t *testing.T) {
+	cases := []struct {
+		name  string
+		strip []string
+		fails bool
+	}{
+		{"without consent", nil, false},
+		{"stripping fails", []string{"gh-token:~/.config/gh/hosts.yml"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			svc, ca := setupConvertService(t)
+			ctx := context.Background()
+			ws, err := svc.Create(ctx, 1, "mine", "")
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			gh := agent.CredentialItem{ID: "gh-token:~/.config/gh/hosts.yml", Kind: "gh-token", Location: "~/.config/gh/hosts.yml"}
+			ca.mu.Lock()
+			ca.credentials = []agent.CredentialItem{gh}
+			ca.stripFails = map[string]bool{gh.ID: c.fails}
+			ca.mu.Unlock()
+			ca.reset()
+
+			_, err = svc.AttachToProject(ctx, 1, ws.ID, 7, c.strip)
+			var credErr *CredentialsError
+			if !errors.As(err, &credErr) || !errors.Is(err, ErrCredentialsPresent) || !slices.Equal(credErr.Items, []agent.CredentialItem{gh}) {
+				t.Fatalf("expected a CredentialsError naming the gh token, got %v", err)
+			}
+			if strings.Contains(err.Error(), "oauth") || !strings.Contains(err.Error(), gh.Location) {
+				t.Fatalf("unexpected message: %v", err)
+			}
+			if slices.Contains(ca.paths(), "/api/ssh/remove-managed") {
+				t.Fatal("keys were removed although the workspace kept credentials")
+			}
+			if got, _ := svc.Get(ctx, 1, ws.ID); got.ProjectID != 0 {
+				t.Fatalf("the workspace was attached: %+v", got)
+			}
+		})
+	}
+}
+
+func TestManagedSSHFilesAlwaysListDevpadKeyPair(t *testing.T) {
+	files, err := managedSSHFiles(&auth.User{}, nil)
+	if err != nil {
+		t.Fatalf("managed files: %v", err)
+	}
+	var names []string
+	for _, f := range files {
+		names = append(names, f.Name)
+	}
+	if !slices.Equal(names, []string{"id_ed25519", "id_ed25519.pub", "known_hosts", "config"}) {
+		t.Fatalf("names = %v", names)
+	}
+}
+
+func TestRestartConverted(t *testing.T) {
+	svc, _ := setupConvertService(t)
+	ctx := context.Background()
+	ws, err := svc.Create(ctx, 1, "mine", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	mock := svc.container.(*mockContainerManager)
+	if err := svc.RestartConverted(ctx, 1, ws.ID); err == nil {
+		t.Fatal("expected a standalone workspace refused")
+	}
+	if _, err := svc.AttachToProject(ctx, 1, ws.ID, 7, nil); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	mock.restarted = nil
+	if err := svc.RestartConverted(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if !slices.Equal(mock.restarted, []string{ws.ContainerID}) {
+		t.Fatalf("restarted %v, want %v", mock.restarted, ws.ContainerID)
 	}
 }
