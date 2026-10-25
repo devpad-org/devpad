@@ -30,7 +30,12 @@ type Service interface {
 	CreateSandbox(ctx context.Context, userID, projectID int64, in SandboxInput) (*workspace.Workspace, error)
 	StartSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*workspace.Workspace, error)
 	PublishSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*agent.RepoBranch, error)
+	SyncSandboxBase(ctx context.Context, userID, projectID, workspaceID int64) (*agent.RepoBranch, error)
 	Compare(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoComparison, error)
+	Diff(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoDiff, error)
+	FileAt(ctx context.Context, userID, projectID int64, rev, path string) ([]byte, error)
+	Merge(ctx context.Context, userID, projectID int64, in MergeInput) (*agent.RepoMergeResult, error)
+	Push(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
 }
 
 // Workspaces is the workspace service surface projects need to run sandboxes.
@@ -324,11 +329,19 @@ func (s *service) CreateSandbox(ctx context.Context, userID, projectID int64, in
 	if err != nil {
 		return nil, err
 	}
-	base := p.DefaultBranch
+	exists := make(map[string]bool, len(refs.Branches))
 	for _, ref := range refs.Branches {
-		if ref.Name == branch {
-			base = branch
+		exists[ref.Name] = true
+	}
+	base := p.DefaultBranch
+	switch {
+	case exists[branch]:
+		base = branch
+	case in.Base != "":
+		if !validBranchName(in.Base) || !exists[in.Base] {
+			return nil, invalid("base branch %q does not exist", in.Base)
 		}
+		base = in.Base
 	}
 
 	name := strings.TrimSpace(in.Name)
@@ -458,6 +471,29 @@ func (s *service) getSandbox(ctx context.Context, userID int64, p *Project, work
 	return ws, nil
 }
 
+// SyncSandboxBase refreshes a sandbox's devpad/<default branch> from the
+// canonical repo, so its agent can merge in work that has landed since.
+func (s *service) SyncSandboxBase(ctx context.Context, userID, projectID, workspaceID int64) (*agent.RepoBranch, error) {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	ws, err := s.getSandbox(ctx, userID, p, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	bundle, err := c.RepoBundle(ctx, p.DefaultBranch)
+	if err != nil {
+		return nil, err
+	}
+	defer bundle.Close()
+	return s.workspaces.FetchSandboxBase(ctx, userID, ws.ID, p.DefaultBranch, bundle)
+}
+
 // PublishSandbox copies the sandbox's branch into the canonical repo. Devpad
 // pulls a bundle of the branch it recorded for the sandbox and imports only
 // that branch, so a sandbox cannot write any other ref.
@@ -469,6 +505,9 @@ func (s *service) PublishSandbox(ctx context.Context, userID, projectID, workspa
 	ws, err := s.getSandbox(ctx, userID, p, workspaceID)
 	if err != nil {
 		return nil, err
+	}
+	if ws.Kind != workspace.KindTask {
+		return nil, invalid("only task sandboxes publish their branch")
 	}
 	if ws.Branch == "" || ws.Branch == p.DefaultBranch {
 		return nil, ErrDefaultBranch
@@ -506,6 +545,93 @@ func (s *service) Compare(ctx context.Context, userID, projectID int64, base, he
 		return nil, err
 	}
 	return c.RepoCompare(ctx, base, head)
+}
+
+// Diff lists the files head changed since it diverged from base, the default
+// branch unless given. Both are branch names or full commit hashes.
+func (s *service) Diff(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoDiff, error) {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if base == "" {
+		base = p.DefaultBranch
+	}
+	if !validRev(base) || !validRev(head) {
+		return nil, invalid("base and head must be branch names or commit hashes")
+	}
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoDiff(ctx, base, head)
+}
+
+// FileAt returns a file's contents at a branch or commit of the canonical repo.
+func (s *service) FileAt(ctx context.Context, userID, projectID int64, rev, path string) ([]byte, error) {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !validRev(rev) || path == "" {
+		return nil, invalid("rev and path are required")
+	}
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoFile(ctx, rev, path)
+}
+
+// Merge merges a branch into the default branch, committing as the user.
+func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeInput) (*agent.RepoMergeResult, error) {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !validBranchName(in.Source) || in.Source == p.DefaultBranch {
+		return nil, invalid("source must be a branch other than the default branch")
+	}
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil || user == nil {
+		return nil, fmt.Errorf("looking up user: %w", err)
+	}
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoMerge(ctx, agent.RepoMergeRequest{
+		Source:            in.Source,
+		Target:            p.DefaultBranch,
+		Strategy:          in.Strategy,
+		Message:           in.Message,
+		ExpectedSourceSHA: in.ExpectedSourceSHA,
+		Name:              user.Username,
+		Email:             user.Email,
+	})
+}
+
+// Push pushes the default branch to the project's upstream. It never forces.
+func (s *service) Push(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error) {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if p.UpstreamURL == "" {
+		return nil, invalid("the project has no upstream")
+	}
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoPush(ctx, p.DefaultBranch)
+}
+
+var hashPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// validRev accepts a branch name or a full commit hash.
+func validRev(rev string) bool {
+	return hashPattern.MatchString(rev) || validBranchName(rev)
 }
 
 func randomHex(n int) (string, error) {

@@ -882,6 +882,8 @@ type AgentError struct {
 	StatusCode int
 	Message    string
 	SSHHostKey *GitSSHHostKeyPrompt
+	// Conflicts lists the conflicting paths when a merge is refused.
+	Conflicts []string
 }
 
 func (e *AgentError) Error() string {
@@ -892,9 +894,10 @@ func parseError(resp *http.Response) error {
 	var errResp struct {
 		Error      string               `json:"error"`
 		SSHHostKey *GitSSHHostKeyPrompt `json:"sshHostKey,omitempty"`
+		Conflicts  []string             `json:"conflicts,omitempty"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
 		return &AgentError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("unexpected status %d", resp.StatusCode)}
 	}
-	return &AgentError{StatusCode: resp.StatusCode, Message: errResp.Error, SSHHostKey: errResp.SSHHostKey}
+	return &AgentError{StatusCode: resp.StatusCode, Message: errResp.Error, SSHHostKey: errResp.SSHHostKey, Conflicts: errResp.Conflicts}
 }

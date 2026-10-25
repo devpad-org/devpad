@@ -155,6 +155,52 @@ func TestAgentChatOrchestrator_IncludesWorkspaceInstructionsBeforeSelectedAgent(
 	}
 }
 
+// scopedToolCatalog offers an extra tool in one workspace.
+type scopedToolCatalog struct{ fakeToolCatalog }
+
+func (scopedToolCatalog) DefinitionsFor(_ context.Context, _, workspaceID int64) []domain.ToolDefinition {
+	if workspaceID != 7 {
+		return nil
+	}
+	return []domain.ToolDefinition{{Type: "function", Function: domain.ToolFunction{Name: "submit_review"}}}
+}
+
+func TestAgentChatOrchestrator_UsesWorkspaceScopedTools(t *testing.T) {
+	for _, tt := range []struct {
+		workspaceID int64
+		want        int
+	}{{7, 1}, {8, 0}} {
+		var captured domain.ChatRequest
+		orch := &agentChatOrchestrator{
+			service: &mockChatService{
+				chatStreamFn: func(_ context.Context, req domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+					captured = req
+					ch := make(chan domain.ProviderEvent, 1)
+					ch <- domain.ProviderEvent{Done: true}
+					close(ch)
+					return ch, nil
+				},
+			},
+			toolCatalog:       scopedToolCatalog{},
+			toolExecutor:      &mockToolExecutor{},
+			approvals:         &mockApprovalBroker{},
+			questions:         &mockQuestionBroker{},
+			maxToolIterations: defaultMaxToolIterations,
+		}
+		stream, err := orch.Stream(context.Background(), AgentChatRequest{
+			UserID: 1, WorkspaceID: tt.workspaceID, Model: "test-model",
+			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		collectEvents(t, stream)
+		if len(captured.Tools) != tt.want {
+			t.Fatalf("workspace %d: expected %d tools, got %+v", tt.workspaceID, tt.want, captured.Tools)
+		}
+	}
+}
+
 func collectEvents(t *testing.T, stream <-chan domain.ClientEvent) []domain.ClientEvent {
 	t.Helper()
 

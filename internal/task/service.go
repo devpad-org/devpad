@@ -25,6 +25,13 @@ type Service interface {
 	Delete(ctx context.Context, userID, projectID, taskID int64) error
 	Start(ctx context.Context, userID, projectID, taskID int64, in StartInput) (*Task, error)
 	Cancel(ctx context.Context, userID, projectID, taskID int64) (*Task, error)
+	// RequestChanges hands review feedback to the task's agent, starting it
+	// now or leaving it for the next Start.
+	RequestChanges(ctx context.Context, userID, projectID, taskID int64, feedback string, start bool) (*Task, error)
+	// Merged closes a task whose branch has been merged and removes its sandbox.
+	Merged(ctx context.Context, userID, projectID, taskID int64) (*Task, error)
+	// SetReviewHook registers who is told when a task is ready for review.
+	SetReviewHook(h ReviewHook)
 
 	// RunFinished is the agent runner's completion hook.
 	RunFinished(run domain.AgentRun)
@@ -34,6 +41,12 @@ type Service interface {
 	Shutdown(ctx context.Context) error
 }
 
+// ReviewHook is told each time a task's branch is published for review,
+// with the agent's closing summary.
+type ReviewHook interface {
+	TaskReadyForReview(ctx context.Context, t *Task, summary string)
+}
+
 // Projects is the project service surface tasks need.
 type Projects interface {
 	Get(ctx context.Context, userID, projectID int64) (*project.Project, error)
@@ -41,6 +54,7 @@ type Projects interface {
 	CreateSandbox(ctx context.Context, userID, projectID int64, in project.SandboxInput) (*workspace.Workspace, error)
 	StartSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*workspace.Workspace, error)
 	PublishSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*agent.RepoBranch, error)
+	SyncSandboxBase(ctx context.Context, userID, projectID, workspaceID int64) (*agent.RepoBranch, error)
 	Compare(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoComparison, error)
 }
 
@@ -86,9 +100,10 @@ type service struct {
 	rootCancel context.CancelFunc
 	wg         sync.WaitGroup
 
-	mu     sync.Mutex
-	closed bool
-	locks  map[int64]*sync.Mutex
+	mu         sync.Mutex
+	closed     bool
+	locks      map[int64]*sync.Mutex
+	reviewHook ReviewHook
 }
 
 // NewService creates a task Service. Background work stops on Shutdown.
@@ -117,6 +132,12 @@ func NewService(repo Repository, projects Projects, workspaces Workspaces, runs 
 		}
 	})
 	return s
+}
+
+func (s *service) SetReviewHook(h ReviewHook) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reviewHook = h
 }
 
 func invalid(format string, args ...any) error {
@@ -233,10 +254,15 @@ func (s *service) Start(ctx context.Context, userID, projectID, taskID int64, in
 	if err != nil {
 		return nil, err
 	}
+	return s.start(ctx, t, in)
+}
+
+// start queues a task the caller has locked and loaded.
+func (s *service) start(ctx context.Context, t *Task, in StartInput) (*Task, error) {
 	if !t.Status.Startable() {
 		return nil, fmt.Errorf("%w: task is %s", ErrInvalidState, t.Status)
 	}
-	p, err := s.projects.Get(ctx, userID, projectID)
+	p, err := s.projects.Get(ctx, t.UserID, t.ProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -257,8 +283,57 @@ func (s *service) Start(ctx context.Context, userID, projectID, taskID int64, in
 	}
 
 	// The previous round's error stays until the new run starts, so the
-	// agent can be told why it is being restarted.
-	t.Status, t.PendingMessage, t.RunID = StatusQueued, strings.TrimSpace(in.Message), 0
+	// agent can be told why it is being restarted. Feedback already waiting
+	// from RequestChanges is kept unless a new message replaces it.
+	if msg := strings.TrimSpace(in.Message); msg != "" {
+		t.PendingMessage = msg
+	}
+	t.Status, t.RunID = StatusQueued, 0
+	if err := s.repo.Update(ctx, t); err != nil {
+		return nil, err
+	}
+	s.kick()
+	return t, nil
+}
+
+func (s *service) RequestChanges(ctx context.Context, userID, projectID, taskID int64, feedback string, start bool) (*Task, error) {
+	unlock := s.lock(taskID)
+	defer unlock()
+	t, err := s.get(ctx, userID, projectID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if t.Status != StatusInReview && t.Status != StatusChangesRequested {
+		return nil, fmt.Errorf("%w: task is %s", ErrInvalidState, t.Status)
+	}
+	feedback = strings.TrimSpace(feedback)
+	if feedback == "" {
+		return nil, invalid("feedback is required")
+	}
+	if start {
+		return s.start(ctx, t, StartInput{Message: feedback})
+	}
+	t.Status, t.PendingMessage = StatusChangesRequested, feedback
+	if err := s.repo.Update(ctx, t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (s *service) Merged(ctx context.Context, userID, projectID, taskID int64) (*Task, error) {
+	unlock := s.lock(taskID)
+	defer unlock()
+	t, err := s.get(ctx, userID, projectID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if t.Status.Closed() {
+		return nil, fmt.Errorf("%w: task is %s", ErrInvalidState, t.Status)
+	}
+	if err := s.teardown(ctx, t); err != nil {
+		return nil, err
+	}
+	t.Status, t.Error, t.PendingMessage = StatusMerged, "", ""
 	if err := s.repo.Update(ctx, t); err != nil {
 		return nil, err
 	}
@@ -315,6 +390,11 @@ func (s *service) startRun(ctx context.Context, t *Task) error {
 			return err
 		}
 		return fmt.Errorf("starting sandbox: %w", err)
+	}
+	// Give the agent the latest default branch, as devpad/<branch>, so it can
+	// merge in work that landed since its sandbox was seeded.
+	if _, err := s.projects.SyncSandboxBase(ctx, t.UserID, t.ProjectID, ws.ID); err != nil {
+		log.Printf("task %d: refreshing devpad/%s in sandbox %d: %v", t.ID, p.DefaultBranch, ws.ID, err)
 	}
 	message, previousError := t.PendingMessage, t.Error
 	t.Status, t.WorkspaceID, t.PendingMessage, t.Error = StatusInProgress, ws.ID, "", ""
@@ -443,11 +523,12 @@ func implementPrompt(p *project.Project, t *Task) string {
 	fmt.Fprintf(&b, `## How to work
 
 - /workspace is a git checkout of the project on the branch %[1]s, which started from %[2]s. If %[1]s already has commits that %[2]s lacks, they are earlier work on this task: build on them.
+- The latest %[2]s is available as %[3]s, refreshed each time you start. If your branch conflicts with it, merge %[3]s into %[1]s and resolve the conflicts.
 - Make the change, and run the project's tests or checks where they exist.
 - Commit your work to %[1]s with clear commit messages. Do not switch branches: only commits on %[1]s are collected.
 - The checkout has no remote and no credentials. Do not try to push; devpad collects the branch when you finish.
 - Leave nothing uncommitted when you finish.
-- When you are done, reply with a short summary of what you changed and anything a reviewer should check.`, "`"+t.Branch+"`", "`"+p.DefaultBranch+"`")
+- When you are done, reply with a short summary of what you changed and anything a reviewer should check.`, "`"+t.Branch+"`", "`"+p.DefaultBranch+"`", "`devpad/"+p.DefaultBranch+"`")
 	return b.String()
 }
 
@@ -522,7 +603,34 @@ func (s *service) collect(ctx context.Context, t *Task) error {
 	}
 	t.HeadSHA = result.SHA
 	s.endRound(ctx, t, StatusInReview, "")
+
+	s.mu.Lock()
+	hook := s.reviewHook
+	s.mu.Unlock()
+	if hook != nil {
+		hook.TaskReadyForReview(ctx, t, s.agentSummary(ctx, t))
+	}
 	return nil
+}
+
+// agentSummary is the agent's closing message, which the prompt asks to be
+// a summary of the change.
+func (s *service) agentSummary(ctx context.Context, t *Task) string {
+	if t.ConversationID == 0 {
+		return ""
+	}
+	turns, err := s.conversations.GetTurns(ctx, t.ConversationID, t.UserID)
+	if err != nil {
+		return ""
+	}
+	for i := len(turns) - 1; i >= 0; i-- {
+		if turns[i].Role == domain.RoleAssistant {
+			if text := strings.TrimSpace(turns[i].Text()); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 func (s *service) fail(ctx context.Context, t *Task, msg string) {

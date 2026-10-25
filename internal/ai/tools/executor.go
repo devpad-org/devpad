@@ -79,3 +79,12 @@ type ChildAgentRunner interface {
 type Executor interface {
 	ExecuteTool(ctx context.Context, req ExecutionRequest) domain.ToolResultPart
 }
+
+// ToolProvider contributes tools that only some workspaces offer, such as the
+// review tools in a merge request's review sandbox.
+type ToolProvider interface {
+	// Tools returns the extra tools offered to runs in the workspace, if any.
+	Tools(ctx context.Context, userID, workspaceID int64) []domain.ToolDefinition
+	// ExecuteTool runs a tool call, reporting false if the tool is not its own.
+	ExecuteTool(ctx context.Context, req ExecutionRequest) (domain.ToolResultPart, bool)
+}

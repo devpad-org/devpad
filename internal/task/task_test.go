@@ -105,6 +105,7 @@ type fakeSandboxes struct {
 	stopped       []int64
 	deleted       []int64
 	published     []int64
+	synced        []int64
 	ahead         int
 	limit         int // running sandboxes allowed; 0 means unlimited
 	createErr     error
@@ -212,6 +213,13 @@ func (f *fakeSandboxes) PublishSandbox(_ context.Context, _, _, workspaceID int6
 	return &agent.RepoBranch{Branch: f.lookup(workspaceID).Branch, SHA: "f00d"}, nil
 }
 
+func (f *fakeSandboxes) SyncSandboxBase(_ context.Context, _, _, workspaceID int64) (*agent.RepoBranch, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.synced = append(f.synced, workspaceID)
+	return &agent.RepoBranch{Branch: "devpad/main"}, nil
+}
+
 func (f *fakeSandboxes) Compare(_ context.Context, _, _ int64, base, head string) (*agent.RepoComparison, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -225,8 +233,8 @@ func (f *fakeSandboxes) set(fn func(f *fakeSandboxes)) {
 }
 
 type sandboxCalls struct {
-	created                              []project.SandboxInput
-	started, stopped, deleted, published []int64
+	created                                      []project.SandboxInput
+	started, stopped, deleted, published, synced []int64
 }
 
 func (f *fakeSandboxes) snapshot() sandboxCalls {
@@ -238,6 +246,7 @@ func (f *fakeSandboxes) snapshot() sandboxCalls {
 		stopped:   append([]int64(nil), f.stopped...),
 		deleted:   append([]int64(nil), f.deleted...),
 		published: append([]int64(nil), f.published...),
+		synced:    append([]int64(nil), f.synced...),
 	}
 }
 
@@ -495,6 +504,126 @@ func TestStartRunsAgentInSandboxThenCollectsBranchForReview(t *testing.T) {
 	}
 	if got := e.sandboxes.snapshot().stopped; len(got) != 1 || got[0] != running.WorkspaceID {
 		t.Fatalf("expected the sandbox stopped after collection, got %v", got)
+	}
+}
+
+type recordingHook struct {
+	mu      sync.Mutex
+	tasks   []Task
+	summary []string
+}
+
+func (h *recordingHook) TaskReadyForReview(_ context.Context, t *Task, summary string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.tasks = append(h.tasks, *t)
+	h.summary = append(h.summary, summary)
+}
+
+func (h *recordingHook) calls() ([]Task, []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]Task(nil), h.tasks...), append([]string(nil), h.summary...)
+}
+
+func TestReviewHookGetsTheAgentSummary(t *testing.T) {
+	e := setup(t)
+	hook := &recordingHook{}
+	e.svc.SetReviewHook(hook)
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	running := e.waitTask(t, task.ID, hasRun)
+	if got := e.sandboxes.snapshot().synced; len(got) != 1 || got[0] != running.WorkspaceID {
+		t.Fatalf("expected devpad/main refreshed before the run, got %v", got)
+	}
+	e.convs.save(running.ConversationID,
+		domain.NewTextTurn(domain.RoleUser, "implement"),
+		domain.NewTextTurn(domain.RoleAssistant, "Added the cart."),
+		domain.Turn{Role: domain.RoleUser, Parts: []domain.Part{{Kind: domain.PartToolResult, ToolResult: &domain.ToolResultPart{ToolCallID: "1"}}}},
+	)
+	e.runs.finish(running.RunID, domain.AgentRunCompleted, "")
+	e.waitTask(t, task.ID, status(StatusInReview))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		tasks, summaries := hook.calls()
+		if len(tasks) == 1 {
+			if tasks[0].HeadSHA != "f00d" || tasks[0].Status != StatusInReview || summaries[0] != "Added the cart." {
+				t.Fatalf("unexpected hook call: %+v %q", tasks[0], summaries[0])
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("review hook was not called")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if prompt := e.runs.startedRequests()[0].Turns[0].Text(); !strings.Contains(prompt, "`devpad/main`") {
+		t.Fatalf("prompt should point the agent at devpad/main:\n%s", prompt)
+	}
+}
+
+func TestRequestChangesQueuesOrStartsFeedback(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	running := e.waitTask(t, task.ID, hasRun)
+
+	if _, err := e.svc.RequestChanges(ctx, owner, 1, task.ID, "Rename it.", false); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected ErrInvalidState while in progress, got %v", err)
+	}
+	e.convs.save(running.ConversationID, domain.NewTextTurn(domain.RoleUser, "implement"), domain.NewTextTurn(domain.RoleAssistant, "done"))
+	e.runs.finish(running.RunID, domain.AgentRunCompleted, "")
+	e.waitTask(t, task.ID, status(StatusInReview))
+
+	if _, err := e.svc.RequestChanges(ctx, owner, 1, task.ID, "  ", false); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for empty feedback, got %v", err)
+	}
+	held, err := e.svc.RequestChanges(ctx, owner, 1, task.ID, "Rename it.", false)
+	if err != nil || held.Status != StatusChangesRequested || held.PendingMessage != "Rename it." {
+		t.Fatalf("held feedback: %+v %v", held, err)
+	}
+	// A later plain Start delivers the held feedback.
+	e.start(t, task.ID, StartInput{})
+	second := e.waitTask(t, task.ID, func(t *Task) bool { return t.RunID != running.RunID && t.RunID != 0 })
+	if text := lastText(e.runs.startedRequests()[1].Turns); !strings.Contains(text, "Rename it.") {
+		t.Fatalf("held feedback not delivered: %q", text)
+	}
+
+	e.convs.save(second.ConversationID, domain.NewTextTurn(domain.RoleUser, "implement"), domain.NewTextTurn(domain.RoleAssistant, "renamed"))
+	e.runs.finish(second.RunID, domain.AgentRunCompleted, "")
+	e.waitTask(t, task.ID, status(StatusInReview))
+	if _, err := e.svc.RequestChanges(ctx, owner, 1, task.ID, "Add a test.", true); err != nil {
+		t.Fatalf("request changes with start: %v", err)
+	}
+	e.waitTask(t, task.ID, func(t *Task) bool { return t.RunID != second.RunID && t.RunID != 0 })
+	if text := lastText(e.runs.startedRequests()[2].Turns); !strings.Contains(text, "Add a test.") {
+		t.Fatalf("immediate feedback not delivered: %q", text)
+	}
+}
+
+func TestMergedClosesTaskAndRemovesSandbox(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	running := e.waitTask(t, task.ID, hasRun)
+	e.runs.finish(running.RunID, domain.AgentRunCompleted, "")
+	e.waitTask(t, task.ID, status(StatusInReview))
+
+	merged, err := e.svc.Merged(ctx, owner, 1, task.ID)
+	if err != nil || merged.Status != StatusMerged || merged.WorkspaceID != 0 {
+		t.Fatalf("merged: %+v %v", merged, err)
+	}
+	if got := e.sandboxes.snapshot().deleted; len(got) != 1 || got[0] != running.WorkspaceID {
+		t.Fatalf("expected the sandbox removed, got %v", got)
+	}
+	if _, err := e.svc.Start(ctx, owner, 1, task.ID, StartInput{}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("a merged task cannot start again, got %v", err)
+	}
+	if _, err := e.svc.Merged(ctx, owner, 1, task.ID); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("merging twice should fail, got %v", err)
 	}
 }
 

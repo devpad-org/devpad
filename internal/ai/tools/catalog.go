@@ -1,22 +1,47 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
+	"sync"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
 // Catalog exposes the current tool definitions and system prompt.
-type Catalog struct{}
+type Catalog struct {
+	mu        sync.RWMutex
+	providers []ToolProvider
+}
 
 // NewCatalog creates a new tool catalog.
 func NewCatalog() *Catalog {
 	return &Catalog{}
 }
 
+// AddProvider adds workspace-specific tools to the catalog.
+func (c *Catalog) AddProvider(p ToolProvider) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.providers = append(c.providers, p)
+}
+
 // Definitions returns the tool definitions available to the AI agent.
 func (c *Catalog) Definitions() []domain.ToolDefinition {
 	return AgentTools()
+}
+
+// DefinitionsFor returns the built-in tools plus any a provider offers in
+// the workspace.
+func (c *Catalog) DefinitionsFor(ctx context.Context, userID, workspaceID int64) []domain.ToolDefinition {
+	defs := AgentTools()
+	c.mu.RLock()
+	providers := c.providers
+	c.mu.RUnlock()
+	for _, p := range providers {
+		defs = append(defs, p.Tools(ctx, userID, workspaceID)...)
+	}
+	return defs
 }
 
 // SystemPrompt returns the system prompt for the AI agent.

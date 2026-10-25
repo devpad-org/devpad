@@ -35,6 +35,8 @@ type Module struct {
 	runListeners interface {
 		OnRunFinished(fn func(domain.AgentRun))
 	}
+	toolCatalog  *aitools.Catalog
+	toolExecutor *aitools.WorkspaceExecutor
 }
 
 // NewModule assembles the AI subpackages behind the root composition facade.
@@ -56,7 +58,8 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	toolExecutor := aitools.NewWorkspaceExecutor(workspaceOps)
 	approvalBroker := approval.NewMemoryBroker()
 	questionBroker := question.NewMemoryBroker()
-	chatService := app.NewChatService(catalogService, aitools.NewCatalog(), toolExecutor, approvalBroker, questionBroker, app.NewAGENTSInstructionSource(workspaceOps))
+	toolCatalog := aitools.NewCatalog()
+	chatService := app.NewChatService(catalogService, toolCatalog, toolExecutor, approvalBroker, questionBroker, app.NewAGENTSInstructionSource(workspaceOps))
 	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService))
 	agentRuns := storage.NewAgentRunRepository(db)
 	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService)
@@ -72,7 +75,16 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 		ToolExecutor:        toolExecutor,
 		Handler:             httptransport.NewHandler(catalogService, agentService, chatService, agentRunService, conversationService, approvalBroker, questionBroker),
 		runListeners:        agentRunService,
+		toolCatalog:         toolCatalog,
+		toolExecutor:        toolExecutor,
 	}
+}
+
+// AddToolProvider offers a provider's tools to runs in the workspaces it
+// chooses and routes their calls to it.
+func (m *Module) AddToolProvider(p aitools.ToolProvider) {
+	m.toolCatalog.AddProvider(p)
+	m.toolExecutor.AddProvider(p)
 }
 
 // OnAgentRunFinished registers fn to be called with a run's final state each

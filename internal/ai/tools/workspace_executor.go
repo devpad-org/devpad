@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/devpad-org/devpad/internal/agent"
@@ -38,6 +39,9 @@ type WorkspaceExecutor struct {
 	childRunner ChildAgentRunner
 	agentLister AgentLister
 	summarizer  FileSummarizer
+
+	providersMu sync.RWMutex
+	providers   []ToolProvider
 }
 
 // NewWorkspaceExecutor creates an Executor backed by workspace operations.
@@ -53,6 +57,13 @@ func (e *WorkspaceExecutor) SetChildAgentRunner(runner ChildAgentRunner) {
 // SetAgentLister wires the agent catalog exposed to coordination tools.
 func (e *WorkspaceExecutor) SetAgentLister(lister AgentLister) {
 	e.agentLister = lister
+}
+
+// AddProvider routes calls for a provider's workspace-specific tools.
+func (e *WorkspaceExecutor) AddProvider(p ToolProvider) {
+	e.providersMu.Lock()
+	defer e.providersMu.Unlock()
+	e.providers = append(e.providers, p)
 }
 
 // SetFileSummarizer wires the AI summarizer used by summarize_file.
@@ -102,6 +113,14 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 	case "wait_for_sub_agents":
 		return e.waitForSubAgents(ctx, req, params)
 	default:
+		e.providersMu.RLock()
+		providers := e.providers
+		e.providersMu.RUnlock()
+		for _, p := range providers {
+			if result, ok := p.ExecuteTool(ctx, req); ok {
+				return result
+			}
+		}
 		return toolFailure(req.ToolName, "unknown tool: %s", req.ToolName)
 	}
 }

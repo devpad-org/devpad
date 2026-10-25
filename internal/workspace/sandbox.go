@@ -70,3 +70,14 @@ func (s *service) BundleSandboxBranch(ctx context.Context, userID, workspaceID i
 	}
 	return ws.Branch, bundle, nil
 }
+
+// FetchSandboxBase refreshes the sandbox's devpad/<branch> from a bundle of a
+// canonical branch, so an agent can merge in work that landed after its
+// sandbox was seeded.
+func (s *service) FetchSandboxBase(ctx context.Context, userID, workspaceID int64, branch string, bundle io.Reader) (*agent.RepoBranch, error) {
+	_, c, err := s.sandboxAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoFetchBase(ctx, branch, bundle)
+}

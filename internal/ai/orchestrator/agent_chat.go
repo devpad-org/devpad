@@ -76,6 +76,9 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 	})
 	turns = append(turns, req.Turns...)
 	toolDefinitions := o.toolCatalog.Definitions()
+	if scoped, ok := o.toolCatalog.(WorkspaceToolCatalog); ok {
+		toolDefinitions = scoped.DefinitionsFor(ctx, req.UserID, req.WorkspaceID)
+	}
 
 	for i := 0; i < o.maxToolIterations; i++ {
 		if ctx.Err() != nil {

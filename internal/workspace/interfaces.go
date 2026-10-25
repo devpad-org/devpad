@@ -106,6 +106,7 @@ type SandboxService interface {
 	ListByProject(ctx context.Context, userID, projectID int64) ([]*Workspace, error)
 	SeedSandboxRepo(ctx context.Context, userID, workspaceID int64, base string, bundle io.Reader) (*agent.RepoBranch, error)
 	BundleSandboxBranch(ctx context.Context, userID, workspaceID int64) (branch string, bundle io.ReadCloser, err error)
+	FetchSandboxBase(ctx context.Context, userID, workspaceID int64, branch string, bundle io.Reader) (*agent.RepoBranch, error)
 }
 
 // SidecarBinder injects the sidecar service lifecycle dependency.

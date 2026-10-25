@@ -75,4 +75,17 @@ type SandboxInput struct {
 	Name   string
 	Kind   string
 	Branch string
+	// Base is the existing branch a new Branch starts from, instead of the
+	// default branch. It is ignored when Branch already exists.
+	Base string
+}
+
+// MergeInput merges Source into the project's default branch.
+type MergeInput struct {
+	Source string
+	// Strategy is merge, squash or fast-forward; empty means merge.
+	Strategy string
+	Message  string
+	// ExpectedSourceSHA refuses the merge if Source has moved past it.
+	ExpectedSourceSHA string
 }

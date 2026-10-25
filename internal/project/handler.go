@@ -159,6 +159,7 @@ func (h *Handler) HandleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		Name   string `json:"name"`
 		Kind   string `json:"kind"`
 		Branch string `json:"branch"`
+		Base   string `json:"base"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -208,6 +209,64 @@ func (h *Handler) HandleCompare(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cmp)
 }
 
+// HandleDiff lists the files a branch or commit changed since it diverged
+// from base, the default branch unless given.
+func (h *Handler) HandleDiff(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	diff, err := h.service.Diff(r.Context(), user.ID, id, q.Get("base"), q.Get("head"))
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, diff)
+}
+
+// HandleFile returns a file's contents at a branch or commit.
+func (h *Handler) HandleFile(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	content, err := h.service.FileAt(r.Context(), user.ID, id, q.Get("rev"), q.Get("path"))
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	WriteFileContent(w, content)
+}
+
+// WriteFileContent serves repo file contents as an inert download, so a file
+// from an agent's branch can never render as a page on devpad's origin.
+func WriteFileContent(w http.ResponseWriter, content []byte) {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	w.Write(content)
+}
+
+// HandlePush pushes the default branch to the project's upstream.
+func (h *Handler) HandlePush(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.Push(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 // HandleStartSandbox restarts a stopped sandbox within the project's limit.
 func (h *Handler) HandleStartSandbox(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
@@ -252,11 +311,26 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	default:
 		var agentErr *agent.AgentError
 		if errors.As(err, &agentErr) {
-			writeError(w, http.StatusBadGateway, agentErr.Message)
+			WriteAgentError(w, agentErr)
 			return
 		}
 		log.Printf("project handler: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
+	}
+}
+
+// WriteAgentError passes on a repo agent's refusal, such as a merge conflict
+// or a missing file, with its status; anything else is a bad gateway.
+func WriteAgentError(w http.ResponseWriter, err *agent.AgentError) {
+	switch err.StatusCode {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusRequestEntityTooLarge:
+		body := map[string]any{"error": err.Message}
+		if len(err.Conflicts) > 0 {
+			body["conflicts"] = err.Conflicts
+		}
+		writeJSON(w, err.StatusCode, body)
+	default:
+		writeError(w, http.StatusBadGateway, err.Message)
 	}
 }
 

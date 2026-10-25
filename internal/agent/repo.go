@@ -136,6 +136,126 @@ func (c *Client) RepoImport(ctx context.Context, branch string, bundle io.Reader
 	return &result, nil
 }
 
+// RepoDiffFile is one file changed by a diff.
+type RepoDiffFile struct {
+	Path      string `json:"path"`
+	OldPath   string `json:"oldPath,omitempty"`
+	Status    string `json:"status"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
+	Binary    bool   `json:"binary"`
+}
+
+// RepoDiff lists the files head changed since its merge base with base.
+type RepoDiff struct {
+	BaseSHA   string         `json:"baseSha"`
+	HeadSHA   string         `json:"headSha"`
+	MergeBase string         `json:"mergeBase"`
+	Files     []RepoDiffFile `json:"files"`
+}
+
+// RepoDiff lists the files head changed since it diverged from base. Both
+// are branch names or full commit hashes.
+func (c *Client) RepoDiff(ctx context.Context, base, head string) (*RepoDiff, error) {
+	q := url.Values{"base": {base}, "head": {head}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/repo/diff?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	var diff RepoDiff
+	if err := c.doRepoJSON(req, "repo diff", &diff); err != nil {
+		return nil, err
+	}
+	return &diff, nil
+}
+
+// RepoFile returns a file's contents at a branch or full commit hash.
+func (c *Client) RepoFile(ctx context.Context, rev, path string) ([]byte, error) {
+	q := url.Values{"rev": {rev}, "path": {path}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/repo/file?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("repo file: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// RepoMergeRequest merges Source into Target. ExpectedSourceSHA, when set,
+// refuses the merge if Source has moved.
+type RepoMergeRequest struct {
+	Source            string `json:"source"`
+	Target            string `json:"target"`
+	Strategy          string `json:"strategy"`
+	Message           string `json:"message"`
+	ExpectedSourceSHA string `json:"expectedSourceSha"`
+	Name              string `json:"name"`
+	Email             string `json:"email"`
+}
+
+// RepoMergeResult is where the target branch moved to.
+type RepoMergeResult struct {
+	Target    string `json:"target"`
+	SHA       string `json:"sha"`
+	Strategy  string `json:"strategy"`
+	MergeBase string `json:"mergeBase"`
+}
+
+// RepoMerge merges one branch into another in the canonical repo. A merge
+// with conflicts fails with an *AgentError listing them.
+func (c *Client) RepoMerge(ctx context.Context, in RepoMergeRequest) (*RepoMergeResult, error) {
+	payload, err := json.Marshal(in)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/repo/merge", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var result RepoMergeResult
+	if err := c.doRepoJSON(req, "repo merge", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// RepoPush pushes a branch of the canonical repo to its upstream.
+func (c *Client) RepoPush(ctx context.Context, branch string) (*RepoBranch, error) {
+	u := fmt.Sprintf("%s/api/repo/push?branch=%s", c.baseURL, url.QueryEscape(branch))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	var result RepoBranch
+	if err := c.doRepoJSON(req, "repo push", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// RepoFetchBase updates a sandbox's devpad/<branch> from a bundle of the
+// canonical branch.
+func (c *Client) RepoFetchBase(ctx context.Context, branch string, bundle io.Reader) (*RepoBranch, error) {
+	u := fmt.Sprintf("%s/api/repo/fetch-base?branch=%s", c.baseURL, url.QueryEscape(branch))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bundle)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	var result RepoBranch
+	if err := c.doRepoJSON(req, "repo fetch base", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (c *Client) doRepoJSON(req *http.Request, op string, out any) error {
 	resp, err := c.do(req)
 	if err != nil {

@@ -47,6 +47,8 @@ func (a *recordingAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"branch": r.URL.Query().Get("branch"), "sha": "abc"})
 	case "/api/repo/bundle":
 		w.Write([]byte("bundle:" + r.URL.Query().Get("branch")))
+	case "/api/repo/fetch-base":
+		json.NewEncoder(w).Encode(map[string]string{"branch": "devpad/" + r.URL.Query().Get("branch"), "sha": "def"})
 	default:
 		http.NotFound(w, r)
 	}
@@ -178,6 +180,11 @@ func TestSandboxRepoOperationsUseRecordedBranch(t *testing.T) {
 	if ra.bodies["/api/repo/seed"] != "main-bundle" {
 		t.Fatalf("seed body = %q", ra.bodies["/api/repo/seed"])
 	}
+
+	got, err := svc.FetchSandboxBase(ctx, 1, ws.ID, "main", strings.NewReader("latest-main"))
+	if err != nil || got.Branch != "devpad/main" || ra.bodies["/api/repo/fetch-base"] != "latest-main" {
+		t.Fatalf("fetch base: %+v %v body=%q", got, err, ra.bodies["/api/repo/fetch-base"])
+	}
 }
 
 func TestSandboxRepoOperationsRejectOtherWorkspaces(t *testing.T) {
@@ -196,6 +203,9 @@ func TestSandboxRepoOperationsRejectOtherWorkspaces(t *testing.T) {
 		t.Fatalf("expected ErrNotSandbox, got %v", err)
 	}
 	if _, err := svc.SeedSandboxRepo(ctx, 1, interactive.ID, "main", strings.NewReader("")); !errors.Is(err, ErrNotSandbox) {
+		t.Fatalf("expected ErrNotSandbox, got %v", err)
+	}
+	if _, err := svc.FetchSandboxBase(ctx, 1, interactive.ID, "main", strings.NewReader("")); !errors.Is(err, ErrNotSandbox) {
 		t.Fatalf("expected ErrNotSandbox, got %v", err)
 	}
 	if _, _, err := svc.BundleSandboxBranch(ctx, 2, sandbox.ID); !errors.Is(err, ErrForbidden) {

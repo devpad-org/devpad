@@ -118,7 +118,10 @@ type fakeRepoAgent struct {
 	initReq   map[string]string
 	branches  []agent.RepoRef
 	ahead     map[string]int // head branch -> commits ahead of base
-	bundled   []string       // branches requested as bundles
+	merges    []agent.RepoMergeRequest
+	mergeErr  map[string]any // error body returned with 409 when set
+	pushed    []string
+	bundled   []string // branches requested as bundles
 	imported  map[string][]byte
 	importErr string
 }
@@ -159,6 +162,24 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		branch := r.URL.Query().Get("branch")
 		a.bundled = append(a.bundled, branch)
 		w.Write([]byte("bundle-of-" + branch))
+	case "/api/repo/diff":
+		q := r.URL.Query()
+		json.NewEncoder(w).Encode(agent.RepoDiff{BaseSHA: q.Get("base"), HeadSHA: q.Get("head"), Files: []agent.RepoDiffFile{{Path: "a.txt", Status: "A", Additions: 1}}})
+	case "/api/repo/file":
+		w.Write([]byte("<script>alert(1)</script> at " + r.URL.Query().Get("rev")))
+	case "/api/repo/merge":
+		var req agent.RepoMergeRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		a.merges = append(a.merges, req)
+		if a.mergeErr != nil {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(a.mergeErr)
+			return
+		}
+		json.NewEncoder(w).Encode(agent.RepoMergeResult{Target: req.Target, SHA: "merged", Strategy: req.Strategy})
+	case "/api/repo/push":
+		a.pushed = append(a.pushed, r.URL.Query().Get("branch"))
+		json.NewEncoder(w).Encode(agent.RepoBranch{Branch: r.URL.Query().Get("branch"), SHA: "pushed"})
 	case "/api/repo/compare":
 		q := r.URL.Query()
 		json.NewEncoder(w).Encode(agent.RepoComparison{Base: q.Get("base"), Head: q.Get("head"), Ahead: a.ahead[q.Get("head")]})
@@ -249,6 +270,14 @@ func (f *fakeWorkspaces) BundleSandboxBranch(_ context.Context, _, id int64) (st
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.byID[id].Branch, io.NopCloser(strings.NewReader(f.sandboxBundle)), nil
+}
+
+func (f *fakeWorkspaces) FetchSandboxBase(_ context.Context, _, id int64, branch string, bundle io.Reader) (*agent.RepoBranch, error) {
+	body, _ := io.ReadAll(bundle)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seeds[id] = "devpad/" + branch + " <- " + string(body)
+	return &agent.RepoBranch{Branch: "devpad/" + branch}, nil
 }
 
 func (f *fakeWorkspaces) Delete(_ context.Context, _, id int64) error {
@@ -695,8 +724,113 @@ func TestPublishSandboxRejections(t *testing.T) {
 			}
 		})
 	}
+	// The fake repo agent holds the token of the last project created.
+	review, err := e.svc.CreateSandbox(ctx, e.userID, other.ID, SandboxInput{Kind: "review", Branch: "review/1"})
+	if err != nil {
+		t.Fatalf("create review sandbox: %v", err)
+	}
+	if _, err := e.svc.PublishSandbox(ctx, e.userID, other.ID, review.ID); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("a review sandbox must not publish, got %v", err)
+	}
 	if len(e.repoAgent.imported) != 0 {
 		t.Fatalf("rejected publishes imported: %v", e.repoAgent.imported)
+	}
+}
+
+func TestCreateSandboxFromAnotherBranch(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main"}, {Name: "task/1"}, {Name: "review/2"}}
+	ctx := context.Background()
+
+	ws, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Kind: "review", Branch: "review/1", Base: "task/1"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if got := e.workspaces.seeds[ws.ID]; got != "task/1 <- bundle-of-task/1" {
+		t.Fatalf("seed = %q", got)
+	}
+	resumed, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Kind: "review", Branch: "review/2", Base: "task/1"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if got := e.workspaces.seeds[resumed.ID]; got != "review/2 <- bundle-of-review/2" {
+		t.Fatalf("an existing branch should resume, seed = %q", got)
+	}
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "review/3", Base: "nope"}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for a missing base, got %v", err)
+	}
+}
+
+func TestSyncSandboxBaseFetchesDefaultBranch(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	ctx := context.Background()
+	ws, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "task/1"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := e.svc.SyncSandboxBase(ctx, e.userID, p.ID, ws.ID)
+	if err != nil || got.Branch != "devpad/main" || e.workspaces.seeds[ws.ID] != "devpad/main <- bundle-of-main" {
+		t.Fatalf("sync: %+v %v seed=%q", got, err, e.workspaces.seeds[ws.ID])
+	}
+	plain := e.workspaces.add(&workspace.Workspace{UserID: e.userID, Kind: workspace.KindInteractive})
+	if _, err := e.svc.SyncSandboxBase(ctx, e.userID, p.ID, plain.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for a non-sandbox, got %v", err)
+	}
+}
+
+func TestMergeCommitsAsUserIntoDefaultBranch(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	ctx := context.Background()
+
+	result, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: "task/1", Strategy: "squash", ExpectedSourceSHA: "abc"})
+	if err != nil || result.SHA != "merged" {
+		t.Fatalf("merge: %+v %v", result, err)
+	}
+	want := agent.RepoMergeRequest{Source: "task/1", Target: "main", Strategy: "squash", ExpectedSourceSHA: "abc", Name: "owner", Email: "owner@example.com"}
+	if got := e.repoAgent.merges; len(got) != 1 || got[0] != want {
+		t.Fatalf("merge request = %+v", got)
+	}
+	for _, source := range []string{"main", "", "-x"} {
+		if _, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: source}); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("source %q: expected ErrInvalidInput, got %v", source, err)
+		}
+	}
+	if _, err := e.svc.Merge(ctx, e.otherID, p.ID, MergeInput{Source: "task/1"}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for another user, got %v", err)
+	}
+
+	e.repoAgent.mergeErr = map[string]any{"error": "task/1 conflicts with main", "conflicts": []string{"a.go"}}
+	_, err = e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: "task/1"})
+	var agentErr *agent.AgentError
+	if !errors.As(err, &agentErr) || agentErr.StatusCode != http.StatusConflict || len(agentErr.Conflicts) != 1 {
+		t.Fatalf("expected a conflict error listing a.go, got %v", err)
+	}
+}
+
+func TestPushRequiresUpstream(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	local := e.createProject(t, CreateInput{Name: "local"})
+	if _, err := e.svc.Push(ctx, e.userID, local.ID); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput without an upstream, got %v", err)
+	}
+	cloned := e.createProject(t, CreateInput{Name: "cloned", UpstreamURL: "https://example.com/repo.git"})
+	if _, err := e.svc.Push(ctx, e.userID, cloned.ID); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if len(e.repoAgent.pushed) != 1 || e.repoAgent.pushed[0] != "main" {
+		t.Fatalf("pushed = %v", e.repoAgent.pushed)
+	}
+}
+
+func TestFileResponseIsInert(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteFileContent(rec, []byte("<html>"))
+	if rec.Header().Get("Content-Type") != "application/octet-stream" || rec.Header().Get("X-Content-Type-Options") != "nosniff" || rec.Header().Get("Content-Disposition") != "attachment" {
+		t.Fatalf("unexpected headers: %v", rec.Header())
 	}
 }
 
@@ -787,7 +921,9 @@ func TestHandlerMapsErrors(t *testing.T) {
 		{ErrSandboxLimit, http.StatusConflict},
 		{ErrBranchInUse, http.StatusConflict},
 		{ErrNotReady, http.StatusConflict},
-		{&agent.AgentError{StatusCode: 400, Message: "invalid bundle"}, http.StatusBadGateway},
+		{&agent.AgentError{StatusCode: 400, Message: "invalid bundle"}, http.StatusBadRequest},
+		{&agent.AgentError{StatusCode: 409, Message: "conflicts", Conflicts: []string{"a.go"}}, http.StatusConflict},
+		{&agent.AgentError{StatusCode: 500, Message: "git crashed"}, http.StatusBadGateway},
 		{errors.New("boom"), http.StatusInternalServerError},
 	}
 	for _, tt := range tests {
