@@ -88,7 +88,10 @@ async function push() {
     <div class="side-header">
       <span class="side-title">
         <svg class="panel-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+          <path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z" />
+          <path d="M12 22V12" />
+          <path d="m3.3 7 7.703 4.734a2 2 0 0 0 1.994 0L20.7 7" />
+          <path d="m7.5 4.27 9 5.15" />
         </svg>
         Project
       </span>
