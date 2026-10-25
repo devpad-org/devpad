@@ -1,18 +1,21 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import { aiApi, type AIModel } from '@/api/ai'
+import { aiApi, type AgentDefaults, type AIModel } from '@/api/ai'
 
 export { type AIModel }
 
 export const useAiModelStore = defineStore('aiModels', () => {
   // Only configured models: those a new run can actually be started with.
   const models = ref<AIModel[]>([])
+  // The defaults an admin set for built-in agents, keyed by agent ID.
+  const agentDefaults = ref<Record<string, AgentDefaults>>({})
   const loaded = ref(false)
 
   async function fetchModels(): Promise<void> {
     try {
       const res = await aiApi.listModels()
       models.value = res.models.filter((m) => m.configured)
+      agentDefaults.value = res.agentDefaults ?? {}
       loaded.value = true
     } catch {
       // models will remain empty
@@ -27,6 +30,7 @@ export const useAiModelStore = defineStore('aiModels', () => {
 
   return {
     models,
+    agentDefaults,
     loaded,
     fetchModels,
     isModelAvailable,

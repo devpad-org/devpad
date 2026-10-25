@@ -26,6 +26,15 @@ type Agent struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
+// AgentDefaults is the model and reasoning effort an admin set for a
+// built-in agent, which the model pickers for that agent start on. An empty
+// Effort means the model's default effort.
+type AgentDefaults struct {
+	AgentID string `json:"agentId"`
+	Model   string `json:"model"`
+	Effort  string `json:"effort,omitempty"`
+}
+
 // DefaultAgent is the agent used when none is selected: the coding agent.
 func DefaultAgent() Agent {
 	return codingAgent()

@@ -54,6 +54,7 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 
 	catalogService := app.NewCatalogService(providerConfigs, registry)
 	agentService := app.NewAgentService(agents)
+	agentDefaultsService := app.NewAgentDefaultsService(storage.NewAgentDefaultsRepository(db), catalogService)
 	conversationService := app.NewConversationService(conversations)
 	toolExecutor := aitools.NewWorkspaceExecutor(workspaceOps)
 	approvalBroker := approval.NewMemoryBroker()
@@ -73,7 +74,7 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 		AgentRunService:     agentRunService,
 		ConversationService: conversationService,
 		ToolExecutor:        toolExecutor,
-		Handler:             httptransport.NewHandler(catalogService, agentService, chatService, agentRunService, conversationService, approvalBroker, questionBroker),
+		Handler:             httptransport.NewHandler(catalogService, agentService, agentDefaultsService, chatService, agentRunService, conversationService, approvalBroker, questionBroker),
 		runListeners:        agentRunService,
 		toolCatalog:         toolCatalog,
 		toolExecutor:        toolExecutor,

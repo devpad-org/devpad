@@ -152,6 +152,8 @@ const focusedRunContextSize = ref<ContextSize | null>(null)
 const autoScrollEnabled = ref(true)
 
 const currentModel = computed(() => models.value.find((model) => model.id === selectedModel.value) ?? null)
+// The model and effort an admin set for the selected agent, if it is built in.
+const currentAgentDefaults = computed(() => aiModelStore.agentDefaults[props.selectedAgentId])
 
 const viewingFocusedRun = computed(() => props.focusedRunId !== null && props.focusedRunId !== undefined)
 
@@ -233,7 +235,7 @@ const thinkingEffort = computed<string>({
       return ''
     }
 
-    return thinkingEffortPreferences.value[model.id] ?? defaultThinkingEffort(model)
+    return thinkingEffortPreferences.value[model.id] ?? defaultThinkingEffort(model, currentAgentDefaults.value)
   },
   set(value: string) {
     const model = currentModel.value
@@ -259,7 +261,7 @@ const thinkingRequest = computed(() => {
   }
 
   if (thinkingEnabled.value && canSelectThinkingEffort.value) {
-    request.effort = thinkingEffort.value || defaultThinkingEffort(model)
+    request.effort = thinkingEffort.value || defaultThinkingEffort(model, currentAgentDefaults.value)
   }
 
   return request
@@ -316,7 +318,7 @@ function selectAgent(agentId: string) {
 
 onMounted(async () => {
   await aiModelStore.fetchModels()
-  const defaultModel = defaultAIModel(models.value)
+  const defaultModel = defaultAIModel(models.value, currentAgentDefaults.value)
   if (defaultModel) {
     selectedModel.value = defaultModel.id
   }
@@ -329,6 +331,14 @@ onUnmounted(() => {
   cancelFocusedRunEventStream()
   if (scrollRaf !== null) cancelAnimationFrame(scrollRaf)
   if (fetchRunsDebounceTimer !== null) clearTimeout(fetchRunsDebounceTimer)
+})
+
+// Switching to a built-in agent moves to the model an admin set for it.
+watch(() => props.selectedAgentId, () => {
+  const defaults = currentAgentDefaults.value
+  if (defaults && models.value.some((model) => model.id === defaults.model)) {
+    selectedModel.value = defaults.model
+  }
 })
 
 watch(() => props.focusedRunId, (runId) => {

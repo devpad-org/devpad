@@ -4,10 +4,13 @@ import { useAdminStore } from '@/stores/admin'
 import { useAuthStore } from '@/stores/auth'
 import type { AdminUser } from '@/api/admin'
 import type { AdminWorkspace } from '@/api/admin'
-import { aiApi, type AIProvider } from '@/api/ai'
+import { aiApi, type AIModel, type AIProvider, type BuiltInAgentDefaults } from '@/api/ai'
+import { useAiModelStore } from '@/stores/aiModels'
+import { thinkingEffortLabel } from '@/utils/aiModels'
 
 const admin = useAdminStore()
 const auth = useAuthStore()
+const aiModelStore = useAiModelStore()
 
 // Modal state
 const showCreateModal = ref(false)
@@ -35,6 +38,15 @@ const aiError = ref('')
 const aiSuccess = ref('')
 const aiSubmitting = ref<string | null>(null)
 
+// AI agent defaults
+const agentDefaults = ref<BuiltInAgentDefaults[]>([])
+const agentDefaultForms = ref<Record<string, { model: string; effort: string }>>({})
+const allAIModels = ref<AIModel[]>([])
+const agentDefaultsLoading = ref(false)
+const agentDefaultsError = ref('')
+const agentDefaultsSuccess = ref('')
+const agentDefaultsSubmitting = ref<string | null>(null)
+
 // Workspace limits modal
 const showLimitsModal = ref(false)
 const selectedWorkspace = ref<AdminWorkspace | null>(null)
@@ -55,6 +67,7 @@ onMounted(() => {
   admin.fetchUsers()
   admin.fetchWorkspaces()
   loadAIProviders()
+  loadAgentDefaults()
 })
 
 async function loadAIProviders() {
@@ -88,10 +101,73 @@ async function saveProvider(providerId: string) {
     for (const p of res.providers) {
       aiProviderForms.value[p.id] = { apiKey: '', enabled: p.enabled }
     }
+    // A provider turned on or off changes which models agents can default to.
+    allAIModels.value = (await aiApi.listModels()).models
+    void aiModelStore.fetchModels()
   } catch (e) {
     aiError.value = e instanceof Error ? e.message : 'Failed to update provider'
   } finally {
     aiSubmitting.value = null
+  }
+}
+
+async function loadAgentDefaults() {
+  agentDefaultsLoading.value = true
+  try {
+    const [defaults, models] = await Promise.all([aiApi.listAgentDefaults(), aiApi.listModels()])
+    allAIModels.value = models.models
+    agentDefaults.value = defaults.agents
+    for (const a of defaults.agents) {
+      agentDefaultForms.value[a.agentId] = { model: a.model, effort: a.effort }
+    }
+  } catch {
+    agentDefaultsError.value = 'Failed to load AI agent defaults'
+  } finally {
+    agentDefaultsLoading.value = false
+  }
+}
+
+function agentDefaultModel(agentId: string): AIModel | undefined {
+  const model = agentDefaultForms.value[agentId]?.model
+  return allAIModels.value.find((m) => m.id === model)
+}
+
+// Models from configured providers, plus the one already chosen if its
+// provider has since been turned off, so the select can still show it.
+function agentModelOptions(agentId: string): AIModel[] {
+  const chosen = agentDefaultForms.value[agentId]?.model
+  return allAIModels.value.filter((m) => m.configured || m.id === chosen)
+}
+
+function agentEffortOptions(agentId: string): string[] {
+  return agentDefaultModel(agentId)?.thinking.supportedEfforts ?? []
+}
+
+function onAgentModelChange(agentId: string) {
+  const form = agentDefaultForms.value[agentId]
+  if (form && !agentEffortOptions(agentId).includes(form.effort)) {
+    form.effort = ''
+  }
+}
+
+async function saveAgentDefaults(agentId: string) {
+  const form = agentDefaultForms.value[agentId]
+  if (!form) return
+  agentDefaultsError.value = ''
+  agentDefaultsSuccess.value = ''
+  agentDefaultsSubmitting.value = agentId
+  try {
+    const res = await aiApi.setAgentDefaults(agentId, form.model, form.model ? form.effort : '')
+    const index = agentDefaults.value.findIndex((a) => a.agentId === agentId)
+    if (index !== -1) agentDefaults.value[index] = res.agent
+    agentDefaultForms.value[agentId] = { model: res.agent.model, effort: res.agent.effort }
+    agentDefaultsSuccess.value = `Defaults for the ${res.agent.name} saved`
+    // Pickers in this browser read the defaults from the models store.
+    void aiModelStore.fetchModels()
+  } catch (e) {
+    agentDefaultsError.value = e instanceof Error ? e.message : 'Failed to save agent defaults'
+  } finally {
+    agentDefaultsSubmitting.value = null
   }
 }
 
@@ -576,6 +652,66 @@ function isSelf(user: AdminUser): boolean {
         </div>
       </div>
     </div>
+
+    <!-- AI Agent Defaults Section -->
+    <div class="admin-container" style="margin-top: var(--space-6);">
+      <div class="admin-header">
+        <div>
+          <h1 class="admin-title">AI Agent Defaults</h1>
+          <p class="admin-subtitle">The model and reasoning effort each built-in agent starts on. Users can still pick another when they start one.</p>
+        </div>
+      </div>
+
+      <div v-if="agentDefaultsError" class="alert alert-error">{{ agentDefaultsError }}</div>
+      <div v-if="agentDefaultsSuccess" class="alert alert-success">{{ agentDefaultsSuccess }}</div>
+
+      <div v-if="agentDefaultsLoading" class="loading-state">Loading agents...</div>
+
+      <div v-else class="ai-providers-list">
+        <div v-for="agent in agentDefaults" :key="agent.agentId" class="ai-provider-card">
+          <div class="ai-provider-header">
+            <span class="ai-provider-name">{{ agent.name }}</span>
+            <span v-if="agent.model" class="badge-role admin">Custom</span>
+            <span v-else class="badge-role user">Devpad default</span>
+          </div>
+          <p v-if="agent.purpose" class="agent-purpose">{{ agent.purpose }}</p>
+          <form v-if="agentDefaultForms[agent.agentId]" @submit.prevent="saveAgentDefaults(agent.agentId)">
+            <div class="agent-default-fields">
+              <div class="form-field">
+                <label :for="'agent-model-' + agent.agentId">Model</label>
+                <select
+                  :id="'agent-model-' + agent.agentId"
+                  v-model="agentDefaultForms[agent.agentId].model"
+                  @change="onAgentModelChange(agent.agentId)"
+                >
+                  <option value="">Devpad default</option>
+                  <option v-for="m in agentModelOptions(agent.agentId)" :key="m.id" :value="m.id">
+                    {{ m.name }} · {{ m.providerName }}{{ m.configured ? '' : ' (not configured)' }}
+                  </option>
+                </select>
+              </div>
+              <div v-if="agentEffortOptions(agent.agentId).length > 0" class="form-field">
+                <label :for="'agent-effort-' + agent.agentId">Reasoning effort</label>
+                <select :id="'agent-effort-' + agent.agentId" v-model="agentDefaultForms[agent.agentId].effort">
+                  <option value="">Model default</option>
+                  <option v-for="e in agentEffortOptions(agent.agentId)" :key="e" :value="e">{{ thinkingEffortLabel(e) }}</option>
+                </select>
+              </div>
+            </div>
+            <div class="ai-provider-actions">
+              <span class="agent-default-hint">
+                <template v-if="agentDefaultModel(agent.agentId) && !agentDefaultModel(agent.agentId)?.configured">
+                  This model's provider is not configured, so agents start on devpad's default until it is.
+                </template>
+              </span>
+              <button type="submit" class="btn-primary" :disabled="agentDefaultsSubmitting === agent.agentId">
+                {{ agentDefaultsSubmitting === agent.agentId ? 'Saving...' : 'Save' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -937,6 +1073,42 @@ function isSelf(user: AdminUser): boolean {
   margin-bottom: var(--space-4);
   border-radius: var(--radius-md);
   font-size: 0.85rem;
+}
+
+/* AI agent defaults */
+.agent-purpose {
+  margin: 0 0 var(--space-3);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.agent-default-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  column-gap: var(--space-3);
+}
+
+.form-field select {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-primary);
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.9rem;
+  transition: border-color var(--transition-fast);
+}
+
+.form-field select:focus {
+  outline: none;
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.agent-default-hint {
+  font-size: 0.8rem;
+  color: var(--accent-amber);
 }
 
 /* AI Providers */

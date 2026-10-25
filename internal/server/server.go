@@ -353,6 +353,8 @@ type aiRouteHandler interface {
 	HandleSaveMessages(http.ResponseWriter, *http.Request)
 	HandleListProviders(http.ResponseWriter, *http.Request)
 	HandleUpdateProvider(http.ResponseWriter, *http.Request)
+	HandleListAgentDefaults(http.ResponseWriter, *http.Request)
+	HandleSetAgentDefaults(http.ResponseWriter, *http.Request)
 }
 
 // registerRoutes sets up all HTTP routes.
@@ -511,6 +513,8 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	// AI admin routes
 	mux.Handle("GET /api/ai/providers", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleListProviders)))
 	mux.Handle("PUT /api/ai/providers/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleUpdateProvider)))
+	mux.Handle("GET /api/ai/agent-defaults", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleListAgentDefaults)))
+	mux.Handle("PUT /api/ai/agent-defaults/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleSetAgentDefaults)))
 
 	// Unknown API paths get a JSON 404 rather than the SPA, so a client
 	// calling a removed or mistyped endpoint sees a real error.

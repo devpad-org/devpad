@@ -436,3 +436,93 @@ func TestHandleListAttention_ReturnsPendingPrompts(t *testing.T) {
 		t.Fatalf("unexpected items: %s", w.Body)
 	}
 }
+
+type stubAgentDefaultsService struct {
+	defaults map[string]domain.AgentDefaults
+	setFn    func(domain.AgentDefaults) (*domain.AgentDefaults, error)
+}
+
+func (s stubAgentDefaultsService) ListAgentDefaults(context.Context) (map[string]domain.AgentDefaults, error) {
+	return s.defaults, nil
+}
+
+func (s stubAgentDefaultsService) SetAgentDefaults(_ context.Context, d domain.AgentDefaults) (*domain.AgentDefaults, error) {
+	return s.setFn(d)
+}
+
+func TestHandleListModels_IncludesAgentDefaults(t *testing.T) {
+	h := &Handler{catalog: stubCatalogService{}, defaults: stubAgentDefaultsService{defaults: map[string]domain.AgentDefaults{
+		domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "gpt-5.4", Effort: "high"},
+	}}}
+	w := httptest.NewRecorder()
+
+	h.HandleListModels(w, httptest.NewRequest(http.MethodGet, "/api/ai/models", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `"agentDefaults":{"review":{"agentId":"review","model":"gpt-5.4","effort":"high"}}`) {
+		t.Fatalf("expected review defaults, got %s", w.Body.String())
+	}
+}
+
+func TestHandleListAgentDefaults_ListsEveryBuiltInAgent(t *testing.T) {
+	h := &Handler{defaults: stubAgentDefaultsService{defaults: map[string]domain.AgentDefaults{
+		domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "gpt-5.4"},
+	}}}
+	w := httptest.NewRecorder()
+
+	h.HandleListAgentDefaults(w, httptest.NewRequest(http.MethodGet, "/api/ai/agent-defaults", nil))
+
+	var resp struct {
+		Agents []agentDefaultsDTO `json:"agents"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Agents) != len(domain.BuiltInAgents()) {
+		t.Fatalf("expected every built-in agent, got %+v", resp.Agents)
+	}
+	if resp.Agents[0].AgentID != domain.CodingAgentID || resp.Agents[0].Model != "" {
+		t.Fatalf("expected the coding agent first without defaults, got %+v", resp.Agents[0])
+	}
+	if resp.Agents[1].AgentID != domain.ReviewAgentID || resp.Agents[1].Model != "gpt-5.4" || resp.Agents[1].Name == "" {
+		t.Fatalf("expected the review agent's defaults, got %+v", resp.Agents[1])
+	}
+}
+
+func TestHandleSetAgentDefaults(t *testing.T) {
+	tests := []struct {
+		name    string
+		agentID string
+		setErr  error
+		want    int
+	}{
+		{"saves", domain.ReviewAgentID, nil, http.StatusOK},
+		{"custom agent", "12", nil, http.StatusNotFound},
+		{"unknown model", domain.ReviewAgentID, domain.ErrModelNotFound, http.StatusBadRequest},
+		{"bad effort", domain.ReviewAgentID, domain.ErrThinkingEffortInvalid, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &Handler{defaults: stubAgentDefaultsService{setFn: func(d domain.AgentDefaults) (*domain.AgentDefaults, error) {
+				if d.AgentID != tt.agentID || d.Model != "gpt-5.4" || d.Effort != "low" {
+					t.Fatalf("unexpected defaults %+v", d)
+				}
+				if tt.setErr != nil {
+					return nil, tt.setErr
+				}
+				return &d, nil
+			}}}
+			req := httptest.NewRequest(http.MethodPut, "/api/ai/agent-defaults/"+tt.agentID, strings.NewReader(`{"model":"gpt-5.4","effort":"low"}`))
+			req.SetPathValue("id", tt.agentID)
+			w := httptest.NewRecorder()
+
+			h.HandleSetAgentDefaults(w, req)
+
+			if w.Code != tt.want {
+				t.Fatalf("expected %d, got %d: %s", tt.want, w.Code, w.Body.String())
+			}
+		})
+	}
+}

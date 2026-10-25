@@ -1,23 +1,26 @@
 <script setup lang="ts">
 import { computed, onMounted, watch } from 'vue'
 import { useAiModelStore } from '@/stores/aiModels'
-import { defaultAIModel, defaultThinkingEffort, thinkingEffortLabel } from '@/utils/aiModels'
+import { CODING_AGENT_ID, defaultAIModel, defaultThinkingEffort, thinkingEffortLabel } from '@/utils/aiModels'
 
-// Picks the model and reasoning effort agents run with.
+// Picks the model and reasoning effort agents run with, starting on the
+// defaults an admin set for the agent.
+const props = withDefaults(defineProps<{ agentId?: string }>(), { agentId: CODING_AGENT_ID })
 const model = defineModel<string>('model', { required: true })
 const effort = defineModel<string>('effort', { default: '' })
 
 const store = useAiModelStore()
 const current = computed(() => store.models.find((m) => m.id === model.value) ?? null)
 const efforts = computed(() => current.value?.thinking.supportedEfforts ?? [])
+const agentDefaults = computed(() => store.agentDefaults[props.agentId])
 
 function applyDefaults() {
   if (!current.value) {
-    const fallback = defaultAIModel(store.models)
+    const fallback = defaultAIModel(store.models, agentDefaults.value)
     if (fallback) model.value = fallback.id
   }
   if (current.value && efforts.value.length > 0 && !efforts.value.includes(effort.value)) {
-    effort.value = defaultThinkingEffort(current.value)
+    effort.value = defaultThinkingEffort(current.value, agentDefaults.value)
   } else if (efforts.value.length === 0) {
     effort.value = ''
   }

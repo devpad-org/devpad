@@ -59,6 +59,23 @@ export interface AIProvider {
   hasApiKey: boolean
 }
 
+// The model and reasoning effort an admin set for a built-in agent. An empty
+// effort means the model's default.
+export interface AgentDefaults {
+  model: string
+  effort?: string
+}
+
+// A built-in agent with the defaults set for it, as admins edit them. An
+// empty model means devpad's own default.
+export interface BuiltInAgentDefaults {
+  agentId: string
+  name: string
+  purpose: string
+  model: string
+  effort: string
+}
+
 export interface AIAgent {
   id: string
   userId?: number
@@ -370,8 +387,8 @@ function agentRunFromDTO(dto: AgentRunDTO): AgentRun {
 }
 
 export const aiApi = {
-  listModels(): Promise<{ models: AIModel[] }> {
-    return apiClient.get<{ models: AIModel[] }>('/api/ai/models')
+  listModels(): Promise<{ models: AIModel[]; agentDefaults?: Record<string, AgentDefaults> }> {
+    return apiClient.get<{ models: AIModel[]; agentDefaults?: Record<string, AgentDefaults> }>('/api/ai/models')
   },
 
   listProviders(): Promise<{ providers: AIProvider[] }> {
@@ -396,6 +413,14 @@ export const aiApi = {
 
   updateProvider(id: string, apiKey: string, enabled: boolean): Promise<void> {
     return apiClient.put<void>(`/api/ai/providers/${id}`, { apiKey, enabled })
+  },
+
+  listAgentDefaults(): Promise<{ agents: BuiltInAgentDefaults[] }> {
+    return apiClient.get<{ agents: BuiltInAgentDefaults[] }>('/api/ai/agent-defaults')
+  },
+
+  setAgentDefaults(agentId: string, model: string, effort: string): Promise<{ agent: BuiltInAgentDefaults }> {
+    return apiClient.put<{ agent: BuiltInAgentDefaults }>(`/api/ai/agent-defaults/${encodeURIComponent(agentId)}`, { model, effort })
   },
 
   async chatStream(

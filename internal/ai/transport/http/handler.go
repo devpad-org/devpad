@@ -21,6 +21,7 @@ const sseKeepAliveInterval = 15 * time.Second
 type Handler struct {
 	catalog     app.CatalogService
 	agents      app.AgentService
+	defaults    app.AgentDefaultsService
 	chat        app.ChatService
 	runs        app.AgentRunService
 	convService app.ConversationService
@@ -29,10 +30,11 @@ type Handler struct {
 }
 
 // NewHandler creates a new AI handler.
-func NewHandler(catalog app.CatalogService, agents app.AgentService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, approvals approval.Broker, questions question.Broker) *Handler {
+func NewHandler(catalog app.CatalogService, agents app.AgentService, defaults app.AgentDefaultsService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, approvals approval.Broker, questions question.Broker) *Handler {
 	return &Handler{
 		catalog:     catalog,
 		agents:      agents,
+		defaults:    defaults,
 		chat:        chat,
 		runs:        runs,
 		convService: convService,
@@ -49,14 +51,20 @@ func isThinkingRequestError(err error) bool {
 		errors.Is(err, domain.ErrThinkingEffortRequiresThinking)
 }
 
-// HandleListModels returns all available AI models with their configuration status.
+// HandleListModels returns all available AI models with their configuration
+// status, and the defaults an admin set for built-in agents.
 func (h *Handler) HandleListModels(w http.ResponseWriter, r *http.Request) {
 	models, err := h.catalog.ListModels(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list models")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+	defaults, err := h.defaults.ListAgentDefaults(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list agent defaults")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models, "agentDefaults": defaults})
 }
 
 // HandleListProviders returns all registered AI providers with their config status (admin only).

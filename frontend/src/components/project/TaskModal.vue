@@ -440,7 +440,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                     @keydown.ctrl.enter.prevent="start"
                   />
                   <div class="composer-footer">
-                    <AgentModelPicker v-model:model="model" v-model:effort="effort" />
+                    <AgentModelPicker v-model:model="model" v-model:effort="effort" :agent-id="task.agentId || undefined" />
                     <button class="btn btn-primary" :disabled="busy || !model" @click="start">
                       <span v-if="busy" class="spinner spinner-sm spinner-on-accent" />
                       <MrIcon v-else :name="composer.icon" :size="13" />

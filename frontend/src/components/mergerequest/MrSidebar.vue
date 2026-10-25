@@ -4,6 +4,7 @@ import AgentModelPicker from '@/components/project/AgentModelPicker.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import StatusBadge from '@/components/project/StatusBadge.vue'
 import { useActiveProjectStore } from '@/stores/activeProject'
+import { REVIEW_AGENT_ID } from '@/utils/aiModels'
 import { fullTime, timeAgo } from '@/utils/time'
 import { authorName, plural, shortSha } from './format'
 import { useMergeRequest } from './useMergeRequest'
@@ -108,7 +109,7 @@ function openTask(e: MouseEvent, id: number) {
       <p class="form-hint side-hint">
         An agent reads the change in its own sandbox and leaves line comments and a verdict.
       </p>
-      <AgentModelPicker v-model:model="agentModel" v-model:effort="agentEffort" class="side-picker" />
+      <AgentModelPicker v-model:model="agentModel" v-model:effort="agentEffort" :agent-id="REVIEW_AGENT_ID" class="side-picker" />
       <label v-if="mr.taskId" class="form-check side-check">
         <input v-model="autoFix" type="checkbox" />
         Send requested changes to the task's agent
