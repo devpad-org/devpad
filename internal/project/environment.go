@@ -111,7 +111,18 @@ type environmentBuild struct {
 	done   chan struct{}
 }
 
-// validateEnvironment refuses a Dockerfile devpad cannot put in its frame.
+// refusedInstructions are the instructions an environment cannot use, and
+// why. ADD and COPY have no build context to copy from, so all they could do
+// is reach outside the build: the daemon itself fetches ADD's URLs, on the
+// host's network, and COPY --from reads any image the daemon has.
+var refusedInstructions = map[string]string{
+	"FROM": "devpad builds it on its own workspace image",
+	"ADD":  "Docker fetches its files from the host, outside the build; download them with RUN curl instead",
+	"COPY": "there is nothing to copy, and copying from another image could read what other projects or tools built; download files with RUN curl instead",
+}
+
+// validateEnvironment refuses a Dockerfile devpad cannot put in its frame,
+// or that could reach outside its build.
 func validateEnvironment(body string) error {
 	if len(body) > environmentLimit {
 		return invalid("the environment must be at most %d KB", environmentLimit/1024)
@@ -133,8 +144,15 @@ func validateEnvironment(body string) error {
 		if !starts {
 			continue
 		}
-		if fields := strings.Fields(line); strings.EqualFold(fields[0], "FROM") {
-			return invalid("the environment cannot use FROM: devpad builds it on its own workspace image")
+		fields := strings.Fields(line)
+		keyword := strings.ToUpper(fields[0])
+		// ONBUILD holds an instruction for later builds; refuse those too,
+		// so the rule needs no exceptions.
+		if keyword == "ONBUILD" && len(fields) > 1 {
+			keyword = strings.ToUpper(fields[1])
+		}
+		if reason, refused := refusedInstructions[keyword]; refused {
+			return invalid("the environment cannot use %s: %s", keyword, reason)
 		}
 	}
 	return nil
@@ -398,10 +416,15 @@ func (s *service) startBuildLocked(p *Project, hash string) error {
 func (s *service) runBuild(ctx context.Context, b *Build, body string) {
 	network := fmt.Sprintf("devpad-build-%d-%s", b.ProjectID, b.ID)
 	var output string
-	err := s.container.CreateNetwork(ctx, network)
-	if err != nil {
-		err = fmt.Errorf("creating the build network: %w", err)
-	} else {
+	// Saving refuses what this refuses; checking again keeps a Dockerfile
+	// stored before a rule existed from ever reaching Docker.
+	err := validateEnvironment(body)
+	if err == nil {
+		if err = s.container.CreateNetwork(ctx, network); err != nil {
+			err = fmt.Errorf("creating the build network: %w", err)
+		}
+	}
+	if err == nil {
 		output, err = s.container.BuildProjectImage(ctx, b.Image, environmentDockerfile(body), container.BuildOptions{
 			NetworkMode: network,
 			Memory:      buildMemory,

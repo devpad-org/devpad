@@ -120,7 +120,7 @@ function handleSubmit() {
               spellcheck="false"
               placeholder="RUN apt-get update &amp;&amp; apt-get install -y nodejs"
             />
-            <p class="form-hint">Dockerfile lines, without <span class="mono">FROM</span>, run as root on devpad's workspace image. Workspaces are made from the result, so install toolchains and system packages here and project dependencies in the setup script.</p>
+            <p class="form-hint">Dockerfile lines run as root on devpad's workspace image, without <span class="mono">FROM</span>, <span class="mono">ADD</span> or <span class="mono">COPY</span>; download files with <span class="mono">RUN curl</span>. Workspaces are made from the result, so install toolchains and system packages here and project dependencies in the setup script.</p>
           </div>
           <div class="form-group">
             <label class="form-label" for="project-max">Concurrent sandboxes</label>

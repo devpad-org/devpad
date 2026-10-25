@@ -99,6 +99,22 @@ func TestBuildProjectImageWithDocker(t *testing.T) {
 		t.Fatalf("expected the step's output and why it failed: %v\n%s", err, output)
 	}
 
+	// The build context holds only the Dockerfile, so no host path can be
+	// copied in, and the classic builder refuses mounting one. (devpad also
+	// refuses COPY and ADD before a build, since ADD's URLs are fetched on
+	// the host's network and COPY --from reads any local image.)
+	for name, reach := range map[string]string{
+		"host file":   "COPY /etc/hostname /stolen\n",
+		"host parent": "COPY ../../etc/hostname /stolen\n",
+		"host mount":  "RUN --mount=type=bind,source=/,target=/host ls /host\n",
+	} {
+		dockerfile := "FROM " + WorkspaceImage + "\n" + reach
+		if output, err := m.BuildProjectImage(ctx, "devpad-project-test:reach-"+id, []byte(dockerfile), opts); err == nil {
+			m.RemoveImage(context.Background(), "devpad-project-test:reach-"+id)
+			t.Errorf("%s: the build reached the host:\n%s", name, output)
+		}
+	}
+
 	if err := m.RemoveImage(ctx, tag); err != nil {
 		t.Fatalf("remove image: %v", err)
 	}

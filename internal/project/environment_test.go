@@ -61,6 +61,14 @@ func TestValidateEnvironment(t *testing.T) {
 		{"from after a comment in a continued run", "RUN echo \\\n# a comment\nFROM still continued\n", true},
 		{"from after a continued run ends", "RUN echo \\\n  done\nFROM node:22\n", false},
 		{"commented from", "# FROM node:22\nRUN true\n", true},
+		{"add from a url", "ADD http://127.0.0.1:8080/secret /secret\n", false},
+		{"lowercase add", "add https://example.com/tool.tgz /opt/\n", false},
+		{"copy from another image", "COPY --from=devpad-project-2:abc /etc/secret /x\n", false},
+		{"copy", "COPY package.json /app/\n", false},
+		{"copy after a tab", "COPY\t--from=postgres:16 /usr/lib /usr/lib\n", false},
+		{"onbuild add", "ONBUILD ADD http://127.0.0.1/x /x\n", false},
+		{"add inside a run", "RUN echo ADD and COPY are just words here\n", true},
+		{"curl instead", "RUN curl -fsSL https://example.com/tool.tgz | tar -xz -C /opt\n", true},
 		{"too large", strings.Repeat("RUN true\n", environmentLimit/9+1), false},
 	}
 	for _, tt := range tests {
@@ -572,5 +580,32 @@ func TestClearingAndRestoringTheEnvironmentQuickly(t *testing.T) {
 	b := waitForBuild(t, e, p.ID, BuildSucceeded)
 	if got := e.project(t, p.ID).EnvironmentImage; got != b.Image {
 		t.Fatalf("expected the restored environment's image recorded, got %q for %+v", got, b)
+	}
+}
+
+func TestRefusedInstructionsNeverReachDocker(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	// Stored before the rule existed, so saving never checked it.
+	if _, err := e.db.Conn().Exec(`UPDATE projects SET environment = ? WHERE id = ?`, "ADD http://169.254.169.254/latest/meta-data/ /m\n", p.ID); err != nil {
+		t.Fatalf("set environment: %v", err)
+	}
+	if err := e.svc.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	b := waitForBuild(t, e, p.ID, BuildFailed)
+	if !strings.Contains(b.Error, "cannot use ADD") {
+		t.Fatalf("expected the build refused for ADD: %+v", b)
+	}
+	if got := e.containers.builtTags(); len(got) != 0 {
+		t.Fatalf("a refused Dockerfile reached Docker: %v", got)
+	}
+	e.containers.mu.Lock()
+	defer e.containers.mu.Unlock()
+	for name := range e.containers.networks {
+		if strings.HasPrefix(name, "devpad-build-") {
+			t.Fatalf("a refused build made a network: %s", name)
+		}
 	}
 }
