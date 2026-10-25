@@ -6,6 +6,10 @@ import SetupView from '@/views/SetupView.vue'
 import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 const IdeView = () => import('@/views/IdeView.vue')
+const ProjectsView = () => import('@/views/ProjectsView.vue')
+const ProjectView = () => import('@/views/ProjectView.vue')
+const MergeRequestView = () => import('@/views/MergeRequestView.vue')
+const InboxView = () => import('@/views/InboxView.vue')
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -20,6 +24,30 @@ export const router = createRouter({
       path: '/settings',
       name: 'settings',
       component: SettingsView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/projects',
+      name: 'projects',
+      component: ProjectsView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/projects/:id',
+      name: 'project',
+      component: ProjectView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/projects/:id/merge-requests/:mrId',
+      name: 'merge-request',
+      component: MergeRequestView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/inbox',
+      name: 'inbox',
+      component: InboxView,
       meta: { requiresAuth: true },
     },
     {

@@ -57,8 +57,9 @@ async function renderDiff() {
     })
   }
 
-  originalModel?.dispose()
-  modifiedModel?.dispose()
+  // The editor must let go of the old models before they are disposed.
+  const previousOriginal = originalModel
+  const previousModified = modifiedModel
 
   const language = getLanguageFromPath(props.newFileName || props.oldFileName)
   originalModel = monaco.editor.createModel(props.oldContent, language)
@@ -71,6 +72,8 @@ async function renderDiff() {
     original: originalModel,
     modified: modifiedModel,
   })
+  previousOriginal?.dispose()
+  previousModified?.dispose()
 }
 
 watch(
@@ -90,9 +93,9 @@ watch(
 
 onBeforeUnmount(() => {
   renderVersion += 1
+  editor.value?.dispose()
   originalModel?.dispose()
   modifiedModel?.dispose()
-  editor.value?.dispose()
 })
 </script>
 

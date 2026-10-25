@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useWorkspaceStore } from '@/stores/workspaces'
 import WorkspaceCard from '@/components/WorkspaceCard.vue'
@@ -16,6 +16,9 @@ const showDeleteModal = ref(false)
 const deleting = ref(false)
 const editTarget = ref<Workspace | null>(null)
 const deleteTarget = ref<Workspace | null>(null)
+
+// Project sandboxes are listed on their project's page.
+const workspaces = computed(() => store.workspaces.filter((ws) => !ws.projectId))
 
 onMounted(() => {
   store.fetchWorkspaces()
@@ -110,7 +113,7 @@ async function handleDelete() {
       <p class="empty-text error-text">{{ store.error }}</p>
     </div>
 
-    <div v-else-if="store.workspaces.length === 0" class="empty-state">
+    <div v-else-if="workspaces.length === 0" class="empty-state">
       <div class="empty-icon">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <rect width="18" height="18" x="3" y="3" rx="2" />
@@ -124,7 +127,7 @@ async function handleDelete() {
 
     <div v-else class="workspace-grid">
       <WorkspaceCard
-        v-for="ws in store.workspaces"
+        v-for="ws in workspaces"
         :key="ws.id"
         :workspace="ws"
         @open="openWorkspace"

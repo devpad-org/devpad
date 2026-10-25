@@ -293,8 +293,11 @@ function openGitPanel() {
   }
 }
 
+// A project sandbox goes back to its project.
 function handleBack() {
-  router.push({ name: 'home' })
+  const projectId = workspace.value?.projectId
+  if (projectId) router.push({ name: 'project', params: { id: projectId } })
+  else router.push({ name: 'home' })
 }
 </script>
 
@@ -319,7 +322,7 @@ function handleBack() {
       - ide-status-bar: bottom status bar (declared in GitStatusBar.vue)
     -->
     <div id="ide-toolbar" class="ide-titlebar" role="toolbar" aria-label="IDE toolbar">
-      <button class="titlebar-back" @click="handleBack" title="Back to workspaces">
+      <button class="titlebar-back" @click="handleBack" :title="workspace?.projectId ? 'Back to project' : 'Back to workspaces'">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="m15 18-6-6 6-6" />
         </svg>

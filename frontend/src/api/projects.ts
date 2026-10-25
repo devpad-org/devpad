@@ -1,0 +1,121 @@
+import { apiClient } from './client'
+
+export type ProjectStatus = 'creating' | 'ready' | 'error'
+
+export interface Project {
+  id: number
+  name: string
+  description: string
+  defaultBranch: string
+  upstreamUrl: string
+  setupScript: string
+  maxSandboxes: number
+  status: ProjectStatus
+  error: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ProjectInput {
+  name: string
+  description: string
+  defaultBranch?: string
+  upstreamUrl?: string
+  setupScript: string
+  maxSandboxes: number
+}
+
+// Sandbox is a project workspace an agent works in on one branch.
+export interface Sandbox {
+  id: number
+  name: string
+  status: 'creating' | 'running' | 'stopped'
+  kind: 'task' | 'review'
+  branch: string
+  projectId: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RepoBranch {
+  name: string
+  sha: string
+}
+
+export interface PushResult {
+  branch: string
+  sha: string
+}
+
+export interface RepoDiffFile {
+  path: string
+  oldPath?: string
+  status: string
+  additions: number
+  deletions: number
+  binary: boolean
+}
+
+export interface RepoDiff {
+  baseSha: string
+  headSha: string
+  mergeBase: string
+  files: RepoDiffFile[]
+}
+
+export const projectApi = {
+  list(): Promise<{ projects: Project[] }> {
+    return apiClient.get('/api/projects')
+  },
+
+  get(id: number): Promise<{ project: Project }> {
+    return apiClient.get(`/api/projects/${id}`)
+  },
+
+  create(input: ProjectInput): Promise<{ project: Project }> {
+    return apiClient.post('/api/projects', input)
+  },
+
+  update(id: number, input: ProjectInput): Promise<{ project: Project }> {
+    return apiClient.put(`/api/projects/${id}`, input)
+  },
+
+  delete(id: number): Promise<void> {
+    return apiClient.delete(`/api/projects/${id}`)
+  },
+
+  branches(id: number): Promise<{ defaultBranch: string; branches: RepoBranch[] }> {
+    return apiClient.get(`/api/projects/${id}/branches`)
+  },
+
+  sandboxes(id: number): Promise<{ sandboxes: Sandbox[] }> {
+    return apiClient.get(`/api/projects/${id}/sandboxes`)
+  },
+
+  startSandbox(id: number, workspaceId: number): Promise<{ sandbox: Sandbox }> {
+    return apiClient.post(`/api/projects/${id}/sandboxes/${workspaceId}/start`, {})
+  },
+
+  push(id: number): Promise<PushResult> {
+    return apiClient.post(`/api/projects/${id}/push`, {})
+  },
+
+  // Returns null for a file that does not exist at rev, such as one a
+  // change adds or deletes.
+  async fileAt(id: number, rev: string, path: string): Promise<string | null> {
+    const params = new URLSearchParams({ rev, path })
+    const res = await fetch(`/api/projects/${id}/file?${params.toString()}`)
+    if (res.status === 404) return null
+    if (!res.ok) {
+      let message = `Failed to load ${path}: ${res.status}`
+      try {
+        const body = await res.json()
+        if (typeof body?.error === 'string') message = body.error
+      } catch {
+        // keep the status message
+      }
+      throw new Error(message)
+    }
+    return res.text()
+  },
+}

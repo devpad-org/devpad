@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
+import { aiApi, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
 import { useAiModelStore } from '@/stores/aiModels'
+import { defaultAIModel, defaultThinkingEffort, thinkingEffortLabel } from '@/utils/aiModels'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
@@ -88,7 +89,6 @@ const conversationStore = useConversationStore()
 const agentRunStore = useAgentRunStore()
 const aiAgentStore = useAiAgentStore()
 const aiModelStore = useAiModelStore()
-const DEFAULT_AI_MODEL_ID = 'mistral-medium-3-5'
 const slashCommands: SlashCommand[] = [
   {
     name: '/init',
@@ -209,14 +209,6 @@ const thinkingEnabled = computed(() => {
   return model.thinking.enabledByDefault
 })
 
-function defaultThinkingEffort(model: AIModel): string {
-  return model.thinking.defaultEffort ?? model.thinking.supportedEfforts?.[0] ?? ''
-}
-
-function defaultAIModel(availableModels: AIModel[]): AIModel | undefined {
-  return availableModels.find((model) => model.id === DEFAULT_AI_MODEL_ID) ?? availableModels[0]
-}
-
 const thinkingEffort = computed<string>({
   get() {
     const model = currentModel.value
@@ -297,23 +289,6 @@ function toggleThinking() {
   thinkingPreferences.value = {
     ...thinkingPreferences.value,
     [model.id]: !thinkingEnabled.value,
-  }
-}
-
-function thinkingEffortLabel(effort: string): string {
-  switch (effort) {
-    case 'none':
-      return 'None'
-    case 'low':
-      return 'Low'
-    case 'medium':
-      return 'Medium'
-    case 'high':
-      return 'High'
-    case 'xhigh':
-      return 'Extra high'
-    default:
-      return effort
   }
 }
 

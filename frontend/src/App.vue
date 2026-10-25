@@ -1,14 +1,27 @@
 <script setup lang="ts">
 import { RouterView, RouterLink } from 'vue-router'
 import { useRouter, useRoute } from 'vue-router'
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { useAttentionStore } from '@/stores/attention'
 
 const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
 
+const attention = useAttentionStore()
+
 const hideChrome = computed(() => route.meta.hideChrome === true)
+
+// The header shows how many agents are waiting for the user.
+watch(
+  () => auth.isAuthenticated && !hideChrome.value,
+  (showing, wasShowing) => {
+    if (showing) attention.watch()
+    else if (wasShowing) attention.unwatch()
+  },
+  { immediate: true },
+)
 
 async function handleLogout() {
   await auth.logout()
@@ -21,6 +34,11 @@ async function handleLogout() {
     <div class="header-left">
       <RouterLink to="/" class="header-brand">Devpad</RouterLink>
       <nav class="header-nav">
+        <RouterLink to="/projects" class="nav-link">Projects</RouterLink>
+        <RouterLink to="/inbox" class="nav-link">
+          Inbox
+          <span v-if="attention.count > 0" class="nav-badge">{{ attention.count }}</span>
+        </RouterLink>
         <RouterLink to="/settings" class="nav-link">Settings</RouterLink>
         <RouterLink v-if="auth.isAdmin" to="/admin" class="nav-link">Admin</RouterLink>
       </nav>
@@ -75,6 +93,20 @@ async function handleLogout() {
 .nav-link:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
+}
+
+.nav-badge {
+  display: inline-block;
+  min-width: 16px;
+  margin-left: var(--space-1);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--attention);
+  color: var(--text-on-accent);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
 }
 
 .nav-link.router-link-active {

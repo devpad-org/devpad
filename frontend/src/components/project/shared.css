@@ -1,0 +1,249 @@
+/* Styles shared by the project, task and merge request views. Each view
+ * includes this file as a scoped style. */
+.page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.page-title {
+  font-size: 1.5rem;
+  font-weight: 500;
+  margin-bottom: var(--space-1);
+  overflow-wrap: anywhere;
+}
+
+.page-subtitle {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.breadcrumb {
+  display: inline-block;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-2);
+}
+
+.breadcrumb:hover {
+  color: var(--text-primary);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.panel {
+  background: var(--bg-surface);
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+
+.section {
+  margin-bottom: var(--space-6);
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.section-title {
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: 0.8rem;
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+  transition: all var(--transition-fast);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-sm {
+  padding: var(--space-1) var(--space-2);
+  font-size: 0.75rem;
+}
+
+.btn-primary {
+  background: var(--accent-blue);
+  color: var(--bg-primary);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+}
+
+.btn-secondary {
+  color: var(--text-secondary);
+  border: 0.5px solid var(--border-default);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--border-active);
+}
+
+.btn-danger {
+  color: var(--error);
+  border: 0.5px solid var(--error-border);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--error-bg);
+}
+
+.btn-success {
+  background: var(--success);
+  color: var(--text-on-accent);
+}
+
+.btn-success:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success) 85%, var(--gruvbox-fg0));
+}
+
+.form-group {
+  margin-bottom: var(--space-4);
+}
+
+.form-label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-1);
+}
+
+.form-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: var(--space-1);
+}
+
+.form-input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-primary);
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.85rem;
+  transition: border-color var(--transition-fast);
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.form-input:disabled {
+  color: var(--text-muted);
+}
+
+.form-textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+
+.form-mono {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.form-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.form-check input {
+  accent-color: var(--accent-blue);
+}
+
+.form-error {
+  color: var(--accent-rose);
+  font-size: 0.8rem;
+  margin-bottom: var(--space-3);
+  overflow-wrap: anywhere;
+}
+
+.notice {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: 0.8rem;
+  margin-bottom: var(--space-4);
+  overflow-wrap: anywhere;
+}
+
+.notice-error {
+  color: var(--error);
+  background: var(--error-bg);
+  border: 0.5px solid var(--error-border);
+}
+
+.notice-warning {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border: 0.5px solid var(--warning-border);
+}
+
+.notice-success {
+  color: var(--success);
+  background: var(--success-bg);
+  border: 0.5px solid var(--success-border);
+}
+
+.empty-text {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  padding: var(--space-3) 0;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}

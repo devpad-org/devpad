@@ -215,7 +215,7 @@ func (h *Handler) HandleResolveConflicts(w http.ResponseWriter, r *http.Request)
 		handleServiceError(w, err)
 		return
 	}
-	w.WriteHeader(http.StatusAccepted)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func params(w http.ResponseWriter, r *http.Request) (*auth.User, int64, int64, bool) {

@@ -7,6 +7,11 @@ export interface Workspace {
   status: 'creating' | 'running' | 'stopped'
   containerId: string
   defaultAgentId: string
+  // Sandboxes belong to a project and own one branch of it; interactive
+  // workspaces have no project.
+  projectId?: number
+  kind?: 'interactive' | 'task' | 'review'
+  branch?: string
   createdAt: string
   updatedAt: string
 }

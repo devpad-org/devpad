@@ -111,6 +111,12 @@ export interface ApprovalRequest {
   command: string
 }
 
+export interface AttentionItem {
+  run: AgentRun
+  approval?: ApprovalRequest
+  question?: UserQuestionRequest
+}
+
 export interface ApprovalResult {
   id: string
   command: string
@@ -396,6 +402,12 @@ export const aiApi = {
     }
 
     await readSSEStream(res, onEvent)
+  },
+
+  // Runs in any workspace that are waiting for an approval or an answer.
+  async listAttention(): Promise<{ items: AttentionItem[] }> {
+    const res = await apiClient.get<{ items: (Omit<AttentionItem, 'run'> & { run: AgentRunDTO })[] }>('/api/ai/agent/attention')
+    return { items: (res.items ?? []).map((item) => ({ ...item, run: agentRunFromDTO(item.run) })) }
   },
 
   approveCommand(id: string, approved: boolean): Promise<void> {
