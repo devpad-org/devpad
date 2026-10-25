@@ -843,3 +843,62 @@ func cloneRun(run *domain.AgentRun) *domain.AgentRun {
 	}
 	return &clone
 }
+
+func TestAgentRunService_NotifiesListenersWhenRunsFinish(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	streams := make(chan chan domain.ClientEvent, 2)
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			return <-streams, nil
+		},
+	}, nil)
+	defer shutdownRunner(t, service)
+
+	finished := make(chan domain.AgentRun, 4)
+	service.OnRunFinished(func(run domain.AgentRun) { finished <- run })
+
+	start := func() (*domain.AgentRun, chan domain.ClientEvent) {
+		t.Helper()
+		events := make(chan domain.ClientEvent, 4)
+		streams <- events
+		run, err := service.StartRun(context.Background(), StartAgentRunRequest{
+			UserID: 1, WorkspaceID: 2, Model: "m",
+			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")},
+		})
+		if err != nil {
+			t.Fatalf("start run: %v", err)
+		}
+		return run, events
+	}
+	next := func() domain.AgentRun {
+		t.Helper()
+		select {
+		case run := <-finished:
+			return run
+		case <-time.After(2 * time.Second):
+			t.Fatal("listener was not called")
+			return domain.AgentRun{}
+		}
+	}
+
+	completed, events := start()
+	events <- domain.ClientEvent{TextDelta: "done"}
+	events <- domain.ClientEvent{Done: true}
+	if got := next(); got.ID != completed.ID || got.Status != domain.AgentRunCompleted {
+		t.Fatalf("expected completed run %d, got %d %s", completed.ID, got.ID, got.Status)
+	}
+
+	cancelled, _ := start()
+	if err := service.CancelRun(context.Background(), 1, cancelled.ID); err != nil {
+		t.Fatalf("cancel run: %v", err)
+	}
+	if got := next(); got.ID != cancelled.ID || got.Status != domain.AgentRunCancelled {
+		t.Fatalf("expected cancelled run %d, got %d %s", cancelled.ID, got.ID, got.Status)
+	}
+
+	select {
+	case run := <-finished:
+		t.Fatalf("unexpected extra notification for run %d", run.ID)
+	case <-time.After(50 * time.Millisecond):
+	}
+}

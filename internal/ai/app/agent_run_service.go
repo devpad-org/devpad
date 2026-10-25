@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"sync"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -68,6 +69,9 @@ type agentRunService struct {
 
 	mu      sync.Mutex
 	cancels map[int64]context.CancelFunc
+
+	listenersMu sync.Mutex
+	listeners   []func(domain.AgentRun)
 }
 
 // NewAgentRunService creates an agent runner that owns background run lifecycles.
@@ -95,6 +99,32 @@ func NewAgentRunService(ctx context.Context, repo AgentRunRepository, chat ChatS
 func (s *agentRunService) WithAgentService(agents AgentService) *agentRunService {
 	s.agents = agents
 	return s
+}
+
+// OnRunFinished registers fn to be called with the run's final state each time
+// a run reaches a terminal status. fn runs on the run's goroutine and must
+// return quickly.
+func (s *agentRunService) OnRunFinished(fn func(domain.AgentRun)) {
+	s.listenersMu.Lock()
+	defer s.listenersMu.Unlock()
+	s.listeners = append(s.listeners, fn)
+}
+
+func (s *agentRunService) notifyFinished(runID int64) {
+	s.listenersMu.Lock()
+	listeners := slices.Clone(s.listeners)
+	s.listenersMu.Unlock()
+	if len(listeners) == 0 {
+		return
+	}
+	run, err := s.repo.GetRun(context.Background(), runID)
+	if err != nil || run == nil {
+		log.Printf("failed to load finished agent run %d for listeners: %v", runID, err)
+		return
+	}
+	for _, fn := range listeners {
+		fn(*run)
+	}
 }
 
 func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest) (*domain.AgentRun, error) {
@@ -411,7 +441,9 @@ func (s *agentRunService) finishRun(runID int64, currentStatus domain.AgentRunSt
 	}
 	if err := s.repo.UpdateStatus(context.Background(), runID, status, errorMessage); err != nil {
 		log.Printf("failed to finish agent run %d: %v", runID, err)
+		return
 	}
+	s.notifyFinished(runID)
 }
 
 func (s *agentRunService) persistRunConversation(ctx context.Context, runID int64) error {
@@ -448,7 +480,11 @@ func (s *agentRunService) failRun(runID int64, message string) error {
 	if err := s.appendAndPublish(runID, domain.ClientEvent{Done: true}); err != nil {
 		return err
 	}
-	return s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunFailed, message)
+	if err := s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunFailed, message); err != nil {
+		return err
+	}
+	s.notifyFinished(runID)
+	return nil
 }
 
 func (s *agentRunService) cancelRun(runID int64, message string) error {
@@ -465,7 +501,11 @@ func (s *agentRunService) cancelRun(runID int64, message string) error {
 	if err := s.persistRunConversation(context.Background(), runID); err != nil {
 		log.Printf("failed to persist cancelled agent run %d conversation: %v", runID, err)
 	}
-	return s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunCancelled, message)
+	if err := s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunCancelled, message); err != nil {
+		return err
+	}
+	s.notifyFinished(runID)
+	return nil
 }
 
 func (s *agentRunService) appendAndPublish(runID int64, event domain.ClientEvent) error {

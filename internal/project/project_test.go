@@ -31,6 +31,10 @@ type fakeContainers struct {
 	networks map[string]bool
 	volumes  map[string]bool
 	removed  []string
+	copied   []string
+	// onCopy runs when a file is copied into a container, standing in for
+	// the agent binary being replaced.
+	onCopy func()
 }
 
 func newFakeContainers(ip string) *fakeContainers {
@@ -90,7 +94,14 @@ func (f *fakeContainers) ExecAttach(context.Context, string) (container.Hijacked
 	return container.HijackedResponse{}, nil
 }
 func (f *fakeContainers) ExecResize(context.Context, string, uint, uint) error { return nil }
-func (f *fakeContainers) CopyFileToContainer(context.Context, string, string, []byte, int64) error {
+func (f *fakeContainers) CopyFileToContainer(_ context.Context, id, path string, _ []byte, _ int64) error {
+	f.mu.Lock()
+	f.copied = append(f.copied, id+":"+path)
+	onCopy := f.onCopy
+	f.mu.Unlock()
+	if onCopy != nil {
+		onCopy()
+	}
 	return nil
 }
 func (f *fakeContainers) BuildImage(context.Context, []byte, []byte, string) error { return nil }
@@ -101,11 +112,13 @@ func (f *fakeContainers) CreateSidecar(context.Context, string, string, string, 
 // fakeRepoAgent stands in for the agent in a project's repo container.
 type fakeRepoAgent struct {
 	mu        sync.Mutex
+	version   string // reported agent version; empty means current
 	token     string
 	initErr   string
 	initReq   map[string]string
 	branches  []agent.RepoRef
-	bundled   []string // branches requested as bundles
+	ahead     map[string]int // head branch -> commits ahead of base
+	bundled   []string       // branches requested as bundles
 	imported  map[string][]byte
 	importErr string
 }
@@ -116,7 +129,13 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
 		return
 	case "/api/version":
-		json.NewEncoder(w).Encode(map[string]string{"version": agentbin.Version})
+		a.mu.Lock()
+		version := a.version
+		a.mu.Unlock()
+		if version == "" {
+			version = agentbin.Version
+		}
+		json.NewEncoder(w).Encode(map[string]string{"version": version})
 		return
 	}
 	a.mu.Lock()
@@ -140,6 +159,9 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		branch := r.URL.Query().Get("branch")
 		a.bundled = append(a.bundled, branch)
 		w.Write([]byte("bundle-of-" + branch))
+	case "/api/repo/compare":
+		q := r.URL.Query()
+		json.NewEncoder(w).Encode(agent.RepoComparison{Base: q.Get("base"), Head: q.Get("head"), Ahead: a.ahead[q.Get("head")]})
 	case "/api/repo/import":
 		if a.importErr != "" {
 			w.WriteHeader(http.StatusBadRequest)
@@ -235,6 +257,19 @@ func (f *fakeWorkspaces) Delete(_ context.Context, _, id int64) error {
 	delete(f.byID, id)
 	f.deleted = append(f.deleted, id)
 	return nil
+}
+
+func (f *fakeWorkspaces) Start(_ context.Context, _, id int64) (*workspace.Workspace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.byID[id].Status = workspace.StatusRunning
+	return f.byID[id], nil
+}
+
+func (f *fakeWorkspaces) setStatus(id int64, status workspace.Status) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.byID[id].Status = status
 }
 
 func (f *fakeWorkspaces) StartCommand(_ context.Context, _, id int64, command, _ string) (*agent.ManagedCommand, error) {
@@ -339,6 +374,27 @@ func TestCreateProvisionsIsolatedRepoContainer(t *testing.T) {
 	stored, err := e.svc.Get(context.Background(), e.userID, p.ID)
 	if err != nil || stored.Status != StatusReady || stored.RepoContainerID == "" {
 		t.Fatalf("stored project not ready: %+v, %v", stored, err)
+	}
+}
+
+func TestCreateUpdatesOutdatedRepoAgentBeforeInit(t *testing.T) {
+	e := setupTest(t)
+	e.repoAgent.version = "old"
+	e.containers.onCopy = func() {
+		e.repoAgent.mu.Lock()
+		e.repoAgent.version = ""
+		e.repoAgent.mu.Unlock()
+	}
+
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	if p.Status != StatusReady {
+		t.Fatalf("expected ready project, got %s: %s", p.Status, p.Error)
+	}
+	if len(e.containers.copied) != 1 || !strings.HasSuffix(e.containers.copied[0], ":usr/local/bin/devpad-agent") {
+		t.Fatalf("expected the agent binary replaced before init, got %v", e.containers.copied)
+	}
+	if e.repoAgent.initReq == nil {
+		t.Fatal("repo init never reached the updated agent")
 	}
 }
 
@@ -476,16 +532,109 @@ func TestCreateSandboxLimitHoldsUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := e.svc.CreateSandbox(context.Background(), e.userID, p.ID, SandboxInput{}); err == nil {
+			_, err := e.svc.CreateSandbox(context.Background(), e.userID, p.ID, SandboxInput{})
+			switch {
+			case err == nil:
 				mu.Lock()
 				created++
 				mu.Unlock()
+			case !errors.Is(err, ErrSandboxLimit):
+				t.Errorf("unexpected error: %v", err)
 			}
 		}()
 	}
 	wg.Wait()
 	if created != 3 {
 		t.Fatalf("created %d sandboxes, limit is 3", created)
+	}
+}
+
+func TestSandboxBeingCreatedIsCountedOnce(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj", MaxSandboxes: 2})
+	ctx := context.Background()
+
+	// The first sandbox's row exists but its creation has not finished, so
+	// its reservation is still held.
+	if err := e.svc.reserveSandbox(ctx, p, "first", false); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	e.workspaces.add(&workspace.Workspace{UserID: e.userID, ProjectID: p.ID, Kind: workspace.KindTask, Branch: "first", Status: workspace.StatusRunning})
+
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "second"}); err != nil {
+		t.Fatalf("second sandbox fits the limit of 2: %v", err)
+	}
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "third"}); !errors.Is(err, ErrSandboxLimit) {
+		t.Fatalf("expected ErrSandboxLimit for a third, got %v", err)
+	}
+	if err := e.svc.reserveSandbox(ctx, p, "first", false); !errors.Is(err, ErrBranchInUse) {
+		t.Fatalf("expected ErrBranchInUse for a branch being created, got %v", err)
+	}
+	e.svc.releaseSandbox(p.ID, "first")
+}
+
+func TestStoppedSandboxesDoNotCountTowardLimit(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj", MaxSandboxes: 1})
+	ctx := context.Background()
+
+	first, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "one"})
+	if err != nil {
+		t.Fatalf("first sandbox: %v", err)
+	}
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "two"}); !errors.Is(err, ErrSandboxLimit) {
+		t.Fatalf("expected ErrSandboxLimit while first runs, got %v", err)
+	}
+
+	e.workspaces.setStatus(first.ID, workspace.StatusStopped)
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "one"}); !errors.Is(err, ErrBranchInUse) {
+		t.Fatalf("a stopped sandbox must keep its branch, got %v", err)
+	}
+	second, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "two"})
+	if err != nil {
+		t.Fatalf("second sandbox after first stopped: %v", err)
+	}
+
+	if _, err := e.svc.StartSandbox(ctx, e.userID, p.ID, first.ID); !errors.Is(err, ErrSandboxLimit) {
+		t.Fatalf("restarting over the limit: expected ErrSandboxLimit, got %v", err)
+	}
+	e.workspaces.setStatus(second.ID, workspace.StatusStopped)
+	ws, err := e.svc.StartSandbox(ctx, e.userID, p.ID, first.ID)
+	if err != nil || ws.Status != workspace.StatusRunning {
+		t.Fatalf("restart within limit: ws=%+v err=%v", ws, err)
+	}
+}
+
+func TestStartSandboxRejectsOtherWorkspaces(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	other := e.createProject(t, CreateInput{Name: "other"})
+	ctx := context.Background()
+	plain := e.workspaces.add(&workspace.Workspace{UserID: e.userID, Kind: workspace.KindInteractive, Status: workspace.StatusStopped})
+	foreign := e.workspaces.add(&workspace.Workspace{UserID: e.userID, ProjectID: other.ID, Kind: workspace.KindTask, Branch: "x", Status: workspace.StatusStopped})
+
+	for _, id := range []int64{plain.ID, foreign.ID, 9999} {
+		if _, err := e.svc.StartSandbox(ctx, e.userID, p.ID, id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("workspace %d: expected ErrNotFound, got %v", id, err)
+		}
+	}
+}
+
+func TestCompareDefaultsBaseToDefaultBranch(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	e.repoAgent.ahead = map[string]int{"task/1": 2}
+	ctx := context.Background()
+
+	cmp, err := e.svc.Compare(ctx, e.userID, p.ID, "", "task/1")
+	if err != nil {
+		t.Fatalf("compare: %v", err)
+	}
+	if cmp.Base != "main" || cmp.Head != "task/1" || cmp.Ahead != 2 {
+		t.Fatalf("unexpected comparison: %+v", cmp)
+	}
+	if _, err := e.svc.Compare(ctx, e.userID, p.ID, "", "-x"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
 	}
 }
 

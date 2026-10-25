@@ -21,6 +21,7 @@ import (
 	"github.com/devpad-org/devpad/internal/preview"
 	"github.com/devpad-org/devpad/internal/project"
 	"github.com/devpad-org/devpad/internal/settings"
+	"github.com/devpad-org/devpad/internal/task"
 	"github.com/devpad-org/devpad/internal/workspace"
 	"github.com/devpad-org/devpad/internal/wsservice"
 	"github.com/devpad-org/devpad/web"
@@ -34,6 +35,7 @@ type Server struct {
 	cfg            Config
 	cleanupCancel  context.CancelFunc
 	aiShutdown     func(context.Context) error
+	taskShutdown   func(context.Context) error
 }
 
 // New creates a new Server with the given configuration.
@@ -125,6 +127,14 @@ func New(cfg Config) (*Server, error) {
 	// AI layer
 	aiModule := ai.NewModule(db.Conn(), workspaceService)
 
+	// Task layer (agents implementing tasks in project sandboxes)
+	taskService := task.NewService(task.NewRepository(db.Conn()), projectService, workspaceService, aiModule.AgentRunService, aiModule.ConversationService)
+	aiModule.OnAgentRunFinished(taskService.RunFinished)
+	if err := taskService.Reconcile(context.Background()); err != nil {
+		log.Printf("reconciling in-progress tasks: %v", err)
+	}
+	taskHandler := task.NewHandler(taskService)
+
 	// Preview layer
 	previewRepo := preview.NewRepository(db.Conn())
 	previewService := preview.NewService(previewRepo, workspaceRepo, containerManager)
@@ -134,7 +144,7 @@ func New(cfg Config) (*Server, error) {
 	authRateLimiter := auth.NewRateLimiter(rate.Limit(5), 10)
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectHandler, aiModule.Handler, previewHandler)
+	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectHandler, taskHandler, aiModule.Handler, previewHandler)
 
 	// Wrap the mux with host-based routing to intercept preview subdomain requests.
 	handler := hostRouter(mux, previewHandler, cfg.PreviewDomain)
@@ -177,6 +187,7 @@ func New(cfg Config) (*Server, error) {
 		cfg:           cfg,
 		cleanupCancel: cleanupCancel,
 		aiShutdown:    aiModule.Shutdown,
+		taskShutdown:  taskService.Shutdown,
 	}
 
 	return s, nil
@@ -254,6 +265,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.cleanupCancel != nil {
 		s.cleanupCancel()
 	}
+	// Stop the task orchestrator first so runs cancelled by the AI shutdown
+	// are left for Reconcile instead of failing their tasks.
+	if s.taskShutdown != nil {
+		if err := s.taskShutdown(ctx); err != nil {
+			return fmt.Errorf("task shutdown: %w", err)
+		}
+	}
 	if s.aiShutdown != nil {
 		if err := s.aiShutdown(ctx); err != nil {
 			return fmt.Errorf("AI shutdown: %w", err)
@@ -302,7 +320,7 @@ type aiRouteHandler interface {
 }
 
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, projectHandler *project.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, projectHandler *project.Handler, taskHandler *task.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
@@ -392,6 +410,15 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("GET /api/projects/{id}/sandboxes", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleListSandboxes)))
 	mux.Handle("POST /api/projects/{id}/sandboxes", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleCreateSandbox)))
 	mux.Handle("POST /api/projects/{id}/sandboxes/{workspaceId}/publish", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandlePublishSandbox)))
+	mux.Handle("POST /api/projects/{id}/sandboxes/{workspaceId}/start", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleStartSandbox)))
+	mux.Handle("GET /api/projects/{id}/compare", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleCompare)))
+	mux.Handle("GET /api/projects/{id}/tasks", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleList)))
+	mux.Handle("POST /api/projects/{id}/tasks", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleCreate)))
+	mux.Handle("GET /api/projects/{id}/tasks/{taskId}", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleGet)))
+	mux.Handle("PUT /api/projects/{id}/tasks/{taskId}", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleUpdate)))
+	mux.Handle("DELETE /api/projects/{id}/tasks/{taskId}", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleDelete)))
+	mux.Handle("POST /api/projects/{id}/tasks/{taskId}/start", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleStart)))
+	mux.Handle("POST /api/projects/{id}/tasks/{taskId}/cancel", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleCancel)))
 
 	// AI API routes
 	mux.Handle("GET /api/ai/models", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListModels)))

@@ -220,6 +220,55 @@ func handleRepoBundle(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, f)
 }
 
+type repoComparison struct {
+	Base      string `json:"base"`
+	Head      string `json:"head"`
+	BaseSHA   string `json:"baseSha"`
+	HeadSHA   string `json:"headSha"`
+	MergeBase string `json:"mergeBase"`
+	Ahead     int    `json:"ahead"`
+	Behind    int    `json:"behind"`
+}
+
+// handleRepoCompare reports how far head has diverged from base: commits on
+// head that base lacks (ahead) and commits on base that head lacks (behind).
+func handleRepoCompare(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
+	defer cancel()
+
+	q := r.URL.Query()
+	cmp := repoComparison{Base: q.Get("base"), Head: q.Get("head")}
+	for _, f := range []struct {
+		name, field string
+		sha         *string
+	}{{cmp.Base, "base", &cmp.BaseSHA}, {cmp.Head, "head", &cmp.HeadSHA}} {
+		if err := validateBranchName(ctx, f.name, f.field); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		out, err := gitOutput(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+f.name+"^{commit}")
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "branch not found: "+f.name)
+			return
+		}
+		*f.sha = strings.TrimSpace(out)
+	}
+
+	if out, err := gitOutput(ctx, "merge-base", cmp.BaseSHA, cmp.HeadSHA); err == nil {
+		cmp.MergeBase = strings.TrimSpace(out)
+	}
+	out, err := gitOutput(ctx, "rev-list", "--left-right", "--count", cmp.BaseSHA+"..."+cmp.HeadSHA)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "comparing branches: "+strings.TrimSpace(out))
+		return
+	}
+	if _, err := fmt.Sscanf(strings.TrimSpace(out), "%d %d", &cmp.Behind, &cmp.Ahead); err != nil {
+		writeErr(w, http.StatusInternalServerError, "parsing rev-list output: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, cmp)
+}
+
 // handleRepoSeed clones a bundle of the base branch into an empty /workspace
 // and checks out the working branch, creating it unless it is the base
 // itself (a sandbox resuming an existing branch). The clone keeps no remote,

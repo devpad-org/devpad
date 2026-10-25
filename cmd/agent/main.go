@@ -71,6 +71,7 @@ func main() {
 	authedMux.HandleFunc("POST /api/repo/init", handleRepoInit)
 	authedMux.HandleFunc("GET /api/repo/refs", handleRepoRefs)
 	authedMux.HandleFunc("GET /api/repo/bundle", handleRepoBundle)
+	authedMux.HandleFunc("GET /api/repo/compare", handleRepoCompare)
 	authedMux.HandleFunc("POST /api/repo/seed", handleRepoSeed)
 	authedMux.HandleFunc("POST /api/repo/import", handleRepoImport)
 

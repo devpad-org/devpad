@@ -191,6 +191,42 @@ func (h *Handler) HandlePublishSandbox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// HandleCompare reports how far a branch has diverged from another, the
+// default branch unless base is given.
+func (h *Handler) HandleCompare(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	cmp, err := h.service.Compare(r.Context(), user.ID, id, q.Get("base"), q.Get("head"))
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, cmp)
+}
+
+// HandleStartSandbox restarts a stopped sandbox within the project's limit.
+func (h *Handler) HandleStartSandbox(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := pathID(w, r, "workspaceId")
+	if !ok {
+		return
+	}
+	ws, err := h.service.StartSandbox(r.Context(), user.ID, id, workspaceID)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sandbox": sandboxResponse(ws)})
+}
+
 func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue(name), 10, 64)
 	if err != nil {

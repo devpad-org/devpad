@@ -31,6 +31,10 @@ type Module struct {
 	ConversationService app.ConversationService
 	ToolExecutor        aitools.Executor
 	Handler             *httptransport.Handler
+
+	runListeners interface {
+		OnRunFinished(fn func(domain.AgentRun))
+	}
 }
 
 // NewModule assembles the AI subpackages behind the root composition facade.
@@ -67,7 +71,14 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 		ConversationService: conversationService,
 		ToolExecutor:        toolExecutor,
 		Handler:             httptransport.NewHandler(catalogService, agentService, chatService, agentRunService, conversationService, approvalBroker, questionBroker),
+		runListeners:        agentRunService,
 	}
+}
+
+// OnAgentRunFinished registers fn to be called with a run's final state each
+// time an agent run completes, fails, or is cancelled. fn must return quickly.
+func (m *Module) OnAgentRunFinished(fn func(domain.AgentRun)) {
+	m.runListeners.OnRunFinished(fn)
 }
 
 type childAgentRunStarter struct {

@@ -28,7 +28,9 @@ type Service interface {
 	Branches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error)
 	ListSandboxes(ctx context.Context, userID, projectID int64) ([]*workspace.Workspace, error)
 	CreateSandbox(ctx context.Context, userID, projectID int64, in SandboxInput) (*workspace.Workspace, error)
+	StartSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*workspace.Workspace, error)
 	PublishSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*agent.RepoBranch, error)
+	Compare(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoComparison, error)
 }
 
 // Workspaces is the workspace service surface projects need to run sandboxes.
@@ -36,6 +38,7 @@ type Workspaces interface {
 	workspace.AccessService
 	workspace.SandboxService
 	Delete(ctx context.Context, userID, workspaceID int64) error
+	Start(ctx context.Context, userID, workspaceID int64) (*workspace.Workspace, error)
 	StartCommand(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
 }
 
@@ -47,10 +50,11 @@ type service struct {
 	cipher     *encrypt.Cipher
 	agentPort  int
 
-	// pending counts sandboxes being created per project, so concurrent
-	// requests cannot overshoot MaxSandboxes while Docker work is in flight.
+	// pending holds, per project, the branches of sandboxes being created or
+	// started, so concurrent requests cannot overshoot MaxSandboxes while
+	// Docker work is in flight.
 	mu      sync.Mutex
-	pending map[int64]int
+	pending map[int64]map[string]bool
 }
 
 // NewService creates a new project Service.
@@ -62,7 +66,7 @@ func NewService(repo Repository, cm container.Manager, workspaces Workspaces, us
 		users:      users,
 		cipher:     cipher,
 		agentPort:  agent.DefaultPort,
-		pending:    make(map[int64]int),
+		pending:    make(map[int64]map[string]bool),
 	}
 }
 
@@ -150,7 +154,11 @@ func (s *service) Create(ctx context.Context, userID int64, in CreateInput) (*Pr
 }
 
 func (s *service) initRepo(ctx context.Context, p *Project) error {
-	c, err := s.waitForRepoAgent(ctx, p)
+	if _, err := s.waitForRepoAgent(ctx, p); err != nil {
+		return err
+	}
+	// The image's agent can predate this server's; repoAgent replaces it.
+	c, err := s.repoAgent(ctx, p)
 	if err != nil {
 		return err
 	}
@@ -303,10 +311,10 @@ func (s *service) CreateSandbox(ctx context.Context, userID, projectID int64, in
 		return nil, ErrDefaultBranch
 	}
 
-	if err := s.reserveSandbox(ctx, p, branch); err != nil {
+	if err := s.reserveSandbox(ctx, p, branch, false); err != nil {
 		return nil, err
 	}
-	defer s.releaseSandbox(p.ID)
+	defer s.releaseSandbox(p.ID, branch)
 
 	c, err := s.repoAgent(ctx, p)
 	if err != nil {
@@ -367,9 +375,11 @@ func (s *service) seedSandbox(ctx context.Context, repo *agent.Client, userID, w
 	return err
 }
 
-// reserveSandbox checks the sandbox limit and branch ownership, counting
-// creations still in flight.
-func (s *service) reserveSandbox(ctx context.Context, p *Project, branch string) error {
+// reserveSandbox checks the sandbox limit and branch ownership for a sandbox
+// about to be created, or restarted when starting is set. The limit counts
+// sandboxes that are not stopped plus creations and starts still in flight;
+// stopped sandboxes keep their branch but use no CPU or memory.
+func (s *service) reserveSandbox(ctx context.Context, p *Project, branch string, starting bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -377,24 +387,75 @@ func (s *service) reserveSandbox(ctx context.Context, p *Project, branch string)
 	if err != nil {
 		return err
 	}
-	if len(existing)+s.pending[p.ID] >= p.MaxSandboxes {
-		return ErrSandboxLimit
+	pending := s.pending[p.ID]
+	if pending[branch] {
+		return ErrBranchInUse
 	}
+	active := 0
 	for _, ws := range existing {
-		if ws.Branch == branch {
+		if !starting && ws.Branch == branch {
 			return ErrBranchInUse
 		}
+		// A sandbox whose creation or start is in flight is counted once,
+		// through pending, even after its row appears.
+		if ws.Status != workspace.StatusStopped && !pending[ws.Branch] {
+			active++
+		}
 	}
-	s.pending[p.ID]++
+	if active+len(pending) >= p.MaxSandboxes {
+		return ErrSandboxLimit
+	}
+	if pending == nil {
+		pending = make(map[string]bool)
+		s.pending[p.ID] = pending
+	}
+	pending[branch] = true
 	return nil
 }
 
-func (s *service) releaseSandbox(projectID int64) {
+func (s *service) releaseSandbox(projectID int64, branch string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.pending[projectID]--; s.pending[projectID] <= 0 {
+	delete(s.pending[projectID], branch)
+	if len(s.pending[projectID]) == 0 {
 		delete(s.pending, projectID)
 	}
+}
+
+// StartSandbox restarts a stopped sandbox, counting it against the project's
+// sandbox limit.
+func (s *service) StartSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*workspace.Workspace, error) {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	ws, err := s.getSandbox(ctx, userID, p, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if ws.Status != workspace.StatusStopped {
+		return ws, nil
+	}
+	if err := s.reserveSandbox(ctx, p, ws.Branch, true); err != nil {
+		return nil, err
+	}
+	defer s.releaseSandbox(p.ID, ws.Branch)
+	return s.workspaces.Start(ctx, userID, ws.ID)
+}
+
+// getSandbox loads a workspace and checks that it is a sandbox of p.
+func (s *service) getSandbox(ctx context.Context, userID int64, p *Project, workspaceID int64) (*workspace.Workspace, error) {
+	ws, err := s.workspaces.Get(ctx, userID, workspaceID)
+	if err != nil {
+		if errors.Is(err, workspace.ErrNotFound) || errors.Is(err, workspace.ErrForbidden) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if ws.ProjectID != p.ID || !ws.IsSandbox() {
+		return nil, ErrNotFound
+	}
+	return ws, nil
 }
 
 // PublishSandbox copies the sandbox's branch into the canonical repo. Devpad
@@ -405,15 +466,9 @@ func (s *service) PublishSandbox(ctx context.Context, userID, projectID, workspa
 	if err != nil {
 		return nil, err
 	}
-	ws, err := s.workspaces.Get(ctx, userID, workspaceID)
+	ws, err := s.getSandbox(ctx, userID, p, workspaceID)
 	if err != nil {
-		if errors.Is(err, workspace.ErrNotFound) || errors.Is(err, workspace.ErrForbidden) {
-			return nil, ErrNotFound
-		}
 		return nil, err
-	}
-	if ws.ProjectID != p.ID || !ws.IsSandbox() {
-		return nil, ErrNotFound
 	}
 	if ws.Branch == "" || ws.Branch == p.DefaultBranch {
 		return nil, ErrDefaultBranch
@@ -432,6 +487,25 @@ func (s *service) PublishSandbox(ctx context.Context, userID, projectID, workspa
 		return nil, fmt.Errorf("sandbox branch changed from %q to %q", ws.Branch, branch)
 	}
 	return c.RepoImport(ctx, ws.Branch, bundle)
+}
+
+// Compare reports how far head has diverged from base in the canonical repo.
+func (s *service) Compare(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoComparison, error) {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if base == "" {
+		base = p.DefaultBranch
+	}
+	if !validBranchName(base) || !validBranchName(head) {
+		return nil, invalid("base and head must be valid branch names")
+	}
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoCompare(ctx, base, head)
 }
 
 func randomHex(n int) (string, error) {

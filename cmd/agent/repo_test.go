@@ -304,3 +304,64 @@ func TestRepoBundleUnknownBranch(t *testing.T) {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body)
 	}
 }
+
+func TestRepoCompareCountsDivergence(t *testing.T) {
+	canonical := initCanonical(t)
+	sandbox := seedSandbox(t, canonical, "task/1")
+
+	importBranch := func() {
+		t.Helper()
+		bundle := bundleFrom(t, sandbox, "task/1")
+		rec := repoRequest(t, canonical, handleRepoImport, http.MethodPost, "/api/repo/import?branch=task/1", bytes.NewReader(bundle))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("import status %d: %s", rec.Code, rec.Body)
+		}
+	}
+	compare := func() repoComparison {
+		t.Helper()
+		rec := repoRequest(t, canonical, handleRepoCompare, http.MethodGet, "/api/repo/compare?base=main&head=task/1", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("compare status %d: %s", rec.Code, rec.Body)
+		}
+		var cmp repoComparison
+		if err := json.Unmarshal(rec.Body.Bytes(), &cmp); err != nil {
+			t.Fatalf("decoding comparison: %v", err)
+		}
+		return cmp
+	}
+
+	importBranch()
+	if cmp := compare(); cmp.Ahead != 0 || cmp.Behind != 0 || cmp.HeadSHA != cmp.BaseSHA {
+		t.Fatalf("fresh branch should match main: %+v", cmp)
+	}
+
+	commitFile(t, sandbox, "a.txt", "a")
+	head := commitFile(t, sandbox, "b.txt", "b")
+	importBranch()
+	cmp := compare()
+	if cmp.Ahead != 2 || cmp.Behind != 0 || cmp.HeadSHA != head || cmp.MergeBase != cmp.BaseSHA {
+		t.Fatalf("unexpected comparison after two commits: %+v", cmp)
+	}
+}
+
+func TestRepoCompareRejections(t *testing.T) {
+	canonical := initCanonical(t)
+	tests := []struct {
+		name   string
+		query  string
+		status int
+	}{
+		{"missing head", "base=main", http.StatusBadRequest},
+		{"flag", "base=main&head=--all", http.StatusBadRequest},
+		{"unknown head", "base=main&head=nope", http.StatusNotFound},
+		{"unknown base", "base=nope&head=main", http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := repoRequest(t, canonical, handleRepoCompare, http.MethodGet, "/api/repo/compare?"+tt.query, nil)
+			if rec.Code != tt.status {
+				t.Fatalf("expected %d, got %d: %s", tt.status, rec.Code, rec.Body)
+			}
+		})
+	}
+}

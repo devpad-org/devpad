@@ -60,6 +60,32 @@ func (c *Client) RepoRefs(ctx context.Context) (*RepoRefs, error) {
 	return &refs, nil
 }
 
+// RepoComparison describes how head has diverged from base.
+type RepoComparison struct {
+	Base      string `json:"base"`
+	Head      string `json:"head"`
+	BaseSHA   string `json:"baseSha"`
+	HeadSHA   string `json:"headSha"`
+	MergeBase string `json:"mergeBase"`
+	Ahead     int    `json:"ahead"`
+	Behind    int    `json:"behind"`
+}
+
+// RepoCompare counts the commits head has that base lacks (Ahead) and the
+// reverse (Behind).
+func (c *Client) RepoCompare(ctx context.Context, base, head string) (*RepoComparison, error) {
+	q := url.Values{"base": {base}, "head": {head}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/repo/compare?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	var cmp RepoComparison
+	if err := c.doRepoJSON(req, "repo compare", &cmp); err != nil {
+		return nil, err
+	}
+	return &cmp, nil
+}
+
 // RepoBundle streams a git bundle of one branch. The caller must close it.
 func (c *Client) RepoBundle(ctx context.Context, branch string) (io.ReadCloser, error) {
 	u := fmt.Sprintf("%s/api/repo/bundle?branch=%s", c.baseURL, url.QueryEscape(branch))
