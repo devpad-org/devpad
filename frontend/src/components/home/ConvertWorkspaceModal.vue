@@ -68,6 +68,10 @@ const contents = computed(() => discovery.value?.contents ?? null)
 const selectedRepo = computed<DiscoveredRepo | null>(
   () => repos.value.find((r) => r.path === repoPath.value) ?? null,
 )
+// Discovery names at most 200 branches; past that the user may need to type one.
+const allBranchesNamed = computed(
+  () => !!selectedRepo.value && selectedRepo.value.branches.length >= selectedRepo.value.branchCount,
+)
 const fromFiles = computed(() => repoPath.value === FROM_FILES && !!contents.value)
 const inPlace = computed(() => fromFiles.value || repoPath.value === ROOT)
 
@@ -129,8 +133,10 @@ function suggestDefaultBranch(repo: DiscoveredRepo | null): string {
   return repo.branch || repo.branches[0] || 'main'
 }
 
+// Separate sources, so the home page's polling, which replaces the workspace
+// object every few seconds, doesn't reset the form unless one of them changed.
 watch(
-  () => [props.show, props.workspace?.id, props.workspace?.status] as const,
+  [() => props.show, () => props.workspace?.id, () => props.workspace?.status],
   ([visible]) => {
     if (!visible || !props.workspace) return
     resetForm()
@@ -431,8 +437,26 @@ function formatBytes(bytes: number): string {
           </div>
           <div class="form-group">
             <label class="form-label" for="convert-branch">Default branch</label>
-            <input id="convert-branch" v-model="defaultBranch" class="form-input form-mono" type="text" autocomplete="off" placeholder="main" />
-            <p class="form-hint">Merges land here. It must be one of the repository's branches.</p>
+            <select v-if="selectedRepo && allBranchesNamed" id="convert-branch" v-model="defaultBranch" class="form-input form-mono">
+              <option v-for="branch in selectedRepo.branches" :key="branch" :value="branch">{{ branch }}</option>
+            </select>
+            <template v-else>
+              <input
+                id="convert-branch"
+                v-model="defaultBranch"
+                class="form-input form-mono"
+                type="text"
+                autocomplete="off"
+                placeholder="main"
+                :list="selectedRepo ? 'convert-branches' : undefined"
+              />
+              <datalist v-if="selectedRepo" id="convert-branches">
+                <option v-for="branch in selectedRepo.branches" :key="branch" :value="branch" />
+              </datalist>
+            </template>
+            <p v-if="selectedRepo && allBranchesNamed" class="form-hint">Merges land here.</p>
+            <p v-else-if="selectedRepo" class="form-hint">Merges land here. It must be one of the repository's branches.</p>
+            <p v-else class="form-hint">The new repository's branch, where merges land.</p>
           </div>
           <div class="form-group">
             <label class="form-label" for="convert-upstream">Upstream repository</label>
