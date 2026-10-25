@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, provide, ref, watch, onMounted, onUnmounted } from 'vue'
+import { computed, nextTick, provide, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter, type LocationQuery } from 'vue-router'
 import { workspaceApi, type Workspace } from '@/api/workspaces'
 import { projectApi } from '@/api/projects'
@@ -145,12 +145,40 @@ const mobileProject = computed(() => isMobile.value && isProjectMode.value)
 const mobileMoreOpen = ref(false)
 // The bottom tabs; everything else lives under More.
 const MOBILE_TABS: ActivityTab[] = ['inbox', 'tasks', 'merge-requests', 'agents', 'ai']
+// Surfaces whose side list leads on a phone's project.
+const MOBILE_LIST_FIRST: ActivityTab[] = ['git', 'services', 'info']
+
+// On a phone a detail, such as a merge request, a file or a diff, covers its
+// list; back returns to the list before leaving the project.
+const MOBILE_LIST_NAMES: Partial<Record<ActivityTab, string>> = {
+  inbox: 'inbox',
+  tasks: 'tasks',
+  'merge-requests': 'merge requests',
+  agents: 'agents',
+  project: 'project',
+  explorer: 'files',
+  git: 'source control',
+  services: 'services',
+  info: 'workspace info',
+}
+const mobileBackList = computed(() =>
+  mobileProject.value && !mobileSidebarOpen.value ? MOBILE_LIST_NAMES[activeActivity.value] ?? null : null,
+)
 
 watch(isMobile, (mobile) => {
-  if (mobile) return
+  if (mobile) {
+    // A project's list shows, rather than a detail nobody chose.
+    if (isProjectMode.value && isProjectActivity.value) mobileSidebarOpen.value = true
+    return
+  }
   closeMobilePanels()
-  if (activeActivity.value === 'inbox') activeActivity.value = 'tasks'
+  if (activeActivity.value === 'inbox') activeActivity.value = desktopActivity()
 })
+
+// What a project opens on, or falls back to, on a wider screen.
+function desktopActivity(): ActivityTab {
+  return projectStore.conversion ? 'project' : workspaceLive.value ? 'ai' : 'tasks'
+}
 
 function closeMobilePanels() {
   mobileSidebarOpen.value = false
@@ -186,8 +214,13 @@ function selectActivity(tab: ActivityTab) {
   }
   activeActivity.value = tab
   // The explorer surface is empty until a file is chosen, so lead with the
-  // tree; the project panels are lists, so lead with those too.
-  mobileSidebarOpen.value = (tab === 'explorer' && !activeFile.value) || PROJECT_ACTIVITIES.includes(tab)
+  // tree; the project panels are lists, so lead with those too. On a project
+  // the other surfaces with a side list lead with it as well, since the
+  // phone layout has no side-panel toggle for them otherwise.
+  mobileSidebarOpen.value =
+    (tab === 'explorer' && !activeFile.value) ||
+    PROJECT_ACTIVITIES.includes(tab) ||
+    (mobileProject.value && MOBILE_LIST_FIRST.includes(tab))
 }
 
 function toggleMobileSidebar() {
@@ -196,14 +229,27 @@ function toggleMobileSidebar() {
 }
 
 function toggleMobileRuns() {
-  mobileSidebarOpen.value = false
+  // A project's full-screen list stays put under the runs drawer.
+  if (!mobileProject.value) mobileSidebarOpen.value = false
   mobileMoreOpen.value = false
   mobileRunsOpen.value = !mobileRunsOpen.value
 }
 
+const moreSheet = ref<HTMLElement | null>(null)
+const moreButton = ref<HTMLButtonElement | null>(null)
+
 function toggleMobileMore() {
   mobileRunsOpen.value = false
   mobileMoreOpen.value = !mobileMoreOpen.value
+  if (mobileMoreOpen.value) {
+    void nextTick(() => moreSheet.value?.querySelector<HTMLButtonElement>('.more-item:not(:disabled)')?.focus())
+  }
+}
+
+// Escape closes the sheet and hands focus back to the More tab.
+function dismissMore() {
+  mobileMoreOpen.value = false
+  moreButton.value?.focus()
 }
 
 // More lists the IDE's other surfaces; each choice closes it.
@@ -229,11 +275,6 @@ function moreTerminal() {
 function morePreview() {
   closeMobilePanels()
   previewVisible.value = true
-}
-
-function openChat() {
-  activeActivity.value = 'ai'
-  closeMobilePanels()
 }
 
 // The More tab stands for whichever surface isn't one of the bottom tabs.
@@ -337,17 +378,19 @@ async function loadProject(id: number, seq: number) {
   await loadProjectWorkspace(id, seq)
   if (seq !== loadSeq) return
   applyTaskQuery()
+  if (isMobile.value && !attention.loaded) {
+    await attention.refresh()
+    if (seq !== loadSeq) return
+  }
   // A conversion leaves the user something to do upstream, so its notice
-  // comes first.
+  // comes first. The screen may have changed size during the wait.
   if (isMobile.value) {
     // A phone opens on what needs the user, or else the tasks, as a list;
     // never on the editor.
-    if (!attention.loaded) await attention.refresh()
-    if (seq !== loadSeq) return
     activeActivity.value = projectStore.conversion ? 'project' : projectAttention.value.length > 0 ? 'inbox' : 'tasks'
     mobileSidebarOpen.value = true
   } else {
-    activeActivity.value = projectStore.conversion ? 'project' : workspaceLive.value ? 'ai' : 'tasks'
+    activeActivity.value = desktopActivity()
   }
   applyViewQuery(route.query)
   // Open files don't survive a reload, so a view takes the editor instead.
@@ -392,6 +435,9 @@ function resetShell() {
   activeView.value = null
   dirtyViews.value = new Set()
   closeMobilePanels()
+  detailPushed = false
+  taskPushed = false
+  reuseTaskEntry = false
 }
 
 async function load() {
@@ -604,11 +650,43 @@ function viewQuery(): { tabs?: string; tab?: string } {
   return { tabs: ids.join(','), tab: activeView.value ?? undefined }
 }
 
-watch([viewTabs, activeView], () => {
-  if (!isProjectMode.value || loading.value) return
+// On a phone a detail shown over its list, such as a merge request, a file
+// or a diff, has its own history entry marked view=detail, so the system back
+// gesture returns to the list. Only then does `tab` name the view tab
+// showing, so a reload or a shared link from the list opens the list.
+let detailPushed = false
+
+function wantedViewQuery(): { tabs?: string; tab?: string; view?: string } {
   const next = viewQuery()
-  if (next.tabs === route.query.tabs && next.tab === route.query.tab) return
-  void router.replace({ query: { ...route.query, tabs: next.tabs, tab: next.tab } })
+  if (!mobileProject.value) return next
+  if (mobileBackList.value === null) return { tabs: next.tabs }
+  return { tabs: next.tabs, tab: isProjectActivity.value ? next.tab : undefined, view: 'detail' }
+}
+
+watch([viewTabs, activeView, mobileBackList], async () => {
+  if (!isProjectMode.value || loading.value) return
+  const want = wantedViewQuery()
+  const q = route.query
+  const reuse = reuseTaskEntry
+  if (want.tabs === q.tabs && want.tab === q.tab && want.view === q.view) return
+  const query = { ...q, tabs: want.tabs, tab: want.tab, view: want.view }
+  // A task closed on its way to a detail, such as its merge request, hands
+  // its history entry to that detail.
+  if (reuse) {
+    reuseTaskEntry = false
+    await router.replace({ query: { ...query, task: undefined } })
+    return
+  }
+  if (want.view === 'detail' && q.view !== 'detail') {
+    // The list's own entry takes the new tab list first, so going back
+    // closes no tabs.
+    if (want.tabs !== q.tabs || q.tab !== undefined) {
+      await router.replace({ query: { ...q, tabs: want.tabs, tab: undefined } })
+    }
+    await router.push({ query })
+    return
+  }
+  await router.replace({ query })
 })
 
 // Back/forward and links within the project change only the query.
@@ -618,6 +696,22 @@ watch(() => [route.query.tabs, route.query.tab], () => {
   if (activeView.value && route.query.tab) revealView(activeView.value)
 })
 
+watch(() => route.query.view, (view, prev) => {
+  if (!isProjectMode.value || loading.value || !mobileProject.value) return
+  if (view === 'detail') {
+    // Reached by a push or by forward, so the list is the entry behind.
+    if (prev !== 'detail') detailPushed = true
+    return
+  }
+  if (prev !== 'detail') return
+  detailPushed = false
+  // Back from a detail shows its list again.
+  if (mobileBackList.value) {
+    closeMobilePanels()
+    mobileSidebarOpen.value = true
+  }
+})
+
 // ?task=<id> opens that task over the project, e.g. from a merge request's
 // task link or the launcher's inbox.
 function applyTaskQuery() {
@@ -625,9 +719,35 @@ function applyTaskQuery() {
   if (task) projectStore.selectedTaskId = task
 }
 
+// On a phone a task opens full screen, so opening one from the project adds
+// a history entry and closing it goes back.
+let taskPushed = false
+// Set while a closed task's entry may go to the detail it led to.
+let reuseTaskEntry = false
+
+watch(() => projectStore.selectedTaskId, (id) => {
+  if (id === null || !mobileProject.value || loading.value) return
+  if (Number(route.query.task) === id) return
+  taskPushed = true
+  void router.push({ query: { ...route.query, task: String(id) } })
+})
+
 function closeTask() {
   projectStore.selectedTaskId = null
-  if (route.query.task) void router.replace({ query: { ...route.query, task: undefined } })
+  if (!route.query.task) return
+  if (taskPushed) {
+    taskPushed = false
+    // Closing a task can lead straight to a detail, such as its merge
+    // request, which then takes the task's entry; otherwise go back.
+    reuseTaskEntry = true
+    void nextTick(() => {
+      if (!reuseTaskEntry) return
+      reuseTaskEntry = false
+      router.back()
+    })
+    return
+  }
+  void router.replace({ query: { ...route.query, task: undefined } })
 }
 
 function taskChanged(task: Task) {
@@ -746,8 +866,15 @@ watch(() => [route.name, route.params.id], (next, prev) => {
   if (name !== 'project' && name !== 'ide') return
   if (name !== prev[0] || id !== prev[1]) void load()
 })
-watch(() => route.query.task, () => {
-  if (isProjectMode.value) applyTaskQuery()
+watch(() => route.query.task, (task) => {
+  if (!isProjectMode.value) return
+  if (task) {
+    applyTaskQuery()
+    return
+  }
+  // Back past a task closes it.
+  taskPushed = false
+  projectStore.selectedTaskId = null
 })
 
 onMounted(() => {
@@ -892,27 +1019,23 @@ function openGitPanel() {
   }
 }
 
-// On a phone a detail, such as a merge request, a file or a diff, covers its
-// list; back returns to the list before leaving the project.
-const MOBILE_LIST_NAMES: Partial<Record<ActivityTab, string>> = {
-  inbox: 'inbox',
-  tasks: 'tasks',
-  'merge-requests': 'merge requests',
-  agents: 'agents',
-  project: 'project',
-  explorer: 'files',
-  git: 'source control',
-}
-const mobileBackList = computed(() =>
-  mobileProject.value && !mobileSidebarOpen.value ? MOBILE_LIST_NAMES[activeActivity.value] ?? null : null,
-)
-
 // A project goes back to the projects list, and an agent's sandbox to its
 // project.
 function handleBack() {
   if (mobileBackList.value) {
+    // A detail opened from its list goes back through history, so this and
+    // the system back gesture agree.
+    if (detailPushed && route.query.view === 'detail') {
+      router.back()
+      return
+    }
     closeMobilePanels()
     mobileSidebarOpen.value = true
+    return
+  }
+  // The agent list over the chat closes back to the chat.
+  if (mobileAgentList.value) {
+    mobileSidebarOpen.value = false
     return
   }
   if (isProjectMode.value) {
@@ -924,8 +1047,11 @@ function handleBack() {
   else router.push({ name: 'home' })
 }
 
+const mobileAgentList = computed(() => mobileProject.value && mobileSidebarOpen.value && activeActivity.value === 'ai')
+
 const backLabel = computed(() => {
   if (mobileBackList.value) return `Back to ${mobileBackList.value}`
+  if (mobileAgentList.value) return 'Back to chat'
   if (isProjectMode.value) return 'Back to projects'
   return workspace.value?.projectId ? 'Back to project' : 'Back to projects'
 })
@@ -960,8 +1086,10 @@ const backLabel = computed(() => {
           <path d="m15 18-6-6 6-6" />
         </svg>
       </button>
+      <!-- On a phone's project, only the IDE's own surfaces have a side list
+           to toggle; the project's lists are full screen already. -->
       <button
-        v-if="isMobile && !mobileProject"
+        v-if="isMobile && (!mobileProject || !isProjectActivity)"
         class="titlebar-toggle"
         :class="{ active: mobileSidebarOpen }"
         @click="toggleMobileSidebar"
@@ -1313,9 +1441,10 @@ const backLabel = computed(() => {
         </button>
         <button
           class="mobile-tab mobile-tab--more"
+          ref="moreButton"
           :class="{ active: mobileMoreOpen || moreActive }"
           :aria-expanded="mobileMoreOpen"
-          aria-controls="ide-more-sheet"
+          :aria-controls="mobileMoreOpen ? 'ide-more-sheet' : undefined"
           @click="toggleMobileMore"
         >
           <span class="mobile-tab-icon">
@@ -1333,11 +1462,13 @@ const backLabel = computed(() => {
       <div
         v-if="mobileProject && mobileMoreOpen"
         id="ide-more-sheet"
+        ref="moreSheet"
         class="more-sheet"
-        role="menu"
+        role="group"
         aria-label="More"
+        @keydown.esc="dismissMore"
       >
-        <button class="more-item" role="menuitem" @click="moreBoard">
+        <button class="more-item" @click="moreBoard">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <rect width="18" height="18" x="3" y="3" rx="2" />
             <path d="M9 3v18" />
@@ -1345,13 +1476,13 @@ const backLabel = computed(() => {
           </svg>
           Board
         </button>
-        <button class="more-item" role="menuitem" @click="moreActivity('explorer')">
+        <button class="more-item" @click="moreActivity('explorer')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 4h5l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" />
           </svg>
           Files
         </button>
-        <button class="more-item" role="menuitem" @click="moreActivity('git')">
+        <button class="more-item" @click="moreActivity('git')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="18" cy="18" r="3" />
             <circle cx="6" cy="6" r="3" />
@@ -1359,14 +1490,14 @@ const backLabel = computed(() => {
           </svg>
           Source control
         </button>
-        <button class="more-item" role="menuitem" :disabled="!workspaceLive" @click="moreTerminal">
+        <button class="more-item" :disabled="!workspaceLive" @click="moreTerminal">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="m4 17 6-6-6-6" />
             <path d="M12 19h8" />
           </svg>
           Terminal
         </button>
-        <button class="more-item" role="menuitem" :disabled="!workspaceLive" @click="morePreview">
+        <button class="more-item" :disabled="!workspaceLive" @click="morePreview">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <rect width="20" height="14" x="2" y="3" rx="2" />
             <path d="M8 21h8" />
@@ -1374,7 +1505,7 @@ const backLabel = computed(() => {
           </svg>
           Preview
         </button>
-        <button class="more-item" role="menuitem" @click="moreActivity('services')">
+        <button class="more-item" @click="moreActivity('services')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <ellipse cx="12" cy="5" rx="9" ry="3" />
             <path d="M3 5v14a9 3 0 0 0 18 0V5" />
@@ -1383,7 +1514,7 @@ const backLabel = computed(() => {
           Services
           <span v-if="serviceCount > 0" class="more-count">{{ serviceCount }}</span>
         </button>
-        <button class="more-item" role="menuitem" @click="moreActivity('info')">
+        <button class="more-item" @click="moreActivity('info')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10" />
             <path d="M12 16v-4" />
@@ -1391,7 +1522,7 @@ const backLabel = computed(() => {
           </svg>
           Workspace info
         </button>
-        <button class="more-item" role="menuitem" @click="moreActivity('project')">
+        <button class="more-item" @click="moreActivity('project')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
           </svg>
@@ -1473,7 +1604,7 @@ const backLabel = computed(() => {
             v-show="activeActivity === 'inbox'"
             :items="projectAttention"
             :workspace-id="workspace?.id ?? null"
-            @open-chat="openChat"
+            @open-chat="handleAgentRunFocus"
           />
           <ProjectTasksPanel v-show="activeActivity === 'tasks'" @open-board="showBoard" />
           <ProjectMergeRequestsPanel v-show="activeActivity === 'merge-requests'" />
@@ -1533,7 +1664,7 @@ const backLabel = computed(() => {
                   v-else-if="projectId !== null && mergeRequestTabId(id) !== null"
                   :project-id="projectId"
                   :mr-id="mergeRequestTabId(id)!"
-                  :active="active && editorSurfaceVisible"
+                  :active="active && editorSurfaceVisible && !(mobileProject && mobileSidebarOpen)"
                   @dirty="(dirty: boolean) => setViewDirty(id, dirty)"
                 />
               </template>
@@ -2263,7 +2394,8 @@ const backLabel = computed(() => {
  * project route on a narrow screen gets it; the desktop layout is untouched.
  */
 .is-mobile-project .ide-body {
-  --mobile-activity-bar-height: calc(56px + env(safe-area-inset-bottom));
+  /* #app already pads the bottom safe-area inset. */
+  --mobile-activity-bar-height: var(--mobile-tabbar-height);
 }
 
 .mobile-tabbar {
@@ -2271,7 +2403,7 @@ const backLabel = computed(() => {
   display: flex;
   flex-shrink: 0;
   height: var(--mobile-activity-bar-height);
-  padding: 0 var(--space-1) env(safe-area-inset-bottom);
+  padding: 0 var(--space-1);
   background: var(--bg-surface);
   border-top: 0.5px solid var(--border-default);
 }
@@ -2281,7 +2413,7 @@ const backLabel = computed(() => {
   position: relative;
   flex: 1;
   min-width: 0;
-  height: 56px;
+  height: var(--mobile-tabbar-height);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2336,7 +2468,7 @@ const backLabel = computed(() => {
 }
 
 .mobile-tab-label {
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   font-weight: 500;
   line-height: 1;
 }
@@ -2379,12 +2511,22 @@ const backLabel = computed(() => {
   transition: none;
 }
 
+/* Over a full-screen list the backdrop and the runs drawer sit above it. */
+.is-mobile-project .mobile-backdrop {
+  z-index: 55;
+}
+
+.is-mobile-project .ide-ai-side-panel {
+  z-index: 58;
+}
+
 .more-sheet {
   position: absolute;
   left: 0;
   right: 0;
   bottom: var(--mobile-activity-bar-height);
-  z-index: 60;
+  /* Above the git push notices (900), below dialogs (1000). */
+  z-index: 950;
   display: flex;
   flex-direction: column;
   max-height: 70dvh;

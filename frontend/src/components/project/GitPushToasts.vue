@@ -147,9 +147,12 @@ onUnmounted(() => {
 /* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: the toasts sit above the
    project's bottom tab bar and span the screen's gutters. */
 @media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  /* Fixed to the viewport, so the safe-area insets that #app pads apply
+     here too. */
   .git-push-toasts {
-    left: var(--space-4);
-    bottom: calc(56px + env(safe-area-inset-bottom) + var(--space-3));
+    left: calc(var(--space-4) + env(safe-area-inset-left));
+    right: calc(var(--space-4) + env(safe-area-inset-right));
+    bottom: calc(var(--mobile-tabbar-height) + env(safe-area-inset-bottom) + var(--space-3));
     max-width: none;
   }
 

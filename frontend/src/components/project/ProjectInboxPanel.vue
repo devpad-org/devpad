@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { watch } from 'vue'
-import type { AttentionItem } from '@/api/ai'
+import type { AgentRun, AttentionItem } from '@/api/ai'
 import { attentionItemKey } from '@/stores/attention'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useProjectStore } from '@/stores/projects'
@@ -15,7 +15,8 @@ const props = defineProps<{
   workspaceId: number | null
 }>()
 
-const emit = defineEmits<{ 'open-chat': [] }>()
+// Opening the chat focuses the run that is waiting.
+const emit = defineEmits<{ 'open-chat': [run: AgentRun] }>()
 
 const store = useActiveProjectStore()
 const projects = useProjectStore()
@@ -85,7 +86,7 @@ watch(
           >
             Open merge request
           </button>
-          <button v-else-if="item.run.workspaceId === workspaceId" class="btn btn-secondary btn-sm" @click="emit('open-chat')">
+          <button v-else-if="item.run.workspaceId === workspaceId" class="btn btn-secondary btn-sm" @click="emit('open-chat', item.run)">
             Open chat
           </button>
           <RouterLink

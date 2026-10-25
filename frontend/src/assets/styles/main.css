@@ -95,6 +95,10 @@
   --space-6: 24px;
   --space-8: 32px;
 
+  /* The project's bottom tab bar on a phone, above the safe-area inset that
+     #app already pads. */
+  --mobile-tabbar-height: 56px;
+
   /* Radius */
   --radius-sm: 3px;
   --radius-md: 5px;
@@ -233,8 +237,9 @@ pre {
    full-screen sheet; short confirmations stay centred. The extra `body` beats
    each dialog's own scoped sizing. */
 @media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  /* The overlay is fixed, so #app's safe-area padding doesn't reach it. */
   .modal-overlay:has(> .modal:not([role='alertdialog'])) {
-    padding: 0 0 env(safe-area-inset-bottom);
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
 
   body .modal-overlay > .modal:not([role='alertdialog']) {

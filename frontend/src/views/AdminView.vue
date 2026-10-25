@@ -420,7 +420,7 @@ function isSelf(user: AdminUser): boolean {
     <!-- Delete Confirmation Modal -->
     <Teleport to="body">
       <div v-if="showDeleteConfirm" class="modal-overlay" @click.self="closeModals">
-        <div class="modal">
+        <div class="modal" role="alertdialog" aria-label="Delete user">
           <h2 class="modal-title">Delete User</h2>
           <p class="modal-subtitle">
             Are you sure you want to delete <strong>{{ selectedUser?.username }}</strong>?
