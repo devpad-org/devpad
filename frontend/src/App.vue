@@ -35,10 +35,14 @@ async function handleLogout() {
     <div class="header-left">
       <RouterLink to="/" class="header-brand">Devpad</RouterLink>
       <nav class="header-nav">
-        <RouterLink to="/projects" class="nav-link">Projects</RouterLink>
-        <RouterLink to="/inbox" class="nav-link">
-          Inbox
-          <span v-if="attention.count > 0" class="nav-badge">{{ attention.count }}</span>
+        <RouterLink
+          v-if="attention.count > 0"
+          :to="{ name: 'home', hash: '#inbox' }"
+          class="nav-badge"
+          :title="`${attention.count} waiting for you`"
+          :aria-label="`Inbox, ${attention.count} waiting for you`"
+        >
+          {{ attention.count }}
         </RouterLink>
         <RouterLink to="/settings" class="nav-link">Settings</RouterLink>
         <RouterLink v-if="auth.isAdmin" to="/admin" class="nav-link">Admin</RouterLink>
@@ -96,18 +100,24 @@ async function handleLogout() {
   background: var(--bg-hover);
 }
 
+/* How many agents are waiting for the user; links to the launcher's inbox. */
 .nav-badge {
   display: inline-block;
-  min-width: 16px;
-  margin-left: var(--space-1);
+  min-width: 20px;
+  margin-right: var(--space-2);
   padding: 0 var(--space-1);
   border-radius: var(--radius-sm);
   background: var(--attention);
   color: var(--text-on-accent);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 600;
-  line-height: 16px;
+  line-height: 20px;
   text-align: center;
+}
+
+.nav-badge:hover {
+  color: var(--text-on-accent);
+  filter: brightness(1.1);
 }
 
 .nav-link.router-link-active {

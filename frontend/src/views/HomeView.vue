@@ -1,248 +1,383 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useAttentionStore } from '@/stores/attention'
+import { useProjectStore } from '@/stores/projects'
 import { useWorkspaceStore } from '@/stores/workspaces'
-import WorkspaceCard from '@/components/WorkspaceCard.vue'
-import WorkspaceModal from '@/components/WorkspaceModal.vue'
-import ConfirmModal from '@/components/ConfirmModal.vue'
-import type { Workspace } from '@/api/workspaces'
+import type { Project, ProjectInput } from '@/api/projects'
+import { projectsOpenedAt } from '@/utils/recentProjects'
+import { fullTime, timeAgo } from '@/utils/time'
+import ProjectModal from '@/components/project/ProjectModal.vue'
+import StatusBadge from '@/components/project/StatusBadge.vue'
+import InboxSection from '@/components/home/InboxSection.vue'
+import StandaloneWorkspaces from '@/components/home/StandaloneWorkspaces.vue'
 
-const store = useWorkspaceStore()
+// The launcher: every project with what needs the user in it, the inbox of
+// agents waiting on the user, and workspaces that belong to no project.
+
+const POLL_INTERVAL_MS = 5000
+
+const route = useRoute()
 const router = useRouter()
+const attention = useAttentionStore()
+const projects = useProjectStore()
+const workspaces = useWorkspaceStore()
 
-const showCreateModal = ref(false)
-const showEditModal = ref(false)
-const showDeleteModal = ref(false)
-const deleting = ref(false)
-const editTarget = ref<Workspace | null>(null)
-const deleteTarget = ref<Workspace | null>(null)
+const showCreate = ref(false)
+const saving = ref(false)
+const createError = ref('')
+const openedAt = projectsOpenedAt()
+let timer: ReturnType<typeof setInterval> | null = null
 
-// Project sandboxes are listed on their project's page.
-const workspaces = computed(() => store.workspaces.filter((ws) => !ws.projectId))
-
-onMounted(() => {
-  store.fetchWorkspaces()
+// Agents waiting on the user, per project.
+const waitingAgents = computed(() => {
+  const counts = new Map<number, number>()
+  for (const item of attention.items) {
+    const link = projects.workspaceLinks.get(item.run.workspaceId)
+    if (link) counts.set(link.projectId, (counts.get(link.projectId) ?? 0) + 1)
+  }
+  return counts
 })
 
-async function handleCreate(name: string, description: string) {
+interface Card {
+  project: Project
+  needsYou: number
+  waiting: number
+  awaitingReview: number
+  runningAgents: number
+  activeTasks: number
+  openMergeRequests: number
+  lastActivityAt: string
+  sortKey: string
+}
+
+const cards = computed<Card[]>(() =>
+  projects.projects
+    .map((project) => {
+      const overview = projects.overviews.get(project.id)
+      const waiting = waitingAgents.value.get(project.id) ?? 0
+      const awaitingReview = overview?.awaitingReview ?? 0
+      const lastActivityAt = overview?.lastActivityAt ?? project.updatedAt
+      const opened = openedAt.get(project.id) ?? ''
+      return {
+        project,
+        needsYou: waiting + awaitingReview,
+        waiting,
+        awaitingReview,
+        runningAgents: overview?.runningAgents ?? 0,
+        activeTasks: overview?.activeTasks ?? 0,
+        openMergeRequests: overview?.openMergeRequests ?? 0,
+        lastActivityAt,
+        sortKey: latest(lastActivityAt, opened),
+      }
+    })
+    .sort((a, b) => b.sortKey.localeCompare(a.sortKey)),
+)
+
+function latest(a: string, b: string): string {
+  const ta = a ? new Date(a).getTime() : 0
+  const tb = b ? new Date(b).getTime() : 0
+  return new Date(Math.max(ta, tb)).toISOString()
+}
+
+function needsYouTitle(card: Card): string {
+  const parts: string[] = []
+  if (card.waiting) parts.push(`${card.waiting} agent${card.waiting === 1 ? '' : 's'} waiting for you`)
+  if (card.awaitingReview) parts.push(`${card.awaitingReview} merge request${card.awaitingReview === 1 ? '' : 's'} to review`)
+  return parts.join(', ')
+}
+
+async function refresh() {
+  await Promise.all([
+    projects.fetchProjects().catch(() => {}),
+    projects.fetchOverview().catch(() => {}),
+    workspaces.fetchWorkspaces().catch(() => {}),
+  ])
+}
+
+onMounted(() => {
+  void refresh()
+  timer = setInterval(() => {
+    if (document.visibilityState === 'visible') void refresh()
+  }, POLL_INTERVAL_MS)
+})
+
+onUnmounted(() => {
+  if (timer !== null) clearInterval(timer)
+})
+
+// /inbox, and links to it, land here with #inbox.
+watch(
+  () => [route.hash, attention.loaded] as const,
+  async ([hash]) => {
+    if (hash !== '#inbox') return
+    await nextTick()
+    document.getElementById('inbox')?.scrollIntoView({ block: 'start' })
+  },
+  { immediate: true },
+)
+
+async function handleCreate(input: ProjectInput) {
+  saving.value = true
+  createError.value = ''
   try {
-    await store.createWorkspace(name, description)
-    showCreateModal.value = false
-  } catch {
-    // error handled by store
-  }
-}
-
-function openEdit(workspace: Workspace) {
-  editTarget.value = workspace
-  showEditModal.value = true
-}
-
-async function handleEdit(name: string, description: string) {
-  if (!editTarget.value) return
-  try {
-    await store.updateWorkspace(editTarget.value.id, name, description)
-    showEditModal.value = false
-    editTarget.value = null
-  } catch {
-    // error handled by store
-  }
-}
-
-function openDelete(workspace: Workspace) {
-  deleteTarget.value = workspace
-  showDeleteModal.value = true
-}
-
-function openWorkspace(workspace: Workspace) {
-  router.push({ name: 'ide', params: { id: workspace.id } })
-}
-
-async function handleStart(workspace: Workspace) {
-  try {
-    await store.startWorkspace(workspace.id)
-  } catch {
-    // error handled by store
-  }
-}
-
-async function handleStop(workspace: Workspace) {
-  try {
-    await store.stopWorkspace(workspace.id)
-  } catch {
-    // error handled by store
-  }
-}
-
-async function handleDelete() {
-  if (!deleteTarget.value) return
-  deleting.value = true
-  try {
-    await store.deleteWorkspace(deleteTarget.value.id)
-    showDeleteModal.value = false
-    deleteTarget.value = null
-  } catch {
-    // error handled by store
+    const project = await projects.createProject(input)
+    showCreate.value = false
+    router.push({ name: 'project', params: { id: project.id } })
+  } catch (e) {
+    createError.value = e instanceof Error ? e.message : 'Failed to create project'
   } finally {
-    deleting.value = false
+    saving.value = false
   }
 }
 </script>
 
 <template>
-  <div class="workspaces-page">
+  <div class="page launcher">
     <div class="page-header">
       <div>
-        <h1 class="page-title">Workspaces</h1>
-        <p class="page-subtitle">Your development environments</p>
+        <h1 class="page-title">Projects</h1>
+        <p class="page-subtitle">Open a project to work in it, alongside the agents working on its tasks</p>
       </div>
-      <button class="btn-create" @click="showCreateModal = true">
+      <button class="btn btn-primary" @click="createError = ''; showCreate = true">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 5v14" />
           <path d="M5 12h14" />
         </svg>
-        New Workspace
+        New project
       </button>
     </div>
 
-    <div v-if="store.loading" class="empty-state">
-      <p class="empty-text">Loading workspaces...</p>
+    <div class="launcher-main">
+      <InboxSection class="launcher-inbox" />
+
+      <section class="section launcher-projects">
+        <p v-if="projects.loading && projects.projects.length === 0" class="empty-text">Loading projects...</p>
+        <p v-else-if="projects.error && projects.projects.length === 0" class="notice notice-error">{{ projects.error }}</p>
+        <div v-else-if="projects.projects.length === 0" class="panel empty-state">
+          <p class="empty-title">No projects yet</p>
+          <p class="empty-text">Create a project from a repository, then work in it and give agents tasks to do in parallel.</p>
+        </div>
+
+        <div v-else class="project-grid">
+          <RouterLink
+            v-for="card in cards"
+            :key="card.project.id"
+            :to="{ name: 'project', params: { id: card.project.id } }"
+            class="panel project-card"
+            :class="{ 'needs-you': card.needsYou > 0 }"
+          >
+            <div class="card-header">
+              <h2 class="card-title">{{ card.project.name }}</h2>
+              <span v-if="card.needsYou > 0" class="needs-badge" :title="needsYouTitle(card)">
+                {{ card.needsYou }} need{{ card.needsYou === 1 ? 's' : '' }} you
+              </span>
+              <StatusBadge v-else-if="card.project.status !== 'ready'" :status="card.project.status" />
+            </div>
+            <p v-if="card.project.description" class="card-description">{{ card.project.description }}</p>
+            <p v-if="card.project.status === 'error' && card.project.error" class="card-error">{{ card.project.error }}</p>
+
+            <div class="card-stats">
+              <span v-if="card.waiting" class="stat stat-attention">
+                {{ card.waiting }} waiting
+              </span>
+              <span v-if="card.awaitingReview" class="stat stat-attention">
+                {{ card.awaitingReview }} to review
+              </span>
+              <span v-if="card.runningAgents" class="stat stat-active">
+                <span class="pulse" />
+                {{ card.runningAgents }} agent{{ card.runningAgents === 1 ? '' : 's' }} running
+              </span>
+              <span v-if="card.activeTasks" class="stat">
+                {{ card.activeTasks }} task{{ card.activeTasks === 1 ? '' : 's' }} in progress
+              </span>
+              <span v-if="card.openMergeRequests" class="stat">
+                {{ card.openMergeRequests }} open MR{{ card.openMergeRequests === 1 ? '' : 's' }}
+              </span>
+            </div>
+
+            <div class="meta-row">
+              <span class="mono">{{ card.project.defaultBranch }}</span>
+              <span>&middot;</span>
+              <span class="mono card-upstream">{{ card.project.upstreamUrl || 'local only' }}</span>
+              <span>&middot;</span>
+              <span :title="fullTime(card.lastActivityAt)">{{ timeAgo(card.lastActivityAt) }}</span>
+            </div>
+          </RouterLink>
+        </div>
+      </section>
     </div>
 
-    <div v-else-if="store.error" class="empty-state">
-      <p class="empty-text error-text">{{ store.error }}</p>
-    </div>
+    <StandaloneWorkspaces />
 
-    <div v-else-if="workspaces.length === 0" class="empty-state">
-      <div class="empty-icon">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <rect width="18" height="18" x="3" y="3" rx="2" />
-          <path d="M12 8v8" />
-          <path d="M8 12h8" />
-        </svg>
-      </div>
-      <p class="empty-text">No workspaces yet</p>
-      <p class="empty-hint">Create your first workspace to get started</p>
-    </div>
-
-    <div v-else class="workspace-grid">
-      <WorkspaceCard
-        v-for="ws in workspaces"
-        :key="ws.id"
-        :workspace="ws"
-        @open="openWorkspace"
-        @edit="openEdit"
-        @delete="openDelete"
-        @start="handleStart"
-        @stop="handleStop"
-      />
-    </div>
-
-    <WorkspaceModal
-      :show="showCreateModal"
-      title="Create Workspace"
-      @close="showCreateModal = false"
+    <ProjectModal
+      :show="showCreate"
+      :saving="saving"
+      :error="createError"
+      @close="showCreate = false"
       @submit="handleCreate"
-    />
-
-    <WorkspaceModal
-      :show="showEditModal"
-      title="Edit Workspace"
-      :name="editTarget?.name"
-      :description="editTarget?.description"
-      @close="showEditModal = false"
-      @submit="handleEdit"
-    />
-
-    <ConfirmModal
-      :show="showDeleteModal"
-      title="Delete Workspace"
-      :message="`Are you sure you want to delete &quot;${deleteTarget?.name}&quot;? This action cannot be undone.`"
-      confirm-label="Delete"
-      variant="danger"
-      :loading="deleting"
-      @confirm="handleDelete"
-      @cancel="showDeleteModal = false"
     />
   </div>
 </template>
 
+<style scoped src="@/components/project/shared.css"></style>
 <style scoped>
-.workspaces-page {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: var(--space-6) var(--space-4);
+.launcher {
+  max-width: 1200px;
 }
 
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  margin-bottom: var(--space-6);
+.launcher-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0 var(--space-6);
 }
 
-.page-title {
-  font-size: 1.5rem;
-  font-weight: 500;
-  margin-bottom: var(--space-1);
+/* Wide screens put the inbox beside the projects; narrow ones stack it
+ * first, since it is what needs the user. */
+@media (min-width: 1100px) {
+  .launcher-main {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
+
+  .launcher-projects {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .launcher-inbox {
+    grid-column: 2;
+    grid-row: 1;
+  }
 }
 
-.page-subtitle {
-  color: var(--text-secondary);
-  font-size: 0.85rem;
-}
-
-.btn-create {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
-  background: var(--accent-blue);
-  color: var(--bg-primary);
-  font-size: 0.8rem;
-  font-weight: 500;
-  border-radius: var(--radius-md);
-  transition: background var(--transition-fast);
-}
-
-.btn-create:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
-}
-
-.workspace-grid {
+.project-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
   gap: var(--space-4);
+}
+
+.project-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-primary);
+  transition: border-color var(--transition-fast);
+}
+
+.project-card:hover {
+  color: var(--text-primary);
+  border-color: var(--border-active);
+}
+
+.project-card.needs-you {
+  border-color: var(--attention);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.card-title {
+  font-size: 0.95rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.needs-badge {
+  flex-shrink: 0;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--attention);
+  color: var(--text-on-accent);
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.card-description {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-error {
+  font-size: 0.75rem;
+  color: var(--error);
+  overflow-wrap: anywhere;
+}
+
+.card-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.card-stats:empty {
+  display: none;
+}
+
+.stat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.stat-attention {
+  color: var(--attention);
+}
+
+.stat-active {
+  color: var(--accent-blue);
+}
+
+.pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
+}
+
+.card-upstream {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: var(--space-8) 0;
+  gap: var(--space-1);
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
 }
 
-.empty-icon {
-  color: var(--text-muted);
-  margin-bottom: var(--space-4);
-  opacity: 0.5;
-}
-
-.empty-text {
+.empty-title {
   color: var(--text-secondary);
   font-size: 0.95rem;
-  margin-bottom: var(--space-1);
-}
-
-.empty-hint {
-  color: var(--text-muted);
-  font-size: 0.8rem;
-}
-
-.error-text {
-  color: var(--accent-rose);
 }
 </style>

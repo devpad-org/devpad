@@ -14,6 +14,8 @@ type Repository interface {
 	ListByUserID(ctx context.Context, userID int64) ([]*Project, error)
 	Update(ctx context.Context, p *Project) error
 	Delete(ctx context.Context, id int64) error
+	Overviews(ctx context.Context, userID int64) ([]*Overview, error)
+	WorkspaceLinks(ctx context.Context, userID int64) ([]*WorkspaceLink, error)
 }
 
 type repository struct {

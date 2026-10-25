@@ -423,6 +423,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 
 	// Project routes
 	mux.Handle("GET /api/projects", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleList)))
+	mux.Handle("GET /api/projects/overview", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleOverview)))
 	mux.Handle("POST /api/projects", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleCreate)))
 	mux.Handle("GET /api/projects/{id}", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleGet)))
 	mux.Handle("PUT /api/projects/{id}", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleUpdate)))

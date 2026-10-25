@@ -1,11 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { projectApi, type Project, type ProjectInput } from '@/api/projects'
+import { projectApi, type Project, type ProjectInput, type ProjectOverview, type WorkspaceLink } from '@/api/projects'
 
 export const useProjectStore = defineStore('projects', () => {
   const projects = ref<Project[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const overviews = ref(new Map<number, ProjectOverview>())
+  const workspaceLinks = ref(new Map<number, WorkspaceLink>())
 
   async function fetchProjects() {
     loading.value = true
@@ -19,6 +21,14 @@ export const useProjectStore = defineStore('projects', () => {
     } finally {
       loading.value = false
     }
+  }
+
+  // Activity counts per project, and which project and task or merge request
+  // each project-linked workspace belongs to.
+  async function fetchOverview() {
+    const response = await projectApi.overview()
+    overviews.value = new Map((response.projects ?? []).map((o) => [o.projectId, o]))
+    workspaceLinks.value = new Map((response.workspaces ?? []).map((l) => [l.workspaceId, l]))
   }
 
   async function createProject(input: ProjectInput) {
@@ -45,7 +55,10 @@ export const useProjectStore = defineStore('projects', () => {
     projects,
     loading,
     error,
+    overviews,
+    workspaceLinks,
     fetchProjects,
+    fetchOverview,
     createProject,
     updateProject,
     deleteProject,

@@ -7,8 +7,6 @@ import SetupView from '@/views/SetupView.vue'
 import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 const IdeView = () => import('@/views/IdeView.vue')
-const ProjectsView = () => import('@/views/ProjectsView.vue')
-const InboxView = () => import('@/views/InboxView.vue')
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -25,11 +23,11 @@ export const router = createRouter({
       component: SettingsView,
       meta: { requiresAuth: true },
     },
+    // The launcher at / lists projects and holds the inbox.
     {
       path: '/projects',
       name: 'projects',
-      component: ProjectsView,
-      meta: { requiresAuth: true },
+      redirect: { name: 'home' },
     },
     // A project opens as its IDE: project panels plus the project workspace.
     {
@@ -55,8 +53,7 @@ export const router = createRouter({
     {
       path: '/inbox',
       name: 'inbox',
-      component: InboxView,
-      meta: { requiresAuth: true },
+      redirect: { name: 'home', hash: '#inbox' },
     },
     {
       path: '/login',

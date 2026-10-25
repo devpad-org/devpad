@@ -46,7 +46,7 @@ async function deleteProject() {
   deleting.value = true
   try {
     await projects.deleteProject(store.projectId)
-    router.push({ name: 'projects' })
+    router.push({ name: 'home' })
   } catch (e) {
     actionError.value = e instanceof Error ? e.message : 'Failed to delete project'
     showDelete.value = false

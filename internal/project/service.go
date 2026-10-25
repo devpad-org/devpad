@@ -22,6 +22,8 @@ import (
 type Service interface {
 	Create(ctx context.Context, userID int64, in CreateInput) (*Project, error)
 	List(ctx context.Context, userID int64) ([]*Project, error)
+	// Overviews summarizes every project's activity for the launcher.
+	Overviews(ctx context.Context, userID int64) ([]*Overview, []*WorkspaceLink, error)
 	Get(ctx context.Context, userID, projectID int64) (*Project, error)
 	Update(ctx context.Context, userID, projectID int64, in UpdateInput) (*Project, error)
 	Delete(ctx context.Context, userID, projectID int64) error

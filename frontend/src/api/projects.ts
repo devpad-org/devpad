@@ -92,9 +92,35 @@ export interface RepoDiff {
   files: RepoDiffFile[]
 }
 
+// What is happening in a project, for the launcher.
+export interface ProjectOverview {
+  projectId: number
+  runningAgents: number
+  activeTasks: number
+  openMergeRequests: number
+  // Open merge requests waiting on the user: no agent is reviewing or
+  // reworking them, and the user hasn't reviewed their current head.
+  awaitingReview: number
+  lastActivityAt: string
+}
+
+// Ties a project-linked workspace to its project and, for sandboxes, to the
+// task or merge request it is working on (0 when none).
+export interface WorkspaceLink {
+  workspaceId: number
+  projectId: number
+  kind: 'interactive' | 'task' | 'review'
+  taskId: number
+  mergeRequestId: number
+}
+
 export const projectApi = {
   list(): Promise<{ projects: Project[] }> {
     return apiClient.get('/api/projects')
+  },
+
+  overview(): Promise<{ projects: ProjectOverview[]; workspaces: WorkspaceLink[] }> {
+    return apiClient.get('/api/projects/overview')
   },
 
   get(id: number): Promise<{ project: Project }> {

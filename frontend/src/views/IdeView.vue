@@ -43,6 +43,7 @@ import { useActiveProjectStore } from '@/stores/activeProject'
 import { useAttentionStore } from '@/stores/attention'
 import { useResizable } from '@/composables/useResizable'
 import { useIsMobile } from '@/composables/useMediaQuery'
+import { recordProjectOpened } from '@/utils/recentProjects'
 import type { GitCommit, GitCommitFile } from '@/api/git'
 import type { AgentRun } from '@/api/ai'
 
@@ -261,6 +262,7 @@ async function loadProject(id: number, seq: number) {
     loading.value = false
     return
   }
+  recordProjectOpened(id)
   await loadProjectWorkspace(id, seq)
   if (seq !== loadSeq) return
   applyTaskQuery()
@@ -318,7 +320,7 @@ async function load() {
 
   if (projectId.value !== null) {
     if (isNaN(projectId.value)) {
-      router.push({ name: 'projects' })
+      router.push({ name: 'home' })
       return
     }
     await loadProject(projectId.value, seq)
@@ -532,7 +534,7 @@ watch(() => [route.query.tabs, route.query.tab], () => {
 })
 
 // ?task=<id> opens that task over the project, e.g. from a merge request's
-// task link or the inbox.
+// task link or the launcher's inbox.
 function applyTaskQuery() {
   const task = Number(route.query.task)
   if (task) projectStore.selectedTaskId = task
@@ -803,7 +805,7 @@ function openGitPanel() {
 // project.
 function handleBack() {
   if (isProjectMode.value) {
-    router.push({ name: 'projects' })
+    router.push({ name: 'home' })
     return
   }
   const sandboxProject = workspace.value?.projectId
@@ -871,7 +873,7 @@ const backLabel = computed(() => {
       </span>
       <div class="titlebar-actions">
         <RouterLink
-          to="/inbox"
+          :to="{ name: 'home', hash: '#inbox' }"
           class="titlebar-btn titlebar-inbox"
           :class="{ 'has-items': attention.count > 0 }"
           :title="attention.count > 0 ? `Inbox: ${attention.count} waiting for you` : 'Inbox'"

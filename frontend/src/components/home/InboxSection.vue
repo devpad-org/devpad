@@ -1,31 +1,77 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, ref } from 'vue'
+import type { RouteLocationRaw } from 'vue-router'
 import { aiApi, type AttentionItem } from '@/api/ai'
 import { useAttentionStore } from '@/stores/attention'
+import { useProjectStore } from '@/stores/projects'
 import { useWorkspaceStore } from '@/stores/workspaces'
+import { BOARD_TAB, mergeRequestTab } from '@/components/ide/viewTabs'
 import AiQuestionCard from '@/components/ide/AiQuestionCard.vue'
 
+// Agents waiting for the user, across every project and workspace. Each item
+// can be answered in place, and links to where its work lives.
+
+interface ItemSource {
+  label: string
+  detail: string
+  to: RouteLocationRaw
+  toLabel: string
+  // The sandbox itself, for a closer look at what the agent was doing.
+  sandbox: RouteLocationRaw | null
+}
+
 const attention = useAttentionStore()
+const projects = useProjectStore()
 const workspaces = useWorkspaceStore()
 
 const busy = ref<string | null>(null)
 const errors = ref<Record<string, string>>({})
 
+const projectNames = computed(() => new Map(projects.projects.map((p) => [p.id, p.name])))
 const workspaceNames = computed(() => new Map(workspaces.workspaces.map((ws) => [ws.id, ws.name])))
-
-onMounted(() => {
-  attention.watch()
-  void workspaces.fetchWorkspaces().catch(() => {})
-})
-
-onUnmounted(() => attention.unwatch())
 
 function itemKey(item: AttentionItem): string {
   return item.approval?.id ?? item.question?.id ?? `run-${item.run.id}`
 }
 
-function workspaceName(item: AttentionItem): string {
-  return workspaceNames.value.get(item.run.workspaceId) ?? `Workspace ${item.run.workspaceId}`
+function source(item: AttentionItem): ItemSource {
+  const workspaceId = item.run.workspaceId
+  const ide: RouteLocationRaw = { name: 'ide', params: { id: workspaceId } }
+  const link = projects.workspaceLinks.get(workspaceId)
+  if (!link) {
+    return {
+      label: workspaceNames.value.get(workspaceId) ?? `Workspace ${workspaceId}`,
+      detail: 'workspace',
+      to: ide,
+      toLabel: 'Open workspace',
+      sandbox: null,
+    }
+  }
+  const project = { name: 'project', params: { id: link.projectId } } as const
+  const label = projectNames.value.get(link.projectId) ?? `Project ${link.projectId}`
+  if (link.kind === 'interactive') {
+    return { label, detail: 'your workspace', to: project, toLabel: 'Open project', sandbox: null }
+  }
+  if (link.kind === 'task' && link.taskId) {
+    return {
+      label,
+      detail: `task #${link.taskId}`,
+      to: { ...project, query: { task: String(link.taskId) } },
+      toLabel: 'Open task',
+      sandbox: ide,
+    }
+  }
+  if (link.kind === 'review' && link.mergeRequestId) {
+    const tab = mergeRequestTab(link.mergeRequestId)
+    return {
+      label,
+      detail: `review of !${link.mergeRequestId}`,
+      to: { ...project, query: { tabs: `${BOARD_TAB},${tab}`, tab } },
+      toLabel: 'Open merge request',
+      sandbox: ide,
+    }
+  }
+  return { label, detail: `${link.kind} sandbox`, to: ide, toLabel: 'Open sandbox', sandbox: null }
 }
 
 async function decide(item: AttentionItem, approved: boolean) {
@@ -49,12 +95,12 @@ function questionError(item: AttentionItem, message: string) {
 </script>
 
 <template>
-  <div class="page inbox-page">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">Inbox</h1>
-        <p class="page-subtitle">Agents waiting for you, across all workspaces and sandboxes</p>
-      </div>
+  <section id="inbox" class="section inbox">
+    <div class="section-header">
+      <h2 class="section-title">
+        Inbox
+        <span v-if="attention.count > 0" class="count-badge">{{ attention.count }}</span>
+      </h2>
     </div>
 
     <p v-if="!attention.loaded" class="empty-text">Loading...</p>
@@ -65,15 +111,20 @@ function questionError(item: AttentionItem, message: string) {
         <div class="item-source">
           <span class="item-kind">{{ item.approval ? 'Approve a command' : 'Answer a question' }}</span>
           <span class="meta-row">
-            <span>{{ workspaceName(item) }}</span>
+            <span>{{ source(item).label }}</span>
+            <span>&middot;</span>
+            <span>{{ source(item).detail }}</span>
             <span>&middot;</span>
             <span>run #{{ item.run.id }}</span>
             <span v-if="item.run.model">&middot; {{ item.run.model }}</span>
           </span>
         </div>
-        <RouterLink class="btn btn-secondary btn-sm" :to="{ name: 'ide', params: { id: item.run.workspaceId } }">
-          Open workspace
-        </RouterLink>
+        <div class="item-links">
+          <RouterLink v-if="source(item).sandbox" class="btn btn-secondary btn-sm" :to="source(item).sandbox!">
+            Sandbox
+          </RouterLink>
+          <RouterLink class="btn btn-secondary btn-sm" :to="source(item).to">{{ source(item).toLabel }}</RouterLink>
+        </div>
       </div>
 
       <p v-if="item.run.promptPreview" class="item-prompt">{{ item.run.promptPreview }}</p>
@@ -96,13 +147,31 @@ function questionError(item: AttentionItem, message: string) {
 
       <p v-if="errors[itemKey(item)]" class="form-error">{{ errors[itemKey(item)] }}</p>
     </div>
-  </div>
+  </section>
 </template>
 
 <style scoped src="@/components/project/shared.css"></style>
 <style scoped>
-.inbox-page {
-  max-width: 820px;
+.inbox {
+  scroll-margin-top: var(--space-4);
+}
+
+.section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.count-badge {
+  min-width: 18px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--attention);
+  color: var(--text-on-accent);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
 }
 
 .item {
@@ -110,6 +179,7 @@ function questionError(item: AttentionItem, message: string) {
   flex-direction: column;
   gap: var(--space-3);
   margin-bottom: var(--space-3);
+  min-width: 0;
 }
 
 .item .form-error {
@@ -120,6 +190,7 @@ function questionError(item: AttentionItem, message: string) {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--space-3);
 }
 
@@ -134,6 +205,12 @@ function questionError(item: AttentionItem, message: string) {
   font-size: 0.85rem;
   font-weight: 500;
   color: var(--attention);
+}
+
+.item-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 .item-prompt {

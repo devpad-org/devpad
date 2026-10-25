@@ -37,6 +37,39 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"projects": items})
 }
 
+// HandleOverview summarizes activity across the user's projects and links
+// each project workspace and sandbox to its task or merge request.
+func (h *Handler) HandleOverview(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	overviews, links, err := h.service.Overviews(r.Context(), user.ID)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	projects := make([]map[string]any, 0, len(overviews))
+	for _, o := range overviews {
+		projects = append(projects, map[string]any{
+			"projectId":         o.ProjectID,
+			"runningAgents":     o.RunningAgents,
+			"activeTasks":       o.ActiveTasks,
+			"openMergeRequests": o.OpenMergeRequests,
+			"awaitingReview":    o.AwaitingReview,
+			"lastActivityAt":    o.LastActivityAt,
+		})
+	}
+	workspaces := make([]map[string]any, 0, len(links))
+	for _, l := range links {
+		workspaces = append(workspaces, map[string]any{
+			"workspaceId":    l.WorkspaceID,
+			"projectId":      l.ProjectID,
+			"kind":           l.Kind,
+			"taskId":         l.TaskID,
+			"mergeRequestId": l.MergeRequestID,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"projects": projects, "workspaces": workspaces})
+}
+
 // HandleCreate creates a project and its canonical repo.
 func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
