@@ -42,7 +42,8 @@ const startNow = ref(true)
 const creating = ref(false)
 const showNewTask = ref(false)
 
-const selectedTaskId = ref<number | null>(null)
+// A merge request links here with ?task= to open that task.
+const selectedTaskId = ref<number | null>(Number(route.query.task) || null)
 const showEdit = ref(false)
 const savingProject = ref(false)
 const editError = ref('')
@@ -137,6 +138,11 @@ onMounted(() => {
 })
 
 onUnmounted(stopPolling)
+
+function closeTask() {
+  selectedTaskId.value = null
+  if (route.query.task) void router.replace({ query: { ...route.query, task: undefined } })
+}
 
 async function createTask() {
   if (!newTitle.value.trim()) {
@@ -402,7 +408,7 @@ function sandboxTask(sandbox: Sandbox): Task | undefined {
       :task="selectedTask"
       :project-id="projectId"
       :merge-request="selectedTask ? mergeRequestByTask.get(selectedTask.id) : undefined"
-      @close="selectedTaskId = null"
+      @close="closeTask"
       @changed="taskChanged"
       @deleted="taskDeleted"
     />

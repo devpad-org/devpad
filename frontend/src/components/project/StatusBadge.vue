@@ -23,7 +23,13 @@ const TONES: Record<string, string> = {
 }
 
 const tone = computed(() => TONES[props.status] ?? 'neutral')
-const label = computed(() => (props.status === 'request_changes' ? 'changes requested' : props.status.replace(/_/g, ' ')))
+const LABELS: Record<string, string> = {
+  approve: 'approved',
+  comment: 'commented',
+  request_changes: 'changes requested',
+}
+
+const label = computed(() => LABELS[props.status] ?? props.status.replace(/_/g, ' '))
 </script>
 
 <template>
