@@ -2,9 +2,12 @@ package project
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"path"
 	"slices"
 	"strings"
@@ -82,6 +85,13 @@ type Conversion struct {
 	// PublicKey is the user's new devpad SSH key once rotated.
 	PublicKey     string
 	RotationError string
+	// OldKeyFingerprint is the fingerprint of the devpad SSH key the
+	// workspace held. The key is only rotated while it is still that one, so
+	// a rotation whose record was lost does not run again.
+	OldKeyFingerprint string
+	// ProgressError is set when recording a step failed, so the step may
+	// have run twice; the user is told.
+	ProgressError string
 	Dismissed     bool
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
@@ -128,6 +138,9 @@ type ConvertResult struct {
 	KeyRotated    bool
 	PublicKey     string
 	RotationError string
+	// ProgressError is set when devpad could not record a step, which may
+	// then run again.
+	ProgressError string
 }
 
 func (s *service) DiscoverConversion(ctx context.Context, userID, workspaceID int64) (*agent.RepoDiscovery, error) {
@@ -191,43 +204,41 @@ func (s *service) ConvertWorkspace(ctx context.Context, userID, workspaceID int6
 		return context.WithTimeout(context.WithoutCancel(ctx), conversionCleanupTimeout)
 	}
 
-	initSHA := ""
+	conv := &Conversion{UserID: userID, WorkspaceID: workspaceID, InPlace: inPlace, State: ConversionImporting}
 	if repoPath == "" {
 		made, err := s.workspaces.InitRepoFromContents(ctx, userID, workspaceID, p.DefaultBranch, in.IncludeSensitive)
 		if err != nil {
 			return nil, fmt.Errorf("making a repo from the workspace's files: %w", err)
 		}
-		initSHA = made.SHA
+		conv.InitSHA = made.SHA
 		repoPath = "."
-	}
-	undoInit := func() {
-		if initSHA == "" {
-			return
-		}
-		cctx, cancel := cleanupCtx()
-		defer cancel()
-		if err := s.workspaces.UndoInitRepoFromContents(cctx, userID, workspaceID, initSHA); err != nil {
-			log.Printf("workspace %d: removing the repo made for a failed conversion: %v", workspaceID, err)
-		}
 	}
 
 	// The project stays "creating" until the workspace is attached, so
 	// nothing else can open its workspace or start a sandbox meanwhile, and
 	// it is marked as converting as it is created, so Delete refuses it.
-	conv := &Conversion{WorkspaceID: workspaceID, InPlace: inPlace, InitSHA: initSHA, State: ConversionImporting}
 	if err := s.createConverting(ctx, p, conv); err != nil {
-		undoInit()
+		cctx, cancel := cleanupCtx()
+		defer cancel()
+		s.undoInit(cctx, conv)
 		return nil, fmt.Errorf("creating project: %w", err)
 	}
 	defer s.endConverting(p.ID)
 	unlock := s.lockWorkspace(p.ID)
 	defer unlock()
 
+	// A failed conversion removes the repo made from the workspace's files
+	// first, while this conversion still holds the workspace. The project
+	// and its record go only once that is settled; otherwise they are kept,
+	// still "creating", so the undo is retried when devpad next looks.
 	fail := func(err error) (*ConvertResult, error) {
 		cctx, cancel := cleanupCtx()
 		defer cancel()
-		s.discardProject(cctx, p)
-		undoInit()
+		if s.undoInit(cctx, conv) {
+			s.discardProject(cctx, p)
+		} else {
+			s.keepForUndo(cctx, p)
+		}
 		return nil, err
 	}
 	if err := s.provisionRepoContainer(ctx, p); err != nil {
@@ -246,18 +257,29 @@ func (s *service) ConvertWorkspace(ctx context.Context, userID, workspaceID int6
 	}
 
 	if !inPlace {
+		// Ready and done are written together: a ready project whose record
+		// still said "importing" would look undoable after a crash. Nothing
+		// was taken from the workspace, so there is nothing to show.
 		p.Status, p.Error = StatusReady, ""
-		if err := s.repo.Update(ctx, p); err != nil {
+		conv.State, conv.Dismissed = ConversionDone, true
+		if err := s.repo.UpdateWithConversion(ctx, p, conv); err != nil {
+			p.Status = StatusCreating
 			return fail(fmt.Errorf("updating project: %w", err))
 		}
-		// Nothing was taken from the workspace, so there is nothing to show.
-		conv.State, conv.Dismissed = ConversionDone, true
-		s.saveConversion(ctx, conv)
 		return &ConvertResult{Project: p}, nil
 	}
 
 	// Record what follows attaching before it happens: once attached, the
-	// conversion stands, and these steps must run even if devpad stops.
+	// conversion stands, and these steps must run even if devpad stops. The
+	// key the workspace held is fingerprinted, so a rotation whose record
+	// is lost is not repeated over a key the user already added upstream.
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return fail(fmt.Errorf("looking up user: %w", err))
+	}
+	if user != nil {
+		conv.OldKeyFingerprint = sshKeyFingerprint(user.SSHPublicKey)
+	}
 	conv.Stripped, conv.RestartPending, conv.RotationPending = consented, true, true
 	if err := s.repo.UpdateConversion(ctx, conv); err != nil {
 		return fail(err)
@@ -289,6 +311,7 @@ func (s *service) ConvertWorkspace(ctx context.Context, userID, workspaceID int6
 		KeyRotated:    conv.KeyRotated,
 		PublicKey:     conv.PublicKey,
 		RotationError: conv.RotationError,
+		ProgressError: conv.ProgressError,
 	}
 	if ws, err := s.workspaces.Get(fctx, userID, workspaceID); err == nil {
 		result.Workspace = ws
@@ -306,8 +329,11 @@ func (s *service) ConvertWorkspace(ctx context.Context, userID, workspaceID int6
 func (s *service) finishAttached(ctx context.Context, p *Project, conv *Conversion) {
 	ready := p.Status == StatusReady
 	if !ready {
+		// Written with the record, so a ready project's record always says
+		// its workspace was attached.
 		p.Status, p.Error = StatusReady, ""
-		if err := s.repo.Update(ctx, p); err != nil {
+		conv.State = ConversionAttached
+		if err := s.repo.UpdateWithConversion(ctx, p, conv); err != nil {
 			log.Printf("project %d: marking ready after conversion: %v", p.ID, err)
 			p.Status = StatusCreating
 		} else {
@@ -334,11 +360,14 @@ func (s *service) finishAttached(ctx context.Context, p *Project, conv *Conversi
 	}
 }
 
-// saveConversion records a conversion's progress. A failed write is logged:
-// the steps it records have run either way.
+// saveConversion records a conversion's progress. The steps it records have
+// run either way, so a failed write is not returned; it is logged and kept
+// on the conversion, so the next write that succeeds, and the response,
+// tell the user a step may run again.
 func (s *service) saveConversion(ctx context.Context, conv *Conversion) {
 	if err := s.repo.UpdateConversion(ctx, conv); err != nil {
 		log.Printf("project %d: recording conversion: %v", conv.ProjectID, err)
+		conv.ProgressError = "devpad could not record a step of the conversion, so it may run again: " + err.Error()
 	}
 }
 
@@ -356,6 +385,13 @@ func (s *service) rotateKey(ctx context.Context, conv *Conversion) {
 	if user == nil || user.SSHPrivateKey == "" {
 		return // no key was ever put in the workspace
 	}
+	if conv.OldKeyFingerprint != "" && sshKeyFingerprint(user.SSHPublicKey) != conv.OldKeyFingerprint {
+		// The key the workspace held is already gone: replaced by an earlier
+		// run of this step whose record was lost, or by the user. Replacing
+		// it again would void a key the user may have added upstream.
+		conv.KeyRotated, conv.PublicKey = true, user.SSHPublicKey
+		return
+	}
 	if s.keys == nil {
 		conv.RotationError = "key rotation is not available"
 		return
@@ -370,43 +406,118 @@ func (s *service) rotateKey(ctx context.Context, conv *Conversion) {
 }
 
 // resumeConversion finishes a conversion that devpad stopped part way
-// through. One whose workspace was attached finishes its pending steps; one
-// whose workspace was not is undone, as a failed conversion would have been.
-// The caller holds the project's converting mark.
+// through. One whose workspace was attached finishes its pending steps. One
+// whose workspace provably was not, from devpad's own records, is undone, as
+// a failed conversion would have been, but only while its project is still
+// "creating": a project that got further may be in use and is never removed.
+// Anything devpad cannot tell is left alone and tried again later. The
+// caller holds the project's converting mark and read p afresh.
 func (s *service) resumeConversion(ctx context.Context, p *Project, conv *Conversion) {
 	if conv.State == ConversionImporting {
 		attached, known := s.conversionAttached(ctx, conv)
-		if !known {
-			return // try again later
-		}
-		if !attached {
-			log.Printf("project %d: undoing a conversion that stopped before its workspace was attached", p.ID)
-			s.discardProject(ctx, p)
-			if conv.InitSHA != "" {
-				if err := s.workspaces.UndoInitRepoFromContents(ctx, conv.UserID, conv.WorkspaceID, conv.InitSHA); err != nil {
-					log.Printf("workspace %d: removing the repo made for a stopped conversion: %v", conv.WorkspaceID, err)
-				}
-			}
+		switch {
+		case p.Status != StatusCreating && !conv.InPlace:
+			// Ready and done are written together, so this is a record from
+			// before that, whose last write was lost; there is nothing to do.
+			conv.State, conv.Dismissed = ConversionDone, true
+			s.saveConversion(ctx, conv)
+			return
+		case !known:
+			log.Printf("project %d: cannot tell whether workspace %d was attached; leaving the conversion to retry", p.ID, conv.WorkspaceID)
+			return
+		case attached:
+			conv.State = ConversionAttached
+			s.saveConversion(ctx, conv)
+		case p.Status != StatusCreating:
+			log.Printf("project %d is %s but workspace %d is not attached to it; leaving the conversion alone", p.ID, p.Status, conv.WorkspaceID)
+			return
+		default:
+			s.undoConversion(ctx, p, conv)
 			return
 		}
-		conv.State = ConversionAttached
-		s.saveConversion(ctx, conv)
 	}
 	if conv.State == ConversionAttached {
 		s.finishAttached(ctx, p, conv)
 	}
 }
 
-// conversionAttached reports whether a conversion's workspace became the
-// project's workspace; known is false when that cannot be told yet.
+// undoConversion removes a conversion that stopped before its workspace was
+// attached. The repo made from the workspace's files is removed first, under
+// the workspace's conversion mark, so no new conversion can be using it; the
+// project and its record are removed only once that is settled, so an undo
+// that could not run is tried again.
+func (s *service) undoConversion(ctx context.Context, p *Project, conv *Conversion) {
+	if conv.InitSHA != "" {
+		release, err := s.workspaces.BeginConversion(ctx, conv.UserID, conv.WorkspaceID)
+		switch {
+		case errors.Is(err, workspace.ErrNotStandalone):
+			// Converted since, so the repo is in use: leave it.
+			log.Printf("workspace %d was converted since; the repo made for project %d was left in place", conv.WorkspaceID, p.ID)
+		case err != nil:
+			log.Printf("project %d: cannot undo its conversion yet: %v", p.ID, err)
+			return
+		default:
+			settled := s.undoInit(ctx, conv)
+			release()
+			if !settled {
+				return
+			}
+		}
+	}
+	log.Printf("project %d: undoing a conversion that stopped before its workspace was attached", p.ID)
+	s.discardProject(ctx, p)
+}
+
+// undoInit removes the repo a conversion made from the workspace's files.
+// The caller holds the workspace's conversion mark. It reports whether that
+// is settled: removed, never made, or left in place because it changed
+// since devpad made it or the workspace is no longer standalone. False means
+// it could not be tried, so the caller keeps what it needs to retry.
+func (s *service) undoInit(ctx context.Context, conv *Conversion) bool {
+	if conv.InitSHA == "" {
+		return true
+	}
+	err := s.workspaces.UndoInitRepoFromContents(ctx, conv.UserID, conv.WorkspaceID, conv.InitSHA)
+	var agentErr *agent.AgentError
+	switch {
+	case err == nil:
+		return true
+	case errors.As(err, &agentErr) && agentErr.StatusCode == http.StatusConflict:
+		log.Printf("workspace %d: the repo made for a failed conversion changed since; it was left in place", conv.WorkspaceID)
+		return true
+	case errors.Is(err, workspace.ErrNotStandalone):
+		log.Printf("workspace %d was converted since; the repo made for a failed conversion was left in place", conv.WorkspaceID)
+		return true
+	default:
+		log.Printf("workspace %d: removing the repo made for a failed conversion: %v", conv.WorkspaceID, err)
+		return false
+	}
+}
+
+// keepForUndo removes the repo container of a failed conversion whose repo
+// made from files could not be removed yet, and keeps the project,
+// "creating", with its record, so the undo is retried by Reconcile or the
+// next read of the project. The user can also delete it.
+func (s *service) keepForUndo(ctx context.Context, p *Project) {
+	log.Printf("project %d: kept until the repo made for its failed conversion can be removed", p.ID)
+	if err := s.removeRepoContainer(ctx, p); err != nil {
+		log.Printf("project %d: removing repo container after a failed conversion: %v", p.ID, err)
+		return
+	}
+	p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName = "", "", ""
+	if err := s.repo.Update(ctx, p); err != nil {
+		log.Printf("project %d: recording its removed repo container: %v", p.ID, err)
+	}
+}
+
+// conversionAttached reports from devpad's records whether a conversion's
+// workspace became the project's workspace; known is false when that cannot
+// be told, such as when the workspace is gone.
 func (s *service) conversionAttached(ctx context.Context, conv *Conversion) (attached, known bool) {
 	if !conv.InPlace {
 		return false, true
 	}
 	ws, err := s.workspaces.Get(ctx, conv.UserID, conv.WorkspaceID)
-	if errors.Is(err, workspace.ErrNotFound) {
-		return false, true
-	}
 	if err != nil {
 		log.Printf("workspace %d: checking a stopped conversion: %v", conv.WorkspaceID, err)
 		return false, false
@@ -598,7 +709,8 @@ func (s *service) importWorkspaceRepo(ctx context.Context, p *Project, userID, w
 }
 
 // discardProject removes a project whose conversion failed, with its repo
-// container. Nothing else can have used it, since it never became ready.
+// container. It is only called for a project still "creating", which
+// nothing else can have used.
 func (s *service) discardProject(ctx context.Context, p *Project) {
 	if err := s.removeRepoContainer(ctx, p); err != nil {
 		log.Printf("project %d: removing repo container after a failed conversion: %v", p.ID, err)
@@ -623,4 +735,15 @@ func hasURLCredentials(raw string) bool {
 	}
 	_, _, hasPassword := strings.Cut(authority[:at], ":")
 	return hasPassword || strings.HasPrefix(strings.ToLower(scheme), "http")
+}
+
+// sshKeyFingerprint identifies an SSH public key by its type and key data,
+// ignoring the comment; empty for no key.
+func sshKeyFingerprint(publicKey string) string {
+	fields := strings.Fields(publicKey)
+	if len(fields) < 2 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(fields[0] + " " + fields[1]))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }

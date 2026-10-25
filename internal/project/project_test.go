@@ -1119,9 +1119,15 @@ func (f *fakeWorkspaces) InitRepoFromContents(_ context.Context, userID, id int6
 	return &agent.RepoContentsInit{Branch: branch, SHA: "init-sha", Files: 3}, nil
 }
 
-func (f *fakeWorkspaces) UndoInitRepoFromContents(_ context.Context, _, _ int64, sha string) error {
+func (f *fakeWorkspaces) UndoInitRepoFromContents(_ context.Context, userID, id int64, sha string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.convertErr["undo"]; err != nil {
+		return err
+	}
+	if _, err := f.standalone(userID, id); err != nil {
+		return err
+	}
 	f.undone = append(f.undone, sha)
 	return nil
 }

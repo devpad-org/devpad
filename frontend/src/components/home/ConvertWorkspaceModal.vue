@@ -307,6 +307,7 @@ function formatBytes(bytes: number): string {
           </div>
           <p class="notice notice-warning">{{ REVOKE_REMINDER }}</p>
 
+          <p v-if="result.progressError" class="notice notice-warning">{{ result.progressError }}.</p>
           <p v-if="result.restartError" class="notice notice-error">
             Devpad couldn't restart the workspace ({{ result.restartError }}). Stop and start it yourself, so no
             process started before the conversion keeps a credential.

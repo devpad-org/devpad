@@ -208,6 +208,8 @@ export interface ConvertResult {
   keyRotated: boolean
   publicKey: string
   rotationError: string
+  // Set when devpad could not record a step, which may then have run twice.
+  progressError: string
 }
 
 // What converting a workspace in place did, kept on the project until the
@@ -224,6 +226,7 @@ export interface ConversionNotice {
   keyRotated: boolean
   publicKey: string
   rotationError: string
+  progressError: string
   createdAt: string
 }
 

@@ -576,7 +576,80 @@ func initRepoFromContents(ctx context.Context, root, branch, name, email string,
 	if err != nil {
 		return "", fmt.Errorf("resolving HEAD: %s", strings.TrimSpace(out))
 	}
+	gitDir := filepath.Join(root, ".git")
+	digest, err := repoStateDigest(gitDir)
+	if err != nil {
+		return "", fmt.Errorf("recording the repo's state: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, initStateFile), []byte(digest+"\n"), 0o644); err != nil {
+		return "", fmt.Errorf("recording the repo's state: %w", err)
+	}
 	return strings.TrimSpace(out), nil
+}
+
+// initStateFile holds, inside a repo made from the workspace's files, a
+// digest of the repo's own state as devpad left it. The undo removes the
+// repo only while that state is unchanged, so a remote, hook, branch switch
+// or anything else the user did in it is never thrown away with it.
+const initStateFile = "devpad-init"
+
+// initStateVolatile are the .git entries the digest leaves out: objects
+// and refs are checked by commit, the index by comparing it with HEAD, and
+// git rewrites the rest by itself.
+var initStateVolatile = map[string]bool{
+	"objects": true, "refs": true, "logs": true, "index": true, "COMMIT_EDITMSG": true, initStateFile: true,
+}
+
+// repoStateDigest hashes the names, modes and contents of everything in a
+// .git directory but its volatile entries: config, HEAD, hooks, info and
+// any state a git command leaves, such as ORIG_HEAD or a worktree.
+func repoStateDigest(gitDir string) (string, error) {
+	h := sha256.New()
+	err := filepath.WalkDir(gitDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(gitDir, p)
+		if err != nil || rel == "." {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if top, _, _ := strings.Cut(rel, "/"); initStateVolatile[top] {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(h, "%s\x00%s\x00", rel, info.Mode())
+		switch {
+		case info.Mode().IsRegular():
+			f, err := os.Open(p)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(h, f)
+			f.Close()
+			if err != nil {
+				return err
+			}
+		case info.Mode()&fs.ModeSymlink != 0:
+			target, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			io.WriteString(h, target)
+		}
+		h.Write([]byte{0})
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // handleRepoUndoInitContents removes a repo made by handleRepoInitContents,
@@ -604,7 +677,8 @@ func handleRepoUndoInitContents(w http.ResponseWriter, r *http.Request) {
 	head, _ := gitOutputIn(ctx, root, "rev-parse", "HEAD")
 	refs, _ := gitOutputIn(ctx, root, "for-each-ref", "--format=%(objectname)")
 	count, _ := gitOutputIn(ctx, root, "rev-list", "--all", "--count")
-	if strings.TrimSpace(head) != sha || strings.TrimSpace(count) != "1" || slices.ContainsFunc(nonEmptyLines(refs), func(ref string) bool { return ref != sha }) {
+	if strings.TrimSpace(head) != sha || strings.TrimSpace(count) != "1" || slices.ContainsFunc(nonEmptyLines(refs), func(ref string) bool { return ref != sha }) ||
+		!repoStateUnchanged(ctx, root) {
 		writeErr(w, http.StatusConflict, "the repository has changed since devpad made it; it was left in place")
 		return
 	}
@@ -613,6 +687,23 @@ func handleRepoUndoInitContents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"removed": true})
+}
+
+// repoStateUnchanged reports whether a repo made from the workspace's files
+// is as devpad left it: the same .git state, and nothing staged. Anything it
+// cannot check counts as changed.
+func repoStateUnchanged(ctx context.Context, root string) bool {
+	gitDir := filepath.Join(root, ".git")
+	want, err := os.ReadFile(filepath.Join(gitDir, initStateFile))
+	if err != nil {
+		return false
+	}
+	got, err := repoStateDigest(gitDir)
+	if err != nil || strings.TrimSpace(string(want)) != got {
+		return false
+	}
+	_, err = gitOutputIn(ctx, root, "diff", "--cached", "--quiet", "HEAD")
+	return err == nil
 }
 
 // managedSSHFileNames are the files devpad writes into ~/.ssh of a

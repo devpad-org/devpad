@@ -580,6 +580,7 @@ func (h *Handler) HandleConvertWorkspace(w http.ResponseWriter, r *http.Request)
 		"keyRotated":    result.KeyRotated,
 		"publicKey":     result.PublicKey,
 		"rotationError": result.RotationError,
+		"progressError": result.ProgressError,
 	}
 	if result.Workspace != nil {
 		body["workspace"] = sandboxResponse(result.Workspace)
@@ -622,6 +623,7 @@ func (h *Handler) HandleConversionNotice(w http.ResponseWriter, r *http.Request)
 		"keyRotated":      conv.KeyRotated,
 		"publicKey":       conv.PublicKey,
 		"rotationError":   conv.RotationError,
+		"progressError":   conv.ProgressError,
 		"createdAt":       conv.CreatedAt,
 	}})
 }

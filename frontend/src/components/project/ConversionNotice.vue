@@ -57,6 +57,10 @@ async function copyKey() {
     </div>
     <p class="notice notice-warning">{{ REVOKE_REMINDER }}</p>
 
+    <p v-if="conversion.progressError" class="notice notice-warning">
+      {{ conversion.progressError }}. If your SSH key or the workspace changed twice, the key shown here is the
+      current one.
+    </p>
     <p v-if="conversion.restartError" class="notice notice-error">
       Devpad couldn't restart the workspace ({{ conversion.restartError }}). Stop and start it yourself, so no
       process from before the conversion keeps a credential.

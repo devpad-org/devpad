@@ -25,6 +25,10 @@ type Repository interface {
 	// GetConversion returns a project's conversion record, or nil.
 	GetConversion(ctx context.Context, projectID int64) (*Conversion, error)
 	UpdateConversion(ctx context.Context, c *Conversion) error
+	// UpdateWithConversion updates a project and its conversion record in
+	// one transaction, so a project is never ready while its record still
+	// says the conversion can be undone.
+	UpdateWithConversion(ctx context.Context, p *Project, c *Conversion) error
 	// UnfinishedConversions lists the conversions still to be finished.
 	UnfinishedConversions(ctx context.Context) ([]*Conversion, error)
 }
@@ -101,8 +105,12 @@ func (r *repository) ListByUserID(ctx context.Context, userID int64) ([]*Project
 }
 
 func (r *repository) Update(ctx context.Context, p *Project) error {
+	return updateProject(ctx, r.db, p)
+}
+
+func updateProject(ctx context.Context, db execer, p *Project) error {
 	now := time.Now()
-	_, err := r.db.ExecContext(ctx,
+	_, err := db.ExecContext(ctx,
 		`UPDATE projects SET name = ?, description = ?, setup_script = ?, max_sandboxes = ?, status = ?, error = ?, repo_container_id = ?, repo_volume_name = ?, repo_network_name = ?, updated_at = ? WHERE id = ?`,
 		p.Name, p.Description, p.SetupScript, p.MaxSandboxes, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, now, p.ID,
 	)
@@ -149,8 +157,8 @@ func (r *repository) CreateConverting(ctx context.Context, p *Project, c *Conver
 	}
 	now := time.Now()
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO project_conversions (project_id, user_id, workspace_id, in_place, init_sha, state, stripped, ssh_kept, restart_pending, restart_error, rotation_pending, key_rotated, public_key, rotation_error, dismissed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ProjectID, c.UserID, c.WorkspaceID, c.InPlace, c.InitSHA, c.State, stripped, sshKept, c.RestartPending, c.RestartError, c.RotationPending, c.KeyRotated, c.PublicKey, c.RotationError, c.Dismissed, now, now,
+		`INSERT INTO project_conversions (project_id, user_id, workspace_id, in_place, init_sha, state, stripped, ssh_kept, restart_pending, restart_error, rotation_pending, key_rotated, public_key, rotation_error, dismissed, old_key_fingerprint, progress_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ProjectID, c.UserID, c.WorkspaceID, c.InPlace, c.InitSHA, c.State, stripped, sshKept, c.RestartPending, c.RestartError, c.RotationPending, c.KeyRotated, c.PublicKey, c.RotationError, c.Dismissed, c.OldKeyFingerprint, c.ProgressError, now, now,
 	); err != nil {
 		return fmt.Errorf("inserting conversion: %w", err)
 	}
@@ -161,7 +169,7 @@ func (r *repository) CreateConverting(ctx context.Context, p *Project, c *Conver
 	return nil
 }
 
-const conversionColumns = `project_id, user_id, workspace_id, in_place, init_sha, state, stripped, ssh_kept, restart_pending, restart_error, rotation_pending, key_rotated, public_key, rotation_error, dismissed, created_at, updated_at`
+const conversionColumns = `project_id, user_id, workspace_id, in_place, init_sha, state, stripped, ssh_kept, restart_pending, restart_error, rotation_pending, key_rotated, public_key, rotation_error, dismissed, old_key_fingerprint, progress_error, created_at, updated_at`
 
 func (r *repository) GetConversion(ctx context.Context, projectID int64) (*Conversion, error) {
 	c, err := scanConversion(r.db.QueryRowContext(ctx, `SELECT `+conversionColumns+` FROM project_conversions WHERE project_id = ?`, projectID))
@@ -175,18 +183,40 @@ func (r *repository) GetConversion(ctx context.Context, projectID int64) (*Conve
 }
 
 func (r *repository) UpdateConversion(ctx context.Context, c *Conversion) error {
+	return updateConversion(ctx, r.db, c)
+}
+
+func updateConversion(ctx context.Context, db execer, c *Conversion) error {
 	stripped, sshKept, err := conversionLists(c)
 	if err != nil {
 		return err
 	}
 	now := time.Now()
-	if _, err := r.db.ExecContext(ctx,
-		`UPDATE project_conversions SET init_sha = ?, state = ?, stripped = ?, ssh_kept = ?, restart_pending = ?, restart_error = ?, rotation_pending = ?, key_rotated = ?, public_key = ?, rotation_error = ?, dismissed = ?, updated_at = ? WHERE project_id = ?`,
-		c.InitSHA, c.State, stripped, sshKept, c.RestartPending, c.RestartError, c.RotationPending, c.KeyRotated, c.PublicKey, c.RotationError, c.Dismissed, now, c.ProjectID,
+	if _, err := db.ExecContext(ctx,
+		`UPDATE project_conversions SET init_sha = ?, state = ?, stripped = ?, ssh_kept = ?, restart_pending = ?, restart_error = ?, rotation_pending = ?, key_rotated = ?, public_key = ?, rotation_error = ?, dismissed = ?, old_key_fingerprint = ?, progress_error = ?, updated_at = ? WHERE project_id = ?`,
+		c.InitSHA, c.State, stripped, sshKept, c.RestartPending, c.RestartError, c.RotationPending, c.KeyRotated, c.PublicKey, c.RotationError, c.Dismissed, c.OldKeyFingerprint, c.ProgressError, now, c.ProjectID,
 	); err != nil {
 		return fmt.Errorf("updating conversion: %w", err)
 	}
 	c.UpdatedAt = now
+	return nil
+}
+
+func (r *repository) UpdateWithConversion(ctx context.Context, p *Project, c *Conversion) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if err := updateProject(ctx, tx, p); err != nil {
+		return err
+	}
+	if err := updateConversion(ctx, tx, c); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing project and conversion: %w", err)
+	}
 	return nil
 }
 
@@ -237,7 +267,7 @@ func scanConversion(row rowScanner) (*Conversion, error) {
 	var stripped, sshKept string
 	err := row.Scan(&c.ProjectID, &c.UserID, &c.WorkspaceID, &c.InPlace, &c.InitSHA, &c.State, &stripped, &sshKept,
 		&c.RestartPending, &c.RestartError, &c.RotationPending, &c.KeyRotated, &c.PublicKey, &c.RotationError, &c.Dismissed,
-		&c.CreatedAt, &c.UpdatedAt)
+		&c.OldKeyFingerprint, &c.ProgressError, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

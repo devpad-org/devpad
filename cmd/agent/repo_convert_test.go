@@ -390,20 +390,10 @@ func TestRepoUndoInitContents(t *testing.T) {
 	_, got := initContents(t, root, false)
 	sha := got["sha"].(string)
 
-	undo := func() int {
-		return repoRequest(t, root, handleRepoUndoInitContents, http.MethodPost, "/api/repo/init-contents/undo?sha="+sha, nil).Code
-	}
-
-	// A repo that gained a commit since is left in place.
-	commitFile(t, root, "more.txt", "y")
-	if code := undo(); code != http.StatusConflict {
-		t.Fatalf("expected 409 after a new commit, got %d", code)
-	}
-	runGit(t, root, "reset", "--hard", sha)
-	runGit(t, root, "reflog", "expire", "--expire=now", "--all")
-	runGit(t, root, "gc", "--prune=now", "--quiet")
-
-	if code := undo(); code != http.StatusOK {
+	// Reading the repo, as the IDE does, leaves it undoable.
+	runGit(t, root, "status")
+	runGit(t, root, "log", "--oneline")
+	if code := undoContents(t, root, sha); code != http.StatusOK {
 		t.Fatalf("undo status %d", code)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".git")); err == nil {
@@ -411,6 +401,56 @@ func TestRepoUndoInitContents(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "index.html")); err != nil {
 		t.Fatalf("undo removed the user's file: %v", err)
+	}
+}
+
+func undoContents(t *testing.T, root, sha string) int {
+	t.Helper()
+	return repoRequest(t, root, handleRepoUndoInitContents, http.MethodPost, "/api/repo/init-contents/undo?sha="+sha, nil).Code
+}
+
+// The undo leaves a repo the user did anything with, even when its only
+// commit is still devpad's.
+func TestRepoUndoInitContentsLeavesAChangedRepo(t *testing.T) {
+	cases := map[string]func(t *testing.T, root, sha string){
+		"new commit": func(t *testing.T, root, _ string) { commitFile(t, root, "more.txt", "y") },
+		"commit then reset": func(t *testing.T, root, sha string) {
+			commitFile(t, root, "more.txt", "y")
+			runGit(t, root, "reset", "--hard", sha)
+			runGit(t, root, "reflog", "expire", "--expire=now", "--all")
+			runGit(t, root, "gc", "--prune=now", "--quiet")
+		},
+		"remote added": func(t *testing.T, root, _ string) {
+			runGit(t, root, "remote", "add", "origin", "https://example.com/r.git")
+		},
+		"config changed":  func(t *testing.T, root, _ string) { runGit(t, root, "config", "core.autocrlf", "input") },
+		"hook added":      func(t *testing.T, root, _ string) { writeFile(t, root, ".git/hooks/pre-commit", "#!/bin/sh\n") },
+		"exclude changed": func(t *testing.T, root, _ string) { writeFile(t, root, ".git/info/exclude", "dist/\n") },
+		"file staged": func(t *testing.T, root, _ string) {
+			writeFile(t, root, "new.txt", "z")
+			runGit(t, root, "add", "new.txt")
+		},
+		"state record removed": func(t *testing.T, root, _ string) {
+			if err := os.Remove(filepath.Join(root, ".git", initStateFile)); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, root, "index.html", "x")
+			_, got := initContents(t, root, false)
+			sha := got["sha"].(string)
+			change(t, root, sha)
+
+			if code := undoContents(t, root, sha); code != http.StatusConflict {
+				t.Fatalf("expected 409, got %d", code)
+			}
+			if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
+				t.Fatalf("the changed repo was removed: %v", err)
+			}
+		})
 	}
 }
 

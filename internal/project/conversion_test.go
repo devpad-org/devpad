@@ -26,17 +26,28 @@ type failReadyRepo struct {
 	fails int
 }
 
-func (r *failReadyRepo) Update(ctx context.Context, p *Project) error {
+func (r *failReadyRepo) failing(p *Project) bool {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	fail := p.Status == StatusReady && r.fails > 0
 	if fail {
 		r.fails--
 	}
-	r.mu.Unlock()
-	if fail {
+	return fail
+}
+
+func (r *failReadyRepo) Update(ctx context.Context, p *Project) error {
+	if r.failing(p) {
 		return errors.New("disk full")
 	}
 	return r.tokenCapturingRepo.Update(ctx, p)
+}
+
+func (r *failReadyRepo) UpdateWithConversion(ctx context.Context, p *Project, c *Conversion) error {
+	if r.failing(p) {
+		return errors.New("disk full")
+	}
+	return r.tokenCapturingRepo.UpdateWithConversion(ctx, p, c)
 }
 
 func (e *testEnv) conversion(t *testing.T, projectID int64) *Conversion {
@@ -314,5 +325,324 @@ func TestPushWritesTheCurrentKey(t *testing.T) {
 		if !strings.Contains(commands, "~/.ssh/id_ed25519") || !strings.Contains(commands, private) {
 			t.Fatalf("push did not write %q: %s", private, commands)
 		}
+	}
+}
+
+// leftConversion records a conversion as a crash or a lost write would leave
+// it: the project in status, with the record as given.
+func (e *testEnv) leftConversion(t *testing.T, status Status, conv *Conversion) *Project {
+	t.Helper()
+	p := &Project{
+		UserID: e.userID, Name: "App", DefaultBranch: "main", MaxSandboxes: 1, Status: status,
+		RepoContainerID: "repo-container", RepoVolumeName: "repo-volume", RepoNetworkName: "repo-network", RepoAgentToken: "token",
+	}
+	if err := e.svc.repo.CreateConverting(context.Background(), p, conv); err != nil {
+		t.Fatalf("recording conversion: %v", err)
+	}
+	return p
+}
+
+func (e *testEnv) reconcile(t *testing.T) {
+	t.Helper()
+	if err := e.svc.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	e.svc.background.Wait()
+}
+
+// A record left "importing" by a lost write must never remove a project
+// that got further: it may hold published branches and merged work.
+func TestReconcileNeverRemovesAReadyProject(t *testing.T) {
+	t.Run("subdirectory", func(t *testing.T) {
+		e := setupTest(t)
+		ws := e.standalone()
+		p := e.leftConversion(t, StatusReady, &Conversion{WorkspaceID: ws.ID, State: ConversionImporting})
+
+		e.reconcile(t)
+
+		if got := e.project(t, p.ID); got.Status != StatusReady {
+			t.Fatalf("project = %s", got.Status)
+		}
+		if len(e.containers.removed) != 0 {
+			t.Fatalf("repo container removed: %v", e.containers.removed)
+		}
+		if conv := e.conversion(t, p.ID); conv.State != ConversionDone {
+			t.Fatalf("conversion = %+v", conv)
+		}
+	})
+
+	t.Run("in place, workspace gone", func(t *testing.T) {
+		e := setupTest(t)
+		e.giveUserKey(t)
+		p := e.leftConversion(t, StatusReady, &Conversion{WorkspaceID: 999, InPlace: true, InitSHA: "init-sha", State: ConversionImporting, RestartPending: true, RotationPending: true})
+
+		e.reconcile(t)
+
+		if got := e.project(t, p.ID); got.Status != StatusReady {
+			t.Fatalf("project = %s", got.Status)
+		}
+		if len(e.containers.removed) != 0 || len(e.workspaces.undone) != 0 {
+			t.Fatalf("removed=%v undone=%v", e.containers.removed, e.workspaces.undone)
+		}
+		// Devpad cannot tell what happened, so the record is left as it was.
+		if conv := e.conversion(t, p.ID); conv.State != ConversionImporting || !conv.RotationPending {
+			t.Fatalf("conversion = %+v", conv)
+		}
+	})
+
+	t.Run("in place, attached", func(t *testing.T) {
+		e := setupTest(t)
+		e.giveUserKey(t)
+		ws := e.standalone()
+		p := e.leftConversion(t, StatusReady, &Conversion{WorkspaceID: ws.ID, InPlace: true, State: ConversionImporting, RestartPending: true, RotationPending: true})
+		ws.ProjectID, ws.RepoSeeded = p.ID, true
+
+		e.reconcile(t)
+
+		if got := e.project(t, p.ID); got.Status != StatusReady {
+			t.Fatalf("project = %s", got.Status)
+		}
+		if len(e.containers.removed) != 0 {
+			t.Fatalf("repo container removed: %v", e.containers.removed)
+		}
+		if conv := e.conversion(t, p.ID); conv.State != ConversionDone || !conv.KeyRotated {
+			t.Fatalf("conversion = %+v", conv)
+		}
+	})
+}
+
+func TestReconcileLeavesAConversionWhoseWorkspaceIsGone(t *testing.T) {
+	e := setupTest(t)
+	p := e.leftConversion(t, StatusCreating, &Conversion{WorkspaceID: 999, InPlace: true, State: ConversionImporting})
+
+	e.reconcile(t)
+
+	if got := e.project(t, p.ID); got.Status != StatusCreating {
+		t.Fatalf("project = %s", got.Status)
+	}
+	if len(e.containers.removed) != 0 {
+		t.Fatalf("repo container removed: %v", e.containers.removed)
+	}
+	if conv := e.conversion(t, p.ID); conv.State != ConversionImporting {
+		t.Fatalf("conversion = %+v", conv)
+	}
+}
+
+// An undo that cannot run yet keeps the project and its record, so it is
+// tried again, and never runs under a conversion of the same workspace.
+func TestReconcileRetriesAnUndoThatCouldNotRun(t *testing.T) {
+	cases := map[string]struct {
+		block   func(e *testEnv, ws *workspace.Workspace)
+		unblock func(e *testEnv, ws *workspace.Workspace)
+	}{
+		"workspace stopped": {
+			block:   func(e *testEnv, ws *workspace.Workspace) { e.workspaces.setStatus(ws.ID, workspace.StatusStopped) },
+			unblock: func(e *testEnv, ws *workspace.Workspace) { e.workspaces.setStatus(ws.ID, workspace.StatusRunning) },
+		},
+		"workspace being converted": {
+			block: func(e *testEnv, ws *workspace.Workspace) {
+				e.workspaces.mu.Lock()
+				e.workspaces.converting[ws.ID] = true
+				e.workspaces.mu.Unlock()
+			},
+			unblock: func(e *testEnv, ws *workspace.Workspace) {
+				e.workspaces.mu.Lock()
+				delete(e.workspaces.converting, ws.ID)
+				e.workspaces.mu.Unlock()
+			},
+		},
+		"undo failed": {
+			block: func(e *testEnv, _ *workspace.Workspace) {
+				e.workspaces.convertErr["undo"] = errors.New("agent unreachable")
+			},
+			unblock: func(e *testEnv, _ *workspace.Workspace) { delete(e.workspaces.convertErr, "undo") },
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := setupTest(t)
+			p, ws := e.interruptedConversion(t, ConversionImporting, false, "init-sha")
+			c.block(e, ws)
+
+			e.reconcile(t)
+			if got := e.project(t, p.ID); got.Status != StatusCreating {
+				t.Fatalf("project = %s", got.Status)
+			}
+			if len(e.containers.removed) != 0 || len(e.workspaces.undone) != 0 {
+				t.Fatalf("removed=%v undone=%v before the undo could run", e.containers.removed, e.workspaces.undone)
+			}
+
+			c.unblock(e, ws)
+			e.reconcile(t)
+			if n := e.projectCount(t); n != 0 {
+				t.Fatalf("%d projects left", n)
+			}
+			if !slices.Equal(e.workspaces.undone, []string{"init-sha"}) {
+				t.Fatalf("undone = %v", e.workspaces.undone)
+			}
+		})
+	}
+}
+
+// A workspace converted again since keeps the repo devpad made: the new
+// conversion is using it. The stale project still goes.
+func TestReconcileLeavesTheRepoOfAWorkspaceConvertedSince(t *testing.T) {
+	e := setupTest(t)
+	p, ws := e.interruptedConversion(t, ConversionImporting, false, "init-sha")
+	other := e.createProject(t, CreateInput{Name: "other"})
+	ws.ProjectID = other.ID
+
+	e.reconcile(t)
+
+	if len(e.workspaces.undone) != 0 {
+		t.Fatalf("undid a repo in use: %v", e.workspaces.undone)
+	}
+	if got, err := e.svc.repo.GetByID(context.Background(), p.ID); err != nil || got != nil {
+		t.Fatalf("stale project kept: %+v %v", got, err)
+	}
+	if got := e.project(t, other.ID); got.Status != StatusReady {
+		t.Fatalf("other project = %s", got.Status)
+	}
+}
+
+func TestConvertWorkspaceKeepsAProjectWhoseUndoCannotRun(t *testing.T) {
+	e := setupTest(t)
+	ws := e.standalone()
+	e.workspaces.discovery = &agent.RepoDiscovery{}
+	e.workspaces.convertErr["bundle"] = errors.New("bundle failed")
+	e.workspaces.convertErr["undo"] = errors.New("agent unreachable")
+
+	if _, err := e.convert(ws.ID, ConvertInput{Name: "App"}); err == nil {
+		t.Fatal("expected the conversion to fail")
+	}
+	// The repo container goes, but the project and its record stay, so the
+	// repo made from the files is removed later.
+	projects, err := e.svc.repo.ListByUserID(context.Background(), e.userID)
+	if err != nil || len(projects) != 1 {
+		t.Fatalf("projects = %v %v", projects, err)
+	}
+	p := projects[0]
+	if p.Status != StatusCreating || p.RepoContainerID != "" || len(e.containers.removed) != 1 {
+		t.Fatalf("project = %+v removed=%v", p, e.containers.removed)
+	}
+	if conv := e.conversion(t, p.ID); conv.State != ConversionImporting || conv.InitSHA != "init-sha" {
+		t.Fatalf("conversion = %+v", conv)
+	}
+
+	delete(e.workspaces.convertErr, "undo")
+	e.reconcile(t)
+	if n := e.projectCount(t); n != 0 {
+		t.Fatalf("%d projects left", n)
+	}
+	if !slices.Equal(e.workspaces.undone, []string{"init-sha"}) {
+		t.Fatalf("undone = %v", e.workspaces.undone)
+	}
+}
+
+func TestConvertWorkspaceLeavesAChangedRepoAndRemovesTheProject(t *testing.T) {
+	e := setupTest(t)
+	ws := e.standalone()
+	e.workspaces.discovery = &agent.RepoDiscovery{}
+	e.workspaces.convertErr["bundle"] = errors.New("bundle failed")
+	e.workspaces.convertErr["undo"] = &agent.AgentError{StatusCode: http.StatusConflict, Message: "changed"}
+
+	if _, err := e.convert(ws.ID, ConvertInput{Name: "App"}); err == nil {
+		t.Fatal("expected the conversion to fail")
+	}
+	if n := e.projectCount(t); n != 0 {
+		t.Fatalf("%d projects left", n)
+	}
+}
+
+func TestResumedRotationKeepsAKeyAlreadyReplaced(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		currentKey  string
+		wantRotated int
+		wantKey     string
+	}{
+		// The record of an earlier rotation was lost: the key the workspace
+		// held is gone, so it is not replaced again.
+		{"already replaced", "ssh-ed25519 REPLACED devpad-owner", 0, "ssh-ed25519 REPLACED devpad-owner"},
+		{"still the old key", "ssh-ed25519 OLDKEY", 1, "ssh-ed25519 NEWKEY devpad-owner"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := setupTest(t)
+			e.giveUserKey(t)
+			p, _ := e.interruptedConversion(t, ConversionAttached, true, "")
+			conv := e.conversion(t, p.ID)
+			conv.OldKeyFingerprint = sshKeyFingerprint("ssh-ed25519 OLDKEY devpad-owner")
+			if err := e.svc.repo.UpdateConversion(context.Background(), conv); err != nil {
+				t.Fatalf("update: %v", err)
+			}
+			if _, err := e.db.Conn().Exec(`UPDATE users SET ssh_public_key = ? WHERE id = ?`, tc.currentKey, e.userID); err != nil {
+				t.Fatalf("setting key: %v", err)
+			}
+
+			e.reconcile(t)
+
+			if len(e.keys.rotated) != tc.wantRotated {
+				t.Fatalf("rotated %v", e.keys.rotated)
+			}
+			if got := e.conversion(t, p.ID); got.State != ConversionDone || !got.KeyRotated || got.PublicKey != tc.wantKey {
+				t.Fatalf("conversion = %+v", got)
+			}
+		})
+	}
+}
+
+func TestConvertWorkspaceRecordsTheKeyItHeld(t *testing.T) {
+	e := setupTest(t)
+	ws := e.standalone()
+	e.giveUserKey(t)
+	result, err := e.convert(ws.ID, ConvertInput{RepoPath: ".", Name: "App"})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if conv := e.conversion(t, result.Project.ID); conv.OldKeyFingerprint != sshKeyFingerprint("ssh-ed25519 OLDKEY") || conv.OldKeyFingerprint == "" {
+		t.Fatalf("fingerprint = %q", conv.OldKeyFingerprint)
+	}
+}
+
+// failProgressRepo fails recording an attached conversion a number of
+// times, as a database write might.
+type failProgressRepo struct {
+	*tokenCapturingRepo
+	mu    sync.Mutex
+	fails int
+}
+
+func (r *failProgressRepo) UpdateConversion(ctx context.Context, c *Conversion) error {
+	r.mu.Lock()
+	fail := c.State == ConversionAttached && r.fails > 0
+	if fail {
+		r.fails--
+	}
+	r.mu.Unlock()
+	if fail {
+		return errors.New("database is locked")
+	}
+	return r.tokenCapturingRepo.UpdateConversion(ctx, c)
+}
+
+func TestConvertWorkspaceReportsAProgressWriteThatFailed(t *testing.T) {
+	e := setupTest(t)
+	ws := e.standalone()
+	e.giveUserKey(t)
+	e.svc.repo = &failProgressRepo{tokenCapturingRepo: &tokenCapturingRepo{Repository: NewRepository(e.db.Conn()), agent: e.repoAgent}, fails: 1}
+
+	result, err := e.svc.ConvertWorkspace(context.Background(), e.userID, ws.ID, ConvertInput{RepoPath: ".", Name: "App"})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if !strings.Contains(result.ProgressError, "may run again") {
+		t.Fatalf("progress error not reported: %q", result.ProgressError)
+	}
+	// It is kept with the record, for the notice.
+	if conv := e.conversion(t, result.Project.ID); conv.ProgressError == "" || conv.State != ConversionDone {
+		t.Fatalf("conversion = %+v", conv)
+	}
+	if got := e.project(t, result.Project.ID); got.Status != StatusReady {
+		t.Fatalf("project = %s", got.Status)
 	}
 }
