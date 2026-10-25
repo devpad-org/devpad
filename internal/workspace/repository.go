@@ -20,6 +20,9 @@ type Repository interface {
 	Update(ctx context.Context, ws *Workspace) error
 	SetDefaultAgentID(ctx context.Context, userID, workspaceID int64, agentID string) (bool, error)
 	MarkRepoSeeded(ctx context.Context, id int64) error
+	// AttachToProject makes a standalone workspace a project's workspace,
+	// reporting false if it was not standalone.
+	AttachToProject(ctx context.Context, id, projectID int64) (bool, error)
 	Delete(ctx context.Context, id int64) error
 }
 
@@ -119,6 +122,22 @@ func (r *repository) MarkRepoSeeded(ctx context.Context, id int64) error {
 		return fmt.Errorf("marking workspace repo seeded: %w", err)
 	}
 	return nil
+}
+
+func (r *repository) AttachToProject(ctx context.Context, id, projectID int64) (bool, error) {
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE workspaces SET project_id = ?, kind = ?, branch = '', repo_seeded = 1, updated_at = ?
+		 WHERE id = ? AND project_id IS NULL AND kind = ?`,
+		projectID, KindInteractive, time.Now(), id, KindInteractive,
+	)
+	if err != nil {
+		return false, fmt.Errorf("attaching workspace to project: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("attaching workspace to project: %w", err)
+	}
+	return n == 1, nil
 }
 
 func (r *repository) SetDefaultAgentID(ctx context.Context, userID, workspaceID int64, agentID string) (bool, error) {

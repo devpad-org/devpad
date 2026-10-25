@@ -68,13 +68,16 @@ func validateBranchName(ctx context.Context, name, field string) error {
 }
 
 // handleRepoInit turns /workspace into a canonical bare repo, cloned from an
-// upstream when one is given, or seeded with an empty initial commit. It is
-// idempotent so devpad can retry a failed project setup.
+// upstream when one is given, or seeded with an empty initial commit. With
+// empty set it clones nothing and makes no commit, only recording the
+// upstream, so a converted workspace's branches can be imported into it. It
+// is idempotent so devpad can retry a failed project setup.
 func handleRepoInit(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxGitRequestBody)
 	var req struct {
 		DefaultBranch string `json:"defaultBranch"`
 		UpstreamURL   string `json:"upstreamUrl"`
+		Empty         bool   `json:"empty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
@@ -93,16 +96,16 @@ func handleRepoInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := initCanonicalRepo(ctx, req.DefaultBranch, req.UpstreamURL); err != nil {
+	if err := initCanonicalRepo(ctx, req.DefaultBranch, req.UpstreamURL, req.Empty); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeRepoRefs(ctx, w)
 }
 
-func initCanonicalRepo(ctx context.Context, defaultBranch, upstreamURL string) error {
+func initCanonicalRepo(ctx context.Context, defaultBranch, upstreamURL string, empty bool) error {
 	if _, err := os.Stat(workspaceRoot + "/HEAD"); err != nil {
-		if upstreamURL != "" {
+		if upstreamURL != "" && !empty {
 			if out, err := gitOutput(ctx, "clone", "--bare", "--", upstreamURL, "."); err != nil {
 				return fmt.Errorf("cloning upstream: %s", strings.TrimSpace(out))
 			}
@@ -126,6 +129,15 @@ func initCanonicalRepo(ctx context.Context, defaultBranch, upstreamURL string) e
 
 	if out, err := gitOutput(ctx, "symbolic-ref", "HEAD", "refs/heads/"+defaultBranch); err != nil {
 		return fmt.Errorf("setting default branch: %s", strings.TrimSpace(out))
+	}
+	if empty {
+		// Push goes to origin, as it does for a repo cloned from upstream.
+		if upstreamURL != "" {
+			if out, err := gitOutput(ctx, "config", "remote.origin.url", upstreamURL); err != nil {
+				return fmt.Errorf("recording upstream: %s", strings.TrimSpace(out))
+			}
+		}
+		return nil
 	}
 	if gitExec(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+defaultBranch) == nil {
 		return nil

@@ -118,6 +118,19 @@ type ProjectWorkspaceService interface {
 	BundleProjectBranch(ctx context.Context, userID, workspaceID int64, branch string) (io.ReadCloser, error)
 }
 
+// ConversionService turns a standalone workspace into a project's
+// workspace. The project service drives it: it reads the workspace's repos,
+// moves their branches into a new canonical repo, then attaches the
+// workspace to the project.
+type ConversionService interface {
+	DiscoverRepos(ctx context.Context, userID, workspaceID int64) (*agent.RepoDiscovery, error)
+	BeginConversion(ctx context.Context, userID, workspaceID int64) (release func(), err error)
+	InitRepoFromContents(ctx context.Context, userID, workspaceID int64, branch string, includeSensitive bool) (*agent.RepoContentsInit, error)
+	UndoInitRepoFromContents(ctx context.Context, userID, workspaceID int64, sha string) error
+	BundleAllBranches(ctx context.Context, userID, workspaceID int64, dir string) (io.ReadCloser, error)
+	AttachToProject(ctx context.Context, userID, workspaceID, projectID int64) (*agent.SSHCleanup, error)
+}
+
 // SidecarBinder injects the sidecar service lifecycle dependency.
 type SidecarBinder interface {
 	SetSidecarService(sidecar SidecarService)
@@ -138,6 +151,7 @@ type Service interface {
 	InfoService
 	SandboxService
 	ProjectWorkspaceService
+	ConversionService
 	SidecarBinder
 }
 

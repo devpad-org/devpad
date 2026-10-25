@@ -213,6 +213,10 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "workspace is not running")
 		return
 	}
+	if errors.Is(err, ErrConverting) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if errors.Is(err, ErrDefaultAgentNotFound) {
 		writeError(w, http.StatusNotFound, "agent not found")
 		return

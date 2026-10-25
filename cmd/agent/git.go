@@ -1601,8 +1601,13 @@ func gitOutput(ctx context.Context, args ...string) (string, error) {
 }
 
 func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
+	return gitCommandIn(ctx, workspaceRoot, args...)
+}
+
+// gitCommandIn is gitCommand for a repo in dir instead of the workspace root.
+func gitCommandIn(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = workspaceRoot
+	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_SSH_COMMAND="+gitSSHCommand,

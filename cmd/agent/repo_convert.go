@@ -1,0 +1,767 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+)
+
+// Conversion endpoints run in a standalone workspace that devpad is turning
+// into a project's workspace. They find the workspace's repos, bundle every
+// branch of one so devpad can import it into the new canonical repo, or make
+// a repo from the workspace's files when it has none. None of them moves or
+// deletes the user's files.
+
+const (
+	// discoverMaxDepth is how far below the workspace root repos are found.
+	discoverMaxDepth = 3
+	// discoverMaxEntries bounds the directory walk in large workspaces.
+	discoverMaxEntries = 20000
+	// maxSensitiveListed caps the sensitive paths a preview names.
+	maxSensitiveListed = 50
+)
+
+// discoverSkipDirs are never searched for repos.
+var discoverSkipDirs = map[string]bool{
+	"node_modules": true, ".cache": true, ".npm": true, ".venv": true,
+	"venv": true, "__pycache__": true, ".git": true,
+}
+
+// junkPatterns are left out of a repo made from the workspace's files.
+var junkPatterns = []string{
+	"node_modules/", ".venv/", "venv/", "__pycache__/", ".cache/",
+	".next/", ".nuxt/", "dist/", "build/", "target/", "coverage/",
+	"*.log", ".DS_Store",
+}
+
+// sensitivePatterns are left out of a repo made from the workspace's files
+// unless the user opts in: they usually hold secrets.
+var sensitivePatterns = []string{
+	".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx",
+	"id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
+	".netrc", ".git-credentials", ".npmrc", ".pypirc",
+}
+
+type discoveredRepo struct {
+	// Path is relative to the workspace root; "." is the root itself.
+	Path        string `json:"path"`
+	Branch      string `json:"branch"`
+	BranchCount int    `json:"branchCount"`
+	Dirty       bool   `json:"dirty"`
+	// OriginURL has any credentials removed; OriginHadCredentials says so.
+	OriginURL            string `json:"originUrl"`
+	OriginHadCredentials bool   `json:"originHadCredentials"`
+	OriginDefaultBranch  string `json:"originDefaultBranch"`
+	// RemotesWithCredentials names remotes whose URL embeds a credential.
+	RemotesWithCredentials []string `json:"remotesWithCredentials"`
+	CredentialHelpers      []string `json:"credentialHelpers"`
+	// HasDevpadRemote is set when a remote is named "devpad", which devpad
+	// needs for its own copies of project branches.
+	HasDevpadRemote bool `json:"hasDevpadRemote"`
+}
+
+type contentsPreview struct {
+	Files          int      `json:"files"`
+	Bytes          int64    `json:"bytes"`
+	SensitiveFiles []string `json:"sensitiveFiles"`
+	SensitiveCount int      `json:"sensitiveCount"`
+	SensitiveBytes int64    `json:"sensitiveBytes"`
+	// JunkPatterns and SensitivePatterns are what gets left out.
+	JunkPatterns      []string `json:"junkPatterns"`
+	SensitivePatterns []string `json:"sensitivePatterns"`
+	MaxBytes          int64    `json:"maxBytes"`
+}
+
+type repoDiscovery struct {
+	Repos []discoveredRepo `json:"repos"`
+	// Contents previews a repo made from the workspace's files; it is only
+	// set when the workspace has no repo at all.
+	Contents *contentsPreview `json:"contents,omitempty"`
+	// CredentialFiles lists credential stores in the home directory.
+	CredentialFiles []string `json:"credentialFiles"`
+	// CredentialHelpers lists globally configured git credential helpers.
+	CredentialHelpers []string `json:"credentialHelpers"`
+}
+
+// handleRepoDiscover lists the git repos in the workspace, or previews a repo
+// made from its files when there are none.
+func handleRepoDiscover(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
+	defer cancel()
+
+	root, err := filepath.EvalSymlinks(workspaceRoot)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "resolving workspace root: "+err.Error())
+		return
+	}
+	dirs, err := findRepos(root)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	result := repoDiscovery{
+		Repos:             []discoveredRepo{},
+		CredentialFiles:   homeCredentialFiles(),
+		CredentialHelpers: configValues(ctx, root, "--global", "credential.helper"),
+	}
+	for _, dir := range dirs {
+		repo, err := describeRepo(ctx, root, dir)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		result.Repos = append(result.Repos, *repo)
+	}
+	if len(result.Repos) == 0 {
+		preview, err := previewContents(ctx, root)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		result.Contents = preview
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// findRepos walks the workspace for repo roots, without following symlinks
+// or descending into a repo once found.
+func findRepos(root string) ([]string, error) {
+	var repos []string
+	seen := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// Unreadable directories are skipped, not fatal.
+			if d != nil && d.IsDir() && path != root {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if seen++; seen > discoverMaxEntries {
+			return fs.SkipAll
+		}
+		rel, _ := filepath.Rel(root, path)
+		if path != root {
+			if discoverSkipDirs[d.Name()] {
+				return fs.SkipDir
+			}
+			if strings.Count(rel, string(filepath.Separator))+1 > discoverMaxDepth {
+				return fs.SkipDir
+			}
+		}
+		// Only a .git directory marks a repo; a .git file is a submodule or
+		// worktree that belongs to another repo.
+		if info, err := os.Lstat(filepath.Join(path, ".git")); err == nil && info.IsDir() {
+			repos = append(repos, path)
+			return fs.SkipDir
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("searching for repos: %w", err)
+	}
+	return repos, nil
+}
+
+func describeRepo(ctx context.Context, root, dir string) (*discoveredRepo, error) {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil {
+		return nil, err
+	}
+	repo := &discoveredRepo{Path: filepath.ToSlash(rel), RemotesWithCredentials: []string{}}
+	if out, err := gitOutputIn(ctx, dir, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+		repo.Branch = strings.TrimSpace(out)
+	}
+	if out, err := gitOutputIn(ctx, dir, "for-each-ref", "--format=%(refname)", "refs/heads/"); err == nil {
+		repo.BranchCount = len(nonEmptyLines(out))
+	}
+	if out, err := gitOutputIn(ctx, dir, "status", "--porcelain"); err == nil {
+		repo.Dirty = strings.TrimSpace(out) != ""
+	}
+	if out, err := gitOutputIn(ctx, dir, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		repo.OriginDefaultBranch = strings.TrimPrefix(strings.TrimSpace(out), "origin/")
+	}
+
+	out, _ := gitOutputIn(ctx, dir, "config", "--local", "--get-regexp", `^remote\..*\.url$`)
+	for _, line := range nonEmptyLines(out) {
+		key, value, _ := strings.Cut(line, " ")
+		name := strings.TrimSuffix(strings.TrimPrefix(key, "remote."), ".url")
+		clean, hadCredentials := stripURLCredentials(value)
+		if hadCredentials {
+			repo.RemotesWithCredentials = append(repo.RemotesWithCredentials, name)
+		}
+		if name == "origin" {
+			repo.OriginURL, repo.OriginHadCredentials = clean, hadCredentials
+		}
+		if name == sandboxBaseRemote {
+			repo.HasDevpadRemote = true
+		}
+	}
+	repo.CredentialHelpers = configValues(ctx, dir, "--local", "credential.helper")
+	return repo, nil
+}
+
+// stripURLCredentials removes a password or token from a URL. A bare user
+// name, as in ssh://git@host/repo, is not a credential and stays.
+func stripURLCredentials(raw string) (string, bool) {
+	if !strings.Contains(raw, "://") {
+		return raw, false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw, false
+	}
+	if _, hasPassword := u.User.Password(); !hasPassword && !strings.HasPrefix(u.Scheme, "http") {
+		return raw, false
+	}
+	u.User = nil
+	return u.String(), true
+}
+
+func configValues(ctx context.Context, dir, scope, key string) []string {
+	out, err := gitOutputIn(ctx, dir, "config", scope, "--get-all", key)
+	if err != nil {
+		return []string{}
+	}
+	return nonEmptyLines(out)
+}
+
+func homeCredentialFiles() []string {
+	files := []string{}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return files
+	}
+	for _, name := range []string{".git-credentials", ".netrc"} {
+		if _, err := os.Lstat(filepath.Join(home, name)); err == nil {
+			files = append(files, "~/"+name)
+		}
+	}
+	return files
+}
+
+func nonEmptyLines(s string) []string {
+	lines := []string{}
+	for _, line := range strings.Split(s, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// previewContents reports what a repo made from the workspace's files would
+// hold. Git lists the files, with the same ignore rules the commit uses, from
+// a scratch repo outside the workspace so nothing is written into it.
+func previewContents(ctx context.Context, root string) (*contentsPreview, error) {
+	withSensitive, err := listContents(ctx, root, false)
+	if err != nil {
+		return nil, err
+	}
+	without, err := listContents(ctx, root, true)
+	if err != nil {
+		return nil, err
+	}
+	kept := make(map[string]bool, len(without))
+	preview := &contentsPreview{
+		SensitiveFiles:    []string{},
+		JunkPatterns:      junkPatterns,
+		SensitivePatterns: sensitivePatterns,
+		MaxBytes:          maxBundleBytes,
+	}
+	for _, path := range without {
+		kept[path] = true
+		preview.Files++
+		preview.Bytes += fileSize(root, path)
+	}
+	for _, path := range withSensitive {
+		if kept[path] {
+			continue
+		}
+		preview.SensitiveCount++
+		preview.SensitiveBytes += fileSize(root, path)
+		if len(preview.SensitiveFiles) < maxSensitiveListed {
+			preview.SensitiveFiles = append(preview.SensitiveFiles, path)
+		}
+	}
+	return preview, nil
+}
+
+// listContents lists the files a repo made from root would commit, leaving
+// out junk and, when excludeSensitive is set, likely secrets.
+func listContents(ctx context.Context, root string, excludeSensitive bool) ([]string, error) {
+	scratch, err := os.MkdirTemp("", "devpad-contents-")
+	if err != nil {
+		return nil, fmt.Errorf("creating scratch repo: %w", err)
+	}
+	defer os.RemoveAll(scratch)
+	if out, err := gitOutputIn(ctx, scratch, "init", "--quiet"); err != nil {
+		return nil, fmt.Errorf("creating scratch repo: %s", strings.TrimSpace(out))
+	}
+	excludes := filepath.Join(scratch, "excludes")
+	if err := os.WriteFile(excludes, []byte(excludeRules(excludeSensitive)), 0o644); err != nil {
+		return nil, fmt.Errorf("writing exclude rules: %w", err)
+	}
+	out, err := gitOutputIn(ctx, root, "--git-dir="+filepath.Join(scratch, ".git"), "--work-tree="+root,
+		"ls-files", "--others", "-z", "--exclude-standard", "--exclude-from="+excludes)
+	if err != nil {
+		return nil, fmt.Errorf("listing workspace files: %s", strings.TrimSpace(out))
+	}
+	var paths []string
+	for _, p := range strings.Split(out, "\x00") {
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths, nil
+}
+
+func excludeRules(excludeSensitive bool) string {
+	var b strings.Builder
+	b.WriteString("# Left out when devpad made this repo from the workspace's files.\n")
+	for _, p := range junkPatterns {
+		b.WriteString(p + "\n")
+	}
+	if excludeSensitive {
+		for _, p := range sensitivePatterns {
+			b.WriteString(p + "\n")
+		}
+	}
+	return b.String()
+}
+
+func fileSize(root, rel string) int64 {
+	info, err := os.Lstat(filepath.Join(root, rel))
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
+// resolveWorkspaceDir resolves a path relative to the workspace root,
+// refusing anything that leaves it, including through symlinks.
+func resolveWorkspaceDir(rel string) (string, error) {
+	if rel == "" {
+		rel = "."
+	}
+	if filepath.IsAbs(rel) || strings.HasPrefix(rel, "-") {
+		return "", fmt.Errorf("dir must be relative to the workspace")
+	}
+	clean := filepath.Clean(rel)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("dir must stay inside the workspace")
+	}
+	root, err := filepath.EvalSymlinks(workspaceRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolving workspace root: %w", err)
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Join(root, clean))
+	if err != nil {
+		return "", fmt.Errorf("dir not found: %s", rel)
+	}
+	if dir != root && !strings.HasPrefix(dir, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("dir must stay inside the workspace")
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("dir is not a directory: %s", rel)
+	}
+	return dir, nil
+}
+
+// handleRepoBundleAll streams a bundle of every branch and tag of the repo at
+// dir, a path relative to the workspace root.
+func handleRepoBundleAll(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
+	defer cancel()
+
+	dir, err := resolveWorkspaceDir(r.URL.Query().Get("dir"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// The dir must be a repo's own root, not a folder inside some other repo.
+	top, err := gitOutputIn(ctx, dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "not a git repository: "+r.URL.Query().Get("dir"))
+		return
+	}
+	if resolved, err := filepath.EvalSymlinks(strings.TrimSpace(top)); err != nil || resolved != dir {
+		writeErr(w, http.StatusBadRequest, "dir is not the root of a repository")
+		return
+	}
+	if out, _ := gitOutputIn(ctx, dir, "for-each-ref", "--count=1", "refs/heads/"); strings.TrimSpace(out) == "" {
+		writeErr(w, http.StatusConflict, "the repository has no commits")
+		return
+	}
+
+	path, cleanup, err := tempBundlePath()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer cleanup()
+	if out, err := gitOutputIn(ctx, dir, "bundle", "create", path, "--branches", "--tags"); err != nil {
+		writeErr(w, http.StatusInternalServerError, "creating bundle: "+strings.TrimSpace(out))
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "opening bundle: "+err.Error())
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	io.Copy(w, f)
+}
+
+// handleRepoInitContents makes a repo at the workspace root from the files
+// already there, committing everything except junk and, unless the user opts
+// in, likely secrets. The exclusions go in .git/info/exclude, so no file in
+// the workspace is added, moved or changed.
+func handleRepoInitContents(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxGitRequestBody)
+	var req struct {
+		DefaultBranch    string `json:"defaultBranch"`
+		IncludeSensitive bool   `json:"includeSensitive"`
+		Name             string `json:"name"`
+		Email            string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
+	defer cancel()
+
+	if err := validateBranchName(ctx, req.DefaultBranch, "defaultBranch"); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	for _, f := range [][2]string{{req.Name, "name"}, {req.Email, "email"}} {
+		if err := validateUserIdentity(f[0], f[1]); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	root, err := filepath.EvalSymlinks(workspaceRoot)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "resolving workspace root: "+err.Error())
+		return
+	}
+	if _, err := os.Lstat(filepath.Join(root, ".git")); err == nil {
+		writeErr(w, http.StatusConflict, "workspace already contains a repository")
+		return
+	}
+	if dirs, err := findRepos(root); err != nil || len(dirs) > 0 {
+		writeErr(w, http.StatusConflict, "workspace already contains a repository")
+		return
+	}
+
+	files, err := listContents(ctx, root, !req.IncludeSensitive)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var size int64
+	for _, f := range files {
+		size += fileSize(root, f)
+	}
+	if size > maxBundleBytes {
+		writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the workspace's files total %d MB, over the %d MB limit", size>>20, maxBundleBytes>>20))
+		return
+	}
+
+	sha, err := initRepoFromContents(ctx, root, req.DefaultBranch, req.Name, req.Email, !req.IncludeSensitive)
+	if err != nil {
+		// The repo is new, so removing it puts the workspace back as it was.
+		os.RemoveAll(filepath.Join(root, ".git"))
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"branch": req.DefaultBranch, "sha": sha, "files": len(files)})
+}
+
+func initRepoFromContents(ctx context.Context, root, branch, name, email string, excludeSensitive bool) (string, error) {
+	if out, err := gitOutputIn(ctx, root, "init", "--quiet", "--initial-branch="+branch); err != nil {
+		return "", fmt.Errorf("initializing repo: %s", strings.TrimSpace(out))
+	}
+	exclude := filepath.Join(root, ".git", "info", "exclude")
+	if err := os.MkdirAll(filepath.Dir(exclude), 0o755); err != nil {
+		return "", fmt.Errorf("creating .git/info: %w", err)
+	}
+	if err := os.WriteFile(exclude, []byte(excludeRules(excludeSensitive)), 0o644); err != nil {
+		return "", fmt.Errorf("writing exclude rules: %w", err)
+	}
+	for _, kv := range [][2]string{{"user.name", name}, {"user.email", email}} {
+		if kv[1] == "" {
+			continue
+		}
+		if out, err := gitOutputIn(ctx, root, "config", kv[0], kv[1]); err != nil {
+			return "", fmt.Errorf("setting %s: %s", kv[0], strings.TrimSpace(out))
+		}
+	}
+	if out, err := gitOutputIn(ctx, root, "add", "--all"); err != nil {
+		return "", fmt.Errorf("adding files: %s", strings.TrimSpace(out))
+	}
+	commit := []string{"-c", "core.hooksPath=/dev/null"}
+	if name == "" {
+		commit = append(commit, "-c", "user.name=devpad")
+	}
+	if email == "" {
+		commit = append(commit, "-c", "user.email=devpad@localhost")
+	}
+	commit = append(commit, "commit", "--quiet", "--allow-empty", "--no-verify", "-m", "Initial commit from the workspace's files")
+	if out, err := gitOutputIn(ctx, root, commit...); err != nil {
+		return "", fmt.Errorf("committing files: %s", strings.TrimSpace(out))
+	}
+	out, err := gitOutputIn(ctx, root, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolving HEAD: %s", strings.TrimSpace(out))
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// handleRepoUndoInitContents removes a repo made by handleRepoInitContents,
+// so a conversion that fails afterwards leaves the workspace as it was. It
+// only removes a repo that still holds nothing but that one commit.
+func handleRepoUndoInitContents(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
+	defer cancel()
+
+	sha := r.URL.Query().Get("sha")
+	if err := validateGitCommitHash(sha); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	root, err := filepath.EvalSymlinks(workspaceRoot)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "resolving workspace root: "+err.Error())
+		return
+	}
+	gitDir := filepath.Join(root, ".git")
+	if info, err := os.Lstat(gitDir); err != nil || !info.IsDir() {
+		writeJSON(w, http.StatusOK, map[string]bool{"removed": false})
+		return
+	}
+	head, _ := gitOutputIn(ctx, root, "rev-parse", "HEAD")
+	refs, _ := gitOutputIn(ctx, root, "for-each-ref", "--format=%(objectname)")
+	count, _ := gitOutputIn(ctx, root, "rev-list", "--all", "--count")
+	if strings.TrimSpace(head) != sha || strings.TrimSpace(count) != "1" || slices.ContainsFunc(nonEmptyLines(refs), func(ref string) bool { return ref != sha }) {
+		writeErr(w, http.StatusConflict, "the repository has changed since devpad made it; it was left in place")
+		return
+	}
+	if err := os.RemoveAll(gitDir); err != nil {
+		writeErr(w, http.StatusInternalServerError, "removing repository: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"removed": true})
+}
+
+// managedSSHFileNames are the files devpad writes into ~/.ssh of a
+// standalone workspace.
+var managedSSHFileNames = []string{"id_ed25519", "id_ed25519.pub", "known_hosts", "config"}
+
+type sshCleanupResult struct {
+	Removed []string `json:"removed"`
+	// Kept lists files that exist but differ from what devpad wrote, so they
+	// may be the user's own and are left alone.
+	Kept   []string `json:"kept"`
+	Absent []string `json:"absent"`
+}
+
+// handleSSHRemoveManaged removes the SSH files devpad put in the workspace,
+// each only if its contents still hash to what devpad wrote, so a file the
+// user changed or made themselves is kept.
+func handleSSHRemoveManaged(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxGitRequestBody)
+	var req struct {
+		Files []struct {
+			Name   string `json:"name"`
+			SHA256 string `json:"sha256"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "finding home directory: "+err.Error())
+		return
+	}
+	result := sshCleanupResult{Removed: []string{}, Kept: []string{}, Absent: []string{}}
+	for _, f := range req.Files {
+		if !slices.Contains(managedSSHFileNames, f.Name) {
+			writeErr(w, http.StatusBadRequest, "not a devpad SSH file: "+f.Name)
+			return
+		}
+		display := "~/.ssh/" + f.Name
+		path := filepath.Join(home, ".ssh", f.Name)
+		info, err := os.Lstat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			result.Absent = append(result.Absent, display)
+			continue
+		}
+		if err != nil || !info.Mode().IsRegular() {
+			result.Kept = append(result.Kept, display)
+			continue
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "reading "+display+": "+err.Error())
+			return
+		}
+		sum := sha256.Sum256(content)
+		if hex.EncodeToString(sum[:]) != strings.ToLower(f.SHA256) {
+			result.Kept = append(result.Kept, display)
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			writeErr(w, http.StatusInternalServerError, "removing "+display+": "+err.Error())
+			return
+		}
+		result.Removed = append(result.Removed, display)
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// gitOutputIn is gitOutput for a repo in dir.
+func gitOutputIn(ctx context.Context, dir string, args ...string) (string, error) {
+	out, err := gitCommandIn(ctx, dir, args...).CombinedOutput()
+	return string(out), err
+}
+
+// handleRepoImportInitial fills a new, empty canonical repo with every branch
+// and tag of an untrusted bundle from a converted workspace, including the
+// default branch. It refuses a repo that already has a branch or tag, so it
+// can only seed a new project; after that, branches only move through the
+// usual imports and merges. Objects are fsck-checked in a quarantine first,
+// and the refs are created in one transaction.
+func handleRepoImportInitial(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
+	defer cancel()
+
+	defaultBranch := r.URL.Query().Get("defaultBranch")
+	if err := validateBranchName(ctx, defaultBranch, "defaultBranch"); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if out, err := gitOutput(ctx, "for-each-ref", "--count=1", "refs/heads/", "refs/tags/"); err != nil || strings.TrimSpace(out) != "" {
+		writeErr(w, http.StatusConflict, "the project repo already has branches")
+		return
+	}
+	bundle, cleanup, err := receiveBundle(w, r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	defer cleanup()
+
+	if err := importInitialBundle(ctx, bundle, defaultBranch); err != nil {
+		var bad *badBundleError
+		if errors.As(err, &bad) {
+			writeErr(w, http.StatusBadRequest, err.Error())
+		} else {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeRepoRefs(ctx, w)
+}
+
+func importInitialBundle(ctx context.Context, bundle, defaultBranch string) error {
+	if out, err := gitOutput(ctx, "bundle", "verify", "--quiet", bundle); err != nil {
+		return &badBundleError{"invalid bundle: " + strings.TrimSpace(out)}
+	}
+	suffix, err := randomHex(8)
+	if err != nil {
+		return err
+	}
+	quarantine := quarantineRefPrefix + suffix + "/"
+	defer deleteRefsUnder(context.WithoutCancel(ctx), quarantine)
+
+	if out, err := gitOutput(ctx, "-c", "transfer.fsckObjects=true", "-c", "fetch.fsckObjects=true",
+		"fetch", "--no-tags", "--no-write-fetch-head", "--", bundle,
+		"refs/heads/*:"+quarantine+"heads/*", "refs/tags/*:"+quarantine+"tags/*"); err != nil {
+		return &badBundleError{"fetching bundle: " + strings.TrimSpace(out)}
+	}
+	out, err := gitOutput(ctx, "for-each-ref", "--format=%(refname) %(objectname) %(objecttype)", quarantine)
+	if err != nil {
+		return fmt.Errorf("listing imported refs: %s", strings.TrimSpace(out))
+	}
+
+	var tx strings.Builder
+	tx.WriteString("start\n")
+	hasDefault := false
+	for _, line := range nonEmptyLines(out) {
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			continue
+		}
+		rel := strings.TrimPrefix(fields[0], quarantine)
+		var target string
+		switch {
+		case strings.HasPrefix(rel, "heads/"):
+			name := strings.TrimPrefix(rel, "heads/")
+			if err := validateBranchName(ctx, name, "branch"); err != nil {
+				return &badBundleError{err.Error()}
+			}
+			if fields[2] != "commit" {
+				return &badBundleError{"branch " + name + " is not a commit"}
+			}
+			hasDefault = hasDefault || name == defaultBranch
+			target = "refs/heads/" + name
+		case strings.HasPrefix(rel, "tags/"):
+			name := strings.TrimPrefix(rel, "tags/")
+			if err := validateGitRef(name, "tag"); err != nil {
+				return &badBundleError{err.Error()}
+			}
+			if out, err := gitOutput(ctx, "check-ref-format", "refs/tags/"+name); err != nil {
+				return &badBundleError{"tag is not a valid name: " + strings.TrimSpace(out)}
+			}
+			target = "refs/tags/" + name
+		default:
+			continue
+		}
+		// create fails if the ref exists, so nothing already there is moved.
+		fmt.Fprintf(&tx, "create %s %s\n", target, fields[1])
+	}
+	if !hasDefault {
+		return &badBundleError{"the repository has no branch named " + defaultBranch}
+	}
+	tx.WriteString("commit\n")
+
+	cmd := gitCommand(ctx, "update-ref", "--stdin")
+	cmd.Stdin = strings.NewReader(tx.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("creating branches: %s", strings.TrimSpace(string(out)))
+	}
+	if out, err := gitOutput(ctx, "symbolic-ref", "HEAD", "refs/heads/"+defaultBranch); err != nil {
+		return fmt.Errorf("setting default branch: %s", strings.TrimSpace(out))
+	}
+	return nil
+}
+
+func deleteRefsUnder(ctx context.Context, prefix string) {
+	out, err := gitOutput(ctx, "for-each-ref", "--format=delete %(refname)", prefix)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return
+	}
+	cmd := gitCommand(ctx, "update-ref", "--stdin")
+	cmd.Stdin = strings.NewReader(out)
+	cmd.Run()
+}

@@ -154,6 +154,9 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 	if err != nil {
 		return err
 	}
+	if s.isConverting(ws.ID) {
+		return ErrConverting
+	}
 
 	// Remove the Docker container
 	if ws.ContainerID != "" {

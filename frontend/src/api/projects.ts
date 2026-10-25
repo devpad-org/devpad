@@ -114,6 +114,66 @@ export interface WorkspaceLink {
   mergeRequestId: number
 }
 
+// A git repo found in a standalone workspace that could become a project.
+export interface DiscoveredRepo {
+  // Relative to /workspace; "." is /workspace itself.
+  path: string
+  branch: string
+  branchCount: number
+  dirty: boolean
+  // Any credentials embedded in origin's URL are removed.
+  originUrl: string
+  originHadCredentials: boolean
+  originDefaultBranch: string
+  remotesWithCredentials: string[]
+  credentialHelpers: string[]
+  // devpad needs the "devpad" remote name for its copies of project branches.
+  hasDevpadRemote: boolean
+}
+
+// What a repo made from a workspace's files would hold.
+export interface ContentsPreview {
+  files: number
+  bytes: number
+  // Files that usually hold secrets, left out unless asked for.
+  sensitiveFiles: string[]
+  sensitiveCount: number
+  sensitiveBytes: number
+  junkPatterns: string[]
+  sensitivePatterns: string[]
+  maxBytes: number
+}
+
+export interface RepoDiscovery {
+  repos: DiscoveredRepo[]
+  // Only set when the workspace has no repo at all.
+  contents?: ContentsPreview
+  credentialFiles: string[]
+  credentialHelpers: string[]
+}
+
+export interface ConvertInput extends ProjectInput {
+  // A repo from discovery; empty makes a repo from the workspace's files.
+  repoPath: string
+  includeSensitive: boolean
+}
+
+// Which of devpad's SSH files were removed from a converted workspace. Kept
+// files differ from what devpad wrote, so they were left alone.
+export interface SSHCleanup {
+  removed: string[]
+  kept: string[]
+  absent: string[]
+}
+
+export interface ConvertResult {
+  project: Project
+  // The converted workspace, now the project's; null when its repo was in a
+  // subdirectory and the workspace was left as it was.
+  workspace: ProjectWorkspace | null
+  ssh: SSHCleanup | null
+}
+
 export const projectApi = {
   list(): Promise<{ projects: Project[] }> {
     return apiClient.get('/api/projects')
@@ -185,6 +245,16 @@ export const projectApi = {
   // Refreshes devpad/<default branch> in the project workspace.
   syncWorkspace(id: number): Promise<BranchResult> {
     return apiClient.post(`/api/projects/${id}/workspace/sync`, {})
+  },
+
+  // Lists the repos in a standalone workspace that could become a project.
+  discoverConversion(workspaceId: number): Promise<RepoDiscovery> {
+    return apiClient.get(`/api/workspaces/${workspaceId}/conversion`)
+  },
+
+  // Makes a project from a standalone workspace.
+  convertWorkspace(workspaceId: number, input: ConvertInput): Promise<ConvertResult> {
+    return apiClient.post(`/api/workspaces/${workspaceId}/convert`, input)
   },
 
   // Returns null for a file that does not exist at rev, such as one a

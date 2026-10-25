@@ -439,6 +439,9 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrDefaultBranch), errors.Is(err, ErrPublishDefault):
 		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, workspace.ErrNotStandalone), errors.Is(err, workspace.ErrConverting),
+		errors.Is(err, workspace.ErrAgentOutdated):
+		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrNotReady), errors.Is(err, workspace.ErrNotRunning),
 		errors.Is(err, ErrSandboxLimit), errors.Is(err, ErrBranchInUse), errors.Is(err, ErrBranchPublishing),
 		errors.Is(err, ErrDeleting), errors.Is(err, ErrBusy):
@@ -506,4 +509,53 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// HandleDiscoverConversion lists the repos in a standalone workspace that
+// could become a project, or previews a repo made from its files.
+func (h *Handler) HandleDiscoverConversion(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	found, err := h.service.DiscoverConversion(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, found)
+}
+
+// HandleConvertWorkspace makes a project from a standalone workspace.
+func (h *Handler) HandleConvertWorkspace(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		RepoPath         string `json:"repoPath"`
+		IncludeSensitive bool   `json:"includeSensitive"`
+		Name             string `json:"name"`
+		Description      string `json:"description"`
+		DefaultBranch    string `json:"defaultBranch"`
+		UpstreamURL      string `json:"upstreamUrl"`
+		SetupScript      string `json:"setupScript"`
+		MaxSandboxes     int    `json:"maxSandboxes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	result, err := h.service.ConvertWorkspace(r.Context(), user.ID, id, ConvertInput(req))
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	body := map[string]any{"project": projectResponse(result.Project), "workspace": nil, "ssh": result.SSH}
+	if result.Workspace != nil {
+		body["workspace"] = sandboxResponse(result.Workspace)
+	}
+	writeJSON(w, http.StatusCreated, body)
 }

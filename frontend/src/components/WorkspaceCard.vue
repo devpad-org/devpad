@@ -15,6 +15,7 @@ const emit = defineEmits<{
   open: [workspace: Workspace]
   start: [workspace: Workspace]
   stop: [workspace: Workspace]
+  convert: [workspace: Workspace]
 }>()
 
 const store = useWorkspaceStore()
@@ -174,6 +175,15 @@ function formatDate(dateStr: string) {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
             <line x1="12" x2="12" y1="2" y2="12" />
+          </svg>
+        </button>
+        <button class="action-btn" title="Convert to project" aria-label="Convert to project" @click="$emit('convert', workspace)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="2" />
+            <circle cx="6" cy="18" r="2" />
+            <circle cx="18" cy="12" r="2" />
+            <path d="M6 8v8" />
+            <path d="M8 6h4a4 4 0 0 1 4 4v0" />
           </svg>
         </button>
         <button class="action-btn" title="Edit" @click="$emit('edit', workspace)">

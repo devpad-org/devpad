@@ -115,7 +115,7 @@ type fakeRepoAgent struct {
 	version   string // reported agent version; empty means current
 	token     string
 	initErr   string
-	initReq   map[string]string
+	initReq   map[string]any
 	branches  []agent.RepoRef
 	ahead     map[string]int // head branch -> commits ahead of base
 	merges    []agent.RepoMergeRequest
@@ -128,6 +128,9 @@ type fakeRepoAgent struct {
 	importStatus int
 	// importedFF lists branches imported fast-forward only.
 	importedFF []string
+	// initialImports records each initial import's default branch and bundle.
+	initialImports []string
+	initialErr     string
 }
 
 func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +162,8 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]string{"error": a.initErr})
 			return
 		}
-		json.NewEncoder(w).Encode(agent.RepoRefs{DefaultBranch: a.initReq["defaultBranch"]})
+		branch, _ := a.initReq["defaultBranch"].(string)
+		json.NewEncoder(w).Encode(agent.RepoRefs{DefaultBranch: branch})
 	case "/api/repo/refs":
 		json.NewEncoder(w).Encode(agent.RepoRefs{DefaultBranch: "main", Branches: a.branches})
 	case "/api/repo/bundle":
@@ -187,6 +191,16 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/repo/compare":
 		q := r.URL.Query()
 		json.NewEncoder(w).Encode(agent.RepoComparison{Base: q.Get("base"), Head: q.Get("head"), Ahead: a.ahead[q.Get("head")]})
+	case "/api/repo/import-initial":
+		if a.initialErr != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": a.initialErr})
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		branch := r.URL.Query().Get("defaultBranch")
+		a.initialImports = append(a.initialImports, branch+" <- "+string(body))
+		json.NewEncoder(w).Encode(agent.RepoRefs{DefaultBranch: branch, Branches: []agent.RepoRef{{Name: branch, SHA: "abc"}}})
 	case "/api/repo/import":
 		if a.importErr != "" {
 			status := a.importStatus
@@ -221,10 +235,22 @@ type fakeWorkspaces struct {
 	deleted       []int64
 	sandboxBundle string
 	bundled       []string // project workspace branches bundled
+
+	// Conversion of standalone workspaces.
+	converting  map[int64]bool
+	convertErr  map[string]error // by step: init, bundle, attach
+	discovery   *agent.RepoDiscovery
+	initCalls   []string
+	bundledAll  []string
+	undone      []string
+	onBundleAll func()
 }
 
 func newFakeWorkspaces() *fakeWorkspaces {
-	return &fakeWorkspaces{nextID: 100, byID: map[int64]*workspace.Workspace{}, seeds: map[int64]string{}, commands: map[int64]string{}}
+	return &fakeWorkspaces{
+		nextID: 100, byID: map[int64]*workspace.Workspace{}, seeds: map[int64]string{}, commands: map[int64]string{},
+		converting: map[int64]bool{}, convertErr: map[string]error{},
+	}
 }
 
 func (f *fakeWorkspaces) add(ws *workspace.Workspace) *workspace.Workspace {
@@ -988,4 +1014,96 @@ func TestHandlerMapsErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (f *fakeWorkspaces) standalone(userID, id int64) (*workspace.Workspace, error) {
+	ws, ok := f.byID[id]
+	switch {
+	case !ok:
+		return nil, workspace.ErrNotFound
+	case ws.UserID != userID:
+		return nil, workspace.ErrForbidden
+	case !ws.ReceivesUserCredentials():
+		return nil, workspace.ErrNotStandalone
+	case ws.Status != workspace.StatusRunning:
+		return nil, workspace.ErrNotRunning
+	}
+	return ws, nil
+}
+
+func (f *fakeWorkspaces) DiscoverRepos(_ context.Context, userID, id int64) (*agent.RepoDiscovery, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, err := f.standalone(userID, id); err != nil {
+		return nil, err
+	}
+	if f.discovery == nil {
+		return &agent.RepoDiscovery{Repos: []agent.DiscoveredRepo{{Path: ".", Branch: "main"}}}, nil
+	}
+	return f.discovery, nil
+}
+
+func (f *fakeWorkspaces) BeginConversion(_ context.Context, userID, id int64) (func(), error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, err := f.standalone(userID, id); err != nil {
+		return nil, err
+	}
+	if f.converting[id] {
+		return nil, workspace.ErrConverting
+	}
+	f.converting[id] = true
+	return func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		delete(f.converting, id)
+	}, nil
+}
+
+func (f *fakeWorkspaces) InitRepoFromContents(_ context.Context, userID, id int64, branch string, includeSensitive bool) (*agent.RepoContentsInit, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.convertErr["init"]; err != nil {
+		return nil, err
+	}
+	f.initCalls = append(f.initCalls, fmt.Sprintf("%s sensitive=%v", branch, includeSensitive))
+	return &agent.RepoContentsInit{Branch: branch, SHA: "init-sha", Files: 3}, nil
+}
+
+func (f *fakeWorkspaces) UndoInitRepoFromContents(_ context.Context, _, _ int64, sha string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.undone = append(f.undone, sha)
+	return nil
+}
+
+func (f *fakeWorkspaces) BundleAllBranches(_ context.Context, userID, id int64, dir string) (io.ReadCloser, error) {
+	f.mu.Lock()
+	hook := f.onBundleAll
+	err := f.convertErr["bundle"]
+	if err == nil {
+		f.bundledAll = append(f.bundledAll, dir)
+	}
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(strings.NewReader("all-of-" + dir)), nil
+}
+
+func (f *fakeWorkspaces) AttachToProject(_ context.Context, userID, id, projectID int64) (*agent.SSHCleanup, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.convertErr["attach"]; err != nil {
+		return nil, err
+	}
+	ws, err := f.standalone(userID, id)
+	if err != nil {
+		return nil, err
+	}
+	ws.ProjectID, ws.RepoSeeded = projectID, true
+	return &agent.SSHCleanup{Removed: []string{"~/.ssh/id_ed25519"}, Kept: []string{}, Absent: []string{}}, nil
 }

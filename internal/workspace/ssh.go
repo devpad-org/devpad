@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 
@@ -55,21 +57,18 @@ func WriteSSHKeys(ctx context.Context, c *agent.Client, user *auth.User, cipher 
 	if user == nil || user.SSHPrivateKey == "" {
 		return nil
 	}
-
-	privateKey, err := cipher.Decrypt(user.SSHPrivateKey)
+	files, err := sshFiles(user, cipher)
 	if err != nil {
-		return fmt.Errorf("decrypting SSH private key: %w", err)
+		return err
 	}
 
-	commands := []struct {
-		desc string
-		cmd  string
-	}{
-		{"creating .ssh directory", "mkdir -p ~/.ssh && chmod 700 ~/.ssh"},
-		{"writing private key", fmt.Sprintf("cat > ~/.ssh/id_ed25519 << 'DEVPAD_SSH_EOF'\n%sDEVPAD_SSH_EOF\nchmod 600 ~/.ssh/id_ed25519", privateKey)},
-		{"writing public key", fmt.Sprintf("cat > ~/.ssh/id_ed25519.pub << 'DEVPAD_SSH_EOF'\n%sDEVPAD_SSH_EOF\nchmod 644 ~/.ssh/id_ed25519.pub", user.SSHPublicKey)},
-		{"writing known_hosts", fmt.Sprintf("cat > ~/.ssh/known_hosts << 'DEVPAD_SSH_EOF'\n%sDEVPAD_SSH_EOF\nchmod 644 ~/.ssh/known_hosts", knownHosts)},
-		{"writing ssh config", fmt.Sprintf("cat > ~/.ssh/config << 'DEVPAD_SSH_EOF'\n%sDEVPAD_SSH_EOF\nchmod 644 ~/.ssh/config", sshConfig)},
+	type command struct{ desc, cmd string }
+	commands := []command{{"creating .ssh directory", "mkdir -p ~/.ssh && chmod 700 ~/.ssh"}}
+	for _, f := range files {
+		commands = append(commands, command{
+			"writing " + f.name,
+			fmt.Sprintf("cat > ~/.ssh/%s << 'DEVPAD_SSH_EOF'\n%sDEVPAD_SSH_EOF\nchmod %s ~/.ssh/%s", f.name, f.content, f.mode, f.name),
+		})
 	}
 
 	for _, cmd := range commands {
@@ -82,4 +81,47 @@ func WriteSSHKeys(ctx context.Context, c *agent.Client, user *auth.User, cipher 
 		}
 	}
 	return nil
+}
+
+// sshFile is a file WriteSSHKeys writes into ~/.ssh.
+type sshFile struct {
+	name    string
+	content string
+	mode    string
+}
+
+// sshFiles returns what WriteSSHKeys writes for a user with a key.
+func sshFiles(user *auth.User, cipher *encrypt.Cipher) ([]sshFile, error) {
+	privateKey, err := cipher.Decrypt(user.SSHPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("decrypting SSH private key: %w", err)
+	}
+	return []sshFile{
+		{"id_ed25519", privateKey, "600"},
+		{"id_ed25519.pub", user.SSHPublicKey, "644"},
+		{"known_hosts", knownHosts, "644"},
+		{"config", sshConfig, "644"},
+	}, nil
+}
+
+// managedSSHFiles hashes the files WriteSSHKeys would write for user, so
+// they can be removed only where they still hold exactly that. Without a key
+// on record, only the fixed known_hosts and config can be recognised.
+func managedSSHFiles(user *auth.User, cipher *encrypt.Cipher) ([]agent.ManagedSSHFile, error) {
+	files := []sshFile{
+		{name: "known_hosts", content: knownHosts},
+		{name: "config", content: sshConfig},
+	}
+	if user != nil && user.SSHPrivateKey != "" {
+		var err error
+		if files, err = sshFiles(user, cipher); err != nil {
+			return nil, err
+		}
+	}
+	managed := make([]agent.ManagedSSHFile, 0, len(files))
+	for _, f := range files {
+		sum := sha256.Sum256([]byte(f.content))
+		managed = append(managed, agent.ManagedSSHFile{Name: f.name, SHA256: hex.EncodeToString(sum[:])})
+	}
+	return managed, nil
 }

@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/auth"
@@ -23,6 +24,10 @@ type service struct {
 	cipher    *encrypt.Cipher
 	agentPort int
 	sidecar   SidecarService
+
+	// converting holds the workspaces being converted into a project.
+	convertMu  sync.Mutex
+	converting map[int64]bool
 }
 
 // NewService creates a new workspace Service.

@@ -5,7 +5,9 @@ import { useWorkspaceStore } from '@/stores/workspaces'
 import WorkspaceCard from '@/components/WorkspaceCard.vue'
 import WorkspaceModal from '@/components/WorkspaceModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
+import ConvertWorkspaceModal from '@/components/home/ConvertWorkspaceModal.vue'
 import type { Workspace } from '@/api/workspaces'
+import type { ConvertResult } from '@/api/projects'
 
 // Workspaces that don't belong to a project, with their own list kept fresh
 // while the section is showing.
@@ -21,8 +23,11 @@ const showDeleteModal = ref(false)
 const deleting = ref(false)
 const editTarget = ref<Workspace | null>(null)
 const deleteTarget = ref<Workspace | null>(null)
+const convertTargetId = ref<number | null>(null)
 
 const workspaces = computed(() => store.workspaces.filter((ws) => !ws.projectId))
+// Follows the store, so the dialog sees the workspace start.
+const convertTarget = computed(() => store.workspaces.find((ws) => ws.id === convertTargetId.value) ?? null)
 
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -91,6 +96,14 @@ async function handleStop(workspace: Workspace) {
   }
 }
 
+// A converted workspace opens as its project; a project seeded from a repo
+// in a subdirectory opens with a fresh workspace.
+function handleConverted(result: ConvertResult) {
+  convertTargetId.value = null
+  refresh()
+  router.push({ name: 'project', params: { id: result.project.id } })
+}
+
 async function handleDelete() {
   if (!deleteTarget.value) return
   deleting.value = true
@@ -130,8 +143,17 @@ async function handleDelete() {
         @delete="openDelete"
         @start="handleStart"
         @stop="handleStop"
+        @convert="convertTargetId = $event.id"
       />
     </div>
+
+    <ConvertWorkspaceModal
+      :show="convertTargetId !== null"
+      :workspace="convertTarget"
+      @close="convertTargetId = null"
+      @start="handleStart"
+      @converted="handleConverted"
+    />
 
     <WorkspaceModal
       :show="showCreateModal"

@@ -43,6 +43,10 @@ type Service interface {
 	CheckoutWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoCheckout, error)
 	PublishWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error)
 	SyncWorkspaceBase(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
+	// DiscoverConversion lists what a standalone workspace holds that could
+	// become a project.
+	DiscoverConversion(ctx context.Context, userID, workspaceID int64) (*agent.RepoDiscovery, error)
+	ConvertWorkspace(ctx context.Context, userID, workspaceID int64, in ConvertInput) (*ConvertResult, error)
 	// SetPublishHook registers who is told when a branch is published from
 	// the project workspace.
 	SetPublishHook(h PublishHook)
@@ -61,6 +65,7 @@ type Workspaces interface {
 	workspace.AccessService
 	workspace.SandboxService
 	workspace.ProjectWorkspaceService
+	workspace.ConversionService
 	Delete(ctx context.Context, userID, workspaceID int64) error
 	Start(ctx context.Context, userID, workspaceID int64) (*workspace.Workspace, error)
 	StartCommand(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
@@ -186,7 +191,7 @@ func (s *service) Create(ctx context.Context, userID int64, in CreateInput) (*Pr
 	// From here on the Docker resources exist, so failures are recorded on
 	// the project instead of rolled back; the user can inspect and delete it.
 	p.Status, p.Error = StatusReady, ""
-	if err := s.initRepo(ctx, p); err != nil {
+	if err := s.initRepo(ctx, p, false); err != nil {
 		log.Printf("project %d: repo init failed: %v", p.ID, err)
 		p.Status, p.Error = StatusError, err.Error()
 	}
@@ -196,7 +201,10 @@ func (s *service) Create(ctx context.Context, userID int64, in CreateInput) (*Pr
 	return p, nil
 }
 
-func (s *service) initRepo(ctx context.Context, p *Project) error {
+// initRepo sets up the canonical repo, cloned from the upstream if there is
+// one. With empty set it clones nothing and makes no commit, so a converted
+// workspace's branches can be imported into it.
+func (s *service) initRepo(ctx context.Context, p *Project, empty bool) error {
 	if _, err := s.waitForRepoAgent(ctx, p); err != nil {
 		return err
 	}
@@ -216,7 +224,12 @@ func (s *service) initRepo(ctx context.Context, p *Project) error {
 			return fmt.Errorf("injecting SSH keys into repo container: %w", err)
 		}
 	}
-	if _, err := c.RepoInit(ctx, p.DefaultBranch, p.UpstreamURL); err != nil {
+	if empty {
+		_, err = c.RepoInitEmpty(ctx, p.DefaultBranch, p.UpstreamURL)
+	} else {
+		_, err = c.RepoInit(ctx, p.DefaultBranch, p.UpstreamURL)
+	}
+	if err != nil {
 		return fmt.Errorf("initializing repo: %w", err)
 	}
 	return nil

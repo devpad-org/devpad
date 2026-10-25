@@ -80,6 +80,12 @@ func main() {
 	authedMux.HandleFunc("POST /api/repo/push", handleRepoPush)
 	authedMux.HandleFunc("POST /api/repo/fetch-base", handleRepoFetchBase)
 	authedMux.HandleFunc("POST /api/repo/checkout", handleRepoCheckout)
+	authedMux.HandleFunc("GET /api/repo/discover", handleRepoDiscover)
+	authedMux.HandleFunc("GET /api/repo/bundle-all", handleRepoBundleAll)
+	authedMux.HandleFunc("POST /api/repo/init-contents", handleRepoInitContents)
+	authedMux.HandleFunc("POST /api/repo/init-contents/undo", handleRepoUndoInitContents)
+	authedMux.HandleFunc("POST /api/repo/import-initial", handleRepoImportInitial)
+	authedMux.HandleFunc("POST /api/ssh/remove-managed", handleSSHRemoveManaged)
 
 	// Terminal WebSocket
 	authedMux.HandleFunc("GET /ws/terminal", handleTerminal)
