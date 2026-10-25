@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { projectApi, type Project, type Sandbox } from '@/api/projects'
+import { projectApi, type Project, type RepoBranch, type Sandbox } from '@/api/projects'
 import { taskApi, type Task, type TaskStatus } from '@/api/tasks'
 import { mergeRequestApi, type MergeRequest } from '@/api/mergeRequests'
 
@@ -21,6 +21,9 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   const tasks = ref<Task[]>([])
   const mergeRequests = ref<MergeRequest[]>([])
   const sandboxes = ref<Sandbox[]>([])
+  // The canonical repo's branches, loaded on demand by the panels that need
+  // them rather than on every poll.
+  const branches = ref<RepoBranch[]>([])
   const loadError = ref('')
   const selectedTaskId = ref<number | null>(null)
 
@@ -33,6 +36,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   const selectedTask = computed(() => tasks.value.find((t) => t.id === selectedTaskId.value) ?? null)
   const openMergeRequests = computed(() => mergeRequests.value.filter((mr) => mr.status === 'open'))
   const activeSandboxes = computed(() => sandboxes.value.filter((s) => s.status !== 'stopped').length)
+  const branchNames = computed(() => new Set(branches.value.map((b) => b.name)))
 
   // A task's newest merge request, open ones first.
   const mergeRequestByTask = computed(() => {
@@ -91,6 +95,14 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     }
   }
 
+  async function refreshBranches() {
+    const id = projectId.value
+    if (id === null || !ready.value) return
+    const gen = generation
+    const res = await projectApi.branches(id)
+    if (gen === generation) branches.value = res.branches ?? []
+  }
+
   function startPolling() {
     stopPolling()
     timer = setInterval(() => {
@@ -111,6 +123,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     tasks.value = []
     mergeRequests.value = []
     sandboxes.value = []
+    branches.value = []
     loadError.value = ''
     selectedTaskId.value = null
   }
@@ -152,17 +165,20 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     tasks,
     mergeRequests,
     sandboxes,
+    branches,
     loadError,
     selectedTaskId,
     ready,
     selectedTask,
     openMergeRequests,
     activeSandboxes,
+    branchNames,
     mergeRequestByTask,
     columns,
     sandboxTask,
     openMergeRequestFor,
     refresh,
+    refreshBranches,
     open,
     close,
     setProject,

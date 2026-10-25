@@ -14,6 +14,9 @@ export function branchActionError(e: unknown, fallback: string): string {
   if (/being published/i.test(message)) {
     return 'This branch is being published right now. Try again in a moment.'
   }
+  if (/branch not found/i.test(message)) {
+    return "The project doesn't have this branch yet. An agent's branch appears once it publishes its work."
+  }
   if (/workspace is not running|not running/i.test(message)) {
     return 'Start the workspace first.'
   }

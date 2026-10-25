@@ -1,23 +1,50 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { inject, ref, watch } from 'vue'
 import { projectApi, type Sandbox } from '@/api/projects'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import StatusBadge from './StatusBadge.vue'
 import { branchActionError } from './branchErrors'
+import { confirmDiscardKey } from '@/components/ide/viewTabs'
 
 // The agents' sandboxes in the IDE side bar. Each can be opened to debug the
 // agent, or its branch checked out in the project workspace.
 const props = defineProps<{
   // The project workspace is running, so branches can be checked out.
   workspaceLive: boolean
+  // The panel is showing, so keep the list of published branches fresh.
+  active: boolean
 }>()
 
 const emit = defineEmits<{ 'checked-out': [branch: string] }>()
 
 const store = useActiveProjectStore()
+const confirmDiscard = inject(confirmDiscardKey, () => Promise.resolve(true))
 const busy = ref<number | null>(null)
 const error = ref('')
 const notice = ref('')
+
+// An agent's branch reaches the project once its work is collected, so a
+// sandbox on its first round has nothing to check out yet.
+function published(sandbox: Sandbox): boolean {
+  return store.branchNames.has(sandbox.branch)
+}
+
+function checkoutTitle(sandbox: Sandbox): string {
+  if (!props.workspaceLive) return 'Start your workspace to check out branches'
+  if (!published(sandbox)) return 'Not published yet. The branch appears once the agent finishes a round.'
+  return `Check out ${sandbox.branch} in your workspace`
+}
+
+function refreshBranches() {
+  store.refreshBranches().catch(() => {
+    // Keep the last known branches; Check out reports a missing one.
+  })
+}
+
+// Agents publish when a round ends, which shows up as the task moving on.
+watch(() => [props.active, store.tasks.map((t) => `${t.id}:${t.status}:${t.headSha}`).join()], () => {
+  if (props.active) refreshBranches()
+}, { immediate: true })
 
 async function start(sandbox: Sandbox) {
   if (store.projectId === null) return
@@ -36,6 +63,7 @@ async function start(sandbox: Sandbox) {
 
 async function checkout(sandbox: Sandbox) {
   if (store.projectId === null || !props.workspaceLive) return
+  if (!(await confirmDiscard('Checking out this branch reloads your open files from it, so their unsaved changes will be lost.'))) return
   busy.value = sandbox.id
   error.value = ''
   notice.value = ''
@@ -102,8 +130,8 @@ async function checkout(sandbox: Sandbox) {
             </button>
             <button
               class="btn btn-secondary btn-sm"
-              :disabled="!workspaceLive || busy === sandbox.id"
-              :title="workspaceLive ? `Check out ${sandbox.branch} in your workspace` : 'Start your workspace to check out branches'"
+              :disabled="!workspaceLive || !published(sandbox) || busy === sandbox.id"
+              :title="checkoutTitle(sandbox)"
               @click="checkout(sandbox)"
             >
               Check out

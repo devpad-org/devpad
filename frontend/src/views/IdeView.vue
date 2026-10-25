@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch, onMounted, onUnmounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, provide, ref, watch, onMounted, onUnmounted } from 'vue'
+import { useRoute, useRouter, type LocationQuery } from 'vue-router'
 import { workspaceApi, type Workspace } from '@/api/workspaces'
 import { projectApi } from '@/api/projects'
 import type { Task } from '@/api/tasks'
@@ -27,20 +27,23 @@ import ProjectMergeRequestsPanel from '@/components/project/ProjectMergeRequests
 import ProjectPanel from '@/components/project/ProjectPanel.vue'
 import ProjectTasksPanel from '@/components/project/ProjectTasksPanel.vue'
 import TaskModal from '@/components/project/TaskModal.vue'
+import ConfirmModal from '@/components/ConfirmModal.vue'
+import { BOARD_TAB, confirmDiscardKey, parseViewTabId, type ViewTab, type ViewTabId } from '@/components/ide/viewTabs'
 import { useServiceStore } from '@/stores/services'
 import { useActiveProjectStore } from '@/stores/activeProject'
+import { useAttentionStore } from '@/stores/attention'
 import { useResizable } from '@/composables/useResizable'
 import { useIsMobile } from '@/composables/useMediaQuery'
 import type { GitCommit, GitCommitFile } from '@/api/git'
 import type { AgentRun } from '@/api/ai'
 
 const WORKSPACE_POLL_INTERVAL_MS = 4000
-const BOARD_TAB = 'board'
 
 const route = useRoute()
 const router = useRouter()
 const serviceStore = useServiceStore()
 const projectStore = useActiveProjectStore()
+const attention = useAttentionStore()
 
 // The shell runs in one of two modes. At /projects/:id it is the project's
 // IDE: project panels always work, and workspace panels wait for the project
@@ -83,6 +86,10 @@ const activeFile = ref<string | null>(null)
 const terminalMinimized = ref(false)
 const previewVisible = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
+// The shell owns its view tabs, such as the board, and mirrors them and the
+// active one into the URL so they survive reloads and back/forward.
+const viewTabs = ref<ViewTab[]>([])
+const activeView = ref<ViewTabId | null>(null)
 const selectedGitCommit = ref<GitCommit | null>(null)
 const gitDiffRequest = ref<GitDiffRequest | null>(null)
 const focusedAgentRunId = ref<number | null>(null)
@@ -199,6 +206,8 @@ function handleGlobalKeydown(e: KeyboardEvent) {
 }
 
 function setWorkspace(ws: Workspace | null) {
+  // Services belong to one workspace; the panels refetch them for the next.
+  if (workspace.value?.id !== ws?.id) serviceStore.$reset()
   workspace.value = ws
   if (ws) selectedAgentId.value = ws.defaultAgentId || 'default'
 }
@@ -236,37 +245,64 @@ async function loadProject(id: number, seq: number) {
   if (seq !== loadSeq) return
   if (!projectStore.project) {
     error.value = projectStore.loadError || 'Failed to load project'
+    // Nothing on the error page uses the project, so stop polling it.
+    projectStore.close()
     loading.value = false
     return
   }
-  await loadProjectWorkspace(id)
+  await loadProjectWorkspace(id, seq)
   if (seq !== loadSeq) return
   applyTaskQuery()
   activeActivity.value = workspaceLive.value ? 'ai' : 'tasks'
+  applyViewQuery(route.query)
+  // Open files don't survive a reload, so a view takes the editor instead.
+  if (!activeView.value) activeView.value = viewTabs.value[0]?.id ?? null
+  // A link to a particular tab shows it.
+  if (activeView.value && route.query.tab) revealView(activeView.value)
   loading.value = false
   startWorkspacePolling()
-  await nextTick()
-  openBoard()
 }
 
 // Finds the project workspace without creating it.
-async function loadProjectWorkspace(id: number) {
+async function loadProjectWorkspace(id: number, seq: number) {
   try {
     const pws = await projectApi.getWorkspace(id)
-    setWorkspace(pws ? (await workspaceApi.get(pws.id)).workspace : null)
+    if (seq !== loadSeq) return
+    const ws = pws ? (await workspaceApi.get(pws.id)).workspace : null
+    if (seq !== loadSeq) return
+    setWorkspace(ws)
     workspaceError.value = ''
   } catch (e) {
+    if (seq !== loadSeq) return
     workspaceError.value = e instanceof Error ? e.message : 'Failed to load the workspace'
   }
+}
+
+// Clears everything that belongs to the previous project or workspace, since
+// both routes reuse this view.
+function resetShell() {
+  stopWorkspacePolling()
+  setWorkspace(null)
+  workspaceAction.value = ''
+  workspaceError.value = ''
+  gitRevision.value = 0
+  activeActivity.value = 'ai'
+  activeFile.value = null
+  previewVisible.value = false
+  selectedGitCommit.value = null
+  gitDiffRequest.value = null
+  focusedAgentRunId.value = null
+  defaultAgentError.value = null
+  viewTabs.value = []
+  activeView.value = null
+  closeMobilePanels()
 }
 
 async function load() {
   const seq = ++loadSeq
   loading.value = true
   error.value = null
-  workspaceError.value = ''
-  stopWorkspacePolling()
-  setWorkspace(null)
+  resetShell()
 
   if (projectId.value !== null) {
     if (isNaN(projectId.value)) {
@@ -286,35 +322,43 @@ async function load() {
   await loadWorkspace(id, seq)
 }
 
+// Creating and starting take a while, and the user may move to another
+// project or a sandbox meanwhile; a result for a superseded load is dropped.
 async function createWorkspace() {
   if (projectId.value === null || workspaceAction.value) return
+  const seq = loadSeq
   workspaceAction.value = 'creating'
   workspaceError.value = ''
   try {
     const { workspace: pws } = await projectApi.openWorkspace(projectId.value)
+    if (seq !== loadSeq) return
     let ws = (await workspaceApi.get(pws.id)).workspace
+    if (seq !== loadSeq) return
     if (ws.status === 'stopped') {
       workspaceAction.value = 'starting'
       ws = (await workspaceApi.start(ws.id)).workspace
+      if (seq !== loadSeq) return
     }
     setWorkspace(ws)
   } catch (e) {
-    workspaceError.value = e instanceof Error ? e.message : 'Failed to create the workspace'
+    if (seq === loadSeq) workspaceError.value = e instanceof Error ? e.message : 'Failed to create the workspace'
   } finally {
-    workspaceAction.value = ''
+    if (seq === loadSeq) workspaceAction.value = ''
   }
 }
 
 async function startWorkspace() {
   if (!workspace.value || workspaceAction.value) return
+  const seq = loadSeq
   workspaceAction.value = 'starting'
   workspaceError.value = ''
   try {
-    setWorkspace((await workspaceApi.start(workspace.value.id)).workspace)
+    const ws = (await workspaceApi.start(workspace.value.id)).workspace
+    if (seq === loadSeq) setWorkspace(ws)
   } catch (e) {
-    workspaceError.value = e instanceof Error ? e.message : 'Failed to start the workspace'
+    if (seq === loadSeq) workspaceError.value = e instanceof Error ? e.message : 'Failed to start the workspace'
   } finally {
-    workspaceAction.value = ''
+    if (seq === loadSeq) workspaceAction.value = ''
   }
 }
 
@@ -323,13 +367,16 @@ async function startWorkspace() {
 async function pollWorkspace() {
   const id = projectId.value
   if (id === null || workspaceAction.value || document.visibilityState !== 'visible') return
+  const seq = loadSeq
   try {
     const pws = await projectApi.getWorkspace(id)
-    if (projectId.value !== id || workspaceAction.value) return
+    if (seq !== loadSeq || workspaceAction.value) return
     if (!pws) {
       if (workspace.value) setWorkspace(null)
     } else if (!workspace.value || workspace.value.id !== pws.id || workspace.value.status !== pws.status) {
-      setWorkspace((await workspaceApi.get(pws.id)).workspace)
+      const ws = (await workspaceApi.get(pws.id)).workspace
+      if (seq !== loadSeq || workspaceAction.value) return
+      setWorkspace(ws)
     }
   } catch {
     // Keep the last known state; the next poll tries again.
@@ -348,14 +395,81 @@ function stopWorkspacePolling() {
   }
 }
 
-function openBoard() {
-  editorPanel.value?.openView(BOARD_TAB, 'Board')
+// The name of a view tab the shell can render, or null for one it can't.
+function viewTabName(id: ViewTabId): string | null {
+  return id === BOARD_TAB ? 'Board' : null
+}
+
+// Opens a view tab, or focuses it if it is already open, and shows it.
+function openView(id: ViewTabId) {
+  if (!viewTabs.value.some((t) => t.id === id)) {
+    const name = viewTabName(id)
+    if (!name) return
+    viewTabs.value = [...viewTabs.value, { id, name }]
+  }
+  activeView.value = id
+  revealView(id)
+}
+
+function closeView(id: string) {
+  viewTabs.value = viewTabs.value.filter((t) => t.id !== id)
+  if (activeView.value === id) activeView.value = null
+}
+
+// View tabs sit on the editor surface, behind the project panels.
+function revealView(id: ViewTabId) {
+  if (!editorSurfaceVisible.value) activeActivity.value = id.startsWith('mr:') ? 'merge-requests' : 'tasks'
+  mobileSidebarOpen.value = false
 }
 
 function showBoard() {
-  openBoard()
-  mobileSidebarOpen.value = false
+  openView(BOARD_TAB)
 }
+
+// The query holds the open view tabs and the active one, as
+// ?tabs=board,mr:12&tab=mr:12. Without ?tabs the project opens on its board;
+// an empty ?tabs= means every view tab was closed.
+const DEFAULT_VIEWS: ViewTabId[] = [BOARD_TAB]
+
+function queryViews(query: LocationQuery): { ids: ViewTabId[]; active: ViewTabId | null } {
+  if (typeof query.tabs !== 'string') return { ids: DEFAULT_VIEWS, active: DEFAULT_VIEWS[0] ?? null }
+  const ids: ViewTabId[] = []
+  for (const part of query.tabs.split(',')) {
+    const id = parseViewTabId(part)
+    if (id && viewTabName(id) && !ids.includes(id)) ids.push(id)
+  }
+  const active = parseViewTabId(query.tab)
+  return { ids, active: active && ids.includes(active) ? active : null }
+}
+
+function applyViewQuery(query: LocationQuery) {
+  const { ids, active } = queryViews(query)
+  const current = viewTabs.value.map((t) => t.id)
+  if (ids.join() !== current.join()) {
+    viewTabs.value = ids.map((id) => ({ id, name: viewTabName(id) ?? id }))
+  }
+  if (active && active !== activeView.value) activeView.value = active
+}
+
+function viewQuery(): { tabs?: string; tab?: string } {
+  const ids = viewTabs.value.map((t) => t.id)
+  if (ids.join() === DEFAULT_VIEWS.join() && activeView.value === DEFAULT_VIEWS[0]) return {}
+  return { tabs: ids.join(','), tab: activeView.value ?? undefined }
+}
+
+watch([viewTabs, activeView], () => {
+  if (!isProjectMode.value || loading.value) return
+  const next = viewQuery()
+  if (next.tabs === route.query.tabs && next.tab === route.query.tab) return
+  void router.replace({ query: { ...route.query, tabs: next.tabs, tab: next.tab } })
+})
+
+// Back/forward and links within the project change only the query.
+watch(() => [route.query.tabs, route.query.tab], () => {
+  if (!isProjectMode.value || loading.value) return
+  applyViewQuery(route.query)
+  if (activeView.value && route.query.tab) revealView(activeView.value)
+})
 
 // A merge request links to its task with ?task=.
 function applyTaskQuery() {
@@ -379,14 +493,49 @@ function taskDeleted(id: number) {
   void projectStore.refresh()
 }
 
-function branchChanged() {
+// A checkout moves HEAD: the git panels start over and open files reload
+// from the new branch. Publish and sync move only refs, which the panels pick
+// up on their own refresh.
+function branchChanged(kind: 'checkout' | 'publish' | 'sync') {
+  if (kind !== 'checkout') return
   gitRevision.value++
+  void editorPanel.value?.reloadFiles()
 }
 
 function checkedOut() {
-  branchChanged()
+  branchChanged('checkout')
   openGitPanel()
 }
+
+// Unsaved editor changes would be lost by leaving the shell or reloading
+// files after a checkout, so the user confirms first.
+const discardPrompt = ref<{ message: string; resolve: (ok: boolean) => void } | null>(null)
+
+function confirmDiscard(message: string): Promise<boolean> {
+  if (!editorPanel.value?.hasDirtyFiles) return Promise.resolve(true)
+  discardPrompt.value?.resolve(false)
+  return new Promise((resolve) => {
+    discardPrompt.value = { message, resolve }
+  })
+}
+
+function answerDiscard(ok: boolean) {
+  const prompt = discardPrompt.value
+  discardPrompt.value = null
+  prompt?.resolve(ok)
+}
+
+provide(confirmDiscardKey, confirmDiscard)
+
+function handleBeforeUnload(e: BeforeUnloadEvent) {
+  if (!editorPanel.value?.hasDirtyFiles) return
+  e.preventDefault()
+  e.returnValue = ''
+}
+
+// Both routes share this view, and in-component route guards stay bound to
+// the route the view first mounted for, so a global guard covers leaving.
+let removeLeaveGuard: (() => void) | null = null
 
 // Both routes render this view, so moving between them reuses it.
 watch(() => [route.name, route.params.id], (next, prev) => {
@@ -400,12 +549,22 @@ watch(() => route.query.task, () => {
 
 onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
+  window.addEventListener('beforeunload', handleBeforeUnload)
+  removeLeaveGuard = router.beforeEach((to, from) => {
+    if (to.name === from.name && to.params.id === from.params.id) return true
+    return confirmDiscard('You have unsaved changes in open files. Leave and lose them?')
+  })
   if (isMobile.value) terminalMinimized.value = true
   void load()
 })
 
 onUnmounted(() => {
+  // Ends any load still in flight, so it can't start polling afterwards.
+  loadSeq++
   window.removeEventListener('keydown', handleGlobalKeydown)
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  removeLeaveGuard?.()
+  answerDiscard(false)
   stopWorkspacePolling()
   projectStore.close()
 })
@@ -555,7 +714,10 @@ const backLabel = computed(() => {
   </div>
   <div v-else-if="error" class="ide-error">
     <p>{{ error }}</p>
-    <button class="ide-back-btn" @click="handleBack">{{ backLabel }}</button>
+    <div class="ide-error-actions">
+      <button class="ide-back-btn" @click="load">Retry</button>
+      <button class="ide-back-btn" @click="handleBack">{{ backLabel }}</button>
+    </div>
   </div>
   <div v-else class="ide-layout" :class="{ 'is-mobile': isMobile }">
     <!--
@@ -597,7 +759,22 @@ const backLabel = computed(() => {
         <span class="status-dot" />
         <span class="titlebar-status-text">{{ workspaceStatusLabel === 'none' ? 'no workspace' : workspaceStatusLabel }}</span>
       </span>
-      <div v-if="workspaceLive" class="titlebar-actions">
+      <div class="titlebar-actions">
+        <RouterLink
+          to="/inbox"
+          class="titlebar-btn titlebar-inbox"
+          :class="{ 'has-items': attention.count > 0 }"
+          :title="attention.count > 0 ? `Inbox: ${attention.count} waiting for you` : 'Inbox'"
+          :aria-label="attention.count > 0 ? `Inbox, ${attention.count} waiting for you` : 'Inbox'"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+            <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+          </svg>
+          <span v-if="attention.count > 0" class="titlebar-badge">{{ attention.count }}</span>
+        </RouterLink>
+      <template v-if="workspaceLive">
+        <div class="titlebar-separator" />
         <button
           class="titlebar-btn"
           :disabled="!editorPanel?.isDirty"
@@ -663,6 +840,7 @@ const backLabel = computed(() => {
             <path d="M3 12h4l3-9 4 18 3-9h4" />
           </svg>
         </button>
+      </template>
       </div>
     </div>
 
@@ -882,6 +1060,7 @@ const backLabel = computed(() => {
           <ProjectAgentsPanel
             v-show="activeActivity === 'agents'"
             :workspace-live="workspaceLive"
+            :active="activeActivity === 'agents'"
             @checked-out="checkedOut"
           />
           <ProjectPanel v-show="activeActivity === 'project'" :workspace-status="workspaceStatusLabel" />
@@ -917,10 +1096,15 @@ const backLabel = computed(() => {
           <div v-show="editorSurfaceVisible" class="ide-surface-pane">
             <EditorPanel
               ref="editorPanel"
+              v-model:active-view="activeView"
               :workspace-id="workspace?.id ?? 0"
               :file-path="activeFile"
+              :views="viewTabs"
               @active-change="(p: string | null) => activeFile = p"
+              @close-view="closeView"
             >
+              <!-- The slot's `active` says the tab is showing; with
+                   editorSurfaceVisible it tells a view when it can pause. -->
               <template #view="{ id }">
                 <ProjectBoard v-if="id === BOARD_TAB" />
               </template>
@@ -1041,6 +1225,16 @@ const backLabel = computed(() => {
       @changed="taskChanged"
       @deleted="taskDeleted"
     />
+    <ConfirmModal
+      :show="!!discardPrompt"
+      title="Discard unsaved changes?"
+      :message="discardPrompt?.message ?? ''"
+      confirm-label="Discard changes"
+      cancel-label="Keep editing"
+      variant="danger"
+      @confirm="answerDiscard(true)"
+      @cancel="answerDiscard(false)"
+    />
     <PreviewNewTabModal
       :show="previewModalVisible"
       :loading="previewModalLoading"
@@ -1081,6 +1275,11 @@ const backLabel = computed(() => {
   gap: var(--space-3);
   color: var(--accent-rose);
   font-size: 0.85rem;
+}
+
+.ide-error-actions {
+  display: flex;
+  gap: var(--space-2);
 }
 
 .ide-back-btn {
@@ -1205,6 +1404,26 @@ const backLabel = computed(() => {
   position: absolute;
   bottom: 3px;
   right: 2px;
+}
+
+.titlebar-badge {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--attention);
+  color: var(--text-on-accent);
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+.titlebar-inbox.has-items {
+  color: var(--attention);
 }
 
 .titlebar-separator {

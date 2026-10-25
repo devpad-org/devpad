@@ -13,9 +13,10 @@ const attention = useAttentionStore()
 
 const hideChrome = computed(() => route.meta.hideChrome === true)
 
-// The header shows how many agents are waiting for the user.
+// The header, and the IDE's title bar where the header is hidden, show how
+// many agents are waiting for the user.
 watch(
-  () => auth.isAuthenticated && !hideChrome.value,
+  () => auth.isAuthenticated,
   (showing, wasShowing) => {
     if (showing) attention.watch()
     else if (wasShowing) attention.unwatch()

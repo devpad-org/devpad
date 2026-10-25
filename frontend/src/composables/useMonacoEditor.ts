@@ -244,6 +244,14 @@ export function useMonacoEditor(
     }
   }
 
+  /** Replace an open file's content, such as after a branch switch, and mark it clean */
+  function reloadFile(filePath: string, content: string) {
+    const model = models.get(filePath)
+    if (!model) return
+    if (model.getValue() !== content) model.setValue(content)
+    markClean(filePath)
+  }
+
   function isFileDirty(filePath: string): boolean {
     return dirtyFiles.has(filePath)
   }
@@ -304,6 +312,7 @@ export function useMonacoEditor(
     setContent,
     switchToFile,
     closeFile,
+    reloadFile,
     isFileDirty,
     markClean,
     getContent,

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { gitApi } from '@/api/git'
-import { projectApi, type RepoBranch } from '@/api/projects'
+import { projectApi } from '@/api/projects'
 import { mergeRequestApi } from '@/api/mergeRequests'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { branchActionError } from './branchErrors'
+import { confirmDiscardKey } from '@/components/ide/viewTabs'
 
 const REFRESH_INTERVAL_MS = 10000
 
@@ -20,14 +21,15 @@ const props = defineProps<{
   revision: number
 }>()
 
-const emit = defineEmits<{ changed: [] }>()
+// A checkout moves the workspace's HEAD; publish and sync only move refs.
+const emit = defineEmits<{ changed: [kind: 'checkout' | 'publish' | 'sync'] }>()
 
 const router = useRouter()
 const store = useActiveProjectStore()
+const confirmDiscard = inject(confirmDiscardKey, () => Promise.resolve(true))
 
 const current = ref('')
 const localSha = ref('')
-const canonical = ref<RepoBranch[]>([])
 const target = ref('')
 const busy = ref<'' | 'checkout' | 'publish' | 'sync' | 'mr'>('')
 const error = ref('')
@@ -40,7 +42,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 const defaultBranch = computed(() => store.project?.defaultBranch ?? 'main')
 const detached = computed(() => current.value === '' || current.value === 'HEAD')
 const onDefault = computed(() => current.value === defaultBranch.value)
-const published = computed(() => canonical.value.find((b) => b.name === current.value) ?? null)
+const published = computed(() => store.branches.find((b) => b.name === current.value) ?? null)
 const branchState = computed(() => {
   if (detached.value) return 'detached'
   if (onDefault.value) return 'default'
@@ -49,7 +51,7 @@ const branchState = computed(() => {
   return localSha.value && published.value.sha.startsWith(localSha.value) ? 'published' : 'changed'
 })
 const openMr = computed(() => (current.value ? store.openMergeRequestFor(current.value) : undefined))
-const switchable = computed(() => canonical.value.filter((b) => b.name !== current.value))
+const switchable = computed(() => store.branches.filter((b) => b.name !== current.value))
 
 const stateLabel = computed(() => {
   switch (branchState.value) {
@@ -67,22 +69,16 @@ async function loadLocal() {
   localSha.value = res.branches.find((b) => !b.remote && b.name === res.current)?.hash ?? ''
 }
 
-async function loadCanonical() {
-  if (store.projectId === null) return
-  const res = await projectApi.branches(store.projectId)
-  canonical.value = res.branches ?? []
-}
-
 async function refresh() {
   try {
-    await Promise.all([loadLocal(), loadCanonical()])
+    await Promise.all([loadLocal(), store.refreshBranches()])
   } catch {
     // The status bar and Source Control panel report git errors.
   }
 }
 
-function changed() {
-  emit('changed')
+function changed(kind: 'checkout' | 'publish' | 'sync') {
+  emit('changed', kind)
   void refresh()
 }
 
@@ -94,6 +90,7 @@ function begin(action: typeof busy.value) {
 
 async function checkout() {
   if (store.projectId === null || !target.value) return
+  if (!(await confirmDiscard('Switching branches reloads your open files from the new branch, so their unsaved changes will be lost.'))) return
   begin('checkout')
   try {
     const res = await projectApi.checkoutBranch(store.projectId, target.value)
@@ -101,7 +98,7 @@ async function checkout() {
       ? `Switched to ${res.branch}.`
       : `Switched to ${res.branch}. It differs from the project's copy; merge ${res.upstream} to pick up the latest.`
     target.value = ''
-    changed()
+    changed('checkout')
   } catch (e) {
     error.value = branchActionError(e, 'Failed to switch branches')
   } finally {
@@ -120,7 +117,7 @@ async function publish() {
   begin('publish')
   try {
     await publishCurrent()
-    changed()
+    changed('publish')
     void store.refresh()
   } catch (e) {
     error.value = branchActionError(e, 'Failed to publish the branch')
@@ -135,7 +132,7 @@ async function sync() {
   try {
     const res = await projectApi.syncWorkspace(store.projectId)
     notice.value = `Fetched ${defaultBranch.value} (${res.sha.slice(0, 8)}) as ${res.branch}. Merge it to bring your branch up to date.`
-    changed()
+    changed('sync')
   } catch (e) {
     error.value = branchActionError(e, 'Failed to sync')
   } finally {
