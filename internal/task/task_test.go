@@ -1024,6 +1024,39 @@ func TestStartUsesTheAgentsDefaultsUnlessAModelIsPicked(t *testing.T) {
 	}
 }
 
+// A task moved to another model drops the effort it ran with on the old
+// one, which the new model may not support; on the same model it keeps it.
+func TestStartOnAnotherModelDropsTheOldEffort(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name, model, effort, wantEffort string
+	}{
+		{"same model", "first", "", "high"},
+		{"no model", "", "", "high"},
+		{"other model", "second", "", ""},
+		{"other model and effort", "second", "low", "low"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			created, err := e.svc.Create(ctx, owner, 1, CreateInput{Title: tt.name, AgentSettings: AgentSettings{Model: "first", Effort: "high"}})
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			started, err := e.svc.Start(ctx, owner, 1, created.ID, StartInput{AgentSettings: AgentSettings{Model: tt.model, Effort: tt.effort}})
+			if err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			wantModel := tt.model
+			if wantModel == "" {
+				wantModel = "first"
+			}
+			if started.Model != wantModel || started.Effort != tt.wantEffort {
+				t.Fatalf("expected %s at %q, got %s at %q", wantModel, tt.wantEffort, started.Model, started.Effort)
+			}
+		})
+	}
+}
+
 func TestStartRejections(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()

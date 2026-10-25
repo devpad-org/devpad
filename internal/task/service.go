@@ -400,11 +400,17 @@ func (s *service) start(ctx context.Context, t *Task, in StartInput) (*Task, err
 	if in.AgentID != "" {
 		t.AgentID = in.AgentID
 	}
-	if in.Model != "" {
-		t.Model = in.Model
-	}
-	if in.Effort != "" {
-		t.Effort = in.Effort
+	// An effort belongs to the model it was chosen for, so moving the task to
+	// another model takes only the effort picked with it, if any.
+	if in.Model != "" && t.Model != "" && in.Model != t.Model {
+		t.Model, t.Effort = in.Model, in.Effort
+	} else {
+		if in.Model != "" {
+			t.Model = in.Model
+		}
+		if in.Effort != "" {
+			t.Effort = in.Effort
+		}
 	}
 	// A task keeps the model it first ran with, default or not, across later
 	// rounds; a new admin default reaches only tasks not started yet.
