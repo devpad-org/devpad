@@ -127,7 +127,7 @@ func TestCreateSandboxNeverInjectsSSHKeys(t *testing.T) {
 	}
 
 	// The same user's interactive workspace still gets them.
-	if _, err := svc.Create(ctx, 1, "mine", ""); err != nil {
+	if _, err := createLegacyWorkspace(ctx, svc, 1, "mine", ""); err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
 	if got := ra.paths(); len(got) == 0 || !strings.HasPrefix(got[0], "/api/command") {
@@ -193,7 +193,7 @@ func TestSandboxRepoOperationsUseRecordedBranch(t *testing.T) {
 func TestSandboxRepoOperationsRejectOtherWorkspaces(t *testing.T) {
 	svc, _ := setupSandboxService(t)
 	ctx := context.Background()
-	interactive, err := svc.Create(ctx, 1, "mine", "")
+	interactive, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
 	if err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestListByProjectFiltersByOwner(t *testing.T) {
 	if _, err := svc.CreateSandbox(ctx, 2, sandboxSpec("b")); err != nil {
 		t.Fatalf("create sandbox: %v", err)
 	}
-	if _, err := svc.Create(ctx, 1, "plain", ""); err != nil {
+	if _, err := createLegacyWorkspace(ctx, svc, 1, "plain", ""); err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
 

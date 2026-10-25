@@ -139,7 +139,9 @@ If no key is configured, Devpad generates an ephemeral key on startup and logs i
 
 Each user can generate an ED25519 SSH key pair from the **Settings** page. The private key is encrypted and stored in the database; the public key is shown in the UI for users to copy to their Git hosting provider (GitHub, GitLab, Bitbucket).
 
-When a workspace starts, Devpad automatically injects the user's SSH key, a `known_hosts` file for common Git hosts, and an SSH config into the container at `~/.ssh/`. This enables `git push`/`pull` over SSH without any manual setup inside workspaces.
+Work happens in projects. Each project has a canonical repo in its own container, one workspace for you, and sandboxes for its AI agents. None of a project's workspaces ever receive your SSH key: devpad moves commits between them and the canonical repo itself, and pushes upstream from the repo container with your key. A project without an upstream is a scratch project that starts from an empty repo.
+
+Workspaces made before projects existed still start with your SSH key, a `known_hosts` file for common Git hosts, and an SSH config injected at `~/.ssh/`. Devpad no longer creates such workspaces; convert each one into a project from the home page (which rotates your key, since an AI may have read it) or delete it.
 
 ## License
 

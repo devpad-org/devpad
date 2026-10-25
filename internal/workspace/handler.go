@@ -58,65 +58,6 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"workspace": workspaceResponse(ws)})
 }
 
-// HandleCreate creates a new workspace.
-func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
-		return
-	}
-
-	ws, err := h.service.Create(r.Context(), user.ID, req.Name, req.Description)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create workspace")
-		return
-	}
-
-	writeJSON(w, http.StatusCreated, map[string]any{"workspace": workspaceResponse(ws)})
-}
-
-// HandleUpdate updates a workspace's name and description.
-func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	id, err := parseID(r, "id")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid workspace id")
-		return
-	}
-
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
-		return
-	}
-
-	ws, err := h.service.Update(r.Context(), user.ID, id, req.Name, req.Description)
-	if err != nil {
-		handleServiceError(w, err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"workspace": workspaceResponse(ws)})
-}
-
 // HandleSetDefaultAgent updates the AI agent selected by default for a workspace.
 func (h *Handler) HandleSetDefaultAgent(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())

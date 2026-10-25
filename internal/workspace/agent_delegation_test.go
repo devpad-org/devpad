@@ -59,7 +59,7 @@ func setupAgentBackedWorkspace(t *testing.T, agentHandler http.HandlerFunc) (Ser
 	svc := NewService(repo, &mockContainerManager{ipOverride: host}, userRepo, cipher)
 	svc.(*service).agentPort = port
 
-	ws, err := svc.Create(context.Background(), 1, "Agent Backed", "")
+	ws, err := createLegacyWorkspace(context.Background(), svc, 1, "Agent Backed", "")
 	if err != nil {
 		t.Fatalf("creating workspace: %v", err)
 	}

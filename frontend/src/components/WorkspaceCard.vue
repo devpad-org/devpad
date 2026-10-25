@@ -10,7 +10,6 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  edit: [workspace: Workspace]
   delete: [workspace: Workspace]
   open: [workspace: Workspace]
   start: [workspace: Workspace]
@@ -184,12 +183,6 @@ function formatDate(dateStr: string) {
             <circle cx="18" cy="12" r="2" />
             <path d="M6 8v8" />
             <path d="M8 6h4a4 4 0 0 1 4 4v0" />
-          </svg>
-        </button>
-        <button class="action-btn" title="Edit" @click="$emit('edit', workspace)">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
-            <path d="m15 5 4 4" />
           </svg>
         </button>
         <button class="action-btn action-danger" title="Delete" @click="$emit('delete', workspace)">

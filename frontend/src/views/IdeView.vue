@@ -817,7 +817,7 @@ function handleBack() {
 
 const backLabel = computed(() => {
   if (isProjectMode.value) return 'Back to projects'
-  return workspace.value?.projectId ? 'Back to project' : 'Back to workspaces'
+  return workspace.value?.projectId ? 'Back to project' : 'Back to projects'
 })
 </script>
 

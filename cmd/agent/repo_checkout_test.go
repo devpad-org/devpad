@@ -165,3 +165,32 @@ func TestRepoCheckoutRejections(t *testing.T) {
 		t.Fatalf("expected 400 for a branch missing from the bundle, got %d: %s", rec.Code, rec.Body)
 	}
 }
+
+// A project with no upstream starts from devpad's empty initial commit, and
+// its project workspace is seeded on the default branch itself: a scratch
+// project the user can commit to and publish from straight away.
+func TestScratchProjectWorkspaceSeedsFromInitialCommit(t *testing.T) {
+	canonical := initCanonical(t)
+	initial := runGit(t, canonical, "rev-parse", "main")
+
+	work := t.TempDir()
+	rec := repoRequest(t, work, handleRepoSeed, http.MethodPost, "/api/repo/seed?base=main&branch=main&name=User&email=user@example.com", bytes.NewReader(bundleFrom(t, canonical, "main")))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("seed status %d: %s", rec.Code, rec.Body)
+	}
+	if got := runGit(t, work, "branch", "--show-current"); got != "main" {
+		t.Fatalf("expected main checked out, got %q", got)
+	}
+	if got := runGit(t, work, "rev-parse", "HEAD"); got != initial {
+		t.Fatalf("workspace HEAD = %s, want the initial commit %s", got, initial)
+	}
+
+	runGit(t, work, "switch", "-c", "first-feature")
+	sha := commitFile(t, work, "main.go", "package main")
+	if rec := publishFF(t, canonical, "first-feature", bundleFrom(t, work, "first-feature")); rec.Code != http.StatusOK {
+		t.Fatalf("publish status %d: %s", rec.Code, rec.Body)
+	}
+	if got := runGit(t, canonical, "rev-parse", "first-feature"); got != sha {
+		t.Fatalf("canonical first-feature = %s, want %s", got, sha)
+	}
+}

@@ -9,7 +9,8 @@ export interface Workspace {
   defaultAgentId: string
   // Sandboxes belong to a project and own one branch of it. An interactive
   // workspace with a project is that project's workspace and owns no branch;
-  // one without a project is standalone.
+  // one without a project is standalone, left from before projects, and can
+  // only be converted or deleted.
   projectId?: number
   kind?: 'interactive' | 'task' | 'review'
   branch?: string
@@ -88,14 +89,6 @@ export const workspaceApi = {
 
   get(id: number): Promise<WorkspaceResponse> {
     return apiClient.get<WorkspaceResponse>(`/api/workspaces/${id}`)
-  },
-
-  create(name: string, description: string): Promise<WorkspaceResponse> {
-    return apiClient.post<WorkspaceResponse>('/api/workspaces', { name, description })
-  },
-
-  update(id: number, name: string, description: string): Promise<WorkspaceResponse> {
-    return apiClient.put<WorkspaceResponse>(`/api/workspaces/${id}`, { name, description })
   },
 
   setDefaultAgent(id: number, agentId: string): Promise<WorkspaceResponse> {

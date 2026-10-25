@@ -9,7 +9,7 @@ import { fullTime, timeAgo } from '@/utils/time'
 import ProjectModal from '@/components/project/ProjectModal.vue'
 import StatusBadge from '@/components/project/StatusBadge.vue'
 import InboxSection from '@/components/home/InboxSection.vue'
-import StandaloneWorkspaces from '@/components/home/StandaloneWorkspaces.vue'
+import WorkspacesToConvert from '@/components/home/WorkspacesToConvert.vue'
 
 // The launcher: every project with what needs the user in it, the inbox of
 // agents waiting on the user, and workspaces that belong to no project.
@@ -156,7 +156,7 @@ async function handleCreate(input: ProjectInput) {
         <p v-else-if="projects.error && projects.projects.length === 0" class="notice notice-error">{{ projects.error }}</p>
         <div v-else-if="projects.projects.length === 0" class="panel empty-state">
           <p class="empty-title">No projects yet</p>
-          <p class="empty-text">Create a project from a repository, then work in it and give agents tasks to do in parallel.</p>
+          <p class="empty-text">Create a project from a repository, or a scratch one from nothing, then work in it and give agents tasks to do in parallel.</p>
         </div>
 
         <div v-else class="project-grid">
@@ -210,7 +210,7 @@ async function handleCreate(input: ProjectInput) {
       </section>
     </div>
 
-    <StandaloneWorkspaces />
+    <WorkspacesToConvert />
 
     <ProjectModal
       :show="showCreate"

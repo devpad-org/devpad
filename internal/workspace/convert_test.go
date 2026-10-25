@@ -154,7 +154,7 @@ func sha(s string) string {
 func TestAttachToProjectRemovesDevpadKeys(t *testing.T) {
 	svc, ca := setupConvertService(t)
 	ctx := context.Background()
-	ws, err := svc.Create(ctx, 1, "mine", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -216,7 +216,7 @@ func (failingAttachRepo) AttachToProject(context.Context, int64, int64) (bool, e
 func TestAttachToProjectPutsKeysBackOnFailure(t *testing.T) {
 	svc, ca := setupConvertService(t)
 	ctx := context.Background()
-	ws, err := svc.Create(ctx, 1, "mine", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestConversionRefusals(t *testing.T) {
 		}
 	}
 
-	ws, err := svc.Create(ctx, 1, "mine", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestConversionRefusals(t *testing.T) {
 func TestConversionLocksTheWorkspace(t *testing.T) {
 	svc, _ := setupConvertService(t)
 	ctx := context.Background()
-	ws, err := svc.Create(ctx, 1, "mine", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestConversionLocksTheWorkspace(t *testing.T) {
 func TestDiscoverAndBundleAllBranches(t *testing.T) {
 	svc, ca := setupConvertService(t)
 	ctx := context.Background()
-	ws, err := svc.Create(ctx, 1, "mine", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestDiscoverAndBundleAllBranches(t *testing.T) {
 func TestAttachToProjectStripsConsentedCredentials(t *testing.T) {
 	svc, ca := setupConvertService(t)
 	ctx := context.Background()
-	ws, err := svc.Create(ctx, 1, "mine", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestAttachToProjectRefusesCredentialsLeftBehind(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			svc, ca := setupConvertService(t)
 			ctx := context.Background()
-			ws, err := svc.Create(ctx, 1, "mine", "")
+			ws, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
 			if err != nil {
 				t.Fatalf("create: %v", err)
 			}
@@ -430,7 +430,7 @@ func TestManagedSSHFilesAlwaysListDevpadKeyPair(t *testing.T) {
 func TestRestartConverted(t *testing.T) {
 	svc, _ := setupConvertService(t)
 	ctx := context.Background()
-	ws, err := svc.Create(ctx, 1, "mine", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestRestartConverted(t *testing.T) {
 func TestAttachToProjectPutsKeysBackWhenRemovingThemFails(t *testing.T) {
 	svc, ca := setupConvertService(t)
 	ctx := context.Background()
-	ws, err := svc.Create(ctx, 1, "mine", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestAttachToProjectPutsKeysBackWhenRemovingThemFails(t *testing.T) {
 func TestConversionAndLifecycleExcludeEachOther(t *testing.T) {
 	svc, _ := setupConvertService(t)
 	ctx := context.Background()
-	ws, err := svc.Create(ctx, 1, "mine", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

@@ -88,7 +88,7 @@ func TestProjectWorkspaceRepoOperations(t *testing.T) {
 func TestProjectWorkspaceOperationsRejectOtherWorkspaces(t *testing.T) {
 	svc, _ := setupSandboxService(t)
 	ctx := context.Background()
-	plain, err := svc.Create(ctx, 1, "mine", "")
+	plain, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
 	if err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}

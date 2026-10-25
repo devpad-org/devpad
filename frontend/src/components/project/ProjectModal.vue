@@ -85,9 +85,9 @@ function handleSubmit() {
           </div>
           <template v-if="!project">
             <div class="form-group">
-              <label class="form-label" for="project-upstream">Upstream repository</label>
+              <label class="form-label" for="project-upstream">Upstream repository <span class="form-optional">(optional)</span></label>
               <input id="project-upstream" v-model="upstreamUrl" class="form-input form-mono" type="text" autocomplete="off" placeholder="git@github.com:org/repo.git" />
-              <p class="form-hint">Optional. Cloned once with your SSH keys; merges can be pushed back. Leave empty to start an empty repo.</p>
+              <p class="form-hint">Cloned once with your SSH keys; merges can be pushed back. Leave it empty for a scratch project that starts from an empty repo.</p>
             </div>
             <div class="form-group">
               <label class="form-label" for="project-branch">Default branch</label>
@@ -105,7 +105,7 @@ function handleSubmit() {
           <div class="form-group">
             <label class="form-label" for="project-setup">Setup script</label>
             <textarea id="project-setup" v-model="setupScript" class="form-input form-textarea form-mono" rows="4" placeholder="npm ci" />
-            <p class="form-hint">Runs in each new sandbox after the repo is checked out.</p>
+            <p class="form-hint">Runs in your project workspace and each new agent sandbox after the repo is checked out.</p>
           </div>
           <div class="form-group">
             <label class="form-label" for="project-max">Concurrent sandboxes</label>
@@ -125,6 +125,11 @@ function handleSubmit() {
 
 <style scoped src="./shared.css"></style>
 <style scoped>
+.form-optional {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
 .modal {
   background: var(--bg-surface);
   border: 0.5px solid var(--border-default);

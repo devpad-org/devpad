@@ -188,11 +188,17 @@ func authedRequest(r *http.Request, user *auth.User) *http.Request {
 	return r.WithContext(ctx)
 }
 
+// createLegacyWorkspace makes a standalone workspace. Devpad no longer
+// creates these, but still runs the ones made before projects existed.
+func createLegacyWorkspace(ctx context.Context, svc Service, userID int64, name, description string) (*Workspace, error) {
+	return svc.(*service).create(ctx, &Workspace{UserID: userID, Name: name, Description: description, Kind: KindInteractive})
+}
+
 func TestService_CreateAndGet(t *testing.T) {
 	svc, _ := setupTestService(t)
 	ctx := context.Background()
 
-	ws, err := svc.Create(ctx, 1, "My Project", "A test workspace")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "My Project", "A test workspace")
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
@@ -225,7 +231,7 @@ func TestService_SetDefaultAgent(t *testing.T) {
 	svc, db := setupTestService(t)
 	ctx := context.Background()
 
-	ws, err := svc.Create(ctx, 1, "Agent Project", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "Agent Project", "")
 	if err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
@@ -252,11 +258,11 @@ func TestService_SetDefaultAgentRejectsUnavailableAgent(t *testing.T) {
 	svc, db := setupTestService(t)
 	ctx := context.Background()
 
-	ws, err := svc.Create(ctx, 1, "Agent Project", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "Agent Project", "")
 	if err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
-	otherWorkspace, err := svc.Create(ctx, 1, "Other Project", "")
+	otherWorkspace, err := createLegacyWorkspace(ctx, svc, 1, "Other Project", "")
 	if err != nil {
 		t.Fatalf("create other workspace: %v", err)
 	}
@@ -272,7 +278,7 @@ func TestService_SetDefaultAgentRejectsDeletedAgent(t *testing.T) {
 	svc, db := setupTestService(t)
 	ctx := context.Background()
 
-	ws, err := svc.Create(ctx, 1, "Agent Project", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "Agent Project", "")
 	if err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
@@ -299,7 +305,7 @@ func TestService_SetDefaultAgentAllowsGlobalAgent(t *testing.T) {
 	svc, db := setupTestService(t)
 	ctx := context.Background()
 
-	ws, err := svc.Create(ctx, 1, "Agent Project", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "Agent Project", "")
 	if err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
@@ -318,7 +324,7 @@ func TestService_SetDefaultAgentAllowsBuiltInAgents(t *testing.T) {
 	svc, _ := setupTestService(t)
 	ctx := context.Background()
 
-	ws, err := svc.Create(ctx, 1, "Agent Project", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "Agent Project", "")
 	if err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
@@ -388,7 +394,7 @@ func TestService_GetForbidden(t *testing.T) {
 	svc, _ := setupTestService(t)
 	ctx := context.Background()
 
-	ws, err := svc.Create(ctx, 1, "User1 Project", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "User1 Project", "")
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
@@ -404,14 +410,14 @@ func TestService_List(t *testing.T) {
 	ctx := context.Background()
 
 	// Create workspaces for user 1
-	if _, err := svc.Create(ctx, 1, "Project A", ""); err != nil {
+	if _, err := createLegacyWorkspace(ctx, svc, 1, "Project A", ""); err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
-	if _, err := svc.Create(ctx, 1, "Project B", ""); err != nil {
+	if _, err := createLegacyWorkspace(ctx, svc, 1, "Project B", ""); err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
 	// Create workspace for user 2
-	if _, err := svc.Create(ctx, 2, "Other Project", ""); err != nil {
+	if _, err := createLegacyWorkspace(ctx, svc, 2, "Other Project", ""); err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
 
@@ -424,43 +430,11 @@ func TestService_List(t *testing.T) {
 	}
 }
 
-func TestService_Update(t *testing.T) {
-	svc, _ := setupTestService(t)
-	ctx := context.Background()
-
-	ws, err := svc.Create(ctx, 1, "Original", "Original desc")
-	if err != nil {
-		t.Fatalf("create failed: %v", err)
-	}
-
-	updated, err := svc.Update(ctx, 1, ws.ID, "Updated", "Updated desc")
-	if err != nil {
-		t.Fatalf("update failed: %v", err)
-	}
-	if updated.Name != "Updated" {
-		t.Errorf("expected name 'Updated', got %q", updated.Name)
-	}
-	if updated.Description != "Updated desc" {
-		t.Errorf("expected description 'Updated desc', got %q", updated.Description)
-	}
-}
-
-func TestService_UpdateForbidden(t *testing.T) {
-	svc, _ := setupTestService(t)
-	ctx := context.Background()
-
-	ws, _ := svc.Create(ctx, 1, "Project", "")
-	_, err := svc.Update(ctx, 2, ws.ID, "Hacked", "")
-	if err != ErrForbidden {
-		t.Fatalf("expected ErrForbidden, got: %v", err)
-	}
-}
-
 func TestService_Delete(t *testing.T) {
 	svc, _ := setupTestService(t)
 	ctx := context.Background()
 
-	ws, _ := svc.Create(ctx, 1, "ToDelete", "")
+	ws, _ := createLegacyWorkspace(ctx, svc, 1, "ToDelete", "")
 	if err := svc.Delete(ctx, 1, ws.ID); err != nil {
 		t.Fatalf("delete failed: %v", err)
 	}
@@ -475,39 +449,23 @@ func TestService_DeleteForbidden(t *testing.T) {
 	svc, _ := setupTestService(t)
 	ctx := context.Background()
 
-	ws, _ := svc.Create(ctx, 1, "Project", "")
+	ws, _ := createLegacyWorkspace(ctx, svc, 1, "Project", "")
 	err := svc.Delete(ctx, 2, ws.ID)
 	if err != ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got: %v", err)
 	}
 }
 
-func TestHandler_CreateAndList(t *testing.T) {
+func TestHandler_List(t *testing.T) {
 	svc, _ := setupTestService(t)
 	handler := NewHandler(svc, nil)
+	if _, err := createLegacyWorkspace(context.Background(), svc, 1, "Test Project", "A test"); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
 
-	// Create
-	body := `{"name":"Test Project","description":"A test"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/workspaces", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
 	req = authedRequest(req, testUser(1))
 	rec := httptest.NewRecorder()
-	handler.HandleCreate(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var createResp map[string]any
-	json.NewDecoder(rec.Body).Decode(&createResp)
-	ws := createResp["workspace"].(map[string]any)
-	if ws["name"] != "Test Project" {
-		t.Errorf("expected name 'Test Project', got %v", ws["name"])
-	}
-
-	// List
-	req = httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
-	req = authedRequest(req, testUser(1))
-	rec = httptest.NewRecorder()
 	handler.HandleList(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -520,20 +478,8 @@ func TestHandler_CreateAndList(t *testing.T) {
 	if len(items) != 1 {
 		t.Errorf("expected 1 workspace, got %d", len(items))
 	}
-}
-
-func TestHandler_CreateValidation(t *testing.T) {
-	svc, _ := setupTestService(t)
-	handler := NewHandler(svc, nil)
-
-	body := `{"name":"","description":"no name"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/workspaces", strings.NewReader(body))
-	req = authedRequest(req, testUser(1))
-	rec := httptest.NewRecorder()
-	handler.HandleCreate(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("expected status 400, got %d", rec.Code)
+	if ws := items[0].(map[string]any); ws["name"] != "Test Project" {
+		t.Errorf("expected name 'Test Project', got %v", ws["name"])
 	}
 }
 
@@ -557,7 +503,7 @@ func TestHandler_Delete(t *testing.T) {
 	handler := NewHandler(svc, nil)
 	ctx := context.Background()
 
-	ws, _ := svc.Create(ctx, 1, "ToDelete", "")
+	ws, _ := createLegacyWorkspace(ctx, svc, 1, "ToDelete", "")
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/workspaces/1", nil)
 	req.SetPathValue("id", "1")
@@ -579,7 +525,7 @@ func TestService_CreateDefaultLimits(t *testing.T) {
 	svc, _ := setupTestService(t)
 	ctx := context.Background()
 
-	ws, err := svc.Create(ctx, 1, "Limited", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "Limited", "")
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
@@ -595,7 +541,7 @@ func TestService_UpdateResourceLimits(t *testing.T) {
 	svc, _ := setupTestService(t)
 	ctx := context.Background()
 
-	ws, err := svc.Create(ctx, 1, "Project", "")
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "Project", "")
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
@@ -641,10 +587,10 @@ func TestService_ListAll(t *testing.T) {
 	svc, _ := setupTestService(t)
 	ctx := context.Background()
 
-	if _, err := svc.Create(ctx, 1, "User1 WS", ""); err != nil {
+	if _, err := createLegacyWorkspace(ctx, svc, 1, "User1 WS", ""); err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
-	if _, err := svc.Create(ctx, 2, "User2 WS", ""); err != nil {
+	if _, err := createLegacyWorkspace(ctx, svc, 2, "User2 WS", ""); err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
 
@@ -657,18 +603,23 @@ func TestService_ListAll(t *testing.T) {
 	}
 }
 
-func TestHandler_CreateIncludesLimitsInResponse(t *testing.T) {
+func TestHandler_GetIncludesLimitsInResponse(t *testing.T) {
 	svc, _ := setupTestService(t)
 	handler := NewHandler(svc, nil)
+	created, err := createLegacyWorkspace(context.Background(), svc, 1, "Test Project", "A test")
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
 
-	body := `{"name":"Test Project","description":"A test"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/workspaces", strings.NewReader(body))
+	id := strconv.FormatInt(created.ID, 10)
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/"+id, nil)
+	req.SetPathValue("id", id)
 	req = authedRequest(req, testUser(1))
 	rec := httptest.NewRecorder()
-	handler.HandleCreate(rec, req)
+	handler.HandleGet(rec, req)
 
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	var resp map[string]any

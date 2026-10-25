@@ -3,25 +3,23 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useWorkspaceStore } from '@/stores/workspaces'
 import WorkspaceCard from '@/components/WorkspaceCard.vue'
-import WorkspaceModal from '@/components/WorkspaceModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import ConvertWorkspaceModal from '@/components/home/ConvertWorkspaceModal.vue'
 import type { Workspace } from '@/api/workspaces'
 import type { ConvertResult } from '@/api/projects'
 
-// Workspaces that don't belong to a project, with their own list kept fresh
-// while the section is showing.
+// Workspaces left from before projects. Devpad no longer makes these; each
+// can still be opened, started and stopped until it is converted into a
+// project or deleted. The list stays fresh while the launcher is showing, and
+// the section hides once none are left.
 
 const POLL_INTERVAL_MS = 5000
 
 const store = useWorkspaceStore()
 const router = useRouter()
 
-const showCreateModal = ref(false)
-const showEditModal = ref(false)
 const showDeleteModal = ref(false)
 const deleting = ref(false)
-const editTarget = ref<Workspace | null>(null)
 const deleteTarget = ref<Workspace | null>(null)
 const convertTargetId = ref<number | null>(null)
 
@@ -45,31 +43,6 @@ onMounted(() => {
 onUnmounted(() => {
   if (timer !== null) clearInterval(timer)
 })
-
-async function handleCreate(name: string, description: string) {
-  try {
-    await store.createWorkspace(name, description)
-    showCreateModal.value = false
-  } catch {
-    // error handled by store
-  }
-}
-
-function openEdit(workspace: Workspace) {
-  editTarget.value = workspace
-  showEditModal.value = true
-}
-
-async function handleEdit(name: string, description: string) {
-  if (!editTarget.value) return
-  try {
-    await store.updateWorkspace(editTarget.value.id, name, description)
-    showEditModal.value = false
-    editTarget.value = null
-  } catch {
-    // error handled by store
-  }
-}
 
 function openDelete(workspace: Workspace) {
   deleteTarget.value = workspace
@@ -120,26 +93,23 @@ async function handleDelete() {
 </script>
 
 <template>
-  <section class="section">
+  <section v-if="workspaces.length > 0" class="section">
     <div class="section-header">
       <div>
-        <h2 class="section-title">Workspaces without a project</h2>
-        <p class="section-hint">Plain development environments, outside any project's board and merge requests.</p>
+        <h2 class="section-title">Workspaces to convert</h2>
+        <p class="section-hint">
+          Left from before projects. Convert one to keep working in it with a board, agents and merge requests, or delete
+          it once you've moved what you need.
+        </p>
       </div>
-      <button class="btn btn-secondary btn-sm" @click="showCreateModal = true">New workspace</button>
     </div>
 
-    <p v-if="!store.loaded && !store.error" class="empty-text">Loading workspaces...</p>
-    <p v-else-if="store.error && workspaces.length === 0" class="notice notice-error">{{ store.error }}</p>
-    <p v-else-if="workspaces.length === 0" class="empty-text">None.</p>
-
-    <div v-else class="workspace-grid">
+    <div class="workspace-grid">
       <WorkspaceCard
         v-for="ws in workspaces"
         :key="ws.id"
         :workspace="ws"
         @open="openWorkspace"
-        @edit="openEdit"
         @delete="openDelete"
         @start="handleStart"
         @stop="handleStop"
@@ -153,22 +123,6 @@ async function handleDelete() {
       @close="convertTargetId = null"
       @start="handleStart"
       @converted="handleConverted"
-    />
-
-    <WorkspaceModal
-      :show="showCreateModal"
-      title="Create Workspace"
-      @close="showCreateModal = false"
-      @submit="handleCreate"
-    />
-
-    <WorkspaceModal
-      :show="showEditModal"
-      title="Edit Workspace"
-      :name="editTarget?.name"
-      :description="editTarget?.description"
-      @close="showEditModal = false"
-      @submit="handleEdit"
     />
 
     <ConfirmModal

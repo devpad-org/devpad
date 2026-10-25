@@ -8,15 +8,6 @@ import (
 	"log"
 )
 
-func (s *service) Create(ctx context.Context, userID int64, name, description string) (*Workspace, error) {
-	return s.create(ctx, &Workspace{
-		UserID:      userID,
-		Name:        name,
-		Description: description,
-		Kind:        KindInteractive,
-	})
-}
-
 // CreateSandbox creates a workspace that belongs to a project and owns one of
 // its branches. The repo is seeded separately via SeedSandboxRepo.
 func (s *service) CreateSandbox(ctx context.Context, userID int64, spec SandboxSpec) (*Workspace, error) {
