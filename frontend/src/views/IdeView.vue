@@ -11,7 +11,6 @@ import TerminalPanel from '@/components/ide/TerminalPanel.vue'
 import AiAgentPanel from '@/components/ide/AiAgentPanel.vue'
 import AiAgentsPanel from '@/components/ide/AiAgentsPanel.vue'
 import AiAgentRunsPanel from '@/components/ide/AiAgentRunsPanel.vue'
-import PreviewPanel from '@/components/ide/PreviewPanel.vue'
 import PreviewNewTabModal from '@/components/ide/PreviewNewTabModal.vue'
 import GitPanel from '@/components/ide/GitPanel.vue'
 import GitStatusBar from '@/components/ide/GitStatusBar.vue'
@@ -97,7 +96,6 @@ const workspaceStatusLabel = computed(() => workspace.value?.status ?? 'none')
 
 const activeFile = ref<string | null>(null)
 const terminalMinimized = ref(false)
-const previewVisible = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
 // The shell owns its view tabs, such as the board, and mirrors them and the
 // active one into the URL so they survive reloads and back/forward.
@@ -274,7 +272,7 @@ function moreTerminal() {
 
 function morePreview() {
   closeMobilePanels()
-  previewVisible.value = true
+  showPreviewNewTabModal()
 }
 
 // The More tab stands for whichever surface isn't one of the bottom tabs.
@@ -304,13 +302,6 @@ const aiSidePanel = useResizable({
   maxSize: 600,
 })
 
-const preview = useResizable({
-  direction: 'horizontal',
-  edge: 'right',
-  initialSize: 480,
-  minSize: 240,
-  maxSize: 800,
-})
 
 
 
@@ -426,7 +417,6 @@ function resetShell() {
   gitRevision.value = 0
   activeActivity.value = 'ai'
   activeFile.value = null
-  previewVisible.value = false
   selectedGitCommit.value = null
   gitDiffRequest.value = null
   focusedAgentRunId.value = null
@@ -1159,18 +1149,6 @@ const backLabel = computed(() => {
         <template v-if="!mobileProject">
         <div class="titlebar-separator" />
         <button
-          class="titlebar-toggle"
-          :class="{ active: previewVisible }"
-          @click="previewVisible = !previewVisible"
-          title="Toggle preview panel"
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <rect width="20" height="14" x="2" y="3" rx="2" />
-            <path d="M8 21h8" />
-            <path d="M12 17v4" />
-          </svg>
-        </button>
-        <button
           class="titlebar-btn"
           @click="showPreviewNewTabModal"
           title="Open preview in new tab"
@@ -1748,21 +1726,6 @@ const backLabel = computed(() => {
       </div>
 
       <div v-if="workspaceLive" id="ide-right-panel" class="ide-right-panel" role="region" aria-label="Right side panel">
-        <!-- Right panel: Preview -->
-        <template v-if="previewVisible">
-          <div
-            class="resize-handle resize-handle--horizontal"
-            :class="{ active: preview.isDragging.value }"
-            @pointerdown="preview.onPointerDown"
-          />
-          <aside class="ide-preview" :style="isMobile ? undefined : { width: preview.size.value + 'px' }">
-            <PreviewPanel
-              :workspace-id="workspace?.id ?? 0"
-              @close="previewVisible = false"
-            />
-          </aside>
-        </template>
-
         <div
           class="resize-handle resize-handle--horizontal"
           :class="{ active: aiSidePanel.isDragging.value }"
@@ -2212,12 +2175,6 @@ const backLabel = computed(() => {
   background: var(--bg-surface);
 }
 
-.ide-preview {
-  flex-shrink: 0;
-  overflow: hidden;
-  background: var(--bg-surface);
-}
-
 /* Resize handles */
 .resize-handle {
   flex-shrink: 0;
@@ -2273,7 +2230,7 @@ const backLabel = computed(() => {
 }
 
 /*
- * Mobile layout: bottom activity bar, slide-over side panels, full-screen preview.
+ * Mobile layout: bottom activity bar and slide-over side panels.
  * The drawers and their backdrop stop above the activity bar so it stays tappable.
  */
 .mobile-backdrop {
@@ -2386,12 +2343,6 @@ const backLabel = computed(() => {
 
 .is-mobile .ide-right-panel {
   display: contents;
-}
-
-.is-mobile .ide-preview {
-  position: absolute;
-  inset: 0;
-  z-index: 30;
 }
 
 /*
