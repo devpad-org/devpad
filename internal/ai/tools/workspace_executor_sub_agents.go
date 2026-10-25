@@ -89,17 +89,18 @@ func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequ
 	}
 
 	// A child without a model runs the one the admin set for its agent, with
-	// that effort, else the parent's model and thinking.
+	// that effort, else the parent's. Only a child on the parent's model
+	// takes the parent's thinking; any other uses its model's default.
 	model, _ := params["model"].(string)
 	model = strings.TrimSpace(model)
-	thinking := cloneThinking(req.Thinking)
+	var thinking *domain.ThinkingConfig
 	if model == "" && e.defaults != nil {
-		d, err := e.defaults.DefaultsFor(ctx, agentID)
+		d, err := e.defaults.DefaultsFor(ctx, agentID, "")
 		if err != nil {
 			return toolFailure("spawn_sub_agent", "Error: looking up the agent's default model: %v", err)
 		}
 		if d != nil {
-			model, thinking = d.Model, nil
+			model = d.Model
 			if d.Effort != "" {
 				thinking = &domain.ThinkingConfig{Effort: d.Effort}
 			}
@@ -107,6 +108,9 @@ func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequ
 	}
 	if model == "" {
 		model = req.Model
+	}
+	if model == req.Model && thinking == nil {
+		thinking = cloneThinking(req.Thinking)
 	}
 
 	child, err := e.childRunner.StartChildAgentRun(ctx, ChildAgentRunRequest{

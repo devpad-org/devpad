@@ -89,9 +89,10 @@ type Conversations interface {
 }
 
 // AgentDefaults looks up the model and effort an admin set for a built-in
-// agent, or nil when it has none a run could use.
+// agent, or nil when it has none a run could use. An effort picked without
+// a model is kept when the default model supports it.
 type AgentDefaults interface {
-	DefaultsFor(ctx context.Context, agentID string) (*domain.AgentDefaults, error)
+	DefaultsFor(ctx context.Context, agentID, effort string) (*domain.AgentDefaults, error)
 }
 
 const (
@@ -162,20 +163,17 @@ func (s *service) SetReviewHook(h ReviewHook) {
 }
 
 // withDefaults fills in the model an admin set for the agent when none was
-// picked, with its effort unless one was.
+// picked, keeping a picked effort only if that model supports it.
 func (s *service) withDefaults(ctx context.Context, settings AgentSettings) (AgentSettings, error) {
 	if settings.Model != "" {
 		return settings, nil
 	}
-	d, err := s.defaults.DefaultsFor(ctx, settings.AgentID)
+	d, err := s.defaults.DefaultsFor(ctx, settings.AgentID, settings.Effort)
 	if err != nil {
 		return settings, fmt.Errorf("looking up the agent's default model: %w", err)
 	}
 	if d != nil {
-		settings.Model = d.Model
-		if settings.Effort == "" {
-			settings.Effort = d.Effort
-		}
+		settings.Model, settings.Effort = d.Model, d.Effort
 	}
 	return settings, nil
 }
@@ -408,6 +406,8 @@ func (s *service) start(ctx context.Context, t *Task, in StartInput) (*Task, err
 	if in.Effort != "" {
 		t.Effort = in.Effort
 	}
+	// A task keeps the model it first ran with, default or not, across later
+	// rounds; a new admin default reaches only tasks not started yet.
 	settings, err := s.withDefaults(ctx, AgentSettings{AgentID: t.AgentID, Model: t.Model, Effort: t.Effort})
 	if err != nil {
 		return nil, err

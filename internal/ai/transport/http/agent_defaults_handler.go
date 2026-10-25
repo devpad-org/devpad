@@ -1,6 +1,7 @@
 package httptransport
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -69,5 +70,30 @@ func toAgentDefaultsDTO(agent domain.Agent, defaults domain.AgentDefaults) agent
 		Purpose: agent.Purpose,
 		Model:   defaults.Model,
 		Effort:  defaults.Effort,
+	}
+}
+
+// withAgentDefaults fills in the model and effort an admin set for a built-in
+// agent when the request picks no model. The request's effort is kept if
+// that model supports it, and thinking it turned off stays off.
+func (h *Handler) withAgentDefaults(ctx context.Context, agentID, model string, thinking *domain.ThinkingConfig) (string, *domain.ThinkingConfig, error) {
+	if model != "" {
+		return model, thinking, nil
+	}
+	effort := ""
+	if thinking != nil {
+		effort = thinking.Effort
+	}
+	d, err := h.defaults.DefaultsFor(ctx, agentID, effort)
+	if err != nil || d == nil {
+		return model, thinking, err
+	}
+	switch {
+	case thinking != nil && thinking.Enabled != nil && !*thinking.Enabled:
+		return d.Model, &domain.ThinkingConfig{Enabled: thinking.Enabled}, nil
+	case d.Effort != "":
+		return d.Model, &domain.ThinkingConfig{Effort: d.Effort}, nil
+	default:
+		return d.Model, nil, nil
 	}
 }

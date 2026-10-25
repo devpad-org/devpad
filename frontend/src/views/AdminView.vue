@@ -701,7 +701,7 @@ function isSelf(user: AdminUser): boolean {
             <div class="ai-provider-actions">
               <span class="agent-default-hint">
                 <template v-if="agentDefaultModel(agent.agentId) && !agentDefaultModel(agent.agentId)?.configured">
-                  This model's provider is not configured, so agents start on devpad's default until it is.
+                  This model's provider is not configured, so the default is skipped until it is.
                 </template>
               </span>
               <button type="submit" class="btn-primary" :disabled="agentDefaultsSubmitting === agent.agentId">

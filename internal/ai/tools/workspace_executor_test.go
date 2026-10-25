@@ -563,7 +563,7 @@ func TestWorkspaceExecutor_SpawnSubAgentStartsChildRun(t *testing.T) {
 
 type stubAgentDefaults map[string]domain.AgentDefaults
 
-func (s stubAgentDefaults) DefaultsFor(_ context.Context, agentID string) (*domain.AgentDefaults, error) {
+func (s stubAgentDefaults) DefaultsFor(_ context.Context, agentID, _ string) (*domain.AgentDefaults, error) {
 	if d, ok := s[agentID]; ok {
 		return &d, nil
 	}
@@ -571,7 +571,7 @@ func (s stubAgentDefaults) DefaultsFor(_ context.Context, agentID string) (*doma
 }
 
 // A child without a model runs the admin's default for its agent with that
-// effort, not the parent's thinking; a picked model keeps the parent's.
+// effort. Only a child on the parent's model takes the parent's thinking.
 func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
 	var got []ChildAgentRunRequest
 	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
@@ -585,6 +585,7 @@ func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
 		`{"prompt":"review","agent_id":"review"}`,
 		`{"prompt":"review","agent_id":"review","model":"picked"}`,
 		`{"prompt":"code"}`,
+		`{"prompt":"code","model":"parent-model"}`,
 	} {
 		req := toolReq(7, 9, "spawn_sub_agent", []byte(args))
 		req.CurrentRunID = 101
@@ -598,11 +599,13 @@ func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
 	if got[0].Model != "admin-review" || got[0].Thinking == nil || got[0].Thinking.Effort != "low" {
 		t.Errorf("expected the review agent's defaults, got %+v %+v", got[0], got[0].Thinking)
 	}
-	if got[1].Model != "picked" || got[1].Thinking == nil || got[1].Thinking.Effort != "max" {
-		t.Errorf("expected the picked model with the parent's thinking, got %+v %+v", got[1], got[1].Thinking)
+	if got[1].Model != "picked" || got[1].Thinking != nil {
+		t.Errorf("expected the picked model without the parent's thinking, got %+v %+v", got[1], got[1].Thinking)
 	}
-	if got[2].Model != "parent-model" {
-		t.Errorf("expected the parent's model for an agent without defaults, got %+v", got[2])
+	for _, child := range got[2:] {
+		if child.Model != "parent-model" || child.Thinking == nil || child.Thinking.Effort != "max" {
+			t.Errorf("expected the parent's model and thinking, got %+v %+v", child, child.Thinking)
+		}
 	}
 }
 

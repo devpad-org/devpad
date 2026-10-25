@@ -509,17 +509,22 @@ type env struct {
 	defaults  fakeDefaults
 }
 
-// fakeDefaults is the admin's agent defaults, keyed by agent ID.
+// fakeDefaults is the admin's agent defaults, keyed by agent ID. Its models
+// support every effort except "unsupported".
 type fakeDefaults map[string]domain.AgentDefaults
 
-func (f fakeDefaults) DefaultsFor(_ context.Context, agentID string) (*domain.AgentDefaults, error) {
+func (f fakeDefaults) DefaultsFor(_ context.Context, agentID, effort string) (*domain.AgentDefaults, error) {
 	if agentID == "" {
 		agentID = domain.DefaultAgentID
 	}
-	if d, ok := f[agentID]; ok {
-		return &d, nil
+	d, ok := f[agentID]
+	if !ok {
+		return nil, nil
 	}
-	return nil, nil
+	if effort != "" && effort != "unsupported" {
+		d.Effort = effort
+	}
+	return &d, nil
 }
 
 const owner, stranger = int64(1), int64(2)
@@ -997,6 +1002,14 @@ func TestStartUsesTheAgentsDefaultsUnlessAModelIsPicked(t *testing.T) {
 	if started.Model != "admin-model" || started.Effort != "high" {
 		t.Fatalf("expected the admin's model with the picked effort, got %q/%q", started.Model, started.Effort)
 	}
+	// An effort the default model does not support gives way to the default's.
+	mismatched, err := e.svc.Create(ctx, owner, 1, CreateInput{Title: "mismatched", Start: true, AgentSettings: AgentSettings{Effort: "unsupported"}})
+	if err != nil {
+		t.Fatalf("create with an unsupported effort: %v", err)
+	}
+	if mismatched.Model != "admin-model" || mismatched.Effort != "low" {
+		t.Fatalf("expected the admin's model and effort, got %q/%q", mismatched.Model, mismatched.Effort)
+	}
 
 	// A custom agent has no defaults, so it still needs a model.
 	custom, err := e.svc.Create(ctx, owner, 1, CreateInput{Title: "custom", AgentSettings: AgentSettings{AgentID: "7"}})
@@ -1005,6 +1018,9 @@ func TestStartUsesTheAgentsDefaultsUnlessAModelIsPicked(t *testing.T) {
 	}
 	if _, err := e.svc.Start(ctx, owner, 1, custom.ID, StartInput{}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput for a custom agent without a model, got %v", err)
+	}
+	if _, err := e.svc.Create(ctx, owner, 1, CreateInput{Title: "custom now", Start: true, AgentSettings: AgentSettings{AgentID: "7"}}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput creating a started task without a usable model, got %v", err)
 	}
 }
 

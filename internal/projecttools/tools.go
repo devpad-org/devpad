@@ -124,9 +124,10 @@ type Projects interface {
 }
 
 // AgentDefaults looks up the model and effort an admin set for a built-in
-// agent, or nil when it has none a run could use.
+// agent, or nil when it has none a run could use. An effort picked without
+// a model is kept when the default model supports it.
 type AgentDefaults interface {
-	DefaultsFor(ctx context.Context, agentID string) (*domain.AgentDefaults, error)
+	DefaultsFor(ctx context.Context, agentID, effort string) (*domain.AgentDefaults, error)
 }
 
 // Tasks is the task surface the tools need.
@@ -750,48 +751,39 @@ func taskError(name string, taskID int64, err error) domain.ToolResultPart {
 
 // agentSettings picks the model and effort a task's agent runs with: what
 // the call asks for, else what the task last ran with, else what the admin
-// set for the agent, else the assistant's own. The approval shows the same
-// choice the call then makes. t is nil for a task not created yet.
+// set for the agent, else the assistant's own. Without an effort in the call
+// a model takes the effort chosen for it, the task's or the assistant's, and
+// any other its own default. The approval shows the same choice the call
+// then makes. t is nil for a task not created yet.
 func (p *Provider) agentSettings(ctx context.Context, req aitools.ExecutionRequest, agentID, model, effort string, t *task.Task) (string, string, error) {
 	model, effort = strings.TrimSpace(model), strings.TrimSpace(effort)
 	var taskModel, taskEffort string
 	if t != nil {
 		taskModel, taskEffort = t.Model, t.Effort
 	}
-	if model == "" && taskModel == "" {
-		d, err := p.defaults.DefaultsFor(ctx, strings.TrimSpace(agentID))
+	switch {
+	case model != "":
+	case taskModel != "":
+		model = taskModel
+	default:
+		d, err := p.defaults.DefaultsFor(ctx, strings.TrimSpace(agentID), effort)
 		if err != nil {
 			return "", "", fmt.Errorf("looking up the agent's default model: %w", err)
 		}
 		if d != nil {
-			return d.Model, firstNonEmpty(effort, d.Effort), nil
+			return d.Model, d.Effort, nil
+		}
+		model = req.Model
+	}
+	if effort == "" {
+		switch {
+		case model == taskModel:
+			effort = taskEffort
+		case model == req.Model && req.Thinking != nil:
+			effort = req.Thinking.Effort
 		}
 	}
-	return defaultModel(model, taskModel, req.Model), defaultEffort(effort, taskEffort, req.Thinking), nil
-}
-
-func defaultModel(requested, taskModel, current string) string {
-	switch {
-	case requested != "":
-		return requested
-	case taskModel != "":
-		return taskModel
-	default:
-		return current
-	}
-}
-
-func defaultEffort(requested, taskEffort string, thinking *domain.ThinkingConfig) string {
-	switch {
-	case requested != "":
-		return requested
-	case taskEffort != "":
-		return taskEffort
-	case thinking != nil:
-		return thinking.Effort
-	default:
-		return ""
-	}
+	return model, effort, nil
 }
 
 func shortSHA(sha string) string {

@@ -85,9 +85,10 @@ type Conversations interface {
 }
 
 // AgentDefaults looks up the model and effort an admin set for a built-in
-// agent, or nil when it has none a run could use.
+// agent, or nil when it has none a run could use. An effort picked without
+// a model is kept when the default model supports it.
 type AgentDefaults interface {
-	DefaultsFor(ctx context.Context, agentID string) (*domain.AgentDefaults, error)
+	DefaultsFor(ctx context.Context, agentID, effort string) (*domain.AgentDefaults, error)
 }
 
 // cancelWait bounds how long closing a merge request waits for a review run
@@ -449,12 +450,12 @@ func (s *service) StartAgentReview(ctx context.Context, userID, projectID, mrID 
 		in.AgentID = domain.ReviewAgentID
 	}
 	if in.Model == "" {
-		d, err := s.defaults.DefaultsFor(ctx, in.AgentID)
+		d, err := s.defaults.DefaultsFor(ctx, in.AgentID, in.Effort)
 		if err != nil {
 			return nil, fmt.Errorf("looking up the review agent's default model: %w", err)
 		}
 		if d != nil {
-			in.Model, in.Effort = d.Model, orDefault(in.Effort, d.Effort)
+			in.Model, in.Effort = d.Model, d.Effort
 		}
 	}
 	if mr.TaskID != 0 && in.Model == "" {

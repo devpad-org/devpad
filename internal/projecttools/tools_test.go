@@ -154,17 +154,22 @@ func (f fakeMRs) Get(_ context.Context, _, projectID, mrID int64) (*mergerequest
 	return nil, mergerequest.ErrNotFound
 }
 
-// fakeDefaults is the admin's agent defaults, keyed by agent ID.
+// fakeDefaults is the admin's agent defaults, keyed by agent ID. Its models
+// support every effort except "unsupported".
 type fakeDefaults map[string]domain.AgentDefaults
 
-func (f fakeDefaults) DefaultsFor(_ context.Context, agentID string) (*domain.AgentDefaults, error) {
+func (f fakeDefaults) DefaultsFor(_ context.Context, agentID, effort string) (*domain.AgentDefaults, error) {
 	if agentID == "" {
 		agentID = domain.DefaultAgentID
 	}
-	if d, ok := f[agentID]; ok {
-		return &d, nil
+	d, ok := f[agentID]
+	if !ok {
+		return nil, nil
 	}
-	return nil, nil
+	if effort != "" && effort != "unsupported" {
+		d.Effort = effort
+	}
+	return &d, nil
 }
 
 type env struct {
@@ -469,6 +474,38 @@ func TestStartingUsesTheAgentsDefaultsOverTheAssistantsModel(t *testing.T) {
 	e.approved(t, owner, 10, startTaskTool, `{"task_id":1}`)
 	if s := e.tasks.started[0]; s.Model != "task-model" {
 		t.Errorf("expected the task's own model kept: %+v", s)
+	}
+	approval, _, err = e.provider.ApprovalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: startTaskTool, Arguments: json.RawMessage(`{"task_id":1}`), Model: "assistant-model"})
+	if err != nil {
+		t.Fatalf("start approval: %v", err)
+	}
+	if !hasDetail(approval, "Model", "task-model") {
+		t.Errorf("expected the start approval to show the task's model: %+v", approval.Details)
+	}
+}
+
+// An effort goes only with the model it was chosen for: the assistant's
+// with the assistant's model, the task's with the task's.
+func TestStartingKeepsEffortsWithTheirModels(t *testing.T) {
+	e := setup()
+	e.tasks.tasks[1].Effort = "medium"
+
+	e.approved(t, owner, 10, createTaskTool, `{"title":"a","body":"b","start":true,"model":"other"}`)
+	e.approved(t, owner, 10, createTaskTool, `{"title":"a","body":"b","start":true}`)
+	if got := e.tasks.created[0]; got.Model != "other" || got.Effort != "" {
+		t.Errorf("expected another model without the assistant's effort: %+v", got)
+	}
+	if got := e.tasks.created[1]; got.Model != "assistant-model" || got.Effort != "high" {
+		t.Errorf("expected the assistant's model and effort: %+v", got)
+	}
+
+	e.approved(t, owner, 10, startTaskTool, `{"task_id":1,"model":"other"}`)
+	e.approved(t, owner, 10, startTaskTool, `{"task_id":1}`)
+	if s := e.tasks.started[0]; s.Model != "other" || s.Effort != "" {
+		t.Errorf("expected another model without the task's effort: %+v", s)
+	}
+	if s := e.tasks.started[1]; s.Model != "task-model" || s.Effort != "medium" {
+		t.Errorf("expected the task's model and effort: %+v", s)
 	}
 }
 

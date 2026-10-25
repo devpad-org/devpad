@@ -448,8 +448,15 @@ func (s stubAgentDefaultsService) ListAgentDefaults(context.Context) (map[string
 	return s.defaults, s.listErr
 }
 
-func (s stubAgentDefaultsService) DefaultsFor(context.Context, string) (*domain.AgentDefaults, error) {
-	return nil, nil
+func (s stubAgentDefaultsService) DefaultsFor(_ context.Context, agentID, effort string) (*domain.AgentDefaults, error) {
+	d, ok := s.defaults[agentID]
+	if !ok {
+		return nil, nil
+	}
+	if effort != "" {
+		d.Effort = effort
+	}
+	return &d, nil
 }
 
 func (s stubAgentDefaultsService) SetAgentDefaults(_ context.Context, d domain.AgentDefaults) (*domain.AgentDefaults, error) {
@@ -545,5 +552,42 @@ func TestHandleListModels_ListsModelsWhenDefaultsFail(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"agentDefaults":{}`) {
 		t.Fatalf("expected empty defaults, got %s", w.Body.String())
+	}
+}
+
+// A run of a built-in agent without a model runs the admin's default; one
+// without either fails as before.
+func TestHandleCreateAgentRun_UsesTheAgentsDefaults(t *testing.T) {
+	var got app.StartAgentRunRequest
+	runs := stubAgentRunService{startRunFn: func(_ context.Context, req app.StartAgentRunRequest) (*domain.AgentRun, error) {
+		got = req
+		return &domain.AgentRun{ID: 1, Model: req.Model, Status: domain.AgentRunRunning}, nil
+	}}
+	h := &Handler{runs: runs, defaults: stubAgentDefaultsService{defaults: map[string]domain.AgentDefaults{
+		domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "admin-review", Effort: "low"},
+	}}}
+	post := func(body string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/ai/agent/runs", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 11}))
+		w := httptest.NewRecorder()
+		h.HandleCreateAgentRun(w, req)
+		return w.Code
+	}
+	turns := `"workspaceId":42,"turns":[{"role":"user","parts":[{"kind":"text","text":"hi"}]}]`
+
+	if code := post(`{"agentId":"review",` + turns + `}`); code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", code)
+	}
+	if got.Model != "admin-review" || got.Thinking == nil || got.Thinking.Effort != "low" {
+		t.Fatalf("expected the review agent's defaults, got %+v %+v", got, got.Thinking)
+	}
+	if code := post(`{"agentId":"review","thinking":{"enabled":false},` + turns + `}`); code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", code)
+	}
+	if got.Thinking == nil || got.Thinking.Enabled == nil || *got.Thinking.Enabled || got.Thinking.Effort != "" {
+		t.Fatalf("expected thinking kept off, got %+v", got.Thinking)
+	}
+	if code := post(`{"agentId":"default",` + turns + `}`); code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an agent without defaults, got %d", code)
 	}
 }

@@ -43,9 +43,10 @@ type AgentLister interface {
 }
 
 // AgentDefaults looks up the model and effort an admin set for a built-in
-// agent, or nil when it has none a run could use.
+// agent, or nil when it has none a run could use. An effort picked without
+// a model is kept when the default model supports it.
 type AgentDefaults interface {
-	DefaultsFor(ctx context.Context, agentID string) (*domain.AgentDefaults, error)
+	DefaultsFor(ctx context.Context, agentID, effort string) (*domain.AgentDefaults, error)
 }
 
 // ChildAgentRunRequest is the minimal request a tool executor needs to spawn a child run.

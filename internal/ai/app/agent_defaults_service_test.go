@@ -144,7 +144,7 @@ func TestAgentDefaultsServiceDefaultsForSkipsUnconfiguredModels(t *testing.T) {
 	repo.defaults[domain.CodingAgentID] = domain.AgentDefaults{AgentID: domain.CodingAgentID, Model: "thinker", Effort: "low"}
 	repo.defaults[domain.ReviewAgentID] = domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: "plain"}
 
-	got, err := service.DefaultsFor(ctx, "")
+	got, err := service.DefaultsFor(ctx, "", "")
 	if err != nil {
 		t.Fatalf("defaults for the default agent: %v", err)
 	}
@@ -152,8 +152,26 @@ func TestAgentDefaultsServiceDefaultsForSkipsUnconfiguredModels(t *testing.T) {
 		t.Fatalf("expected the coding agent's defaults for an empty agent ID, got %+v", got)
 	}
 	for _, agentID := range []string{domain.ReviewAgentID, "7"} {
-		if got, err := service.DefaultsFor(ctx, agentID); err != nil || got != nil {
+		if got, err := service.DefaultsFor(ctx, agentID, ""); err != nil || got != nil {
 			t.Fatalf("%s: expected no usable defaults, got %+v, %v", agentID, got, err)
+		}
+	}
+}
+
+// An effort picked without a model goes with the default model only if that
+// model supports it.
+func TestAgentDefaultsServiceDefaultsForKeepsASupportedEffort(t *testing.T) {
+	repo, service := newTestAgentDefaultsService()
+	ctx := context.Background()
+	repo.defaults[domain.CodingAgentID] = domain.AgentDefaults{AgentID: domain.CodingAgentID, Model: "thinker", Effort: "low"}
+
+	for effort, want := range map[string]string{"high": "high", "xhigh": "low", "": "low"} {
+		got, err := service.DefaultsFor(ctx, domain.CodingAgentID, effort)
+		if err != nil {
+			t.Fatalf("%q: %v", effort, err)
+		}
+		if got == nil || got.Model != "thinker" || got.Effort != want {
+			t.Errorf("%q: expected thinker at %q, got %+v", effort, want, got)
 		}
 	}
 }

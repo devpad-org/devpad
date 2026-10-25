@@ -290,17 +290,22 @@ type env struct {
 	taskID     int64
 }
 
-// fakeDefaults is the admin's agent defaults, keyed by agent ID.
+// fakeDefaults is the admin's agent defaults, keyed by agent ID. Its models
+// support every effort except "unsupported".
 type fakeDefaults map[string]domain.AgentDefaults
 
-func (f fakeDefaults) DefaultsFor(_ context.Context, agentID string) (*domain.AgentDefaults, error) {
+func (f fakeDefaults) DefaultsFor(_ context.Context, agentID, effort string) (*domain.AgentDefaults, error) {
 	if agentID == "" {
 		agentID = domain.DefaultAgentID
 	}
-	if d, ok := f[agentID]; ok {
-		return &d, nil
+	d, ok := f[agentID]
+	if !ok {
+		return nil, nil
 	}
-	return nil, nil
+	if effort != "" && effort != "unsupported" {
+		d.Effort = effort
+	}
+	return &d, nil
 }
 
 func setup(t *testing.T) *env {

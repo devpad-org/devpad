@@ -185,7 +185,12 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Model == "" {
+	model, thinking, err := h.withAgentDefaults(r.Context(), req.AgentID, req.Model, ToDomainThinking(req.Thinking))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to look up the agent's default model")
+		return
+	}
+	if model == "" {
 		writeError(w, http.StatusBadRequest, "model is required")
 		return
 	}
@@ -211,9 +216,9 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		UserID:      user.ID,
 		WorkspaceID: req.WorkspaceID,
 		AgentPrompt: agentPrompt,
-		Model:       req.Model,
+		Model:       model,
 		Turns:       ToDomainTurns(req.Turns),
-		Thinking:    ToDomainThinking(req.Thinking),
+		Thinking:    thinking,
 	})
 	if err != nil {
 		switch {

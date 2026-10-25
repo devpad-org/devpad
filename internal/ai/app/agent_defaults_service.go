@@ -30,10 +30,12 @@ type AgentDefaultsService interface {
 	// naming a model devpad no longer offers; an effort the model no longer
 	// supports is dropped, leaving the model's default effort.
 	ListAgentDefaults(ctx context.Context) (map[string]domain.AgentDefaults, error)
-	// DefaultsFor returns the defaults for an agent, or nil when it has none
-	// a run could use: it is not built in, has no defaults, or their model's
-	// provider is not configured. An empty agentID is the default agent.
-	DefaultsFor(ctx context.Context, agentID string) (*domain.AgentDefaults, error)
+	// DefaultsFor returns the model and effort a run of the agent uses when
+	// whoever starts it picks no model, or nil when it has none a run could
+	// use: it is not built in, has no defaults, or their model's provider is
+	// not configured. effort is one picked without a model, kept when the
+	// default model supports it. An empty agentID is the default agent.
+	DefaultsFor(ctx context.Context, agentID, effort string) (*domain.AgentDefaults, error)
 	// SetAgentDefaults sets a built-in agent's default model and effort. An
 	// empty model clears them, so the agent uses devpad's own default.
 	SetAgentDefaults(ctx context.Context, defaults domain.AgentDefaults) (*domain.AgentDefaults, error)
@@ -71,7 +73,7 @@ func (s *agentDefaultsService) ListAgentDefaults(ctx context.Context) (map[strin
 	return defaults, nil
 }
 
-func (s *agentDefaultsService) DefaultsFor(ctx context.Context, agentID string) (*domain.AgentDefaults, error) {
+func (s *agentDefaultsService) DefaultsFor(ctx context.Context, agentID, effort string) (*domain.AgentDefaults, error) {
 	if agentID == "" {
 		agentID = domain.DefaultAgentID
 	}
@@ -83,11 +85,15 @@ func (s *agentDefaultsService) DefaultsFor(ctx context.Context, agentID string) 
 	if !ok {
 		return nil, nil
 	}
-	if _, err := s.catalog.ResolveChatTarget(ctx, d.Model); err != nil {
+	target, err := s.catalog.ResolveChatTarget(ctx, d.Model)
+	if err != nil {
 		if errors.Is(err, domain.ErrModelNotFound) || errors.Is(err, domain.ErrProviderNotEnabled) || errors.Is(err, domain.ErrNoAPIKey) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("checking the default model's provider: %w", err)
+	}
+	if effort = strings.TrimSpace(effort); effort != "" && domain.ValidateThinkingEffort(target.Model, effort) == nil {
+		d.Effort = effort
 	}
 	return &d, nil
 }
