@@ -17,6 +17,10 @@ type ExecutionRequest struct {
 	Thinking       *domain.ThinkingConfig
 	ToolName       string
 	Arguments      json.RawMessage
+	// Approved is set only after the user approved this exact call. Tools
+	// that need approval refuse to run without it, so a caller that skips the
+	// approval step cannot start them.
+	Approved bool
 }
 
 // FileSummaryRequest contains the workspace file content prepared for summarization.
@@ -93,15 +97,19 @@ type ToolProvider interface {
 type Approval struct {
 	// Title names what is being approved, such as "Start an agent".
 	Title string
-	// Summary says what the call will do.
+	// Summary says what the call will do. It is written by the server, never
+	// copied from the model's arguments.
 	Summary string
+	// Details lists everything else the call carries, in full.
+	Details []domain.ApprovalDetail
 }
 
 // ApprovalGate is a ToolProvider some of whose calls need the user's
 // approval before they run.
 type ApprovalGate interface {
 	// ApprovalFor reports whether a call needs approval, and describes it.
-	ApprovalFor(ctx context.Context, req ExecutionRequest) (Approval, bool)
+	// An error means it could not tell; the call must then not run.
+	ApprovalFor(ctx context.Context, req ExecutionRequest) (Approval, bool, error)
 }
 
 // PromptProvider is a ToolProvider that adds context to the system prompt

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -85,8 +86,11 @@ func (projectToolProvider) Prompt(_ context.Context, _, workspaceID int64) strin
 	return "Project context"
 }
 
-func (projectToolProvider) ApprovalFor(_ context.Context, req ExecutionRequest) (Approval, bool) {
-	return Approval{Title: "Start a background agent", Summary: "start"}, req.ToolName == "start_task"
+func (projectToolProvider) ApprovalFor(_ context.Context, req ExecutionRequest) (Approval, bool, error) {
+	if req.ToolName == "broken" {
+		return Approval{}, false, errors.New("lookup failed")
+	}
+	return Approval{Title: "Start a background agent", Summary: "start"}, req.ToolName == "start_task", nil
 }
 
 func TestProvidersAddPromptContextAndApprovals(t *testing.T) {
@@ -105,10 +109,14 @@ func TestProvidersAddPromptContextAndApprovals(t *testing.T) {
 	if got := catalog.PromptFor(ctx, 1, 8); got != "" {
 		t.Fatalf("expected no context elsewhere, got %q", got)
 	}
-	if approval, needed := executor.ApprovalFor(ctx, ExecutionRequest{ToolName: "start_task"}); !needed || approval.Title != "Start a background agent" {
-		t.Fatalf("expected the gate's approval, got %+v %v", approval, needed)
+	if approval, needed, err := executor.ApprovalFor(ctx, ExecutionRequest{ToolName: "start_task"}); err != nil || !needed || approval.Title != "Start a background agent" {
+		t.Fatalf("expected the gate's approval, got %+v %v %v", approval, needed, err)
 	}
-	if _, needed := executor.ApprovalFor(ctx, ExecutionRequest{ToolName: "list_tasks"}); needed {
+	if _, needed, err := executor.ApprovalFor(ctx, ExecutionRequest{ToolName: "list_tasks"}); err != nil || needed {
 		t.Fatal("expected no approval for other tools")
+	}
+	// A gate that cannot tell passes its error on, so the call does not run.
+	if _, needed, err := executor.ApprovalFor(ctx, ExecutionRequest{ToolName: "broken"}); err == nil || needed {
+		t.Fatalf("expected the gate's error, got needed=%v err=%v", needed, err)
 	}
 }

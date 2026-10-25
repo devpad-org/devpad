@@ -64,6 +64,10 @@ type Task struct {
 	// BaseBranch is the canonical branch the task's branch starts from when
 	// it is not the project's default branch.
 	BaseBranch string
+	// BaseSHA is the commit the task's branch was first made from, read
+	// from the canonical repo when its first sandbox is seeded. Empty for
+	// tasks from before it was recorded.
+	BaseSHA string
 	// Handoff is the conversation the task was handed off from, given to its
 	// agent as context when a conversation starts.
 	Handoff   string

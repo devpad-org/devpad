@@ -484,3 +484,65 @@ func TestDeleteWaitsForWorkspaceOpenInFlight(t *testing.T) {
 		t.Fatalf("expected the project gone, got %v", err)
 	}
 }
+
+func TestWorkspaceBranchStatus(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	ws, _, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "task/1"}); err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	e.repoAgent.mu.Lock()
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "new-main"}, {Name: "task/1", SHA: "t1"}}
+	e.repoAgent.bundled = nil
+	e.repoAgent.mu.Unlock()
+	e.workspaces.mu.Lock()
+	e.workspaces.branchStatus = map[string]agent.RepoBranchStatus{
+		// The workspace last saw an older main and has a commit of its own.
+		"main": {Branch: "main", SHA: "local-main", UpstreamSHA: "old-main", Ahead: 1, Behind: 0},
+		// Up to date with the project.
+		"task/1": {Branch: "task/1", SHA: "t1", UpstreamSHA: "t1"},
+		// Never published.
+		"mine": {Branch: "mine", SHA: "m1", Ahead: 2},
+	}
+	e.workspaces.fetchedSHA = map[string]string{"main": "new-main"}
+	e.workspaces.mu.Unlock()
+
+	got, err := e.svc.WorkspaceBranchStatus(ctx, e.userID, p.ID, "main")
+	if err != nil {
+		t.Fatalf("main: %v", err)
+	}
+	if !got.Published || got.CanonicalSHA != "new-main" || got.Ahead != 1 || got.SandboxOwned {
+		t.Fatalf("unexpected status for main: %+v", got)
+	}
+	if e.workspaces.seeds[ws.ID] != "devpad/main <- bundle-of-main" {
+		t.Fatalf("expected a stale copy of main refreshed first, got %q", e.workspaces.seeds[ws.ID])
+	}
+
+	e.repoAgent.mu.Lock()
+	e.repoAgent.bundled = nil
+	e.repoAgent.mu.Unlock()
+	got, err = e.svc.WorkspaceBranchStatus(ctx, e.userID, p.ID, "task/1")
+	if err != nil || !got.Published || !got.SandboxOwned || got.Ahead != 0 {
+		t.Fatalf("task/1: %+v %v", got, err)
+	}
+	if len(e.repoAgent.bundled) != 0 {
+		t.Fatalf("an up-to-date copy should not be fetched again, bundled %v", e.repoAgent.bundled)
+	}
+
+	got, err = e.svc.WorkspaceBranchStatus(ctx, e.userID, p.ID, "mine")
+	if err != nil || got.Published || got.Ahead != 2 || got.CanonicalSHA != "" {
+		t.Fatalf("mine: %+v %v", got, err)
+	}
+
+	if _, err := e.svc.WorkspaceBranchStatus(ctx, e.userID, p.ID, "--all"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+	if _, err := e.svc.WorkspaceBranchStatus(ctx, e.otherID, p.ID, "main"); err == nil {
+		t.Fatal("expected another user refused")
+	}
+}

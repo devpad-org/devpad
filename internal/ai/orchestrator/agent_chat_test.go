@@ -724,13 +724,21 @@ func TestAgentChatOrchestrator_StreamValidatesModelErrors(t *testing.T) {
 // that starts agents does.
 type gatedToolExecutor struct {
 	mockToolExecutor
+	err error
 }
 
-func (gatedToolExecutor) ApprovalFor(_ context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool) {
-	if req.ToolName != "start_task" {
-		return aitools.Approval{}, false
+func (g gatedToolExecutor) ApprovalFor(_ context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool, error) {
+	if g.err != nil {
+		return aitools.Approval{}, false, g.err
 	}
-	return aitools.Approval{Title: "Start a background agent", Summary: "Start the coding agent on task #3."}, true
+	if req.ToolName != "start_task" {
+		return aitools.Approval{}, false, nil
+	}
+	return aitools.Approval{
+		Title:   "Start a background agent",
+		Summary: "Start the coding agent on task #3.",
+		Details: []domain.ApprovalDetail{{Label: "Instructions", Value: "do it", Text: true}},
+	}, true, nil
 }
 
 func TestAgentChatOrchestrator_ExecutorApprovalGatesTheCall(t *testing.T) {
@@ -738,8 +746,11 @@ func TestAgentChatOrchestrator_ExecutorApprovalGatesTheCall(t *testing.T) {
 		t.Run(fmt.Sprintf("approved=%v", approve), func(t *testing.T) {
 			decisionCh := make(chan bool, 1)
 			callCount, toolCalls := 0, 0
-			executor := &gatedToolExecutor{mockToolExecutor{executeToolFn: func(_ context.Context, req aitools.ExecutionRequest) domain.ToolResultPart {
+			executor := &gatedToolExecutor{mockToolExecutor: mockToolExecutor{executeToolFn: func(_ context.Context, req aitools.ExecutionRequest) domain.ToolResultPart {
 				toolCalls++
+				if !req.Approved {
+					return domain.ToolResultPart{Name: req.ToolName, Content: "not approved", IsError: true}
+				}
 				return domain.ToolResultPart{Name: req.ToolName, Content: "started"}
 			}}}
 			orch := &agentChatOrchestrator{
@@ -779,14 +790,17 @@ func TestAgentChatOrchestrator_ExecutorApprovalGatesTheCall(t *testing.T) {
 			if approvalEvent.Approval == nil || approvalEvent.Approval.Title != "Start a background agent" || approvalEvent.Approval.Command != "Start the coding agent on task #3." {
 				t.Fatalf("expected an approval request from the executor, got %+v", approvalEvent)
 			}
+			if d := approvalEvent.Approval.Details; len(d) != 1 || d[0].Value != "do it" || !d[0].Text {
+				t.Fatalf("expected the approval's details, got %+v", d)
+			}
 			if toolCalls != 0 {
 				t.Fatal("the tool ran before the user decided")
 			}
 			decisionCh <- approve
 
 			resultEvent := nextEvent(t, stream)
-			if resultEvent.ApprovalResult == nil || resultEvent.ApprovalResult.Title != "Start a background agent" {
-				t.Fatalf("expected an approval result with its title, got %+v", resultEvent)
+			if resultEvent.ApprovalResult == nil || resultEvent.ApprovalResult.Title != "Start a background agent" || len(resultEvent.ApprovalResult.Details) != 1 {
+				t.Fatalf("expected an approval result with its title and details, got %+v", resultEvent)
 			}
 			toolResult := nextEvent(t, stream).ToolResult
 			if toolResult == nil {
@@ -800,6 +814,58 @@ func TestAgentChatOrchestrator_ExecutorApprovalGatesTheCall(t *testing.T) {
 				t.Fatalf("expected the denied call not to run, got %d calls, %+v", toolCalls, toolResult)
 			}
 		})
+	}
+}
+
+func TestAgentChatOrchestrator_ApprovalCheckErrorFailsClosed(t *testing.T) {
+	toolCalls, callCount := 0, 0
+	executor := &gatedToolExecutor{
+		mockToolExecutor: mockToolExecutor{executeToolFn: func(_ context.Context, req aitools.ExecutionRequest) domain.ToolResultPart {
+			toolCalls++
+			return domain.ToolResultPart{Name: req.ToolName, Content: "started"}
+		}},
+		err: errors.New("database is locked"),
+	}
+	opened := false
+	orch := &agentChatOrchestrator{
+		service: &mockChatService{
+			chatStreamFn: func(_ context.Context, _ domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+				ch := make(chan domain.ProviderEvent, 2)
+				callCount++
+				if callCount == 1 {
+					ch <- domain.ProviderEvent{ToolCalls: []domain.ToolCall{{
+						ID: "tc1", Type: "function",
+						Function: domain.ToolCallFunction{Name: "start_task", Arguments: `{"task_id":3}`},
+					}}}
+				}
+				ch <- domain.ProviderEvent{Done: true}
+				close(ch)
+				return ch, nil
+			},
+		},
+		toolCatalog:  fakeToolCatalog{},
+		toolExecutor: executor,
+		approvals: &mockApprovalBroker{openFn: func(context.Context, int64, string) (domain.ApprovalRequest, error) {
+			opened = true
+			return domain.ApprovalRequest{ID: "a1"}, nil
+		}},
+		maxToolIterations: defaultMaxToolIterations,
+		questions:         &mockQuestionBroker{},
+	}
+	stream, err := orch.Stream(context.Background(), AgentChatRequest{
+		UserID: 1, WorkspaceID: 1, Model: "test-model",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	nextEvent(t, stream) // the tool call
+	toolResult := nextEvent(t, stream).ToolResult
+	if toolResult == nil || !toolResult.IsError || !strings.Contains(toolResult.Content, "did not run") {
+		t.Fatalf("expected a failed tool call, got %+v", toolResult)
+	}
+	if toolCalls != 0 || opened {
+		t.Fatalf("expected no run and no approval card, got %d calls, opened=%v", toolCalls, opened)
 	}
 }
 

@@ -103,3 +103,21 @@ type MergeInput struct {
 	// ExpectedSourceSHA refuses the merge if Source has moved past it.
 	ExpectedSourceSHA string
 }
+
+// WorkspaceBranchStatus says how a branch of the project workspace compares
+// with the project's branch of the same name.
+type WorkspaceBranchStatus struct {
+	Branch string `json:"branch"`
+	// Published is whether the project has the branch.
+	Published bool `json:"published"`
+	// SHA is the workspace's commit, CanonicalSHA the project's.
+	SHA          string `json:"sha"`
+	CanonicalSHA string `json:"canonicalSha,omitempty"`
+	// Ahead counts the workspace's commits the project lacks, Behind the
+	// project's commits the workspace lacks.
+	Ahead  int `json:"ahead"`
+	Behind int `json:"behind"`
+	// SandboxOwned is set when an agent's sandbox owns the branch, so the
+	// workspace cannot publish to it.
+	SandboxOwned bool `json:"sandboxOwned"`
+}

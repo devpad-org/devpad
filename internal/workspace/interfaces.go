@@ -114,6 +114,7 @@ type ProjectWorkspaceService interface {
 	CreateProjectWorkspace(ctx context.Context, userID int64, spec ProjectWorkspaceSpec) (*Workspace, error)
 	CheckoutProjectBranch(ctx context.Context, userID, workspaceID int64, branch string, bundle io.Reader) (*agent.RepoCheckout, error)
 	BundleProjectBranch(ctx context.Context, userID, workspaceID int64, branch string) (io.ReadCloser, error)
+	ProjectBranchStatus(ctx context.Context, userID, workspaceID int64, branch string) (*agent.RepoBranchStatus, error)
 }
 
 // ConversionService turns a standalone workspace into a project's

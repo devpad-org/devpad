@@ -41,7 +41,7 @@ type ToolExecutor interface {
 // ApprovalChecker is a ToolExecutor whose tools can need the user's
 // approval for reasons other than sudo, such as starting another agent.
 type ApprovalChecker interface {
-	ApprovalFor(ctx context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool)
+	ApprovalFor(ctx context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool, error)
 }
 
 // AgentChatRequest contains the inputs needed to run the agent loop.

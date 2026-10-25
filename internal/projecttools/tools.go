@@ -17,6 +17,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -47,6 +48,10 @@ const (
 	maxListedComments  = 50
 	maxSummaryBytes    = 300
 )
+
+// promptStatusTimeout bounds reading the workspace's branch for the prompt,
+// so a slow workspace cannot hold up the start of a run.
+var promptStatusTimeout = 2 * time.Second
 
 var definitions = []domain.ToolDefinition{
 	{
@@ -183,6 +188,12 @@ func owns(name string) bool {
 	return slices.ContainsFunc(definitions, func(d domain.ToolDefinition) bool { return d.Function.Name == name })
 }
 
+// outsideProject reports whether a lookup failed because the run is not in
+// a project's own workspace, as opposed to failing to find out.
+func outsideProject(err error) bool {
+	return errors.Is(err, errNotProjectWorkspace) || errors.Is(err, workspace.ErrNotFound) || errors.Is(err, project.ErrNotFound)
+}
+
 // Prompt tells the assistant which project and branch it is on and what the
 // project tools are for.
 func (p *Provider) Prompt(ctx context.Context, userID, workspaceID int64) string {
@@ -192,7 +203,10 @@ func (p *Provider) Prompt(ctx context.Context, userID, workspaceID int64) string
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Project context:\nYou are working in the user's own workspace for the project %q. /workspace is a git checkout of the project; its default branch is `%s`.", proj.Name, proj.DefaultBranch)
-	if status, err := p.workspaces.GitStatus(ctx, userID, ws.ID); err == nil && status != nil && status.IsRepo {
+	// The branch is a nicety: a slow workspace must not hold up the run.
+	statusCtx, cancel := context.WithTimeout(ctx, promptStatusTimeout)
+	defer cancel()
+	if status, err := p.workspaces.GitStatus(statusCtx, userID, ws.ID); err == nil && status != nil && status.IsRepo {
 		if branch := cleanBranch(status.Branch); branch != "" {
 			fmt.Fprintf(&b, " The checkout is on the branch `%s`.", branch)
 		}
@@ -205,10 +219,14 @@ func (p *Provider) Prompt(ctx context.Context, userID, workspaceID int64) string
 }
 
 // cleanBranch makes a branch name reported by the workspace safe to show in
-// the prompt.
+// the prompt. The workspace is untrusted, so anything that could break out
+// of the code span or reorder the text, such as control, format (bidi) or
+// line separator characters, drops the name.
 func cleanBranch(name string) string {
 	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 200 || strings.ContainsFunc(name, func(r rune) bool { return unicode.IsControl(r) || r == '`' }) {
+	if name == "" || len(name) > 200 || !utf8.ValidString(name) || strings.ContainsFunc(name, func(r rune) bool {
+		return r == '`' || unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp)
+	}) {
 		return ""
 	}
 	return name
@@ -230,64 +248,137 @@ type taskArgs struct {
 	MergeRequestID int64  `json:"merge_request_id"`
 }
 
-func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool) {
+// needsApproval reports whether a call starts an agent run, which costs
+// money and so waits for the user.
+func needsApproval(tool string, args taskArgs) bool {
+	switch tool {
+	case createTaskTool:
+		return args.Start
+	case startTaskTool, requestTaskChangesTool:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool, error) {
 	if req.ToolName != createTaskTool && req.ToolName != startTaskTool && req.ToolName != requestTaskChangesTool {
-		return aitools.Approval{}, false
+		return aitools.Approval{}, false, nil
 	}
 	// Outside a project workspace the call is refused without asking, so an
 	// agent in a sandbox cannot put an approval card in front of the user.
-	if _, _, err := p.project(ctx, req.UserID, req.WorkspaceID); err != nil {
-		return aitools.Approval{}, false
+	// Any other failure leaves the call unchecked, and it must not run.
+	proj, _, err := p.project(ctx, req.UserID, req.WorkspaceID)
+	if err != nil {
+		if outsideProject(err) {
+			return aitools.Approval{}, false, nil
+		}
+		return aitools.Approval{}, false, fmt.Errorf("checking the workspace: %w", err)
 	}
 	var args taskArgs
 	if err := json.Unmarshal(req.Arguments, &args); err != nil {
 		// ExecuteTool rejects the same arguments without starting anything.
-		return aitools.Approval{}, false
+		return aitools.Approval{}, false, nil
 	}
+	if !needsApproval(req.ToolName, args) {
+		return aitools.Approval{}, false, nil
+	}
+
 	switch req.ToolName {
 	case createTaskTool:
-		if !args.Start {
-			return aitools.Approval{}, false
+		details := []domain.ApprovalDetail{
+			textDetail("Task title", args.Title),
+			textDetail("Instructions", args.Body),
+			{Label: "Starts from", Value: branchLabel(args.BaseBranch, proj.DefaultBranch)},
 		}
+		details = append(details, agentDetails(args.AgentID, defaultModel(strings.TrimSpace(args.Model), "", req.Model), defaultEffort(strings.TrimSpace(args.Effort), "", req.Thinking))...)
 		return aitools.Approval{
 			Title:   "Start a background agent",
-			Summary: fmt.Sprintf("Create the task %q%s and start %s on it.", oneLine(args.Title, 120), baseNote(args.BaseBranch), agentLabel(args.AgentID, defaultModel(args.Model, "", req.Model))),
-		}, true
+			Summary: "Create a task on the board and start a background agent on it, in its own sandbox.",
+			Details: details,
+		}, true, nil
+
 	case startTaskTool:
-		label := fmt.Sprintf("task #%d", args.TaskID)
-		taskModel := ""
-		if t := p.lookupTask(ctx, req, args.TaskID); t != nil {
-			label = fmt.Sprintf("task #%d %q", t.ID, oneLine(t.Title, 120))
-			taskModel = t.Model
+		t, err := p.tasks.Get(ctx, req.UserID, proj.ID, args.TaskID)
+		if err != nil {
+			if errors.Is(err, task.ErrNotFound) || errors.Is(err, project.ErrNotFound) {
+				// ExecuteTool reports the task as not in this project.
+				return aitools.Approval{}, false, nil
+			}
+			return aitools.Approval{}, false, fmt.Errorf("reading task #%d: %w", args.TaskID, err)
 		}
-		summary := fmt.Sprintf("Start %s on %s.", agentLabel(args.AgentID, defaultModel(args.Model, taskModel, req.Model)), label)
+		details := []domain.ApprovalDetail{
+			textDetail("Task title", t.Title),
+			textDetail("Task description", t.Body),
+		}
 		if msg := strings.TrimSpace(args.Message); msg != "" {
-			summary += " Instructions: " + oneLine(msg, maxSummaryBytes)
+			details = append(details, textDetail("Extra instructions", args.Message))
 		}
-		return aitools.Approval{Title: "Start a background agent", Summary: summary}, true
+		details = append(details, agentDetails(firstNonEmpty(strings.TrimSpace(args.AgentID), t.AgentID), defaultModel(strings.TrimSpace(args.Model), t.Model, req.Model), defaultEffort(strings.TrimSpace(args.Effort), t.Effort, req.Thinking))...)
+		return aitools.Approval{
+			Title:   "Start a background agent",
+			Summary: fmt.Sprintf("Start a background agent on task #%d, in its own sandbox.", t.ID),
+			Details: details,
+		}, true, nil
+
 	default:
-		label := fmt.Sprintf("task #%d", args.TaskID)
-		if t := p.lookupTask(ctx, req, args.TaskID); t != nil {
-			label = fmt.Sprintf("task #%d %q", t.ID, oneLine(t.Title, 120))
+		t, err := p.tasks.Get(ctx, req.UserID, proj.ID, args.TaskID)
+		if err != nil {
+			if errors.Is(err, task.ErrNotFound) || errors.Is(err, project.ErrNotFound) {
+				return aitools.Approval{}, false, nil
+			}
+			return aitools.Approval{}, false, fmt.Errorf("reading task #%d: %w", args.TaskID, err)
 		}
+		details := []domain.ApprovalDetail{
+			textDetail("Task title", t.Title),
+			textDetail("Feedback", args.Feedback),
+		}
+		details = append(details, agentDetails(t.AgentID, t.Model, t.Effort)...)
 		return aitools.Approval{
 			Title:   "Send a task back to its agent",
-			Summary: fmt.Sprintf("Restart the agent on %s with this feedback: %s", label, oneLine(args.Feedback, maxSummaryBytes)),
-		}, true
+			Summary: fmt.Sprintf("Send this feedback on task #%d to its agent, which starts working again.", t.ID),
+			Details: details,
+		}, true, nil
 	}
 }
 
-// lookupTask finds a task in the run's project, for describing a call.
-func (p *Provider) lookupTask(ctx context.Context, req aitools.ExecutionRequest, taskID int64) *task.Task {
-	proj, _, err := p.project(ctx, req.UserID, req.WorkspaceID)
-	if err != nil {
-		return nil
+// textDetail is model-written text, shown in full and set apart.
+func textDetail(label, value string) domain.ApprovalDetail {
+	return domain.ApprovalDetail{Label: label, Value: value, Text: true}
+}
+
+func agentDetails(agentID, model, effort string) []domain.ApprovalDetail {
+	agent := "The built-in coding agent"
+	if agentID = strings.TrimSpace(agentID); agentID != "" {
+		agent = agentID
 	}
-	t, err := p.tasks.Get(ctx, req.UserID, proj.ID, taskID)
-	if err != nil {
-		return nil
+	if model == "" {
+		model = "Not set"
 	}
-	return t
+	if effort == "" {
+		effort = "Default"
+	}
+	return []domain.ApprovalDetail{
+		{Label: "Agent", Value: agent},
+		{Label: "Model", Value: model},
+		{Label: "Effort", Value: effort},
+	}
+}
+
+func branchLabel(base, defaultBranch string) string {
+	if base = strings.TrimSpace(base); base != "" && base != defaultBranch {
+		return base
+	}
+	return defaultBranch + " (the default branch)"
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (p *Provider) ExecuteTool(ctx context.Context, req aitools.ExecutionRequest) (domain.ToolResultPart, bool) {
@@ -297,7 +388,10 @@ func (p *Provider) ExecuteTool(ctx context.Context, req aitools.ExecutionRequest
 	// The tools are re-checked on every call, not just when offered.
 	proj, _, err := p.project(ctx, req.UserID, req.WorkspaceID)
 	if err != nil {
-		return toolError(req.ToolName, "project tools only work in a project's own workspace"), true
+		if outsideProject(err) {
+			return toolError(req.ToolName, "project tools only work in a project's own workspace"), true
+		}
+		return toolError(req.ToolName, "could not read the project, try again later"), true
 	}
 	// Arguments are decoded exactly as ApprovalFor decoded them, so the call
 	// that runs is the one the user approved.
@@ -437,7 +531,16 @@ func taskDetail(t *task.Task, mr *mergerequest.MergeRequest) map[string]any {
 	return detail
 }
 
+// errNotApproved refuses a call that starts an agent without the user's
+// approval for it.
+func errNotApproved(name string) domain.ToolResultPart {
+	return toolError(name, "this action starts an agent and needs the user's approval, which it did not get")
+}
+
 func (p *Provider) createTask(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) domain.ToolResultPart {
+	if needsApproval(req.ToolName, args) && !req.Approved {
+		return errNotApproved(req.ToolName)
+	}
 	in := task.CreateInput{
 		Title:      args.Title,
 		Body:       args.Body,
@@ -471,6 +574,9 @@ func (p *Provider) startTask(ctx context.Context, req aitools.ExecutionRequest, 
 	if err != nil {
 		return taskError(req.ToolName, args.TaskID, err)
 	}
+	if !req.Approved {
+		return errNotApproved(req.ToolName)
+	}
 	t, err := p.tasks.Start(ctx, req.UserID, proj.ID, current.ID, task.StartInput{
 		Message: args.Message,
 		AgentSettings: task.AgentSettings{
@@ -491,6 +597,12 @@ func (p *Provider) startTask(ctx context.Context, req aitools.ExecutionRequest, 
 func (p *Provider) requestChanges(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) domain.ToolResultPart {
 	if strings.TrimSpace(args.Feedback) == "" {
 		return toolError(req.ToolName, "feedback is required")
+	}
+	if _, err := p.tasks.Get(ctx, req.UserID, proj.ID, args.TaskID); err != nil {
+		return taskError(req.ToolName, args.TaskID, err)
+	}
+	if !req.Approved {
+		return errNotApproved(req.ToolName)
 	}
 	t, err := p.tasks.RequestChanges(ctx, req.UserID, proj.ID, args.TaskID, args.Feedback, true)
 	if err != nil {
@@ -642,34 +754,11 @@ func defaultEffort(requested, taskEffort string, thinking *domain.ThinkingConfig
 	}
 }
 
-func agentLabel(agentID, model string) string {
-	label := "the coding agent"
-	if agentID != "" {
-		label = fmt.Sprintf("the agent %q", oneLine(agentID, 60))
-	}
-	if model != "" {
-		label += " (" + oneLine(model, 80) + ")"
-	}
-	return label
-}
-
-func baseNote(base string) string {
-	if base = strings.TrimSpace(base); base == "" {
-		return ""
-	}
-	return fmt.Sprintf(" from the branch %q", oneLine(base, 120))
-}
-
 func shortSHA(sha string) string {
 	if len(sha) > 12 {
 		return sha[:12]
 	}
 	return sha
-}
-
-// oneLine collapses whitespace and clips s for an approval summary.
-func oneLine(s string, n int) string {
-	return clip(strings.Join(strings.Fields(s), " "), n)
 }
 
 // clip shortens s to at most n bytes on a rune boundary, marking the cut.

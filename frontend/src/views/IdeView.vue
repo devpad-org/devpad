@@ -35,6 +35,7 @@ import {
   ideShellKey,
   mergeRequestTabId,
   parseViewTabId,
+  type BranchChange,
   type ViewTab,
   type ViewTabId,
 } from '@/components/ide/viewTabs'
@@ -558,13 +559,14 @@ function taskDeleted(id: number) {
   void projectStore.refresh()
 }
 
-// A checkout moves HEAD: the git panels start over and open files reload
-// from the new branch. Publish and sync move only refs, which the panels pick
-// up on their own refresh.
-function branchChanged(kind: 'checkout' | 'publish' | 'sync') {
-  if (kind !== 'checkout') return
+// A checkout moves HEAD to other files: the git panels start over and open
+// files reload from the new branch. A commit or a new branch moves HEAD
+// without touching the files, so only the git panels start over. Publish
+// and sync move only refs, which the panels pick up on their own refresh.
+function branchChanged(kind: BranchChange) {
+  if (kind === 'publish' || kind === 'sync') return
   gitRevision.value++
-  void editorPanel.value?.reloadFiles()
+  if (kind === 'checkout') void editorPanel.value?.reloadFiles()
 }
 
 function checkedOut() {
@@ -639,6 +641,11 @@ provide(ideShellKey, {
   openFile,
   activeView,
   liveWorkspaceId: computed(() => (isProjectMode.value && workspaceLive.value ? workspace.value?.id ?? null : null)),
+  unsavedFiles: computed(() => !!editorPanel.value?.hasDirtyFiles),
+  async saveAllFiles() {
+    await editorPanel.value?.saveAllFiles()
+    return !editorPanel.value?.hasDirtyFiles
+  },
 })
 
 function handleBeforeUnload(e: BeforeUnloadEvent) {
@@ -1195,7 +1202,7 @@ const backLabel = computed(() => {
               v-if="workspaceLive"
               :workspace-id="workspace?.id ?? 0"
               :project-id="isProjectMode ? projectId : null"
-              @branch-changed="branchChanged('checkout')"
+              @branch-changed="branchChanged"
               :selected-agent-id="selectedAgentId"
               :focused-run-id="focusedAgentRunId"
               @clear-focused-run="focusedAgentRunId = null"

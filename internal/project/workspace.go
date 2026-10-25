@@ -243,6 +243,76 @@ func (s *service) PublishWorkspaceBranch(ctx context.Context, userID, projectID 
 	return published, nil
 }
 
+// WorkspaceBranchStatus compares a branch of the project workspace with the
+// project's. The workspace's devpad/<branch> copy is refreshed first when it
+// is stale, so the counts reflect the project as it is now. The counts come
+// from the workspace and are only fit for showing the user.
+func (s *service) WorkspaceBranchStatus(ctx context.Context, userID, projectID int64, branch string) (*WorkspaceBranchStatus, error) {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !validBranchName(branch) {
+		return nil, invalid("branch is not a valid branch name")
+	}
+	ws, err := s.runningWorkspace(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	refs, err := c.RepoRefs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	canonical := ""
+	for _, ref := range refs.Branches {
+		if ref.Name == branch {
+			canonical = ref.SHA
+		}
+	}
+
+	local, err := s.workspaces.ProjectBranchStatus(ctx, userID, ws.ID, branch)
+	if err != nil {
+		return nil, err
+	}
+	if canonical != "" && local.UpstreamSHA != canonical {
+		bundle, err := c.RepoBundle(ctx, branch)
+		if err != nil {
+			return nil, err
+		}
+		_, err = s.workspaces.FetchSandboxBase(ctx, userID, ws.ID, branch, bundle)
+		bundle.Close()
+		if err != nil {
+			return nil, err
+		}
+		if local, err = s.workspaces.ProjectBranchStatus(ctx, userID, ws.ID, branch); err != nil {
+			return nil, err
+		}
+	}
+
+	status := &WorkspaceBranchStatus{
+		Branch:       branch,
+		Published:    canonical != "",
+		SHA:          local.SHA,
+		CanonicalSHA: canonical,
+		Ahead:        local.Ahead,
+		Behind:       local.Behind,
+	}
+	sandboxes, err := s.workspaces.ListByProject(ctx, userID, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, sb := range sandboxes {
+		if sb.IsSandbox() && sb.Branch == branch {
+			status.SandboxOwned = true
+		}
+	}
+	return status, nil
+}
+
 // reservePublish refuses a branch that a sandbox owns or is being created
 // for, and holds it until releasePublish so no sandbox can claim it while the
 // import is in flight. A sandbox force-publishes its branch, so it would

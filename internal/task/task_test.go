@@ -113,6 +113,10 @@ type fakeSandboxes struct {
 	hiddenSandbox *workspace.Workspace // exists for its branch but CreateSandbox reports it in use
 	branches      []string             // canonical branches besides the default
 	projectWS     *workspace.Workspace // the project workspace, if opened
+	// aheadOf overrides ahead for a compare against the given base, and
+	// compared records each compare's base.
+	aheadOf  map[string]int
+	compared []string
 }
 
 func newFakeSandboxes(owner int64) *fakeSandboxes {
@@ -252,6 +256,10 @@ func (f *fakeSandboxes) SyncSandboxBase(_ context.Context, _, _, workspaceID int
 func (f *fakeSandboxes) Compare(_ context.Context, _, _ int64, base, head string) (*agent.RepoComparison, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.compared = append(f.compared, base)
+	if ahead, ok := f.aheadOf[base]; ok {
+		return &agent.RepoComparison{Base: base, Head: head, Ahead: ahead}, nil
+	}
 	return &agent.RepoComparison{Base: "main", Head: head, Ahead: f.ahead}, nil
 }
 
@@ -404,6 +412,8 @@ type fakeConversations struct {
 	nextID int64
 	turns  map[int64][]domain.Turn
 	convs  map[int64]domain.Conversation
+	// getErr fails GetConversation, as a database error would.
+	getErr error
 }
 
 func (f *fakeConversations) CreateConversation(_ context.Context, userID, workspaceID int64, model string) (*domain.Conversation, error) {
@@ -416,6 +426,9 @@ func (f *fakeConversations) CreateConversation(_ context.Context, userID, worksp
 func (f *fakeConversations) GetConversation(_ context.Context, id, userID int64) (*domain.Conversation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	conv, ok := f.convs[id]
 	if !ok || conv.UserID != userID {
 		return nil, domain.ErrConversationNotFound
@@ -1115,6 +1128,43 @@ func TestHandler(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if rec := do(tt.userID, tt.method, tt.path, tt.body); rec.Code != tt.want {
 				t.Fatalf("expected %d, got %d: %s", tt.want, rec.Code, rec.Body)
+			}
+		})
+	}
+
+	// Once the project workspace exists, a handoff of one of its
+	// conversations starts a task; anything else is refused.
+	e.sandboxes.set(func(f *fakeSandboxes) {
+		f.projectWS = &workspace.Workspace{ID: 50, UserID: owner, ProjectID: 1, Kind: workspace.KindInteractive}
+	})
+	e.convs.mu.Lock()
+	e.convs.convs[7] = domain.Conversation{ID: 7, UserID: owner, WorkspaceID: 50, Title: "Cart"}
+	e.convs.convs[8] = domain.Conversation{ID: 8, UserID: owner, WorkspaceID: 101, Title: "Sandbox"}
+	e.convs.turns[7] = []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Build the cart.")}
+	e.convs.mu.Unlock()
+	for _, tt := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{"handoff", `{"conversationId":7,"title":"Cart","model":"claude-opus-5-5"}`, http.StatusCreated},
+		{"handoff without a model", `{"conversationId":7,"title":"Cart"}`, http.StatusBadRequest},
+		{"handoff of another workspace's conversation", `{"conversationId":8,"title":"x","model":"m"}`, http.StatusBadRequest},
+		{"handoff from an unpublished base", `{"conversationId":7,"title":"x","model":"m","baseBranch":"nope"}`, http.StatusBadRequest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(owner, http.MethodPost, "/api/projects/1/tasks/handoff", tt.body)
+			if rec.Code != tt.want {
+				t.Fatalf("expected %d, got %d: %s", tt.want, rec.Code, rec.Body)
+			}
+			if tt.want == http.StatusCreated {
+				var res struct {
+					Task map[string]any `json:"task"`
+				}
+				json.Unmarshal(rec.Body.Bytes(), &res)
+				if res.Task["status"] != "queued" || res.Task["handedOff"] != true {
+					t.Fatalf("unexpected task: %v", res.Task)
+				}
 			}
 		})
 	}

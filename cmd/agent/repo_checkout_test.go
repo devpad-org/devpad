@@ -194,3 +194,57 @@ func TestScratchProjectWorkspaceSeedsFromInitialCommit(t *testing.T) {
 		t.Fatalf("canonical first-feature = %s, want %s", got, sha)
 	}
 }
+
+func branchStatus(t *testing.T, work, branch string) (int, repoBranchStatus) {
+	t.Helper()
+	rec := repoRequest(t, work, handleRepoBranchStatus, http.MethodGet, "/api/repo/branch-status?branch="+branch, nil)
+	var result repoBranchStatus
+	if rec.Code == http.StatusOK {
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+			t.Fatalf("decoding branch status: %v", err)
+		}
+	}
+	return rec.Code, result
+}
+
+func TestRepoBranchStatusCountsAheadAndBehind(t *testing.T) {
+	canonical := initCanonical(t)
+	work := seedSandbox(t, canonical, "main")
+	fetchBase := func(branch string) {
+		t.Helper()
+		rec := repoRequest(t, work, handleRepoFetchBase, http.MethodPost, "/api/repo/fetch-base?branch="+branch, bytes.NewReader(bundleFrom(t, canonical, branch)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("fetch-base status %d: %s", rec.Code, rec.Body)
+		}
+	}
+	fetchBase("main")
+
+	if code, st := branchStatus(t, work, "main"); code != http.StatusOK || st.Ahead != 0 || st.Behind != 0 || st.UpstreamSHA != st.SHA {
+		t.Fatalf("fresh main: %d %+v", code, st)
+	}
+
+	// Local main gets a commit; the project's main gets two others.
+	commitFile(t, work, "local.txt", "local")
+	other := seedSandbox(t, canonical, "side")
+	commitFile(t, other, "x.txt", "x")
+	commitFile(t, other, "y.txt", "y")
+	runGit(t, canonical, "fetch", other, "side:main")
+	fetchBase("main")
+	if code, st := branchStatus(t, work, "main"); code != http.StatusOK || st.Ahead != 1 || st.Behind != 2 {
+		t.Fatalf("diverged main: %d %+v", code, st)
+	}
+
+	// A branch the project does not have counts only its own commits.
+	runGit(t, work, "switch", "-c", "mine")
+	commitFile(t, work, "mine.txt", "mine")
+	if code, st := branchStatus(t, work, "mine"); code != http.StatusOK || st.Ahead != 2 || st.UpstreamSHA != "" {
+		t.Fatalf("unpublished branch: %d %+v", code, st)
+	}
+
+	if code, _ := branchStatus(t, work, "nope"); code != http.StatusNotFound {
+		t.Fatalf("expected 404 for an unknown branch, got %d", code)
+	}
+	if code, _ := branchStatus(t, work, "--all"); code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a flag, got %d", code)
+	}
+}

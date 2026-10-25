@@ -245,6 +245,10 @@ type fakeWorkspaces struct {
 	deleted       []int64
 	sandboxBundle string
 	bundled       []string // project workspace branches bundled
+	// branchStatus is what the project workspace reports per branch; a
+	// fetch of the branch moves its devpad/ copy to fetchedSHA.
+	branchStatus map[string]agent.RepoBranchStatus
+	fetchedSHA   map[string]string
 
 	// Conversion of standalone workspaces.
 	converting  map[int64]bool
@@ -365,7 +369,22 @@ func (f *fakeWorkspaces) FetchSandboxBase(_ context.Context, _, id int64, branch
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.seeds[id] = "devpad/" + branch + " <- " + string(body)
+	if sha, ok := f.fetchedSHA[branch]; ok {
+		st := f.branchStatus[branch]
+		st.UpstreamSHA, st.Behind = sha, 0
+		f.branchStatus[branch] = st
+	}
 	return &agent.RepoBranch{Branch: "devpad/" + branch}, nil
+}
+
+func (f *fakeWorkspaces) ProjectBranchStatus(_ context.Context, _, _ int64, branch string) (*agent.RepoBranchStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st, ok := f.branchStatus[branch]
+	if !ok {
+		return nil, errors.New("repo branch status: branch not found: " + branch)
+	}
+	return &st, nil
 }
 
 func (f *fakeWorkspaces) Delete(_ context.Context, _, id int64) error {

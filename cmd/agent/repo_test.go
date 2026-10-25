@@ -344,6 +344,44 @@ func TestRepoCompareCountsDivergence(t *testing.T) {
 	}
 }
 
+func TestRepoCompareAgainstACommit(t *testing.T) {
+	canonical := initCanonical(t)
+	sandbox := seedSandbox(t, canonical, "base")
+	commitFile(t, sandbox, "a.txt", "a")
+	importAs := func(branch string) {
+		t.Helper()
+		rec := repoRequest(t, canonical, handleRepoImport, http.MethodPost, "/api/repo/import?branch="+branch, bytes.NewReader(bundleFrom(t, sandbox, branch)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("import status %d: %s", rec.Code, rec.Body)
+		}
+	}
+	importAs("base")
+	baseSHA := runGit(t, canonical, "rev-parse", "base")
+
+	// A task branch made from base, with nothing new, is ahead of main but
+	// not of the commit it was made from.
+	runGit(t, sandbox, "branch", "task/1", "base")
+	importAs("task/1")
+	compare := func(base string) repoComparison {
+		t.Helper()
+		rec := repoRequest(t, canonical, handleRepoCompare, http.MethodGet, "/api/repo/compare?base="+base+"&head=task/1", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("compare status %d: %s", rec.Code, rec.Body)
+		}
+		var cmp repoComparison
+		if err := json.Unmarshal(rec.Body.Bytes(), &cmp); err != nil {
+			t.Fatalf("decoding comparison: %v", err)
+		}
+		return cmp
+	}
+	if cmp := compare("main"); cmp.Ahead != 1 {
+		t.Fatalf("expected task/1 ahead of main by the base's commit, got %+v", cmp)
+	}
+	if cmp := compare(baseSHA); cmp.Ahead != 0 || cmp.BaseSHA != baseSHA {
+		t.Fatalf("expected task/1 level with its base commit, got %+v", cmp)
+	}
+}
+
 func TestRepoCompareRejections(t *testing.T) {
 	canonical := initCanonical(t)
 	tests := []struct {
@@ -355,6 +393,8 @@ func TestRepoCompareRejections(t *testing.T) {
 		{"flag", "base=main&head=--all", http.StatusBadRequest},
 		{"unknown head", "base=main&head=nope", http.StatusNotFound},
 		{"unknown base", "base=nope&head=main", http.StatusNotFound},
+		{"unknown commit", "base=" + strings.Repeat("ab", 20) + "&head=main", http.StatusNotFound},
+		{"short hash is a branch name", "base=abc123&head=main", http.StatusNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

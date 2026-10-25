@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { aiApi, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalRequest, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
+import { aiApi, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalDetail, type ApprovalRequest, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
@@ -11,6 +11,8 @@ import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
 import AiMessageCopyButton from '@/components/ide/AiMessageCopyButton.vue'
 import AiQuestionCard from '@/components/ide/AiQuestionCard.vue'
+import ApprovalDetails from '@/components/ide/ApprovalDetails.vue'
+import type { BranchChange } from '@/components/ide/viewTabs'
 import HandoffModal from '@/components/project/HandoffModal.vue'
 import type { Task } from '@/api/tasks'
 import { useActiveProjectStore } from '@/stores/activeProject'
@@ -36,7 +38,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'clear-focused-run'): void
   (e: 'select-agent', agentId: string): void
-  (e: 'branch-changed'): void
+  (e: 'branch-changed', kind: BranchChange): void
 }>()
 
 interface TextSegment {
@@ -54,6 +56,7 @@ interface ApprovalSegment {
   // Set for actions other than sudo commands, such as starting an agent.
   title?: string
   command: string
+  details?: ApprovalDetail[]
   status: 'pending' | ApprovalResult['status']
   error?: string
 }
@@ -417,6 +420,7 @@ function applyApprovalRequired(segments: MessageSegment[], request: ApprovalRequ
   if (existing) {
     existing.command = request.command
     existing.title = request.title
+    existing.details = request.details
     return
   }
 
@@ -425,6 +429,7 @@ function applyApprovalRequired(segments: MessageSegment[], request: ApprovalRequ
     id: request.id,
     title: request.title,
     command: request.command,
+    details: request.details,
     status: 'pending',
   })
 }
@@ -434,6 +439,7 @@ function applyApprovalResolved(segments: MessageSegment[], result: ApprovalResul
   if (existing) {
     existing.command = result.command || existing.command
     existing.title = result.title || existing.title
+    existing.details = result.details ?? existing.details
     existing.status = result.status
     existing.error = undefined
     return
@@ -444,6 +450,7 @@ function applyApprovalResolved(segments: MessageSegment[], result: ApprovalResul
     id: result.id,
     title: result.title,
     command: result.command,
+    details: result.details,
     status: result.status,
   })
 }
@@ -706,7 +713,7 @@ function cloneMessageSegment(seg: MessageSegment): MessageSegment {
     case 'tool':
       return { type: 'tool', toolCallId: seg.toolCallId, name: seg.name, args: seg.args, result: seg.result }
     case 'approval':
-      return { type: 'approval', id: seg.id, title: seg.title, command: seg.command, status: seg.status, error: seg.error }
+      return { type: 'approval', id: seg.id, title: seg.title, command: seg.command, details: seg.details, status: seg.status, error: seg.error }
     case 'question':
       return {
         type: 'question',
@@ -921,6 +928,8 @@ function isAbortError(err: unknown): boolean {
 }
 
 async function loadConversation(convId: number) {
+  // Handoff notes belong to the conversation they came from.
+  handedOff.value = []
   const res = await aiApi.getMessages(convId)
   rawMessages.value = res.messages
   messages.value = reconstructDisplayMessages(res.messages)
@@ -1607,6 +1616,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
               </div>
               <p v-if="(item as ApprovalSegment).title" class="approval-summary">{{ (item as ApprovalSegment).command }}</p>
               <code v-else class="approval-command">{{ (item as ApprovalSegment).command }}</code>
+              <ApprovalDetails v-if="(item as ApprovalSegment).details?.length" :details="(item as ApprovalSegment).details!" />
               <div v-if="(item as ApprovalSegment).status === 'pending'" class="approval-actions">
                 <button class="approval-btn approve" @click="handleApproval(item as ApprovalSegment, true)">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1831,7 +1841,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
       :default-effort="thinkingEffort"
       @close="showHandoff = false"
       @created="handedOffTask"
-      @branch-changed="emit('branch-changed')"
+      @branch-changed="(kind) => emit('branch-changed', kind)"
     />
   </div>
 </template>

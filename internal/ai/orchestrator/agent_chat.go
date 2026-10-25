@@ -228,7 +228,17 @@ func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentCha
 		ToolName:       toolCall.Function.Name,
 		Arguments:      json.RawMessage(toolCall.Function.Arguments),
 	}
-	if gate, needed := o.approvalFor(ctx, execReq); needed {
+	gate, needed, err := o.approvalFor(ctx, execReq)
+	if err != nil {
+		// Without knowing whether the call needs approval it must not run.
+		return o.emitToolResult(ctx, domain.ToolResultPart{
+			ToolCallID: toolCall.ID,
+			Name:       toolCall.Function.Name,
+			Content:    "Error: could not check whether this action needs the user's approval, so it did not run. Try again later.",
+			IsError:    true,
+		}, turns, out)
+	}
+	if needed {
 		result, approved, ok := o.awaitApproval(ctx, req.UserID, gate, out)
 		if !ok {
 			return false
@@ -241,6 +251,7 @@ func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentCha
 				IsError:    true,
 			}, turns, out)
 		}
+		execReq.Approved = true
 	}
 
 	result := o.toolExecutor.ExecuteTool(ctx, execReq)
@@ -355,28 +366,35 @@ func (o *agentChatOrchestrator) emitToolResult(ctx context.Context, result domai
 type approvalGate struct {
 	title   string
 	command string
+	details []domain.ApprovalDetail
 	denied  string
 }
 
 // approvalFor reports whether a tool call must wait for the user: sudo
-// commands always do, and the executor's tools may ask for it too.
-func (o *agentChatOrchestrator) approvalFor(ctx context.Context, req aitools.ExecutionRequest) (approvalGate, bool) {
+// commands always do, and the executor's tools may ask for it too. An error
+// means it could not tell, and the call must not run.
+func (o *agentChatOrchestrator) approvalFor(ctx context.Context, req aitools.ExecutionRequest) (approvalGate, bool, error) {
 	if aitools.ToolCallNeedsSudoApproval(req.ToolName, string(req.Arguments)) {
 		return approvalGate{
 			command: aitools.CommandFromArgs(string(req.Arguments)),
 			denied:  "Command denied by user. The user rejected executing this sudo command.",
-		}, true
+		}, true, nil
 	}
 	if checker, ok := o.toolExecutor.(ApprovalChecker); ok {
-		if approval, needed := checker.ApprovalFor(ctx, req); needed {
+		approval, needed, err := checker.ApprovalFor(ctx, req)
+		if err != nil {
+			return approvalGate{}, false, err
+		}
+		if needed {
 			return approvalGate{
 				title:   approval.Title,
 				command: approval.Summary,
+				details: approval.Details,
 				denied:  "The user denied this action. Do not retry it unless the user asks you to.",
-			}, true
+			}, true, nil
 		}
 	}
-	return approvalGate{}, false
+	return approvalGate{}, false, nil
 }
 
 func (o *agentChatOrchestrator) awaitApproval(ctx context.Context, userID int64, gate approvalGate, out chan<- domain.ClientEvent) (string, bool, bool) {
@@ -385,6 +403,7 @@ func (o *agentChatOrchestrator) awaitApproval(ctx context.Context, userID int64,
 		return "Approval failed.", false, true
 	}
 	request.Title = gate.title
+	request.Details = gate.details
 
 	if !emitEvent(ctx, out, domain.ClientEvent{Approval: &request}) {
 		return "", false, false
@@ -426,6 +445,7 @@ func emitApprovalResult(ctx context.Context, out chan<- domain.ClientEvent, requ
 		ID:      request.ID,
 		Title:   request.Title,
 		Command: request.Command,
+		Details: request.Details,
 		Status:  status,
 	}})
 }

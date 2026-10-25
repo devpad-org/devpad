@@ -141,6 +141,17 @@ func (s *service) CheckoutProjectBranch(ctx context.Context, userID, workspaceID
 	return c.RepoCheckout(ctx, branch, bundle)
 }
 
+// ProjectBranchStatus compares a local branch of a project workspace with
+// its devpad/<branch> copy. The answer comes from the workspace, so it is
+// only fit for showing the user.
+func (s *service) ProjectBranchStatus(ctx context.Context, userID, workspaceID int64, branch string) (*agent.RepoBranchStatus, error) {
+	_, c, err := s.projectWorkspaceAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoBranchStatus(ctx, branch)
+}
+
 // BundleProjectBranch streams a bundle of a local branch of a project
 // workspace. The caller picks the branch and must treat the bundle as
 // untrusted, and must close it.

@@ -254,6 +254,17 @@ func handleRepoCompare(w http.ResponseWriter, r *http.Request) {
 		name, field string
 		sha         *string
 	}{{cmp.Base, "base", &cmp.BaseSHA}, {cmp.Head, "head", &cmp.HeadSHA}} {
+		// A full commit hash pins a side to an exact commit, such as the one a
+		// task's branch was seeded from.
+		if isFullHash(f.name) {
+			sha, err := resolveCommit(ctx, f.name, f.name, f.field)
+			if err != nil {
+				writeErr(w, http.StatusNotFound, "commit not found: "+f.name)
+				return
+			}
+			*f.sha = sha
+			continue
+		}
 		if err := validateBranchName(ctx, f.name, f.field); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return

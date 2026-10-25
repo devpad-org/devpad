@@ -131,17 +131,39 @@ type StreamToolResultDTO struct {
 
 // ApprovalRequestDTO asks the client to approve a command.
 type ApprovalRequestDTO struct {
-	ID      string `json:"id"`
-	Title   string `json:"title,omitempty"`
-	Command string `json:"command"`
+	ID      string              `json:"id"`
+	Title   string              `json:"title,omitempty"`
+	Command string              `json:"command"`
+	Details []ApprovalDetailDTO `json:"details,omitempty"`
 }
 
 // ApprovalResultDTO reports the outcome of a previous approval request.
 type ApprovalResultDTO struct {
-	ID      string `json:"id"`
-	Title   string `json:"title,omitempty"`
-	Command string `json:"command"`
-	Status  string `json:"status"`
+	ID      string              `json:"id"`
+	Title   string              `json:"title,omitempty"`
+	Command string              `json:"command"`
+	Details []ApprovalDetailDTO `json:"details,omitempty"`
+	Status  string              `json:"status"`
+}
+
+// ApprovalDetailDTO is one fact about an action awaiting approval. Text
+// marks a value the model wrote, to be shown verbatim and set apart.
+type ApprovalDetailDTO struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+	Text  bool   `json:"text,omitempty"`
+}
+
+// FromApprovalDetails converts approval details for the client.
+func FromApprovalDetails(details []domain.ApprovalDetail) []ApprovalDetailDTO {
+	if len(details) == 0 {
+		return nil
+	}
+	out := make([]ApprovalDetailDTO, len(details))
+	for i, d := range details {
+		out[i] = ApprovalDetailDTO{Label: d.Label, Value: d.Value, Text: d.Text}
+	}
+	return out
 }
 
 // QuestionRequestDTO asks the frontend to collect answers from the user.
@@ -363,6 +385,7 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 			ID:      event.Approval.ID,
 			Title:   event.Approval.Title,
 			Command: event.Approval.Command,
+			Details: FromApprovalDetails(event.Approval.Details),
 		}
 	}
 	if event.ApprovalResult != nil {
@@ -370,6 +393,7 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 			ID:      event.ApprovalResult.ID,
 			Title:   event.ApprovalResult.Title,
 			Command: event.ApprovalResult.Command,
+			Details: FromApprovalDetails(event.ApprovalResult.Details),
 			Status:  event.ApprovalResult.Status,
 		}
 	}

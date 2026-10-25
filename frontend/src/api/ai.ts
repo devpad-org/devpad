@@ -109,11 +109,20 @@ export interface ToolResult {
 
 // A tool call waiting for the user's approval. Without a title, command is a
 // sudo shell command; with one, command describes the action, such as
-// starting a background agent.
+// starting a background agent, in the server's own words.
 export interface ApprovalRequest {
   id: string
   title?: string
   command: string
+  details?: ApprovalDetail[]
+}
+
+// One fact about an action awaiting approval. Text marks a value the model
+// wrote, such as a task's instructions, shown verbatim and set apart.
+export interface ApprovalDetail {
+  label: string
+  value: string
+  text?: boolean
 }
 
 export interface AttentionItem {
@@ -126,6 +135,7 @@ export interface ApprovalResult {
   id: string
   title?: string
   command: string
+  details?: ApprovalDetail[]
   status: 'approved' | 'denied' | 'expired' | 'failed'
 }
 

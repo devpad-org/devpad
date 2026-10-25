@@ -371,6 +371,22 @@ func (h *Handler) HandleCheckoutWorkspaceBranch(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, result)
 }
 
+// HandleWorkspaceBranchStatus compares a branch of the project workspace
+// with the project's.
+func (h *Handler) HandleWorkspaceBranchStatus(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	status, err := h.service.WorkspaceBranchStatus(r.Context(), user.ID, id, r.URL.Query().Get("branch"))
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
 // HandlePublishWorkspaceBranch copies a branch of the project workspace into
 // the canonical repo.
 func (h *Handler) HandlePublishWorkspaceBranch(w http.ResponseWriter, r *http.Request) {

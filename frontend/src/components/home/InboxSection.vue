@@ -7,6 +7,7 @@ import { useProjectStore } from '@/stores/projects'
 import { useWorkspaceStore } from '@/stores/workspaces'
 import { BOARD_TAB, mergeRequestTab } from '@/components/ide/viewTabs'
 import AiQuestionCard from '@/components/ide/AiQuestionCard.vue'
+import ApprovalDetails from '@/components/ide/ApprovalDetails.vue'
 
 // Agents waiting for the user, across every project and workspace. Each item
 // can be answered in place, and links to where its work lives.
@@ -132,6 +133,7 @@ function questionError(item: AttentionItem, message: string) {
       <template v-if="item.approval">
         <p v-if="item.approval.title" class="approval-summary">{{ item.approval.command }}</p>
         <pre v-else class="command">{{ item.approval.command }}</pre>
+        <ApprovalDetails v-if="item.approval.details?.length" :details="item.approval.details" />
         <div class="item-actions">
           <button class="btn btn-secondary" :disabled="busy === itemKey(item)" @click="decide(item, false)">Deny</button>
           <button class="btn btn-primary" :disabled="busy === itemKey(item)" @click="decide(item, true)">Approve</button>

@@ -66,6 +66,21 @@ export interface BranchResult {
   sha: string
 }
 
+// How a branch of the project workspace compares with the project's.
+export interface WorkspaceBranchStatus {
+  branch: string
+  // Whether the project has the branch at all.
+  published: boolean
+  sha: string
+  canonicalSha?: string
+  // Local commits the project lacks, and the project's commits the local
+  // branch lacks.
+  ahead: number
+  behind: number
+  // An agent's sandbox owns the branch, so the workspace can't publish to it.
+  sandboxOwned: boolean
+}
+
 export interface CheckoutResult {
   branch: string
   // The local branch's commit; it differs from upstreamSha when an existing
@@ -301,6 +316,12 @@ export const projectApi = {
   // Refreshes devpad/<default branch> in the project workspace.
   syncWorkspace(id: number): Promise<BranchResult> {
     return apiClient.post(`/api/projects/${id}/workspace/sync`, {})
+  },
+
+  // Compares a branch of the project workspace with the project's, after
+  // refreshing the workspace's copy of the project's branch.
+  workspaceBranchStatus(id: number, branch: string): Promise<WorkspaceBranchStatus> {
+    return apiClient.get(`/api/projects/${id}/workspace/branch-status?branch=${encodeURIComponent(branch)}`)
   },
 
   // Lists the repos in a standalone workspace that could become a project.

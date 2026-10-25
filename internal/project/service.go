@@ -44,6 +44,7 @@ type Service interface {
 	CheckoutWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoCheckout, error)
 	PublishWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error)
 	SyncWorkspaceBase(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
+	WorkspaceBranchStatus(ctx context.Context, userID, projectID int64, branch string) (*WorkspaceBranchStatus, error)
 	// DiscoverConversion lists what a standalone workspace holds that could
 	// become a project.
 	DiscoverConversion(ctx context.Context, userID, workspaceID int64) (*agent.RepoDiscovery, error)
@@ -670,6 +671,8 @@ func (s *service) PublishSandbox(ctx context.Context, userID, projectID, workspa
 }
 
 // Compare reports how far head has diverged from base in the canonical repo.
+// Each is a branch name or a full commit hash; base defaults to the default
+// branch.
 func (s *service) Compare(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoComparison, error) {
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
@@ -678,8 +681,8 @@ func (s *service) Compare(ctx context.Context, userID, projectID int64, base, he
 	if base == "" {
 		base = p.DefaultBranch
 	}
-	if !validBranchName(base) || !validBranchName(head) {
-		return nil, invalid("base and head must be valid branch names")
+	if !validRev(base) || !validRev(head) {
+		return nil, invalid("base and head must be branch names or commit hashes")
 	}
 	c, err := s.repoAgent(ctx, p)
 	if err != nil {

@@ -297,6 +297,31 @@ func (c *Client) RepoCheckout(ctx context.Context, branch string, bundle io.Read
 	return &result, nil
 }
 
+// RepoBranchStatus compares a project workspace's local branch with its
+// devpad/<branch> copy of the project's branch.
+type RepoBranchStatus struct {
+	Branch      string `json:"branch"`
+	SHA         string `json:"sha"`
+	UpstreamSHA string `json:"upstreamSha,omitempty"`
+	Ahead       int    `json:"ahead"`
+	Behind      int    `json:"behind"`
+}
+
+// RepoBranchStatus reads how a local branch of a project workspace compares
+// with the project's copy as of the workspace's last fetch.
+func (c *Client) RepoBranchStatus(ctx context.Context, branch string) (*RepoBranchStatus, error) {
+	u := fmt.Sprintf("%s/api/repo/branch-status?branch=%s", c.baseURL, url.QueryEscape(branch))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	var result RepoBranchStatus
+	if err := c.doRepoJSON(req, "repo branch status", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (c *Client) doRepoJSON(req *http.Request, op string, out any) error {
 	resp, err := c.do(req)
 	if err != nil {
