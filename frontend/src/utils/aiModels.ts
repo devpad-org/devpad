@@ -6,6 +6,10 @@ export const DEFAULT_AI_MODEL_ID = 'mistral-medium-3-5'
 export const CODING_AGENT_ID = 'default'
 export const REVIEW_AGENT_ID = 'review'
 
+export function isBuiltInAgentId(agentId: string): boolean {
+  return agentId === CODING_AGENT_ID || agentId === REVIEW_AGENT_ID
+}
+
 // The model to start on: the agent's admin-set default when it can be used,
 // otherwise devpad's own.
 export function defaultAIModel(availableModels: AIModel[], agentDefaults?: AgentDefaults): AIModel | undefined {

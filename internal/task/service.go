@@ -88,6 +88,12 @@ type Conversations interface {
 	GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error)
 }
 
+// AgentDefaults looks up the model and effort an admin set for a built-in
+// agent, or nil when it has none a run could use.
+type AgentDefaults interface {
+	DefaultsFor(ctx context.Context, agentID string) (*domain.AgentDefaults, error)
+}
+
 const (
 	// cancelWait bounds how long Cancel and Delete wait for a cancelled run
 	// to stop before removing its sandbox.
@@ -103,6 +109,7 @@ type service struct {
 	projects      Projects
 	workspaces    Workspaces
 	runs          Runs
+	defaults      AgentDefaults
 	conversations Conversations
 
 	rootCtx    context.Context
@@ -119,13 +126,14 @@ type service struct {
 }
 
 // NewService creates a task Service. Background work stops on Shutdown.
-func NewService(repo Repository, projects Projects, workspaces Workspaces, runs Runs, conversations Conversations) Service {
+func NewService(repo Repository, projects Projects, workspaces Workspaces, runs Runs, conversations Conversations, defaults AgentDefaults) Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &service{
 		repo:          repo,
 		projects:      projects,
 		workspaces:    workspaces,
 		runs:          runs,
+		defaults:      defaults,
 		conversations: conversations,
 		rootCtx:       ctx,
 		rootCancel:    cancel,
@@ -151,6 +159,25 @@ func (s *service) SetReviewHook(h ReviewHook) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reviewHook = h
+}
+
+// withDefaults fills in the model an admin set for the agent when none was
+// picked, with its effort unless one was.
+func (s *service) withDefaults(ctx context.Context, settings AgentSettings) (AgentSettings, error) {
+	if settings.Model != "" {
+		return settings, nil
+	}
+	d, err := s.defaults.DefaultsFor(ctx, settings.AgentID)
+	if err != nil {
+		return settings, fmt.Errorf("looking up the agent's default model: %w", err)
+	}
+	if d != nil {
+		settings.Model = d.Model
+		if settings.Effort == "" {
+			settings.Effort = d.Effort
+		}
+	}
+	return settings, nil
 }
 
 func invalid(format string, args ...any) error {
@@ -222,7 +249,11 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 		if p.Status != project.StatusReady {
 			return nil, project.ErrNotReady
 		}
-		if strings.TrimSpace(in.Model) == "" {
+		in.Model = strings.TrimSpace(in.Model)
+		if in.AgentSettings, err = s.withDefaults(ctx, in.AgentSettings); err != nil {
+			return nil, err
+		}
+		if in.Model == "" {
 			return nil, invalid("model is required")
 		}
 	}
@@ -377,6 +408,11 @@ func (s *service) start(ctx context.Context, t *Task, in StartInput) (*Task, err
 	if in.Effort != "" {
 		t.Effort = in.Effort
 	}
+	settings, err := s.withDefaults(ctx, AgentSettings{AgentID: t.AgentID, Model: t.Model, Effort: t.Effort})
+	if err != nil {
+		return nil, err
+	}
+	t.Model, t.Effort = settings.Model, settings.Effort
 	if t.Model == "" {
 		return nil, invalid("model is required")
 	}

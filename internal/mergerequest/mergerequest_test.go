@@ -284,9 +284,23 @@ type env struct {
 	workspaces *fakeWorkspaces
 	tasks      *fakeTasks
 	runs       *fakeRuns
+	defaults   fakeDefaults
 	owner      int64
 	stranger   int64
 	taskID     int64
+}
+
+// fakeDefaults is the admin's agent defaults, keyed by agent ID.
+type fakeDefaults map[string]domain.AgentDefaults
+
+func (f fakeDefaults) DefaultsFor(_ context.Context, agentID string) (*domain.AgentDefaults, error) {
+	if agentID == "" {
+		agentID = domain.DefaultAgentID
+	}
+	if d, ok := f[agentID]; ok {
+		return &d, nil
+	}
+	return nil, nil
 }
 
 func setup(t *testing.T) *env {
@@ -320,11 +334,12 @@ func setup(t *testing.T) *env {
 		workspaces: &fakeWorkspaces{db: conn},
 		tasks:      &fakeTasks{tasks: map[int64]*task.Task{taskID: {ID: taskID, ProjectID: projectID, UserID: owner, Title: "Add a cart", Body: "Users need a cart.", Status: task.StatusInReview, Branch: "task/1", Model: "claude-opus-5-5", Effort: "high"}}},
 		runs:       &fakeRuns{db: conn},
+		defaults:   fakeDefaults{},
 		owner:      owner,
 		stranger:   stranger,
 		taskID:     taskID,
 	}
-	e.svc = NewService(NewRepository(conn), e.projects, e.workspaces, e.tasks, e.runs, fakeConversations{conn}).(*service)
+	e.svc = NewService(NewRepository(conn), e.projects, e.workspaces, e.tasks, e.runs, fakeConversations{conn}, e.defaults).(*service)
 	e.runs.onFinish = e.svc.RunFinished
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -876,5 +891,35 @@ func TestReviewPromptSaysTheEnvironmentWasStillBuilding(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+// A review without a picked model runs the one the admin set for the review
+// agent rather than the task's.
+func TestAgentReviewUsesTheReviewAgentsDefaults(t *testing.T) {
+	e := setup(t)
+	e.defaults[domain.ReviewAgentID] = domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: "admin-review", Effort: "medium"}
+	mr := e.openTaskMR(t)
+
+	rv, err := e.svc.StartAgentReview(context.Background(), e.owner, e.pid(), mr.ID, AgentReviewInput{})
+	if err != nil {
+		t.Fatalf("start agent review: %v", err)
+	}
+	if rv.AgentID != domain.ReviewAgentID || rv.Model != "admin-review" || rv.Effort != "medium" {
+		t.Fatalf("expected the review agent on the admin's model, got %+v", rv)
+	}
+}
+
+func TestAgentReviewKeepsAPickedModel(t *testing.T) {
+	e := setup(t)
+	e.defaults[domain.ReviewAgentID] = domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: "admin-review", Effort: "medium"}
+	mr := e.openTaskMR(t)
+
+	rv, err := e.svc.StartAgentReview(context.Background(), e.owner, e.pid(), mr.ID, AgentReviewInput{Model: "picked", Effort: "low"})
+	if err != nil {
+		t.Fatalf("start agent review: %v", err)
+	}
+	if rv.Model != "picked" || rv.Effort != "low" {
+		t.Fatalf("expected the picked model, got %+v", rv)
 	}
 }

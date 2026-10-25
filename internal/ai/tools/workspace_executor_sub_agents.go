@@ -82,16 +82,31 @@ func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequ
 		return toolFailure("spawn_sub_agent", "Error: prompt is required")
 	}
 
-	model, _ := params["model"].(string)
-	model = strings.TrimSpace(model)
-	if model == "" {
-		model = req.Model
-	}
-
 	agentID, _ := params["agent_id"].(string)
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
 		agentID = domain.DefaultAgentID
+	}
+
+	// A child without a model runs the one the admin set for its agent, with
+	// that effort, else the parent's model and thinking.
+	model, _ := params["model"].(string)
+	model = strings.TrimSpace(model)
+	thinking := cloneThinking(req.Thinking)
+	if model == "" && e.defaults != nil {
+		d, err := e.defaults.DefaultsFor(ctx, agentID)
+		if err != nil {
+			return toolFailure("spawn_sub_agent", "Error: looking up the agent's default model: %v", err)
+		}
+		if d != nil {
+			model, thinking = d.Model, nil
+			if d.Effort != "" {
+				thinking = &domain.ThinkingConfig{Effort: d.Effort}
+			}
+		}
+	}
+	if model == "" {
+		model = req.Model
 	}
 
 	child, err := e.childRunner.StartChildAgentRun(ctx, ChildAgentRunRequest{
@@ -102,7 +117,7 @@ func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequ
 		AgentID:        agentID,
 		Model:          model,
 		Prompt:         prompt,
-		Thinking:       cloneThinking(req.Thinking),
+		Thinking:       thinking,
 	})
 	if err != nil {
 		return toolFailure("spawn_sub_agent", "Error: %v", err)

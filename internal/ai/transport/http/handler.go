@@ -59,10 +59,12 @@ func (h *Handler) HandleListModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list models")
 		return
 	}
+	// Pickers fall back to devpad's own defaults, so models still list
+	// without the admin's.
 	defaults, err := h.defaults.ListAgentDefaults(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list agent defaults")
-		return
+		log.Printf("listing agent defaults: %v", err)
+		defaults = map[string]domain.AgentDefaults{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": models, "agentDefaults": defaults})
 }

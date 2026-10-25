@@ -506,6 +506,20 @@ type env struct {
 	sandboxes *fakeSandboxes
 	runs      *fakeRuns
 	convs     *fakeConversations
+	defaults  fakeDefaults
+}
+
+// fakeDefaults is the admin's agent defaults, keyed by agent ID.
+type fakeDefaults map[string]domain.AgentDefaults
+
+func (f fakeDefaults) DefaultsFor(_ context.Context, agentID string) (*domain.AgentDefaults, error) {
+	if agentID == "" {
+		agentID = domain.DefaultAgentID
+	}
+	if d, ok := f[agentID]; ok {
+		return &d, nil
+	}
+	return nil, nil
 }
 
 const owner, stranger = int64(1), int64(2)
@@ -517,8 +531,9 @@ func setup(t *testing.T) *env {
 		sandboxes: newFakeSandboxes(owner),
 		runs:      newFakeRuns(),
 		convs:     &fakeConversations{turns: map[int64][]domain.Turn{}, convs: map[int64]domain.Conversation{}},
+		defaults:  fakeDefaults{},
 	}
-	e.svc = NewService(e.repo, e.sandboxes, workspaceLifecycle{e.sandboxes}, e.runs, e.convs).(*service)
+	e.svc = NewService(e.repo, e.sandboxes, workspaceLifecycle{e.sandboxes}, e.runs, e.convs, e.defaults).(*service)
 	e.runs.onFinish = e.svc.RunFinished
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -945,6 +960,51 @@ func TestQueuedTaskCanBeCancelled(t *testing.T) {
 	}
 	if len(e.runs.snapshot().cancelled) != 0 {
 		t.Fatal("cancelling a queued task must not touch other runs")
+	}
+}
+
+func TestStartUsesTheAgentsDefaultsUnlessAModelIsPicked(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.defaults[domain.DefaultAgentID] = domain.AgentDefaults{AgentID: domain.DefaultAgentID, Model: "admin-model", Effort: "low"}
+
+	defaulted, err := e.svc.Create(ctx, owner, 1, CreateInput{Title: "defaulted", Start: true})
+	if err != nil {
+		t.Fatalf("create with the default: %v", err)
+	}
+	if defaulted.Model != "admin-model" || defaulted.Effort != "low" {
+		t.Fatalf("expected the admin's model and effort, got %q/%q", defaulted.Model, defaulted.Effort)
+	}
+	picked, err := e.svc.Create(ctx, owner, 1, CreateInput{Title: "picked", Start: true, AgentSettings: AgentSettings{Model: "picked-model"}})
+	if err != nil {
+		t.Fatalf("create with a picked model: %v", err)
+	}
+	if picked.Model != "picked-model" || picked.Effort != "" {
+		t.Fatalf("expected the picked model alone, got %q/%q", picked.Model, picked.Effort)
+	}
+
+	later, err := e.svc.Create(ctx, owner, 1, CreateInput{Title: "later"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if later.Model != "" {
+		t.Fatalf("a task not started should keep no model, got %q", later.Model)
+	}
+	started, err := e.svc.Start(ctx, owner, 1, later.ID, StartInput{AgentSettings: AgentSettings{Effort: "high"}})
+	if err != nil {
+		t.Fatalf("start with the default: %v", err)
+	}
+	if started.Model != "admin-model" || started.Effort != "high" {
+		t.Fatalf("expected the admin's model with the picked effort, got %q/%q", started.Model, started.Effort)
+	}
+
+	// A custom agent has no defaults, so it still needs a model.
+	custom, err := e.svc.Create(ctx, owner, 1, CreateInput{Title: "custom", AgentSettings: AgentSettings{AgentID: "7"}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := e.svc.Start(ctx, owner, 1, custom.ID, StartInput{}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for a custom agent without a model, got %v", err)
 	}
 }
 

@@ -126,12 +126,12 @@ func New(cfg Config) (*Server, error) {
 	aiModule := ai.NewModule(db.Conn(), workspaceService)
 
 	// Task layer (agents implementing tasks in project sandboxes)
-	taskService := task.NewService(task.NewRepository(db.Conn()), projectService, workspaceService, aiModule.AgentRunService, aiModule.ConversationService)
+	taskService := task.NewService(task.NewRepository(db.Conn()), projectService, workspaceService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults)
 	aiModule.OnAgentRunFinished(taskService.RunFinished)
 	taskHandler := task.NewHandler(taskService)
 
 	// Merge request layer (reviews by users and review agents, and merging)
-	mrService := mergerequest.NewService(mergerequest.NewRepository(db.Conn()), projectService, workspaceService, taskService, aiModule.AgentRunService, aiModule.ConversationService)
+	mrService := mergerequest.NewService(mergerequest.NewRepository(db.Conn()), projectService, workspaceService, taskService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults)
 	taskService.SetReviewHook(mrService)
 	projectService.SetPublishHook(mrService)
 	aiModule.OnAgentRunFinished(mrService.RunFinished)
@@ -150,7 +150,7 @@ func New(cfg Config) (*Server, error) {
 
 	// The assistant in a project's workspace sees the board and hands work to
 	// task agents.
-	aiModule.AddToolProvider(projecttools.NewProvider(workspaceService, projectService, taskService, mrService))
+	aiModule.AddToolProvider(projecttools.NewProvider(workspaceService, projectService, taskService, mrService, aiModule.AgentDefaults))
 
 	if err := projectService.Reconcile(context.Background()); err != nil {
 		log.Printf("finishing interrupted workspace conversions: %v", err)

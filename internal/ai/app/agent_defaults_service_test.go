@@ -30,22 +30,40 @@ func (r *memoryAgentDefaultsRepo) DeleteAgentDefaults(_ context.Context, agentID
 	return nil
 }
 
-type stubModelFinder map[string]domain.Model
+// stubModelCatalog offers its models; only the configured ones can run.
+type stubModelCatalog struct {
+	models     map[string]domain.Model
+	configured map[string]bool
+}
 
-func (f stubModelFinder) FindModel(id string) (domain.Model, error) {
-	if model, ok := f[id]; ok {
+func (c stubModelCatalog) FindModel(id string) (domain.Model, error) {
+	if model, ok := c.models[id]; ok {
 		return model, nil
 	}
 	return domain.Model{}, domain.ErrModelNotFound
 }
 
+func (c stubModelCatalog) ResolveChatTarget(_ context.Context, id string) (ResolvedTarget, error) {
+	model, err := c.FindModel(id)
+	if err != nil {
+		return ResolvedTarget{}, err
+	}
+	if !c.configured[id] {
+		return ResolvedTarget{}, domain.ErrNoAPIKey
+	}
+	return ResolvedTarget{Model: model}, nil
+}
+
 func newTestAgentDefaultsService() (*memoryAgentDefaultsRepo, AgentDefaultsService) {
 	repo := &memoryAgentDefaultsRepo{defaults: map[string]domain.AgentDefaults{}}
-	models := stubModelFinder{
-		"thinker": {ID: "thinker", Thinking: domain.ThinkingCapability{Supported: true, SupportedEfforts: []string{"low", "high"}}},
-		"plain":   {ID: "plain"},
+	catalog := stubModelCatalog{
+		models: map[string]domain.Model{
+			"thinker": {ID: "thinker", Thinking: domain.ThinkingCapability{Supported: true, SupportedEfforts: []string{"low", "high"}}},
+			"plain":   {ID: "plain"},
+		},
+		configured: map[string]bool{"thinker": true},
 	}
-	return repo, NewAgentDefaultsService(repo, models)
+	return repo, NewAgentDefaultsService(repo, catalog)
 }
 
 func TestAgentDefaultsServiceSetsAndClearsDefaults(t *testing.T) {
@@ -99,19 +117,43 @@ func TestAgentDefaultsServiceRejectsInvalidDefaults(t *testing.T) {
 	}
 }
 
-// Defaults devpad can no longer honor, like a model a provider dropped, are
-// left out so the pickers fall back to devpad's own default.
+// A default naming a model devpad no longer offers, or an agent no longer
+// built in, is left out. One whose effort the model dropped keeps its model
+// with the model's default effort.
 func TestAgentDefaultsServiceSkipsStaleDefaults(t *testing.T) {
 	repo, service := newTestAgentDefaultsService()
 	repo.defaults[domain.CodingAgentID] = domain.AgentDefaults{AgentID: domain.CodingAgentID, Model: "retired"}
-	repo.defaults[domain.ReviewAgentID] = domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: "plain"}
+	repo.defaults[domain.ReviewAgentID] = domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: "thinker", Effort: "xhigh"}
 	repo.defaults["gone"] = domain.AgentDefaults{AgentID: "gone", Model: "plain"}
 
 	listed, err := service.ListAgentDefaults(context.Background())
 	if err != nil {
 		t.Fatalf("list defaults: %v", err)
 	}
-	if len(listed) != 1 || listed[domain.ReviewAgentID].Model != "plain" {
-		t.Fatalf("expected only the review defaults, got %+v", listed)
+	want := domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: "thinker"}
+	if len(listed) != 1 || listed[domain.ReviewAgentID] != want {
+		t.Fatalf("expected only the review defaults without their effort, got %+v", listed)
+	}
+}
+
+// Runs only get a default they can use, so one whose provider is not
+// configured is none at all.
+func TestAgentDefaultsServiceDefaultsForSkipsUnconfiguredModels(t *testing.T) {
+	repo, service := newTestAgentDefaultsService()
+	ctx := context.Background()
+	repo.defaults[domain.CodingAgentID] = domain.AgentDefaults{AgentID: domain.CodingAgentID, Model: "thinker", Effort: "low"}
+	repo.defaults[domain.ReviewAgentID] = domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: "plain"}
+
+	got, err := service.DefaultsFor(ctx, "")
+	if err != nil {
+		t.Fatalf("defaults for the default agent: %v", err)
+	}
+	if got == nil || got.Model != "thinker" || got.Effort != "low" {
+		t.Fatalf("expected the coding agent's defaults for an empty agent ID, got %+v", got)
+	}
+	for _, agentID := range []string{domain.ReviewAgentID, "7"} {
+		if got, err := service.DefaultsFor(ctx, agentID); err != nil || got != nil {
+			t.Fatalf("%s: expected no usable defaults, got %+v, %v", agentID, got, err)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -439,11 +440,16 @@ func TestHandleListAttention_ReturnsPendingPrompts(t *testing.T) {
 
 type stubAgentDefaultsService struct {
 	defaults map[string]domain.AgentDefaults
+	listErr  error
 	setFn    func(domain.AgentDefaults) (*domain.AgentDefaults, error)
 }
 
 func (s stubAgentDefaultsService) ListAgentDefaults(context.Context) (map[string]domain.AgentDefaults, error) {
-	return s.defaults, nil
+	return s.defaults, s.listErr
+}
+
+func (s stubAgentDefaultsService) DefaultsFor(context.Context, string) (*domain.AgentDefaults, error) {
+	return nil, nil
 }
 
 func (s stubAgentDefaultsService) SetAgentDefaults(_ context.Context, d domain.AgentDefaults) (*domain.AgentDefaults, error) {
@@ -524,5 +530,20 @@ func TestHandleSetAgentDefaults(t *testing.T) {
 				t.Fatalf("expected %d, got %d: %s", tt.want, w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// Losing the admin's defaults must not take the model list down with them.
+func TestHandleListModels_ListsModelsWhenDefaultsFail(t *testing.T) {
+	h := &Handler{catalog: stubCatalogService{}, defaults: stubAgentDefaultsService{listErr: errors.New("disk I/O error")}}
+	w := httptest.NewRecorder()
+
+	h.HandleListModels(w, httptest.NewRequest(http.MethodGet, "/api/ai/models", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `"agentDefaults":{}`) {
+		t.Fatalf("expected empty defaults, got %s", w.Body.String())
 	}
 }

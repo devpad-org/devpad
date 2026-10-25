@@ -658,7 +658,7 @@ function isSelf(user: AdminUser): boolean {
       <div class="admin-header">
         <div>
           <h1 class="admin-title">AI Agent Defaults</h1>
-          <p class="admin-subtitle">The model and reasoning effort each built-in agent starts on. Users can still pick another when they start one.</p>
+          <p class="admin-subtitle">The model and reasoning effort each built-in agent runs with unless whoever starts it picks another, including agents started by other agents.</p>
         </div>
       </div>
 

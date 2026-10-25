@@ -38,6 +38,7 @@ type WorkspaceExecutor struct {
 	ws          WorkspaceOps
 	childRunner ChildAgentRunner
 	agentLister AgentLister
+	defaults    AgentDefaults
 	summarizer  FileSummarizer
 
 	providersMu sync.RWMutex
@@ -57,6 +58,12 @@ func (e *WorkspaceExecutor) SetChildAgentRunner(runner ChildAgentRunner) {
 // SetAgentLister wires the agent catalog exposed to coordination tools.
 func (e *WorkspaceExecutor) SetAgentLister(lister AgentLister) {
 	e.agentLister = lister
+}
+
+// SetAgentDefaults wires the admin's agent defaults, which child runs use
+// when spawn_sub_agent names no model.
+func (e *WorkspaceExecutor) SetAgentDefaults(defaults AgentDefaults) {
+	e.defaults = defaults
 }
 
 // AddProvider routes calls for a provider's workspace-specific tools.

@@ -26,6 +26,7 @@ import (
 type Module struct {
 	CatalogService      app.CatalogService
 	AgentService        app.AgentService
+	AgentDefaults       app.AgentDefaultsService
 	ChatService         app.ChatService
 	AgentRunService     app.AgentRunService
 	ConversationService app.ConversationService
@@ -66,10 +67,12 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService)
 	toolExecutor.SetChildAgentRunner(childAgentRunStarter{runs: agentRunService})
 	toolExecutor.SetAgentLister(agentService)
+	toolExecutor.SetAgentDefaults(agentDefaultsService)
 
 	return &Module{
 		CatalogService:      catalogService,
 		AgentService:        agentService,
+		AgentDefaults:       agentDefaultsService,
 		ChatService:         chatService,
 		AgentRunService:     agentRunService,
 		ConversationService: conversationService,

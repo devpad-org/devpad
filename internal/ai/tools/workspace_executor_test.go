@@ -561,6 +561,51 @@ func TestWorkspaceExecutor_SpawnSubAgentStartsChildRun(t *testing.T) {
 	}
 }
 
+type stubAgentDefaults map[string]domain.AgentDefaults
+
+func (s stubAgentDefaults) DefaultsFor(_ context.Context, agentID string) (*domain.AgentDefaults, error) {
+	if d, ok := s[agentID]; ok {
+		return &d, nil
+	}
+	return nil, nil
+}
+
+// A child without a model runs the admin's default for its agent with that
+// effort, not the parent's thinking; a picked model keeps the parent's.
+func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
+	var got []ChildAgentRunRequest
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetAgentDefaults(stubAgentDefaults{domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "admin-review", Effort: "low"}})
+	executor.SetChildAgentRunner(stubChildAgentRunner{startFn: func(_ context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error) {
+		got = append(got, req)
+		return &ChildAgentRun{ID: int64(len(got)), AgentID: req.AgentID, Model: req.Model, Status: "queued"}, nil
+	}})
+
+	for _, args := range []string{
+		`{"prompt":"review","agent_id":"review"}`,
+		`{"prompt":"review","agent_id":"review","model":"picked"}`,
+		`{"prompt":"code"}`,
+	} {
+		req := toolReq(7, 9, "spawn_sub_agent", []byte(args))
+		req.CurrentRunID = 101
+		req.Model = "parent-model"
+		req.Thinking = &domain.ThinkingConfig{Effort: "max"}
+		if result := executor.ExecuteTool(context.Background(), req); result.IsError {
+			t.Fatalf("%s: expected spawn success, got %+v", args, result)
+		}
+	}
+
+	if got[0].Model != "admin-review" || got[0].Thinking == nil || got[0].Thinking.Effort != "low" {
+		t.Errorf("expected the review agent's defaults, got %+v %+v", got[0], got[0].Thinking)
+	}
+	if got[1].Model != "picked" || got[1].Thinking == nil || got[1].Thinking.Effort != "max" {
+		t.Errorf("expected the picked model with the parent's thinking, got %+v %+v", got[1], got[1].Thinking)
+	}
+	if got[2].Model != "parent-model" {
+		t.Errorf("expected the parent's model for an agent without defaults, got %+v", got[2])
+	}
+}
+
 func TestWorkspaceExecutor_ListAvailableAgentsReturnsScopedCatalog(t *testing.T) {
 	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
 	executor.SetAgentLister(stubAgentLister{listFn: func(_ context.Context, userID, workspaceID int64) ([]domain.Agent, error) {

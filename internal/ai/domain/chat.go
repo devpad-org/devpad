@@ -70,8 +70,13 @@ func validateThinkingEffort(model Model, thinking *ThinkingConfig) error {
 	if thinking == nil {
 		return nil
 	}
+	return ValidateThinkingEffort(model, thinking.Effort)
+}
 
-	effort := strings.TrimSpace(thinking.Effort)
+// ValidateThinkingEffort checks that the model supports the effort. An empty
+// effort, meaning the model's default, is always valid.
+func ValidateThinkingEffort(model Model, effort string) error {
+	effort = strings.TrimSpace(effort)
 	if effort == "" {
 		return nil
 	}

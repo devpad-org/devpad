@@ -75,7 +75,7 @@ var definitions = []domain.ToolDefinition{
 		Function: domain.ToolFunction{
 			Name:        createTaskTool,
 			Description: "Add a task to the project's board. With start=true a background agent starts on it in its own sandbox, which needs the user's approval. Write the body as complete instructions: the agent sees only the task, not this conversation.",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"title":{"type":"string","description":"A short title."},"body":{"type":"string","description":"What to do and why, in Markdown, with everything the agent needs."},"start":{"type":"boolean","description":"Start a background agent on the task now. Defaults to false."},"base_branch":{"type":"string","description":"Optional project branch to start from instead of the default branch. It must already be published to the project."},"agent_id":{"type":"string","description":"Optional agent id. Defaults to the built-in coding agent."},"model":{"type":"string","description":"Optional model id. Defaults to the current model."},"effort":{"type":"string","description":"Optional thinking effort, such as low, medium or high."}},"required":["title","body"]}`),
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"title":{"type":"string","description":"A short title."},"body":{"type":"string","description":"What to do and why, in Markdown, with everything the agent needs."},"start":{"type":"boolean","description":"Start a background agent on the task now. Defaults to false."},"base_branch":{"type":"string","description":"Optional project branch to start from instead of the default branch. It must already be published to the project."},"agent_id":{"type":"string","description":"Optional agent id. Defaults to the built-in coding agent."},"model":{"type":"string","description":"Optional model id. Defaults to the model the admin set for the agent, else the current model."},"effort":{"type":"string","description":"Optional thinking effort, such as low, medium or high."}},"required":["title","body"]}`),
 		},
 	},
 	{
@@ -83,7 +83,7 @@ var definitions = []domain.ToolDefinition{
 		Function: domain.ToolFunction{
 			Name:        startTaskTool,
 			Description: "Start a background agent on a task that is to do, failed, or waiting for changes. Needs the user's approval.",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"integer","minimum":1},"message":{"type":"string","description":"Optional extra instructions for the agent."},"agent_id":{"type":"string"},"model":{"type":"string","description":"Optional model id. Defaults to the task's model, then the current model."},"effort":{"type":"string"}},"required":["task_id"]}`),
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"integer","minimum":1},"message":{"type":"string","description":"Optional extra instructions for the agent."},"agent_id":{"type":"string"},"model":{"type":"string","description":"Optional model id. Defaults to the task's model, then the model the admin set for the agent, then the current model."},"effort":{"type":"string"}},"required":["task_id"]}`),
 		},
 	},
 	{
@@ -123,6 +123,12 @@ type Projects interface {
 	Get(ctx context.Context, userID, projectID int64) (*project.Project, error)
 }
 
+// AgentDefaults looks up the model and effort an admin set for a built-in
+// agent, or nil when it has none a run could use.
+type AgentDefaults interface {
+	DefaultsFor(ctx context.Context, agentID string) (*domain.AgentDefaults, error)
+}
+
 // Tasks is the task surface the tools need.
 type Tasks interface {
 	List(ctx context.Context, userID, projectID int64) ([]*task.Task, error)
@@ -144,6 +150,7 @@ type Provider struct {
 	projects   Projects
 	tasks      Tasks
 	mrs        MergeRequests
+	defaults   AgentDefaults
 }
 
 var (
@@ -153,8 +160,8 @@ var (
 )
 
 // NewProvider creates the project tools provider.
-func NewProvider(workspaces Workspaces, projects Projects, tasks Tasks, mrs MergeRequests) *Provider {
-	return &Provider{workspaces: workspaces, projects: projects, tasks: tasks, mrs: mrs}
+func NewProvider(workspaces Workspaces, projects Projects, tasks Tasks, mrs MergeRequests, defaults AgentDefaults) *Provider {
+	return &Provider{workspaces: workspaces, projects: projects, tasks: tasks, mrs: mrs, defaults: defaults}
 }
 
 var errNotProjectWorkspace = errors.New("not a project workspace")
@@ -291,7 +298,11 @@ func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest
 			textDetail("Instructions", args.Body),
 			{Label: "Starts from", Value: branchLabel(args.BaseBranch, proj.DefaultBranch)},
 		}
-		details = append(details, agentDetails(args.AgentID, defaultModel(strings.TrimSpace(args.Model), "", req.Model), defaultEffort(strings.TrimSpace(args.Effort), "", req.Thinking))...)
+		model, effort, err := p.agentSettings(ctx, req, args.AgentID, args.Model, args.Effort, nil)
+		if err != nil {
+			return aitools.Approval{}, false, err
+		}
+		details = append(details, agentDetails(args.AgentID, model, effort)...)
 		return aitools.Approval{
 			Title:   "Start a background agent",
 			Summary: "Create a task on the board and start a background agent on it, in its own sandbox.",
@@ -314,7 +325,12 @@ func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest
 		if msg := strings.TrimSpace(args.Message); msg != "" {
 			details = append(details, textDetail("Extra instructions", args.Message))
 		}
-		details = append(details, agentDetails(firstNonEmpty(strings.TrimSpace(args.AgentID), t.AgentID), defaultModel(strings.TrimSpace(args.Model), t.Model, req.Model), defaultEffort(strings.TrimSpace(args.Effort), t.Effort, req.Thinking))...)
+		agentID := firstNonEmpty(strings.TrimSpace(args.AgentID), t.AgentID)
+		model, effort, err := p.agentSettings(ctx, req, agentID, args.Model, args.Effort, t)
+		if err != nil {
+			return aitools.Approval{}, false, err
+		}
+		details = append(details, agentDetails(agentID, model, effort)...)
 		return aitools.Approval{
 			Title:   "Start a background agent",
 			Summary: fmt.Sprintf("Start a background agent on task #%d, in its own sandbox.", t.ID),
@@ -552,11 +568,12 @@ func (p *Provider) createTask(ctx context.Context, req aitools.ExecutionRequest,
 			Effort:  strings.TrimSpace(args.Effort),
 		},
 	}
-	// The agent starts with the assistant's own model and effort unless the
-	// call picks others, as the board's picker defaults to the last choice.
 	if in.Start {
-		in.Model = defaultModel(in.Model, "", req.Model)
-		in.Effort = defaultEffort(in.Effort, "", req.Thinking)
+		model, effort, err := p.agentSettings(ctx, req, in.AgentID, in.Model, in.Effort, nil)
+		if err != nil {
+			return toolError(req.ToolName, "choosing the agent's model: %v", err)
+		}
+		in.Model, in.Effort = model, effort
 	}
 	t, err := p.tasks.Create(ctx, req.UserID, proj.ID, in)
 	if err != nil {
@@ -577,13 +594,14 @@ func (p *Provider) startTask(ctx context.Context, req aitools.ExecutionRequest, 
 	if !req.Approved {
 		return errNotApproved(req.ToolName)
 	}
+	agentID := strings.TrimSpace(args.AgentID)
+	model, effort, err := p.agentSettings(ctx, req, firstNonEmpty(agentID, current.AgentID), args.Model, args.Effort, current)
+	if err != nil {
+		return toolError(req.ToolName, "choosing the agent's model: %v", err)
+	}
 	t, err := p.tasks.Start(ctx, req.UserID, proj.ID, current.ID, task.StartInput{
-		Message: args.Message,
-		AgentSettings: task.AgentSettings{
-			AgentID: strings.TrimSpace(args.AgentID),
-			Model:   defaultModel(strings.TrimSpace(args.Model), current.Model, req.Model),
-			Effort:  defaultEffort(strings.TrimSpace(args.Effort), current.Effort, req.Thinking),
-		},
+		Message:       args.Message,
+		AgentSettings: task.AgentSettings{AgentID: agentID, Model: model, Effort: effort},
 	})
 	if err != nil {
 		return taskError(req.ToolName, args.TaskID, err)
@@ -728,6 +746,28 @@ func taskError(name string, taskID int64, err error) domain.ToolResultPart {
 	default:
 		return toolError(name, "task #%d: %v", taskID, err)
 	}
+}
+
+// agentSettings picks the model and effort a task's agent runs with: what
+// the call asks for, else what the task last ran with, else what the admin
+// set for the agent, else the assistant's own. The approval shows the same
+// choice the call then makes. t is nil for a task not created yet.
+func (p *Provider) agentSettings(ctx context.Context, req aitools.ExecutionRequest, agentID, model, effort string, t *task.Task) (string, string, error) {
+	model, effort = strings.TrimSpace(model), strings.TrimSpace(effort)
+	var taskModel, taskEffort string
+	if t != nil {
+		taskModel, taskEffort = t.Model, t.Effort
+	}
+	if model == "" && taskModel == "" {
+		d, err := p.defaults.DefaultsFor(ctx, strings.TrimSpace(agentID))
+		if err != nil {
+			return "", "", fmt.Errorf("looking up the agent's default model: %w", err)
+		}
+		if d != nil {
+			return d.Model, firstNonEmpty(effort, d.Effort), nil
+		}
+	}
+	return defaultModel(model, taskModel, req.Model), defaultEffort(effort, taskEffort, req.Thinking), nil
 }
 
 func defaultModel(requested, taskModel, current string) string {

@@ -84,6 +84,12 @@ type Conversations interface {
 	CreateConversation(ctx context.Context, userID, workspaceID int64, model string) (*domain.Conversation, error)
 }
 
+// AgentDefaults looks up the model and effort an admin set for a built-in
+// agent, or nil when it has none a run could use.
+type AgentDefaults interface {
+	DefaultsFor(ctx context.Context, agentID string) (*domain.AgentDefaults, error)
+}
+
 // cancelWait bounds how long closing a merge request waits for a review run
 // to stop before removing its sandbox.
 const cancelWait = 15 * time.Second
@@ -95,6 +101,7 @@ type service struct {
 	tasks         Tasks
 	runs          Runs
 	conversations Conversations
+	defaults      AgentDefaults
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
@@ -107,7 +114,7 @@ type service struct {
 
 // NewService creates a merge request Service. Background work stops on
 // Shutdown.
-func NewService(repo Repository, projects Projects, workspaces Workspaces, tasks Tasks, runs Runs, conversations Conversations) Service {
+func NewService(repo Repository, projects Projects, workspaces Workspaces, tasks Tasks, runs Runs, conversations Conversations, defaults AgentDefaults) Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &service{
 		repo:          repo,
@@ -116,6 +123,7 @@ func NewService(repo Repository, projects Projects, workspaces Workspaces, tasks
 		tasks:         tasks,
 		runs:          runs,
 		conversations: conversations,
+		defaults:      defaults,
 		rootCtx:       ctx,
 		rootCancel:    cancel,
 		locks:         make(map[string]*sync.Mutex),
@@ -435,10 +443,19 @@ func (s *service) StartAgentReview(ctx context.Context, userID, projectID, mrID 
 			return nil, fmt.Errorf("%w: a review agent is already reviewing it", ErrInvalidState)
 		}
 	}
-	// Reviews default to the task's model, but not its agent: they run the
-	// built-in review agent unless another is picked.
+	// Reviews run the built-in review agent unless another is picked, and
+	// the model an admin set for their agent, else the task's model.
 	if in.AgentID == "" {
 		in.AgentID = domain.ReviewAgentID
+	}
+	if in.Model == "" {
+		d, err := s.defaults.DefaultsFor(ctx, in.AgentID)
+		if err != nil {
+			return nil, fmt.Errorf("looking up the review agent's default model: %w", err)
+		}
+		if d != nil {
+			in.Model, in.Effort = d.Model, orDefault(in.Effort, d.Effort)
+		}
 	}
 	if mr.TaskID != 0 && in.Model == "" {
 		if t, err := s.tasks.Get(ctx, userID, projectID, mr.TaskID); err == nil {

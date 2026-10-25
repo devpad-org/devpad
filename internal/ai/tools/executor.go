@@ -42,6 +42,12 @@ type AgentLister interface {
 	ListAgents(ctx context.Context, userID, workspaceID int64) ([]domain.Agent, error)
 }
 
+// AgentDefaults looks up the model and effort an admin set for a built-in
+// agent, or nil when it has none a run could use.
+type AgentDefaults interface {
+	DefaultsFor(ctx context.Context, agentID string) (*domain.AgentDefaults, error)
+}
+
 // ChildAgentRunRequest is the minimal request a tool executor needs to spawn a child run.
 type ChildAgentRunRequest struct {
 	ParentRunID    int64

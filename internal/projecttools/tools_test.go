@@ -154,10 +154,24 @@ func (f fakeMRs) Get(_ context.Context, _, projectID, mrID int64) (*mergerequest
 	return nil, mergerequest.ErrNotFound
 }
 
+// fakeDefaults is the admin's agent defaults, keyed by agent ID.
+type fakeDefaults map[string]domain.AgentDefaults
+
+func (f fakeDefaults) DefaultsFor(_ context.Context, agentID string) (*domain.AgentDefaults, error) {
+	if agentID == "" {
+		agentID = domain.DefaultAgentID
+	}
+	if d, ok := f[agentID]; ok {
+		return &d, nil
+	}
+	return nil, nil
+}
+
 type env struct {
 	provider   *Provider
 	tasks      *fakeTasks
 	workspaces *fakeWorkspaces
+	defaults   fakeDefaults
 }
 
 func setup() *env {
@@ -176,7 +190,8 @@ func setup() *env {
 		{ID: 5, ProjectID: 1, TaskID: 1, Title: "Add a cart", Status: mergerequest.StatusOpen, SourceBranch: "task/1", TargetBranch: "main", HeadSHA: "abcdef1234567890"},
 		{ID: 6, ProjectID: 2, TaskID: 3, Title: "Blog post", Status: mergerequest.StatusOpen},
 	}}
-	return &env{provider: NewProvider(workspaces, fakeProjects{}, tasks, mrs), tasks: tasks, workspaces: workspaces}
+	defaults := fakeDefaults{}
+	return &env{provider: NewProvider(workspaces, fakeProjects{}, tasks, mrs, defaults), tasks: tasks, workspaces: workspaces, defaults: defaults}
 }
 
 func (e *env) call(t *testing.T, userID, workspaceID int64, tool, args string) (domain.ToolResultPart, bool) {
@@ -423,6 +438,47 @@ func TestStartingUsesTheAssistantsModelUnlessToldOtherwise(t *testing.T) {
 	if s := e.tasks.started[0]; s.Model != "task-model" || s.Message != "go" {
 		t.Errorf("expected the task's own model kept: %+v", s)
 	}
+}
+
+// The admin's default for the agent beats the assistant's own model, but not
+// a model the call picks or the one the task last ran with. The approval
+// shows the model the call then uses.
+func TestStartingUsesTheAgentsDefaultsOverTheAssistantsModel(t *testing.T) {
+	e := setup()
+	e.defaults[domain.DefaultAgentID] = domain.AgentDefaults{AgentID: domain.DefaultAgentID, Model: "admin-model"}
+	ctx := context.Background()
+
+	args := `{"title":"a","body":"b","start":true}`
+	approval, _, err := e.provider.ApprovalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: createTaskTool, Arguments: json.RawMessage(args), Model: "assistant-model", Thinking: &domain.ThinkingConfig{Effort: "high"}})
+	if err != nil {
+		t.Fatalf("approval: %v", err)
+	}
+	if !hasDetail(approval, "Model", "admin-model") || !hasDetail(approval, "Effort", "Default") {
+		t.Errorf("expected the approval to show the admin's model and its default effort: %+v", approval.Details)
+	}
+	e.approved(t, owner, 10, createTaskTool, args)
+	e.approved(t, owner, 10, createTaskTool, `{"title":"a","body":"b","start":true,"model":"other"}`)
+	got := e.tasks.created
+	if got[0].Model != "admin-model" || got[0].Effort != "" {
+		t.Errorf("expected the admin's model, not the assistant's effort: %+v", got[0])
+	}
+	if got[1].Model != "other" {
+		t.Errorf("expected the requested model: %+v", got[1])
+	}
+
+	e.approved(t, owner, 10, startTaskTool, `{"task_id":1}`)
+	if s := e.tasks.started[0]; s.Model != "task-model" {
+		t.Errorf("expected the task's own model kept: %+v", s)
+	}
+}
+
+func hasDetail(a aitools.Approval, label, value string) bool {
+	for _, d := range a.Details {
+		if d.Label == label && d.Value == value {
+			return true
+		}
+	}
+	return false
 }
 
 func TestListsAndDetails(t *testing.T) {

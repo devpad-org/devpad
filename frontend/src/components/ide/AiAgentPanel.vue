@@ -5,7 +5,7 @@ import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
 import { useAiModelStore } from '@/stores/aiModels'
-import { defaultAIModel, defaultThinkingEffort, thinkingEffortLabel } from '@/utils/aiModels'
+import { defaultAIModel, defaultThinkingEffort, isBuiltInAgentId, thinkingEffortLabel } from '@/utils/aiModels'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
@@ -333,11 +333,13 @@ onUnmounted(() => {
   if (fetchRunsDebounceTimer !== null) clearTimeout(fetchRunsDebounceTimer)
 })
 
-// Switching to a built-in agent moves to the model an admin set for it.
-watch(() => props.selectedAgentId, () => {
-  const defaults = currentAgentDefaults.value
-  if (defaults && models.value.some((model) => model.id === defaults.model)) {
-    selectedModel.value = defaults.model
+// Switching to a built-in agent moves to its default model: the one an admin
+// set for it, else devpad's. Custom agents keep the model in use.
+watch(() => props.selectedAgentId, (agentId) => {
+  if (!isBuiltInAgentId(agentId)) return
+  const model = defaultAIModel(models.value, currentAgentDefaults.value)
+  if (model) {
+    selectedModel.value = model.id
   }
 })
 
