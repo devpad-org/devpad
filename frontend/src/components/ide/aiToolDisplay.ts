@@ -116,6 +116,20 @@ export function toolFriendlyName(name: string): string {
       return 'Start sub-agent'
     case 'wait_for_sub_agents':
       return 'Wait for sub-agents'
+    case 'list_tasks':
+      return 'List tasks'
+    case 'get_task':
+      return 'Read task'
+    case 'create_task':
+      return 'Create task'
+    case 'start_task':
+      return 'Start task'
+    case 'request_task_changes':
+      return 'Request changes'
+    case 'list_merge_requests':
+      return 'List merge requests'
+    case 'get_merge_request':
+      return 'Read merge request'
     default:
       return name.replace(/_/g, ' ')
   }
@@ -154,6 +168,21 @@ export function toolTargetLabel(seg: ToolDisplaySegment): string {
       const runIds = parsed?.run_ids
       if (Array.isArray(runIds) && runIds.length > 0) return `Runs ${runIds.join(', ')}`
       return formatToolArgs(seg.name, seg.args)
+    }
+    case 'list_tasks':
+    case 'list_merge_requests':
+      return `${stringArg(seg.args, 'status') || 'open'}`
+    case 'get_task':
+    case 'start_task':
+    case 'request_task_changes': {
+      const id = numberArg(seg.args, 'task_id')
+      return id !== null ? `Task #${id}` : formatToolArgs(seg.name, seg.args)
+    }
+    case 'create_task':
+      return truncateEnd(stringArg(seg.args, 'title') || formatToolArgs(seg.name, seg.args))
+    case 'get_merge_request': {
+      const id = numberArg(seg.args, 'merge_request_id')
+      return id !== null ? `!${id}` : formatToolArgs(seg.name, seg.args)
     }
     default:
       return truncateEnd(formatToolArgs(seg.name, seg.args))
@@ -235,6 +264,18 @@ export function toolResultMeta(seg: ToolDisplaySegment): string {
       const lines = seg.result.trim() === '' ? 0 : seg.result.trim().split('\n').length
       return lines === 0 ? 'No output' : `${lines} output ${pluralize(lines, 'line')}`
     }
+    case 'list_tasks':
+    case 'list_merge_requests': {
+      const count = parseToolResult(seg.result)?.count
+      if (typeof count !== 'number') return 'Completed'
+      return seg.name === 'list_tasks' ? `${count} ${pluralize(count, 'task')}` : `${count} ${pluralize(count, 'merge request')}`
+    }
+    case 'create_task':
+    case 'start_task':
+    case 'request_task_changes': {
+      const message = parseToolResult(seg.result)?.message
+      return typeof message === 'string' ? truncateEnd(message, 80) : 'Completed'
+    }
     case 'spawn_sub_agent':
     case 'wait_for_sub_agents': {
       try {
@@ -251,6 +292,62 @@ export function toolResultMeta(seg: ToolDisplaySegment): string {
     default:
       return 'Completed'
   }
+}
+
+// A task or merge request a project tool's result refers to, which the IDE
+// shell can open.
+export interface ProjectRef {
+  kind: 'task' | 'mr'
+  id: number
+  label: string
+}
+
+const MAX_PROJECT_REFS = 8
+
+// The tasks and merge requests a project tool's result mentions.
+export function projectRefs(seg: ToolDisplaySegment): ProjectRef[] {
+  if (!hasToolResult(seg) || isToolError(seg)) return []
+  const result = parseToolResult(seg.result)
+  if (!result) return []
+  const refs: ProjectRef[] = []
+  const add = (kind: ProjectRef['kind'], value: unknown) => {
+    if (!value || typeof value !== 'object') return
+    const record = value as Record<string, unknown>
+    const id = record.id
+    if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) return
+    if (refs.some((ref) => ref.kind === kind && ref.id === id)) return
+    const title = typeof record.title === 'string' ? record.title : ''
+    const prefix = kind === 'task' ? `#${id}` : `!${id}`
+    refs.push({ kind, id, label: title ? `${prefix} ${truncateEnd(title, 40)}` : prefix })
+  }
+  switch (seg.name) {
+    case 'list_tasks':
+      if (Array.isArray(result.tasks)) result.tasks.slice(0, MAX_PROJECT_REFS).forEach((t) => add('task', t))
+      break
+    case 'get_task':
+    case 'create_task':
+    case 'start_task':
+    case 'request_task_changes': {
+      add('task', result.task)
+      const task = result.task as Record<string, unknown> | undefined
+      add('mr', task?.mergeRequest)
+      break
+    }
+    case 'list_merge_requests':
+      if (Array.isArray(result.mergeRequests)) result.mergeRequests.slice(0, MAX_PROJECT_REFS).forEach((mr) => add('mr', mr))
+      break
+    case 'get_merge_request': {
+      add('mr', result.mergeRequest)
+      const taskId = (result.mergeRequest as Record<string, unknown> | undefined)?.taskId
+      if (typeof taskId === 'number' && taskId > 0) add('task', { id: taskId })
+      break
+    }
+  }
+  return refs
+}
+
+function parseToolResult(result: string): Record<string, unknown> | null {
+  return parseToolArgs(result)
 }
 
 function stringArg(args: string, key: string): string {

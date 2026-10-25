@@ -719,3 +719,123 @@ func TestAgentChatOrchestrator_StreamValidatesModelErrors(t *testing.T) {
 		t.Fatalf("expected model error, got %v", err)
 	}
 }
+
+// gatedToolExecutor asks for approval before start_task, as a tool provider
+// that starts agents does.
+type gatedToolExecutor struct {
+	mockToolExecutor
+}
+
+func (gatedToolExecutor) ApprovalFor(_ context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool) {
+	if req.ToolName != "start_task" {
+		return aitools.Approval{}, false
+	}
+	return aitools.Approval{Title: "Start a background agent", Summary: "Start the coding agent on task #3."}, true
+}
+
+func TestAgentChatOrchestrator_ExecutorApprovalGatesTheCall(t *testing.T) {
+	for _, approve := range []bool{false, true} {
+		t.Run(fmt.Sprintf("approved=%v", approve), func(t *testing.T) {
+			decisionCh := make(chan bool, 1)
+			callCount, toolCalls := 0, 0
+			executor := &gatedToolExecutor{mockToolExecutor{executeToolFn: func(_ context.Context, req aitools.ExecutionRequest) domain.ToolResultPart {
+				toolCalls++
+				return domain.ToolResultPart{Name: req.ToolName, Content: "started"}
+			}}}
+			orch := &agentChatOrchestrator{
+				service: &mockChatService{
+					chatStreamFn: func(_ context.Context, _ domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+						ch := make(chan domain.ProviderEvent, 2)
+						callCount++
+						if callCount == 1 {
+							ch <- domain.ProviderEvent{ToolCalls: []domain.ToolCall{{
+								ID: "tc1", Type: "function",
+								Function: domain.ToolCallFunction{Name: "start_task", Arguments: `{"task_id":3}`},
+							}}}
+						}
+						ch <- domain.ProviderEvent{Done: true}
+						close(ch)
+						return ch, nil
+					},
+				},
+				toolCatalog:  fakeToolCatalog{},
+				toolExecutor: executor,
+				approvals: &mockApprovalBroker{
+					awaitFn: func(_ context.Context, _ string) (bool, error) { return <-decisionCh, nil },
+				},
+				maxToolIterations: defaultMaxToolIterations,
+				questions:         &mockQuestionBroker{},
+			}
+
+			stream, err := orch.Stream(context.Background(), AgentChatRequest{
+				UserID: 1, WorkspaceID: 1, Model: "test-model",
+				Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			nextEvent(t, stream) // the tool call
+			approvalEvent := nextEvent(t, stream)
+			if approvalEvent.Approval == nil || approvalEvent.Approval.Title != "Start a background agent" || approvalEvent.Approval.Command != "Start the coding agent on task #3." {
+				t.Fatalf("expected an approval request from the executor, got %+v", approvalEvent)
+			}
+			if toolCalls != 0 {
+				t.Fatal("the tool ran before the user decided")
+			}
+			decisionCh <- approve
+
+			resultEvent := nextEvent(t, stream)
+			if resultEvent.ApprovalResult == nil || resultEvent.ApprovalResult.Title != "Start a background agent" {
+				t.Fatalf("expected an approval result with its title, got %+v", resultEvent)
+			}
+			toolResult := nextEvent(t, stream).ToolResult
+			if toolResult == nil {
+				t.Fatal("expected a tool result")
+			}
+			if approve {
+				if toolCalls != 1 || toolResult.Content != "started" {
+					t.Fatalf("expected the approved call to run once, got %d calls, %+v", toolCalls, toolResult)
+				}
+			} else if toolCalls != 0 || !toolResult.IsError || !strings.Contains(toolResult.Content, "denied") {
+				t.Fatalf("expected the denied call not to run, got %d calls, %+v", toolCalls, toolResult)
+			}
+		})
+	}
+}
+
+type promptToolCatalog struct{ fakeToolCatalog }
+
+func (promptToolCatalog) PromptFor(_ context.Context, _, workspaceID int64) string {
+	return fmt.Sprintf("Project context for workspace %d", workspaceID)
+}
+
+func TestAgentChatOrchestrator_AddsWorkspaceContextToTheSystemPrompt(t *testing.T) {
+	var captured domain.ChatRequest
+	orch := &agentChatOrchestrator{
+		service: &mockChatService{chatStreamFn: func(_ context.Context, req domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+			captured = req
+			ch := make(chan domain.ProviderEvent, 1)
+			ch <- domain.ProviderEvent{Done: true}
+			close(ch)
+			return ch, nil
+		}},
+		toolCatalog:       promptToolCatalog{},
+		toolExecutor:      &mockToolExecutor{},
+		approvals:         &mockApprovalBroker{},
+		questions:         &mockQuestionBroker{},
+		maxToolIterations: defaultMaxToolIterations,
+	}
+	stream, err := orch.Stream(context.Background(), AgentChatRequest{
+		UserID: 1, WorkspaceID: 9, Model: "m", AgentPrompt: "agent",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hi")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range stream {
+	}
+	system := captured.Turns[0].Text()
+	if !strings.Contains(system, "Project context for workspace 9") || strings.Index(system, "Project context") > strings.Index(system, "Selected agent instructions") {
+		t.Fatalf("expected the workspace context before the agent instructions:\n%s", system)
+	}
+}

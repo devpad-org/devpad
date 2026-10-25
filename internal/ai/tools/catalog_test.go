@@ -74,3 +74,41 @@ func TestProvidersAddWorkspaceToolsAndHandleTheirCalls(t *testing.T) {
 		t.Fatalf("unknown tools must still fail: %+v", result)
 	}
 }
+
+// projectToolProvider adds prompt context and gates one of its tools.
+type projectToolProvider struct{ reviewToolProvider }
+
+func (projectToolProvider) Prompt(_ context.Context, _, workspaceID int64) string {
+	if workspaceID != 7 {
+		return ""
+	}
+	return "Project context"
+}
+
+func (projectToolProvider) ApprovalFor(_ context.Context, req ExecutionRequest) (Approval, bool) {
+	return Approval{Title: "Start a background agent", Summary: "start"}, req.ToolName == "start_task"
+}
+
+func TestProvidersAddPromptContextAndApprovals(t *testing.T) {
+	ctx := context.Background()
+	catalog := NewCatalog()
+	executor := NewWorkspaceExecutor(nil)
+	catalog.AddProvider(&reviewToolProvider{})
+	executor.AddProvider(&reviewToolProvider{})
+	p := &projectToolProvider{}
+	catalog.AddProvider(p)
+	executor.AddProvider(p)
+
+	if got := catalog.PromptFor(ctx, 1, 7); got != "Project context" {
+		t.Fatalf("expected the provider's context, got %q", got)
+	}
+	if got := catalog.PromptFor(ctx, 1, 8); got != "" {
+		t.Fatalf("expected no context elsewhere, got %q", got)
+	}
+	if approval, needed := executor.ApprovalFor(ctx, ExecutionRequest{ToolName: "start_task"}); !needed || approval.Title != "Start a background agent" {
+		t.Fatalf("expected the gate's approval, got %+v %v", approval, needed)
+	}
+	if _, needed := executor.ApprovalFor(ctx, ExecutionRequest{ToolName: "list_tasks"}); needed {
+		t.Fatal("expected no approval for other tools")
+	}
+}

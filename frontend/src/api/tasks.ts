@@ -25,6 +25,10 @@ export interface Task {
   effort: string
   pendingMessage: string
   headSha: string
+  // The project branch the task started from, when not the default branch.
+  baseBranch: string
+  // The task continues a conversation handed off from the project workspace.
+  handedOff: boolean
   error: string
   createdAt: string
   updatedAt: string
@@ -41,8 +45,17 @@ export const taskApi = {
     return apiClient.get(`/api/projects/${projectId}/tasks`)
   },
 
-  create(projectId: number, input: { title: string; body: string; start: boolean } & AgentSettings): Promise<{ task: Task }> {
+  create(projectId: number, input: { title: string; body: string; start: boolean; baseBranch?: string } & AgentSettings): Promise<{ task: Task }> {
     return apiClient.post(`/api/projects/${projectId}/tasks`, input)
+  },
+
+  // Hands a conversation from the project workspace off to a new task, which
+  // starts at once on a branch made from baseBranch.
+  handoff(
+    projectId: number,
+    input: { conversationId: number; title: string; instructions: string; baseBranch: string } & AgentSettings,
+  ): Promise<{ task: Task }> {
+    return apiClient.post(`/api/projects/${projectId}/tasks/handoff`, input)
   },
 
   update(projectId: number, id: number, title: string, body: string): Promise<{ task: Task }> {

@@ -107,8 +107,12 @@ export interface ToolResult {
   isError?: boolean
 }
 
+// A tool call waiting for the user's approval. Without a title, command is a
+// sudo shell command; with one, command describes the action, such as
+// starting a background agent.
 export interface ApprovalRequest {
   id: string
+  title?: string
   command: string
 }
 
@@ -120,6 +124,7 @@ export interface AttentionItem {
 
 export interface ApprovalResult {
   id: string
+  title?: string
   command: string
   status: 'approved' | 'denied' | 'expired' | 'failed'
 }

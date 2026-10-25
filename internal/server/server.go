@@ -21,6 +21,7 @@ import (
 	"github.com/devpad-org/devpad/internal/mergerequest"
 	"github.com/devpad-org/devpad/internal/preview"
 	"github.com/devpad-org/devpad/internal/project"
+	"github.com/devpad-org/devpad/internal/projecttools"
 	"github.com/devpad-org/devpad/internal/settings"
 	"github.com/devpad-org/devpad/internal/task"
 	"github.com/devpad-org/devpad/internal/workspace"
@@ -133,6 +134,10 @@ func New(cfg Config) (*Server, error) {
 	aiModule.OnAgentRunFinished(mrService.RunFinished)
 	aiModule.AddToolProvider(mrService)
 	mrHandler := mergerequest.NewHandler(mrService)
+
+	// The assistant in a project's workspace sees the board and hands work to
+	// task agents.
+	aiModule.AddToolProvider(projecttools.NewProvider(workspaceService, projectService, taskService, mrService))
 
 	if err := projectService.Reconcile(context.Background()); err != nil {
 		log.Printf("finishing interrupted workspace conversions: %v", err)
@@ -436,6 +441,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/projects/{id}/conversion/dismiss", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDismissConversionNotice)))
 	mux.Handle("GET /api/projects/{id}/tasks", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleList)))
 	mux.Handle("POST /api/projects/{id}/tasks", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleCreate)))
+	mux.Handle("POST /api/projects/{id}/tasks/handoff", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleHandoff)))
 	mux.Handle("GET /api/projects/{id}/tasks/{taskId}", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleGet)))
 	mux.Handle("PUT /api/projects/{id}/tasks/{taskId}", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleUpdate)))
 	mux.Handle("DELETE /api/projects/{id}/tasks/{taskId}", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleDelete)))

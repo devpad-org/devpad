@@ -61,8 +61,14 @@ type Task struct {
 	PendingMessage string
 	HeadSHA        string
 	Error          string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// BaseBranch is the canonical branch the task's branch starts from when
+	// it is not the project's default branch.
+	BaseBranch string
+	// Handoff is the conversation the task was handed off from, given to its
+	// agent as context when a conversation starts.
+	Handoff   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // BranchName is the branch a task's sandbox works on.
@@ -85,6 +91,22 @@ type CreateInput struct {
 	AgentSettings
 	// Start launches an agent on the task right away.
 	Start bool
+	// BaseBranch is an existing canonical branch to start from instead of
+	// the default branch.
+	BaseBranch string
+	// Handoff is conversation context for the task's agent.
+	Handoff string
+}
+
+// HandoffInput hands a conversation from the project workspace off to a new
+// task, which starts at once.
+type HandoffInput struct {
+	ConversationID int64
+	Title          string
+	// Instructions tell the agent what to do with the conversation.
+	Instructions string
+	BaseBranch   string
+	AgentSettings
 }
 
 // UpdateInput holds the editable task fields.

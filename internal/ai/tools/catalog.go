@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -42,6 +43,23 @@ func (c *Catalog) DefinitionsFor(ctx context.Context, userID, workspaceID int64)
 		defs = append(defs, p.Tools(ctx, userID, workspaceID)...)
 	}
 	return defs
+}
+
+// PromptFor returns the context providers add to the system prompt of runs
+// in the workspace.
+func (c *Catalog) PromptFor(ctx context.Context, userID, workspaceID int64) string {
+	c.mu.RLock()
+	providers := c.providers
+	c.mu.RUnlock()
+	var sections []string
+	for _, p := range providers {
+		if pp, ok := p.(PromptProvider); ok {
+			if section := strings.TrimSpace(pp.Prompt(ctx, userID, workspaceID)); section != "" {
+				sections = append(sections, section)
+			}
+		}
+	}
+	return strings.Join(sections, "\n\n")
 }
 
 // SystemPrompt returns the system prompt for the AI agent.

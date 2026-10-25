@@ -120,7 +120,7 @@ func (h *Handler) HandleListAttention(w http.ResponseWriter, r *http.Request) {
 		item := item
 		dto := attentionDTO{Run: FromAgentRunSummary(&item.Run), Question: FromQuestionRequest(item.Question)}
 		if item.Approval != nil {
-			dto.Approval = &ApprovalRequestDTO{ID: item.Approval.ID, Command: item.Approval.Command}
+			dto.Approval = &ApprovalRequestDTO{ID: item.Approval.ID, Title: item.Approval.Title, Command: item.Approval.Command}
 		}
 		out = append(out, dto)
 	}

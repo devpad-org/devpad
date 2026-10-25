@@ -71,6 +71,22 @@ func (e *WorkspaceExecutor) SetFileSummarizer(summarizer FileSummarizer) {
 	e.summarizer = summarizer
 }
 
+// ApprovalFor reports whether a provider requires the user's approval
+// before the call runs.
+func (e *WorkspaceExecutor) ApprovalFor(ctx context.Context, req ExecutionRequest) (Approval, bool) {
+	e.providersMu.RLock()
+	providers := e.providers
+	e.providersMu.RUnlock()
+	for _, p := range providers {
+		if gate, ok := p.(ApprovalGate); ok {
+			if approval, needed := gate.ApprovalFor(ctx, req); needed {
+				return approval, true
+			}
+		}
+	}
+	return Approval{}, false
+}
+
 func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionRequest) domain.ToolResultPart {
 	var params map[string]any
 	if err := json.Unmarshal(req.Arguments, &params); err != nil {

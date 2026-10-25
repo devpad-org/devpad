@@ -1,0 +1,699 @@
+// Package projecttools gives the assistant in a project's workspace tools
+// to look at the project's tasks and merge requests and to hand work to
+// background agents.
+//
+// The tools run on the host, and the project is always the one the
+// conversation's workspace belongs to, never one named in a tool argument.
+// They cannot merge, close, approve, push, delete or move the default
+// branch: those stay with the user. Anything that starts an agent run waits
+// for the user's approval first.
+package projecttools
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"sort"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/ai/domain"
+	aitools "github.com/devpad-org/devpad/internal/ai/tools"
+	"github.com/devpad-org/devpad/internal/mergerequest"
+	"github.com/devpad-org/devpad/internal/project"
+	"github.com/devpad-org/devpad/internal/task"
+	"github.com/devpad-org/devpad/internal/workspace"
+)
+
+const (
+	listTasksTool          = "list_tasks"
+	getTaskTool            = "get_task"
+	createTaskTool         = "create_task"
+	startTaskTool          = "start_task"
+	requestTaskChangesTool = "request_task_changes"
+	listMergeRequestsTool  = "list_merge_requests"
+	getMergeRequestTool    = "get_merge_request"
+
+	// Caps that keep tool results small enough for the model's context.
+	maxListedItems     = 100
+	maxTaskBodyBytes   = 8 * 1024
+	maxMRTextBytes     = 4 * 1024
+	maxReviewBodyBytes = 2 * 1024
+	maxCommentBytes    = 1024
+	maxListedComments  = 50
+	maxSummaryBytes    = 300
+)
+
+var definitions = []domain.ToolDefinition{
+	{
+		Type: "function",
+		Function: domain.ToolFunction{
+			Name:        listTasksTool,
+			Description: "List the tasks on this project's board. Tasks are units of work that background AI agents implement on their own branches, each opening a merge request when done.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"status":{"type":"string","enum":["open","all","todo","queued","in_progress","in_review","changes_requested","merged","cancelled","failed"],"description":"Which tasks to list. open (the default) leaves out merged and cancelled tasks."}}}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: domain.ToolFunction{
+			Name:        getTaskTool,
+			Description: "Get one task: its description, status, branch, the agent working on it, any error, and its merge request.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"integer","minimum":1}},"required":["task_id"]}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: domain.ToolFunction{
+			Name:        createTaskTool,
+			Description: "Add a task to the project's board. With start=true a background agent starts on it in its own sandbox, which needs the user's approval. Write the body as complete instructions: the agent sees only the task, not this conversation.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"title":{"type":"string","description":"A short title."},"body":{"type":"string","description":"What to do and why, in Markdown, with everything the agent needs."},"start":{"type":"boolean","description":"Start a background agent on the task now. Defaults to false."},"base_branch":{"type":"string","description":"Optional project branch to start from instead of the default branch. It must already be published to the project."},"agent_id":{"type":"string","description":"Optional agent id. Defaults to the built-in coding agent."},"model":{"type":"string","description":"Optional model id. Defaults to the current model."},"effort":{"type":"string","description":"Optional thinking effort, such as low, medium or high."}},"required":["title","body"]}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: domain.ToolFunction{
+			Name:        startTaskTool,
+			Description: "Start a background agent on a task that is to do, failed, or waiting for changes. Needs the user's approval.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"integer","minimum":1},"message":{"type":"string","description":"Optional extra instructions for the agent."},"agent_id":{"type":"string"},"model":{"type":"string","description":"Optional model id. Defaults to the task's model, then the current model."},"effort":{"type":"string"}},"required":["task_id"]}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: domain.ToolFunction{
+			Name:        requestTaskChangesTool,
+			Description: "Send feedback on a task in review back to its agent, which starts working on it again. Needs the user's approval.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"integer","minimum":1},"feedback":{"type":"string","description":"What to change, in Markdown."}},"required":["task_id","feedback"]}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: domain.ToolFunction{
+			Name:        listMergeRequestsTool,
+			Description: "List the project's merge requests. Each proposes merging a branch into the default branch; only the user can merge.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"status":{"type":"string","enum":["open","merged","closed","all"],"description":"Defaults to open."}}}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: domain.ToolFunction{
+			Name:        getMergeRequestTool,
+			Description: "Get a merge request with its reviews and comments. It does not include the diff: check out the branch to read the code.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"merge_request_id":{"type":"integer","minimum":1}},"required":["merge_request_id"]}`),
+		},
+	},
+}
+
+// Workspaces is the workspace surface the tools need.
+type Workspaces interface {
+	Get(ctx context.Context, userID, workspaceID int64) (*workspace.Workspace, error)
+	GitStatus(ctx context.Context, userID, workspaceID int64) (*agent.GitStatus, error)
+}
+
+// Projects is the project surface the tools need.
+type Projects interface {
+	Get(ctx context.Context, userID, projectID int64) (*project.Project, error)
+}
+
+// Tasks is the task surface the tools need.
+type Tasks interface {
+	List(ctx context.Context, userID, projectID int64) ([]*task.Task, error)
+	Get(ctx context.Context, userID, projectID, taskID int64) (*task.Task, error)
+	Create(ctx context.Context, userID, projectID int64, in task.CreateInput) (*task.Task, error)
+	Start(ctx context.Context, userID, projectID, taskID int64, in task.StartInput) (*task.Task, error)
+	RequestChanges(ctx context.Context, userID, projectID, taskID int64, feedback string, start bool) (*task.Task, error)
+}
+
+// MergeRequests is the merge request surface the tools need.
+type MergeRequests interface {
+	List(ctx context.Context, userID, projectID int64) ([]*mergerequest.MergeRequest, error)
+	Get(ctx context.Context, userID, projectID, mrID int64) (*mergerequest.Detail, error)
+}
+
+// Provider offers the project tools to runs in project workspaces.
+type Provider struct {
+	workspaces Workspaces
+	projects   Projects
+	tasks      Tasks
+	mrs        MergeRequests
+}
+
+var (
+	_ aitools.ToolProvider   = (*Provider)(nil)
+	_ aitools.ApprovalGate   = (*Provider)(nil)
+	_ aitools.PromptProvider = (*Provider)(nil)
+)
+
+// NewProvider creates the project tools provider.
+func NewProvider(workspaces Workspaces, projects Projects, tasks Tasks, mrs MergeRequests) *Provider {
+	return &Provider{workspaces: workspaces, projects: projects, tasks: tasks, mrs: mrs}
+}
+
+var errNotProjectWorkspace = errors.New("not a project workspace")
+
+// project returns the project whose workspace the run is in. Sandboxes and
+// standalone workspaces have none: agents in sandboxes work on one task, and
+// standalone workspaces have no project.
+func (p *Provider) project(ctx context.Context, userID, workspaceID int64) (*project.Project, *workspace.Workspace, error) {
+	ws, err := p.workspaces.Get(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if ws.ProjectID == 0 || ws.Kind != workspace.KindInteractive {
+		return nil, nil, errNotProjectWorkspace
+	}
+	proj, err := p.projects.Get(ctx, userID, ws.ProjectID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return proj, ws, nil
+}
+
+func (p *Provider) Tools(ctx context.Context, userID, workspaceID int64) []domain.ToolDefinition {
+	if _, _, err := p.project(ctx, userID, workspaceID); err != nil {
+		return nil
+	}
+	return definitions
+}
+
+func owns(name string) bool {
+	return slices.ContainsFunc(definitions, func(d domain.ToolDefinition) bool { return d.Function.Name == name })
+}
+
+// Prompt tells the assistant which project and branch it is on and what the
+// project tools are for.
+func (p *Provider) Prompt(ctx context.Context, userID, workspaceID int64) string {
+	proj, ws, err := p.project(ctx, userID, workspaceID)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Project context:\nYou are working in the user's own workspace for the project %q. /workspace is a git checkout of the project; its default branch is `%s`.", proj.Name, proj.DefaultBranch)
+	if status, err := p.workspaces.GitStatus(ctx, userID, ws.ID); err == nil && status != nil && status.IsRepo {
+		if branch := cleanBranch(status.Branch); branch != "" {
+			fmt.Fprintf(&b, " The checkout is on the branch `%s`.", branch)
+		}
+	}
+	b.WriteString(`
+- There is no git remote and no credentials here. The user publishes branches to the project and opens merge requests from the IDE; do not try to push.
+- Background agents implement tasks from the project's board on their own branches. Use list_tasks, get_task, list_merge_requests and get_merge_request to see the board, and create_task to add work for them. Starting an agent (create_task with start, start_task, request_task_changes) asks the user first.
+- Only the user merges, closes, approves or pushes. You have no tools for those.`)
+	return b.String()
+}
+
+// cleanBranch makes a branch name reported by the workspace safe to show in
+// the prompt.
+func cleanBranch(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 200 || strings.ContainsFunc(name, func(r rune) bool { return unicode.IsControl(r) || r == '`' }) {
+		return ""
+	}
+	return name
+}
+
+type taskArgs struct {
+	TaskID     int64  `json:"task_id"`
+	Title      string `json:"title"`
+	Body       string `json:"body"`
+	Start      bool   `json:"start"`
+	BaseBranch string `json:"base_branch"`
+	Message    string `json:"message"`
+	Feedback   string `json:"feedback"`
+	AgentID    string `json:"agent_id"`
+	Model      string `json:"model"`
+	Effort     string `json:"effort"`
+	// Status filters the list tools.
+	Status         string `json:"status"`
+	MergeRequestID int64  `json:"merge_request_id"`
+}
+
+func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool) {
+	if req.ToolName != createTaskTool && req.ToolName != startTaskTool && req.ToolName != requestTaskChangesTool {
+		return aitools.Approval{}, false
+	}
+	// Outside a project workspace the call is refused without asking, so an
+	// agent in a sandbox cannot put an approval card in front of the user.
+	if _, _, err := p.project(ctx, req.UserID, req.WorkspaceID); err != nil {
+		return aitools.Approval{}, false
+	}
+	var args taskArgs
+	if err := json.Unmarshal(req.Arguments, &args); err != nil {
+		// ExecuteTool rejects the same arguments without starting anything.
+		return aitools.Approval{}, false
+	}
+	switch req.ToolName {
+	case createTaskTool:
+		if !args.Start {
+			return aitools.Approval{}, false
+		}
+		return aitools.Approval{
+			Title:   "Start a background agent",
+			Summary: fmt.Sprintf("Create the task %q%s and start %s on it.", oneLine(args.Title, 120), baseNote(args.BaseBranch), agentLabel(args.AgentID, defaultModel(args.Model, "", req.Model))),
+		}, true
+	case startTaskTool:
+		label := fmt.Sprintf("task #%d", args.TaskID)
+		taskModel := ""
+		if t := p.lookupTask(ctx, req, args.TaskID); t != nil {
+			label = fmt.Sprintf("task #%d %q", t.ID, oneLine(t.Title, 120))
+			taskModel = t.Model
+		}
+		summary := fmt.Sprintf("Start %s on %s.", agentLabel(args.AgentID, defaultModel(args.Model, taskModel, req.Model)), label)
+		if msg := strings.TrimSpace(args.Message); msg != "" {
+			summary += " Instructions: " + oneLine(msg, maxSummaryBytes)
+		}
+		return aitools.Approval{Title: "Start a background agent", Summary: summary}, true
+	default:
+		label := fmt.Sprintf("task #%d", args.TaskID)
+		if t := p.lookupTask(ctx, req, args.TaskID); t != nil {
+			label = fmt.Sprintf("task #%d %q", t.ID, oneLine(t.Title, 120))
+		}
+		return aitools.Approval{
+			Title:   "Send a task back to its agent",
+			Summary: fmt.Sprintf("Restart the agent on %s with this feedback: %s", label, oneLine(args.Feedback, maxSummaryBytes)),
+		}, true
+	}
+}
+
+// lookupTask finds a task in the run's project, for describing a call.
+func (p *Provider) lookupTask(ctx context.Context, req aitools.ExecutionRequest, taskID int64) *task.Task {
+	proj, _, err := p.project(ctx, req.UserID, req.WorkspaceID)
+	if err != nil {
+		return nil
+	}
+	t, err := p.tasks.Get(ctx, req.UserID, proj.ID, taskID)
+	if err != nil {
+		return nil
+	}
+	return t
+}
+
+func (p *Provider) ExecuteTool(ctx context.Context, req aitools.ExecutionRequest) (domain.ToolResultPart, bool) {
+	if !owns(req.ToolName) {
+		return domain.ToolResultPart{}, false
+	}
+	// The tools are re-checked on every call, not just when offered.
+	proj, _, err := p.project(ctx, req.UserID, req.WorkspaceID)
+	if err != nil {
+		return toolError(req.ToolName, "project tools only work in a project's own workspace"), true
+	}
+	// Arguments are decoded exactly as ApprovalFor decoded them, so the call
+	// that runs is the one the user approved.
+	var args taskArgs
+	if err := json.Unmarshal(req.Arguments, &args); err != nil {
+		return toolError(req.ToolName, "invalid arguments: %v", err), true
+	}
+
+	switch req.ToolName {
+	case listTasksTool:
+		return p.listTasks(ctx, req, proj, args.Status), true
+	case getTaskTool:
+		return p.getTask(ctx, req, proj, args.TaskID), true
+	case createTaskTool:
+		return p.createTask(ctx, req, proj, args), true
+	case startTaskTool:
+		return p.startTask(ctx, req, proj, args), true
+	case requestTaskChangesTool:
+		return p.requestChanges(ctx, req, proj, args), true
+	case listMergeRequestsTool:
+		return p.listMergeRequests(ctx, req, proj, args.Status), true
+	default:
+		return p.getMergeRequest(ctx, req, proj, args.MergeRequestID), true
+	}
+}
+
+type mrRef struct {
+	ID     int64               `json:"id"`
+	Title  string              `json:"title,omitempty"`
+	Status mergerequest.Status `json:"status"`
+}
+
+type taskSummary struct {
+	ID           int64       `json:"id"`
+	Title        string      `json:"title"`
+	Status       task.Status `json:"status"`
+	Branch       string      `json:"branch"`
+	BaseBranch   string      `json:"baseBranch,omitempty"`
+	Error        string      `json:"error,omitempty"`
+	MergeRequest *mrRef      `json:"mergeRequest,omitempty"`
+}
+
+func summarizeTask(t *task.Task, mr *mergerequest.MergeRequest) taskSummary {
+	s := taskSummary{ID: t.ID, Title: t.Title, Status: t.Status, Branch: t.Branch, BaseBranch: t.BaseBranch, Error: clip(t.Error, maxSummaryBytes)}
+	if mr != nil {
+		s.MergeRequest = &mrRef{ID: mr.ID, Status: mr.Status}
+	}
+	return s
+}
+
+// mergeRequestsByTask maps each task to its newest merge request, open ones
+// first, as the board shows it.
+func (p *Provider) mergeRequestsByTask(ctx context.Context, userID, projectID int64) map[int64]*mergerequest.MergeRequest {
+	mrs, err := p.mrs.List(ctx, userID, projectID)
+	if err != nil {
+		return nil
+	}
+	byTask := make(map[int64]*mergerequest.MergeRequest)
+	for _, mr := range mrs {
+		if mr.TaskID == 0 {
+			continue
+		}
+		current := byTask[mr.TaskID]
+		if current == nil || (current.Status != mergerequest.StatusOpen && (mr.Status == mergerequest.StatusOpen || mr.ID > current.ID)) {
+			byTask[mr.TaskID] = mr
+		}
+	}
+	return byTask
+}
+
+func (p *Provider) listTasks(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, status string) domain.ToolResultPart {
+	if status == "" {
+		status = "open"
+	}
+	tasks, err := p.tasks.List(ctx, req.UserID, proj.ID)
+	if err != nil {
+		return toolError(req.ToolName, "listing tasks: %v", err)
+	}
+	byTask := p.mergeRequestsByTask(ctx, req.UserID, proj.ID)
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].ID > tasks[j].ID })
+	items := make([]taskSummary, 0)
+	total := 0
+	for _, t := range tasks {
+		switch status {
+		case "all":
+		case "open":
+			if t.Status.Closed() {
+				continue
+			}
+		default:
+			if string(t.Status) != status {
+				continue
+			}
+		}
+		total++
+		if len(items) < maxListedItems {
+			items = append(items, summarizeTask(t, byTask[t.ID]))
+		}
+	}
+	return toolResult(req.ToolName, map[string]any{"status": status, "count": total, "tasks": items})
+}
+
+func (p *Provider) getTask(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, taskID int64) domain.ToolResultPart {
+	t, err := p.tasks.Get(ctx, req.UserID, proj.ID, taskID)
+	if err != nil {
+		return taskError(req.ToolName, taskID, err)
+	}
+	return toolResult(req.ToolName, map[string]any{"task": taskDetail(t, p.mergeRequestsByTask(ctx, req.UserID, proj.ID)[t.ID])})
+}
+
+func taskDetail(t *task.Task, mr *mergerequest.MergeRequest) map[string]any {
+	detail := map[string]any{
+		"id":        t.ID,
+		"title":     t.Title,
+		"body":      clip(t.Body, maxTaskBodyBytes),
+		"status":    t.Status,
+		"branch":    t.Branch,
+		"agentId":   t.AgentID,
+		"model":     t.Model,
+		"effort":    t.Effort,
+		"headSha":   t.HeadSHA,
+		"createdAt": t.CreatedAt,
+		"updatedAt": t.UpdatedAt,
+	}
+	if t.BaseBranch != "" {
+		detail["baseBranch"] = t.BaseBranch
+	}
+	if t.Error != "" {
+		detail["error"] = clip(t.Error, maxTaskBodyBytes)
+	}
+	if t.PendingMessage != "" {
+		detail["pendingFeedback"] = clip(t.PendingMessage, maxTaskBodyBytes)
+	}
+	if mr != nil {
+		detail["mergeRequest"] = mrRef{ID: mr.ID, Title: mr.Title, Status: mr.Status}
+	}
+	return detail
+}
+
+func (p *Provider) createTask(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) domain.ToolResultPart {
+	in := task.CreateInput{
+		Title:      args.Title,
+		Body:       args.Body,
+		Start:      args.Start,
+		BaseBranch: args.BaseBranch,
+		AgentSettings: task.AgentSettings{
+			AgentID: strings.TrimSpace(args.AgentID),
+			Model:   strings.TrimSpace(args.Model),
+			Effort:  strings.TrimSpace(args.Effort),
+		},
+	}
+	// The agent starts with the assistant's own model and effort unless the
+	// call picks others, as the board's picker defaults to the last choice.
+	if in.Start {
+		in.Model = defaultModel(in.Model, "", req.Model)
+		in.Effort = defaultEffort(in.Effort, "", req.Thinking)
+	}
+	t, err := p.tasks.Create(ctx, req.UserID, proj.ID, in)
+	if err != nil {
+		return toolError(req.ToolName, "creating the task: %v", err)
+	}
+	message := fmt.Sprintf("Created task #%d.", t.ID)
+	if t.Status == task.StatusQueued {
+		message = fmt.Sprintf("Created task #%d and queued an agent on it. It works in its own sandbox and opens a merge request when done.", t.ID)
+	}
+	return toolResult(req.ToolName, map[string]any{"message": message, "task": summarizeTask(t, nil)})
+}
+
+func (p *Provider) startTask(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) domain.ToolResultPart {
+	current, err := p.tasks.Get(ctx, req.UserID, proj.ID, args.TaskID)
+	if err != nil {
+		return taskError(req.ToolName, args.TaskID, err)
+	}
+	t, err := p.tasks.Start(ctx, req.UserID, proj.ID, current.ID, task.StartInput{
+		Message: args.Message,
+		AgentSettings: task.AgentSettings{
+			AgentID: strings.TrimSpace(args.AgentID),
+			Model:   defaultModel(strings.TrimSpace(args.Model), current.Model, req.Model),
+			Effort:  defaultEffort(strings.TrimSpace(args.Effort), current.Effort, req.Thinking),
+		},
+	})
+	if err != nil {
+		return taskError(req.ToolName, args.TaskID, err)
+	}
+	return toolResult(req.ToolName, map[string]any{
+		"message": fmt.Sprintf("Queued an agent on task #%d.", t.ID),
+		"task":    summarizeTask(t, nil),
+	})
+}
+
+func (p *Provider) requestChanges(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) domain.ToolResultPart {
+	if strings.TrimSpace(args.Feedback) == "" {
+		return toolError(req.ToolName, "feedback is required")
+	}
+	t, err := p.tasks.RequestChanges(ctx, req.UserID, proj.ID, args.TaskID, args.Feedback, true)
+	if err != nil {
+		return taskError(req.ToolName, args.TaskID, err)
+	}
+	return toolResult(req.ToolName, map[string]any{
+		"message": fmt.Sprintf("Sent the feedback to task #%d's agent, which is starting again.", t.ID),
+		"task":    summarizeTask(t, nil),
+	})
+}
+
+type mrSummary struct {
+	ID           int64               `json:"id"`
+	Title        string              `json:"title"`
+	Status       mergerequest.Status `json:"status"`
+	SourceBranch string              `json:"sourceBranch"`
+	TargetBranch string              `json:"targetBranch"`
+	TaskID       int64               `json:"taskId,omitempty"`
+	HeadSHA      string              `json:"headSha,omitempty"`
+}
+
+func summarizeMR(mr *mergerequest.MergeRequest) mrSummary {
+	return mrSummary{ID: mr.ID, Title: mr.Title, Status: mr.Status, SourceBranch: mr.SourceBranch, TargetBranch: mr.TargetBranch, TaskID: mr.TaskID, HeadSHA: shortSHA(mr.HeadSHA)}
+}
+
+func (p *Provider) listMergeRequests(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, status string) domain.ToolResultPart {
+	if status == "" {
+		status = "open"
+	}
+	mrs, err := p.mrs.List(ctx, req.UserID, proj.ID)
+	if err != nil {
+		return toolError(req.ToolName, "listing merge requests: %v", err)
+	}
+	sort.Slice(mrs, func(i, j int) bool { return mrs[i].ID > mrs[j].ID })
+	items := make([]mrSummary, 0)
+	total := 0
+	for _, mr := range mrs {
+		if status != "all" && string(mr.Status) != status {
+			continue
+		}
+		total++
+		if len(items) < maxListedItems {
+			items = append(items, summarizeMR(mr))
+		}
+	}
+	return toolResult(req.ToolName, map[string]any{"status": status, "count": total, "mergeRequests": items})
+}
+
+func (p *Provider) getMergeRequest(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, mrID int64) domain.ToolResultPart {
+	d, err := p.mrs.Get(ctx, req.UserID, proj.ID, mrID)
+	if err != nil {
+		if errors.Is(err, mergerequest.ErrNotFound) || errors.Is(err, project.ErrNotFound) {
+			return toolError(req.ToolName, "merge request !%d is not in this project", mrID)
+		}
+		return toolError(req.ToolName, "reading the merge request: %v", err)
+	}
+	mr := d.MergeRequest
+	reviews := make([]map[string]any, 0, len(d.Reviews))
+	for _, rv := range d.Reviews {
+		review := map[string]any{
+			"id":       rv.ID,
+			"author":   rv.Author,
+			"status":   rv.Status,
+			"verdict":  rv.Verdict,
+			"body":     clip(rv.Body, maxReviewBodyBytes),
+			"headSha":  shortSHA(rv.HeadSHA),
+			"outdated": rv.HeadSHA != "" && rv.HeadSHA != mr.HeadSHA,
+		}
+		if rv.Model != "" {
+			review["model"] = rv.Model
+		}
+		if rv.Error != "" {
+			review["error"] = clip(rv.Error, maxSummaryBytes)
+		}
+		reviews = append(reviews, review)
+	}
+	comments := d.Comments
+	omitted := 0
+	if len(comments) > maxListedComments {
+		omitted = len(comments) - maxListedComments
+		comments = comments[omitted:]
+	}
+	listed := make([]map[string]any, 0, len(comments))
+	for _, c := range comments {
+		comment := map[string]any{
+			"author":   c.Author,
+			"body":     clip(c.Body, maxCommentBytes),
+			"outdated": c.HeadSHA != "" && c.HeadSHA != mr.HeadSHA,
+		}
+		if c.Path != "" {
+			comment["path"], comment["line"] = c.Path, c.Line
+		}
+		listed = append(listed, comment)
+	}
+	result := map[string]any{
+		"mergeRequest": map[string]any{
+			"id":           mr.ID,
+			"title":        mr.Title,
+			"description":  clip(mr.Description, maxMRTextBytes),
+			"status":       mr.Status,
+			"sourceBranch": mr.SourceBranch,
+			"targetBranch": mr.TargetBranch,
+			"taskId":       mr.TaskID,
+			"headSha":      shortSHA(mr.HeadSHA),
+			"ahead":        d.Ahead,
+			"behind":       d.Behind,
+		},
+		"reviews":  reviews,
+		"comments": listed,
+	}
+	if omitted > 0 {
+		result["olderCommentsLeftOut"] = omitted
+	}
+	return toolResult(req.ToolName, result)
+}
+
+func taskError(name string, taskID int64, err error) domain.ToolResultPart {
+	switch {
+	case errors.Is(err, task.ErrNotFound), errors.Is(err, project.ErrNotFound):
+		return toolError(name, "task #%d is not in this project", taskID)
+	case errors.Is(err, task.ErrInvalidState), errors.Is(err, task.ErrInvalidInput), errors.Is(err, project.ErrNotReady):
+		return toolError(name, "%v", err)
+	default:
+		return toolError(name, "task #%d: %v", taskID, err)
+	}
+}
+
+func defaultModel(requested, taskModel, current string) string {
+	switch {
+	case requested != "":
+		return requested
+	case taskModel != "":
+		return taskModel
+	default:
+		return current
+	}
+}
+
+func defaultEffort(requested, taskEffort string, thinking *domain.ThinkingConfig) string {
+	switch {
+	case requested != "":
+		return requested
+	case taskEffort != "":
+		return taskEffort
+	case thinking != nil:
+		return thinking.Effort
+	default:
+		return ""
+	}
+}
+
+func agentLabel(agentID, model string) string {
+	label := "the coding agent"
+	if agentID != "" {
+		label = fmt.Sprintf("the agent %q", oneLine(agentID, 60))
+	}
+	if model != "" {
+		label += " (" + oneLine(model, 80) + ")"
+	}
+	return label
+}
+
+func baseNote(base string) string {
+	if base = strings.TrimSpace(base); base == "" {
+		return ""
+	}
+	return fmt.Sprintf(" from the branch %q", oneLine(base, 120))
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+// oneLine collapses whitespace and clips s for an approval summary.
+func oneLine(s string, n int) string {
+	return clip(strings.Join(strings.Fields(s), " "), n)
+}
+
+// clip shortens s to at most n bytes on a rune boundary, marking the cut.
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n - len("…")
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+func toolResult(name string, v any) domain.ToolResultPart {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return toolError(name, "encoding the result: %v", err)
+	}
+	return domain.ToolResultPart{Name: name, Content: string(data)}
+}
+
+// toolError reports a failed call. The "Error:" prefix is what the IDE uses
+// to show a tool call as failed.
+func toolError(name, format string, args ...any) domain.ToolResultPart {
+	return domain.ToolResultPart{Name: name, Content: "Error: " + fmt.Sprintf(format, args...), IsError: true}
+}

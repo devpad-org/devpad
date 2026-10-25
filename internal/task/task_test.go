@@ -111,6 +111,8 @@ type fakeSandboxes struct {
 	createErr     error
 	publishErr    error
 	hiddenSandbox *workspace.Workspace // exists for its branch but CreateSandbox reports it in use
+	branches      []string             // canonical branches besides the default
+	projectWS     *workspace.Workspace // the project workspace, if opened
 }
 
 func newFakeSandboxes(owner int64) *fakeSandboxes {
@@ -134,6 +136,29 @@ func (f *fakeSandboxes) Get(_ context.Context, userID, projectID int64) (*projec
 	}
 	p := f.project
 	return &p, nil
+}
+
+func (f *fakeSandboxes) Branches(_ context.Context, _, _ int64) (*agent.RepoRefs, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	refs := &agent.RepoRefs{DefaultBranch: f.project.DefaultBranch, Branches: []agent.RepoRef{{Name: f.project.DefaultBranch, SHA: "0001"}}}
+	for _, b := range f.branches {
+		refs.Branches = append(refs.Branches, agent.RepoRef{Name: b, SHA: "0002"})
+	}
+	return refs, nil
+}
+
+func (f *fakeSandboxes) Workspace(_ context.Context, userID, projectID int64) (*workspace.Workspace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if projectID != f.project.ID || userID != f.owner {
+		return nil, project.ErrNotFound
+	}
+	if f.projectWS == nil {
+		return nil, project.ErrNoWorkspace
+	}
+	clone := *f.projectWS
+	return &clone, nil
 }
 
 func (f *fakeSandboxes) ListSandboxes(_ context.Context, _, _ int64) ([]*workspace.Workspace, error) {
@@ -378,6 +403,7 @@ type fakeConversations struct {
 	mu     sync.Mutex
 	nextID int64
 	turns  map[int64][]domain.Turn
+	convs  map[int64]domain.Conversation
 }
 
 func (f *fakeConversations) CreateConversation(_ context.Context, userID, workspaceID int64, model string) (*domain.Conversation, error) {
@@ -385,6 +411,16 @@ func (f *fakeConversations) CreateConversation(_ context.Context, userID, worksp
 	defer f.mu.Unlock()
 	f.nextID++
 	return &domain.Conversation{ID: f.nextID, UserID: userID, WorkspaceID: workspaceID, Model: model}, nil
+}
+
+func (f *fakeConversations) GetConversation(_ context.Context, id, userID int64) (*domain.Conversation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	conv, ok := f.convs[id]
+	if !ok || conv.UserID != userID {
+		return nil, domain.ErrConversationNotFound
+	}
+	return &conv, nil
 }
 
 func (f *fakeConversations) GetTurns(_ context.Context, conversationID, _ int64) ([]domain.Turn, error) {
@@ -415,7 +451,7 @@ func setup(t *testing.T) *env {
 		repo:      newMemRepo(),
 		sandboxes: newFakeSandboxes(owner),
 		runs:      newFakeRuns(),
-		convs:     &fakeConversations{turns: map[int64][]domain.Turn{}},
+		convs:     &fakeConversations{turns: map[int64][]domain.Turn{}, convs: map[int64]domain.Conversation{}},
 	}
 	e.svc = NewService(e.repo, e.sandboxes, workspaceLifecycle{e.sandboxes}, e.runs, e.convs).(*service)
 	e.runs.onFinish = e.svc.RunFinished
@@ -1033,6 +1069,7 @@ func TestHandler(t *testing.T) {
 	mux.HandleFunc("GET /api/projects/{id}/tasks", h.HandleList)
 	mux.HandleFunc("POST /api/projects/{id}/tasks/{taskId}/start", h.HandleStart)
 	mux.HandleFunc("GET /api/projects/{id}/tasks/{taskId}", h.HandleGet)
+	mux.HandleFunc("POST /api/projects/{id}/tasks/handoff", h.HandleHandoff)
 
 	do := func(userID int64, method, path, body string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -1071,6 +1108,8 @@ func TestHandler(t *testing.T) {
 		{"unknown project", owner, http.MethodGet, "/api/projects/9/tasks", "", http.StatusNotFound},
 		{"blank title", owner, http.MethodPost, "/api/projects/1/tasks", `{"title":""}`, http.StatusBadRequest},
 		{"bad id", owner, http.MethodGet, "/api/projects/1/tasks/x", "", http.StatusBadRequest},
+		{"unpublished base", owner, http.MethodPost, "/api/projects/1/tasks", `{"title":"x","baseBranch":"nope"}`, http.StatusBadRequest},
+		{"handoff without a project workspace", owner, http.MethodPost, "/api/projects/1/tasks/handoff", `{"conversationId":1,"title":"x"}`, http.StatusConflict},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

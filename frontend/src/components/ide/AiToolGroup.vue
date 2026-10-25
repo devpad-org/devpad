@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { inject } from 'vue'
 import {
   hasToolResult,
   isToolError,
+  projectRefs,
   toolFriendlyName,
   toolGroupState,
   toolGroupSubtitle,
@@ -9,12 +11,25 @@ import {
   toolResultMeta,
   toolStatusLabel,
   toolTargetLabel,
+  type ProjectRef,
   type ToolGroupDisplay,
 } from '@/components/ide/aiToolDisplay'
+import { ideShellKey, mergeRequestTab } from '@/components/ide/viewTabs'
+import { useActiveProjectStore } from '@/stores/activeProject'
 
 defineProps<{
   group: ToolGroupDisplay
 }>()
+
+// In the project shell, tasks and merge requests that project tools mention
+// open in place: a task in its modal, a merge request in its tab.
+const shell = inject(ideShellKey, null)
+const projectStore = useActiveProjectStore()
+
+function openRef(ref: ProjectRef) {
+  if (ref.kind === 'task') projectStore.selectedTaskId = ref.id
+  else shell?.openView(mergeRequestTab(ref.id))
+}
 </script>
 
 <template>
@@ -81,6 +96,18 @@ defineProps<{
         <span class="tool-row-meta">{{ toolResultMeta(tool) }}</span>
         <span class="tool-row-status">{{ toolStatusLabel(tool) }}</span>
         <pre v-if="isToolError(tool)" class="tool-row-error">{{ tool.result }}</pre>
+        <div v-if="shell && projectRefs(tool).length > 0" class="tool-row-refs">
+          <button
+            v-for="ref in projectRefs(tool)"
+            :key="`${ref.kind}-${ref.id}`"
+            type="button"
+            class="tool-ref"
+            :title="ref.kind === 'task' ? 'Open the task' : 'Open the merge request'"
+            @click="openRef(ref)"
+          >
+            {{ ref.label }}
+          </button>
+        </div>
       </div>
     </div>
   </details>
@@ -277,6 +304,32 @@ defineProps<{
   font-size: 0.7rem;
   line-height: 1.45;
   white-space: pre-wrap;
+}
+
+.tool-row-refs {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tool-ref {
+  max-width: 100%;
+  padding: 1px 7px;
+  overflow: hidden;
+  border: 0.5px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-glow);
+  color: var(--accent);
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.tool-ref:hover {
+  background: var(--bg-hover);
 }
 
 .tool-status-icon {

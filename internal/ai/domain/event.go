@@ -44,15 +44,19 @@ type StreamEvent struct {
 	Error            string           `json:"error,omitempty"`
 }
 
-// ApprovalRequest is sent to the frontend when a command needs user approval before execution.
+// ApprovalRequest is sent to the frontend when a tool call needs user
+// approval before execution. Title names what is being approved and Command
+// describes it; an empty Title means Command is a sudo shell command.
 type ApprovalRequest struct {
 	ID      string `json:"id"`
+	Title   string `json:"title,omitempty"`
 	Command string `json:"command"`
 }
 
 // ApprovalResult is sent after a pending approval has been resolved.
 type ApprovalResult struct {
 	ID      string `json:"id"`
+	Title   string `json:"title,omitempty"`
 	Command string `json:"command"`
 	Status  string `json:"status"`
 }

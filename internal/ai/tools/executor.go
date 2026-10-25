@@ -88,3 +88,25 @@ type ToolProvider interface {
 	// ExecuteTool runs a tool call, reporting false if the tool is not its own.
 	ExecuteTool(ctx context.Context, req ExecutionRequest) (domain.ToolResultPart, bool)
 }
+
+// Approval describes a tool call the user must approve before it runs.
+type Approval struct {
+	// Title names what is being approved, such as "Start an agent".
+	Title string
+	// Summary says what the call will do.
+	Summary string
+}
+
+// ApprovalGate is a ToolProvider some of whose calls need the user's
+// approval before they run.
+type ApprovalGate interface {
+	// ApprovalFor reports whether a call needs approval, and describes it.
+	ApprovalFor(ctx context.Context, req ExecutionRequest) (Approval, bool)
+}
+
+// PromptProvider is a ToolProvider that adds context to the system prompt
+// of runs in the workspaces it serves.
+type PromptProvider interface {
+	// Prompt returns the context for runs in the workspace, if any.
+	Prompt(ctx context.Context, userID, workspaceID int64) string
+}

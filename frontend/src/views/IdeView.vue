@@ -1194,6 +1194,8 @@ const backLabel = computed(() => {
             <AiAgentPanel
               v-if="workspaceLive"
               :workspace-id="workspace?.id ?? 0"
+              :project-id="isProjectMode ? projectId : null"
+              @branch-changed="branchChanged('checkout')"
               :selected-agent-id="selectedAgentId"
               :focused-run-id="focusedAgentRunId"
               @clear-focused-run="focusedAgentRunId = null"
@@ -1349,7 +1351,9 @@ const backLabel = computed(() => {
       :task="projectStore.selectedTask"
       :project-id="projectId"
       :merge-request="projectStore.selectedTask ? projectStore.mergeRequestByTask.get(projectStore.selectedTask.id) : undefined"
+      :workspace-live="workspaceLive"
       @close="closeTask"
+      @checked-out="checkedOut"
       @changed="taskChanged"
       @deleted="taskDeleted"
     />

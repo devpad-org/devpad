@@ -21,6 +21,12 @@ type WorkspaceToolCatalog interface {
 	DefinitionsFor(ctx context.Context, userID, workspaceID int64) []domain.ToolDefinition
 }
 
+// WorkspacePromptCatalog is a ToolCatalog that adds context about the
+// workspace a run is in to its system prompt.
+type WorkspacePromptCatalog interface {
+	PromptFor(ctx context.Context, userID, workspaceID int64) string
+}
+
 // ToolCatalog exposes the built-in agent prompt and tool definitions.
 type ToolCatalog interface {
 	SystemPrompt() string
@@ -30,6 +36,12 @@ type ToolCatalog interface {
 // ToolExecutor executes agent tools against a workspace.
 type ToolExecutor interface {
 	ExecuteTool(ctx context.Context, req aitools.ExecutionRequest) domain.ToolResultPart
+}
+
+// ApprovalChecker is a ToolExecutor whose tools can need the user's
+// approval for reasons other than sudo, such as starting another agent.
+type ApprovalChecker interface {
+	ApprovalFor(ctx context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool)
 }
 
 // AgentChatRequest contains the inputs needed to run the agent loop.

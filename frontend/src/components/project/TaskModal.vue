@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { taskApi, type Task, type TaskStatus } from '@/api/tasks'
+import { projectApi } from '@/api/projects'
 import type { MergeRequest } from '@/api/mergeRequests'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
-import { useOpenMergeRequest } from '@/components/ide/viewTabs'
+import { confirmDiscardKey, useOpenMergeRequest } from '@/components/ide/viewTabs'
+import { useActiveProjectStore } from '@/stores/activeProject'
+import { branchActionError } from './branchErrors'
 import AgentModelPicker from './AgentModelPicker.vue'
 import MrIcon, { type MrIconName } from './MrIcon.vue'
 import StatusBadge from './StatusBadge.vue'
@@ -13,12 +16,15 @@ const props = defineProps<{
   task: Task | null
   projectId: number
   mergeRequest?: MergeRequest
+  // The project workspace is running, so the task's branch can be checked out.
+  workspaceLive?: boolean
 }>()
 
 const emit = defineEmits<{
   close: []
   changed: [task: Task]
   deleted: [id: number]
+  'checked-out': [branch: string]
 }>()
 
 type Tone = 'neutral' | 'active' | 'review' | 'attention' | 'error' | 'success'
@@ -58,6 +64,46 @@ const confirmingDelete = ref(false)
 const composerOpen = ref(true)
 const error = ref('')
 const titleInput = ref<HTMLInputElement | null>(null)
+
+const projectStore = useActiveProjectStore()
+const confirmDiscard = inject(confirmDiscardKey, () => Promise.resolve(true))
+const checkingOut = ref(false)
+const checkoutNotice = ref('')
+
+// The agent's branch reaches the project when a round of its work is
+// collected, so it can only be checked out after that.
+const branchPublished = computed(() => !!props.task?.branch && projectStore.branchNames.has(props.task.branch))
+
+watch(() => props.task?.id, (id) => {
+  checkoutNotice.value = ''
+  if (id !== undefined) {
+    projectStore.refreshBranches().catch(() => {
+      // Keep the last known branches; checking out reports a missing one.
+    })
+  }
+}, { immediate: true })
+
+async function checkoutBranch() {
+  const branch = props.task?.branch
+  if (!branch || !props.workspaceLive || checkingOut.value) return
+  if (!(await confirmDiscard('Checking out this branch reloads your open files from it, so their unsaved changes will be lost.'))) return
+  checkingOut.value = true
+  error.value = ''
+  checkoutNotice.value = ''
+  try {
+    const res = await projectApi.checkoutBranch(props.projectId, branch)
+    checkoutNotice.value = res.created
+      ? `Checked out ${res.branch} in your workspace.`
+      : res.sha === res.upstreamSha
+        ? `Switched your workspace to ${res.branch}.`
+        : `Switched to ${res.branch}. Your copy differs from the agent's; merge ${res.upstream} to pick up its latest work.`
+    emit('checked-out', res.branch)
+  } catch (e) {
+    error.value = branchActionError(e, 'Failed to check out the branch')
+  } finally {
+    checkingOut.value = false
+  }
+}
 
 const info = computed(() => (props.task ? STATUS[props.task.status] : STATUS.todo))
 const canStart = computed(() => props.task !== null && STARTABLE.has(props.task.status))
@@ -422,6 +468,10 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                   <span v-if="task.branch" class="mono ellipsis" :title="task.branch">{{ task.branch }}</span>
                   <span v-else class="muted">Not created yet</span>
                 </dd>
+                <template v-if="task.baseBranch">
+                  <dt>From</dt>
+                  <dd><span class="mono ellipsis" :title="task.baseBranch">{{ task.baseBranch }}</span></dd>
+                </template>
                 <template v-if="task.headSha">
                   <dt>Head</dt>
                   <dd><span class="mono" :title="task.headSha">{{ task.headSha.slice(0, 8) }}</span></dd>
@@ -442,9 +492,25 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               </dl>
             </section>
 
-            <section v-if="task.workspaceId || mergeRequest" class="card side-card">
+            <section v-if="task.workspaceId || mergeRequest || branchPublished" class="card side-card">
               <h3 class="side-title">Linked</h3>
               <div class="links">
+                <button
+                  v-if="branchPublished"
+                  type="button"
+                  class="link-row"
+                  :disabled="!workspaceLive || checkingOut"
+                  :title="workspaceLive ? `Check out ${task.branch} in your workspace` : 'Start your workspace to check out branches'"
+                  @click="checkoutBranch"
+                >
+                  <span class="link-icon"><MrIcon name="branch" :size="13" /></span>
+                  <span class="link-text">
+                    <span class="link-title">{{ checkingOut ? 'Checking out…' : 'Check out branch' }}</span>
+                    <span class="link-sub">{{ workspaceLive ? 'Run and change it in your workspace' : 'Start your workspace first' }}</span>
+                  </span>
+                  <MrIcon name="chevron-right" :size="13" class="link-go" />
+                </button>
+                <p v-if="checkoutNotice" class="checkout-notice">{{ checkoutNotice }}</p>
                 <RouterLink v-if="task.workspaceId" class="link-row" :to="{ name: 'ide', params: { id: task.workspaceId } }">
                   <span class="link-icon"><MrIcon name="terminal" :size="13" /></span>
                   <span class="link-text">
@@ -1087,6 +1153,17 @@ button.link-row {
   width: 100%;
   text-align: left;
   font-size: inherit;
+}
+
+button.link-row:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.checkout-notice {
+  margin: 2px var(--space-2) 4px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
 }
 
 .link-row:hover {

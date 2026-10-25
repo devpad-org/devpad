@@ -59,16 +59,50 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		agentSettingsRequest
-		Title string `json:"title"`
-		Body  string `json:"body"`
-		Start bool   `json:"start"`
+		Title      string `json:"title"`
+		Body       string `json:"body"`
+		Start      bool   `json:"start"`
+		BaseBranch string `json:"baseBranch"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	t, err := h.service.Create(r.Context(), user.ID, projectID, CreateInput{
-		Title: req.Title, Body: req.Body, AgentSettings: req.settings(), Start: req.Start,
+		Title: req.Title, Body: req.Body, AgentSettings: req.settings(), Start: req.Start, BaseBranch: req.BaseBranch,
+	})
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"task": taskResponse(t)})
+}
+
+// HandleHandoff hands a conversation from the project workspace off to a
+// new task, which starts at once.
+func (h *Handler) HandleHandoff(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	projectID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		agentSettingsRequest
+		ConversationID int64  `json:"conversationId"`
+		Title          string `json:"title"`
+		Instructions   string `json:"instructions"`
+		BaseBranch     string `json:"baseBranch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	t, err := h.service.Handoff(r.Context(), user.ID, projectID, HandoffInput{
+		ConversationID: req.ConversationID,
+		Title:          req.Title,
+		Instructions:   req.Instructions,
+		BaseBranch:     req.BaseBranch,
+		AgentSettings:  req.settings(),
 	})
 	if err != nil {
 		handleServiceError(w, err)
@@ -179,7 +213,7 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "access denied")
 	case errors.Is(err, ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrInvalidState), errors.Is(err, project.ErrNotReady):
+	case errors.Is(err, ErrInvalidState), errors.Is(err, project.ErrNotReady), errors.Is(err, project.ErrNoWorkspace):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		log.Printf("task handler: %v", err)
@@ -203,6 +237,8 @@ func taskResponse(t *Task) map[string]any {
 		"effort":         t.Effort,
 		"pendingMessage": t.PendingMessage,
 		"headSha":        t.HeadSHA,
+		"baseBranch":     t.BaseBranch,
+		"handedOff":      t.Handoff != "",
 		"error":          t.Error,
 		"createdAt":      t.CreatedAt,
 		"updatedAt":      t.UpdatedAt,

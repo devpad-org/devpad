@@ -27,13 +27,13 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const taskColumns = `id, project_id, user_id, title, body, status, branch, workspace_id, conversation_id, run_id, agent_id, model, effort, pending_message, head_sha, error, created_at, updated_at`
+const taskColumns = `id, project_id, user_id, title, body, status, branch, workspace_id, conversation_id, run_id, agent_id, model, effort, pending_message, head_sha, error, base_branch, handoff, created_at, updated_at`
 
 func (r *repository) Create(ctx context.Context, t *Task) error {
 	now := time.Now()
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO tasks (project_id, user_id, title, body, status, branch, workspace_id, conversation_id, run_id, agent_id, model, effort, pending_message, head_sha, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ProjectID, t.UserID, t.Title, t.Body, t.Status, t.Branch, nullableID(t.WorkspaceID), nullableID(t.ConversationID), nullableID(t.RunID), t.AgentID, t.Model, t.Effort, t.PendingMessage, t.HeadSHA, t.Error, now, now,
+		`INSERT INTO tasks (project_id, user_id, title, body, status, branch, workspace_id, conversation_id, run_id, agent_id, model, effort, pending_message, head_sha, error, base_branch, handoff, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ProjectID, t.UserID, t.Title, t.Body, t.Status, t.Branch, nullableID(t.WorkspaceID), nullableID(t.ConversationID), nullableID(t.RunID), t.AgentID, t.Model, t.Effort, t.PendingMessage, t.HeadSHA, t.Error, t.BaseBranch, t.Handoff, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting task: %w", err)
@@ -123,7 +123,7 @@ type rowScanner interface {
 func scanTask(row rowScanner) (*Task, error) {
 	var t Task
 	var workspaceID, conversationID, runID sql.NullInt64
-	if err := row.Scan(&t.ID, &t.ProjectID, &t.UserID, &t.Title, &t.Body, &t.Status, &t.Branch, &workspaceID, &conversationID, &runID, &t.AgentID, &t.Model, &t.Effort, &t.PendingMessage, &t.HeadSHA, &t.Error, &t.CreatedAt, &t.UpdatedAt); err != nil {
+	if err := row.Scan(&t.ID, &t.ProjectID, &t.UserID, &t.Title, &t.Body, &t.Status, &t.Branch, &workspaceID, &conversationID, &runID, &t.AgentID, &t.Model, &t.Effort, &t.PendingMessage, &t.HeadSHA, &t.Error, &t.BaseBranch, &t.Handoff, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.WorkspaceID = workspaceID.Int64

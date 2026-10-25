@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { aiApi, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
+import { aiApi, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalRequest, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
@@ -11,6 +11,9 @@ import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
 import AiMessageCopyButton from '@/components/ide/AiMessageCopyButton.vue'
 import AiQuestionCard from '@/components/ide/AiQuestionCard.vue'
+import HandoffModal from '@/components/project/HandoffModal.vue'
+import type { Task } from '@/api/tasks'
+import { useActiveProjectStore } from '@/stores/activeProject'
 import ComposerSelect, { type ComposerSelectOption } from '@/components/ide/ComposerSelect.vue'
 import {
   hasToolResult,
@@ -25,11 +28,15 @@ const props = defineProps<{
   workspaceId: number
   selectedAgentId: string
   focusedRunId?: number | null
+  // Set in a project's own workspace, where a conversation can be handed off
+  // to a background task.
+  projectId?: number | null
 }>()
 
 const emit = defineEmits<{
   (e: 'clear-focused-run'): void
   (e: 'select-agent', agentId: string): void
+  (e: 'branch-changed'): void
 }>()
 
 interface TextSegment {
@@ -44,6 +51,8 @@ interface ToolSegment extends ToolDisplaySegment {
 interface ApprovalSegment {
   type: 'approval'
   id: string
+  // Set for actions other than sudo commands, such as starting an agent.
+  title?: string
   command: string
   status: 'pending' | ApprovalResult['status']
   error?: string
@@ -115,6 +124,11 @@ const inputValue = ref('')
 const chatBody = ref<HTMLElement | null>(null)
 const models = computed(() => aiModelStore.models)
 const selectedModel = ref('')
+
+const projectStore = useActiveProjectStore()
+const showHandoff = ref(false)
+// The tasks this chat was handed off to, newest last.
+const handedOff = ref<Task[]>([])
 const thinkingPreferences = ref<Record<string, boolean>>({})
 const thinkingEffortPreferences = ref<Record<string, string>>({})
 const streaming = ref(false)
@@ -398,17 +412,19 @@ function findApprovalSegment(segments: MessageSegment[], id: string): ApprovalSe
   return segments.find((seg): seg is ApprovalSegment => seg.type === 'approval' && seg.id === id)
 }
 
-function applyApprovalRequired(segments: MessageSegment[], id: string, command: string): void {
-  const existing = findApprovalSegment(segments, id)
+function applyApprovalRequired(segments: MessageSegment[], request: ApprovalRequest): void {
+  const existing = findApprovalSegment(segments, request.id)
   if (existing) {
-    existing.command = command
+    existing.command = request.command
+    existing.title = request.title
     return
   }
 
   segments.push({
     type: 'approval',
-    id,
-    command,
+    id: request.id,
+    title: request.title,
+    command: request.command,
     status: 'pending',
   })
 }
@@ -417,6 +433,7 @@ function applyApprovalResolved(segments: MessageSegment[], result: ApprovalResul
   const existing = findApprovalSegment(segments, result.id)
   if (existing) {
     existing.command = result.command || existing.command
+    existing.title = result.title || existing.title
     existing.status = result.status
     existing.error = undefined
     return
@@ -425,6 +442,7 @@ function applyApprovalResolved(segments: MessageSegment[], result: ApprovalResul
   segments.push({
     type: 'approval',
     id: result.id,
+    title: result.title,
     command: result.command,
     status: result.status,
   })
@@ -688,7 +706,7 @@ function cloneMessageSegment(seg: MessageSegment): MessageSegment {
     case 'tool':
       return { type: 'tool', toolCallId: seg.toolCallId, name: seg.name, args: seg.args, result: seg.result }
     case 'approval':
-      return { type: 'approval', id: seg.id, command: seg.command, status: seg.status, error: seg.error }
+      return { type: 'approval', id: seg.id, title: seg.title, command: seg.command, status: seg.status, error: seg.error }
     case 'question':
       return {
         type: 'question',
@@ -826,7 +844,7 @@ function applyFocusedRunEvent(event: StreamEvent) {
   }
 
   if (event.approvalRequired) {
-    applyApprovalRequired(msg.segments, event.approvalRequired.id, event.approvalRequired.command)
+    applyApprovalRequired(msg.segments, event.approvalRequired)
     refreshRunForEvent(event)
   }
 
@@ -1135,7 +1153,7 @@ async function sendMessage() {
         }
 
         if (event.approvalRequired) {
-          applyApprovalRequired(messages.value[assistantIdx].segments, event.approvalRequired.id, event.approvalRequired.command)
+          applyApprovalRequired(messages.value[assistantIdx].segments, event.approvalRequired)
           refreshRunForEvent(event)
         }
 
@@ -1236,6 +1254,27 @@ function stopStreaming() {
   abortController.value?.abort()
 }
 
+// The conversation goes to a background agent once it has something in it and
+// no run is writing to it, so the agent gets all of it.
+const canHandOff = computed(() =>
+  Boolean(props.projectId) && activeConversationId.value !== null && messages.value.length > 0 && !streaming.value,
+)
+
+const handoffTitle = computed(() => {
+  const first = messages.value.find((m) => m.role === 'user')?.content ?? ''
+  const line = first.split('\n').find((l) => l.trim()) ?? ''
+  return line.trim().slice(0, 80)
+})
+
+function handedOffTask(task: Task) {
+  showHandoff.value = false
+  handedOff.value = [...handedOff.value, task]
+}
+
+function openTask(id: number) {
+  projectStore.selectedTaskId = id
+}
+
 function newChat() {
   if (streaming.value) {
     // Disconnect from the SSE stream without cancelling the backend run.
@@ -1245,6 +1284,7 @@ function newChat() {
   }
   messages.value = []
   rawMessages.value = []
+  handedOff.value = []
   inputValue.value = ''
   planExpanded.value = false
   activeAgentRunId.value = null
@@ -1471,6 +1511,16 @@ function scrollToBottom(options: { force?: boolean } = {}) {
         >
           {{ contextSizeLabel(displayedContextSize) }}
         </span>
+        <button
+          v-if="projectId"
+          class="continue-run-btn"
+          type="button"
+          :disabled="!canHandOff"
+          :title="canHandOff ? 'Hand this conversation to a background agent as a task' : 'Available once the conversation has messages and no run is active'"
+          @click="showHandoff = true"
+        >
+          Continue in background
+        </button>
         <button class="new-chat-btn" title="New Chat" @click="newChat">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 5v14" />
@@ -1553,9 +1603,10 @@ function scrollToBottom(options: { force?: boolean } = {}) {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" />
                 </svg>
-                <span class="approval-title">sudo command requires approval</span>
+                <span class="approval-title">{{ (item as ApprovalSegment).title || 'sudo command requires approval' }}</span>
               </div>
-              <code class="approval-command">{{ (item as ApprovalSegment).command }}</code>
+              <p v-if="(item as ApprovalSegment).title" class="approval-summary">{{ (item as ApprovalSegment).command }}</p>
+              <code v-else class="approval-command">{{ (item as ApprovalSegment).command }}</code>
               <div v-if="(item as ApprovalSegment).status === 'pending'" class="approval-actions">
                 <button class="approval-btn approve" @click="handleApproval(item as ApprovalSegment, true)">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1686,6 +1737,10 @@ function scrollToBottom(options: { force?: boolean } = {}) {
     </div>
 
     <div v-else class="agent-input-area">
+      <div v-for="task in handedOff" :key="task.id" class="handoff-note">
+        <span>Handed off to task #{{ task.id }}: {{ task.title }}</span>
+        <button type="button" class="handoff-link" @click="openTask(task.id)">Open task</button>
+      </div>
       <div class="input-shell" :class="{ focused: inputFocused }">
         <div v-if="slashCommandOptions.length > 0" class="slash-command-menu">
           <button
@@ -1764,6 +1819,20 @@ function scrollToBottom(options: { force?: boolean } = {}) {
         </div>
       </div>
     </div>
+
+    <HandoffModal
+      v-if="projectId && activeConversationId !== null"
+      :show="showHandoff"
+      :project-id="projectId"
+      :workspace-id="workspaceId"
+      :conversation-id="activeConversationId"
+      :default-title="handoffTitle"
+      :default-model="selectedModel"
+      :default-effort="thinkingEffort"
+      @close="showHandoff = false"
+      @created="handedOffTask"
+      @branch-changed="emit('branch-changed')"
+    />
   </div>
 </template>
 
@@ -2496,6 +2565,46 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   font-size: 0.72rem;
   color: var(--text-primary);
   word-break: break-all;
+}
+
+.handoff-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: 6px 10px;
+  border: 0.5px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-glow);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+}
+
+.handoff-note span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.handoff-link {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.handoff-link:hover {
+  text-decoration: underline;
+}
+
+.approval-summary {
+  margin: 8px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
 }
 
 .approval-actions {

@@ -25,6 +25,9 @@ type Service interface {
 	Delete(ctx context.Context, userID, projectID, taskID int64) error
 	Start(ctx context.Context, userID, projectID, taskID int64, in StartInput) (*Task, error)
 	Cancel(ctx context.Context, userID, projectID, taskID int64) (*Task, error)
+	// Handoff creates and starts a task that continues a conversation from
+	// the project workspace.
+	Handoff(ctx context.Context, userID, projectID int64, in HandoffInput) (*Task, error)
 	// RequestChanges hands review feedback to the task's agent, starting it
 	// now or leaving it for the next Start.
 	RequestChanges(ctx context.Context, userID, projectID, taskID int64, feedback string, start bool) (*Task, error)
@@ -50,6 +53,8 @@ type ReviewHook interface {
 // Projects is the project service surface tasks need.
 type Projects interface {
 	Get(ctx context.Context, userID, projectID int64) (*project.Project, error)
+	Branches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error)
+	Workspace(ctx context.Context, userID, projectID int64) (*workspace.Workspace, error)
 	ListSandboxes(ctx context.Context, userID, projectID int64) ([]*workspace.Workspace, error)
 	CreateSandbox(ctx context.Context, userID, projectID int64, in project.SandboxInput) (*workspace.Workspace, error)
 	StartSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*workspace.Workspace, error)
@@ -76,6 +81,7 @@ type Runs interface {
 // transcript per task.
 type Conversations interface {
 	CreateConversation(ctx context.Context, userID, workspaceID int64, model string) (*domain.Conversation, error)
+	GetConversation(ctx context.Context, id, userID int64) (*domain.Conversation, error)
 	GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error)
 }
 
@@ -192,22 +198,32 @@ func (s *service) List(ctx context.Context, userID, projectID int64) ([]*Task, e
 }
 
 func (s *service) Create(ctx context.Context, userID, projectID int64, in CreateInput) (*Task, error) {
-	if _, err := s.projects.Get(ctx, userID, projectID); err != nil {
+	p, err := s.projects.Get(ctx, userID, projectID)
+	if err != nil {
 		return nil, err
 	}
 	title := strings.TrimSpace(in.Title)
 	if title == "" {
 		return nil, invalid("title is required")
 	}
+	if len(in.Handoff) > maxHandoffBytes {
+		return nil, invalid("the handed-off conversation is too long")
+	}
+	base, err := s.baseBranch(ctx, p, in.BaseBranch)
+	if err != nil {
+		return nil, err
+	}
 	t := &Task{
-		ProjectID: projectID,
-		UserID:    userID,
-		Title:     title,
-		Body:      in.Body,
-		Status:    StatusTodo,
-		AgentID:   in.AgentID,
-		Model:     in.Model,
-		Effort:    in.Effort,
+		ProjectID:  projectID,
+		UserID:     userID,
+		Title:      title,
+		Body:       in.Body,
+		Status:     StatusTodo,
+		AgentID:    in.AgentID,
+		Model:      in.Model,
+		Effort:     in.Effort,
+		BaseBranch: base,
+		Handoff:    in.Handoff,
 	}
 	if err := s.repo.Create(ctx, t); err != nil {
 		return nil, err
@@ -220,6 +236,60 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 		return s.Start(ctx, userID, projectID, t.ID, StartInput{})
 	}
 	return t, nil
+}
+
+// baseBranch checks a requested base against the canonical repo. The
+// default branch is the implicit base, so it is stored as empty.
+func (s *service) baseBranch(ctx context.Context, p *project.Project, requested string) (string, error) {
+	base := strings.TrimSpace(requested)
+	if base == "" || base == p.DefaultBranch {
+		return "", nil
+	}
+	refs, err := s.projects.Branches(ctx, p.UserID, p.ID)
+	if err != nil {
+		return "", fmt.Errorf("listing branches: %w", err)
+	}
+	for _, ref := range refs.Branches {
+		if ref.Name == base {
+			return base, nil
+		}
+	}
+	return "", invalid("base branch %q is not in the project; publish it first", base)
+}
+
+func (s *service) Handoff(ctx context.Context, userID, projectID int64, in HandoffInput) (*Task, error) {
+	ws, err := s.projects.Workspace(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	// Only the project's own workspace can hand off, and only its own
+	// conversations: the conversation is looked up for this user and must
+	// belong to that workspace.
+	conv, err := s.conversations.GetConversation(ctx, in.ConversationID, userID)
+	if err != nil || conv == nil || conv.WorkspaceID != ws.ID {
+		return nil, invalid("the conversation is not in this project's workspace")
+	}
+	turns, err := s.conversations.GetTurns(ctx, conv.ID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("loading the conversation: %w", err)
+	}
+	transcript := HandoffTranscript(turns, maxHandoffBytes)
+	if transcript == "" {
+		return nil, invalid("the conversation has nothing to hand off yet")
+	}
+	body := strings.TrimSpace(in.Instructions)
+	if body != "" {
+		body += "\n\n"
+	}
+	body += fmt.Sprintf("_Handed off from the conversation %q in the project workspace._", conv.Title)
+	return s.Create(ctx, userID, projectID, CreateInput{
+		Title:         in.Title,
+		Body:          body,
+		AgentSettings: in.AgentSettings,
+		Start:         true,
+		BaseBranch:    in.BaseBranch,
+		Handoff:       transcript,
+	})
 }
 
 func (s *service) Get(ctx context.Context, userID, projectID, taskID int64) (*Task, error) {
@@ -455,6 +525,7 @@ func (s *service) ensureSandbox(ctx context.Context, t *Task) (*workspace.Worksp
 		Name:   fmt.Sprintf("Task #%d: %s", t.ID, t.Title),
 		Kind:   string(workspace.KindTask),
 		Branch: t.Branch,
+		Base:   t.BaseBranch,
 	})
 	if errors.Is(err, project.ErrBranchInUse) {
 		// A sandbox for the branch exists but was never recorded on the task,
@@ -522,15 +593,24 @@ func implementPrompt(p *project.Project, t *Task) string {
 	if body := strings.TrimSpace(t.Body); body != "" {
 		b.WriteString(body + "\n\n")
 	}
+	if handoff := strings.TrimSpace(t.Handoff); handoff != "" {
+		b.WriteString("## The conversation this task continues\n\n")
+		b.WriteString("The user worked on this with an assistant in their own workspace, then handed it to you. The conversation so far, oldest first:\n\n")
+		b.WriteString(handoff + "\n\n")
+	}
+	start := "`" + p.DefaultBranch + "`"
+	if t.BaseBranch != "" {
+		start = "`" + t.BaseBranch + "`, a branch of " + start + " that already holds work you are continuing"
+	}
 	fmt.Fprintf(&b, `## How to work
 
-- /workspace is a git checkout of the project on the branch %[1]s, which started from %[2]s. If %[1]s already has commits that %[2]s lacks, they are earlier work on this task: build on them.
-- The latest %[2]s is available as %[3]s, refreshed each time you start. If your branch conflicts with it, merge %[3]s into %[1]s and resolve the conflicts.
+- /workspace is a git checkout of the project on the branch %[1]s, which started from %[2]s. If %[1]s already has commits that %[3]s lacks, they are earlier work on this task: build on them.
+- The latest %[3]s is available as %[4]s, refreshed each time you start. If your branch conflicts with it, merge %[4]s into %[1]s and resolve the conflicts.
 - Make the change, and run the project's tests or checks where they exist.
 - Commit your work to %[1]s with clear commit messages. Do not switch branches: only commits on %[1]s are collected.
 - The checkout has no remote and no credentials. Do not try to push; devpad collects the branch when you finish.
 - Leave nothing uncommitted when you finish.
-- When you are done, reply with a short summary of what you changed and anything a reviewer should check.`, "`"+t.Branch+"`", "`"+p.DefaultBranch+"`", "`devpad/"+p.DefaultBranch+"`")
+- When you are done, reply with a short summary of what you changed and anything a reviewer should check.`, "`"+t.Branch+"`", start, "`"+p.DefaultBranch+"`", "`devpad/"+p.DefaultBranch+"`")
 	return b.String()
 }
 

@@ -132,12 +132,14 @@ type StreamToolResultDTO struct {
 // ApprovalRequestDTO asks the client to approve a command.
 type ApprovalRequestDTO struct {
 	ID      string `json:"id"`
+	Title   string `json:"title,omitempty"`
 	Command string `json:"command"`
 }
 
 // ApprovalResultDTO reports the outcome of a previous approval request.
 type ApprovalResultDTO struct {
 	ID      string `json:"id"`
+	Title   string `json:"title,omitempty"`
 	Command string `json:"command"`
 	Status  string `json:"status"`
 }
@@ -359,12 +361,14 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 	if event.Approval != nil {
 		dto.ApprovalRequired = &ApprovalRequestDTO{
 			ID:      event.Approval.ID,
+			Title:   event.Approval.Title,
 			Command: event.Approval.Command,
 		}
 	}
 	if event.ApprovalResult != nil {
 		dto.ApprovalResolved = &ApprovalResultDTO{
 			ID:      event.ApprovalResult.ID,
+			Title:   event.ApprovalResult.Title,
 			Command: event.ApprovalResult.Command,
 			Status:  event.ApprovalResult.Status,
 		}

@@ -109,7 +109,7 @@ function questionError(item: AttentionItem, message: string) {
     <div v-for="item in attention.items" :key="itemKey(item)" class="panel item">
       <div class="item-header">
         <div class="item-source">
-          <span class="item-kind">{{ item.approval ? 'Approve a command' : 'Answer a question' }}</span>
+          <span class="item-kind">{{ item.approval ? item.approval.title || 'Approve a command' : 'Answer a question' }}</span>
           <span class="meta-row">
             <span>{{ source(item).label }}</span>
             <span>&middot;</span>
@@ -130,7 +130,8 @@ function questionError(item: AttentionItem, message: string) {
       <p v-if="item.run.promptPreview" class="item-prompt">{{ item.run.promptPreview }}</p>
 
       <template v-if="item.approval">
-        <pre class="command">{{ item.approval.command }}</pre>
+        <p v-if="item.approval.title" class="approval-summary">{{ item.approval.command }}</p>
+        <pre v-else class="command">{{ item.approval.command }}</pre>
         <div class="item-actions">
           <button class="btn btn-secondary" :disabled="busy === itemKey(item)" @click="decide(item, false)">Deny</button>
           <button class="btn btn-primary" :disabled="busy === itemKey(item)" @click="decide(item, true)">Approve</button>
@@ -220,6 +221,13 @@ function questionError(item: AttentionItem, message: string) {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.approval-summary {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .command {
