@@ -245,4 +245,11 @@ onUnmounted(() => {
 .review-pop .form-error {
   margin: 0;
 }
+
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: the popover spans the tab. */
+@media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  .review-pop {
+    width: calc(100cqw - 2 * var(--space-4));
+  }
+}
 </style>

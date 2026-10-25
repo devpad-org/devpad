@@ -143,4 +143,19 @@ onUnmounted(() => {
 .git-push-toast__close:hover {
   color: var(--text-primary);
 }
+
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: the toasts sit above the
+   project's bottom tab bar and span the screen's gutters. */
+@media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  .git-push-toasts {
+    left: var(--space-4);
+    bottom: calc(56px + env(safe-area-inset-bottom) + var(--space-3));
+    max-width: none;
+  }
+
+  .git-push-toast__close {
+    min-width: 40px;
+    min-height: 40px;
+  }
+}
 </style>

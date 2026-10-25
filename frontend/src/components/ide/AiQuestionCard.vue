@@ -424,4 +424,19 @@ function statusLabel(status: 'pending' | UserQuestionResult['status']): string {
   color: var(--accent-rose);
   font-size: 0.72rem;
 }
+
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: touch-sized choices. */
+@media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  .question-option {
+    min-height: 44px;
+    padding: var(--space-2) var(--space-3);
+    font-size: 0.85rem;
+  }
+
+  .question-submit {
+    flex: 1;
+    min-height: 44px;
+    font-size: 0.85rem;
+  }
+}
 </style>

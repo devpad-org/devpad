@@ -87,9 +87,14 @@ function created(task: Task) {
   }
 }
 
+/* One column under another on a phone; an empty column needs no height. */
 @container (max-width: 480px) {
   .board {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .board .column {
+    min-height: 0;
   }
 }
 

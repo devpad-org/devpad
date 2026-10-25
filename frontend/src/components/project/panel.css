@@ -170,3 +170,39 @@ a.side-row:hover {
   margin: var(--space-2) var(--space-3);
   margin-bottom: 0;
 }
+
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts. On a phone these panels
+   fill the screen, so they take the page gutter and touch-sized rows. */
+@media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  .side-header {
+    height: 44px;
+    padding: 0 var(--space-4);
+  }
+
+  .side-section {
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .side-notice {
+    margin: var(--space-2) var(--space-4) 0;
+  }
+
+  .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .side-row {
+    min-height: 44px;
+    padding: var(--space-2);
+  }
+
+  .side-row-title {
+    font-size: 0.875rem;
+  }
+
+  .side-row-meta,
+  .side-row-meta .mono {
+    font-size: 0.75rem;
+  }
+}

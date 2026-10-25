@@ -2987,5 +2987,17 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   .slash-command-description {
     font-size: 0.9rem;
   }
+
+  /* Approving is the action a phone is most often picked up for. */
+  .approval-actions {
+    gap: var(--space-2);
+  }
+
+  .approval-btn {
+    flex: 1;
+    justify-content: center;
+    min-height: 44px;
+    font-size: 0.85rem;
+  }
 }
 </style>

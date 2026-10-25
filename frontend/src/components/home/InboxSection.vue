@@ -1,13 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import type { RouteLocationRaw } from 'vue-router'
-import { aiApi, type AttentionItem } from '@/api/ai'
-import { useAttentionStore } from '@/stores/attention'
+import type { AttentionItem } from '@/api/ai'
+import { attentionItemKey, useAttentionStore } from '@/stores/attention'
 import { useProjectStore } from '@/stores/projects'
 import { useWorkspaceStore } from '@/stores/workspaces'
 import { BOARD_TAB, mergeRequestTab } from '@/components/ide/viewTabs'
-import AiQuestionCard from '@/components/ide/AiQuestionCard.vue'
-import ApprovalDetails from '@/components/ide/ApprovalDetails.vue'
+import AttentionItemCard from '@/components/ide/AttentionItemCard.vue'
 
 // Agents waiting for the user, across every project and workspace. Each item
 // can be answered in place, and links to where its work lives.
@@ -25,15 +24,8 @@ const attention = useAttentionStore()
 const projects = useProjectStore()
 const workspaces = useWorkspaceStore()
 
-const busy = ref<string | null>(null)
-const errors = ref<Record<string, string>>({})
-
 const projectNames = computed(() => new Map(projects.projects.map((p) => [p.id, p.name])))
 const workspaceNames = computed(() => new Map(workspaces.workspaces.map((ws) => [ws.id, ws.name])))
-
-function itemKey(item: AttentionItem): string {
-  return item.approval?.id ?? item.question?.id ?? `run-${item.run.id}`
-}
 
 function source(item: AttentionItem): ItemSource {
   const workspaceId = item.run.workspaceId
@@ -74,25 +66,6 @@ function source(item: AttentionItem): ItemSource {
   }
   return { label, detail: `${link.kind} sandbox`, to: ide, toLabel: 'Open sandbox', sandbox: null }
 }
-
-async function decide(item: AttentionItem, approved: boolean) {
-  if (!item.approval) return
-  const key = itemKey(item)
-  busy.value = key
-  delete errors.value[key]
-  try {
-    await aiApi.approveCommand(item.approval.id, approved)
-    await attention.refresh()
-  } catch (e) {
-    errors.value[key] = e instanceof Error ? e.message : 'Request failed'
-  } finally {
-    busy.value = null
-  }
-}
-
-function questionError(item: AttentionItem, message: string) {
-  errors.value[itemKey(item)] = message
-}
 </script>
 
 <template>
@@ -107,48 +80,20 @@ function questionError(item: AttentionItem, message: string) {
     <p v-if="!attention.loaded" class="empty-text">Loading...</p>
     <p v-else-if="attention.items.length === 0" class="empty-text">Nothing needs you right now.</p>
 
-    <div v-for="item in attention.items" :key="itemKey(item)" class="panel item">
-      <div class="item-header">
-        <div class="item-source">
-          <span class="item-kind">{{ item.approval ? item.approval.title || 'Approve a command' : 'Answer a question' }}</span>
-          <span class="meta-row">
-            <span>{{ source(item).label }}</span>
-            <span>&middot;</span>
-            <span>{{ source(item).detail }}</span>
-            <span>&middot;</span>
-            <span>run #{{ item.run.id }}</span>
-            <span v-if="item.run.model">&middot; {{ item.run.model }}</span>
-          </span>
-        </div>
-        <div class="item-links">
+    <div class="items">
+      <AttentionItemCard v-for="item in attention.items" :key="attentionItemKey(item)" :item="item">
+        <template #source>
+          <span>{{ source(item).label }}</span>
+          <span>&middot;</span>
+          <span>{{ source(item).detail }}</span>
+        </template>
+        <template #links>
           <RouterLink v-if="source(item).sandbox" class="btn btn-secondary btn-sm" :to="source(item).sandbox!">
             Sandbox
           </RouterLink>
           <RouterLink class="btn btn-secondary btn-sm" :to="source(item).to">{{ source(item).toLabel }}</RouterLink>
-        </div>
-      </div>
-
-      <p v-if="item.run.promptPreview" class="item-prompt">{{ item.run.promptPreview }}</p>
-
-      <template v-if="item.approval">
-        <p v-if="item.approval.title" class="approval-summary">{{ item.approval.command }}</p>
-        <pre v-else class="command">{{ item.approval.command }}</pre>
-        <ApprovalDetails v-if="item.approval.details?.length" :details="item.approval.details" />
-        <div class="item-actions">
-          <button class="btn btn-secondary" :disabled="busy === itemKey(item)" @click="decide(item, false)">Deny</button>
-          <button class="btn btn-primary" :disabled="busy === itemKey(item)" @click="decide(item, true)">Approve</button>
-        </div>
-      </template>
-      <AiQuestionCard
-        v-else-if="item.question"
-        :request="item.question"
-        status="pending"
-        :answers="[]"
-        @answered="attention.refresh()"
-        @error="questionError(item, $event)"
-      />
-
-      <p v-if="errors[itemKey(item)]" class="form-error">{{ errors[itemKey(item)] }}</p>
+        </template>
+      </AttentionItemCard>
     </div>
   </section>
 </template>
@@ -177,77 +122,9 @@ function questionError(item: AttentionItem, message: string) {
   text-align: center;
 }
 
-.item {
+.items {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  margin-bottom: var(--space-3);
-  min-width: 0;
-}
-
-.item .form-error {
-  margin-bottom: 0;
-}
-
-.item-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-}
-
-.item-source {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.item-kind {
-  font-size: 0.85rem;
-  font-weight: 500;
-  color: var(--attention);
-}
-
-.item-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.item-prompt {
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.approval-summary {
-  margin: 0;
-  font-size: 0.85rem;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.command {
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-void);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-md);
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 240px;
-  overflow-y: auto;
-}
-
-.item-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-2);
 }
 </style>

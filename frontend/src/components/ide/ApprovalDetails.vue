@@ -125,4 +125,12 @@ dd > code {
 .expand:hover {
   text-decoration: underline;
 }
+
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: a touch-sized target. */
+@media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  .expand {
+    min-height: 40px;
+    font-size: 0.8rem;
+  }
+}
 </style>

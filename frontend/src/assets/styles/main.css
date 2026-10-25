@@ -229,6 +229,29 @@ pre {
   margin: auto;
 }
 
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts. On a phone a dialog is a
+   full-screen sheet; short confirmations stay centred. The extra `body` beats
+   each dialog's own scoped sizing. */
+@media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  .modal-overlay:has(> .modal:not([role='alertdialog'])) {
+    padding: 0 0 env(safe-area-inset-bottom);
+  }
+
+  body .modal-overlay > .modal:not([role='alertdialog']) {
+    width: 100%;
+    max-width: none;
+    min-height: 100%;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+  }
+
+  body .modal-overlay .modal-close {
+    min-width: 40px;
+    min-height: 40px;
+  }
+}
+
 /* Touch devices: iOS zooms the page when focusing a field under 16px. */
 @media (pointer: coarse) {
   input:not([type='checkbox']):not([type='radio']):not([type='range']),

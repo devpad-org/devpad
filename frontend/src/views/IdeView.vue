@@ -24,6 +24,7 @@ import GitPushToasts from '@/components/project/GitPushToasts.vue'
 import ProjectAgentsPanel from '@/components/project/ProjectAgentsPanel.vue'
 import ProjectBoard from '@/components/project/ProjectBoard.vue'
 import ProjectBranchActions from '@/components/project/ProjectBranchActions.vue'
+import ProjectInboxPanel from '@/components/project/ProjectInboxPanel.vue'
 import ProjectMergeRequestsPanel from '@/components/project/ProjectMergeRequestsPanel.vue'
 import ProjectPanel from '@/components/project/ProjectPanel.vue'
 import ProjectTasksPanel from '@/components/project/ProjectTasksPanel.vue'
@@ -120,8 +121,10 @@ type GitDiffRequest =
   | { kind: 'working'; path: string; staged: boolean; requestId: number }
 
 type ActivityTab = 'ai' | 'explorer' | 'git' | 'info' | 'services' | ProjectActivity
-type ProjectActivity = 'tasks' | 'merge-requests' | 'agents' | 'project'
-const PROJECT_ACTIVITIES: ActivityTab[] = ['tasks', 'merge-requests', 'agents', 'project']
+// The inbox is a phone-only activity; on wider screens the title bar's inbox
+// link covers it.
+type ProjectActivity = 'inbox' | 'tasks' | 'merge-requests' | 'agents' | 'project'
+const PROJECT_ACTIVITIES: ActivityTab[] = ['inbox', 'tasks', 'merge-requests', 'agents', 'project']
 const activeActivity = ref<ActivityTab>('ai')
 const serviceCount = computed(() => serviceStore.services.length)
 const isProjectActivity = computed(() => PROJECT_ACTIVITIES.includes(activeActivity.value))
@@ -135,14 +138,34 @@ const isMobile = useIsMobile()
 const mobileSidebarOpen = ref(false)
 const mobileRunsOpen = ref(false)
 
+// A project on a phone is mostly for checking on agents, so it gets its own
+// layout: a bottom tab bar of the project's lists, each shown full screen,
+// with the editor and the rest of the IDE under More.
+const mobileProject = computed(() => isMobile.value && isProjectMode.value)
+const mobileMoreOpen = ref(false)
+// The bottom tabs; everything else lives under More.
+const MOBILE_TABS: ActivityTab[] = ['inbox', 'tasks', 'merge-requests', 'agents', 'ai']
+
 watch(isMobile, (mobile) => {
-  if (!mobile) closeMobilePanels()
+  if (mobile) return
+  closeMobilePanels()
+  if (activeActivity.value === 'inbox') activeActivity.value = 'tasks'
 })
 
 function closeMobilePanels() {
   mobileSidebarOpen.value = false
   mobileRunsOpen.value = false
+  mobileMoreOpen.value = false
 }
+
+// The agent runs in this project waiting for the user: the project
+// workspace's own and its agents' sandboxes'.
+const projectAttention = computed(() => {
+  if (!isProjectMode.value) return []
+  const ids = new Set(projectStore.sandboxes.map((s) => s.id))
+  if (workspace.value) ids.add(workspace.value.id)
+  return attention.items.filter((item) => ids.has(item.run.workspaceId))
+})
 
 function selectActivity(tab: ActivityTab) {
   if (!isMobile.value) {
@@ -150,6 +173,13 @@ function selectActivity(tab: ActivityTab) {
     return
   }
   mobileRunsOpen.value = false
+  mobileMoreOpen.value = false
+  // On a phone a project's lists fill the screen, so tapping the tab of the
+  // one showing a detail goes back to the list rather than hiding it.
+  if (mobileProject.value && activeActivity.value === tab && PROJECT_ACTIVITIES.includes(tab)) {
+    mobileSidebarOpen.value = true
+    return
+  }
   if (activeActivity.value === tab) {
     mobileSidebarOpen.value = !mobileSidebarOpen.value
     return
@@ -167,8 +197,47 @@ function toggleMobileSidebar() {
 
 function toggleMobileRuns() {
   mobileSidebarOpen.value = false
+  mobileMoreOpen.value = false
   mobileRunsOpen.value = !mobileRunsOpen.value
 }
+
+function toggleMobileMore() {
+  mobileRunsOpen.value = false
+  mobileMoreOpen.value = !mobileMoreOpen.value
+}
+
+// More lists the IDE's other surfaces; each choice closes it.
+function moreActivity(tab: ActivityTab) {
+  mobileMoreOpen.value = false
+  selectActivity(tab)
+}
+
+function moreBoard() {
+  mobileMoreOpen.value = false
+  showBoard()
+}
+
+function moreTerminal() {
+  mobileMoreOpen.value = false
+  closeMobilePanels()
+  // The terminal sits under the editor, so it needs a surface that isn't a
+  // full-screen list.
+  if (isProjectActivity.value) activeActivity.value = 'explorer'
+  terminalMinimized.value = false
+}
+
+function morePreview() {
+  closeMobilePanels()
+  previewVisible.value = true
+}
+
+function openChat() {
+  activeActivity.value = 'ai'
+  closeMobilePanels()
+}
+
+// The More tab stands for whichever surface isn't one of the bottom tabs.
+const moreActive = computed(() => !MOBILE_TABS.includes(activeActivity.value))
 
 const sidebar = useResizable({
   direction: 'horizontal',
@@ -270,7 +339,16 @@ async function loadProject(id: number, seq: number) {
   applyTaskQuery()
   // A conversion leaves the user something to do upstream, so its notice
   // comes first.
-  activeActivity.value = projectStore.conversion ? 'project' : workspaceLive.value ? 'ai' : 'tasks'
+  if (isMobile.value) {
+    // A phone opens on what needs the user, or else the tasks, as a list;
+    // never on the editor.
+    if (!attention.loaded) await attention.refresh()
+    if (seq !== loadSeq) return
+    activeActivity.value = projectStore.conversion ? 'project' : projectAttention.value.length > 0 ? 'inbox' : 'tasks'
+    mobileSidebarOpen.value = true
+  } else {
+    activeActivity.value = projectStore.conversion ? 'project' : workspaceLive.value ? 'ai' : 'tasks'
+  }
   applyViewQuery(route.query)
   // Open files don't survive a reload, so a view takes the editor instead.
   if (!activeView.value) activeView.value = viewTabs.value[0]?.id ?? null
@@ -482,10 +560,13 @@ function openFile(path: string) {
   mobileSidebarOpen.value = false
 }
 
-// View tabs sit on the editor surface, behind the project panels.
+// View tabs sit on the editor surface, behind the project panels. On a phone
+// the tab bar follows the view, so going back returns to its list.
 function revealView(id: ViewTabId) {
-  if (!editorSurfaceVisible.value) activeActivity.value = id.startsWith('mr:') ? 'merge-requests' : 'tasks'
-  mobileSidebarOpen.value = false
+  if (!editorSurfaceVisible.value || mobileProject.value) {
+    activeActivity.value = id.startsWith('mr:') ? 'merge-requests' : 'tasks'
+  }
+  closeMobilePanels()
 }
 
 function showBoard() {
@@ -811,9 +892,29 @@ function openGitPanel() {
   }
 }
 
+// On a phone a detail, such as a merge request, a file or a diff, covers its
+// list; back returns to the list before leaving the project.
+const MOBILE_LIST_NAMES: Partial<Record<ActivityTab, string>> = {
+  inbox: 'inbox',
+  tasks: 'tasks',
+  'merge-requests': 'merge requests',
+  agents: 'agents',
+  project: 'project',
+  explorer: 'files',
+  git: 'source control',
+}
+const mobileBackList = computed(() =>
+  mobileProject.value && !mobileSidebarOpen.value ? MOBILE_LIST_NAMES[activeActivity.value] ?? null : null,
+)
+
 // A project goes back to the projects list, and an agent's sandbox to its
 // project.
 function handleBack() {
+  if (mobileBackList.value) {
+    closeMobilePanels()
+    mobileSidebarOpen.value = true
+    return
+  }
   if (isProjectMode.value) {
     router.push({ name: 'home' })
     return
@@ -824,6 +925,7 @@ function handleBack() {
 }
 
 const backLabel = computed(() => {
+  if (mobileBackList.value) return `Back to ${mobileBackList.value}`
   if (isProjectMode.value) return 'Back to projects'
   return workspace.value?.projectId ? 'Back to project' : 'Back to projects'
 })
@@ -841,7 +943,7 @@ const backLabel = computed(() => {
       <button class="ide-back-btn" @click="handleBack">{{ backLabel }}</button>
     </div>
   </div>
-  <div v-else class="ide-layout" :class="{ 'is-mobile': isMobile }">
+  <div v-else class="ide-layout" :class="{ 'is-mobile': isMobile, 'is-mobile-project': mobileProject }">
     <!--
       IDE panel IDs:
       - ide-toolbar: top toolbar/title bar
@@ -859,7 +961,7 @@ const backLabel = computed(() => {
         </svg>
       </button>
       <button
-        v-if="isMobile"
+        v-if="isMobile && !mobileProject"
         class="titlebar-toggle"
         :class="{ active: mobileSidebarOpen }"
         @click="toggleMobileSidebar"
@@ -910,6 +1012,7 @@ const backLabel = computed(() => {
           </svg>
         </button>
         <button
+          v-if="!mobileProject"
           class="titlebar-btn"
           :disabled="!editorPanel?.hasDirtyFiles"
           @click="editorPanel?.saveAllFiles()"
@@ -925,6 +1028,7 @@ const backLabel = computed(() => {
             <path d="M5 12h14" />
           </svg>
         </button>
+        <template v-if="!mobileProject">
         <div class="titlebar-separator" />
         <button
           class="titlebar-toggle"
@@ -949,6 +1053,7 @@ const backLabel = computed(() => {
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
           </svg>
         </button>
+        </template>
         <button
           v-if="isMobile"
           class="titlebar-toggle"
@@ -968,7 +1073,7 @@ const backLabel = computed(() => {
 
     <!-- Main IDE area -->
     <div class="ide-body">
-      <nav id="ide-activity-bar" class="activity-bar" aria-label="Activity bar">
+      <nav v-if="!mobileProject" id="ide-activity-bar" class="activity-bar" aria-label="Activity bar">
         <button
           class="activity-btn activity-btn--ai"
           :class="{ active: activeActivity === 'ai' }"
@@ -1110,8 +1215,193 @@ const backLabel = computed(() => {
         </button>
       </nav>
 
+      <nav v-else id="ide-activity-bar" class="mobile-tabbar" aria-label="Project sections">
+        <button
+          class="mobile-tab mobile-tab--inbox"
+          :class="{ active: activeActivity === 'inbox' }"
+          :aria-current="activeActivity === 'inbox' ? 'page' : undefined"
+          @click="selectActivity('inbox')"
+        >
+          <span class="mobile-tab-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+              <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+            </svg>
+            <span v-if="projectAttention.length > 0" class="mobile-tab-badge attention" :aria-label="`${projectAttention.length} waiting for you`">
+              {{ projectAttention.length }}
+            </span>
+          </span>
+          <span class="mobile-tab-label">Inbox</span>
+        </button>
+        <button
+          class="mobile-tab mobile-tab--tasks"
+          :class="{ active: activeActivity === 'tasks' }"
+          :aria-current="activeActivity === 'tasks' ? 'page' : undefined"
+          @click="selectActivity('tasks')"
+        >
+          <span class="mobile-tab-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m3 17 2 2 4-4" />
+              <path d="m3 7 2 2 4-4" />
+              <path d="M13 6h8" />
+              <path d="M13 12h8" />
+              <path d="M13 18h8" />
+            </svg>
+          </span>
+          <span class="mobile-tab-label">Tasks</span>
+        </button>
+        <button
+          class="mobile-tab mobile-tab--merge-requests"
+          :class="{ active: activeActivity === 'merge-requests' }"
+          :aria-current="activeActivity === 'merge-requests' ? 'page' : undefined"
+          @click="selectActivity('merge-requests')"
+        >
+          <span class="mobile-tab-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="18" cy="18" r="3" />
+              <circle cx="6" cy="6" r="3" />
+              <path d="M13 6h3a2 2 0 0 1 2 2v7" />
+              <path d="M6 9v12" />
+            </svg>
+            <span
+              v-if="projectStore.openMergeRequests.length > 0"
+              class="mobile-tab-badge"
+              :aria-label="`${projectStore.openMergeRequests.length} open merge requests`"
+            >
+              {{ projectStore.openMergeRequests.length }}
+            </span>
+          </span>
+          <span class="mobile-tab-label">MRs</span>
+        </button>
+        <button
+          class="mobile-tab mobile-tab--agents"
+          :class="{ active: activeActivity === 'agents' }"
+          :aria-current="activeActivity === 'agents' ? 'page' : undefined"
+          @click="selectActivity('agents')"
+        >
+          <span class="mobile-tab-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 8V4H8" />
+              <rect width="16" height="12" x="4" y="8" rx="2" />
+              <path d="M2 14h2" />
+              <path d="M20 14h2" />
+              <path d="M15 13v2" />
+              <path d="M9 13v2" />
+            </svg>
+            <span
+              v-if="projectStore.activeSandboxes > 0"
+              class="mobile-tab-badge"
+              :aria-label="`${projectStore.activeSandboxes} sandboxes running`"
+            >
+              {{ projectStore.activeSandboxes }}
+            </span>
+          </span>
+          <span class="mobile-tab-label">Agents</span>
+        </button>
+        <button
+          class="mobile-tab mobile-tab--ai"
+          :class="{ active: activeActivity === 'ai' }"
+          :aria-current="activeActivity === 'ai' ? 'page' : undefined"
+          @click="selectActivity('ai')"
+        >
+          <span class="mobile-tab-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+            </svg>
+          </span>
+          <span class="mobile-tab-label">Chat</span>
+        </button>
+        <button
+          class="mobile-tab mobile-tab--more"
+          :class="{ active: mobileMoreOpen || moreActive }"
+          :aria-expanded="mobileMoreOpen"
+          aria-controls="ide-more-sheet"
+          @click="toggleMobileMore"
+        >
+          <span class="mobile-tab-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="1" />
+              <circle cx="19" cy="12" r="1" />
+              <circle cx="5" cy="12" r="1" />
+            </svg>
+            <span v-if="projectStore.conversion" class="mobile-tab-badge" aria-label="Conversion notice">!</span>
+          </span>
+          <span class="mobile-tab-label">More</span>
+        </button>
+      </nav>
+
       <div
-        v-if="isMobile && (mobileSidebarOpen || mobileRunsOpen)"
+        v-if="mobileProject && mobileMoreOpen"
+        id="ide-more-sheet"
+        class="more-sheet"
+        role="menu"
+        aria-label="More"
+      >
+        <button class="more-item" role="menuitem" @click="moreBoard">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="18" height="18" x="3" y="3" rx="2" />
+            <path d="M9 3v18" />
+            <path d="M15 3v18" />
+          </svg>
+          Board
+        </button>
+        <button class="more-item" role="menuitem" @click="moreActivity('explorer')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 4h5l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" />
+          </svg>
+          Files
+        </button>
+        <button class="more-item" role="menuitem" @click="moreActivity('git')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="18" cy="18" r="3" />
+            <circle cx="6" cy="6" r="3" />
+            <path d="M6 21V9a9 9 0 0 0 9 9" />
+          </svg>
+          Source control
+        </button>
+        <button class="more-item" role="menuitem" :disabled="!workspaceLive" @click="moreTerminal">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m4 17 6-6-6-6" />
+            <path d="M12 19h8" />
+          </svg>
+          Terminal
+        </button>
+        <button class="more-item" role="menuitem" :disabled="!workspaceLive" @click="morePreview">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="20" height="14" x="2" y="3" rx="2" />
+            <path d="M8 21h8" />
+            <path d="M12 17v4" />
+          </svg>
+          Preview
+        </button>
+        <button class="more-item" role="menuitem" @click="moreActivity('services')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <ellipse cx="12" cy="5" rx="9" ry="3" />
+            <path d="M3 5v14a9 3 0 0 0 18 0V5" />
+            <path d="M3 12a9 3 0 0 0 18 0" />
+          </svg>
+          Services
+          <span v-if="serviceCount > 0" class="more-count">{{ serviceCount }}</span>
+        </button>
+        <button class="more-item" role="menuitem" @click="moreActivity('info')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 16v-4" />
+            <path d="M12 8h.01" />
+          </svg>
+          Workspace info
+        </button>
+        <button class="more-item" role="menuitem" @click="moreActivity('project')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+          </svg>
+          Project
+          <span v-if="projectStore.conversion" class="more-count attention">!</span>
+        </button>
+      </div>
+
+      <div
+        v-if="isMobile && (mobileRunsOpen || mobileMoreOpen || (mobileSidebarOpen && !mobileProject))"
         class="mobile-backdrop"
         aria-hidden="true"
         @click="closeMobilePanels"
@@ -1178,6 +1468,13 @@ const backLabel = computed(() => {
           @start="startWorkspace"
         />
         <template v-if="isProjectMode">
+          <ProjectInboxPanel
+            v-if="mobileProject"
+            v-show="activeActivity === 'inbox'"
+            :items="projectAttention"
+            :workspace-id="workspace?.id ?? null"
+            @open-chat="openChat"
+          />
           <ProjectTasksPanel v-show="activeActivity === 'tasks'" @open-board="showBoard" />
           <ProjectMergeRequestsPanel v-show="activeActivity === 'merge-requests'" />
           <ProjectAgentsPanel
@@ -1349,7 +1646,7 @@ const backLabel = computed(() => {
       </div>
     </div>
     <GitStatusBar
-      v-if="workspaceLive"
+      v-if="workspaceLive && !mobileProject"
       :key="`status-${gitRevision}`"
       :workspace-id="workspace?.id ?? 0"
       @open-git="openGitPanel"
@@ -1959,4 +2256,187 @@ const backLabel = computed(() => {
   inset: 0;
   z-index: 30;
 }
+
+/*
+ * Phone layout of a project: a labelled bottom tab bar, the project's lists
+ * full screen above it, and the rest of the IDE in the More sheet. Only the
+ * project route on a narrow screen gets it; the desktop layout is untouched.
+ */
+.is-mobile-project .ide-body {
+  --mobile-activity-bar-height: calc(56px + env(safe-area-inset-bottom));
+}
+
+.mobile-tabbar {
+  order: 1;
+  display: flex;
+  flex-shrink: 0;
+  height: var(--mobile-activity-bar-height);
+  padding: 0 var(--space-1) env(safe-area-inset-bottom);
+  background: var(--bg-surface);
+  border-top: 0.5px solid var(--border-default);
+}
+
+.mobile-tab {
+  --activity-accent: var(--text-muted);
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  color: color-mix(in srgb, var(--activity-accent) 58%, var(--text-muted));
+  transition: color var(--transition-fast);
+}
+
+.mobile-tab--inbox {
+  --activity-accent: var(--attention);
+}
+
+.mobile-tab--tasks {
+  --activity-accent: var(--accent-amber);
+}
+
+.mobile-tab--merge-requests {
+  --activity-accent: var(--accent-blue);
+}
+
+.mobile-tab--agents {
+  --activity-accent: var(--gruvbox-orange);
+}
+
+.mobile-tab--ai {
+  --activity-accent: var(--accent);
+}
+
+.mobile-tab--more {
+  --activity-accent: var(--text-secondary);
+}
+
+.mobile-tab.active {
+  color: var(--activity-accent);
+}
+
+.mobile-tab.active::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 25%;
+  right: 25%;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--activity-accent);
+}
+
+.mobile-tab-icon {
+  position: relative;
+  display: flex;
+}
+
+.mobile-tab-label {
+  font-size: 0.65rem;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.mobile-tab-badge {
+  position: absolute;
+  top: -6px;
+  right: -11px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--activity-accent);
+  color: var(--text-on-accent);
+  border: 1px solid var(--bg-surface);
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.mobile-tab-badge.attention {
+  background: var(--attention);
+}
+
+/* The project's lists fill the screen above the tab bar instead of sliding
+   over the surface, so there is no backdrop and no slide. */
+.is-mobile-project .ide-sidebar {
+  left: 0;
+  right: 0;
+  width: auto;
+  transform: none;
+  box-shadow: none;
+  border-right: none;
+  transition: none;
+}
+
+.is-mobile-project .ide-sidebar.open {
+  transition: none;
+}
+
+.more-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--mobile-activity-bar-height);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  max-height: 70dvh;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-4);
+  background: var(--bg-elevated);
+  border-top: 0.5px solid var(--border-strong);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  box-shadow: var(--shadow-strong);
+}
+
+.more-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 48px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.more-item svg {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.more-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.more-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.more-count {
+  margin-left: auto;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--bg-selected);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  line-height: 20px;
+  text-align: center;
+}
+
+.more-count.attention {
+  background: var(--attention);
+  color: var(--text-on-accent);
+}
 </style>
+

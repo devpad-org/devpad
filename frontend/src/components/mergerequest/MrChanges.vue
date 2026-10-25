@@ -4,6 +4,7 @@ import { gitApi } from '@/api/git'
 import MonacoDiffViewer from '@/components/ide/MonacoDiffViewer.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { ideShellKey } from '@/components/ide/viewTabs'
+import { useIsMobile } from '@/composables/useMediaQuery'
 import MrFileComments from './MrFileComments.vue'
 import MrFileTree from './MrFileTree.vue'
 import { baseName, dirName, fileStatusLabel, statBlocks } from './format'
@@ -21,6 +22,7 @@ const {
   isOpen,
   files,
   orderedFiles,
+  selectedPath,
   selectedFile,
   selectedIndex,
   oldContent,
@@ -36,6 +38,14 @@ const {
 
 const shell = inject(ideShellKey, null)
 const root = ref<HTMLElement | null>(null)
+
+// On a phone the file list folds away behind a toggle so the diff gets the
+// screen, and choosing a file folds it again.
+const isMobile = useIsMobile()
+const treeOpen = ref(false)
+watch(selectedPath, () => {
+  treeOpen.value = false
+})
 
 // The branch and commit the project workspace has checked out, so "Open in
 // editor" can say when the editor shows a different version than this diff.
@@ -98,8 +108,19 @@ onMounted(() => {
       <MrIcon name="file" :size="28" :stroke-width="1.5" />
       <p>This branch changes nothing.</p>
     </div>
-    <div v-else class="changes">
-      <MrFileTree />
+    <div v-else class="changes" :class="{ 'changes--phone': isMobile }">
+      <button
+        v-if="isMobile"
+        type="button"
+        class="tree-toggle"
+        :aria-expanded="treeOpen"
+        @click="treeOpen = !treeOpen"
+      >
+        <MrIcon name="folder" :size="14" />
+        <span class="tree-toggle-label">{{ files.length }} {{ files.length === 1 ? 'file' : 'files' }} changed</span>
+        <MrIcon name="chevron-down" :size="14" class="tree-toggle-chevron" :class="{ open: treeOpen }" />
+      </button>
+      <MrFileTree v-if="!isMobile || treeOpen" />
 
       <div v-if="selectedFile" class="file-view">
         <div class="file-bar">
@@ -166,7 +187,7 @@ onMounted(() => {
             :new-content="newContent"
             :old-file-name="selectedFile.oldPath || selectedFile.path"
             :new-file-name="selectedFile.path"
-            :side-by-side="sideBySide ?? true"
+            :side-by-side="!isMobile && (sideBySide ?? true)"
             :marked-lines="markedLines"
             :reveal="reveal"
             :commentable="isOpen"
@@ -195,6 +216,57 @@ onMounted(() => {
   .changes {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+.changes--phone {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.tree-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  background: var(--bg-surface);
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+.tree-toggle-label {
+  flex: 1;
+}
+
+.tree-toggle-chevron {
+  transition: transform var(--transition-fast);
+}
+
+.tree-toggle-chevron.open {
+  transform: rotate(180deg);
+}
+
+/* A phone shows the unified diff only; side by side has no room. The path
+   takes its own line, with the status, stats and pager under it. */
+.changes--phone .segmented-icons {
+  display: none;
+}
+
+.changes--phone .file-bar-path {
+  flex-basis: 100%;
+  order: -1;
+}
+
+.changes--phone .file-bar-end {
+  margin-left: auto;
+}
+
+.changes--phone .diff-frame {
+  height: 60dvh;
+  min-height: 300px;
 }
 
 .file-view {

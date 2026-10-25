@@ -247,3 +247,17 @@
   font-size: 0.75rem;
   color: var(--text-secondary);
 }
+
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: buttons are touch-sized
+   on a phone. */
+@media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  .btn,
+  .btn-sm {
+    min-height: 40px;
+  }
+
+  .btn-sm {
+    padding: var(--space-1) var(--space-3);
+    font-size: 0.8rem;
+  }
+}
