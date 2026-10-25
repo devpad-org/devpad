@@ -151,6 +151,8 @@ func agentScope(agent domain.Agent) string {
 	switch {
 	case agent.IsDefault:
 		return "default"
+	case agent.IsBuiltIn:
+		return "built-in"
 	case agent.IsGlobal:
 		return "global"
 	default:

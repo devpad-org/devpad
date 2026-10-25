@@ -68,6 +68,7 @@ export interface AIAgent {
   instructions: string
   isGlobal: boolean
   isDefault: boolean
+  isBuiltIn: boolean
   createdAt: string
   updatedAt: string
 }

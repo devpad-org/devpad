@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -121,7 +122,7 @@ func (r *repository) SetDefaultAgentID(ctx context.Context, userID, workspaceID 
 		  WHERE id = ?
 		    AND user_id = ?
 		    AND (
-				? = ?
+				?
 				OR EXISTS (
 					SELECT 1
 					  FROM ai_agents
@@ -134,8 +135,7 @@ func (r *repository) SetDefaultAgentID(ctx context.Context, userID, workspaceID 
 		now,
 		workspaceID,
 		userID,
-		agentID,
-		DefaultAgentID,
+		slices.Contains(builtInAgentIDs, agentID),
 		agentID,
 		userID,
 		workspaceID,

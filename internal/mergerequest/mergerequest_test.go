@@ -440,8 +440,8 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	mr := e.openTaskMR(t)
 
 	rv := e.startAgentReview(t, mr, AgentReviewInput{AutoFix: true})
-	if rv.Model != "claude-opus-5-5" || rv.Effort != "high" || rv.AgentID != "" || rv.WorkspaceID == 0 {
-		t.Fatalf("review should take the task's model but not its agent: %+v", rv)
+	if rv.Model != "claude-opus-5-5" || rv.Effort != "high" || rv.AgentID != domain.ReviewAgentID || rv.WorkspaceID == 0 {
+		t.Fatalf("review should take the task's model but run the review agent: %+v", rv)
 	}
 	sb := e.projects.sandboxes[0]
 	if sb.Kind != "review" || sb.Base != "task/1" || sb.Branch != "review/1" {
@@ -454,7 +454,7 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
-	if req.WorkspaceID != rv.WorkspaceID || req.ConversationID == 0 || req.Thinking == nil || req.Thinking.Effort != "high" {
+	if req.WorkspaceID != rv.WorkspaceID || req.AgentID != domain.ReviewAgentID || req.ConversationID == 0 || req.Thinking == nil || req.Thinking.Effort != "high" {
 		t.Fatalf("unexpected run request: %+v", req)
 	}
 

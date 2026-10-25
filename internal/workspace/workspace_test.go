@@ -7,10 +7,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	aidomain "github.com/devpad-org/devpad/internal/ai/domain"
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/container"
 	"github.com/devpad-org/devpad/internal/encrypt"
@@ -304,6 +306,38 @@ func TestService_SetDefaultAgentAllowsGlobalAgent(t *testing.T) {
 	}
 	if updated.DefaultAgentID != globalAgentID {
 		t.Fatalf("expected global default agent %q, got %q", globalAgentID, updated.DefaultAgentID)
+	}
+}
+
+func TestService_SetDefaultAgentAllowsBuiltInAgents(t *testing.T) {
+	svc, _ := setupTestService(t)
+	ctx := context.Background()
+
+	ws, err := svc.Create(ctx, 1, "Agent Project", "")
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	for _, agent := range aidomain.BuiltInAgents() {
+		updated, err := svc.SetDefaultAgent(ctx, 1, ws.ID, agent.ID)
+		if err != nil {
+			t.Fatalf("set built-in default agent %q: %v", agent.ID, err)
+		}
+		if updated.DefaultAgentID != agent.ID {
+			t.Fatalf("expected default agent %q, got %q", agent.ID, updated.DefaultAgentID)
+		}
+	}
+	if _, err := svc.SetDefaultAgent(ctx, 1, ws.ID, "nonexistent"); err != ErrDefaultAgentNotFound {
+		t.Fatalf("expected ErrDefaultAgentNotFound for an unknown agent, got %v", err)
+	}
+}
+
+func TestBuiltInAgentIDsMatchAIDomain(t *testing.T) {
+	var want []string
+	for _, agent := range aidomain.BuiltInAgents() {
+		want = append(want, agent.ID)
+	}
+	if !slices.Equal(builtInAgentIDs, want) {
+		t.Fatalf("builtInAgentIDs = %v, want %v", builtInAgentIDs, want)
 	}
 }
 

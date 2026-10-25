@@ -73,25 +73,51 @@ func TestAgentServiceListIncludesDefaultAndScopedAgents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list agents: %v", err)
 	}
-	if len(agents) != 3 {
-		t.Fatalf("expected default plus 2 available agents, got %+v", agents)
+	if len(agents) != 4 {
+		t.Fatalf("expected 2 built-in plus 2 available agents, got %+v", agents)
 	}
-	if agents[0].ID != domain.DefaultAgentID || !agents[0].IsDefault {
-		t.Fatalf("expected first agent to be default, got %+v", agents[0])
+	if agents[0].ID != domain.DefaultAgentID || !agents[0].IsDefault || !agents[0].IsBuiltIn {
+		t.Fatalf("expected first agent to be the default coding agent, got %+v", agents[0])
+	}
+	if agents[1].ID != domain.ReviewAgentID || agents[1].IsDefault || !agents[1].IsBuiltIn {
+		t.Fatalf("expected second agent to be the review agent, got %+v", agents[1])
 	}
 }
 
-func TestAgentServiceRejectsEditingDefaultAgent(t *testing.T) {
+func TestAgentServiceGetsBuiltInAgents(t *testing.T) {
 	service := NewAgentService(newMemoryAgentRepo())
 
-	_, err := service.UpdateAgent(context.Background(), SaveAgentRequest{
-		ID:           domain.DefaultAgentID,
-		UserID:       1,
-		WorkspaceID:  1,
-		Name:         "Default",
-		Instructions: "new",
-	})
-	if !errors.Is(err, domain.ErrAgentNotEditable) {
-		t.Fatalf("expected ErrAgentNotEditable, got %v", err)
+	for _, id := range []string{"", domain.CodingAgentID, domain.ReviewAgentID} {
+		agent, err := service.GetAgent(context.Background(), 1, 1, id)
+		if err != nil {
+			t.Fatalf("get agent %q: %v", id, err)
+		}
+		want := id
+		if want == "" {
+			want = domain.DefaultAgentID
+		}
+		if agent.ID != want || !agent.IsBuiltIn || agent.Instructions == "" {
+			t.Fatalf("get agent %q: unexpected %+v", id, agent)
+		}
+	}
+}
+
+func TestAgentServiceRejectsEditingBuiltInAgents(t *testing.T) {
+	service := NewAgentService(newMemoryAgentRepo())
+
+	for _, agent := range domain.BuiltInAgents() {
+		_, err := service.UpdateAgent(context.Background(), SaveAgentRequest{
+			ID:           agent.ID,
+			UserID:       1,
+			WorkspaceID:  1,
+			Name:         "Changed",
+			Instructions: "new",
+		})
+		if !errors.Is(err, domain.ErrAgentNotEditable) {
+			t.Fatalf("update %q: expected ErrAgentNotEditable, got %v", agent.ID, err)
+		}
+		if err := service.DeleteAgent(context.Background(), 1, agent.ID); !errors.Is(err, domain.ErrAgentNotEditable) {
+			t.Fatalf("delete %q: expected ErrAgentNotEditable, got %v", agent.ID, err)
+		}
 	}
 }

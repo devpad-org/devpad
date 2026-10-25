@@ -59,7 +59,7 @@ function openCreateModal(): void {
 }
 
 function openEditModal(agent: AIAgent): void {
-  if (agent.isDefault) return
+  if (agent.isBuiltIn) return
   editingAgent.value = agent
   form.name = agent.name
   form.purpose = agent.purpose
@@ -94,7 +94,7 @@ async function saveAgent(): Promise<void> {
 }
 
 async function deleteEditingAgent(): Promise<void> {
-  if (!editingAgent.value || editingAgent.value.isDefault || saving.value) return
+  if (!editingAgent.value || editingAgent.value.isBuiltIn || saving.value) return
   saving.value = true
   const deleted = await store.deleteAgent(editingAgent.value.id)
   saving.value = false
@@ -147,7 +147,7 @@ async function deleteEditingAgent(): Promise<void> {
             <span class="agent-card-title">{{ agent.name }}</span>
             <span class="agent-card-purpose">{{ agent.purpose || 'Custom Devpad agent' }}</span>
             <span class="agent-card-scope">
-              {{ agent.id === props.defaultAgentId ? 'Default' : agent.isDefault ? 'Baked in' : agent.isGlobal ? 'Global' : 'Workspace' }}
+              {{ agent.id === props.defaultAgentId ? 'Default' : agent.isBuiltIn ? 'Built in' : agent.isGlobal ? 'Global' : 'Workspace' }}
             </span>
           </span>
         </button>
@@ -165,7 +165,7 @@ async function deleteEditingAgent(): Promise<void> {
           </svg>
         </button>
         <button
-          v-if="!agent.isDefault"
+          v-if="!agent.isBuiltIn"
           type="button"
           class="agent-edit"
           title="Edit agent"

@@ -402,8 +402,11 @@ func (s *service) StartAgentReview(ctx context.Context, userID, projectID, mrID 
 			return nil, fmt.Errorf("%w: a review agent is already reviewing it", ErrInvalidState)
 		}
 	}
-	// Reviews default to the task's model, but not its agent: the review
-	// needs the default agent's general instructions, not the implementer's.
+	// Reviews default to the task's model, but not its agent: they run the
+	// built-in review agent unless another is picked.
+	if in.AgentID == "" {
+		in.AgentID = domain.ReviewAgentID
+	}
 	if mr.TaskID != 0 && in.Model == "" {
 		if t, err := s.tasks.Get(ctx, userID, projectID, mr.TaskID); err == nil {
 			in.Model, in.Effort = t.Model, orDefault(in.Effort, t.Effort)

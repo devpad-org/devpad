@@ -63,12 +63,14 @@ func (s *agentService) ListAgents(ctx context.Context, userID, workspaceID int64
 	if err != nil {
 		return nil, fmt.Errorf("listing custom agents: %w", err)
 	}
-	return append([]domain.Agent{domain.DefaultAgent()}, agents...), nil
+	return append(domain.BuiltInAgents(), agents...), nil
 }
 
 func (s *agentService) GetAgent(ctx context.Context, userID, workspaceID int64, id string) (*domain.Agent, error) {
-	if id == "" || id == domain.DefaultAgentID {
-		agent := domain.DefaultAgent()
+	if id == "" {
+		id = domain.DefaultAgentID
+	}
+	if agent, ok := domain.BuiltInAgent(id); ok {
 		return &agent, nil
 	}
 	agent, err := s.repo.GetAgent(ctx, id)
@@ -93,7 +95,7 @@ func (s *agentService) CreateAgent(ctx context.Context, req SaveAgentRequest) (*
 }
 
 func (s *agentService) UpdateAgent(ctx context.Context, req SaveAgentRequest) (*domain.Agent, error) {
-	if req.ID == "" || req.ID == domain.DefaultAgentID {
+	if req.ID == "" || domain.IsBuiltInAgentID(req.ID) {
 		return nil, domain.ErrAgentNotEditable
 	}
 	existing, err := s.repo.GetAgent(ctx, req.ID)
@@ -115,7 +117,7 @@ func (s *agentService) UpdateAgent(ctx context.Context, req SaveAgentRequest) (*
 }
 
 func (s *agentService) DeleteAgent(ctx context.Context, userID int64, id string) error {
-	if id == "" || id == domain.DefaultAgentID {
+	if id == "" || domain.IsBuiltInAgentID(id) {
 		return domain.ErrAgentNotEditable
 	}
 	if err := s.repo.DeleteAgent(ctx, id, userID); err != nil {

@@ -37,6 +37,10 @@ func (k Kind) Valid() bool {
 // no custom default agent selected.
 const DefaultAgentID = "default"
 
+// builtInAgentIDs mirrors the built-in agents in internal/ai/domain, which a
+// workspace can pick as its default without an ai_agents row.
+var builtInAgentIDs = []string{DefaultAgentID, "review"}
+
 // Default resource limits for new workspaces.
 const (
 	DefaultMemoryLimit int64 = 2 * 1024 * 1024 * 1024 // 2 GB

@@ -10,7 +10,7 @@ import (
 	"github.com/devpad-org/devpad/internal/auth"
 )
 
-// HandleListAgents returns the default agent plus user agents available in a workspace.
+// HandleListAgents returns the built-in agents plus user agents available in a workspace.
 func (h *Handler) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
@@ -121,7 +121,7 @@ func (h *Handler) writeAgentError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrAgentNotFound):
 		writeError(w, http.StatusNotFound, "agent not found")
 	case errors.Is(err, domain.ErrAgentNotEditable):
-		writeError(w, http.StatusConflict, "default agent cannot be edited")
+		writeError(w, http.StatusConflict, "built-in agents cannot be edited")
 	default:
 		writeError(w, http.StatusBadRequest, err.Error())
 	}
