@@ -560,11 +560,15 @@ func TestFetchWorkspaceBranches(t *testing.T) {
 	e.repoAgent.bundled = nil
 	e.repoAgent.mu.Unlock()
 
-	if err := e.svc.FetchWorkspaceBranches(ctx, e.userID, p.ID, []string{"main", "task/1"}); err != nil {
+	if err := e.svc.FetchWorkspaceBranches(ctx, e.userID, p.ID, []string{"main", "task/1", "main"}); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
-	if e.workspaces.seeds[ws.ID] != "devpad/task/1 <- bundle-of-task/1" {
-		t.Fatalf("expected the branches fetched as devpad copies, got %q", e.workspaces.seeds[ws.ID])
+	// One bundle carries every branch, each named once.
+	if got := e.workspaces.seeds[ws.ID]; got != "devpad/{main,task/1} <- bundle-of-main,task/1" {
+		t.Fatalf("expected the branches fetched as devpad copies from one bundle, got %q", got)
+	}
+	if len(e.repoAgent.bundled) != 1 {
+		t.Fatalf("expected one bundle, got %v", e.repoAgent.bundled)
 	}
 
 	// Names come from the workspace: each must be valid and exist, and

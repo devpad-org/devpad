@@ -10,27 +10,27 @@ const OK_MS = 8000
 const REFUSED_MS = 15000
 
 const store = useActiveProjectStore()
-const timers = new Map<number, ReturnType<typeof setTimeout>>()
+const timers = new Map<string, ReturnType<typeof setTimeout>>()
 
 watch(
   () => store.gitPushes,
   (events) => {
     for (const event of events) {
-      if (timers.has(event.seq)) continue
+      if (timers.has(event.key)) continue
       timers.set(
-        event.seq,
-        setTimeout(() => dismiss(event.seq), event.ok ? OK_MS : REFUSED_MS),
+        event.key,
+        setTimeout(() => dismiss(event.key), event.ok ? OK_MS : REFUSED_MS),
       )
     }
   },
   { immediate: true },
 )
 
-function dismiss(seq: number) {
-  const timer = timers.get(seq)
+function dismiss(key: string) {
+  const timer = timers.get(key)
   if (timer) clearTimeout(timer)
-  timers.delete(seq)
-  store.dismissGitPush(seq)
+  timers.delete(key)
+  store.dismissGitPush(key)
 }
 
 function shortSha(event: GitPushEvent): string {
@@ -47,7 +47,7 @@ onUnmounted(() => {
   <div v-if="store.gitPushes.length" class="git-push-toasts" role="status" aria-live="polite">
     <div
       v-for="event in store.gitPushes"
-      :key="event.seq"
+      :key="event.key"
       class="git-push-toast"
       :class="event.ok ? 'git-push-toast--ok' : 'git-push-toast--refused'"
     >
@@ -61,7 +61,7 @@ onUnmounted(() => {
           <span class="git-push-toast__detail">{{ event.error }}</span>
         </template>
       </div>
-      <button class="git-push-toast__close" type="button" aria-label="Dismiss" @click="dismiss(event.seq)">×</button>
+      <button class="git-push-toast__close" type="button" aria-label="Dismiss" @click="dismiss(event.key)">×</button>
     </div>
   </div>
 </template>

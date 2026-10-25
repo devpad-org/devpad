@@ -194,18 +194,35 @@ func listRepoRefs(ctx context.Context) (*repoRefs, error) {
 }
 
 // handleRepoBundle streams a bundle containing one branch.
+// maxBundleBranches bounds the branches one bundle request names.
+const maxBundleBranches = 256
+
 func handleRepoBundle(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
 	defer cancel()
 
-	branch := r.URL.Query().Get("branch")
-	if err := validateBranchName(ctx, branch, "branch"); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+	// One bundle can carry several branches, so a fetch of many branches
+	// costs one bundle rather than one each.
+	branches := r.URL.Query()["branch"]
+	if len(branches) == 0 || len(branches) > maxBundleBranches {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("bundle between 1 and %d branches", maxBundleBranches))
 		return
 	}
-	if gitExec(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch) != nil {
-		writeErr(w, http.StatusNotFound, "branch not found: "+branch)
-		return
+	refs := make([]string, 0, len(branches))
+	seen := make(map[string]bool, len(branches))
+	for _, branch := range branches {
+		if err := validateBranchName(ctx, branch, "branch"); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if gitExec(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch) != nil {
+			writeErr(w, http.StatusNotFound, "branch not found: "+branch)
+			return
+		}
+		if !seen[branch] {
+			seen[branch] = true
+			refs = append(refs, "refs/heads/"+branch)
+		}
 	}
 
 	// Write to a temp file first so a git failure can still be reported as an
@@ -216,7 +233,7 @@ func handleRepoBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer cleanup()
-	if out, err := gitOutput(ctx, "bundle", "create", path, "refs/heads/"+branch); err != nil {
+	if out, err := gitOutput(ctx, append([]string{"bundle", "create", path}, refs...)...); err != nil {
 		writeErr(w, http.StatusInternalServerError, "creating bundle: "+strings.TrimSpace(out))
 		return
 	}

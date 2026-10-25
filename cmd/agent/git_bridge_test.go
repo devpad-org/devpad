@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -69,12 +70,13 @@ type fakeHost struct {
 	work      string
 	mu        sync.Mutex
 	pushes    []string
+	fetches   []int
 }
 
 func (h *fakeHost) run(ctx context.Context, b *gitBridge) {
 	for ctx.Err() == nil {
-		for _, req := range b.poll(ctx, time.Second) {
-			b.complete(req.ID, h.serve(req))
+		for _, req := range b.poll(ctx, "host", time.Second) {
+			b.complete("host", req.ID, h.serve(req))
 		}
 	}
 }
@@ -100,6 +102,13 @@ func (h *fakeHost) serve(req gitBridgeRequest) gitBridgeResult {
 		}
 		return res
 	case "fetch":
+		h.mu.Lock()
+		h.fetches = append(h.fetches, len(req.Branches))
+		h.mu.Unlock()
+		// devpad refuses wider fetches, as here.
+		if len(req.Branches) > gitBridgeMaxBranches {
+			return gitBridgeResult{Error: "too many branches"}
+		}
 		for _, branch := range req.Branches {
 			bundle := filepath.Join(h.t.TempDir(), "b.bundle")
 			if out, err := gitIn(h.canonical, "bundle", "create", bundle, "refs/heads/"+branch); err != nil {
@@ -374,7 +383,7 @@ func TestGitBridgeQueueLimitsAndDroppedHelpers(t *testing.T) {
 		_, err := b.submit(ctx, gitBridgeRequest{Op: "list"})
 		errc <- err
 	}()
-	reqs := b.poll(context.Background(), time.Second)
+	reqs := b.poll(context.Background(), "s1", time.Second)
 	if len(reqs) != 1 {
 		t.Fatalf("polled %d requests", len(reqs))
 	}
@@ -382,7 +391,7 @@ func TestGitBridgeQueueLimitsAndDroppedHelpers(t *testing.T) {
 	if err := <-errc; err == nil {
 		t.Fatal("expected the cancelled submit to fail")
 	}
-	if b.complete(reqs[0].ID, gitBridgeResult{}) {
+	if b.complete("s1", reqs[0].ID, gitBridgeResult{}) {
 		t.Fatal("a result for a dropped request was delivered")
 	}
 
@@ -422,7 +431,7 @@ func TestGitBridgeHTTPEndpoints(t *testing.T) {
 	}()
 
 	rec := httptest.NewRecorder()
-	b.handlePoll(rec, httptest.NewRequest(http.MethodGet, "/api/git-bridge/requests?wait=2s", nil))
+	b.handlePoll(rec, httptest.NewRequest(http.MethodGet, "/api/git-bridge/requests?wait=2s&session=aa", nil))
 	var polled struct {
 		Requests []gitBridgeRequest `json:"requests"`
 	}
@@ -433,27 +442,119 @@ func TestGitBridgeHTTPEndpoints(t *testing.T) {
 		t.Fatalf("polled %+v", got)
 	}
 
-	post := func(id string) int {
-		req := httptest.NewRequest(http.MethodPost, "/api/git-bridge/requests/"+id+"/result", strings.NewReader(`{"sha":"abc"}`))
+	post := func(id, session string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/git-bridge/requests/"+id+"/result?session="+session, strings.NewReader(`{"sha":"abc"}`))
 		req.SetPathValue("id", id)
 		rec := httptest.NewRecorder()
 		b.handleResult(rec, req)
 		return rec.Code
 	}
-	if code := post(polled.Requests[0].ID); code != http.StatusNoContent {
+	// Only the session that picked the request up may answer it.
+	if code := post(polled.Requests[0].ID, "bb"); code != http.StatusGone {
+		t.Fatalf("another session's result got %d", code)
+	}
+	if code := post(polled.Requests[0].ID, "aa"); code != http.StatusNoContent {
 		t.Fatalf("result status %d", code)
 	}
 	if a := <-ans; a.err != nil || a.res.SHA != "abc" {
 		t.Fatalf("submit got %+v %v", a.res, a.err)
 	}
-	if code := post(polled.Requests[0].ID); code != http.StatusGone {
+	if code := post(polled.Requests[0].ID, "aa"); code != http.StatusGone {
 		t.Fatalf("a second result got %d", code)
 	}
 
 	// An empty poll returns an empty list, not null.
 	rec = httptest.NewRecorder()
-	b.handlePoll(rec, httptest.NewRequest(http.MethodGet, "/api/git-bridge/requests?wait=10ms", nil))
+	b.handlePoll(rec, httptest.NewRequest(http.MethodGet, "/api/git-bridge/requests?wait=10ms&session=aa", nil))
 	if !strings.Contains(rec.Body.String(), `"requests":[]`) {
 		t.Fatalf("empty poll body %s", rec.Body)
+	}
+
+	// A poll must name its session.
+	rec = httptest.NewRecorder()
+	b.handlePoll(rec, httptest.NewRequest(http.MethodGet, "/api/git-bridge/requests?wait=10ms", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("a poll without a session got %d", rec.Code)
+	}
+}
+
+func TestGitBridgeNewSessionFailsEarlierRequests(t *testing.T) {
+	b := newGitBridge()
+	b.lastSeen = time.Now()
+	type answer struct {
+		res gitBridgeResult
+		err error
+	}
+	ans := make(chan answer, 1)
+	go func() {
+		res, err := b.submit(context.Background(), gitBridgeRequest{Op: "push", Branches: []string{"feature"}})
+		ans <- answer{res, err}
+	}()
+	reqs := b.poll(context.Background(), "old", time.Second)
+	if len(reqs) != 1 {
+		t.Fatalf("polled %d requests", len(reqs))
+	}
+
+	// devpad restarts: its new poller has a new session, and the request the
+	// old one took is failed rather than left until the helper gives up.
+	b.poll(context.Background(), "new", time.Millisecond)
+	select {
+	case a := <-ans:
+		if a.err != nil || a.res.Error != errDevpadRestarted {
+			t.Fatalf("submit got %+v %v", a.res, a.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the request from the old session was left waiting")
+	}
+	if b.complete("old", reqs[0].ID, gitBridgeResult{SHA: "late"}) {
+		t.Fatal("the old session answered a request it no longer owns")
+	}
+}
+
+func TestGitBridgeSocketRefusesForcePushes(t *testing.T) {
+	b := newGitBridge()
+	b.lastSeen = time.Now()
+	rec := httptest.NewRecorder()
+	b.handleHelperRequest(rec, httptest.NewRequest(http.MethodPost, "/request", strings.NewReader(`{"op":"push","branches":["feature"],"force":true}`)))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "force") {
+		t.Fatalf("force push got %d %s", rec.Code, rec.Body)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.pending) != 0 {
+		t.Fatal("a force push was queued for devpad")
+	}
+}
+
+func TestGitFetchDevpadBatchesManyBranches(t *testing.T) {
+	rig := newBridgeRig(t)
+	// Each branch gets a commit the workspace lacks, so git asks the helper
+	// to fetch every one.
+	n := gitBridgeMaxBranches + 6
+	tree := runGit(t, rig.canonical, "rev-parse", "main^{tree}")
+	parent := runGit(t, rig.canonical, "rev-parse", "main")
+	var last string
+	for i := 0; i < n; i++ {
+		last = runGit(t, rig.canonical, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit-tree", tree, "-p", parent, "-m", fmt.Sprintf("b-%02d", i))
+		runGit(t, rig.canonical, "update-ref", fmt.Sprintf("refs/heads/b-%02d", i), last)
+	}
+
+	if out, err := rig.git(t, "fetch", "devpad"); err != nil {
+		t.Fatalf("fetch: %v\n%s", err, out)
+	}
+	if got, want := runGit(t, rig.work, "rev-parse", fmt.Sprintf("refs/remotes/devpad/b-%02d", n-1)), last; got != want {
+		t.Fatalf("last branch = %s, want %s", got, want)
+	}
+	rig.host.mu.Lock()
+	defer rig.host.mu.Unlock()
+	total := 0
+	for _, size := range rig.host.fetches {
+		if size > gitBridgeMaxBranches {
+			t.Fatalf("a fetch named %d branches", size)
+		}
+		total += size
+	}
+	if len(rig.host.fetches) < 2 || total < n {
+		t.Fatalf("fetches %v, want batches covering %d branches", rig.host.fetches, n)
 	}
 }

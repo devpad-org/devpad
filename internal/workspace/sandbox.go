@@ -130,6 +130,16 @@ func (s *service) FetchSandboxBase(ctx context.Context, userID, workspaceID int6
 	return c.RepoFetchBase(ctx, branch, bundle)
 }
 
+// FetchProjectBranches refreshes devpad/<branch> in a project workspace for
+// each branch, from one bundle of them.
+func (s *service) FetchProjectBranches(ctx context.Context, userID, workspaceID int64, branches []string, bundle io.Reader) ([]agent.RepoBranch, error) {
+	_, c, err := s.projectWorkspaceAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoFetchBases(ctx, branches, bundle)
+}
+
 // CheckoutProjectBranch brings a canonical branch into a project workspace
 // from a bundle and switches to it, creating the local branch if it is new.
 // An existing local branch keeps its commits; only devpad/<branch> moves.

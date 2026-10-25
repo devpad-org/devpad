@@ -3,7 +3,6 @@ package workspace
 import (
 	"context"
 	"io"
-	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 )
@@ -116,14 +115,13 @@ type ProjectWorkspaceService interface {
 	CheckoutProjectBranch(ctx context.Context, userID, workspaceID int64, branch string, bundle io.Reader) (*agent.RepoCheckout, error)
 	BundleProjectBranch(ctx context.Context, userID, workspaceID int64, branch string) (io.ReadCloser, error)
 	ProjectBranchStatus(ctx context.Context, userID, workspaceID int64, branch string) (*agent.RepoBranchStatus, error)
+	FetchProjectBranches(ctx context.Context, userID, workspaceID int64, branches []string, bundle io.Reader) ([]agent.RepoBranch, error)
 }
 
 // GitBridgeService carries git-remote-devpad's requests out of a project
 // workspace for devpad to answer. Only a project's own workspace is served.
 type GitBridgeService interface {
-	ConfigureGitBridge(ctx context.Context, userID, workspaceID int64) error
-	GitBridgeRequests(ctx context.Context, userID, workspaceID int64, wait time.Duration) ([]agent.GitBridgeRequest, error)
-	GitBridgeRespond(ctx context.Context, userID, workspaceID int64, id string, result agent.GitBridgeResult) error
+	GitBridgeAgent(ctx context.Context, userID, workspaceID int64) (*Workspace, GitBridgeAgent, error)
 }
 
 // ConversionService turns a standalone workspace into a project's

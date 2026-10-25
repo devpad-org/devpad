@@ -5,10 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
 )
+
+// maxGitBridgeResponse bounds what devpad reads from a workspace agent's git
+// bridge, which is under the workspace's control.
+const maxGitBridgeResponse = 1 << 20
 
 // GitBridgeRequest is a request git-remote-devpad made inside a project
 // workspace. Everything in it comes from the workspace and is untrusted.
@@ -28,30 +33,41 @@ type GitBridgeResult struct {
 }
 
 // GitBridgeRequests long-polls the agent for git requests, waiting up to
-// wait for one.
-func (c *Client) GitBridgeRequests(ctx context.Context, wait time.Duration) ([]GitBridgeRequest, error) {
-	q := url.Values{"wait": {wait.String()}}
+// wait for one. session names devpad's poller; the agent only takes answers
+// from the session that picked a request up.
+func (c *Client) GitBridgeRequests(ctx context.Context, session string, wait time.Duration) ([]GitBridgeRequest, error) {
+	q := url.Values{"wait": {wait.String()}, "session": {session}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/git-bridge/requests?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("git bridge poll: %w", err)
+	}
+	defer resp.Body.Close()
+	limitBody(resp)
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
 	var out struct {
 		Requests []GitBridgeRequest `json:"requests"`
 	}
-	if err := c.doRepoJSON(req, "git bridge poll", &out); err != nil {
-		return nil, err
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decoding git bridge poll: %w", err)
 	}
 	return out.Requests, nil
 }
 
 // GitBridgeRespond posts the result of a git request. The agent answers 410
 // when the helper that asked has gone away.
-func (c *Client) GitBridgeRespond(ctx context.Context, id string, result GitBridgeResult) error {
+func (c *Client) GitBridgeRespond(ctx context.Context, session, id string, result GitBridgeResult) error {
 	payload, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("marshaling result: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/git-bridge/requests/"+url.PathEscape(id)+"/result", bytes.NewReader(payload))
+	u := c.baseURL + "/api/git-bridge/requests/" + url.PathEscape(id) + "/result?" + url.Values{"session": {session}}.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -75,8 +91,15 @@ func (c *Client) doNoContent(req *http.Request, op string) error {
 		return fmt.Errorf("%s: %w", op, err)
 	}
 	defer resp.Body.Close()
+	limitBody(resp)
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		return parseError(resp)
 	}
 	return nil
+}
+
+// limitBody caps how much of resp's body is read; the caller still closes
+// the original body.
+func limitBody(resp *http.Response) {
+	resp.Body = io.NopCloser(io.LimitReader(resp.Body, maxGitBridgeResponse))
 }

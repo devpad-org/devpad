@@ -86,6 +86,7 @@ func main() {
 	authedMux.HandleFunc("POST /api/repo/merge", handleRepoMerge)
 	authedMux.HandleFunc("POST /api/repo/push", handleRepoPush)
 	authedMux.HandleFunc("POST /api/repo/fetch-base", handleRepoFetchBase)
+	authedMux.HandleFunc("POST /api/repo/fetch-bases", handleRepoFetchBases)
 	authedMux.HandleFunc("POST /api/repo/checkout", handleRepoCheckout)
 	authedMux.HandleFunc("GET /api/repo/branch-status", handleRepoBranchStatus)
 	authedMux.HandleFunc("GET /api/repo/discover", handleRepoDiscover)

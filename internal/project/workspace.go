@@ -210,9 +210,15 @@ func (s *service) FetchWorkspaceBranches(ctx context.Context, userID, projectID 
 	if len(branches) == 0 || len(branches) > maxFetchBranches {
 		return invalid("fetch between 1 and %d branches", maxFetchBranches)
 	}
+	unique := make([]string, 0, len(branches))
+	seen := make(map[string]bool, len(branches))
 	for _, branch := range branches {
 		if !validBranchName(branch) {
 			return invalid("branch is not a valid branch name")
+		}
+		if !seen[branch] {
+			seen[branch] = true
+			unique = append(unique, branch)
 		}
 	}
 	ws, err := s.runningWorkspace(ctx, p)
@@ -231,21 +237,20 @@ func (s *service) FetchWorkspaceBranches(ctx context.Context, userID, projectID 
 	for _, ref := range refs.Branches {
 		exists[ref.Name] = true
 	}
-	for _, branch := range branches {
+	for _, branch := range unique {
 		if !exists[branch] {
 			return invalid("branch %q does not exist", branch)
 		}
 	}
-	for _, branch := range branches {
-		bundle, err := c.RepoBundle(ctx, branch)
-		if err != nil {
-			return err
-		}
-		_, err = s.workspaces.FetchSandboxBase(ctx, userID, ws.ID, branch, bundle)
-		bundle.Close()
-		if err != nil {
-			return err
-		}
+	// One bundle carries every branch, so a wide fetch costs the repo
+	// container one bundle rather than one per branch.
+	bundle, err := c.RepoBundleBranches(ctx, unique)
+	if err != nil {
+		return err
+	}
+	defer bundle.Close()
+	if _, err := s.workspaces.FetchProjectBranches(ctx, userID, ws.ID, unique, bundle); err != nil {
+		return err
 	}
 	return nil
 }

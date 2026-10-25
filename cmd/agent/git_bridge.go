@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -31,8 +32,10 @@ const (
 
 	gitBridgeMaxOutstanding = 8
 	gitBridgeMaxPerMinute   = 60
-	gitBridgeMaxBranches    = 256
-	gitBridgeMaxPollWait    = 30 * time.Second
+	// gitBridgeMaxBranches is devpad's limit on branches per request; the
+	// helper fetches more in batches.
+	gitBridgeMaxBranches = 64
+	gitBridgeMaxPollWait = 30 * time.Second
 	// gitBridgePickupTimeout bounds how long a request waits for devpad to
 	// pick it up, and gitBridgeServingWindow how recently devpad must have
 	// polled for the bridge to accept requests at all.
@@ -43,6 +46,12 @@ const (
 )
 
 var errBridgeNotServing = errors.New("devpad is not serving git requests for this workspace; only a project's own workspace can push to or fetch from devpad")
+
+// errDevpadRestarted answers requests a previous devpad poller picked up but
+// never answered: devpad restarted or stopped polling while handling them.
+const errDevpadRestarted = "devpad restarted while handling this request; check the branch and retry"
+
+var sessionPattern = regexp.MustCompile(`^[0-9a-f]{1,64}$`)
 
 type gitBridgeRequest struct {
 	ID       string   `json:"id"`
@@ -63,6 +72,9 @@ type gitBridgeResult struct {
 type bridgeCall struct {
 	req  gitBridgeRequest
 	done chan gitBridgeResult
+	// session is the devpad poller that picked the request up; only it may
+	// answer.
+	session string
 }
 
 type gitBridge struct {
@@ -89,15 +101,14 @@ func (b *gitBridge) serving() bool {
 	return b.polling > 0 || len(b.inflight) > 0 || (!b.lastSeen.IsZero() && b.now().Sub(b.lastSeen) < gitBridgeServingWindow)
 }
 
+// opTimeout is how long a helper waits for devpad. Transfers wait longer
+// than devpad's own 20-minute limit, so a slow push devpad completes is not
+// reported to git as a failure.
 func opTimeout(op string) time.Duration {
-	switch op {
-	case "list":
+	if op == "list" {
 		return 2 * time.Minute
-	case "fetch":
-		return 15 * time.Minute
-	default:
-		return 20 * time.Minute
 	}
+	return 25 * time.Minute
 }
 
 // submit queues a request for devpad and waits for its result, until ctx is
@@ -181,8 +192,11 @@ func (b *gitBridge) drop(call *bridgeCall) {
 	b.mu.Unlock()
 }
 
-// poll hands devpad the pending requests, waiting up to wait for one.
-func (b *gitBridge) poll(ctx context.Context, wait time.Duration) []gitBridgeRequest {
+// poll hands devpad's poller session the pending requests, waiting up to
+// wait for one. A new session means devpad restarted or replaced its poller,
+// so requests an earlier session picked up will never be answered; they fail
+// now instead of when their helper gives up.
+func (b *gitBridge) poll(ctx context.Context, session string, wait time.Duration) []gitBridgeRequest {
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 
@@ -194,10 +208,17 @@ func (b *gitBridge) poll(ctx context.Context, wait time.Duration) []gitBridgeReq
 		b.lastSeen = b.now()
 		b.mu.Unlock()
 	}()
+	for id, c := range b.inflight {
+		if c.session != session {
+			delete(b.inflight, id)
+			c.done <- gitBridgeResult{Error: errDevpadRestarted}
+		}
+	}
 	for {
 		if len(b.pending) > 0 {
 			reqs := make([]gitBridgeRequest, 0, len(b.pending))
 			for _, c := range b.pending {
+				c.session = session
 				b.inflight[c.req.ID] = c
 				reqs = append(reqs, c.req)
 			}
@@ -219,23 +240,29 @@ func (b *gitBridge) poll(ctx context.Context, wait time.Duration) []gitBridgeReq
 	}
 }
 
-// complete delivers devpad's result, reporting whether a helper still waits
-// for it.
-func (b *gitBridge) complete(id string, res gitBridgeResult) bool {
+// complete delivers devpad's result from the session that picked the
+// request up, reporting whether a helper still waits for it.
+func (b *gitBridge) complete(session, id string, res gitBridgeResult) bool {
 	b.mu.Lock()
 	call := b.inflight[id]
+	if call == nil || call.session != session {
+		b.mu.Unlock()
+		return false
+	}
 	delete(b.inflight, id)
 	b.lastSeen = b.now()
 	b.mu.Unlock()
-	if call == nil {
-		return false
-	}
 	call.done <- res
 	return true
 }
 
 // handlePoll is devpad's long poll for requests.
 func (b *gitBridge) handlePoll(w http.ResponseWriter, r *http.Request) {
+	session := r.URL.Query().Get("session")
+	if !sessionPattern.MatchString(session) {
+		writeErr(w, http.StatusBadRequest, "invalid session")
+		return
+	}
 	wait := gitBridgeMaxPollWait
 	if s := r.URL.Query().Get("wait"); s != "" {
 		d, err := time.ParseDuration(s)
@@ -245,7 +272,7 @@ func (b *gitBridge) handlePoll(w http.ResponseWriter, r *http.Request) {
 		}
 		wait = min(d, gitBridgeMaxPollWait)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"requests": b.poll(r.Context(), wait)})
+	writeJSON(w, http.StatusOK, map[string]any{"requests": b.poll(r.Context(), session, wait)})
 }
 
 // handleResult is devpad posting a request's result.
@@ -255,7 +282,7 @@ func (b *gitBridge) handleResult(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid result")
 		return
 	}
-	if !b.complete(r.PathValue("id"), res) {
+	if !b.complete(r.URL.Query().Get("session"), r.PathValue("id"), res) {
 		writeErr(w, http.StatusGone, "nobody is waiting for that request")
 		return
 	}
@@ -267,6 +294,12 @@ func (b *gitBridge) handleHelperRequest(w http.ResponseWriter, r *http.Request) 
 	var req gitBridgeRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, gitBridgeResult{Error: "invalid request"})
+		return
+	}
+	if req.Force {
+		// The helper refuses force pushes itself; anything else on this
+		// socket asking for one is refused here too, and by devpad.
+		writeJSON(w, http.StatusBadRequest, gitBridgeResult{Error: "devpad refuses force pushes; it only fast-forwards"})
 		return
 	}
 	switch req.Op {

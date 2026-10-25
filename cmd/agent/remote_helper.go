@@ -201,14 +201,17 @@ func (h *remoteHelper) fetch(first string, in *bufio.Reader) error {
 			branches = append(branches, branch)
 		}
 	}
-	if len(branches) > 0 {
-		res, err := h.request(gitBridgeRequest{Op: "fetch", Branches: branches})
+	// devpad takes a bounded number of branches per request.
+	for len(branches) > 0 {
+		n := min(len(branches), gitBridgeMaxBranches)
+		res, err := h.request(gitBridgeRequest{Op: "fetch", Branches: branches[:n]})
 		if err != nil {
 			return err
 		}
 		if res.Error != "" {
 			return fmt.Errorf("devpad: %s", res.Error)
 		}
+		branches = branches[n:]
 	}
 	for branch, sha := range want {
 		if exec.Command("git", "cat-file", "-e", sha+"^{commit}").Run() != nil {

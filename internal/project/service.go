@@ -151,6 +151,11 @@ var branchNamePattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
 // validBranchName is a conservative pre-check; the agent runs git's own
 // check-ref-format before using any name.
+// ValidBranchName reports whether name is a branch name devpad accepts.
+func ValidBranchName(name string) bool {
+	return validBranchName(name)
+}
+
 func validBranchName(name string) bool {
 	return branchNamePattern.MatchString(name) &&
 		!strings.HasPrefix(name, "-") && !strings.HasPrefix(name, "/") &&

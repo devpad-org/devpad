@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { projectApi, type ConversionNotice, type GitPushEvent, type Project, type RepoBranch, type Sandbox } from '@/api/projects'
+
+// A push notice, keyed by devpad's epoch and the push's sequence number.
+export type GitPushNotice = GitPushEvent & { key: string }
 import { taskApi, type Task, type TaskStatus } from '@/api/tasks'
 import { mergeRequestApi, type MergeRequest } from '@/api/mergeRequests'
 
@@ -30,9 +33,13 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   const conversion = ref<ConversionNotice | null>(null)
   let conversionLoaded = false
   // Pushes made with `git push devpad` since the shell opened, until shown
-  // and dismissed.
-  const gitPushes = ref<GitPushEvent[]>([])
+  // and dismissed. Each is keyed by devpad's epoch and its sequence number.
+  const gitPushes = ref<GitPushNotice[]>([])
   let gitActivitySeq: number | null = null
+  let gitActivityEpoch: string | null = null
+  // Many panels call refresh; only one activity request runs at a time, so
+  // two cannot deliver the same pushes.
+  let gitActivityLoading = false
 
   // Bumped whenever the open project changes, so responses for the previous
   // one are dropped.
@@ -111,21 +118,35 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   }
 
   async function refreshGitActivity(id: number, gen: number) {
+    if (gitActivityLoading) return
+    gitActivityLoading = true
     try {
-      const res = await projectApi.gitActivity(id, gitActivitySeq ?? undefined)
+      const res = await projectApi.gitActivity(id, gitActivitySeq ?? undefined, gitActivityEpoch ?? undefined)
       if (gen !== generation) return
+      const restarted = gitActivityEpoch !== null && res.epoch !== gitActivityEpoch
       if (gitActivitySeq !== null && res.events.length > 0) {
-        gitPushes.value = [...gitPushes.value, ...res.events]
-        if (res.events.some((e) => e.ok) && branches.value.length > 0) void refreshBranches()
+        const known = new Set(gitPushes.value.map((e) => e.key))
+        const fresh = res.events
+          .map((e) => ({ ...e, key: `${res.epoch}:${e.seq}` }))
+          .filter((e) => !known.has(e.key))
+        if (fresh.length > 0) {
+          gitPushes.value = [...gitPushes.value, ...fresh]
+          if (fresh.some((e) => e.ok) && branches.value.length > 0) void refreshBranches()
+        }
       }
-      gitActivitySeq = res.latest
+      // The cursor only moves forward, except across a devpad restart,
+      // where the sequence starts again.
+      if (restarted || gitActivitySeq === null || res.latest > gitActivitySeq) gitActivitySeq = res.latest
+      gitActivityEpoch = res.epoch
     } catch {
       // Push notices are a convenience; the board still loads without them.
+    } finally {
+      gitActivityLoading = false
     }
   }
 
-  function dismissGitPush(seq: number) {
-    gitPushes.value = gitPushes.value.filter((e) => e.seq !== seq)
+  function dismissGitPush(key: string) {
+    gitPushes.value = gitPushes.value.filter((e) => e.key !== key)
   }
 
   async function refreshBranches() {
@@ -163,6 +184,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     conversionLoaded = false
     gitPushes.value = []
     gitActivitySeq = null
+    gitActivityEpoch = null
   }
 
   // Opens a project and polls it until close.

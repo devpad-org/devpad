@@ -18,9 +18,10 @@ func NewHandler(b *Bridge) *Handler {
 	return &Handler{bridge: b}
 }
 
-// HandleActivity returns a project's pushes after ?after=. Without it, only
-// the latest sequence number comes back, so a newly opened IDE does not
-// replay old pushes.
+// HandleActivity returns a project's pushes after ?after=, with the latest
+// sequence number and the bridge's epoch. Without after, only the latest
+// sequence number comes back, so a newly opened IDE does not replay old
+// pushes. An ?epoch= from before a restart returns everything since.
 func (h *Handler) HandleActivity(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	projectID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -28,19 +29,19 @@ func (h *Handler) HandleActivity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid project id")
 		return
 	}
-	s := r.URL.Query().Get("after")
-	if s == "" {
-		_, latest := h.bridge.Activity(user.ID, projectID, 0)
-		writeJSON(w, http.StatusOK, map[string]any{"events": []Event{}, "latest": latest})
+	q := r.URL.Query()
+	if q.Get("after") == "" {
+		_, latest, epoch := h.bridge.Activity(user.ID, projectID, 0, "")
+		writeJSON(w, http.StatusOK, map[string]any{"events": []Event{}, "latest": latest, "epoch": epoch})
 		return
 	}
-	after, err := strconv.ParseInt(s, 10, 64)
+	after, err := strconv.ParseInt(q.Get("after"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid after")
 		return
 	}
-	events, latest := h.bridge.Activity(user.ID, projectID, after)
-	writeJSON(w, http.StatusOK, map[string]any{"events": events, "latest": latest})
+	events, latest, epoch := h.bridge.Activity(user.ID, projectID, after, q.Get("epoch"))
+	writeJSON(w, http.StatusOK, map[string]any{"events": events, "latest": latest, "epoch": epoch})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

@@ -170,7 +170,7 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/repo/refs":
 		json.NewEncoder(w).Encode(agent.RepoRefs{DefaultBranch: "main", Branches: a.branches})
 	case "/api/repo/bundle":
-		branch := r.URL.Query().Get("branch")
+		branch := strings.Join(r.URL.Query()["branch"], ",")
 		a.bundled = append(a.bundled, branch)
 		w.Write([]byte("bundle-of-" + branch))
 	case "/api/repo/diff":
@@ -375,6 +375,18 @@ func (f *fakeWorkspaces) FetchSandboxBase(_ context.Context, _, id int64, branch
 		f.branchStatus[branch] = st
 	}
 	return &agent.RepoBranch{Branch: "devpad/" + branch}, nil
+}
+
+func (f *fakeWorkspaces) FetchProjectBranches(_ context.Context, _, id int64, branches []string, bundle io.Reader) ([]agent.RepoBranch, error) {
+	body, _ := io.ReadAll(bundle)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seeds[id] = "devpad/{" + strings.Join(branches, ",") + "} <- " + string(body)
+	out := make([]agent.RepoBranch, len(branches))
+	for i, branch := range branches {
+		out[i] = agent.RepoBranch{Branch: "devpad/" + branch}
+	}
+	return out, nil
 }
 
 func (f *fakeWorkspaces) ProjectBranchStatus(_ context.Context, _, _ int64, branch string) (*agent.RepoBranchStatus, error) {

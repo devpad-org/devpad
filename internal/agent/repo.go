@@ -88,7 +88,13 @@ func (c *Client) RepoCompare(ctx context.Context, base, head string) (*RepoCompa
 
 // RepoBundle streams a git bundle of one branch. The caller must close it.
 func (c *Client) RepoBundle(ctx context.Context, branch string) (io.ReadCloser, error) {
-	u := fmt.Sprintf("%s/api/repo/bundle?branch=%s", c.baseURL, url.QueryEscape(branch))
+	return c.RepoBundleBranches(ctx, []string{branch})
+}
+
+// RepoBundleBranches streams one bundle of several branches. The caller must
+// close it.
+func (c *Client) RepoBundleBranches(ctx context.Context, branches []string) (io.ReadCloser, error) {
+	u := c.baseURL + "/api/repo/bundle?" + url.Values{"branch": branches}.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -265,6 +271,24 @@ func (c *Client) RepoFetchBase(ctx context.Context, branch string, bundle io.Rea
 		return nil, err
 	}
 	return &result, nil
+}
+
+// RepoFetchBases refreshes devpad/<branch> for each branch from one bundle of
+// them.
+func (c *Client) RepoFetchBases(ctx context.Context, branches []string, bundle io.Reader) ([]RepoBranch, error) {
+	u := c.baseURL + "/api/repo/fetch-bases?" + url.Values{"branch": branches}.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bundle)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	var result struct {
+		Branches []RepoBranch `json:"branches"`
+	}
+	if err := c.doRepoJSON(req, "repo fetch bases", &result); err != nil {
+		return nil, err
+	}
+	return result.Branches, nil
 }
 
 // RepoCheckout is the result of checking out a canonical branch in a

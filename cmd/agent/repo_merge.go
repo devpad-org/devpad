@@ -458,6 +458,59 @@ func handleRepoFetchBase(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, repoBranchResult{Branch: sandboxBaseRemote + "/" + branch, SHA: strings.TrimSpace(sha)})
 }
 
+// handleRepoFetchBases refreshes devpad/<branch> for each named branch from
+// one bundle of them, for git fetch through the devpad remote.
+func handleRepoFetchBases(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
+	defer cancel()
+
+	branches := r.URL.Query()["branch"]
+	if len(branches) == 0 || len(branches) > maxBundleBranches {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("fetch between 1 and %d branches", maxBundleBranches))
+		return
+	}
+	var unique, refspecs []string
+	seen := make(map[string]bool, len(branches))
+	for _, branch := range branches {
+		if err := validateBranchName(ctx, branch, "branch"); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !seen[branch] {
+			seen[branch] = true
+			unique = append(unique, branch)
+			refspecs = append(refspecs, "refs/heads/"+branch+":refs/remotes/"+sandboxBaseRemote+"/"+branch)
+		}
+	}
+	if gitExec(ctx, "rev-parse", "--git-dir") != nil {
+		writeErr(w, http.StatusConflict, "workspace has no repository")
+		return
+	}
+	bundle, cleanup, err := receiveBundle(w, r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	defer cleanup()
+
+	args := append([]string{"fetch", "--no-tags", "--no-write-fetch-head", "--force", "--", bundle}, refspecs...)
+	if out, err := gitOutput(ctx, args...); err != nil {
+		writeErr(w, http.StatusBadRequest, "fetching bundle: "+strings.TrimSpace(out))
+		return
+	}
+	results := make([]repoBranchResult, 0, len(unique))
+	for _, branch := range unique {
+		ref := "refs/remotes/" + sandboxBaseRemote + "/" + branch
+		sha, err := gitOutput(ctx, "rev-parse", ref)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "resolving "+ref)
+			return
+		}
+		results = append(results, repoBranchResult{Branch: sandboxBaseRemote + "/" + branch, SHA: strings.TrimSpace(sha)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"branches": results})
+}
+
 // gitStdout runs git and returns stdout only, so stderr warnings cannot
 // corrupt parsed or binary output.
 func gitStdout(ctx context.Context, args ...string) (string, error) {

@@ -256,6 +256,13 @@ export interface GitPushEvent {
   at: string
 }
 
+export interface GitActivity {
+  events: GitPushEvent[]
+  latest: number
+  // Changes when devpad restarts, which restarts the sequence numbers.
+  epoch: string
+}
+
 export const projectApi = {
   list(): Promise<{ projects: Project[] }> {
     return apiClient.get('/api/projects')
@@ -335,11 +342,15 @@ export const projectApi = {
     return apiClient.get(`/api/projects/${id}/workspace/branch-status?branch=${encodeURIComponent(branch)}`)
   },
 
-  // Pushes made through the devpad remote after `after`. Without it, only the
-  // latest sequence number comes back, so old pushes are not replayed.
-  gitActivity(id: number, after?: number): Promise<{ events: GitPushEvent[]; latest: number }> {
-    const query = after === undefined ? '' : `?after=${after}`
-    return apiClient.get(`/api/projects/${id}/git-activity${query}`)
+  // Pushes made through the devpad remote after `after` in `epoch`. Without
+  // after, only the latest sequence number comes back, so old pushes are not
+  // replayed; with an epoch from before a restart, everything since comes.
+  gitActivity(id: number, after?: number, epoch?: string): Promise<GitActivity> {
+    const query = new URLSearchParams()
+    if (after !== undefined) query.set('after', String(after))
+    if (epoch !== undefined) query.set('epoch', epoch)
+    const qs = query.toString()
+    return apiClient.get(`/api/projects/${id}/git-activity${qs ? `?${qs}` : ''}`)
   },
 
   // Lists the repos in a standalone workspace that could become a project.

@@ -405,3 +405,57 @@ func TestRepoCompareRejections(t *testing.T) {
 		})
 	}
 }
+
+func TestRepoBundleAndFetchSeveralBranchesAtOnce(t *testing.T) {
+	canonical := initCanonical(t)
+	work := seedSandbox(t, canonical, "main")
+	tree := runGit(t, canonical, "rev-parse", "main^{tree}")
+	parent := runGit(t, canonical, "rev-parse", "main")
+	want := map[string]string{}
+	for _, branch := range []string{"a", "b/c"} {
+		sha := runGit(t, canonical, "commit-tree", tree, "-p", parent, "-m", branch)
+		runGit(t, canonical, "update-ref", "refs/heads/"+branch, sha)
+		want[branch] = sha
+	}
+
+	// One bundle carries both branches, named twice or not.
+	rec := repoRequest(t, canonical, handleRepoBundle, http.MethodGet, "/api/repo/bundle?branch=a&branch=b/c&branch=a", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bundle status %d: %s", rec.Code, rec.Body)
+	}
+	bundle := rec.Body.Bytes()
+
+	rec = repoRequest(t, work, handleRepoFetchBases, http.MethodPost, "/api/repo/fetch-bases?branch=a&branch=b/c", bytes.NewReader(bundle))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetch-bases status %d: %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Branches []repoBranchResult `json:"branches"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got.Branches) != 2 || got.Branches[0].Branch != "devpad/a" {
+		t.Fatalf("fetch-bases result %s: %v", rec.Body, err)
+	}
+	for branch, sha := range want {
+		if ref := runGit(t, work, "rev-parse", "refs/remotes/devpad/"+branch); ref != sha {
+			t.Fatalf("devpad/%s = %s, want %s", branch, ref, sha)
+		}
+	}
+	// The local branches are untouched.
+	if head := runGit(t, work, "rev-parse", "main"); head != parent {
+		t.Fatalf("main moved to %s", head)
+	}
+
+	// Every name is checked, and an unknown branch fails the whole bundle.
+	for _, target := range []string{
+		"/api/repo/bundle",
+		"/api/repo/bundle?branch=a&branch=nope",
+		"/api/repo/bundle?branch=a&branch=--all",
+	} {
+		if rec := repoRequest(t, canonical, handleRepoBundle, http.MethodGet, target, nil); rec.Code == http.StatusOK {
+			t.Fatalf("%s was bundled", target)
+		}
+	}
+	if rec := repoRequest(t, work, handleRepoFetchBases, http.MethodPost, "/api/repo/fetch-bases?branch=--all", bytes.NewReader(bundle)); rec.Code != http.StatusBadRequest {
+		t.Fatalf("an invalid name got %d", rec.Code)
+	}
+}
