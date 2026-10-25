@@ -158,7 +158,7 @@ async function createMr() {
     })
     showMrForm.value = false
     void store.refresh()
-    openMergeRequest(store.projectId, res.mergeRequest.id)
+    openMergeRequest(res.mergeRequest.id)
   } catch (e) {
     error.value = branchActionError(e, 'Failed to open the merge request')
     void refresh()
@@ -231,7 +231,7 @@ onUnmounted(stopTimer)
       <button
         v-if="openMr"
         class="btn btn-secondary btn-sm"
-        @click="openMergeRequest(openMr.projectId, openMr.id)"
+        @click="openMergeRequest(openMr.id)"
       >
         MR !{{ openMr.id }}
       </button>

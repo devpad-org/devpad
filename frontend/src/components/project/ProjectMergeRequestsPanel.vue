@@ -39,7 +39,7 @@ const visible = computed(() => (showClosed.value ? store.mergeRequests : store.o
           type="button"
           class="side-row"
           :class="{ active: shell?.activeView.value === mergeRequestTab(mr.id) }"
-          @click="openMergeRequest(mr.projectId, mr.id)"
+          @click="openMergeRequest(mr.id)"
         >
           <span class="side-row-main">
             <span class="side-row-title">!{{ mr.id }} {{ mr.title }}</span>

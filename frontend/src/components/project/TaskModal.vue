@@ -28,7 +28,7 @@ const openMergeRequest = useOpenMergeRequest()
 // The merge request opens as a tab behind the modal, so the modal gets out
 // of the way.
 function reviewMergeRequest(id: number) {
-  openMergeRequest(props.projectId, id)
+  openMergeRequest(id)
   emit('close')
 }
 

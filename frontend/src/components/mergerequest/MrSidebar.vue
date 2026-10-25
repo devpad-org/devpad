@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useRoute, useRouter } from 'vue-router'
 import AgentModelPicker from '@/components/project/AgentModelPicker.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import StatusBadge from '@/components/project/StatusBadge.vue'
@@ -24,8 +25,18 @@ const {
 } = useMergeRequest()
 
 const projectStore = useActiveProjectStore()
+const route = useRoute()
+const router = useRouter()
 
-function openTask(id: number) {
+// A real link to the task, so it can be copied or opened in a new tab.
+function taskHref(id: number): string {
+  return router.resolve({ query: { ...route.query, task: id } }).href
+}
+
+// A plain click opens the task over the project without navigating.
+function openTask(e: MouseEvent, id: number) {
+  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+  e.preventDefault()
   projectStore.selectedTaskId = id
 }
 </script>
@@ -58,10 +69,10 @@ function openTask(id: number) {
         <template v-if="mr.taskId">
           <dt>Task</dt>
           <dd>
-            <button class="task-link" @click="openTask(mr.taskId)">
+            <a class="task-link" :href="taskHref(mr.taskId)" @click="openTask($event, mr.taskId)">
               <MrIcon name="task" :size="12" />
               #{{ mr.taskId }}
-            </button>
+            </a>
           </dd>
         </template>
         <dt>Opened</dt>
@@ -166,6 +177,7 @@ function openTask(id: number) {
   gap: 4px;
   color: var(--accent-blue);
   font-size: inherit;
+  text-decoration: none;
 }
 
 .task-link:hover {

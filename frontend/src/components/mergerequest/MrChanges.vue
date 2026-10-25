@@ -37,9 +37,10 @@ const {
 const shell = inject(ideShellKey, null)
 const root = ref<HTMLElement | null>(null)
 
-// The branch the project workspace has checked out, so "Open in editor" can
-// say when the editor shows a different version than this diff.
+// The branch and commit the project workspace has checked out, so "Open in
+// editor" can say when the editor shows a different version than this diff.
 const workspaceBranch = ref('')
+const workspaceHash = ref('')
 const workspaceId = computed(() => shell?.liveWorkspaceId.value ?? null)
 const canOpenInEditor = computed(() => workspaceId.value !== null && !!selectedFile.value && selectedFile.value.status !== 'D')
 const otherBranch = computed(() =>
@@ -47,22 +48,34 @@ const otherBranch = computed(() =>
     ? workspaceBranch.value
     : '',
 )
+// On the right branch, but at a different commit than the merge request's
+// head, e.g. after an agent pushed a fix. The branch list gives short hashes.
+const otherCommit = computed(() => {
+  const head = mr.value?.headSha ?? ''
+  const hash = workspaceHash.value
+  if (!canOpenInEditor.value || otherBranch.value || !workspaceBranch.value || !hash || !head) return ''
+  return head.startsWith(hash) ? '' : hash
+})
 
 async function loadWorkspaceBranch() {
   const id = workspaceId.value
   if (id === null) {
     workspaceBranch.value = ''
+    workspaceHash.value = ''
     return
   }
   try {
     const res = await gitApi.branches(id)
-    if (workspaceId.value === id) workspaceBranch.value = res.current
+    if (workspaceId.value !== id) return
+    workspaceBranch.value = res.current
+    workspaceHash.value = res.branches.find((b) => !b.remote && b.name === res.current)?.hash ?? ''
   } catch {
     workspaceBranch.value = ''
+    workspaceHash.value = ''
   }
 }
 
-watch(() => [props.active, workspaceId.value] as const, ([active]) => {
+watch(() => [props.active, workspaceId.value, mr.value?.headSha] as const, ([active]) => {
   if (active) void loadWorkspaceBranch()
 }, { immediate: true })
 
@@ -134,6 +147,12 @@ onMounted(() => {
         <p v-if="otherBranch" class="notice notice-warning branch-note">
           Your workspace is on <span class="mono">{{ otherBranch }}</span>, not <span class="mono">{{ mr?.sourceBranch }}</span>,
           so the editor shows that branch's version of this file.
+        </p>
+        <p v-else-if="otherCommit" class="notice notice-warning branch-note">
+          Your workspace's <span class="mono">{{ workspaceBranch }}</span> is at
+          <span class="mono">{{ otherCommit }}</span>, but this merge request is at
+          <span class="mono">{{ mr?.headSha.slice(0, otherCommit.length) }}</span>, so the editor may show a different version
+          of this file.
         </p>
 
         <p v-if="fileError" class="notice notice-error">{{ fileError }}</p>

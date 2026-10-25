@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { BOARD_TAB, mergeRequestTab, parseViewTabId } from '@/components/ide/viewTabs'
 import HomeView from '@/views/HomeView.vue'
 import LoginView from '@/views/LoginView.vue'
 import SetupView from '@/views/SetupView.vue'
@@ -42,8 +43,13 @@ export const router = createRouter({
       path: '/projects/:id/merge-requests/:mrId',
       name: 'merge-request',
       redirect: (to) => {
-        const tab = `mr:${Number(to.params.mrId)}`
-        return { name: 'project', params: { id: to.params.id }, query: { tabs: `board,${tab}`, tab } }
+        const mrId = Number(to.params.mrId)
+        if (!Number.isInteger(mrId) || mrId < 1) return { name: 'project', params: { id: to.params.id } }
+        const tab = mergeRequestTab(mrId)
+        // Keep any tabs the link already names; otherwise the board stays open.
+        const tabs = typeof to.query.tabs === 'string' ? to.query.tabs.split(',').filter((t) => parseViewTabId(t)) : [BOARD_TAB]
+        if (!tabs.includes(tab)) tabs.push(tab)
+        return { name: 'project', params: { id: to.params.id }, query: { ...to.query, tabs: tabs.join(','), tab } }
       },
     },
     {

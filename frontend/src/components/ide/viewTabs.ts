@@ -1,5 +1,4 @@
 import { inject, type InjectionKey, type Ref } from 'vue'
-import { useRouter } from 'vue-router'
 
 // A view tab is an editor tab the IDE shell renders itself, such as the
 // project board or a merge request. View ids never start with "/", so they
@@ -49,13 +48,9 @@ export interface IdeShell {
 
 export const ideShellKey: InjectionKey<IdeShell> = Symbol('ideShell')
 
-// Opens a merge request: as a tab inside the project shell, or by navigating
-// to it from anywhere else.
-export function useOpenMergeRequest(): (projectId: number, mrId: number) => void {
+// Opens a merge request as a tab in the project shell. Every caller sits
+// inside the shell.
+export function useOpenMergeRequest(): (mrId: number) => void {
   const shell = inject(ideShellKey, null)
-  const router = useRouter()
-  return (projectId, mrId) => {
-    if (shell) shell.openView(mergeRequestTab(mrId))
-    else void router.push({ name: 'merge-request', params: { id: projectId, mrId } })
-  }
+  return (mrId) => shell?.openView(mergeRequestTab(mrId))
 }

@@ -457,7 +457,9 @@ function setViewDirty(id: string, dirty: boolean) {
   dirtyViews.value = next
 }
 
-// A tab closed by back/forward takes its draft with it.
+// A tab can close without closeView, when the URL's tab list changes, e.g.
+// on back/forward. The leave guard has asked about any draft by then, so the
+// tab's dirty mark just goes with it.
 watch(viewTabs, (tabs) => {
   const open = new Set<string>(tabs.map((t) => t.id))
   for (const id of dirtyViews.value) {
@@ -529,7 +531,8 @@ watch(() => [route.query.tabs, route.query.tab], () => {
   if (activeView.value && route.query.tab) revealView(activeView.value)
 })
 
-// A merge request links to its task with ?task=.
+// ?task=<id> opens that task over the project, e.g. from a merge request's
+// task link or the inbox.
 function applyTaskQuery() {
   const task = Number(route.query.task)
   if (task) projectStore.selectedTaskId = task
@@ -607,6 +610,19 @@ function confirmLeave(): Promise<boolean> {
   })
 }
 
+// A navigation within the shell changes only the query, but a new tab list
+// can still close merge request tabs that hold a review draft.
+function confirmDropViews(query: LocationQuery): boolean | Promise<boolean> {
+  if (!isProjectMode.value || dirtyViews.value.size === 0) return true
+  const kept = new Set<string>(queryViews(query).ids)
+  if ([...dirtyViews.value].every((id) => kept.has(id))) return true
+  return askConfirm({
+    title: 'Discard your review?',
+    message: 'This closes a merge request with a review you haven\'t submitted. Close it and lose the summary and line comments?',
+    confirmLabel: 'Discard review',
+  })
+}
+
 function answerDiscard(ok: boolean) {
   const prompt = discardPrompt.value
   discardPrompt.value = null
@@ -645,7 +661,7 @@ onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('beforeunload', handleBeforeUnload)
   removeLeaveGuard = router.beforeEach((to, from) => {
-    if (to.name === from.name && to.params.id === from.params.id) return true
+    if (to.name === from.name && to.params.id === from.params.id) return confirmDropViews(to.query)
     return confirmLeave()
   })
   if (isMobile.value) terminalMinimized.value = true

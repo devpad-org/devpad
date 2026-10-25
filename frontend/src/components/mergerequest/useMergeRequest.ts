@@ -87,7 +87,10 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   )
 
   // Unsubmitted review text or line comments, which closing the tab would lose.
-  const hasDraft = computed(() => reviewBody.value.trim() !== '' || drafts.value.length > 0 || draftBody.value.trim() !== '')
+  // Only an open merge request can still be reviewed.
+  const hasDraft = computed(
+    () => isOpen.value && (reviewBody.value.trim() !== '' || drafts.value.length > 0 || draftBody.value.trim() !== ''),
+  )
 
   // Files sorted so each directory's files sit together, as a tree would show them.
   const orderedFiles = computed(() =>
@@ -312,6 +315,20 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     draftError.value = ''
     void loadFile()
   })
+
+  // A merged or closed merge request can't take a review, so its drafts go.
+  watch(
+    () => mr.value?.status,
+    (status) => {
+      if (!status || status === 'open') return
+      reviewOpen.value = false
+      reviewBody.value = ''
+      drafts.value = []
+      draftLine.value = null
+      draftBody.value = ''
+      draftError.value = ''
+    },
+  )
 
   watch([projectId, mrId], () => {
     generation++
