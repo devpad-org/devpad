@@ -34,6 +34,9 @@ type Service interface {
 	// SendBack starts the task's agent again on the feedback left on the
 	// merge request.
 	SendBack(ctx context.Context, userID, projectID, mrID int64, in SendBackInput) (*task.Task, error)
+	// AssistantComment leaves a comment from the assistant in the project's
+	// workspace on an open merge request.
+	AssistantComment(ctx context.Context, userID, projectID, mrID int64, in AgentCommentInput) (*Comment, error)
 
 	// TaskReadyForReview opens or updates the task's merge request.
 	TaskReadyForReview(ctx context.Context, t *task.Task, summary string)

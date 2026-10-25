@@ -1,12 +1,13 @@
 // Package projecttools gives the assistant in a project's workspace tools
-// to look at the project's tasks and merge requests and to hand work to
-// background agents.
+// to look at the project's tasks and merge requests, comment on merge
+// requests, and hand work to background agents.
 //
 // The tools run on the host, and the project is always the one the
 // conversation's workspace belongs to, never one named in a tool argument.
 // They cannot merge, close, approve, push, delete or move the default
 // branch: those stay with the user. Anything that starts an agent run waits
-// for the user's approval first.
+// for the user's approval first; comments do not, since they change nothing
+// but the discussion.
 package projecttools
 
 import (
@@ -38,6 +39,9 @@ const (
 	requestTaskChangesTool = "request_task_changes"
 	listMergeRequestsTool  = "list_merge_requests"
 	getMergeRequestTool    = "get_merge_request"
+	// The merge request service already offers task agents a tool named
+	// comment_on_merge_request, and it claims every call by that name.
+	commentTool = "add_merge_request_comment"
 
 	// Caps that keep tool results small enough for the model's context.
 	maxListedItems     = 100
@@ -110,6 +114,14 @@ var definitions = []domain.ToolDefinition{
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"merge_request_id":{"type":"integer","minimum":1}},"required":["merge_request_id"]}`),
 		},
 	},
+	{
+		Type: "function",
+		Function: domain.ToolFunction{
+			Name:        commentTool,
+			Description: "Comment on an open merge request, or reply to one of its comments, such as a review comment you addressed. The comment is shown as the assistant's. A reply sits with the comment it answers; use the comment ids from get_merge_request.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"merge_request_id":{"type":"integer","minimum":1},"reply_to":{"type":"integer","minimum":1,"description":"The id of the comment you are answering. Leave it out to comment on the whole change."},"body":{"type":"string","description":"The comment, in Markdown. Keep it short and factual."}},"required":["merge_request_id","body"]}`),
+		},
+	},
 }
 
 // Workspaces is the workspace surface the tools need.
@@ -143,6 +155,7 @@ type Tasks interface {
 type MergeRequests interface {
 	List(ctx context.Context, userID, projectID int64) ([]*mergerequest.MergeRequest, error)
 	Get(ctx context.Context, userID, projectID, mrID int64) (*mergerequest.Detail, error)
+	AssistantComment(ctx context.Context, userID, projectID, mrID int64, in mergerequest.AgentCommentInput) (*mergerequest.Comment, error)
 }
 
 // Provider offers the project tools to runs in project workspaces.
@@ -220,9 +233,10 @@ func (p *Provider) Prompt(ctx context.Context, userID, workspaceID int64) string
 		}
 	}
 	b.WriteString(`
-- There is no git remote and no credentials here. The user publishes branches to the project and opens merge requests from the IDE; do not try to push.
+- The repo has a devpad remote. git fetch devpad refreshes the project's branches as devpad/<branch>, and git push devpad <branch> publishes a branch exactly as the IDE's Publish button does: never the default branch, fast-forward only, and an open merge request for the branch moves to the new commit. Push only when the user asks you to publish.
 - Background agents implement tasks from the project's board on their own branches. Use list_tasks, get_task, list_merge_requests and get_merge_request to see the board, and create_task to add work for them. Starting an agent (create_task with start, start_task, request_task_changes) asks the user first.
-- Only the user merges, closes, approves or pushes. You have no tools for those.`)
+- add_merge_request_comment comments on an open merge request or replies to one of its comments, for example to say how you addressed a review comment. Comments are shown as yours, not the user's.
+- Only the user merges, closes or approves. You have no tools for those.`)
 	return b.String()
 }
 
@@ -254,6 +268,9 @@ type taskArgs struct {
 	// Status filters the list tools.
 	Status         string `json:"status"`
 	MergeRequestID int64  `json:"merge_request_id"`
+	// ReplyTo is the comment add_merge_request_comment answers; Body is
+	// its comment.
+	ReplyTo int64 `json:"reply_to"`
 }
 
 // needsApproval reports whether a call starts an agent run, which costs
@@ -430,6 +447,8 @@ func (p *Provider) ExecuteTool(ctx context.Context, req aitools.ExecutionRequest
 		return p.requestChanges(ctx, req, proj, args), true
 	case listMergeRequestsTool:
 		return p.listMergeRequests(ctx, req, proj, args.Status), true
+	case commentTool:
+		return p.comment(ctx, req, proj, args), true
 	default:
 		return p.getMergeRequest(ctx, req, proj, args.MergeRequestID), true
 	}
@@ -707,9 +726,13 @@ func (p *Provider) getMergeRequest(ctx context.Context, req aitools.ExecutionReq
 	listed := make([]map[string]any, 0, len(comments))
 	for _, c := range comments {
 		comment := map[string]any{
+			"id":       c.ID,
 			"author":   c.Author,
 			"body":     clip(c.Body, maxCommentBytes),
 			"outdated": c.HeadSHA != "" && c.HeadSHA != mr.HeadSHA,
+		}
+		if c.ReplyTo != 0 {
+			comment["replyTo"] = c.ReplyTo
 		}
 		if c.Path != "" {
 			comment["path"], comment["line"] = c.Path, c.Line
@@ -736,6 +759,24 @@ func (p *Provider) getMergeRequest(ctx context.Context, req aitools.ExecutionReq
 		result["olderCommentsLeftOut"] = omitted
 	}
 	return toolResult(req.ToolName, result)
+}
+
+func (p *Provider) comment(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) domain.ToolResultPart {
+	c, err := p.mrs.AssistantComment(ctx, req.UserID, proj.ID, args.MergeRequestID, mergerequest.AgentCommentInput{ReplyTo: args.ReplyTo, Body: args.Body})
+	switch {
+	case errors.Is(err, mergerequest.ErrNotFound), errors.Is(err, project.ErrNotFound):
+		return toolError(req.ToolName, "merge request !%d is not in this project", args.MergeRequestID)
+	case errors.Is(err, mergerequest.ErrCommentLimit):
+		return toolError(req.ToolName, "you have left as many comments on merge request !%d as you can", args.MergeRequestID)
+	case errors.Is(err, mergerequest.ErrInvalidInput), errors.Is(err, mergerequest.ErrInvalidState):
+		return toolError(req.ToolName, "%v", err)
+	case err != nil:
+		return toolError(req.ToolName, "commenting on the merge request: %v", err)
+	case c.ReplyTo != 0:
+		return toolResult(req.ToolName, map[string]any{"commentId": c.ID, "replyTo": c.ReplyTo})
+	default:
+		return toolResult(req.ToolName, map[string]any{"commentId": c.ID})
+	}
 }
 
 func taskError(name string, taskID int64, err error) domain.ToolResultPart {

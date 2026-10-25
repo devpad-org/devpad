@@ -3,6 +3,7 @@ package mergerequest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -38,7 +39,7 @@ var readCommentsDefinition = domain.ToolDefinition{
 	Type: "function",
 	Function: domain.ToolFunction{
 		Name:        readCommentsTool,
-		Description: "Read the merge request's reviews and comments, earlier rounds included, oldest first. Authors are user, review_agent, or task_agent (the agent implementing the task). Each comment has an id to reply to, and outdated is true for feedback on an older version of the change.",
+		Description: "Read the merge request's reviews and comments, earlier rounds included, oldest first. Authors are user, review_agent, task_agent (the agent implementing the task), or assistant (the assistant in the user's own workspace). Each comment has an id to reply to, and outdated is true for feedback on an older version of the change.",
 		Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 	},
 }
@@ -273,38 +274,65 @@ func (s *service) commentAsTaskAgent(ctx context.Context, req aitools.ExecutionR
 	if err := json.Unmarshal(req.Arguments, &args); err != nil {
 		return toolError(taskCommentTool, "invalid arguments: %v", err)
 	}
-	body := strings.TrimSpace(args.Body)
+	c, err := s.addAgentComment(ctx, found.ID, AuthorTaskAgent, maxTaskAgentComments, AgentCommentInput{ReplyTo: args.ReplyTo, Body: args.Body})
+	switch {
+	case errors.Is(err, ErrCommentLimit):
+		return toolError(taskCommentTool, "you have left %d comments on this merge request, the most you can; put anything else in your closing summary", maxTaskAgentComments)
+	case err != nil:
+		return toolError(taskCommentTool, "%v", err)
+	case c.ReplyTo != 0:
+		return domain.ToolResultPart{Name: taskCommentTool, Content: fmt.Sprintf("Replied to comment %d.", c.ReplyTo)}
+	default:
+		return domain.ToolResultPart{Name: taskCommentTool, Content: "Comment added."}
+	}
+}
+
+// AssistantComment leaves a comment from the assistant in the project's
+// workspace on one of the user's open merge requests.
+func (s *service) AssistantComment(ctx context.Context, userID, projectID, mrID int64, in AgentCommentInput) (*Comment, error) {
+	mr, err := s.get(ctx, userID, projectID, mrID)
+	if err != nil {
+		return nil, err
+	}
+	return s.addAgentComment(ctx, mr.ID, AuthorAssistant, maxAssistantComments, in)
+}
+
+// addAgentComment leaves an agent's comment on the whole change, or its
+// reply to a comment, on an open merge request. Each author can leave at
+// most limit comments on one merge request.
+func (s *service) addAgentComment(ctx context.Context, mrID int64, author Author, limit int, in AgentCommentInput) (*Comment, error) {
+	body := strings.TrimSpace(in.Body)
 	switch {
 	case body == "":
-		return toolError(taskCommentTool, "body is required")
+		return nil, invalid("body is required")
 	case len(body) > maxCommentBytes:
-		return toolError(taskCommentTool, "the comment is too long")
+		return nil, invalid("the comment is too long")
 	}
 
-	unlock := s.lock("mr", found.ID)
+	unlock := s.lock("mr", mrID)
 	defer unlock()
-	mr, err := s.repo.GetByID(ctx, found.ID)
+	mr, err := s.repo.GetByID(ctx, mrID)
 	if err != nil {
-		return toolError(taskCommentTool, "%v", err)
+		return nil, err
 	}
 	if mr == nil || mr.Status != StatusOpen {
-		return toolError(taskCommentTool, "the merge request is no longer open")
+		return nil, fmt.Errorf("%w: the merge request is no longer open", ErrInvalidState)
 	}
-	n, err := s.repo.CountAuthorComments(ctx, mr.ID, AuthorTaskAgent)
+	n, err := s.repo.CountAuthorComments(ctx, mr.ID, author)
 	if err != nil {
-		return toolError(taskCommentTool, "%v", err)
+		return nil, err
 	}
-	if n >= maxTaskAgentComments {
-		return toolError(taskCommentTool, "you have left %d comments on this merge request, the most you can; put anything else in your closing summary", n)
+	if n >= limit {
+		return nil, ErrCommentLimit
 	}
-	c := &Comment{MergeRequestID: mr.ID, Author: AuthorTaskAgent, Body: body, HeadSHA: mr.HeadSHA}
-	if args.ReplyTo != 0 {
-		parent, err := s.repo.GetComment(ctx, args.ReplyTo)
+	c := &Comment{MergeRequestID: mr.ID, Author: author, Body: body, HeadSHA: mr.HeadSHA}
+	if in.ReplyTo != 0 {
+		parent, err := s.repo.GetComment(ctx, in.ReplyTo)
 		if err != nil {
-			return toolError(taskCommentTool, "%v", err)
+			return nil, err
 		}
 		if parent == nil || parent.MergeRequestID != mr.ID {
-			return toolError(taskCommentTool, "comment %d is not on this merge request", args.ReplyTo)
+			return nil, invalid("comment %d is not on this merge request", in.ReplyTo)
 		}
 		// Threads are one level deep: a reply to a reply answers the thread.
 		c.ReplyTo = parent.ID
@@ -314,12 +342,9 @@ func (s *service) commentAsTaskAgent(ctx context.Context, req aitools.ExecutionR
 		c.Path, c.Line, c.HeadSHA = parent.Path, parent.Line, parent.HeadSHA
 	}
 	if err := s.repo.CreateComment(ctx, c); err != nil {
-		return toolError(taskCommentTool, "%v", err)
+		return nil, err
 	}
-	if c.ReplyTo != 0 {
-		return domain.ToolResultPart{Name: taskCommentTool, Content: fmt.Sprintf("Replied to comment %d.", c.ReplyTo)}
-	}
-	return domain.ToolResultPart{Name: taskCommentTool, Content: "Comment added."}
+	return c, nil
 }
 
 func (s *service) commentOnLine(ctx context.Context, mr *MergeRequest, rv *Review, raw json.RawMessage) domain.ToolResultPart {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -128,7 +129,11 @@ func (f *fakeTasks) RequestChanges(_ context.Context, _, projectID, taskID int64
 	return &clone, nil
 }
 
-type fakeMRs struct{ mrs []*mergerequest.MergeRequest }
+type fakeMRs struct {
+	mrs []*mergerequest.MergeRequest
+	// comments records the assistant's comments, by merge request.
+	comments map[int64][]mergerequest.AgentCommentInput
+}
 
 func (f fakeMRs) List(_ context.Context, _, projectID int64) ([]*mergerequest.MergeRequest, error) {
 	var out []*mergerequest.MergeRequest
@@ -145,10 +150,23 @@ func (f fakeMRs) Get(_ context.Context, _, projectID, mrID int64) (*mergerequest
 		if mr.ID == mrID && mr.ProjectID == projectID {
 			d := &mergerequest.Detail{MergeRequest: mr}
 			for i := 0; i < 60; i++ {
-				d.Comments = append(d.Comments, &mergerequest.Comment{Author: mergerequest.AuthorAgent, Path: "cart.go", Line: i + 1, Body: "nit", HeadSHA: "old"})
+				d.Comments = append(d.Comments, &mergerequest.Comment{ID: int64(i + 1), Author: mergerequest.AuthorAgent, Path: "cart.go", Line: i + 1, Body: "nit", HeadSHA: "old"})
 			}
 			d.Reviews = []*mergerequest.Review{{ID: 1, Author: mergerequest.AuthorAgent, Status: mergerequest.ReviewSubmitted, Verdict: mergerequest.VerdictApprove, Body: "Looks good", HeadSHA: mr.HeadSHA}}
 			return d, nil
+		}
+	}
+	return nil, mergerequest.ErrNotFound
+}
+
+func (f fakeMRs) AssistantComment(_ context.Context, _, projectID, mrID int64, in mergerequest.AgentCommentInput) (*mergerequest.Comment, error) {
+	for _, mr := range f.mrs {
+		if mr.ID == mrID && mr.ProjectID == projectID {
+			if strings.TrimSpace(in.Body) == "" {
+				return nil, fmt.Errorf("%w: body is required", mergerequest.ErrInvalidInput)
+			}
+			f.comments[mrID] = append(f.comments[mrID], in)
+			return &mergerequest.Comment{ID: int64(100 + len(f.comments[mrID])), MergeRequestID: mrID, ReplyTo: in.ReplyTo, Author: mergerequest.AuthorAssistant, Body: in.Body}, nil
 		}
 	}
 	return nil, mergerequest.ErrNotFound
@@ -176,6 +194,7 @@ type env struct {
 	provider   *Provider
 	tasks      *fakeTasks
 	workspaces *fakeWorkspaces
+	mrs        fakeMRs
 	defaults   fakeDefaults
 }
 
@@ -194,9 +213,9 @@ func setup() *env {
 	mrs := fakeMRs{mrs: []*mergerequest.MergeRequest{
 		{ID: 5, ProjectID: 1, TaskID: 1, Title: "Add a cart", Status: mergerequest.StatusOpen, SourceBranch: "task/1", TargetBranch: "main", HeadSHA: "abcdef1234567890"},
 		{ID: 6, ProjectID: 2, TaskID: 3, Title: "Blog post", Status: mergerequest.StatusOpen},
-	}}
+	}, comments: map[int64][]mergerequest.AgentCommentInput{}}
 	defaults := fakeDefaults{}
-	return &env{provider: NewProvider(workspaces, fakeProjects{}, tasks, mrs, defaults), tasks: tasks, workspaces: workspaces, defaults: defaults}
+	return &env{provider: NewProvider(workspaces, fakeProjects{}, tasks, mrs, defaults), tasks: tasks, workspaces: workspaces, mrs: mrs, defaults: defaults}
 }
 
 func (e *env) call(t *testing.T, userID, workspaceID int64, tool, args string) (domain.ToolResultPart, bool) {
@@ -313,6 +332,7 @@ func TestOnlyCallsThatStartAnAgentNeedApproval(t *testing.T) {
 		{getTaskTool, `{"task_id":1}`, false, ""},
 		{listMergeRequestsTool, `{}`, false, ""},
 		{getMergeRequestTool, `{"merge_request_id":5}`, false, ""},
+		{commentTool, `{"merge_request_id":5,"body":"Fixed."}`, false, ""},
 		{createTaskTool, `{"title":"x","body":"y"}`, false, ""},
 		{createTaskTool, `{"title":"Checkout","body":"y","start":true}`, true, "Checkout"},
 		{startTaskTool, `{"task_id":1}`, true, "task #1"},
@@ -548,12 +568,48 @@ func TestListsAndDetails(t *testing.T) {
 	if len(mr.Comments) != maxListedComments || mr.OlderCommentsLeftOut != 10 || len(mr.Reviews) != 1 || mr.Comments[0]["outdated"] != true {
 		t.Fatalf("unexpected merge request detail: %s", res.Content)
 	}
+	// The assistant needs a comment's id to reply to it.
+	if mr.Comments[0]["id"] != float64(11) {
+		t.Fatalf("expected comments listed with their ids: %v", mr.Comments[0])
+	}
+}
+
+func TestAssistantCommentsOnTheProjectsMergeRequests(t *testing.T) {
+	e := setup()
+	res, _ := e.call(t, owner, 10, commentTool, `{"merge_request_id":5,"reply_to":11,"body":"Added a nil check."}`)
+	if res.IsError || !strings.Contains(res.Content, `"replyTo":11`) {
+		t.Fatalf("reply: %+v", res)
+	}
+	res, _ = e.call(t, owner, 10, commentTool, `{"merge_request_id":5,"body":"Ready for another look."}`)
+	if res.IsError {
+		t.Fatalf("comment: %+v", res)
+	}
+	want := []mergerequest.AgentCommentInput{{ReplyTo: 11, Body: "Added a nil check."}, {Body: "Ready for another look."}}
+	if got := e.mrs.comments[5]; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("comments = %+v, want %+v", got, want)
+	}
+
+	for name, c := range map[string]struct {
+		ws   int64
+		args string
+	}{
+		"another project's merge request": {10, `{"merge_request_id":6,"body":"x"}`},
+		"an empty comment":                {10, `{"merge_request_id":5,"body":" "}`},
+		"a task sandbox":                  {11, `{"merge_request_id":5,"body":"x"}`},
+	} {
+		if res, _ := e.call(t, owner, c.ws, commentTool, c.args); !res.IsError {
+			t.Errorf("%s: expected refused, got %+v", name, res)
+		}
+	}
+	if len(e.mrs.comments[5]) != 2 || len(e.mrs.comments[6]) != 0 {
+		t.Fatalf("refused comments must not be left: %+v", e.mrs.comments)
+	}
 }
 
 func TestPromptNamesTheProjectAndBranch(t *testing.T) {
 	e := setup()
 	prompt := e.provider.Prompt(context.Background(), owner, 10)
-	for _, want := range []string{`"shop"`, "`main`", "`feature/cart`", "do not try to push"} {
+	for _, want := range []string{`"shop"`, "`main`", "`feature/cart`", "git push devpad", "Push only when the user asks", commentTool} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}

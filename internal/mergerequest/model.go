@@ -25,6 +25,8 @@ const (
 	AuthorAgent Author = "agent"
 	// AuthorTaskAgent is the agent working on the merge request's task.
 	AuthorTaskAgent Author = "task_agent"
+	// AuthorAssistant is the assistant in the project's own workspace.
+	AuthorAssistant Author = "assistant"
 )
 
 // ReviewStatus tracks an agent review from start to submission.
@@ -57,6 +59,9 @@ const (
 	// maxTaskAgentComments bounds the comments a task's agent can leave on
 	// one merge request over all its rounds.
 	maxTaskAgentComments = 500
+	// maxAssistantComments bounds the comments the project workspace's
+	// assistant can leave on one merge request.
+	maxAssistantComments = 500
 	// maxSendBackBytes bounds the feedback sent back to a task's agent; the
 	// agent can read the rest with its merge request tools.
 	maxSendBackBytes = 100_000
@@ -66,6 +71,9 @@ var (
 	ErrNotFound     = errors.New("merge request not found")
 	ErrInvalidInput = errors.New("invalid input")
 	ErrInvalidState = errors.New("merge request cannot do that in its current status")
+	// ErrCommentLimit is returned when an agent has left as many comments on
+	// a merge request as it can.
+	ErrCommentLimit = errors.New("too many comments on this merge request")
 )
 
 // MergeRequest proposes merging a branch into the project's default branch.
@@ -153,6 +161,13 @@ type CommentInput struct {
 	Path string
 	Line int
 	Body string
+}
+
+// AgentCommentInput is an agent's comment on the whole change, or its reply
+// to the comment ReplyTo.
+type AgentCommentInput struct {
+	ReplyTo int64
+	Body    string
 }
 
 // ReviewInput is a user's review.

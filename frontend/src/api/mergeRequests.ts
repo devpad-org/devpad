@@ -41,8 +41,9 @@ export interface Review {
   updatedAt: string
 }
 
-// task_agent is the agent working on the merge request's task.
-export type CommentAuthor = Review['author'] | 'task_agent'
+// task_agent is the agent working on the merge request's task, and
+// assistant the assistant in the project's own workspace.
+export type CommentAuthor = Review['author'] | 'task_agent' | 'assistant'
 
 export interface ReviewComment {
   id: number

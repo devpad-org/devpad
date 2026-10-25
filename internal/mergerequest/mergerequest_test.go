@@ -1288,3 +1288,59 @@ func TestReReviewIsToldAboutEarlierReviews(t *testing.T) {
 		t.Fatalf("the review agent should read the earlier review: %+v", result)
 	}
 }
+
+func TestAssistantCommentsOnAHandMadeMergeRequest(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.projects.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "feature", SHA: "f1"}}
+	mr, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Feature", SourceBranch: "feature"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{
+		Verdict: VerdictRequestChanges, Body: "Almost.",
+		Comments: []CommentInput{{Path: "cart.go", Line: 12, Body: "This panics on nil."}},
+	}); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	d, _ := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	lineComment := d.Comments[0]
+
+	reply, err := e.svc.AssistantComment(ctx, e.owner, e.pid(), mr.ID, AgentCommentInput{ReplyTo: lineComment.ID, Body: "Added a nil check."})
+	if err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	if reply.Author != AuthorAssistant || reply.ReplyTo != lineComment.ID || reply.Path != "cart.go" || reply.Line != 12 {
+		t.Fatalf("a reply should sit with its comment: %+v", reply)
+	}
+	general, err := e.svc.AssistantComment(ctx, e.owner, e.pid(), mr.ID, AgentCommentInput{Body: "Ready for another look."})
+	if err != nil || general.ReplyTo != 0 || general.Path != "" || general.HeadSHA != "f1" {
+		t.Fatalf("comment: %+v %v", general, err)
+	}
+
+	if _, err := e.svc.AssistantComment(ctx, e.stranger, e.pid(), mr.ID, AgentCommentInput{Body: "x"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another user must not comment: %v", err)
+	}
+	if _, err := e.svc.AssistantComment(ctx, e.owner, e.pid(), mr.ID, AgentCommentInput{Body: "  "}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected an empty comment refused: %v", err)
+	}
+	if _, err := e.svc.AssistantComment(ctx, e.owner, e.pid(), mr.ID, AgentCommentInput{ReplyTo: 999, Body: "x"}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected a reply to an unknown comment refused: %v", err)
+	}
+
+	for i := 2; i < maxAssistantComments; i++ {
+		if _, err := e.svc.AssistantComment(ctx, e.owner, e.pid(), mr.ID, AgentCommentInput{Body: "more"}); err != nil {
+			t.Fatalf("comment %d: %v", i, err)
+		}
+	}
+	if _, err := e.svc.AssistantComment(ctx, e.owner, e.pid(), mr.ID, AgentCommentInput{Body: "one too many"}); !errors.Is(err, ErrCommentLimit) {
+		t.Fatalf("expected the comment limit, got %v", err)
+	}
+
+	if _, err := e.svc.Close(ctx, e.owner, e.pid(), mr.ID); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := e.svc.AssistantComment(ctx, e.owner, e.pid(), mr.ID, AgentCommentInput{Body: "x"}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected a closed merge request refused: %v", err)
+	}
+}

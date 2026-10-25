@@ -35,6 +35,7 @@ export function baseName(path: string): string {
 export function authorName(author: CommentAuthor): string {
   if (author === 'agent') return 'Review agent'
   if (author === 'task_agent') return 'Task agent'
+  if (author === 'assistant') return 'Assistant'
   return 'You'
 }
 
