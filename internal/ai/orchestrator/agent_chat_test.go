@@ -126,8 +126,6 @@ func TestAgentChatOrchestrator_IncludesWorkspaceInstructionsBeforeSelectedAgent(
 		approvals:         &mockApprovalBroker{},
 		questions:         &mockQuestionBroker{},
 		maxToolIterations: defaultMaxToolIterations,
-		approvalTimeout:   defaultApprovalTimeout,
-		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
@@ -212,8 +210,6 @@ func TestAgentChatOrchestrator_EmitsContextTelemetryBeforeProviderRequest(t *tes
 		approvals:         &mockApprovalBroker{},
 		questions:         &mockQuestionBroker{},
 		maxToolIterations: defaultMaxToolIterations,
-		approvalTimeout:   defaultApprovalTimeout,
-		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
@@ -276,8 +272,6 @@ func TestAgentChatOrchestrator_MultiToolCallOrdering(t *testing.T) {
 		approvals:         &mockApprovalBroker{awaitFn: func(context.Context, string) (bool, error) { return true, nil }},
 		questions:         &mockQuestionBroker{},
 		maxToolIterations: defaultMaxToolIterations,
-		approvalTimeout:   defaultApprovalTimeout,
-		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
@@ -388,9 +382,7 @@ func TestAgentChatOrchestrator_ApprovalWaitAndDenial(t *testing.T) {
 			},
 		},
 		maxToolIterations: defaultMaxToolIterations,
-		approvalTimeout:   defaultApprovalTimeout,
 		questions:         &mockQuestionBroker{},
-		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
@@ -494,8 +486,6 @@ func TestAgentChatOrchestrator_AskUserWaitsAndReturnsAnswers(t *testing.T) {
 			},
 		},
 		maxToolIterations: defaultMaxToolIterations,
-		approvalTimeout:   defaultApprovalTimeout,
-		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
@@ -574,8 +564,6 @@ func TestAgentChatOrchestrator_CancellationStopsToolExecution(t *testing.T) {
 		approvals:         &mockApprovalBroker{},
 		questions:         &mockQuestionBroker{},
 		maxToolIterations: defaultMaxToolIterations,
-		approvalTimeout:   defaultApprovalTimeout,
-		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(ctx, AgentChatRequest{
@@ -631,8 +619,6 @@ func TestAgentChatOrchestrator_MaxIterationsEmitsWarning(t *testing.T) {
 		approvals:         &mockApprovalBroker{awaitFn: func(context.Context, string) (bool, error) { return true, nil }},
 		questions:         &mockQuestionBroker{},
 		maxToolIterations: 2,
-		approvalTimeout:   defaultApprovalTimeout,
-		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
@@ -680,8 +666,6 @@ func TestAgentChatOrchestrator_StreamValidatesModelErrors(t *testing.T) {
 		approvals:         &mockApprovalBroker{},
 		questions:         &mockQuestionBroker{},
 		maxToolIterations: defaultMaxToolIterations,
-		approvalTimeout:   defaultApprovalTimeout,
-		questionTimeout:   defaultQuestionTimeout,
 	}
 
 	_, err := orch.Stream(context.Background(), AgentChatRequest{Model: "test-model"})

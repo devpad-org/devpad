@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/devpad-org/devpad/internal/ai/approval"
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -14,11 +13,7 @@ import (
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 )
 
-const (
-	defaultMaxToolIterations = 100
-	defaultApprovalTimeout   = 60 * time.Second
-	defaultQuestionTimeout   = 10 * time.Minute
-)
+const defaultMaxToolIterations = 100
 
 type agentChatOrchestrator struct {
 	service           ChatService
@@ -27,8 +22,6 @@ type agentChatOrchestrator struct {
 	approvals         approval.Broker
 	questions         question.Broker
 	maxToolIterations int
-	approvalTimeout   time.Duration
-	questionTimeout   time.Duration
 }
 
 // NewAgentChatOrchestrator creates the phase-2 agent orchestrator.
@@ -40,8 +33,6 @@ func NewAgentChatOrchestrator(service ChatService, toolCatalog ToolCatalog, tool
 		approvals:         approvals,
 		questions:         questions,
 		maxToolIterations: defaultMaxToolIterations,
-		approvalTimeout:   defaultApprovalTimeout,
-		questionTimeout:   defaultQuestionTimeout,
 	}
 }
 
@@ -289,9 +280,8 @@ func (o *agentChatOrchestrator) handleUserQuestion(ctx context.Context, req Agen
 		return false
 	}
 
-	waitCtx, cancel := context.WithTimeout(ctx, o.questionTimeout)
-	defer cancel()
-	answers, err := o.questions.Await(waitCtx, opened.ID)
+	// Like approvals, wait until the user answers or the run is cancelled.
+	answers, err := o.questions.Await(ctx, opened.ID)
 	if err == nil {
 		result := domain.UserQuestionResult{ID: opened.ID, Status: "answered", Answers: answers}
 		if !emitQuestionResult(ctx, out, result) {
@@ -316,12 +306,9 @@ func (o *agentChatOrchestrator) handleUserQuestion(ctx context.Context, req Agen
 	status := "failed"
 	message := "User question failed."
 	switch {
-	case errors.Is(err, context.Canceled):
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		status = "expired"
 		message = "User question was cancelled before the user answered."
-	case errors.Is(err, context.DeadlineExceeded):
-		status = "expired"
-		message = "User question timed out before the user answered."
 	default:
 		message = fmt.Sprintf("User question failed: %v", err)
 	}
@@ -364,9 +351,9 @@ func (o *agentChatOrchestrator) awaitApproval(ctx context.Context, userID int64,
 		return "", false, false
 	}
 
-	approvalCtx, cancel := context.WithTimeout(ctx, o.approvalTimeout)
-	defer cancel()
-	approved, err := o.approvals.Await(approvalCtx, request.ID)
+	// Wait as long as it takes: a timeout here just pushes the agent toward
+	// workarounds. Cancelling the run cancels ctx, which ends the wait.
+	approved, err := o.approvals.Await(ctx, request.ID)
 	if err == nil {
 		status := "denied"
 		if approved {
@@ -382,16 +369,11 @@ func (o *agentChatOrchestrator) awaitApproval(ctx context.Context, userID int64,
 	}
 
 	switch {
-	case errors.Is(err, context.Canceled):
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		if !emitApprovalResult(ctx, out, request, "expired") {
 			return "", false, false
 		}
-		return "Command approval timed out — the request was cancelled.", false, true
-	case errors.Is(err, context.DeadlineExceeded):
-		if !emitApprovalResult(ctx, out, request, "expired") {
-			return "", false, false
-		}
-		return "Command approval timed out after 60 seconds.", false, true
+		return "Command approval was cancelled before the user responded.", false, true
 	default:
 		if !emitApprovalResult(ctx, out, request, "failed") {
 			return "", false, false
