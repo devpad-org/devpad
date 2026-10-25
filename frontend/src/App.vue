@@ -24,6 +24,12 @@ watch(
   { immediate: true },
 )
 
+// Clicking the badge while already on /#inbox is not a navigation, so the
+// launcher's hash watcher can't scroll; scroll here instead.
+function scrollToInbox() {
+  if (route.name === 'home') document.getElementById('inbox')?.scrollIntoView({ block: 'start' })
+}
+
 async function handleLogout() {
   await auth.logout()
   router.push({ name: 'login' })
@@ -41,6 +47,7 @@ async function handleLogout() {
           class="nav-badge"
           :title="`${attention.count} waiting for you`"
           :aria-label="`Inbox, ${attention.count} waiting for you`"
+          @click="scrollToInbox"
         >
           {{ attention.count }}
         </RouterLink>

@@ -3,7 +3,6 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAttentionStore } from '@/stores/attention'
 import { useProjectStore } from '@/stores/projects'
-import { useWorkspaceStore } from '@/stores/workspaces'
 import type { Project, ProjectInput } from '@/api/projects'
 import { projectsOpenedAt } from '@/utils/recentProjects'
 import { fullTime, timeAgo } from '@/utils/time'
@@ -21,7 +20,6 @@ const route = useRoute()
 const router = useRouter()
 const attention = useAttentionStore()
 const projects = useProjectStore()
-const workspaces = useWorkspaceStore()
 
 const showCreate = ref(false)
 const saving = ref(false)
@@ -75,9 +73,12 @@ const cards = computed<Card[]>(() =>
 )
 
 function latest(a: string, b: string): string {
-  const ta = a ? new Date(a).getTime() : 0
-  const tb = b ? new Date(b).getTime() : 0
-  return new Date(Math.max(ta, tb)).toISOString()
+  return new Date(Math.max(timeOf(a), timeOf(b))).toISOString()
+}
+
+function timeOf(value: string): number {
+  const t = value ? Date.parse(value) : 0
+  return Number.isFinite(t) ? t : 0
 }
 
 function needsYouTitle(card: Card): string {
@@ -91,7 +92,6 @@ async function refresh() {
   await Promise.all([
     projects.fetchProjects().catch(() => {}),
     projects.fetchOverview().catch(() => {}),
-    workspaces.fetchWorkspaces().catch(() => {}),
   ])
 }
 
@@ -152,7 +152,7 @@ async function handleCreate(input: ProjectInput) {
       <InboxSection class="launcher-inbox" />
 
       <section class="section launcher-projects">
-        <p v-if="projects.loading && projects.projects.length === 0" class="empty-text">Loading projects...</p>
+        <p v-if="!projects.loaded && !projects.error" class="empty-text">Loading projects...</p>
         <p v-else-if="projects.error && projects.projects.length === 0" class="notice notice-error">{{ projects.error }}</p>
         <div v-else-if="projects.projects.length === 0" class="panel empty-state">
           <p class="empty-title">No projects yet</p>
@@ -200,6 +200,8 @@ async function handleCreate(input: ProjectInput) {
               <span class="mono">{{ card.project.defaultBranch }}</span>
               <span>&middot;</span>
               <span class="mono card-upstream">{{ card.project.upstreamUrl || 'local only' }}</span>
+              <span>&middot;</span>
+              <span>{{ card.project.maxSandboxes }} sandbox{{ card.project.maxSandboxes === 1 ? '' : 'es' }} max</span>
               <span>&middot;</span>
               <span :title="fullTime(card.lastActivityAt)">{{ timeAgo(card.lastActivityAt) }}</span>
             </div>

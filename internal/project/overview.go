@@ -17,9 +17,11 @@ type Overview struct {
 	ActiveTasks int
 	// OpenMergeRequests counts every open merge request.
 	OpenMergeRequests int
-	// AwaitingReview counts open merge requests that wait on the user: no
-	// agent is reviewing or reworking them, and the user has not reviewed
-	// their current head.
+	// AwaitingReview counts open merge requests that wait on the user, while
+	// no agent is reviewing them. A task's merge request waits once its agent
+	// has handed it over, until the user reviews its current head after that
+	// hand-over. The user's own merge request waits only for them to read an
+	// agent's review of its current head.
 	AwaitingReview int
 	// LastActivityAt is the latest change to the project, its tasks or its
 	// merge requests.
@@ -93,15 +95,32 @@ func (r *repository) Overviews(ctx context.Context, userID int64) ([]*Overview, 
 			func(o *Overview) *int { return &o.OpenMergeRequests },
 		},
 		{
+			// Timestamps are compared with julianday because rows mix
+			// SQLite's and Go's formats and time zones.
 			`SELECT mr.project_id, COUNT(*) FROM merge_requests mr
 			 WHERE mr.user_id = ? AND mr.status = 'open'
 			   AND NOT EXISTS (SELECT 1 FROM merge_request_reviews rv
 			                   WHERE rv.merge_request_id = mr.id AND rv.status = 'pending')
-			   AND NOT EXISTS (SELECT 1 FROM merge_request_reviews rv
-			                   WHERE rv.merge_request_id = mr.id AND rv.author = 'user'
-			                     AND rv.status = 'submitted' AND rv.head_sha = mr.head_sha)
-			   AND NOT EXISTS (SELECT 1 FROM tasks t
-			                   WHERE t.id = mr.task_id AND t.status IN ('queued','in_progress'))
+			   AND (
+			     (mr.task_id IS NOT NULL
+			      AND NOT EXISTS (SELECT 1 FROM tasks t
+			                      WHERE t.id = mr.task_id AND t.status IN ('queued','in_progress'))
+			      AND NOT EXISTS (SELECT 1 FROM merge_request_reviews rv
+			                      WHERE rv.merge_request_id = mr.id AND rv.author = 'user'
+			                        AND rv.status = 'submitted' AND rv.head_sha = mr.head_sha
+			                        AND NOT EXISTS (SELECT 1 FROM tasks t
+			                                        WHERE t.id = mr.task_id AND t.status = 'in_review'
+			                                          AND julianday(t.updated_at) > julianday(rv.created_at))))
+			     OR
+			     (mr.task_id IS NULL
+			      AND EXISTS (SELECT 1 FROM merge_request_reviews ag
+			                  WHERE ag.merge_request_id = mr.id AND ag.author = 'agent'
+			                    AND ag.status = 'submitted' AND ag.head_sha = mr.head_sha
+			                    AND NOT EXISTS (SELECT 1 FROM merge_request_reviews rv
+			                                    WHERE rv.merge_request_id = mr.id AND rv.author = 'user'
+			                                      AND rv.status = 'submitted'
+			                                      AND julianday(rv.created_at) >= julianday(ag.updated_at))))
+			   )
 			 GROUP BY mr.project_id`,
 			func(o *Overview) *int { return &o.AwaitingReview },
 		},
@@ -127,18 +146,26 @@ func (r *repository) Overviews(ctx context.Context, userID int64) ([]*Overview, 
 		}
 	}
 
-	// MAX() would drop the column type and with it time parsing, so the
-	// latest change is picked here.
+	// MAX() drops the column type, so the latest change comes back as a UTC
+	// string. julianday orders rows written in different formats and zones.
 	for _, table := range []string{"tasks", "merge_requests"} {
-		rows, err := r.db.QueryContext(ctx, `SELECT project_id, updated_at FROM `+table+` WHERE user_id = ?`, userID)
+		rows, err := r.db.QueryContext(ctx, `SELECT project_id, strftime('%Y-%m-%dT%H:%M:%fZ', MAX(julianday(updated_at)))
+			FROM `+table+` WHERE user_id = ? GROUP BY project_id`, userID)
 		if err != nil {
 			return nil, fmt.Errorf("listing %s activity: %w", table, err)
 		}
 		err = eachRow(rows, func() error {
 			var projectID int64
-			var at time.Time
-			if err := rows.Scan(&projectID, &at); err != nil {
+			var latest sql.NullString
+			if err := rows.Scan(&projectID, &latest); err != nil {
 				return err
+			}
+			if !latest.Valid {
+				return nil
+			}
+			at, err := time.Parse("2006-01-02T15:04:05.000Z", latest.String)
+			if err != nil {
+				return fmt.Errorf("parsing %q: %w", latest.String, err)
 			}
 			if o := byID[projectID]; o != nil && at.After(o.LastActivityAt) {
 				o.LastActivityAt = at

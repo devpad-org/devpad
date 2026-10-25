@@ -4,11 +4,18 @@
 
 const STORAGE_KEY = 'devpad.projectsOpenedAt'
 
+// Only entries with a numeric id and a parseable time survive, so a stored
+// value from an older version or a hand edit can't break the launcher.
 function read(): Record<string, string> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     const parsed: unknown = raw ? JSON.parse(raw) : {}
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {}
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const valid: Record<string, string> = {}
+    for (const [id, at] of Object.entries(parsed)) {
+      if (Number.isInteger(Number(id)) && typeof at === 'string' && Number.isFinite(Date.parse(at))) valid[id] = at
+    }
+    return valid
   } catch {
     return {}
   }

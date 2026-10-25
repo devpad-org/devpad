@@ -5,18 +5,24 @@ import { projectApi, type Project, type ProjectInput, type ProjectOverview, type
 export const useProjectStore = defineStore('projects', () => {
   const projects = ref<Project[]>([])
   const loading = ref(false)
+  const loaded = ref(false)
   const error = ref<string | null>(null)
   const overviews = ref(new Map<number, ProjectOverview>())
   const workspaceLinks = ref(new Map<number, WorkspaceLink>())
 
+  // Only a fetch before the first successful load shows loading, and an
+  // error stays until a fetch succeeds, so background polls don't flicker
+  // the page between its states.
   async function fetchProjects() {
-    loading.value = true
-    error.value = null
+    const initial = !loaded.value
+    if (initial && !error.value) loading.value = true
     try {
       const response = await projectApi.list()
       projects.value = response.projects ?? []
+      loaded.value = true
+      error.value = null
     } catch (e) {
-      error.value = 'Failed to load projects'
+      if (initial) error.value = 'Failed to load projects'
       throw e
     } finally {
       loading.value = false
@@ -54,6 +60,7 @@ export const useProjectStore = defineStore('projects', () => {
   return {
     projects,
     loading,
+    loaded,
     error,
     overviews,
     workspaceLinks,

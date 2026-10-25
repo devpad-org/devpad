@@ -51,21 +51,48 @@ func TestOverviews(t *testing.T) {
 		}
 		return execSQL(t, e, `INSERT INTO merge_requests (project_id, user_id, task_id, title, source_branch, target_branch, head_sha) VALUES (?, ?, ?, 'mr', ?, 'main', ?)`, busy, e.userID, taskID, branch, head)
 	}
+	review := func(mrID int64, author, status, head string, at time.Time) {
+		execSQL(t, e, `INSERT INTO merge_request_reviews (merge_request_id, author, status, verdict, head_sha, created_at, updated_at) VALUES (?, ?, ?, 'comment', ?, ?, ?)`, mrID, author, status, head, at, at)
+	}
+	t1 := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 3, 2, 0, 0, 0, 0, time.FixedZone("CST", -6*3600))
+	t3 := time.Date(2026, 3, 3, 0, 0, 0, 0, time.UTC)
+
+	// Task merge requests:
 	// Waits on the user: nobody has reviewed it.
 	mr(reviewed, "task/3", "aaa")
 	// Waits on the user: their review is of an older head.
-	stale := mr(0, "feature/a", "bbb")
-	execSQL(t, e, `INSERT INTO merge_request_reviews (merge_request_id, author, status, verdict, head_sha) VALUES (?, 'user', 'submitted', 'comment', 'old')`, stale)
-	// Not waiting: the user reviewed this head.
-	done := mr(0, "feature/b", "ccc")
-	execSQL(t, e, `INSERT INTO merge_request_reviews (merge_request_id, author, status, verdict, head_sha) VALUES (?, 'user', 'submitted', 'request_changes', 'ccc')`, done)
+	staleTask := execSQL(t, e, `INSERT INTO tasks (project_id, user_id, title, status) VALUES (?, ?, 'stale', 'in_review')`, busy, e.userID)
+	review(mr(staleTask, "task/4", "bbb"), "user", "submitted", "old", t1)
+	// Not waiting: the user reviewed this head after the agent handed it over.
+	doneTask := execSQL(t, e, `INSERT INTO tasks (project_id, user_id, title, status, updated_at) VALUES (?, ?, 'done', 'in_review', ?)`, busy, e.userID, t1)
+	review(mr(doneTask, "task/5", "ccc"), "user", "submitted", "ccc", t2)
+	// Waits on the user: the agent handed it back after their review,
+	// without new commits.
+	reworked := execSQL(t, e, `INSERT INTO tasks (project_id, user_id, title, status, updated_at) VALUES (?, ?, 'reworked', 'in_review', ?)`, busy, e.userID, t3)
+	review(mr(reworked, "task/6", "ccd"), "user", "submitted", "ccd", t2)
+	// Not waiting: the task's agent is reworking it.
+	mr(working, "task/1", "eee")
+
+	// The user's own merge requests:
+	// Not waiting: no agent has reviewed it, even though the user hasn't.
+	mr(0, "feature/a", "ggg")
+	// Waits on the user: an agent reviewed its current head.
+	agentDone := mr(0, "feature/b", "hhh")
+	review(agentDone, "agent", "submitted", "hhh", t2)
+	// Not waiting: the user has read the agent's review since.
+	read := mr(0, "feature/e", "iii")
+	review(read, "agent", "submitted", "iii", t1)
+	review(read, "user", "submitted", "iii", t2)
+	// Not waiting: the agent reviewed an older head.
+	moved := mr(0, "feature/f", "jjj")
+	review(moved, "agent", "submitted", "old", t1)
 	// Not waiting: an agent is reviewing it.
 	agentReviewing := mr(0, "feature/c", "ddd")
 	execSQL(t, e, `INSERT INTO merge_request_reviews (merge_request_id, author, status, head_sha, workspace_id) VALUES (?, 'agent', 'pending', 'ddd', ?)`, agentReviewing, reviewWS)
-	// Not waiting: the task's agent is reworking it.
-	mr(working, "task/1", "eee")
 	// Closed merge requests don't count at all.
 	closed := mr(0, "feature/d", "fff")
+	review(closed, "agent", "submitted", "fff", t1)
 	execSQL(t, e, `UPDATE merge_requests SET status = 'closed' WHERE id = ?`, closed)
 
 	overviews, links, err := e.svc.Overviews(ctx, e.userID)
@@ -83,7 +110,7 @@ func TestOverviews(t *testing.T) {
 	if b == nil {
 		t.Fatal("missing busy project")
 	}
-	if b.RunningAgents != 2 || b.ActiveTasks != 2 || b.OpenMergeRequests != 5 || b.AwaitingReview != 2 {
+	if b.RunningAgents != 2 || b.ActiveTasks != 2 || b.OpenMergeRequests != 10 || b.AwaitingReview != 4 {
 		t.Fatalf("busy overview = %+v", b)
 	}
 	if b.LastActivityAt.Before(recent) {
@@ -115,7 +142,8 @@ func TestOverviews(t *testing.T) {
 func TestHandleOverview(t *testing.T) {
 	e := setupTest(t)
 	p := execSQL(t, e, `INSERT INTO projects (user_id, name, status) VALUES (?, 'p', 'ready')`, e.userID)
-	execSQL(t, e, `INSERT INTO merge_requests (project_id, user_id, title, source_branch, target_branch, head_sha) VALUES (?, ?, 'mr', 'x', 'main', 'abc')`, p, e.userID)
+	mrID := execSQL(t, e, `INSERT INTO merge_requests (project_id, user_id, title, source_branch, target_branch, head_sha) VALUES (?, ?, 'mr', 'x', 'main', 'abc')`, p, e.userID)
+	execSQL(t, e, `INSERT INTO merge_request_reviews (merge_request_id, author, status, verdict, head_sha) VALUES (?, 'agent', 'submitted', 'approve', 'abc')`, mrID)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/overview", nil)
 	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: e.userID}))

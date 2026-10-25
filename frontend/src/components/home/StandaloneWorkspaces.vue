@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useWorkspaceStore } from '@/stores/workspaces'
 import WorkspaceCard from '@/components/WorkspaceCard.vue'
@@ -7,8 +7,10 @@ import WorkspaceModal from '@/components/WorkspaceModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import type { Workspace } from '@/api/workspaces'
 
-// Workspaces that don't belong to a project. The launcher fetches the
-// workspace list; this section only manages these workspaces.
+// Workspaces that don't belong to a project, with their own list kept fresh
+// while the section is showing.
+
+const POLL_INTERVAL_MS = 5000
 
 const store = useWorkspaceStore()
 const router = useRouter()
@@ -21,6 +23,23 @@ const editTarget = ref<Workspace | null>(null)
 const deleteTarget = ref<Workspace | null>(null)
 
 const workspaces = computed(() => store.workspaces.filter((ws) => !ws.projectId))
+
+let timer: ReturnType<typeof setInterval> | null = null
+
+function refresh() {
+  store.fetchWorkspaces().catch(() => {})
+}
+
+onMounted(() => {
+  refresh()
+  timer = setInterval(() => {
+    if (document.visibilityState === 'visible') refresh()
+  }, POLL_INTERVAL_MS)
+})
+
+onUnmounted(() => {
+  if (timer !== null) clearInterval(timer)
+})
 
 async function handleCreate(name: string, description: string) {
   try {
@@ -97,7 +116,7 @@ async function handleDelete() {
       <button class="btn btn-secondary btn-sm" @click="showCreateModal = true">New workspace</button>
     </div>
 
-    <p v-if="store.loading && workspaces.length === 0" class="empty-text">Loading workspaces...</p>
+    <p v-if="!store.loaded && !store.error" class="empty-text">Loading workspaces...</p>
     <p v-else-if="store.error && workspaces.length === 0" class="notice notice-error">{{ store.error }}</p>
     <p v-else-if="workspaces.length === 0" class="empty-text">None.</p>
 
