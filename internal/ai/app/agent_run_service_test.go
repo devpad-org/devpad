@@ -118,6 +118,28 @@ func (r *fakeAgentRunRepository) UpdateStatus(_ context.Context, runID int64, st
 	return nil
 }
 
+func (r *fakeAgentRunRepository) AddUsage(_ context.Context, runID int64, usage domain.Usage) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	run := r.runs[runID]
+	if run == nil {
+		return domain.ErrAgentRunNotFound
+	}
+	run.Usage.InputTokens += usage.InputTokens
+	run.Usage.OutputTokens += usage.OutputTokens
+	run.Usage.CacheReadTokens += usage.CacheReadTokens
+	run.Usage.CacheWriteTokens += usage.CacheWriteTokens
+	if usage.CostUSD != nil {
+		cost := *usage.CostUSD
+		if run.Usage.CostUSD != nil {
+			cost += *run.Usage.CostUSD
+		}
+		run.Usage.CostUSD = &cost
+	}
+	return nil
+}
+
 func (r *fakeAgentRunRepository) ListRunsByStatus(_ context.Context, userID int64, statuses ...domain.AgentRunStatus) ([]domain.AgentRun, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1078,5 +1100,53 @@ func TestAgentRunService_ListAttentionReturnsPendingPrompts(t *testing.T) {
 	}
 	if items[1].Run.ID != question || items[1].Question == nil || items[1].Question.Title != "Which DB?" {
 		t.Fatalf("expected the open question, got %+v", items[1])
+	}
+}
+
+func TestAgentRunService_RecordsUsageEventsOnTheRun(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	events := make(chan domain.ClientEvent, 4)
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			return events, nil
+		},
+	}, nil)
+	defer shutdownRunner(t, service)
+
+	run, err := service.StartRun(context.Background(), StartAgentRunRequest{
+		UserID:      7,
+		WorkspaceID: 9,
+		Model:       "gpt-5.4",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "build it")},
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	first, second := 0.01, 0.02
+	events <- domain.ClientEvent{Usage: &domain.Usage{InputTokens: 100, OutputTokens: 10, CostUSD: &first}}
+	events <- domain.ClientEvent{Usage: &domain.Usage{InputTokens: 50, OutputTokens: 5, CacheReadTokens: 100, CostUSD: &second}}
+	events <- domain.ClientEvent{Done: true}
+	close(events)
+
+	waitForRunStatus(t, repo, run.ID, domain.AgentRunCompleted)
+	stored, err := repo.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	usage := stored.Usage
+	if usage.InputTokens != 150 || usage.OutputTokens != 15 || usage.CacheReadTokens != 100 {
+		t.Fatalf("unexpected usage totals: %+v", usage)
+	}
+	if usage.CostUSD == nil || *usage.CostUSD != first+second {
+		t.Fatalf("expected cost %v, got %v", first+second, usage.CostUSD)
+	}
+
+	storedEvents, err := repo.ListEvents(context.Background(), run.ID, 0)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(storedEvents) != 3 || storedEvents[0].Event.Usage == nil {
+		t.Fatalf("expected usage events kept in the run's log, got %+v", storedEvents)
 	}
 }

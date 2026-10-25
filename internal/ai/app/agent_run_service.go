@@ -24,6 +24,7 @@ type AgentRunRepository interface {
 	ListEvents(ctx context.Context, runID, afterSequence int64) ([]domain.AgentRunEvent, error)
 	AppendEvent(ctx context.Context, runID int64, event domain.ClientEvent) (domain.AgentRunEvent, error)
 	UpdateStatus(ctx context.Context, runID int64, status domain.AgentRunStatus, errorMessage string) error
+	AddUsage(ctx context.Context, runID int64, usage domain.Usage) error
 	MarkActiveRunsFailed(ctx context.Context, message string) error
 	ListRunsByStatus(ctx context.Context, userID int64, statuses ...domain.AgentRunStatus) ([]domain.AgentRun, error)
 }
@@ -434,6 +435,13 @@ func (s *agentRunService) consumeRun(ctx context.Context, runID int64, stream <-
 			}
 			if event.ErrorMessage != "" {
 				errorMessage = event.ErrorMessage
+			}
+			if event.Usage != nil {
+				// Losing a request's usage undercounts the run but must not
+				// stop it.
+				if err := s.repo.AddUsage(context.Background(), runID, *event.Usage); err != nil {
+					log.Printf("failed to record agent run %d usage: %v", runID, err)
+				}
 			}
 			if err := s.appendAndPublish(runID, event); err != nil {
 				log.Printf("failed to persist agent run %d event: %v", runID, err)

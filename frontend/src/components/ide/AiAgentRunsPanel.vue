@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { type AgentRun, useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
+import type { Usage } from '@/api/ai'
 import { useAiModelStore } from '@/stores/aiModels'
 
 const treeStepPx = 18
@@ -21,6 +22,21 @@ interface RunListItem {
   isLastChild: boolean
   hasChildren: boolean
   ancestorContinuations: boolean[]
+  usage: UsageTotals
+}
+
+// UsageTotals adds up a run's usage and its sub-agents'. priced is set when
+// any of them has a cost and unpriced when any used tokens without one.
+interface UsageTotals {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  costUsd: number
+  ownCostUsd: number
+  subRuns: number
+  priced: boolean
+  unpriced: boolean
 }
 
 const runStore = useAgentRunStore()
@@ -70,10 +86,27 @@ const runListItems = computed<RunListItem[]>(() => {
     siblings.sort(compareRuns)
   }
 
+  const usageTotals = (run: AgentRun): UsageTotals => {
+    const totals = addUsage(emptyUsageTotals(), run.usage)
+    totals.ownCostUsd = totals.costUsd
+    for (const child of children.get(run.id) ?? []) {
+      const childTotals = usageTotals(child)
+      totals.inputTokens += childTotals.inputTokens
+      totals.outputTokens += childTotals.outputTokens
+      totals.cacheReadTokens += childTotals.cacheReadTokens
+      totals.cacheWriteTokens += childTotals.cacheWriteTokens
+      totals.costUsd += childTotals.costUsd
+      totals.subRuns += 1 + childTotals.subRuns
+      totals.priced ||= childTotals.priced
+      totals.unpriced ||= childTotals.unpriced
+    }
+    return totals
+  }
+
   const items: RunListItem[] = []
   const appendRun = (run: AgentRun, depth: number, isLastChild: boolean, ancestorContinuations: boolean[]) => {
     const runChildren = children.get(run.id) ?? []
-    items.push({ run, depth, isLastChild, hasChildren: runChildren.length > 0, ancestorContinuations })
+    items.push({ run, depth, isLastChild, hasChildren: runChildren.length > 0, ancestorContinuations, usage: usageTotals(run) })
     runChildren.forEach((child, index) => {
       const childIsLast = index === runChildren.length - 1
       appendRun(child, depth + 1, childIsLast, [...ancestorContinuations, !childIsLast])
@@ -85,6 +118,75 @@ const runListItems = computed<RunListItem[]>(() => {
   })
   return items
 })
+
+function emptyUsageTotals(): UsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costUsd: 0,
+    ownCostUsd: 0,
+    subRuns: 0,
+    priced: false,
+    unpriced: false,
+  }
+}
+
+function addUsage(totals: UsageTotals, usage: Usage | undefined): UsageTotals {
+  if (!usage) return totals
+  totals.inputTokens += usage.inputTokens
+  totals.outputTokens += usage.outputTokens
+  totals.cacheReadTokens += usage.cacheReadTokens ?? 0
+  totals.cacheWriteTokens += usage.cacheWriteTokens ?? 0
+  if (usage.costUsd !== undefined) {
+    totals.costUsd += usage.costUsd
+    totals.priced = true
+  } else if (usage.inputTokens + usage.outputTokens > 0) {
+    totals.unpriced = true
+  }
+  return totals
+}
+
+function usageTokenCount(usage: UsageTotals): number {
+  return usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens
+}
+
+function formatCost(costUsd: number): string {
+  if (costUsd > 0 && costUsd < 0.01) return '<$0.01'
+  return `$${costUsd.toFixed(2)}`
+}
+
+const compactNumber = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
+
+function formatUsage(usage: UsageTotals): string {
+  if (usage.priced) return usage.unpriced ? `${formatCost(usage.costUsd)}+` : formatCost(usage.costUsd)
+  return `${compactNumber.format(usageTokenCount(usage))} tokens`
+}
+
+function formatUsageTitle(usage: UsageTotals): string {
+  const lines: string[] = []
+  if (usage.priced) {
+    lines.push(`Cost: $${usage.costUsd.toFixed(4)}`)
+  }
+  if (usage.subRuns > 0) {
+    const plural = usage.subRuns === 1 ? 'run' : 'runs'
+    lines.push(usage.priced
+      ? `Includes ${usage.subRuns} sub-agent ${plural} ($${(usage.costUsd - usage.ownCostUsd).toFixed(4)})`
+      : `Includes ${usage.subRuns} sub-agent ${plural}`)
+  }
+  if (usage.unpriced) {
+    lines.push(usage.priced ? 'Some tokens are from models without known prices and are not in the cost.' : 'This model has no known prices.')
+  }
+  const tokens = [
+    `Input ${usage.inputTokens.toLocaleString()}`,
+    `Output ${usage.outputTokens.toLocaleString()}`,
+  ]
+  if (usage.cacheReadTokens > 0) tokens.push(`Cache read ${usage.cacheReadTokens.toLocaleString()}`)
+  if (usage.cacheWriteTokens > 0) tokens.push(`Cache write ${usage.cacheWriteTokens.toLocaleString()}`)
+  lines.push(tokens.join(' · '))
+  return lines.join('\n')
+}
 
 function isAgentRunWaitingStatus(status: AgentRun['status']): boolean {
   return status === 'waiting_approval' || status === 'waiting_user'
@@ -304,6 +406,10 @@ onUnmounted(stopRefreshTimer)
               class="model-unavailable"
               title="This model is no longer available."
             >unavailable</span>
+            <template v-if="usageTokenCount(item.usage) > 0">
+              <span class="run-meta-sep" aria-hidden="true">&middot;</span>
+              <span class="run-cost" :title="formatUsageTitle(item.usage)">{{ formatUsage(item.usage) }}</span>
+            </template>
             <span class="run-meta-sep" aria-hidden="true">&middot;</span>
             <time class="run-time" :datetime="item.run.updatedAt" :title="formatAbsoluteTime(item.run.updatedAt)">
               {{ formatRelativeTime(item.run.updatedAt) }}
@@ -731,7 +837,8 @@ onUnmounted(stopRefreshTimer)
   text-overflow: ellipsis;
 }
 
-.run-time {
+.run-time,
+.run-cost {
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }

@@ -905,3 +905,72 @@ func TestAgentChatOrchestrator_AddsWorkspaceContextToTheSystemPrompt(t *testing.
 		t.Fatalf("expected the workspace context before the agent instructions:\n%s", system)
 	}
 }
+
+func TestAgentChatOrchestrator_EmitsPricedUsageForEachRequest(t *testing.T) {
+	tests := []struct {
+		name     string
+		pricing  *domain.Pricing
+		wantCost *float64
+	}{
+		{
+			name:     "priced model",
+			pricing:  &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 3, Output: 15, CacheRead: 0.3}},
+			wantCost: func() *float64 { cost := (1000*3 + 200*15 + 5000*0.3) / 1e6; return &cost }(),
+		},
+		{name: "unpriced model"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orch := &agentChatOrchestrator{
+				service: &mockChatService{
+					findModelFn: func(modelID string) (domain.Model, error) {
+						return domain.Model{ID: modelID, Pricing: tt.pricing}, nil
+					},
+					chatStreamFn: func(_ context.Context, _ domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+						ch := make(chan domain.ProviderEvent, 3)
+						ch <- domain.ProviderEvent{TextDelta: "done"}
+						ch <- domain.ProviderEvent{Usage: &domain.Usage{InputTokens: 1000, OutputTokens: 200, CacheReadTokens: 5000}}
+						ch <- domain.ProviderEvent{Done: true}
+						close(ch)
+						return ch, nil
+					},
+				},
+				toolCatalog:       fakeToolCatalog{},
+				toolExecutor:      &mockToolExecutor{},
+				approvals:         &mockApprovalBroker{},
+				questions:         &mockQuestionBroker{},
+				maxToolIterations: defaultMaxToolIterations,
+			}
+
+			stream, err := orch.Stream(context.Background(), AgentChatRequest{
+				UserID:      1,
+				WorkspaceID: 1,
+				Model:       "model-1",
+				Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hi")},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			var usages []domain.Usage
+			for _, event := range collectEvents(t, stream) {
+				if event.Usage != nil {
+					usages = append(usages, *event.Usage)
+				}
+			}
+			if len(usages) != 1 {
+				t.Fatalf("expected one usage event, got %+v", usages)
+			}
+			usage := usages[0]
+			if usage.InputTokens != 1000 || usage.OutputTokens != 200 || usage.CacheReadTokens != 5000 {
+				t.Fatalf("unexpected usage tokens: %+v", usage)
+			}
+			switch {
+			case tt.wantCost == nil && usage.CostUSD != nil:
+				t.Fatalf("expected no cost for an unpriced model, got %v", *usage.CostUSD)
+			case tt.wantCost != nil && (usage.CostUSD == nil || *usage.CostUSD != *tt.wantCost):
+				t.Fatalf("cost = %v, want %v", usage.CostUSD, *tt.wantCost)
+			}
+		})
+	}
+}

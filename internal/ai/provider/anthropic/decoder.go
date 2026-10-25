@@ -85,6 +85,7 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	pendingThinking := make(map[int]*pendingThinkingBlock)
 	pendingTextBytes := make(map[int]int)
 	var layout []map[string]any
+	var usage *domain.Usage
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -95,6 +96,7 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		if strings.HasPrefix(line, "event: ") {
 			eventType := strings.TrimPrefix(line, "event: ")
 			if eventType == "message_stop" {
+				emitAnthropicUsage(ch, usage)
 				emitAnthropicReasoningState(ch, layout)
 				emitAnthropicToolCalls(ch, toolCalls, toolCallArgs)
 				ch <- domain.ProviderEvent{Done: true}
@@ -115,6 +117,11 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		}
 
 		switch event.Type {
+		case "message_start":
+			if event.Message != nil && event.Message.Usage != nil {
+				usage = mergeAnthropicUsage(usage, event.Message.Usage)
+			}
+
 		case "content_block_start":
 			if event.ContentBlock == nil || event.Index == nil {
 				continue
@@ -224,19 +231,25 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			}
 
 		case "message_delta":
+			if event.Usage != nil {
+				usage = mergeAnthropicUsage(usage, event.Usage)
+			}
 			if event.Delta != nil && event.Delta.StopReason == "refusal" {
+				emitAnthropicUsage(ch, usage)
 				ch <- domain.ProviderEvent{Err: refusalError(event.Delta.StopDetails)}
 				return
 			}
 
 		case "error":
 			if event.Error != nil {
+				emitAnthropicUsage(ch, usage)
 				ch <- domain.ProviderEvent{Err: errors.New(event.Error.Message)}
 				return
 			}
 		}
 	}
 
+	emitAnthropicUsage(ch, usage)
 	if err := scanner.Err(); err != nil {
 		log.Printf("error reading anthropic stream: %v", err)
 		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
@@ -263,6 +276,38 @@ func emitAnthropicReasoningState(ch chan<- domain.ProviderEvent, layout []map[st
 	if raw, err := json.Marshal(layout); err == nil {
 		ch <- domain.ProviderEvent{ReasoningState: raw}
 	}
+}
+
+// mergeAnthropicUsage folds a usage report into the request's usage so far.
+// message_start reports the prompt and message_delta the running totals, so
+// each count the report carries replaces the one before it.
+func mergeAnthropicUsage(usage *domain.Usage, report *anthropicUsage) *domain.Usage {
+	if usage == nil {
+		usage = &domain.Usage{}
+	}
+	if report.InputTokens > 0 {
+		usage.InputTokens = report.InputTokens
+	}
+	if report.OutputTokens > 0 {
+		usage.OutputTokens = report.OutputTokens
+	}
+	if report.CacheReadInputTokens > 0 {
+		usage.CacheReadTokens = report.CacheReadInputTokens
+	}
+	if report.CacheCreationInputTokens > 0 {
+		usage.CacheWriteTokens = report.CacheCreationInputTokens
+	}
+	return usage
+}
+
+// emitAnthropicUsage sends what the request was billed for, before any error
+// or the end of the stream, so a request that fails part-way still counts.
+func emitAnthropicUsage(ch chan<- domain.ProviderEvent, usage *domain.Usage) {
+	if usage == nil {
+		return
+	}
+	reported := *usage
+	ch <- domain.ProviderEvent{Usage: &reported}
 }
 
 // textRefsOnly keeps the text written before a fallback boundary, which the
@@ -308,6 +353,21 @@ type anthropicEvent struct {
 	ContentBlock *anthropicContent `json:"content_block,omitempty"`
 	Delta        *anthropicDelta   `json:"delta,omitempty"`
 	Error        *anthropicError   `json:"error,omitempty"`
+	Message      *anthropicMessage `json:"message,omitempty"` // message_start
+	Usage        *anthropicUsage   `json:"usage,omitempty"`   // message_delta
+}
+
+type anthropicMessage struct {
+	Usage *anthropicUsage `json:"usage,omitempty"`
+}
+
+// anthropicUsage is a usage report. input_tokens excludes the cache reads and
+// writes counted beside it.
+type anthropicUsage struct {
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 }
 
 type anthropicContent struct {

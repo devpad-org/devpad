@@ -93,36 +93,45 @@ func (a *Adapter) Models() []domain.Model {
 		CanDisable:       true,
 	}
 
+	// Prices are USD per million tokens from
+	// https://platform.claude.com/docs/en/about-claude/pricing (October 2026).
+	// Cache writes are priced at the 5-minute rate. None of these models
+	// charge more for long prompts.
 	return []domain.Model{
 		{
 			ID:         "claude-opus-5-5",
 			Name:       "Claude Opus 5.5",
 			ProviderID: providerID,
 			Thinking:   opus55Thinking,
+			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 4, Output: 20, CacheRead: 0.20, CacheWrite: 5}},
 		},
 		{
 			ID:         "claude-sonnet-5-5",
 			Name:       "Claude Sonnet 5.5",
 			ProviderID: providerID,
 			Thinking:   sonnet55Thinking,
+			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 2, Output: 10, CacheRead: 0.10, CacheWrite: 2.50}},
 		},
 		{
 			ID:         "claude-opus-4-7",
 			Name:       "Claude Opus 4.7",
 			ProviderID: providerID,
 			Thinking:   opus47Thinking,
+			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 5, Output: 25, CacheRead: 0.50, CacheWrite: 6.25}},
 		},
 		{
 			ID:         "claude-sonnet-4-6",
 			Name:       "Claude Sonnet 4.6",
 			ProviderID: providerID,
 			Thinking:   sonnet46Thinking,
+			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 3, Output: 15, CacheRead: 0.30, CacheWrite: 3.75}},
 		},
 		{
 			ID:         "claude-haiku-4-5",
 			Name:       "Claude Haiku 4.5",
 			ProviderID: providerID,
 			Thinking:   haiku45Thinking,
+			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1, Output: 5, CacheRead: 0.10, CacheWrite: 1.25}},
 		},
 	}
 }

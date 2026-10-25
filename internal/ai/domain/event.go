@@ -8,6 +8,7 @@ type ProviderEvent struct {
 	ReasoningDelta string
 	ReasoningState json.RawMessage
 	ToolCalls      []ToolCall
+	Usage          *Usage // sent once, before the stream ends, when the provider reports it
 	Done           bool
 	Err            error
 }
@@ -25,6 +26,7 @@ type ClientEvent struct {
 	QuestionResult *UserQuestionResult
 	Plan           []PlanStep
 	ContextSize    *ContextSize
+	Usage          *Usage // what one provider request was billed for
 	Done           bool
 	ErrorMessage   string
 }

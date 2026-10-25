@@ -38,6 +38,7 @@ func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequ
 					ReasoningDelta: event.ReasoningDelta,
 					ReasoningState: domain.CloneRawMessage(event.ReasoningState),
 					ToolCalls:      append([]domain.ToolCall(nil), event.ToolCalls...),
+					Usage:          event.Usage,
 					Done:           event.Done,
 				}
 				if event.Err != nil {

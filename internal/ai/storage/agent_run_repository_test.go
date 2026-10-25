@@ -229,3 +229,71 @@ func insertAgentRunTestWorkspace(t *testing.T, db *appdb.DB, userID int64) int64
 	}
 	return id
 }
+
+func TestAgentRunRepository_AddUsageTotalsTokensAndCost(t *testing.T) {
+	db, err := appdb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	ctx := context.Background()
+	userID := insertAgentRunTestUser(t, db)
+	workspaceID := insertAgentRunTestWorkspace(t, db, userID)
+	repo := NewAgentRunRepository(db.Conn())
+
+	run := &domain.AgentRun{UserID: userID, WorkspaceID: workspaceID, Model: "gpt-5.4", Status: domain.AgentRunRunning}
+	if err := repo.CreateRun(ctx, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	fresh, err := repo.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if fresh.Usage != (domain.Usage{}) {
+		t.Fatalf("expected a new run to have no usage, got %+v", fresh.Usage)
+	}
+
+	// An unpriced request adds tokens but leaves the cost unknown.
+	if err := repo.AddUsage(ctx, run.ID, domain.Usage{InputTokens: 10, OutputTokens: 5}); err != nil {
+		t.Fatalf("add unpriced usage: %v", err)
+	}
+	unpriced, err := repo.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if unpriced.Usage.CostUSD != nil {
+		t.Fatalf("expected no cost after an unpriced request, got %v", *unpriced.Usage.CostUSD)
+	}
+
+	for _, cost := range []float64{0.25, 0.5} {
+		cost := cost
+		usage := domain.Usage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 1000, CacheWriteTokens: 20, CostUSD: &cost}
+		if err := repo.AddUsage(ctx, run.ID, usage); err != nil {
+			t.Fatalf("add usage: %v", err)
+		}
+	}
+
+	runs, err := repo.ListRuns(ctx, userID, workspaceID)
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected one run, got %d", len(runs))
+	}
+	got := runs[0].Usage
+	if got.InputTokens != 210 || got.OutputTokens != 105 || got.CacheReadTokens != 2000 || got.CacheWriteTokens != 40 {
+		t.Fatalf("unexpected token totals: %+v", got)
+	}
+	if got.CostUSD == nil || *got.CostUSD != 0.75 {
+		t.Fatalf("expected cost 0.75, got %v", got.CostUSD)
+	}
+
+	if err := repo.AddUsage(ctx, run.ID+100, domain.Usage{InputTokens: 1}); err != domain.ErrAgentRunNotFound {
+		t.Fatalf("expected ErrAgentRunNotFound for a missing run, got %v", err)
+	}
+}

@@ -129,6 +129,11 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 					emitEvent(ctx, out, domain.ClientEvent{Done: true})
 					return
 				}
+				if event.Usage != nil {
+					if !emitEvent(ctx, out, domain.ClientEvent{Usage: pricedUsage(model, *event.Usage)}) {
+						return
+					}
+				}
 				if event.ReasoningDelta != "" || len(event.ReasoningState) > 0 {
 					if !emitEvent(ctx, out, domain.ClientEvent{
 						ReasoningDelta: event.ReasoningDelta,
@@ -438,6 +443,16 @@ func (o *agentChatOrchestrator) awaitApproval(ctx context.Context, userID int64,
 		}
 		return "Approval failed.", false, true
 	}
+}
+
+// pricedUsage adds the cost of one request's usage when the model's prices
+// are known.
+func pricedUsage(model domain.Model, usage domain.Usage) *domain.Usage {
+	if model.Pricing != nil {
+		cost := model.Pricing.Cost(usage)
+		usage.CostUSD = &cost
+	}
+	return &usage
 }
 
 func emitApprovalResult(ctx context.Context, out chan<- domain.ClientEvent, request domain.ApprovalRequest, status string) bool {

@@ -28,6 +28,7 @@ type AgentRun struct {
 	Error          string
 	InputTurns     []Turn
 	Thinking       *ThinkingConfig
+	Usage          Usage // the run's own provider requests, not its child runs'
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	StartedAt      *time.Time

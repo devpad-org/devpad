@@ -51,6 +51,17 @@ type responsePayload struct {
 	Error             *responseError     `json:"error,omitempty"`
 	IncompleteDetails *incompleteDetails `json:"incomplete_details,omitempty"`
 	Output            []json.RawMessage  `json:"output,omitempty"`
+	Usage             *responseUsage     `json:"usage,omitempty"`
+}
+
+// responseUsage is a response's usage. input_tokens includes the cached
+// tokens counted in input_tokens_details.
+type responseUsage struct {
+	InputTokens        int64 `json:"input_tokens"`
+	OutputTokens       int64 `json:"output_tokens"`
+	InputTokensDetails struct {
+		CachedTokens int64 `json:"cached_tokens"`
+	} `json:"input_tokens_details"`
 }
 
 type responseError struct {
@@ -108,9 +119,23 @@ func (a *Adapter) Models() []domain.Model {
 		DefaultEffort:    defaultReasoningEffort,
 	}
 
+	// Prices are USD per million tokens from
+	// https://developers.openai.com/api/docs/pricing (October 2026). A prompt
+	// over 272K tokens is billed at the long-context prices.
+	gpt54Pricing := &domain.Pricing{
+		TokenPrices:          domain.TokenPrices{Input: 2.50, Output: 15, CacheRead: 0.25},
+		LongContextThreshold: 272_000,
+		LongContext:          &domain.TokenPrices{Input: 5, Output: 22.50, CacheRead: 0.50},
+	}
+	gpt55Pricing := &domain.Pricing{
+		TokenPrices:          domain.TokenPrices{Input: 5, Output: 30, CacheRead: 0.50},
+		LongContextThreshold: 272_000,
+		LongContext:          &domain.TokenPrices{Input: 10, Output: 45, CacheRead: 1},
+	}
+
 	return []domain.Model{
-		{ID: "gpt-5.4", Name: "GPT-5.4", ProviderID: providerID, Thinking: gpt54Thinking},
-		{ID: "gpt-5.5", Name: "GPT-5.5", ProviderID: providerID, Thinking: gpt55Thinking},
+		{ID: "gpt-5.4", Name: "GPT-5.4", ProviderID: providerID, Thinking: gpt54Thinking, Pricing: gpt54Pricing},
+		{ID: "gpt-5.5", Name: "GPT-5.5", ProviderID: providerID, Thinking: gpt55Thinking, Pricing: gpt55Pricing},
 	}
 }
 
@@ -399,6 +424,7 @@ func readResponsesStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 				}
 			}
 		case "response.completed":
+			emitResponseUsage(ch, event.Response)
 			captureResponseOutput(event.Response, toolCallsByIndex, toolCallsByItemID)
 			if state := marshalReasoningState(reasoningItems); len(state) > 0 {
 				ch <- domain.ProviderEvent{ReasoningState: state}
@@ -407,6 +433,7 @@ func readResponsesStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			ch <- domain.ProviderEvent{Done: true}
 			return false
 		case "response.failed":
+			emitResponseUsage(ch, event.Response)
 			message := responseErrorMessage(event.Response)
 			if message == "" {
 				message = "OpenAI response failed"
@@ -414,6 +441,7 @@ func readResponsesStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			ch <- domain.ProviderEvent{Err: errors.New(message)}
 			return false
 		case "response.incomplete":
+			emitResponseUsage(ch, event.Response)
 			message := responseIncompleteMessage(event.Response)
 			if message == "" {
 				message = "OpenAI response incomplete"
@@ -634,6 +662,21 @@ func marshalReasoningState(items []json.RawMessage) json.RawMessage {
 	}
 
 	return raw
+}
+
+// emitResponseUsage sends what a finished response was billed for. Cached
+// input is billed at its own rate and OpenAI charges nothing extra to write
+// the cache.
+func emitResponseUsage(ch chan<- domain.ProviderEvent, response *responsePayload) {
+	if response == nil || response.Usage == nil {
+		return
+	}
+	cached := min(response.Usage.InputTokensDetails.CachedTokens, response.Usage.InputTokens)
+	ch <- domain.ProviderEvent{Usage: &domain.Usage{
+		InputTokens:     response.Usage.InputTokens - cached,
+		OutputTokens:    response.Usage.OutputTokens,
+		CacheReadTokens: cached,
+	}}
 }
 
 func responseErrorMessage(response *responsePayload) string {

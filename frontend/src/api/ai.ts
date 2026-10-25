@@ -46,6 +46,7 @@ export interface AgentRun {
   status: AgentRunStatus
   error?: string
   inputMessages?: ChatMessage[]
+  usage?: Usage
   createdAt: string
   updatedAt: string
   startedAt?: string
@@ -196,6 +197,16 @@ export interface PlanStep {
   status: 'pending' | 'in_progress' | 'completed' | 'failed'
 }
 
+// Usage is the tokens provider requests were billed for. costUsd is absent
+// when the model's prices are not known.
+export interface Usage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  costUsd?: number
+}
+
 export interface ContextSize {
   approximate: boolean
   providerId?: string
@@ -231,6 +242,7 @@ export interface StreamEvent {
   questionResolved?: UserQuestionResult
   plan?: PlanStep[]
   contextSize?: ContextSize
+  usage?: Usage
   done?: boolean
   error?: string
 }
@@ -261,6 +273,7 @@ interface AgentRunDTO {
   status: AgentRunStatus
   error?: string
   inputTurns?: TurnDTO[]
+  usage?: Usage
   createdAt: string
   updatedAt: string
   startedAt?: string
@@ -375,6 +388,7 @@ function agentRunFromDTO(dto: AgentRunDTO): AgentRun {
     model: dto.model,
     status: dto.status,
     error: dto.error,
+    usage: dto.usage,
     createdAt: dto.createdAt,
     updatedAt: dto.updatedAt,
     startedAt: dto.startedAt,

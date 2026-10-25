@@ -89,6 +89,7 @@ type StreamEventDTO struct {
 	QuestionResolved *QuestionResultDTO   `json:"questionResolved,omitempty"`
 	Plan             []PlanStepDTO        `json:"plan,omitempty"`
 	ContextSize      *ContextSizeDTO      `json:"contextSize,omitempty"`
+	Usage            *UsageDTO            `json:"usage,omitempty"`
 	Done             bool                 `json:"done,omitempty"`
 	Error            string               `json:"error,omitempty"`
 }
@@ -106,6 +107,7 @@ type AgentRunDTO struct {
 	Status         string     `json:"status"`
 	Error          string     `json:"error,omitempty"`
 	InputTurns     []TurnDTO  `json:"inputTurns,omitempty"`
+	Usage          *UsageDTO  `json:"usage,omitempty"`
 	CreatedAt      time.Time  `json:"createdAt"`
 	UpdatedAt      time.Time  `json:"updatedAt"`
 	StartedAt      *time.Time `json:"startedAt,omitempty"`
@@ -222,6 +224,31 @@ type ContextSizeDTO struct {
 	PercentageUsed             float64 `json:"percentageUsed"`
 	WarningThresholdPercentage int     `json:"warningThresholdPercentage"`
 	Warning                    bool    `json:"warning"`
+}
+
+// UsageDTO is the tokens provider requests were billed for and, when the
+// model's prices are known, their cost in USD.
+type UsageDTO struct {
+	InputTokens      int64    `json:"inputTokens"`
+	OutputTokens     int64    `json:"outputTokens"`
+	CacheReadTokens  int64    `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int64    `json:"cacheWriteTokens,omitempty"`
+	CostUSD          *float64 `json:"costUsd,omitempty"`
+}
+
+// FromUsage converts usage into its transport shape, or nil when there is
+// none to report.
+func FromUsage(usage domain.Usage) *UsageDTO {
+	if usage == (domain.Usage{}) {
+		return nil
+	}
+	return &UsageDTO{
+		InputTokens:      usage.InputTokens,
+		OutputTokens:     usage.OutputTokens,
+		CacheReadTokens:  usage.CacheReadTokens,
+		CacheWriteTokens: usage.CacheWriteTokens,
+		CostUSD:          usage.CostUSD,
+	}
 }
 
 // ToDomainThinking maps a transport thinking config into the domain shape.
@@ -423,6 +450,9 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 			Warning:                    event.ContextSize.Warning,
 		}
 	}
+	if event.Usage != nil {
+		dto.Usage = FromUsage(*event.Usage)
+	}
 
 	return dto
 }
@@ -514,6 +544,7 @@ func fromAgentRun(run *domain.AgentRun, includeInputTurns bool) AgentRunDTO {
 		Model:          run.Model,
 		Status:         string(run.Status),
 		Error:          run.Error,
+		Usage:          FromUsage(run.Usage),
 		CreatedAt:      run.CreatedAt,
 		UpdatedAt:      run.UpdatedAt,
 		StartedAt:      run.StartedAt,

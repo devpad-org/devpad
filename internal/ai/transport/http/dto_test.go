@@ -361,3 +361,25 @@ func TestAgentRunPromptPreview(t *testing.T) {
 		})
 	}
 }
+
+func TestFromAgentRunSummaryIncludesUsage(t *testing.T) {
+	if dto := FromAgentRunSummary(&domain.AgentRun{ID: 1}); dto.Usage != nil {
+		t.Fatalf("expected no usage for a run without any, got %+v", dto.Usage)
+	}
+
+	cost := 0.42
+	dto := FromAgentRunSummary(&domain.AgentRun{ID: 1, Usage: domain.Usage{InputTokens: 10, OutputTokens: 2, CostUSD: &cost}})
+	raw, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal run: %v", err)
+	}
+	var decoded struct {
+		Usage map[string]any `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal run: %v", err)
+	}
+	if decoded.Usage["inputTokens"] != float64(10) || decoded.Usage["outputTokens"] != float64(2) || decoded.Usage["costUsd"] != 0.42 {
+		t.Fatalf("unexpected usage JSON: %s", raw)
+	}
+}
