@@ -49,6 +49,9 @@ func (a *recordingAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("bundle:" + r.URL.Query().Get("branch")))
 	case "/api/repo/fetch-base":
 		json.NewEncoder(w).Encode(map[string]string{"branch": "devpad/" + r.URL.Query().Get("branch"), "sha": "def"})
+	case "/api/repo/checkout":
+		branch := r.URL.Query().Get("branch")
+		json.NewEncoder(w).Encode(map[string]any{"branch": branch, "sha": "local", "upstream": "devpad/" + branch, "upstreamSha": "up", "created": true})
 	default:
 		http.NotFound(w, r)
 	}

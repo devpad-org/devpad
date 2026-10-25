@@ -27,7 +27,11 @@ var (
 	ErrSandboxLimit  = errors.New("project sandbox limit reached")
 	ErrBranchInUse   = errors.New("branch already belongs to a sandbox")
 	ErrDefaultBranch = errors.New("sandboxes cannot own the default branch")
-	ErrInvalidInput  = errors.New("invalid input")
+	// ErrPublishDefault refuses publishing the default branch from the
+	// project workspace; it only moves through a merge.
+	ErrPublishDefault = errors.New("the default branch cannot be published; merge into it through a merge request")
+	ErrNoWorkspace    = errors.New("project has no workspace yet")
+	ErrInvalidInput   = errors.New("invalid input")
 )
 
 // Project is a repo that AI agents work on in parallel sandboxes. Its

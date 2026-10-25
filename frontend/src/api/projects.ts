@@ -37,6 +37,19 @@ export interface Sandbox {
   updatedAt: string
 }
 
+// ProjectWorkspace is the user's own workspace for a project. It owns no
+// branch and can switch between them.
+export interface ProjectWorkspace {
+  id: number
+  name: string
+  status: 'creating' | 'running' | 'stopped'
+  kind: 'interactive'
+  branch: ''
+  projectId: number
+  createdAt: string
+  updatedAt: string
+}
+
 export interface RepoBranch {
   name: string
   sha: string
@@ -45,6 +58,22 @@ export interface RepoBranch {
 export interface PushResult {
   branch: string
   sha: string
+}
+
+// A branch moved in the canonical repo or a workspace.
+export interface BranchResult {
+  branch: string
+  sha: string
+}
+
+export interface CheckoutResult {
+  branch: string
+  // The local branch's commit; it differs from upstreamSha when an existing
+  // local branch has diverged from the canonical one.
+  sha: string
+  upstream: string
+  upstreamSha: string
+  created: boolean
 }
 
 export interface RepoDiffFile {
@@ -98,6 +127,27 @@ export const projectApi = {
 
   push(id: number): Promise<PushResult> {
     return apiClient.post(`/api/projects/${id}/push`, {})
+  },
+
+  // Returns the project workspace, creating it on first use.
+  openWorkspace(id: number): Promise<{ workspace: ProjectWorkspace }> {
+    return apiClient.post(`/api/projects/${id}/workspace`, {})
+  },
+
+  // Checks out a canonical branch in the project workspace.
+  checkoutBranch(id: number, branch: string): Promise<CheckoutResult> {
+    return apiClient.post(`/api/projects/${id}/workspace/checkout`, { branch })
+  },
+
+  // Publishes a branch of the project workspace; existing branches only
+  // fast-forward.
+  publishBranch(id: number, branch: string): Promise<BranchResult> {
+    return apiClient.post(`/api/projects/${id}/workspace/publish`, { branch })
+  },
+
+  // Refreshes devpad/<default branch> in the project workspace.
+  syncWorkspace(id: number): Promise<BranchResult> {
+    return apiClient.post(`/api/projects/${id}/workspace/sync`, {})
   },
 
   // Returns null for a file that does not exist at rev, such as one a

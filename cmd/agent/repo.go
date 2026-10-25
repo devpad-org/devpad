@@ -340,12 +340,14 @@ func handleRepoSeed(w http.ResponseWriter, r *http.Request) {
 // handleRepoImport fetches one branch from an untrusted bundle into the
 // canonical repo. Devpad chooses the branch; the bundle's other refs are
 // ignored, the default branch is refused, and objects are fsck-checked before
-// the branch moves.
+// the branch moves. With ffOnly=true an existing branch only fast-forwards,
+// so the import can add commits but never rewrite them.
 func handleRepoImport(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
 	defer cancel()
 
 	branch := r.URL.Query().Get("branch")
+	ffOnly := r.URL.Query().Get("ffOnly") == "true"
 	if err := validateBranchName(ctx, branch, "branch"); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -362,14 +364,18 @@ func handleRepoImport(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cleanup()
 
-	sha, err := importBundleBranch(ctx, path, branch)
+	sha, err := importBundleBranch(ctx, path, branch, ffOnly)
 	if err != nil {
 		var bad *badBundleError
-		if errors.As(err, &bad) {
+		var nonFF *nonFastForwardError
+		switch {
+		case errors.As(err, &bad):
 			writeErr(w, http.StatusBadRequest, err.Error())
-			return
+		case errors.As(err, &nonFF):
+			writeErr(w, http.StatusConflict, err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, err.Error())
 		}
-		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, repoBranchResult{Branch: branch, SHA: sha})
@@ -379,7 +385,13 @@ type badBundleError struct{ msg string }
 
 func (e *badBundleError) Error() string { return e.msg }
 
-func importBundleBranch(ctx context.Context, bundlePath, branch string) (string, error) {
+type nonFastForwardError struct{ branch string }
+
+func (e *nonFastForwardError) Error() string {
+	return fmt.Sprintf("%s has commits the published branch lacks; merge %s/%s first", e.branch, sandboxBaseRemote, e.branch)
+}
+
+func importBundleBranch(ctx context.Context, bundlePath, branch string, ffOnly bool) (string, error) {
 	if out, err := gitOutput(ctx, "bundle", "verify", "--quiet", bundlePath); err != nil {
 		return "", &badBundleError{"invalid bundle: " + strings.TrimSpace(out)}
 	}
@@ -402,7 +414,20 @@ func importBundleBranch(ctx context.Context, bundlePath, branch string) (string,
 		return "", &badBundleError{"bundle branch is not a commit"}
 	}
 	sha = strings.TrimSpace(sha)
-	if out, err := gitOutput(ctx, "update-ref", "refs/heads/"+branch, sha); err != nil {
+	args := []string{"update-ref", "refs/heads/" + branch, sha}
+	if ffOnly {
+		// The old value makes update-ref fail if the branch moves between
+		// this check and the update; an empty one means it must not exist.
+		current := ""
+		if out, err := gitOutput(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
+			current = strings.TrimSpace(out)
+			if current != sha && gitExec(ctx, "merge-base", "--is-ancestor", current, sha) != nil {
+				return "", &nonFastForwardError{branch}
+			}
+		}
+		args = append(args, current)
+	}
+	if out, err := gitOutput(ctx, args...); err != nil {
 		return "", fmt.Errorf("updating branch: %s", strings.TrimSpace(out))
 	}
 	return sha, nil

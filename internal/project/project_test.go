@@ -124,6 +124,8 @@ type fakeRepoAgent struct {
 	bundled   []string // branches requested as bundles
 	imported  map[string][]byte
 	importErr string
+	// importedFF lists branches imported fast-forward only.
+	importedFF []string
 }
 
 func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -192,6 +194,9 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		branch := r.URL.Query().Get("branch")
 		a.imported[branch] = body
+		if r.URL.Query().Get("ffOnly") == "true" {
+			a.importedFF = append(a.importedFF, branch)
+		}
 		json.NewEncoder(w).Encode(agent.RepoBranch{Branch: branch, SHA: "abc123"})
 	default:
 		http.NotFound(w, r)
@@ -208,6 +213,7 @@ type fakeWorkspaces struct {
 	commands      map[int64]string
 	deleted       []int64
 	sandboxBundle string
+	bundled       []string // project workspace branches bundled
 }
 
 func newFakeWorkspaces() *fakeWorkspaces {
@@ -241,6 +247,36 @@ func (f *fakeWorkspaces) CreateSandbox(_ context.Context, userID int64, spec wor
 		UserID: userID, Name: spec.Name, ProjectID: spec.ProjectID, Kind: spec.Kind, Branch: spec.Branch,
 		Status: workspace.StatusRunning,
 	}), nil
+}
+
+func (f *fakeWorkspaces) CreateProjectWorkspace(_ context.Context, userID int64, spec workspace.ProjectWorkspaceSpec) (*workspace.Workspace, error) {
+	f.mu.Lock()
+	for _, ws := range f.byID {
+		if ws.ProjectID == spec.ProjectID && ws.IsProjectWorkspace() {
+			f.mu.Unlock()
+			return nil, fmt.Errorf("inserting workspace: UNIQUE constraint failed")
+		}
+	}
+	f.mu.Unlock()
+	return f.add(&workspace.Workspace{
+		UserID: userID, Name: spec.Name, ProjectID: spec.ProjectID, Kind: workspace.KindInteractive,
+		Status: workspace.StatusRunning,
+	}), nil
+}
+
+func (f *fakeWorkspaces) CheckoutProjectBranch(_ context.Context, _, id int64, branch string, bundle io.Reader) (*agent.RepoCheckout, error) {
+	body, _ := io.ReadAll(bundle)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seeds[id] = "checkout " + branch + " <- " + string(body)
+	return &agent.RepoCheckout{Branch: branch, Upstream: "devpad/" + branch}, nil
+}
+
+func (f *fakeWorkspaces) BundleProjectBranch(_ context.Context, _, id int64, branch string) (io.ReadCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bundled = append(f.bundled, branch)
+	return io.NopCloser(strings.NewReader("workspace-bundle-of-" + branch)), nil
 }
 
 func (f *fakeWorkspaces) ListByProject(_ context.Context, userID, projectID int64) ([]*workspace.Workspace, error) {

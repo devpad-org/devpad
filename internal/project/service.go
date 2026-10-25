@@ -36,12 +36,19 @@ type Service interface {
 	FileAt(ctx context.Context, userID, projectID int64, rev, path string) ([]byte, error)
 	Merge(ctx context.Context, userID, projectID int64, in MergeInput) (*agent.RepoMergeResult, error)
 	Push(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
+	Workspace(ctx context.Context, userID, projectID int64) (*workspace.Workspace, error)
+	OpenWorkspace(ctx context.Context, userID, projectID int64) (ws *workspace.Workspace, created bool, err error)
+	CheckoutWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoCheckout, error)
+	PublishWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error)
+	SyncWorkspaceBase(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
 }
 
-// Workspaces is the workspace service surface projects need to run sandboxes.
+// Workspaces is the workspace service surface projects need to run sandboxes
+// and the project workspace.
 type Workspaces interface {
 	workspace.AccessService
 	workspace.SandboxService
+	workspace.ProjectWorkspaceService
 	Delete(ctx context.Context, userID, workspaceID int64) error
 	Start(ctx context.Context, userID, workspaceID int64) (*workspace.Workspace, error)
 	StartCommand(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
@@ -60,6 +67,11 @@ type service struct {
 	// Docker work is in flight.
 	mu      sync.Mutex
 	pending map[int64]map[string]bool
+	// publishing holds, per project, the branches being published from the
+	// project workspace, which no sandbox may claim meanwhile.
+	publishing map[int64]map[string]bool
+	// workspaceLocks serialize opening each project's workspace.
+	workspaceLocks map[int64]*sync.Mutex
 }
 
 // NewService creates a new project Service.
@@ -72,6 +84,9 @@ func NewService(repo Repository, cm container.Manager, workspaces Workspaces, us
 		cipher:     cipher,
 		agentPort:  agent.DefaultPort,
 		pending:    make(map[int64]map[string]bool),
+
+		publishing:     make(map[int64]map[string]bool),
+		workspaceLocks: make(map[int64]*sync.Mutex),
 	}
 }
 
@@ -240,8 +255,9 @@ func (s *service) Update(ctx context.Context, userID, projectID int64, in Update
 	return p, nil
 }
 
-// Delete removes every sandbox through the workspace lifecycle, then the
-// repo container and the project. Published branches are lost with the repo.
+// Delete removes every sandbox and the project workspace through the
+// workspace lifecycle, then the repo container and the project. Published
+// branches are lost with the repo.
 func (s *service) Delete(ctx context.Context, userID, projectID int64) error {
 	p, err := s.Get(ctx, userID, projectID)
 	if err != nil {
@@ -281,7 +297,17 @@ func (s *service) ListSandboxes(ctx context.Context, userID, projectID int64) ([
 	if _, err := s.Get(ctx, userID, projectID); err != nil {
 		return nil, err
 	}
-	return s.workspaces.ListByProject(ctx, userID, projectID)
+	all, err := s.workspaces.ListByProject(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	sandboxes := make([]*workspace.Workspace, 0, len(all))
+	for _, ws := range all {
+		if ws.IsSandbox() {
+			sandboxes = append(sandboxes, ws)
+		}
+	}
+	return sandboxes, nil
 }
 
 // CreateSandbox starts a sandbox that owns one branch of the project. A
@@ -401,11 +427,15 @@ func (s *service) reserveSandbox(ctx context.Context, p *Project, branch string,
 		return err
 	}
 	pending := s.pending[p.ID]
-	if pending[branch] {
+	if pending[branch] || s.publishing[p.ID][branch] {
 		return ErrBranchInUse
 	}
 	active := 0
 	for _, ws := range existing {
+		// The project workspace owns no branch and has no limit.
+		if !ws.IsSandbox() {
+			continue
+		}
 		if !starting && ws.Branch == branch {
 			return ErrBranchInUse
 		}

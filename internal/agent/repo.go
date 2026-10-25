@@ -123,7 +123,18 @@ func (c *Client) RepoSeed(ctx context.Context, base, branch, name, email string,
 // RepoImport fetches branch from a bundle into the repo in /workspace,
 // ignoring every other ref in the bundle.
 func (c *Client) RepoImport(ctx context.Context, branch string, bundle io.Reader) (*RepoBranch, error) {
-	u := fmt.Sprintf("%s/api/repo/import?branch=%s", c.baseURL, url.QueryEscape(branch))
+	return c.repoImport(ctx, url.Values{"branch": {branch}}, bundle)
+}
+
+// RepoImportFastForward is RepoImport, except that an existing branch only
+// moves forward: the import fails with a 409 *AgentError unless the bundle's
+// commit descends from the branch's current one.
+func (c *Client) RepoImportFastForward(ctx context.Context, branch string, bundle io.Reader) (*RepoBranch, error) {
+	return c.repoImport(ctx, url.Values{"branch": {branch}, "ffOnly": {"true"}}, bundle)
+}
+
+func (c *Client) repoImport(ctx context.Context, q url.Values, bundle io.Reader) (*RepoBranch, error) {
+	u := c.baseURL + "/api/repo/import?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bundle)
 	if err != nil {
 		return nil, err
@@ -251,6 +262,36 @@ func (c *Client) RepoFetchBase(ctx context.Context, branch string, bundle io.Rea
 	req.Header.Set("Content-Type", "application/octet-stream")
 	var result RepoBranch
 	if err := c.doRepoJSON(req, "repo fetch base", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// RepoCheckout is the result of checking out a canonical branch in a
+// project workspace.
+type RepoCheckout struct {
+	Branch string `json:"branch"`
+	// SHA is the local branch's commit, which differs from UpstreamSHA when
+	// the local branch already existed and has diverged.
+	SHA string `json:"sha"`
+	// Upstream is the local ref holding devpad's copy, devpad/<branch>.
+	Upstream    string `json:"upstream"`
+	UpstreamSHA string `json:"upstreamSha"`
+	Created     bool   `json:"created"`
+}
+
+// RepoCheckout updates devpad/<branch> in a working repo from a bundle of the
+// canonical branch, creates the local branch from it if it does not exist,
+// and switches to it. Switching never discards local changes.
+func (c *Client) RepoCheckout(ctx context.Context, branch string, bundle io.Reader) (*RepoCheckout, error) {
+	u := fmt.Sprintf("%s/api/repo/checkout?branch=%s", c.baseURL, url.QueryEscape(branch))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bundle)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	var result RepoCheckout
+	if err := c.doRepoJSON(req, "repo checkout", &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

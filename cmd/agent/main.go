@@ -79,6 +79,7 @@ func main() {
 	authedMux.HandleFunc("POST /api/repo/merge", handleRepoMerge)
 	authedMux.HandleFunc("POST /api/repo/push", handleRepoPush)
 	authedMux.HandleFunc("POST /api/repo/fetch-base", handleRepoFetchBase)
+	authedMux.HandleFunc("POST /api/repo/checkout", handleRepoCheckout)
 
 	// Terminal WebSocket
 	authedMux.HandleFunc("GET /ws/terminal", handleTerminal)

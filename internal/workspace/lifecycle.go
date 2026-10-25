@@ -39,6 +39,21 @@ func (s *service) CreateSandbox(ctx context.Context, userID int64, spec SandboxS
 	})
 }
 
+// CreateProjectWorkspace creates a project's own interactive workspace. It
+// owns no branch; its repo is seeded separately via SeedSandboxRepo.
+func (s *service) CreateProjectWorkspace(ctx context.Context, userID int64, spec ProjectWorkspaceSpec) (*Workspace, error) {
+	if spec.ProjectID == 0 {
+		return nil, fmt.Errorf("project workspace requires a project")
+	}
+	return s.create(ctx, &Workspace{
+		UserID:      userID,
+		Name:        spec.Name,
+		Description: spec.Description,
+		ProjectID:   spec.ProjectID,
+		Kind:        KindInteractive,
+	})
+}
+
 func (s *service) create(ctx context.Context, ws *Workspace) (*Workspace, error) {
 	// Generate a cryptographically random token for agent authentication.
 	tokenBytes := make([]byte, 32)
@@ -264,10 +279,10 @@ func (s *service) Stop(ctx context.Context, userID, workspaceID int64) (*Workspa
 }
 
 // injectUserSSHKeys injects the user's SSH keys if they have them configured.
-// Sandboxes never get them, so an agent cannot push anywhere on the user's
-// behalf. Best-effort.
+// Sandboxes and project workspaces never get them, so an agent cannot push
+// anywhere on the user's behalf. Best-effort.
 func (s *service) injectUserSSHKeys(ctx context.Context, ws *Workspace) {
-	if ws.IsSandbox() {
+	if !ws.ReceivesUserCredentials() {
 		return
 	}
 	if err := s.injectSSHKeys(ctx, ws); err != nil {

@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { projectApi, type Project, type ProjectInput, type Sandbox } from '@/api/projects'
 import { taskApi, type Task, type TaskStatus } from '@/api/tasks'
 import { mergeRequestApi, type MergeRequest } from '@/api/mergeRequests'
+import { workspaceApi } from '@/api/workspaces'
 import { useProjectStore } from '@/stores/projects'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import AgentModelPicker from '@/components/project/AgentModelPicker.vue'
@@ -51,6 +52,7 @@ const showDelete = ref(false)
 const deleting = ref(false)
 const pushing = ref(false)
 const startingSandbox = ref<number | null>(null)
+const openingWorkspace = ref(false)
 const showClosed = ref(false)
 
 let timer: ReturnType<typeof setInterval> | null = null
@@ -236,6 +238,22 @@ async function startSandbox(sandbox: Sandbox) {
   }
 }
 
+// Opens the project workspace, creating it on first use and starting it if
+// it is stopped.
+async function openWorkspace() {
+  openingWorkspace.value = true
+  actionError.value = ''
+  try {
+    const { workspace } = await projectApi.openWorkspace(projectId.value)
+    if (workspace.status === 'stopped') await workspaceApi.start(workspace.id)
+    router.push({ name: 'ide', params: { id: workspace.id } })
+  } catch (e) {
+    actionError.value = e instanceof Error ? e.message : 'Failed to open the workspace'
+  } finally {
+    openingWorkspace.value = false
+  }
+}
+
 function sandboxTask(sandbox: Sandbox): Task | undefined {
   return tasks.value.find((t) => t.workspaceId === sandbox.id)
 }
@@ -265,6 +283,9 @@ function sandboxTask(sandbox: Sandbox): Task | undefined {
           </div>
         </div>
         <div class="header-actions">
+          <button v-if="ready" class="btn btn-primary" :disabled="openingWorkspace" @click="openWorkspace">
+            {{ openingWorkspace ? 'Opening...' : 'Open workspace' }}
+          </button>
           <button v-if="project.upstreamUrl && ready" class="btn btn-secondary" :disabled="pushing" @click="push">
             {{ pushing ? 'Pushing...' : `Push ${project.defaultBranch}` }}
           </button>

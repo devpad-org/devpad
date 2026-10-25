@@ -286,6 +286,105 @@ func (h *Handler) HandleStartSandbox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"sandbox": sandboxResponse(ws)})
 }
 
+// HandleGetWorkspace returns the project's workspace, or 404 before it has
+// been opened.
+func (h *Handler) HandleGetWorkspace(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	ws, err := h.service.Workspace(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workspace": sandboxResponse(ws)})
+}
+
+// HandleOpenWorkspace returns the project's workspace, creating it on first
+// use.
+func (h *Handler) HandleOpenWorkspace(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	ws, created, err := h.service.OpenWorkspace(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, map[string]any{"workspace": sandboxResponse(ws)})
+}
+
+// HandleCheckoutWorkspaceBranch checks out a canonical branch in the
+// project workspace.
+func (h *Handler) HandleCheckoutWorkspaceBranch(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, branch, ok := workspaceBranchRequest(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.service.CheckoutWorkspaceBranch(r.Context(), user.ID, id, branch)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// HandlePublishWorkspaceBranch copies a branch of the project workspace into
+// the canonical repo.
+func (h *Handler) HandlePublishWorkspaceBranch(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, branch, ok := workspaceBranchRequest(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.service.PublishWorkspaceBranch(r.Context(), user.ID, id, branch)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// HandleSyncWorkspace refreshes the project workspace's copy of the default
+// branch.
+func (h *Handler) HandleSyncWorkspace(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.SyncWorkspaceBase(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func workspaceBranchRequest(w http.ResponseWriter, r *http.Request) (int64, string, bool) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return 0, "", false
+	}
+	var req struct {
+		Branch string `json:"branch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return 0, "", false
+	}
+	return id, req.Branch, true
+}
+
 func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue(name), 10, 64)
 	if err != nil {
@@ -297,13 +396,15 @@ func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 
 func handleServiceError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, ErrNoWorkspace):
+		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrNotFound), errors.Is(err, workspace.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, ErrForbidden), errors.Is(err, workspace.ErrForbidden):
 		writeError(w, http.StatusForbidden, "access denied")
 	case errors.Is(err, ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrDefaultBranch):
+	case errors.Is(err, ErrDefaultBranch), errors.Is(err, ErrPublishDefault):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrNotReady), errors.Is(err, workspace.ErrNotRunning),
 		errors.Is(err, ErrSandboxLimit), errors.Is(err, ErrBranchInUse):

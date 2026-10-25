@@ -15,7 +15,8 @@ const (
 )
 
 // Kind distinguishes a user's own workspace from project sandboxes that AI
-// agents work in.
+// agents work in. An interactive workspace with a project is that project's
+// workspace: the user's IDE for it, one per project.
 type Kind string
 
 const (
@@ -82,6 +83,27 @@ type Workspace struct {
 // agent. Sandboxes are untrusted: they never receive the user's SSH keys.
 func (ws *Workspace) IsSandbox() bool {
 	return ws.Kind != KindInteractive
+}
+
+// IsProjectWorkspace reports whether the workspace is a project's own
+// interactive workspace.
+func (ws *Workspace) IsProjectWorkspace() bool {
+	return ws.Kind == KindInteractive && ws.ProjectID != 0
+}
+
+// ReceivesUserCredentials reports whether devpad may put the user's SSH keys
+// in the workspace. Anything tied to a project is untrusted, including the
+// project workspace, whose IDE assistant can act on its own: the project repo
+// is only reachable through devpad.
+func (ws *Workspace) ReceivesUserCredentials() bool {
+	return ws.Kind == KindInteractive && ws.ProjectID == 0
+}
+
+// ProjectWorkspaceSpec describes a project workspace to create.
+type ProjectWorkspaceSpec struct {
+	ProjectID   int64
+	Name        string
+	Description string
 }
 
 // SandboxSpec describes a project sandbox to create.

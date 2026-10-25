@@ -109,6 +109,15 @@ type SandboxService interface {
 	FetchSandboxBase(ctx context.Context, userID, workspaceID int64, branch string, bundle io.Reader) (*agent.RepoBranch, error)
 }
 
+// ProjectWorkspaceService defines a project's own interactive workspace and
+// the branch transfers devpad drives for it. Seeding and base refreshes go
+// through SandboxService, which serves both.
+type ProjectWorkspaceService interface {
+	CreateProjectWorkspace(ctx context.Context, userID int64, spec ProjectWorkspaceSpec) (*Workspace, error)
+	CheckoutProjectBranch(ctx context.Context, userID, workspaceID int64, branch string, bundle io.Reader) (*agent.RepoCheckout, error)
+	BundleProjectBranch(ctx context.Context, userID, workspaceID int64, branch string) (io.ReadCloser, error)
+}
+
 // SidecarBinder injects the sidecar service lifecycle dependency.
 type SidecarBinder interface {
 	SetSidecarService(sidecar SidecarService)
@@ -128,6 +137,7 @@ type Service interface {
 	AgentResolver
 	InfoService
 	SandboxService
+	ProjectWorkspaceService
 	SidecarBinder
 }
 
