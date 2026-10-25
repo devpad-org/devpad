@@ -546,3 +546,38 @@ func TestWorkspaceBranchStatus(t *testing.T) {
 		t.Fatal("expected another user refused")
 	}
 }
+
+func TestFetchWorkspaceBranches(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	ws, _, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	e.repoAgent.mu.Lock()
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "task/1", SHA: "t1"}}
+	e.repoAgent.bundled = nil
+	e.repoAgent.mu.Unlock()
+
+	if err := e.svc.FetchWorkspaceBranches(ctx, e.userID, p.ID, []string{"main", "task/1"}); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if e.workspaces.seeds[ws.ID] != "devpad/task/1 <- bundle-of-task/1" {
+		t.Fatalf("expected the branches fetched as devpad copies, got %q", e.workspaces.seeds[ws.ID])
+	}
+
+	// Names come from the workspace: each must be valid and exist, and
+	// nothing travels unless all do.
+	e.repoAgent.mu.Lock()
+	e.repoAgent.bundled = nil
+	e.repoAgent.mu.Unlock()
+	for _, branches := range [][]string{nil, {"--all"}, {"main", "missing"}} {
+		if err := e.svc.FetchWorkspaceBranches(ctx, e.userID, p.ID, branches); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("fetch %v: expected ErrInvalidInput, got %v", branches, err)
+		}
+	}
+	if len(e.repoAgent.bundled) != 0 {
+		t.Fatalf("a refused fetch bundled %v", e.repoAgent.bundled)
+	}
+}

@@ -20,6 +20,7 @@ import WorkspaceProcessesPanel from '@/components/ide/WorkspaceProcessesPanel.vu
 import ServiceCatalogPanel from '@/components/ide/ServiceCatalogPanel.vue'
 import WorkspaceServicesPanel from '@/components/ide/WorkspaceServicesPanel.vue'
 import WorkspaceGate, { type WorkspaceGateState } from '@/components/ide/WorkspaceGate.vue'
+import GitPushToasts from '@/components/project/GitPushToasts.vue'
 import ProjectAgentsPanel from '@/components/project/ProjectAgentsPanel.vue'
 import ProjectBoard from '@/components/project/ProjectBoard.vue'
 import ProjectBranchActions from '@/components/project/ProjectBranchActions.vue'
@@ -1364,6 +1365,7 @@ const backLabel = computed(() => {
       @changed="taskChanged"
       @deleted="taskDeleted"
     />
+    <GitPushToasts v-if="isProjectMode" />
     <ConfirmModal
       :show="!!discardPrompt"
       :title="discardPrompt?.title ?? ''"

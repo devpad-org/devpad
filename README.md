@@ -141,6 +141,8 @@ Each user can generate an ED25519 SSH key pair from the **Settings** page. The p
 
 Work happens in projects. Each project has a canonical repo in its own container, one workspace for you, and sandboxes for its AI agents. None of a project's workspaces ever receive your SSH key: devpad moves commits between them and the canonical repo itself, and pushes upstream from the repo container with your key. A project without an upstream is a scratch project that starts from an empty repo.
 
+In a project workspace's terminal, `git fetch devpad` brings in the project's branches as `devpad/<branch>`, and `git push devpad <branch>` publishes a branch just like the Publish button: never the default branch (that only changes through a merge request), never a branch an agent's sandbox owns, and only as a fast-forward. The IDE assistant can push the same way, and the IDE shows every push.
+
 Workspaces made before projects existed still start with your SSH key, a `known_hosts` file for common Git hosts, and an SSH config injected at `~/.ssh/`. Devpad no longer creates such workspaces; convert each one into a project from the home page, or delete it.
 
 - **Repo at the workspace root, or no repo yet:** the workspace is converted in place and becomes the project's workspace. Devpad removes its SSH key, strips the other credentials it finds (with your consent), restarts the container and rotates your key, since an AI may have read the old one. Add the new public key to your Git host and remove the old one.

@@ -38,7 +38,7 @@ func (noopAI) HandleUpdateProvider(http.ResponseWriter, *http.Request)     {}
 // sandbox, so the API has no way to create or rename a standalone one.
 func TestRoutesHaveNoStandaloneWorkspaceCreation(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, noopAI{}, nil)
+	registerRoutes(mux, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, noopAI{}, nil)
 
 	// Nothing under /api matches; only the JSON not-found fallback answers.
 	for _, req := range []*http.Request{
@@ -60,7 +60,7 @@ func TestRoutesHaveNoStandaloneWorkspaceCreation(t *testing.T) {
 // other paths still fall through to the SPA.
 func TestUnknownAPIPathsReturnJSONNotFound(t *testing.T) {
 	mux := http.NewServeMux()
-	registerRoutes(mux, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, noopAI{}, nil)
+	registerRoutes(mux, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, noopAI{}, nil)
 
 	for _, req := range []*http.Request{
 		httptest.NewRequest(http.MethodGet, "/api/nope", nil),

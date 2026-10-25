@@ -6,6 +6,9 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/devpad-org/devpad/internal/agent"
 )
 
 func TestCreateProjectWorkspaceNeverInjectsSSHKeys(t *testing.T) {
@@ -107,6 +110,16 @@ func TestProjectWorkspaceOperationsRejectOtherWorkspaces(t *testing.T) {
 		}
 		if _, err := svc.BundleProjectBranch(ctx, 1, id, "main"); !errors.Is(err, ErrNotProjectWorkspace) {
 			t.Fatalf("bundle on workspace %d: expected ErrNotProjectWorkspace, got %v", id, err)
+		}
+		// Only a project's own workspace is served git requests.
+		if err := svc.ConfigureGitBridge(ctx, 1, id); !errors.Is(err, ErrNotProjectWorkspace) {
+			t.Fatalf("git bridge setup on workspace %d: expected ErrNotProjectWorkspace, got %v", id, err)
+		}
+		if _, err := svc.GitBridgeRequests(ctx, 1, id, time.Millisecond); !errors.Is(err, ErrNotProjectWorkspace) {
+			t.Fatalf("git bridge poll on workspace %d: expected ErrNotProjectWorkspace, got %v", id, err)
+		}
+		if err := svc.GitBridgeRespond(ctx, 1, id, "aa", agent.GitBridgeResult{}); !errors.Is(err, ErrNotProjectWorkspace) {
+			t.Fatalf("git bridge answer on workspace %d: expected ErrNotProjectWorkspace, got %v", id, err)
 		}
 	}
 	// The sandbox-only bundle reads a recorded branch, which a project

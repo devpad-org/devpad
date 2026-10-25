@@ -195,6 +195,61 @@ func (s *service) SyncWorkspaceBase(ctx context.Context, userID, projectID int64
 	return s.workspaces.FetchSandboxBase(ctx, userID, ws.ID, p.DefaultBranch, bundle)
 }
 
+// maxFetchBranches bounds one fetch through the devpad remote.
+const maxFetchBranches = 256
+
+// FetchWorkspaceBranches brings canonical branches into the project
+// workspace as devpad/<branch>, for git fetch through the devpad remote. The
+// names come from the workspace, so each is checked and must exist in the
+// canonical repo; only those branches travel.
+func (s *service) FetchWorkspaceBranches(ctx context.Context, userID, projectID int64, branches []string) error {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return err
+	}
+	if len(branches) == 0 || len(branches) > maxFetchBranches {
+		return invalid("fetch between 1 and %d branches", maxFetchBranches)
+	}
+	for _, branch := range branches {
+		if !validBranchName(branch) {
+			return invalid("branch is not a valid branch name")
+		}
+	}
+	ws, err := s.runningWorkspace(ctx, p)
+	if err != nil {
+		return err
+	}
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return err
+	}
+	refs, err := c.RepoRefs(ctx)
+	if err != nil {
+		return err
+	}
+	exists := make(map[string]bool, len(refs.Branches))
+	for _, ref := range refs.Branches {
+		exists[ref.Name] = true
+	}
+	for _, branch := range branches {
+		if !exists[branch] {
+			return invalid("branch %q does not exist", branch)
+		}
+	}
+	for _, branch := range branches {
+		bundle, err := c.RepoBundle(ctx, branch)
+		if err != nil {
+			return err
+		}
+		_, err = s.workspaces.FetchSandboxBase(ctx, userID, ws.ID, branch, bundle)
+		bundle.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // PublishWorkspaceBranch copies a local branch of the project workspace into
 // the canonical repo under the same name. The name comes from the request and
 // is checked here, never taken from the workspace. The default branch and

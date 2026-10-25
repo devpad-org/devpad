@@ -18,6 +18,7 @@ import (
 	"github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/dockerfile"
 	"github.com/devpad-org/devpad/internal/encrypt"
+	"github.com/devpad-org/devpad/internal/gitbridge"
 	"github.com/devpad-org/devpad/internal/mergerequest"
 	"github.com/devpad-org/devpad/internal/preview"
 	"github.com/devpad-org/devpad/internal/project"
@@ -39,6 +40,8 @@ type Server struct {
 	aiShutdown     func(context.Context) error
 	taskShutdown   func(context.Context) error
 	mrShutdown     func(context.Context) error
+	// gitBridgeStop stops polling project workspaces for git requests.
+	gitBridgeStop func()
 }
 
 // New creates a new Server with the given configuration.
@@ -135,6 +138,16 @@ func New(cfg Config) (*Server, error) {
 	aiModule.AddToolProvider(mrService)
 	mrHandler := mergerequest.NewHandler(mrService)
 
+	// git push and fetch through the devpad remote in a project's workspace.
+	gitBridge := gitbridge.New(workspaceService, projectService)
+	gitBridgeHandler := gitbridge.NewHandler(gitBridge)
+	gitBridgeCtx, gitBridgeCancel := context.WithCancel(context.Background())
+	gitBridgeDone := make(chan struct{})
+	go func() {
+		gitBridge.Run(gitBridgeCtx)
+		close(gitBridgeDone)
+	}()
+
 	// The assistant in a project's workspace sees the board and hands work to
 	// task agents.
 	aiModule.AddToolProvider(projecttools.NewProvider(workspaceService, projectService, taskService, mrService))
@@ -158,7 +171,7 @@ func New(cfg Config) (*Server, error) {
 	authRateLimiter := auth.NewRateLimiter(rate.Limit(5), 10)
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectHandler, taskHandler, mrHandler, aiModule.Handler, previewHandler)
+	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectHandler, taskHandler, mrHandler, gitBridgeHandler, aiModule.Handler, previewHandler)
 
 	handler := buildHandler(mux, http.HandlerFunc(previewHandler.HandleProxy), cfg)
 
@@ -198,6 +211,10 @@ func New(cfg Config) (*Server, error) {
 		aiShutdown:    aiModule.Shutdown,
 		taskShutdown:  taskService.Shutdown,
 		mrShutdown:    mrService.Shutdown,
+		gitBridgeStop: func() {
+			gitBridgeCancel()
+			<-gitBridgeDone
+		},
 	}
 
 	return s, nil
@@ -275,6 +292,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.cleanupCancel != nil {
 		s.cleanupCancel()
 	}
+	if s.gitBridgeStop != nil {
+		s.gitBridgeStop()
+	}
 	// Stop the task orchestrator first so runs cancelled by the AI shutdown
 	// are left for Reconcile instead of failing their tasks.
 	if s.taskShutdown != nil {
@@ -336,7 +356,7 @@ type aiRouteHandler interface {
 }
 
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, projectHandler *project.Handler, taskHandler *task.Handler, mrHandler *mergerequest.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, projectHandler *project.Handler, taskHandler *task.Handler, mrHandler *mergerequest.Handler, gitBridgeHandler *gitbridge.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
@@ -436,6 +456,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/projects/{id}/workspace/publish", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandlePublishWorkspaceBranch)))
 	mux.Handle("POST /api/projects/{id}/workspace/sync", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleSyncWorkspace)))
 	mux.Handle("GET /api/projects/{id}/workspace/branch-status", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleWorkspaceBranchStatus)))
+	mux.Handle("GET /api/projects/{id}/git-activity", authMiddleware.RequireAuth(http.HandlerFunc(gitBridgeHandler.HandleActivity)))
 	mux.Handle("GET /api/workspaces/{id}/conversion", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDiscoverConversion)))
 	mux.Handle("POST /api/workspaces/{id}/convert", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleConvertWorkspace)))
 	mux.Handle("GET /api/projects/{id}/conversion", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleConversionNotice)))

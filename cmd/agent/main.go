@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 )
 
@@ -19,6 +20,12 @@ const defaultPort = "9100"
 var workspaceRoot = "/workspace"
 
 func main() {
+	// Linked as git-remote-devpad, the binary is git's helper for the devpad
+	// remote, run by git inside the workspace.
+	if filepath.Base(os.Args[0]) == remoteHelperName {
+		os.Exit(runRemoteHelper(os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	port := os.Getenv("AGENT_PORT")
 	if port == "" {
 		port = defaultPort
@@ -89,6 +96,11 @@ func main() {
 	authedMux.HandleFunc("POST /api/ssh/remove-managed", handleSSHRemoveManaged)
 	authedMux.HandleFunc("POST /api/credentials/strip", handleCredentialsStrip)
 
+	// Git bridge: devpad polls for git-remote-devpad's requests.
+	authedMux.HandleFunc("GET /api/git-bridge/requests", bridge.handlePoll)
+	authedMux.HandleFunc("POST /api/git-bridge/requests/{id}/result", bridge.handleResult)
+	authedMux.HandleFunc("POST /api/git-bridge/remote", handleGitBridgeRemote)
+
 	// Terminal WebSocket
 	authedMux.HandleFunc("GET /ws/terminal", handleTerminal)
 
@@ -109,6 +121,11 @@ func main() {
 
 	srv := &http.Server{Addr: addr, Handler: mux}
 
+	bridgeSrv, err := serveGitBridgeSocket(bridge, gitBridgeSocketPath())
+	if err != nil {
+		log.Printf("git bridge unavailable: %v", err)
+	}
+
 	// Graceful shutdown: close the filesystem watcher and HTTP server on SIGINT/SIGTERM.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -116,6 +133,9 @@ func main() {
 		<-sigCh
 		log.Println("shutting down agent...")
 		fsWatcher.Close()
+		if bridgeSrv != nil {
+			bridgeSrv.Shutdown(context.Background())
+		}
 		srv.Shutdown(context.Background())
 	}()
 

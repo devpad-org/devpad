@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { projectApi, type ConversionNotice, type Project, type RepoBranch, type Sandbox } from '@/api/projects'
+import { projectApi, type ConversionNotice, type GitPushEvent, type Project, type RepoBranch, type Sandbox } from '@/api/projects'
 import { taskApi, type Task, type TaskStatus } from '@/api/tasks'
 import { mergeRequestApi, type MergeRequest } from '@/api/mergeRequests'
 
@@ -29,6 +29,10 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   // What converting a workspace into this project did, until dismissed.
   const conversion = ref<ConversionNotice | null>(null)
   let conversionLoaded = false
+  // Pushes made with `git push devpad` since the shell opened, until shown
+  // and dismissed.
+  const gitPushes = ref<GitPushEvent[]>([])
+  let gitActivitySeq: number | null = null
 
   // Bumped whenever the open project changes, so responses for the previous
   // one are dropped.
@@ -92,6 +96,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
         mergeRequests.value = m.mergeRequests ?? []
         sandboxes.value = s.sandboxes ?? []
       }
+      if (project.value?.status === 'ready') await refreshGitActivity(id, gen)
       // Load the notice once, then follow it while devpad finishes it.
       if (!conversionLoaded || (conversion.value && !conversion.value.finished)) {
         const res = await projectApi.conversionNotice(id)
@@ -103,6 +108,24 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     } catch (e) {
       if (gen === generation) loadError.value = e instanceof Error ? e.message : 'Failed to load project'
     }
+  }
+
+  async function refreshGitActivity(id: number, gen: number) {
+    try {
+      const res = await projectApi.gitActivity(id, gitActivitySeq ?? undefined)
+      if (gen !== generation) return
+      if (gitActivitySeq !== null && res.events.length > 0) {
+        gitPushes.value = [...gitPushes.value, ...res.events]
+        if (res.events.some((e) => e.ok) && branches.value.length > 0) void refreshBranches()
+      }
+      gitActivitySeq = res.latest
+    } catch {
+      // Push notices are a convenience; the board still loads without them.
+    }
+  }
+
+  function dismissGitPush(seq: number) {
+    gitPushes.value = gitPushes.value.filter((e) => e.seq !== seq)
   }
 
   async function refreshBranches() {
@@ -138,6 +161,8 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     selectedTaskId.value = null
     conversion.value = null
     conversionLoaded = false
+    gitPushes.value = []
+    gitActivitySeq = null
   }
 
   // Opens a project and polls it until close.
@@ -188,6 +213,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     loadError,
     selectedTaskId,
     conversion,
+    gitPushes,
     ready,
     selectedTask,
     openMergeRequests,
@@ -203,6 +229,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     close,
     setProject,
     dismissConversion,
+    dismissGitPush,
     upsertTask,
     removeTask,
   }

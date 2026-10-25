@@ -44,6 +44,9 @@ type Service interface {
 	CheckoutWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoCheckout, error)
 	PublishWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error)
 	SyncWorkspaceBase(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
+	// FetchWorkspaceBranches refreshes the project workspace's devpad/<branch>
+	// copies of canonical branches, for git fetch through the devpad remote.
+	FetchWorkspaceBranches(ctx context.Context, userID, projectID int64, branches []string) error
 	WorkspaceBranchStatus(ctx context.Context, userID, projectID int64, branch string) (*WorkspaceBranchStatus, error)
 	// DiscoverConversion lists what a standalone workspace holds that could
 	// become a project.

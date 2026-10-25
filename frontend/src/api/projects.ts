@@ -245,6 +245,17 @@ export interface ConversionNotice {
   createdAt: string
 }
 
+// A push made with `git push devpad` in the project workspace, by the user
+// or the IDE assistant, published or refused.
+export interface GitPushEvent {
+  seq: number
+  branch: string
+  ok: boolean
+  sha?: string
+  error?: string
+  at: string
+}
+
 export const projectApi = {
   list(): Promise<{ projects: Project[] }> {
     return apiClient.get('/api/projects')
@@ -322,6 +333,13 @@ export const projectApi = {
   // refreshing the workspace's copy of the project's branch.
   workspaceBranchStatus(id: number, branch: string): Promise<WorkspaceBranchStatus> {
     return apiClient.get(`/api/projects/${id}/workspace/branch-status?branch=${encodeURIComponent(branch)}`)
+  },
+
+  // Pushes made through the devpad remote after `after`. Without it, only the
+  // latest sequence number comes back, so old pushes are not replayed.
+  gitActivity(id: number, after?: number): Promise<{ events: GitPushEvent[]; latest: number }> {
+    const query = after === undefined ? '' : `?after=${after}`
+    return apiClient.get(`/api/projects/${id}/git-activity${query}`)
   },
 
   // Lists the repos in a standalone workspace that could become a project.

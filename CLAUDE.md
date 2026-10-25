@@ -35,6 +35,8 @@ Devpad is a Go web server that serves an embedded Vue 3 IDE frontend and manages
 
 **Projects and workspaces** — every new workspace belongs to a project (`internal/project`): either its one project workspace (`kind = 'interactive'`, the user's IDE for the project) or an AI sandbox (`task`/`review`, each owning one branch). Each project's canonical bare repo lives in an isolated repo container; devpad moves commits between it and workspaces with git bundles over the agent channel, and no project-linked workspace gets a mount, route or credential to that repo or the user's SSH keys. Workspaces without a project are left from before projects: devpad no longer creates them, and they can only be used, converted into a project, or deleted.
 
+**The devpad git remote** — a project workspace's repo has a `devpad` remote (`devpad::project`) served by `git-remote-devpad`, the agent binary linked under that name. The helper talks to the agent over a unix socket; `internal/gitbridge` long-polls each running project workspace's agent for those requests and answers them through the project service. `git fetch devpad` refreshes `refs/remotes/devpad/*` by bundle, and `git push devpad <branch>` is only a request: devpad pulls the branch and publishes it exactly like the Publish button (never the default branch, never a sandbox-owned branch, fast-forward only), and the IDE shows each push. The IDE assistant runs in the same workspace and can push this way too, with no more power than the Publish button. Sandboxes and standalone workspaces are never polled, so the helper refuses there.
+
 **Workspace previews** — `internal/preview` generates one-time preview URLs. Preview subdomains follow `{workspaceID}-{port}.preview-domain` format; traffic is reverse-proxied through the workspace agent's port proxy after token/cookie validation.
 
 **SQLite migrations** live in numbered `.sql` files under `internal/database/migrations/`. `database.Migrate` applies them lexicographically and records versions in `schema_migrations`. Always add the next numbered migration; never edit an applied one.
@@ -58,6 +60,7 @@ Devpad is a Go web server that serves an embedded Vue 3 IDE frontend and manages
 **Agent boundary**
 - Code that needs live filesystem, terminal, command, or Git data for a workspace belongs in `cmd/agent` plus a proxy/client path in the host — not only in the Vue frontend.
 - Agent requests use the `X-Devpad-Agent-Token` header; `/healthz` and `/api/version` are intentionally unauthenticated.
+- The agent cannot call the host. When something inside a workspace needs devpad (like `git push devpad`), the agent queues it and the host polls for it; treat everything queued as untrusted input.
 
 **Frontend**
 - Use Vue 3 `<script setup lang="ts">`, strict TypeScript, and the `@/` alias for `frontend/src`.
