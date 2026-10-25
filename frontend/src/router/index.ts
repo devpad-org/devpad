@@ -7,7 +7,6 @@ import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 const IdeView = () => import('@/views/IdeView.vue')
 const ProjectsView = () => import('@/views/ProjectsView.vue')
-const MergeRequestView = () => import('@/views/MergeRequestView.vue')
 const InboxView = () => import('@/views/InboxView.vue')
 
 export const router = createRouter({
@@ -38,11 +37,14 @@ export const router = createRouter({
       component: IdeView,
       meta: { requiresAuth: true, hideChrome: true },
     },
+    // Merge requests open as tabs in their project, next to its board.
     {
       path: '/projects/:id/merge-requests/:mrId',
       name: 'merge-request',
-      component: MergeRequestView,
-      meta: { requiresAuth: true },
+      redirect: (to) => {
+        const tab = `mr:${Number(to.params.mrId)}`
+        return { name: 'project', params: { id: to.params.id }, query: { tabs: `board,${tab}`, tab } }
+      },
     },
     {
       path: '/inbox',

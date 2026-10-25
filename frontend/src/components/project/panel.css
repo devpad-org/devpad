@@ -118,6 +118,10 @@ a.side-row:hover {
   background: var(--bg-hover);
 }
 
+.side-row.active {
+  background: var(--bg-selected);
+}
+
 .side-row-main {
   display: flex;
   flex-direction: column;

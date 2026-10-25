@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, inject, ref } from 'vue'
+import { ideShellKey, mergeRequestTab, useOpenMergeRequest } from '@/components/ide/viewTabs'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import StatusBadge from './StatusBadge.vue'
 
-// The project's merge requests in the IDE side bar.
+// The project's merge requests in the IDE side bar. Each opens as a tab.
 const store = useActiveProjectStore()
+const shell = inject(ideShellKey, null)
+const openMergeRequest = useOpenMergeRequest()
 const showClosed = ref(false)
 
 const visible = computed(() => (showClosed.value ? store.mergeRequests : store.openMergeRequests))
@@ -30,11 +33,13 @@ const visible = computed(() => (showClosed.value ? store.mergeRequests : store.o
 
     <div class="side-body">
       <div class="side-section">
-        <RouterLink
+        <button
           v-for="mr in visible"
           :key="mr.id"
-          :to="{ name: 'merge-request', params: { id: mr.projectId, mrId: mr.id } }"
+          type="button"
           class="side-row"
+          :class="{ active: shell?.activeView.value === mergeRequestTab(mr.id) }"
+          @click="openMergeRequest(mr.projectId, mr.id)"
         >
           <span class="side-row-main">
             <span class="side-row-title">!{{ mr.id }} {{ mr.title }}</span>
@@ -43,7 +48,7 @@ const visible = computed(() => (showClosed.value ? store.mergeRequests : store.o
             </span>
           </span>
           <StatusBadge :status="mr.status" />
-        </RouterLink>
+        </button>
         <p v-if="visible.length === 0" class="side-empty">
           {{ showClosed ? 'No merge requests yet.' : 'No open merge requests.' }}
         </p>

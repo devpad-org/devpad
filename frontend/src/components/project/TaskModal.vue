@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { taskApi, type Task, type TaskStatus } from '@/api/tasks'
 import type { MergeRequest } from '@/api/mergeRequests'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
+import { useOpenMergeRequest } from '@/components/ide/viewTabs'
 import AgentModelPicker from './AgentModelPicker.vue'
 import MrIcon, { type MrIconName } from './MrIcon.vue'
 import StatusBadge from './StatusBadge.vue'
@@ -21,6 +22,15 @@ const emit = defineEmits<{
 }>()
 
 type Tone = 'neutral' | 'active' | 'review' | 'attention' | 'error' | 'success'
+
+const openMergeRequest = useOpenMergeRequest()
+
+// The merge request opens as a tab behind the modal, so the modal gets out
+// of the way.
+function reviewMergeRequest(id: number) {
+  openMergeRequest(props.projectId, id)
+  emit('close')
+}
 
 // Where each status sits on the to do → agent → review → done track.
 const STATUS: Record<TaskStatus, { step: number; tone: Tone; icon: MrIconName; label: string }> = {
@@ -284,14 +294,14 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 <MrIcon name="terminal" :size="13" />
                 Watch in sandbox
               </RouterLink>
-              <RouterLink
+              <button
                 v-if="mergeRequest && (task.status === 'in_review' || task.status === 'changes_requested')"
                 class="btn btn-primary btn-sm"
-                :to="{ name: 'merge-request', params: { id: projectId, mrId: mergeRequest.id } }"
+                @click="reviewMergeRequest(mergeRequest.id)"
               >
                 <MrIcon name="open" :size="13" />
                 Review !{{ mergeRequest.id }}
-              </RouterLink>
+              </button>
             </div>
           </div>
         </section>
@@ -443,10 +453,11 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                   </span>
                   <MrIcon name="chevron-right" :size="13" class="link-go" />
                 </RouterLink>
-                <RouterLink
+                <button
                   v-if="mergeRequest"
+                  type="button"
                   class="link-row"
-                  :to="{ name: 'merge-request', params: { id: projectId, mrId: mergeRequest.id } }"
+                  @click="reviewMergeRequest(mergeRequest.id)"
                 >
                   <span class="link-icon link-icon-mr" :class="`mr-${mergeRequest.status}`">
                     <MrIcon :name="mergeRequest.status === 'merged' ? 'merged' : mergeRequest.status === 'closed' ? 'closed' : 'open'" :size="13" />
@@ -456,7 +467,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                     <span class="link-sub">{{ mergeRequest.status }} &middot; into {{ mergeRequest.targetBranch }}</span>
                   </span>
                   <MrIcon name="chevron-right" :size="13" class="link-go" />
-                </RouterLink>
+                </button>
               </div>
             </section>
 
@@ -1070,6 +1081,12 @@ kbd {
   border-radius: var(--radius-md);
   color: var(--text-primary);
   transition: background var(--transition-fast);
+}
+
+button.link-row {
+  width: 100%;
+  text-align: left;
+  font-size: inherit;
 }
 
 .link-row:hover {

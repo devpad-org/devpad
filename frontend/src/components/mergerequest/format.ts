@@ -1,0 +1,92 @@
+import type { RepoDiffFile } from '@/api/projects'
+import type { MergeStrategy, Review, Verdict } from '@/api/mergeRequests'
+import type { MrIconName } from '@/components/project/MrIcon.vue'
+
+// Presentation helpers shared by the merge request components.
+
+export type Author = Review['author']
+export type Tone = 'success' | 'active' | 'review' | 'attention' | 'error' | 'warning' | 'neutral'
+
+export const VERDICTS: { value: Verdict; label: string; hint: string; icon: MrIconName; tone: Tone }[] = [
+  { value: 'comment', label: 'Comment', hint: 'General feedback without a decision.', icon: 'comment', tone: 'review' },
+  { value: 'approve', label: 'Approve', hint: 'The change is ready to merge.', icon: 'check', tone: 'success' },
+  { value: 'request_changes', label: 'Request changes', hint: 'Feedback that must be addressed before merging.', icon: 'alert', tone: 'attention' },
+]
+
+export const STRATEGIES: { value: MergeStrategy; label: string; hint: string }[] = [
+  { value: 'merge', label: 'Merge commit', hint: 'Keeps every commit and records a merge commit.' },
+  { value: 'squash', label: 'Squash', hint: 'Combines the branch into a single commit.' },
+  { value: 'fast-forward', label: 'Fast-forward', hint: 'Moves the target branch forward; no new commit.' },
+]
+
+export function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`
+}
+
+export function dirName(path: string): string {
+  const i = path.lastIndexOf('/')
+  return i === -1 ? '' : path.slice(0, i)
+}
+
+export function baseName(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1)
+}
+
+export function authorName(author: Author): string {
+  return author === 'agent' ? 'Agent' : 'You'
+}
+
+export function shortSha(sha: string): string {
+  return sha ? sha.slice(0, 8) : ''
+}
+
+// Five blocks split between additions and deletions, like a diffstat.
+export function statBlocks(additions: number, deletions: number): ('add' | 'del' | 'none')[] {
+  const total = additions + deletions
+  if (total === 0) return Array(5).fill('none')
+  const add = Math.round((additions / total) * 5)
+  return Array.from({ length: 5 }, (_, i) => (i < add ? 'add' : 'del'))
+}
+
+export function reviewTone(review: Review): Tone {
+  if (review.status === 'pending') return 'active'
+  if (review.status === 'failed') return 'error'
+  if (review.verdict === 'approve') return 'success'
+  if (review.verdict === 'request_changes') return 'attention'
+  return 'review'
+}
+
+export function reviewIcon(review: Review): MrIconName {
+  if (review.status === 'pending') return 'clock'
+  if (review.status === 'failed') return 'warning'
+  if (review.verdict === 'approve') return 'check'
+  if (review.verdict === 'request_changes') return 'alert'
+  return 'comment'
+}
+
+export function reviewAction(review: Review): string {
+  if (review.status === 'pending') return 'is reviewing the change'
+  if (review.status === 'failed') return 'could not finish the review'
+  if (review.verdict === 'approve') return 'approved these changes'
+  if (review.verdict === 'request_changes') return 'requested changes'
+  return 'left a review'
+}
+
+export function fileStatusLabel(file: RepoDiffFile): string {
+  switch (file.status) {
+    case 'A':
+      return 'added'
+    case 'D':
+      return 'deleted'
+    case 'R':
+      return 'renamed'
+    case 'C':
+      return 'copied'
+    default:
+      return 'modified'
+  }
+}
+
+export function errorText(e: unknown, fallback: string): string {
+  return e instanceof Error ? e.message : fallback
+}

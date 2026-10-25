@@ -27,8 +27,17 @@ import ProjectMergeRequestsPanel from '@/components/project/ProjectMergeRequests
 import ProjectPanel from '@/components/project/ProjectPanel.vue'
 import ProjectTasksPanel from '@/components/project/ProjectTasksPanel.vue'
 import TaskModal from '@/components/project/TaskModal.vue'
+import MergeRequestTab from '@/components/mergerequest/MergeRequestTab.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
-import { BOARD_TAB, confirmDiscardKey, parseViewTabId, type ViewTab, type ViewTabId } from '@/components/ide/viewTabs'
+import {
+  BOARD_TAB,
+  confirmDiscardKey,
+  ideShellKey,
+  mergeRequestTabId,
+  parseViewTabId,
+  type ViewTab,
+  type ViewTabId,
+} from '@/components/ide/viewTabs'
 import { useServiceStore } from '@/stores/services'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useAttentionStore } from '@/stores/attention'
@@ -90,6 +99,8 @@ const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
 // active one into the URL so they survive reloads and back/forward.
 const viewTabs = ref<ViewTab[]>([])
 const activeView = ref<ViewTabId | null>(null)
+// View tabs holding work that closing them would lose, such as a review draft.
+const dirtyViews = ref(new Set<string>())
 const selectedGitCommit = ref<GitCommit | null>(null)
 const gitDiffRequest = ref<GitDiffRequest | null>(null)
 const focusedAgentRunId = ref<number | null>(null)
@@ -295,6 +306,7 @@ function resetShell() {
   defaultAgentError.value = null
   viewTabs.value = []
   activeView.value = null
+  dirtyViews.value = new Set()
   closeMobilePanels()
 }
 
@@ -395,10 +407,22 @@ function stopWorkspacePolling() {
   }
 }
 
-// The name of a view tab the shell can render, or null for one it can't.
+const MR_TAB_TITLE_LENGTH = 28
+
+// The name of a view tab the shell can render, or null for one it can't. A
+// merge request tab is named after its title once the project's list has it.
 function viewTabName(id: ViewTabId): string | null {
-  return id === BOARD_TAB ? 'Board' : null
+  if (id === BOARD_TAB) return 'Board'
+  const mrId = mergeRequestTabId(id)
+  if (mrId === null) return null
+  const title = projectStore.mergeRequests.find((m) => m.id === mrId)?.title
+  if (!title) return `!${mrId}`
+  const short = title.length > MR_TAB_TITLE_LENGTH ? `${title.slice(0, MR_TAB_TITLE_LENGTH - 1)}…` : title
+  return `!${mrId} ${short}`
 }
+
+// The open view tabs with their current names, which follow renames.
+const namedViewTabs = computed(() => viewTabs.value.map((t) => ({ id: t.id, name: viewTabName(t.id) ?? t.name })))
 
 // Opens a view tab, or focuses it if it is already open, and shows it.
 function openView(id: ViewTabId) {
@@ -411,9 +435,43 @@ function openView(id: ViewTabId) {
   revealView(id)
 }
 
-function closeView(id: string) {
+async function closeView(id: string) {
+  if (dirtyViews.value.has(id)) {
+    const ok = await askConfirm({
+      title: 'Discard your review?',
+      message: 'This merge request has a review you haven\'t submitted. Close it and lose the summary and line comments?',
+      confirmLabel: 'Discard review',
+    })
+    if (!ok) return
+  }
+  setViewDirty(id, false)
   viewTabs.value = viewTabs.value.filter((t) => t.id !== id)
   if (activeView.value === id) activeView.value = null
+}
+
+function setViewDirty(id: string, dirty: boolean) {
+  if (dirty === dirtyViews.value.has(id)) return
+  const next = new Set(dirtyViews.value)
+  if (dirty) next.add(id)
+  else next.delete(id)
+  dirtyViews.value = next
+}
+
+// A tab closed by back/forward takes its draft with it.
+watch(viewTabs, (tabs) => {
+  const open = new Set<string>(tabs.map((t) => t.id))
+  for (const id of dirtyViews.value) {
+    if (!open.has(id)) setViewDirty(id, false)
+  }
+})
+
+// Something in the shell would be lost by leaving it: unsaved files or a
+// review draft in a merge request tab.
+const hasUnsavedWork = computed(() => !!editorPanel.value?.hasDirtyFiles || dirtyViews.value.size > 0)
+
+function openFile(path: string) {
+  activeFile.value = path
+  mobileSidebarOpen.value = false
 }
 
 // View tabs sit on the editor surface, behind the project panels.
@@ -507,15 +565,45 @@ function checkedOut() {
   openGitPanel()
 }
 
-// Unsaved editor changes would be lost by leaving the shell or reloading
-// files after a checkout, so the user confirms first.
-const discardPrompt = ref<{ message: string; resolve: (ok: boolean) => void } | null>(null)
+// Work that an action would throw away, such as unsaved editor changes or a
+// review draft, is only dropped once the user confirms.
+interface DiscardPrompt {
+  title: string
+  message: string
+  confirmLabel: string
+}
 
-function confirmDiscard(message: string): Promise<boolean> {
-  if (!editorPanel.value?.hasDirtyFiles) return Promise.resolve(true)
+const discardPrompt = ref<(DiscardPrompt & { resolve: (ok: boolean) => void }) | null>(null)
+
+function askConfirm(prompt: DiscardPrompt): Promise<boolean> {
   discardPrompt.value?.resolve(false)
   return new Promise((resolve) => {
-    discardPrompt.value = { message, resolve }
+    discardPrompt.value = { ...prompt, resolve }
+  })
+}
+
+const UNSAVED_FILES = { title: 'Discard unsaved changes?', confirmLabel: 'Discard changes' }
+
+// Reloading files after a checkout loses only unsaved editor changes.
+function confirmDiscard(message: string): Promise<boolean> {
+  if (!editorPanel.value?.hasDirtyFiles) return Promise.resolve(true)
+  return askConfirm({ ...UNSAVED_FILES, message })
+}
+
+// Leaving the shell also loses review drafts in merge request tabs.
+function confirmLeave(): Promise<boolean> {
+  if (!hasUnsavedWork.value) return Promise.resolve(true)
+  const files = !!editorPanel.value?.hasDirtyFiles
+  const reviews = dirtyViews.value.size > 0
+  if (files && !reviews) {
+    return askConfirm({ ...UNSAVED_FILES, message: 'You have unsaved changes in open files. Leave and lose them?' })
+  }
+  return askConfirm({
+    title: files ? 'Discard unsaved work?' : 'Discard your review?',
+    message: files
+      ? 'You have unsaved changes in open files and a review you haven\'t submitted. Leave and lose them?'
+      : 'You have a merge request review you haven\'t submitted. Leave and lose it?',
+    confirmLabel: 'Discard and leave',
   })
 }
 
@@ -526,9 +614,15 @@ function answerDiscard(ok: boolean) {
 }
 
 provide(confirmDiscardKey, confirmDiscard)
+provide(ideShellKey, {
+  openView,
+  openFile,
+  activeView,
+  liveWorkspaceId: computed(() => (isProjectMode.value && workspaceLive.value ? workspace.value?.id ?? null : null)),
+})
 
 function handleBeforeUnload(e: BeforeUnloadEvent) {
-  if (!editorPanel.value?.hasDirtyFiles) return
+  if (!hasUnsavedWork.value) return
   e.preventDefault()
   e.returnValue = ''
 }
@@ -552,7 +646,7 @@ onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   removeLeaveGuard = router.beforeEach((to, from) => {
     if (to.name === from.name && to.params.id === from.params.id) return true
-    return confirmDiscard('You have unsaved changes in open files. Leave and lose them?')
+    return confirmLeave()
   })
   if (isMobile.value) terminalMinimized.value = true
   void load()
@@ -1099,20 +1193,33 @@ const backLabel = computed(() => {
               v-model:active-view="activeView"
               :workspace-id="workspace?.id ?? 0"
               :file-path="activeFile"
-              :views="viewTabs"
+              :views="namedViewTabs"
               @active-change="(p: string | null) => activeFile = p"
               @close-view="closeView"
             >
               <!-- The slot's `active` says the tab is showing; with
                    editorSurfaceVisible it tells a view when it can pause. -->
-              <template #view="{ id }">
+              <template #view="{ id, active }">
                 <ProjectBoard v-if="id === BOARD_TAB" />
+                <MergeRequestTab
+                  v-else-if="projectId !== null && mergeRequestTabId(id) !== null"
+                  :project-id="projectId"
+                  :mr-id="mergeRequestTabId(id)!"
+                  :active="active && editorSurfaceVisible"
+                  @dirty="(dirty: boolean) => setViewDirty(id, dirty)"
+                />
               </template>
               <template #view-icon="{ id }">
                 <svg v-if="id === BOARD_TAB" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <rect width="18" height="18" x="3" y="3" rx="2" />
                   <path d="M9 3v18" />
                   <path d="M15 3v18" />
+                </svg>
+                <svg v-else-if="mergeRequestTabId(id) !== null" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="18" cy="18" r="3" />
+                  <circle cx="6" cy="6" r="3" />
+                  <path d="M13 6h3a2 2 0 0 1 2 2v7" />
+                  <path d="M6 9v12" />
                 </svg>
               </template>
             </EditorPanel>
@@ -1227,9 +1334,9 @@ const backLabel = computed(() => {
     />
     <ConfirmModal
       :show="!!discardPrompt"
-      title="Discard unsaved changes?"
+      :title="discardPrompt?.title ?? ''"
       :message="discardPrompt?.message ?? ''"
-      confirm-label="Discard changes"
+      :confirm-label="discardPrompt?.confirmLabel ?? ''"
       cancel-label="Keep editing"
       variant="danger"
       @confirm="answerDiscard(true)"

@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
 import { gitApi } from '@/api/git'
 import { projectApi } from '@/api/projects'
 import { mergeRequestApi } from '@/api/mergeRequests'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { branchActionError } from './branchErrors'
-import { confirmDiscardKey } from '@/components/ide/viewTabs'
+import { confirmDiscardKey, useOpenMergeRequest } from '@/components/ide/viewTabs'
 
 const REFRESH_INTERVAL_MS = 10000
 
@@ -24,8 +23,8 @@ const props = defineProps<{
 // A checkout moves the workspace's HEAD; publish and sync only move refs.
 const emit = defineEmits<{ changed: [kind: 'checkout' | 'publish' | 'sync'] }>()
 
-const router = useRouter()
 const store = useActiveProjectStore()
+const openMergeRequest = useOpenMergeRequest()
 const confirmDiscard = inject(confirmDiscardKey, () => Promise.resolve(true))
 
 const current = ref('')
@@ -159,7 +158,7 @@ async function createMr() {
     })
     showMrForm.value = false
     void store.refresh()
-    router.push({ name: 'merge-request', params: { id: store.projectId, mrId: res.mergeRequest.id } })
+    openMergeRequest(store.projectId, res.mergeRequest.id)
   } catch (e) {
     error.value = branchActionError(e, 'Failed to open the merge request')
     void refresh()
@@ -229,13 +228,13 @@ onUnmounted(stopTimer)
       >
         {{ busy === 'sync' ? 'Syncing…' : `Sync ${defaultBranch}` }}
       </button>
-      <RouterLink
+      <button
         v-if="openMr"
         class="btn btn-secondary btn-sm"
-        :to="{ name: 'merge-request', params: { id: openMr.projectId, mrId: openMr.id } }"
+        @click="openMergeRequest(openMr.projectId, openMr.id)"
       >
         MR !{{ openMr.id }}
-      </RouterLink>
+      </button>
       <button
         v-else
         class="btn btn-secondary btn-sm"
