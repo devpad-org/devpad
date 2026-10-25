@@ -1363,3 +1363,24 @@ func waitSandbox(t *testing.T, e *env, cond func(sandboxCalls) bool) sandboxCall
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+func TestSandboxStoppedDuringSetupIsRestartedForTheRun(t *testing.T) {
+	e := setup(t)
+	gate := make(chan struct{})
+	e.sandboxes.set(func(f *fakeSandboxes) { f.setupGate = gate })
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	waiting := waitSandbox(t, e, func(c sandboxCalls) bool { return len(c.awaited) == 1 })
+
+	if _, err := (workspaceLifecycle{e.sandboxes}).Stop(context.Background(), owner, waiting.awaited[0]); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	close(gate)
+	running := e.waitTask(t, task.ID, hasRun)
+	if running.Status != StatusInProgress {
+		t.Fatalf("unexpected task: %+v", running)
+	}
+	if got := e.sandboxes.snapshot().started; len(got) != 1 || got[0] != waiting.awaited[0] {
+		t.Fatalf("expected the stopped sandbox restarted, got %v", got)
+	}
+}

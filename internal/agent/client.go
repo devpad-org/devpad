@@ -475,6 +475,10 @@ func (c *Client) CommandStatus(ctx context.Context, commandID string) (*ManagedC
 	return &result, nil
 }
 
+// maxCommandOutputResponse bounds a command output response read from the
+// workspace, which may not respect max_bytes.
+const maxCommandOutputResponse = 6*64*1024 + 64*1024
+
 // ReadCommandOutput reads buffered output from a managed command session.
 func (c *Client) ReadCommandOutput(ctx context.Context, commandID string, cursor int64, maxBytes, waitMS int) (*CommandOutput, error) {
 	u := fmt.Sprintf("%s/api/commands/%s/output?cursor=%d&max_bytes=%d&wait_ms=%d", c.baseURL, url.PathEscape(commandID), cursor, maxBytes, waitMS)
@@ -493,8 +497,10 @@ func (c *Client) ReadCommandOutput(ctx context.Context, commandID string, cursor
 		return nil, parseError(resp)
 	}
 
+	// The agent returns at most 64 KB of output per read. JSON can escape
+	// each byte into six, so anything much larger is refused unread.
 	var result CommandOutput
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxCommandOutputResponse)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 	return &result, nil

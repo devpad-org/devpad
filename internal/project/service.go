@@ -127,9 +127,9 @@ type service struct {
 	converting map[int64]bool
 	// workspaceLocks serialize opening each project's workspace.
 	workspaceLocks map[int64]*sync.Mutex
-	// setupWatches holds, per workspace, the setup run being followed,
-	// closed once it is no longer.
-	setupWatches map[int64]chan struct{}
+	// setupWatches holds the setup runs being followed, each closed once
+	// it is no longer.
+	setupWatches map[setupWatch]chan struct{}
 	publishHook  PublishHook
 	// background tracks conversions being finished and setup runs being
 	// followed in the background.
@@ -156,7 +156,7 @@ func NewService(repo Repository, cm container.Manager, workspaces Workspaces, us
 		deleting:       make(map[int64]bool),
 		converting:     make(map[int64]bool),
 		workspaceLocks: make(map[int64]*sync.Mutex),
-		setupWatches:   make(map[int64]chan struct{}),
+		setupWatches:   make(map[setupWatch]chan struct{}),
 	}
 }
 

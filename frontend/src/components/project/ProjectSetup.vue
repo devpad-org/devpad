@@ -53,7 +53,10 @@ async function load() {
     loaded.value = true
     error.value = ''
   } catch (e) {
-    if (mine === seq) error.value = e instanceof Error ? e.message : 'Failed to load the setup run'
+    if (mine !== seq) return
+    // Show the section anyway, so the error and the run button are reachable.
+    loaded.value = true
+    error.value = e instanceof Error ? e.message : 'Failed to load the setup run'
   }
 }
 

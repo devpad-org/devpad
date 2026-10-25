@@ -166,3 +166,22 @@ func TestListFilesPassesOptionsAndDecodesMetadata(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
+
+func TestReadCommandOutputRefusesOversizedResponses(t *testing.T) {
+	output := "ok"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(CommandOutput{Status: "running", Output: output})
+	}))
+	defer srv.Close()
+	c := &Client{baseURL: srv.URL, http: srv.Client()}
+
+	got, err := c.ReadCommandOutput(context.Background(), "cmd", 0, 64*1024, 0)
+	if err != nil || got.Output != "ok" {
+		t.Fatalf("read: %+v %v", got, err)
+	}
+	// A workspace that ignores max_bytes.
+	output = strings.Repeat("x", maxCommandOutputResponse+1)
+	if _, err := c.ReadCommandOutput(context.Background(), "cmd", 0, 64*1024, 0); err == nil {
+		t.Fatal("expected an oversized response refused")
+	}
+}

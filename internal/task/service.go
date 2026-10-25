@@ -490,6 +490,16 @@ func (s *service) launch(ctx context.Context, taskID int64) {
 	if err != nil || t == nil || t.Status != StatusQueued || t.WorkspaceID != ws.ID {
 		return
 	}
+	// The sandbox may have been stopped while setup ran.
+	if ws, err = s.workspaces.Get(ctx, t.UserID, ws.ID); err == nil {
+		ws, err = s.running(ctx, t, ws)
+	}
+	if err != nil {
+		if !errors.Is(err, project.ErrSandboxLimit) && !errors.Is(err, project.ErrBranchPublishing) {
+			s.failUnlessShuttingDown(ctx, t, fmt.Sprintf("starting sandbox: %v", err))
+		}
+		return
+	}
 	if err := s.startRun(ctx, t, ws, setup); err != nil {
 		s.failUnlessShuttingDown(ctx, t, err.Error())
 	}
