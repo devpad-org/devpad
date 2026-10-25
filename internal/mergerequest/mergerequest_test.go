@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -145,6 +146,20 @@ type fakeWorkspaces struct {
 	deleted []int64
 }
 
+func (f *fakeWorkspaces) Get(_ context.Context, userID, id int64) (*workspace.Workspace, error) {
+	ws := workspace.Workspace{ID: id}
+	var projectID sql.NullInt64
+	err := f.db.QueryRow(`SELECT user_id, project_id, kind, branch, status FROM workspaces WHERE id = ?`, id).Scan(&ws.UserID, &projectID, &ws.Kind, &ws.Branch, &ws.Status)
+	if err != nil {
+		return nil, workspace.ErrNotFound
+	}
+	if ws.UserID != userID {
+		return nil, workspace.ErrForbidden
+	}
+	ws.ProjectID = projectID.Int64
+	return &ws, nil
+}
+
 func (f *fakeWorkspaces) Stop(_ context.Context, _, id int64) (*workspace.Workspace, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -177,7 +192,27 @@ type fakeTasks struct {
 	mu       sync.Mutex
 	tasks    map[int64]*task.Task
 	requests []changeRequest
+	starts   []task.StartInput
 	merged   []int64
+}
+
+func (f *fakeTasks) Start(_ context.Context, _, _, taskID int64, in task.StartInput) (*task.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t := f.tasks[taskID]
+	if !t.Status.Startable() {
+		return nil, task.ErrInvalidState
+	}
+	f.starts = append(f.starts, in)
+	t.Status = task.StatusQueued
+	clone := *t
+	return &clone, nil
+}
+
+func (f *fakeTasks) started() []task.StartInput {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]task.StartInput(nil), f.starts...)
 }
 
 func (f *fakeTasks) Get(_ context.Context, userID, projectID, taskID int64) (*task.Task, error) {
@@ -519,7 +554,7 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 		t.Fatalf("unexpected run request: %+v", req)
 	}
 
-	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID); len(got) != 2 {
+	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID); len(got) != 3 {
 		t.Fatalf("expected the review tools in the review sandbox, got %d", len(got))
 	}
 	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID+1); got != nil {
@@ -766,6 +801,7 @@ func TestHandler(t *testing.T) {
 	mux.HandleFunc("GET /api/projects/{id}/merge-requests/{mrId}", h.HandleGet)
 	mux.HandleFunc("POST /api/projects/{id}/merge-requests/{mrId}/reviews", h.HandleReview)
 	mux.HandleFunc("POST /api/projects/{id}/merge-requests/{mrId}/merge", h.HandleMerge)
+	mux.HandleFunc("POST /api/projects/{id}/merge-requests/{mrId}/send-back", h.HandleSendBack)
 
 	do := func(userID int64, method, path, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -788,11 +824,18 @@ func TestHandler(t *testing.T) {
 			Reviews  []map[string]any `json:"reviews"`
 			Comments []map[string]any `json:"comments"`
 			Ahead    int              `json:"ahead"`
+			Task     struct {
+				ID     int64  `json:"id"`
+				Status string `json:"status"`
+			} `json:"task"`
 		} `json:"mergeRequest"`
 	}
 	json.Unmarshal(rec.Body.Bytes(), &got)
 	if rec.Code != http.StatusOK || got.MergeRequest.Status != "open" || len(got.MergeRequest.Reviews) != 1 || len(got.MergeRequest.Comments) != 1 || got.MergeRequest.Ahead != 2 {
 		t.Fatalf("get: %d %s", rec.Code, rec.Body)
+	}
+	if got.MergeRequest.Task.ID != e.taskID || got.MergeRequest.Task.Status != "in_review" {
+		t.Fatalf("expected the task in the detail: %s", rec.Body)
 	}
 
 	e.projects.mergeErr = &agent.AgentError{StatusCode: http.StatusConflict, Message: "task/1 conflicts with main", Conflicts: []string{"cart.go"}}
@@ -814,6 +857,8 @@ func TestHandler(t *testing.T) {
 		{"other user's project", e.stranger, http.MethodGet, base, "", http.StatusForbidden},
 		{"bad verdict", e.owner, http.MethodPost, one + "/reviews", `{"verdict":"meh"}`, http.StatusBadRequest},
 		{"bad id", e.owner, http.MethodGet, base + "/x", "", http.StatusBadRequest},
+		{"send back", e.owner, http.MethodPost, one + "/send-back", `{"message":"Fix the typo."}`, http.StatusAccepted},
+		{"send back while the agent works", e.owner, http.MethodPost, one + "/send-back", `{"message":"Again."}`, http.StatusConflict},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1030,4 +1075,216 @@ func TestAgentReviewWaitsForAFreeSandbox(t *testing.T) {
 	e.projects.sandboxErr = nil
 	e.projects.mu.Unlock()
 	waitFor(t, "the review run", func() bool { return len(e.runs.started()) == 1 })
+}
+
+func TestSendBackStartsTheTaskAgentWithTheFeedback(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+
+	if _, err := e.svc.SendBack(ctx, e.owner, e.pid(), mr.ID, SendBackInput{}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected nothing to send without feedback or a note, got %v", err)
+	}
+	// An approval is not feedback to send back.
+	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{Verdict: VerdictApprove}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if _, err := e.svc.SendBack(ctx, e.owner, e.pid(), mr.ID, SendBackInput{}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected an approval alone refused, got %v", err)
+	}
+	// Feedback on an older head was for an earlier round.
+	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{Verdict: VerdictComment, Body: "Old round."}); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{
+		Verdict: VerdictComment, Body: "Rename the cart.",
+		Comments: []CommentInput{{Path: "cart.go", Line: 4, Body: "Call it basket."}},
+	}); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+
+	tk, err := e.svc.SendBack(ctx, e.owner, e.pid(), mr.ID, SendBackInput{Message: "  Also add tests.  "})
+	if err != nil || tk.Status != task.StatusQueued {
+		t.Fatalf("send back: %+v %v", tk, err)
+	}
+	starts := e.tasks.started()
+	if len(starts) != 1 {
+		t.Fatalf("expected the task's agent started once, got %+v", starts)
+	}
+	msg := starts[0].Message
+	for _, want := range []string{"!1", "Also add tests.", "The reviewer left comments.", "Rename the cart.", "cart.go:4: Call it basket.", readCommentsTool, taskCommentTool} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message missing %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "Old round.") {
+		t.Errorf("feedback on an older head should be left to the tools:\n%s", msg)
+	}
+	d, _ := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	last := d.Comments[len(d.Comments)-1]
+	if last.Author != AuthorUser || last.Body != "Also add tests." || last.Path != "" || last.ReviewID != 0 || last.HeadSHA != "head2" {
+		t.Fatalf("the note should be kept as a comment: %+v", last)
+	}
+	if d.Task == nil || d.Task.Status != task.StatusQueued {
+		t.Fatalf("the detail should carry the task: %+v", d.Task)
+	}
+
+	// The agent is working now: it cannot be sent back again.
+	if _, err := e.svc.SendBack(ctx, e.owner, e.pid(), mr.ID, SendBackInput{Message: "More."}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected ErrInvalidState while the agent works, got %v", err)
+	}
+	if _, err := e.svc.SendBack(ctx, e.stranger, e.pid(), mr.ID, SendBackInput{Message: "x"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected another user refused, got %v", err)
+	}
+}
+
+func TestSendBackNeedsATask(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.projects.branches = []agent.RepoRef{{Name: "feature", SHA: "f1"}}
+	mr, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Feature", SourceBranch: "feature"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := e.svc.SendBack(ctx, e.owner, e.pid(), mr.ID, SendBackInput{Message: "x"}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+}
+
+// taskSandbox gives the task a running sandbox on its branch, as a round of
+// its agent has.
+func (e *env) taskSandbox(t *testing.T) int64 {
+	t.Helper()
+	res, err := e.db.Exec(`INSERT INTO workspaces (user_id, name, status, project_id, kind, branch) VALUES (?, 'Task #1', 'running', ?, 'task', 'task/1')`, e.owner, e.pid())
+	if err != nil {
+		t.Fatalf("insert sandbox: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	e.tasks.mu.Lock()
+	e.tasks.tasks[e.taskID].WorkspaceID = id
+	e.tasks.mu.Unlock()
+	return id
+}
+
+func TestTaskAgentReadsAndAnswersTheComments(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	wsID := e.taskSandbox(t)
+	if got := e.svc.Tools(ctx, e.owner, wsID); got != nil {
+		t.Fatal("a task without a merge request gets no merge request tools")
+	}
+
+	mr := e.openTaskMR(t)
+	if got := e.svc.Tools(ctx, e.owner, wsID); len(got) != 2 {
+		t.Fatalf("expected the task agent's tools, got %d", len(got))
+	}
+	if got := e.svc.Tools(ctx, e.stranger, wsID); got != nil {
+		t.Fatal("another user's runs must not get the tools")
+	}
+	if prompt := e.svc.Prompt(ctx, e.owner, wsID); !strings.Contains(prompt, "!1") || !strings.Contains(prompt, taskCommentTool) {
+		t.Fatalf("unexpected prompt: %q", prompt)
+	}
+	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{
+		Verdict: VerdictRequestChanges, Body: "Handle an empty cart.",
+		Comments: []CommentInput{{Path: "cart.go", Line: 12, Body: "This panics on nil."}},
+	}); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	d, _ := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	lineComment := d.Comments[0]
+
+	result, _ := e.tool(e.owner, wsID, readCommentsTool, `{}`)
+	if result.IsError {
+		t.Fatalf("read: %+v", result)
+	}
+	var read struct {
+		Reviews []struct {
+			Author  string `json:"author"`
+			Verdict string `json:"verdict"`
+			Body    string `json:"body"`
+		} `json:"reviews"`
+		Comments []struct {
+			ID       int64  `json:"id"`
+			Author   string `json:"author"`
+			Path     string `json:"path"`
+			Line     int    `json:"line"`
+			Body     string `json:"body"`
+			ReplyTo  int64  `json:"reply_to"`
+			Outdated bool   `json:"outdated"`
+		} `json:"comments"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &read); err != nil {
+		t.Fatalf("decode %s: %v", result.Content, err)
+	}
+	if len(read.Reviews) != 1 || read.Reviews[0].Verdict != "request_changes" || len(read.Comments) != 1 || read.Comments[0].ID != lineComment.ID || read.Comments[0].Path != "cart.go" {
+		t.Fatalf("unexpected discussion: %s", result.Content)
+	}
+
+	reply, _ := e.tool(e.owner, wsID, taskCommentTool, fmt.Sprintf(`{"reply_to":%d,"body":"Added a nil check."}`, lineComment.ID))
+	if reply.IsError {
+		t.Fatalf("reply: %+v", reply)
+	}
+	if general, _ := e.tool(e.owner, wsID, taskCommentTool, `{"body":"Ready for another look."}`); general.IsError {
+		t.Fatalf("comment: %+v", general)
+	}
+	d, _ = e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	if len(d.Comments) != 3 {
+		t.Fatalf("expected two task agent comments, got %+v", d.Comments)
+	}
+	answer, general := d.Comments[1], d.Comments[2]
+	if answer.Author != AuthorTaskAgent || answer.ReplyTo != lineComment.ID || answer.Path != "cart.go" || answer.Line != 12 || answer.ReviewID != 0 {
+		t.Fatalf("a reply should sit with its comment: %+v", answer)
+	}
+	if general.ReplyTo != 0 || general.Path != "" || general.HeadSHA != "head1" {
+		t.Fatalf("unexpected general comment: %+v", general)
+	}
+	// A reply to a reply answers the thread.
+	if r, _ := e.tool(e.owner, wsID, taskCommentTool, fmt.Sprintf(`{"reply_to":%d,"body":"And a test."}`, answer.ID)); r.IsError {
+		t.Fatalf("reply to reply: %+v", r)
+	}
+	if d, _ = e.svc.Get(ctx, e.owner, e.pid(), mr.ID); d.Comments[3].ReplyTo != lineComment.ID {
+		t.Fatalf("expected the thread's first comment as reply_to: %+v", d.Comments[3])
+	}
+
+	for _, args := range []string{`{"body":"  "}`, `{"reply_to":999,"body":"x"}`, `{"body":"` + strings.Repeat("x", maxCommentBytes+1) + `"}`} {
+		if r, _ := e.tool(e.owner, wsID, taskCommentTool, args); !r.IsError {
+			t.Errorf("%.40s: expected refused, got %+v", args, r)
+		}
+	}
+	if r, _ := e.tool(e.stranger, wsID, taskCommentTool, `{"body":"x"}`); !r.IsError {
+		t.Fatalf("another user must not comment: %+v", r)
+	}
+
+	// Once the sandbox is no longer the task's, it loses the tools.
+	e.tasks.mu.Lock()
+	e.tasks.tasks[e.taskID].WorkspaceID = 0
+	e.tasks.mu.Unlock()
+	if got := e.svc.Tools(ctx, e.owner, wsID); got != nil {
+		t.Fatal("a sandbox the task no longer has must not get the tools")
+	}
+	if r, _ := e.tool(e.owner, wsID, taskCommentTool, `{"body":"x"}`); !r.IsError {
+		t.Fatalf("expected refused: %+v", r)
+	}
+}
+
+func TestReReviewIsToldAboutEarlierReviews(t *testing.T) {
+	e := setup(t)
+	mr := e.openTaskMR(t)
+	first := e.startAgentReview(t, mr, AgentReviewInput{})
+	if prompt := e.runs.started()[0].Turns[0].Text(); strings.Contains(prompt, "Earlier reviews") {
+		t.Fatalf("a first review has no earlier reviews:\n%s", prompt)
+	}
+	e.tool(e.owner, first.WorkspaceID, submitTool, `{"verdict":"request_changes","body":"Needs tests."}`)
+	e.runs.finish(first.RunID, domain.AgentRunCompleted, "")
+	waitFor(t, "the first review sandbox to stop", func() bool { stopped, _ := e.workspaces.calls(); return len(stopped) == 1 })
+
+	second := e.startAgentReview(t, mr, AgentReviewInput{})
+	if prompt := e.runs.started()[1].Turns[0].Text(); !strings.Contains(prompt, "Earlier reviews") || !strings.Contains(prompt, readCommentsTool) {
+		t.Fatalf("a re-review should be pointed at the earlier reviews:\n%s", prompt)
+	}
+	result, _ := e.tool(e.owner, second.WorkspaceID, readCommentsTool, `{}`)
+	if result.IsError || !strings.Contains(result.Content, "Needs tests.") || !strings.Contains(result.Content, `"review_agent"`) {
+		t.Fatalf("the review agent should read the earlier review: %+v", result)
+	}
 }

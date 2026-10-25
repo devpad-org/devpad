@@ -133,6 +133,11 @@
   background: color-mix(in srgb, var(--accent-purple) 16%, transparent);
 }
 
+.avatar-task_agent {
+  color: var(--accent-green);
+  background: color-mix(in srgb, var(--accent-green) 16%, transparent);
+}
+
 .tag {
   padding: 0 6px;
   border-radius: var(--radius-sm);

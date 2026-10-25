@@ -87,6 +87,10 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	body := mergeRequestResponse(d.MergeRequest)
 	body["reviews"], body["comments"] = reviews, comments
 	body["ahead"], body["behind"] = d.Ahead, d.Behind
+	body["task"] = nil
+	if d.Task != nil {
+		body["task"] = taskSummaryResponse(d.Task)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"mergeRequest": body})
 }
 
@@ -218,6 +222,27 @@ func (h *Handler) HandleResolveConflicts(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// HandleSendBack starts the task's agent again on the merge request's
+// feedback.
+func (h *Handler) HandleSendBack(w http.ResponseWriter, r *http.Request) {
+	user, projectID, mrID, ok := params(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Message string `json:"message"`
+	}
+	if r.ContentLength != 0 && !decode(w, r, &req) {
+		return
+	}
+	t, err := h.service.SendBack(r.Context(), user.ID, projectID, mrID, SendBackInput(req))
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"task": taskSummaryResponse(t)})
+}
+
 func params(w http.ResponseWriter, r *http.Request) (*auth.User, int64, int64, bool) {
 	projectID, ok := pathID(w, r, "id")
 	if !ok {
@@ -299,6 +324,7 @@ func reviewResponse(rv *Review) map[string]any {
 		"runId":       rv.RunID,
 		"agentId":     rv.AgentID,
 		"model":       rv.Model,
+		"effort":      rv.Effort,
 		"autoFix":     rv.AutoFix,
 		"error":       rv.Error,
 		"createdAt":   rv.CreatedAt,
@@ -310,12 +336,23 @@ func commentResponse(c *Comment) map[string]any {
 	return map[string]any{
 		"id":        c.ID,
 		"reviewId":  c.ReviewID,
+		"replyTo":   c.ReplyTo,
 		"author":    c.Author,
 		"path":      c.Path,
 		"line":      c.Line,
 		"body":      c.Body,
 		"headSha":   c.HeadSHA,
 		"createdAt": c.CreatedAt,
+	}
+}
+
+// taskSummaryResponse is what a merge request shows of its task.
+func taskSummaryResponse(t *task.Task) map[string]any {
+	return map[string]any{
+		"id":          t.ID,
+		"status":      t.Status,
+		"workspaceId": t.WorkspaceID,
+		"error":       t.Error,
 	}
 }
 

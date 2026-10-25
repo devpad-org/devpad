@@ -3,6 +3,8 @@ package mergerequest
 import (
 	"errors"
 	"time"
+
+	"github.com/devpad-org/devpad/internal/task"
 )
 
 // Status is where a merge request is in its lifecycle.
@@ -18,8 +20,11 @@ const (
 type Author string
 
 const (
-	AuthorUser  Author = "user"
+	AuthorUser Author = "user"
+	// AuthorAgent is a review agent.
 	AuthorAgent Author = "agent"
+	// AuthorTaskAgent is the agent working on the merge request's task.
+	AuthorTaskAgent Author = "task_agent"
 )
 
 // ReviewStatus tracks an agent review from start to submission.
@@ -49,6 +54,12 @@ const (
 	maxCommentBytes      = 10_000
 	maxReviewBodyBytes   = 50_000
 	maxCommentsPerReview = 100
+	// maxTaskAgentComments bounds the comments a task's agent can leave on
+	// one merge request over all its rounds.
+	maxTaskAgentComments = 500
+	// maxSendBackBytes bounds the feedback sent back to a task's agent; the
+	// agent can read the rest with its merge request tools.
+	maxSendBackBytes = 100_000
 )
 
 var (
@@ -106,7 +117,10 @@ type Comment struct {
 	ID             int64
 	MergeRequestID int64
 	ReviewID       int64
-	Author         Author
+	// ReplyTo is the first comment of the thread this one answers. A reply
+	// sits where that comment does: same path, line and head.
+	ReplyTo int64
+	Author  Author
 	Path           string
 	Line           int
 	Body           string
@@ -119,6 +133,9 @@ type Detail struct {
 	MergeRequest *MergeRequest
 	Reviews      []*Review
 	Comments     []*Comment
+	// Task is the merge request's task, nil when it has none or the task is
+	// gone.
+	Task *task.Task
 	// Ahead and Behind count commits relative to the target branch; they are
 	// only filled in for open merge requests.
 	Ahead, Behind int
@@ -154,6 +171,13 @@ type AgentReviewInput struct {
 	Model   string
 	Effort  string
 	AutoFix bool
+}
+
+// SendBackInput sends a merge request back to its task's agent.
+type SendBackInput struct {
+	// Message is the user's note to the agent, kept on the merge request as
+	// a comment.
+	Message string
 }
 
 // MergeInput merges an open merge request.

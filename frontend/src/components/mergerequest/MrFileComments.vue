@@ -3,7 +3,7 @@ import { nextTick, ref, watch } from 'vue'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
-import { authorName } from './format'
+import { authorIcon, authorName } from './format'
 import { useMergeRequest } from './useMergeRequest'
 
 // The selected file's comments, the user's pending line comments, and the
@@ -38,12 +38,13 @@ watch(draftFocus, () => void nextTick(() => draftInput.value?.focus()))
       <span v-if="isOpen" class="form-hint">Click a line number in the new version to comment on it.</span>
     </div>
 
-    <div v-for="c in selectedComments" :key="c.id" class="comment" :class="{ outdated: c.headSha !== mr.headSha }">
+    <div v-for="c in selectedComments" :key="c.id" class="comment" :class="{ outdated: c.headSha !== mr.headSha, reply: c.replyTo }">
       <div class="comment-meta">
         <span class="avatar avatar-sm" :class="`avatar-${c.author}`">
-          <MrIcon :name="c.author === 'agent' ? 'bot' : 'user'" :size="11" />
+          <MrIcon :name="authorIcon(c.author)" :size="11" />
         </span>
         <span class="comment-author">{{ authorName(c.author) }}</span>
+        <span v-if="c.replyTo" class="muted">replied</span>
         <button class="line-chip line-chip-button" :title="`Show line ${c.line}`" @click="selectFile(c.path, c.line)">L{{ c.line }}</button>
         <span v-if="c.headSha !== mr.headSha" class="tag tag-outdated">outdated</span>
         <span class="muted comment-time" :title="fullTime(c.createdAt)">{{ timeAgo(c.createdAt) }}</span>
@@ -128,6 +129,11 @@ watch(draftFocus, () => void nextTick(() => draftInput.value?.focus()))
 
 .comment.outdated {
   opacity: 0.75;
+}
+
+/* A reply sits indented under the comment it answers. */
+.comment.reply {
+  margin-left: var(--space-5);
 }
 
 .comment.draft {

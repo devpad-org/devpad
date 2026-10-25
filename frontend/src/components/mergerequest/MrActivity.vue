@@ -2,12 +2,13 @@
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
-import { authorName, reviewAction, reviewIcon, reviewTone, shortSha } from './format'
+import MrReplies from './MrReplies.vue'
+import { authorIcon, authorName, reviewAction, reviewIcon, reviewTone, shortSha } from './format'
 import { useMergeRequest } from './useMergeRequest'
 
 // The merge request's timeline: opened, each review with its line comments,
-// and how it ended.
-const { mr, isOpen, timelineReviews, statusIcon, reviewComments, jumpToComment } = useMergeRequest()
+// comments on the whole change, the replies to both, and how it ended.
+const { mr, isOpen, timeline, repliesByComment, statusIcon, reviewComments, jumpToComment } = useMergeRequest()
 </script>
 
 <template>
@@ -23,51 +24,80 @@ const { mr, isOpen, timelineReviews, statusIcon, reviewComments, jumpToComment }
         </span>
       </li>
 
-      <li v-for="review in timelineReviews" :key="review.id" class="event">
-        <span class="event-node" :class="`tone-${reviewTone(review)}`">
-          <MrIcon :name="reviewIcon(review)" :size="13" />
-        </span>
-        <article class="card review-card" :class="`edge-${reviewTone(review)}`">
-          <div class="card-header">
-            <span class="avatar" :class="`avatar-${review.author}`">
-              <MrIcon :name="review.author === 'agent' ? 'bot' : 'user'" :size="13" />
-            </span>
-            <span class="card-header-text">
-              <strong>{{ authorName(review.author) }}</strong>
-              <span>{{ reviewAction(review) }}</span>
-              <span class="muted" :title="fullTime(review.createdAt)">&middot; {{ timeAgo(review.createdAt) }}</span>
-            </span>
-            <span class="card-header-end">
-              <span v-if="review.model" class="tag">{{ review.model }}</span>
-              <span v-if="review.headSha && review.headSha !== mr.headSha" class="tag tag-outdated" :title="`Reviewed ${shortSha(review.headSha)}`">outdated</span>
-              <span v-if="review.status === 'pending'" class="spinner spinner-sm" />
-            </span>
-          </div>
-          <div v-if="review.error || review.body || reviewComments(review).length || (review.workspaceId && review.status === 'pending')" class="card-body">
-            <p v-if="review.error" class="notice notice-error">{{ review.error }}</p>
-            <MarkdownMessage v-if="review.body" :content="review.body" />
-            <div v-if="reviewComments(review).length" class="thread-list">
-              <div v-for="c in reviewComments(review)" :key="c.id" class="thread">
-                <button class="thread-location" :title="`Open ${c.path} at line ${c.line}`" @click="jumpToComment(c.path, c.line)">
-                  <MrIcon name="file" :size="12" />
-                  <span class="mono">{{ c.path }}</span>
-                  <span class="line-chip">L{{ c.line }}</span>
-                  <MrIcon name="chevron-right" :size="12" class="thread-go" />
-                </button>
-                <div class="thread-body"><MarkdownMessage :content="c.body" /></div>
-              </div>
+      <template v-for="item in timeline" :key="item.kind === 'review' ? `review-${item.review.id}` : `comment-${item.comment.id}`">
+        <li v-if="item.kind === 'review'" class="event">
+          <span class="event-node" :class="`tone-${reviewTone(item.review)}`">
+            <MrIcon :name="reviewIcon(item.review)" :size="13" />
+          </span>
+          <article class="card review-card" :class="`edge-${reviewTone(item.review)}`">
+            <div class="card-header">
+              <span class="avatar" :class="`avatar-${item.review.author}`">
+                <MrIcon :name="authorIcon(item.review.author)" :size="13" />
+              </span>
+              <span class="card-header-text">
+                <strong>{{ authorName(item.review.author) }}</strong>
+                <span>{{ reviewAction(item.review) }}</span>
+                <span class="muted" :title="fullTime(item.review.createdAt)">&middot; {{ timeAgo(item.review.createdAt) }}</span>
+              </span>
+              <span class="card-header-end">
+                <span v-if="item.review.model" class="tag">{{ item.review.model }}</span>
+                <span v-if="item.review.headSha && item.review.headSha !== mr.headSha" class="tag tag-outdated" :title="`Reviewed ${shortSha(item.review.headSha)}`">outdated</span>
+                <span v-if="item.review.status === 'pending'" class="spinner spinner-sm" />
+              </span>
             </div>
-            <RouterLink
-              v-if="review.workspaceId && review.status === 'pending'"
-              class="btn btn-secondary btn-sm watch-link"
-              :to="{ name: 'ide', params: { id: review.workspaceId } }"
+            <div
+              v-if="item.review.error || item.review.body || reviewComments(item.review).length || (item.review.workspaceId && item.review.status === 'pending')"
+              class="card-body"
             >
-              <MrIcon name="terminal" :size="13" />
-              Watch in sandbox
-            </RouterLink>
-          </div>
-        </article>
-      </li>
+              <p v-if="item.review.error" class="notice notice-error">{{ item.review.error }}</p>
+              <MarkdownMessage v-if="item.review.body" :content="item.review.body" />
+              <div v-if="reviewComments(item.review).length" class="thread-list">
+                <div v-for="c in reviewComments(item.review)" :key="c.id" class="thread">
+                  <button class="thread-location" :title="`Open ${c.path} at line ${c.line}`" @click="jumpToComment(c.path, c.line)">
+                    <MrIcon name="file" :size="12" />
+                    <span class="mono">{{ c.path }}</span>
+                    <span class="line-chip">L{{ c.line }}</span>
+                    <MrIcon name="chevron-right" :size="12" class="thread-go" />
+                  </button>
+                  <div class="thread-body"><MarkdownMessage :content="c.body" /></div>
+                  <MrReplies v-if="repliesByComment.get(c.id)" :replies="repliesByComment.get(c.id)!" />
+                </div>
+              </div>
+              <RouterLink
+                v-if="item.review.workspaceId && item.review.status === 'pending'"
+                class="btn btn-secondary btn-sm watch-link"
+                :to="{ name: 'ide', params: { id: item.review.workspaceId } }"
+              >
+                <MrIcon name="terminal" :size="13" />
+                Watch in sandbox
+              </RouterLink>
+            </div>
+          </article>
+        </li>
+
+        <li v-else class="event">
+          <span class="event-node tone-neutral">
+            <MrIcon name="comment" :size="13" />
+          </span>
+          <article class="card comment-card">
+            <div class="card-header">
+              <span class="avatar" :class="`avatar-${item.comment.author}`">
+                <MrIcon :name="authorIcon(item.comment.author)" :size="13" />
+              </span>
+              <span class="card-header-text">
+                <strong>{{ authorName(item.comment.author) }}</strong>
+                <span>commented</span>
+                <span class="muted" :title="fullTime(item.comment.createdAt)">&middot; {{ timeAgo(item.comment.createdAt) }}</span>
+              </span>
+              <span class="card-header-end">
+                <span v-if="item.comment.headSha && item.comment.headSha !== mr.headSha" class="tag tag-outdated" :title="`On ${shortSha(item.comment.headSha)}`">outdated</span>
+              </span>
+            </div>
+            <div class="card-body"><MarkdownMessage :content="item.comment.body" /></div>
+            <MrReplies v-if="repliesByComment.get(item.comment.id)" :replies="repliesByComment.get(item.comment.id)!" />
+          </article>
+        </li>
+      </template>
 
       <li v-if="mr.status !== 'open'" class="event event-small">
         <span class="event-node" :class="mr.status === 'merged' ? 'tone-success' : 'tone-neutral'">
@@ -85,7 +115,7 @@ const { mr, isOpen, timelineReviews, statusIcon, reviewComments, jumpToComment }
         </span>
       </li>
     </ol>
-    <p v-if="timelineReviews.length === 0 && isOpen" class="empty-text timeline-empty">
+    <p v-if="timeline.length === 0 && isOpen" class="empty-text timeline-empty">
       No reviews yet. Use <strong>Review</strong> above, or start an agent review from the sidebar.
     </p>
   </section>
@@ -157,6 +187,10 @@ const { mr, isOpen, timelineReviews, statusIcon, reviewComments, jumpToComment }
 
 .review-card {
   border-left-width: 2px;
+}
+
+.comment-card {
+  overflow: hidden;
 }
 
 .edge-success {
@@ -233,6 +267,11 @@ const { mr, isOpen, timelineReviews, statusIcon, reviewComments, jumpToComment }
 .thread-body {
   padding: var(--space-2) var(--space-3);
   font-size: 0.82rem;
+}
+
+/* Replies to a line comment sit inside its thread. */
+.thread :deep(.replies) {
+  background: color-mix(in srgb, var(--bg-raised) 50%, transparent);
 }
 
 .watch-link {

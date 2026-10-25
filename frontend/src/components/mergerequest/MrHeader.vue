@@ -1,10 +1,21 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
+import MrSendBackPopover from './MrSendBackPopover.vue'
 import { useMergeRequest } from './useMergeRequest'
 
-// The merge request's title, state and branches, with the close action.
-const { mr, isOpen, busy, statusIcon, close } = useMergeRequest()
+// The merge request's title, state and branches, with the actions that move
+// it along: review again, send back to the task's agent, close.
+const { mr, isOpen, busy, statusIcon, pendingAgentReview, latestAgentReview, canSendBack, taskWorking, close, rereview } = useMergeRequest()
+
+// The task's agent is about to change the branch, so a review now would be
+// of a commit on its way out.
+const rereviewHint = computed(() => {
+  if (pendingAgentReview.value) return 'A review agent is reviewing it'
+  if (taskWorking.value) return "Wait for the task's agent to finish its changes"
+  return `Review the latest commit again with ${latestAgentReview.value?.model}`
+})
 </script>
 
 <template>
@@ -32,6 +43,18 @@ const { mr, isOpen, busy, statusIcon, close } = useMergeRequest()
       </div>
     </div>
     <div v-if="isOpen" class="header-actions">
+      <button
+        v-if="latestAgentReview"
+        class="btn btn-secondary"
+        :disabled="busy || pendingAgentReview || taskWorking"
+        :title="rereviewHint"
+        @click="rereview"
+      >
+        <span v-if="pendingAgentReview" class="spinner spinner-sm" />
+        <MrIcon v-else name="retry" :size="14" />
+        Re-review
+      </button>
+      <MrSendBackPopover v-if="canSendBack" />
       <button class="btn btn-secondary" :disabled="busy" @click="close">Close merge request</button>
     </div>
   </header>

@@ -1,5 +1,5 @@
 import { apiClient, ApiError } from './client'
-import type { AgentSettings } from './tasks'
+import type { AgentSettings, TaskStatus } from './tasks'
 import type { RepoDiff } from './projects'
 
 export type MergeRequestStatus = 'open' | 'merged' | 'closed'
@@ -34,16 +34,22 @@ export interface Review {
   runId: number
   agentId: string
   model: string
+  effort: string
   autoFix: boolean
   error: string
   createdAt: string
   updatedAt: string
 }
 
+// task_agent is the agent working on the merge request's task.
+export type CommentAuthor = Review['author'] | 'task_agent'
+
 export interface ReviewComment {
   id: number
   reviewId: number
-  author: 'user' | 'agent'
+  // The first comment of the thread this one answers, or 0.
+  replyTo: number
+  author: CommentAuthor
   path: string
   line: number
   body: string
@@ -51,11 +57,20 @@ export interface ReviewComment {
   createdAt: string
 }
 
+// What a merge request shows of its task.
+export interface MergeRequestTask {
+  id: number
+  status: TaskStatus
+  workspaceId: number
+  error: string
+}
+
 export interface MergeRequestDetail extends MergeRequest {
   reviews: Review[]
   comments: ReviewComment[]
   ahead: number
   behind: number
+  task: MergeRequestTask | null
 }
 
 export interface CommentInput {
@@ -106,6 +121,11 @@ export const mergeRequestApi = {
 
   resolveConflicts(projectId: number, id: number, files: string[]): Promise<void> {
     return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/resolve-conflicts`, { files })
+  },
+
+  // Starts the task's agent again on the feedback, with an optional note.
+  sendBack(projectId: number, id: number, input: { message: string }): Promise<{ task: MergeRequestTask }> {
+    return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/send-back`, input)
   },
 }
 

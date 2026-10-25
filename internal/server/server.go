@@ -485,6 +485,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/merge", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleMerge)))
 	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/close", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleClose)))
 	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/resolve-conflicts", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleResolveConflicts)))
+	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/send-back", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleSendBack)))
 
 	// AI API routes
 	mux.Handle("GET /api/ai/models", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListModels)))

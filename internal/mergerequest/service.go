@@ -31,14 +31,20 @@ type Service interface {
 	// ResolveConflicts asks the task's agent to merge the target branch into
 	// its branch and resolve the conflicts a merge ran into.
 	ResolveConflicts(ctx context.Context, userID, projectID, mrID int64, files []string) error
+	// SendBack starts the task's agent again on the feedback left on the
+	// merge request.
+	SendBack(ctx context.Context, userID, projectID, mrID int64, in SendBackInput) (*task.Task, error)
 
 	// TaskReadyForReview opens or updates the task's merge request.
 	TaskReadyForReview(ctx context.Context, t *task.Task, summary string)
 	// BranchPublished moves the open merge request for a branch published
 	// from the project workspace to the new commit.
 	BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string)
-	// Tools and ExecuteTool give review agents their review tools.
+	// Tools and ExecuteTool give review agents their review tools, and task
+	// agents the tools to read and answer their merge request's comments,
+	// which Prompt tells them about.
 	aitools.ToolProvider
+	aitools.PromptProvider
 	// RunFinished is the agent runner's completion hook.
 	RunFinished(run domain.AgentRun)
 	// Reconcile settles agent reviews interrupted by a server restart.
@@ -59,8 +65,10 @@ type Projects interface {
 	Push(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
 }
 
-// Workspaces is the workspace lifecycle surface review sandboxes need.
+// Workspaces is the workspace surface review sandboxes, and the tools of
+// task agents, need.
 type Workspaces interface {
+	Get(ctx context.Context, userID, workspaceID int64) (*workspace.Workspace, error)
 	Stop(ctx context.Context, userID, workspaceID int64) (*workspace.Workspace, error)
 	Delete(ctx context.Context, userID, workspaceID int64) error
 }
@@ -68,6 +76,7 @@ type Workspaces interface {
 // Tasks is the task service surface merge requests need.
 type Tasks interface {
 	Get(ctx context.Context, userID, projectID, taskID int64) (*task.Task, error)
+	Start(ctx context.Context, userID, projectID, taskID int64, in task.StartInput) (*task.Task, error)
 	RequestChanges(ctx context.Context, userID, projectID, taskID int64, feedback string, start bool) (*task.Task, error)
 	Merged(ctx context.Context, userID, projectID, taskID int64) (*task.Task, error)
 }
@@ -345,6 +354,13 @@ func (s *service) Get(ctx context.Context, userID, projectID, mrID int64) (*Deta
 	if d.Comments, err = s.repo.ListComments(ctx, mr.ID); err != nil {
 		return nil, err
 	}
+	if mr.TaskID != 0 {
+		if t, err := s.tasks.Get(ctx, userID, projectID, mr.TaskID); err == nil {
+			d.Task = t
+		} else if !errors.Is(err, task.ErrNotFound) {
+			return nil, err
+		}
+	}
 	if mr.Status == StatusOpen {
 		if cmp, err := s.projects.Compare(ctx, userID, projectID, mr.TargetBranch, mr.SourceBranch); err == nil {
 			d.Ahead, d.Behind = cmp.Ahead, cmp.Behind
@@ -440,21 +456,29 @@ func validateComment(path string, line int, body string) error {
 	return nil
 }
 
-// feedback renders a review for the task's agent.
+// feedback renders a review for the task's agent. Line comments carry
+// their IDs, so the agent can reply to them.
 func feedback(rv *Review, comments []*Comment) string {
 	var b strings.Builder
 	who := "The reviewer"
 	if rv.Author == AuthorAgent {
 		who = "A review agent"
 	}
-	fmt.Fprintf(&b, "%s requested changes.\n", who)
+	switch rv.Verdict {
+	case VerdictRequestChanges:
+		fmt.Fprintf(&b, "%s requested changes.\n", who)
+	case VerdictApprove:
+		fmt.Fprintf(&b, "%s approved the change.\n", who)
+	default:
+		fmt.Fprintf(&b, "%s left comments.\n", who)
+	}
 	if rv.Body != "" {
 		b.WriteString("\n" + rv.Body + "\n")
 	}
 	if len(comments) > 0 {
 		b.WriteString("\nLine comments:\n")
 		for _, c := range comments {
-			fmt.Fprintf(&b, "- %s:%d: %s\n", c.Path, c.Line, c.Body)
+			fmt.Fprintf(&b, "- [comment %d] %s:%d: %s\n", c.ID, c.Path, c.Line, c.Body)
 		}
 	}
 	return strings.TrimSpace(b.String())
@@ -678,6 +702,10 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 	if mr.TaskID != 0 {
 		t, _ = s.tasks.Get(ctx, mr.UserID, mr.ProjectID, mr.TaskID)
 	}
+	earlier, err := s.earlierFeedback(ctx, mr, rv)
+	if err != nil {
+		return err
+	}
 	var thinking *domain.ThinkingConfig
 	if rv.Effort != "" {
 		thinking = &domain.ThinkingConfig{Effort: rv.Effort}
@@ -688,7 +716,7 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 		ConversationID: conv.ID,
 		AgentID:        rv.AgentID,
 		Model:          rv.Model,
-		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, reviewPrompt(p, mr, t, rv, ws.Branch, diff, env, setup))},
+		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, reviewPrompt(p, mr, t, rv, ws.Branch, diff, env, setup, earlier))},
 		Thinking:       thinking,
 	})
 	if err != nil {
@@ -704,7 +732,27 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 	return nil
 }
 
-func reviewPrompt(p *project.Project, mr *MergeRequest, t *task.Task, rv *Review, branch string, diff *agent.RepoDiff, env *project.Environment, setup *project.Setup) string {
+// earlierFeedback counts the reviews submitted before rv and the comments
+// left on the merge request, which a re-review should read.
+func (s *service) earlierFeedback(ctx context.Context, mr *MergeRequest, rv *Review) (int, error) {
+	reviews, err := s.repo.ListReviews(ctx, mr.ID)
+	if err != nil {
+		return 0, err
+	}
+	comments, err := s.repo.ListComments(ctx, mr.ID)
+	if err != nil {
+		return 0, err
+	}
+	n := len(comments)
+	for _, r := range reviews {
+		if r.ID != rv.ID && r.Status == ReviewSubmitted {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func reviewPrompt(p *project.Project, mr *MergeRequest, t *task.Task, rv *Review, branch string, diff *agent.RepoDiff, env *project.Environment, setup *project.Setup, earlier int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are reviewing merge request !%d in the project %q: %s\n\n", mr.ID, p.Name, mr.Title)
 	if d := strings.TrimSpace(mr.Description); d != "" {
@@ -738,6 +786,9 @@ func reviewPrompt(p *project.Project, mr *MergeRequest, t *task.Task, rv *Review
 	}
 	if note := project.SetupPrompt(setup); note != "" {
 		b.WriteString(note + "\n")
+	}
+	if earlier > 0 {
+		fmt.Fprintf(&b, "## Earlier reviews\n\nThis merge request has been reviewed before. Read the earlier reviews and comments, and the author's replies, with %s. Check whether the changes they asked for were made, and do not raise again what was addressed or answered convincingly.\n\n", readCommentsTool)
 	}
 	b.WriteString(`## How to review
 
@@ -964,6 +1015,96 @@ func (s *service) ResolveConflicts(ctx context.Context, userID, projectID, mrID 
 	fmt.Fprintf(&b, "\nMerge `devpad/%s` into `%s`, resolve the conflicts keeping both sides' intent, make sure the project's checks pass, and commit the merge.", mr.TargetBranch, mr.SourceBranch)
 	_, err = s.tasks.RequestChanges(ctx, userID, projectID, mr.TaskID, b.String(), true)
 	return err
+}
+
+// SendBack starts the task's agent on the reviews of the merge request's
+// current head that are not approvals, with the user's note, which stays on
+// the merge request as a comment. The agent reads the rest of the discussion,
+// and replies to it, with its merge request tools. It takes no merge request
+// lock: a task publishing its branch holds the task's lock while it takes
+// the merge request's, and the task's lock keeps two sends from both
+// starting the agent.
+func (s *service) SendBack(ctx context.Context, userID, projectID, mrID int64, in SendBackInput) (*task.Task, error) {
+	mr, err := s.getOpen(ctx, userID, projectID, mrID)
+	if err != nil {
+		return nil, err
+	}
+	if mr.TaskID == 0 {
+		return nil, invalid("this merge request has no task to send it back to")
+	}
+	note := strings.TrimSpace(in.Message)
+	if len(note) > maxCommentBytes {
+		return nil, invalid("the note is too long")
+	}
+	t, err := s.tasks.Get(ctx, userID, projectID, mr.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	switch t.Status {
+	case task.StatusInReview, task.StatusChangesRequested, task.StatusFailed:
+	default:
+		return nil, fmt.Errorf("%w: the task is %s", ErrInvalidState, t.Status)
+	}
+	reviews, err := s.repo.ListReviews(ctx, mr.ID)
+	if err != nil {
+		return nil, err
+	}
+	comments, err := s.repo.ListComments(ctx, mr.ID)
+	if err != nil {
+		return nil, err
+	}
+	message, ok := sendBackMessage(mr, reviews, comments, note)
+	if !ok {
+		return nil, invalid("there is no feedback on the current commit to send back; add a note for the agent")
+	}
+	if t, err = s.tasks.Start(ctx, userID, projectID, mr.TaskID, task.StartInput{Message: message}); err != nil {
+		return nil, err
+	}
+	if note != "" {
+		c := &Comment{MergeRequestID: mr.ID, Author: AuthorUser, Body: note, HeadSHA: mr.HeadSHA}
+		if err := s.repo.CreateComment(ctx, c); err != nil {
+			log.Printf("merge request %d: keeping the note sent back to task %d: %v", mr.ID, mr.TaskID, err)
+		}
+	}
+	return t, nil
+}
+
+// sendBackMessage is what SendBack tells the task's agent. It reports false
+// when there is nothing to tell: no note and no feedback on the head.
+func sendBackMessage(mr *MergeRequest, reviews []*Review, comments []*Comment, note string) (string, bool) {
+	var parts []string
+	for _, rv := range reviews {
+		if rv.Status != ReviewSubmitted || rv.Verdict == VerdictApprove || rv.HeadSHA != mr.HeadSHA {
+			continue
+		}
+		var own []*Comment
+		for _, c := range comments {
+			if c.ReviewID == rv.ID {
+				own = append(own, c)
+			}
+		}
+		parts = append(parts, feedback(rv, own))
+	}
+	if note == "" && len(parts) == 0 {
+		return "", false
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Your merge request !%d, %q, was sent back to you.\n", mr.ID, mr.Title)
+	if note != "" {
+		b.WriteString("\n## Note from the user\n\n" + note + "\n")
+	}
+	if len(parts) > 0 {
+		b.WriteString("\n## Reviews of the current version\n")
+		for _, p := range parts {
+			if b.Len()+len(p) > maxSendBackBytes {
+				b.WriteString("\nMore reviews are left out here; read them with " + readCommentsTool + ".\n")
+				break
+			}
+			b.WriteString("\n" + p + "\n")
+		}
+	}
+	fmt.Fprintf(&b, "\nRead the whole discussion, earlier rounds included, with %s. Reply with %s to the comments you address or disagree with.", readCommentsTool, taskCommentTool)
+	return b.String(), true
 }
 
 // Reconcile settles agent reviews that were pending when the server last

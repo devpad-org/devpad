@@ -18,6 +18,10 @@ const NOTICE_MS = 6000
 
 export type Section = 'overview' | 'changes'
 
+// An entry in the activity timeline: a review, or a comment on the whole
+// change that is not part of one.
+export type TimelineItem = { kind: 'review'; at: string; review: Review } | { kind: 'comment'; at: string; comment: ReviewComment }
+
 export interface Check {
   key: string
   tone: Tone
@@ -67,6 +71,10 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   const agentEffort = ref('')
   const autoFix = ref(true)
 
+  const sendBackOpen = ref(false)
+  const sendBackNote = ref('')
+  const sendBackError = ref('')
+
   const strategy = ref<MergeStrategy>('merge')
   const pushAfterMerge = ref(true)
   const conflicts = ref<string[] | null>(null)
@@ -79,6 +87,41 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   const files = computed(() => diff.value?.files ?? [])
   const pendingAgentReview = computed(() => mr.value?.reviews.some((r) => r.author === 'agent' && r.status === 'pending') ?? false)
   const timelineReviews = computed(() => [...(mr.value?.reviews ?? [])].sort((a, b) => a.id - b.id))
+
+  // Replies to each comment that starts a thread, oldest first.
+  const repliesByComment = computed(() => {
+    const byParent = new Map<number, ReviewComment[]>()
+    for (const c of mr.value?.comments ?? []) {
+      if (!c.replyTo) continue
+      const list = byParent.get(c.replyTo) ?? []
+      list.push(c)
+      byParent.set(c.replyTo, list)
+    }
+    for (const list of byParent.values()) list.sort((a, b) => a.id - b.id)
+    return byParent
+  })
+
+  const timeline = computed<TimelineItem[]>(() => {
+    const items: TimelineItem[] = timelineReviews.value.map((review) => ({ kind: 'review', at: review.createdAt, review }))
+    for (const comment of mr.value?.comments ?? []) {
+      if (!comment.reviewId && !comment.replyTo) items.push({ kind: 'comment', at: comment.createdAt, comment })
+    }
+    return items.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+  })
+
+  const task = computed(() => mr.value?.task ?? null)
+  const taskWorking = computed(() => task.value?.status === 'queued' || task.value?.status === 'in_progress')
+  // The task's agent can be sent back while the change waits for review, or
+  // after its last round failed.
+  const canSendBack = computed(
+    () => isOpen.value && ['in_review', 'changes_requested', 'failed'].includes(task.value?.status ?? ''),
+  )
+  // The reviews of the current head sent back with the note: all but approvals.
+  const sendBackReviews = computed(() =>
+    timelineReviews.value.filter((r) => r.status === 'submitted' && r.verdict !== 'approve' && r.headSha === mr.value?.headSha),
+  )
+
+  const latestAgentReview = computed(() => [...timelineReviews.value].reverse().find((r) => r.author === 'agent' && r.status !== 'pending' && r.model) ?? null)
   const totals = computed(() =>
     files.value.reduce((sum, f) => ({ additions: sum.additions + f.additions, deletions: sum.deletions + f.deletions }), {
       additions: 0,
@@ -89,7 +132,9 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   // Unsubmitted review text or line comments, which closing the tab would lose.
   // Only an open merge request can still be reviewed.
   const hasDraft = computed(
-    () => isOpen.value && (reviewBody.value.trim() !== '' || drafts.value.length > 0 || draftBody.value.trim() !== ''),
+    () =>
+      isOpen.value &&
+      (reviewBody.value.trim() !== '' || drafts.value.length > 0 || draftBody.value.trim() !== '' || sendBackNote.value.trim() !== ''),
   )
 
   // Files sorted so each directory's files sit together, as a tree would show them.
@@ -120,7 +165,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
       list.push(c)
       byPath.set(c.path, list)
     }
-    for (const list of byPath.values()) list.sort((a, b) => a.line - b.line || a.id - b.id)
+    // Each reply follows the comment it answers.
+    for (const list of byPath.values()) list.sort((a, b) => a.line - b.line || (a.replyTo || a.id) - (b.replyTo || b.id) || a.id - b.id)
     return byPath
   })
 
@@ -168,6 +214,18 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     }
     if (pendingAgentReview.value) {
       list.push({ key: 'agent', tone: 'active', icon: 'bot', title: 'Agent review in progress', detail: 'An agent is reading the change.', spin: true })
+    }
+    if (taskWorking.value) {
+      list.push({
+        key: 'task',
+        tone: 'active',
+        icon: 'task',
+        title: task.value?.status === 'queued' ? 'Task agent queued' : 'Task agent at work',
+        detail: 'The task agent is working on the feedback; its commits update this merge request when it finishes.',
+        spin: true,
+      })
+    } else if (task.value?.status === 'failed') {
+      list.push({ key: 'task', tone: 'error', icon: 'warning', title: 'The task agent stopped', detail: task.value.error || undefined })
     }
     if (conflicts.value) {
       list.push({
@@ -322,6 +380,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     (status) => {
       if (!status || status === 'open') return
       reviewOpen.value = false
+      sendBackOpen.value = false
       reviewBody.value = ''
       drafts.value = []
       draftLine.value = null
@@ -339,6 +398,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     reviewBody.value = ''
     conflicts.value = null
     reviewOpen.value = false
+    sendBackOpen.value = false
+    sendBackNote.value = ''
     void refresh()
   })
 
@@ -413,6 +474,36 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
       showNotice('A review agent is reading the change.')
       await refreshAll()
     })
+  }
+
+  // Reviews the change again with the last review agent's settings, or the
+  // review agent's defaults when there was none.
+  function rereview() {
+    const last = latestAgentReview.value
+    void act(async () => {
+      await mergeRequestApi.startAgentReview(projectId.value, mrId.value, {
+        agentId: last?.agentId || undefined,
+        model: last?.model || undefined,
+        effort: last?.effort || undefined,
+        autoFix: Boolean(last?.autoFix && mr.value?.taskId),
+      })
+      showNotice('A review agent is reading the change again.')
+      await refreshAll()
+    })
+  }
+
+  function sendBack() {
+    if (!sendBackNote.value.trim() && sendBackReviews.value.length === 0) {
+      sendBackError.value = 'There is no feedback on this commit yet: tell the agent what to change'
+      return
+    }
+    void act(async () => {
+      await mergeRequestApi.sendBack(projectId.value, mrId.value, { message: sendBackNote.value.trim() })
+      sendBackNote.value = ''
+      sendBackOpen.value = false
+      showNotice("Sent back to the task's agent.")
+      await refreshAll()
+    }, sendBackError)
   }
 
   function merge() {
@@ -494,6 +585,9 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     agentModel,
     agentEffort,
     autoFix,
+    sendBackOpen,
+    sendBackNote,
+    sendBackError,
     strategy,
     pushAfterMerge,
     conflicts,
@@ -502,6 +596,13 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     files,
     pendingAgentReview,
     timelineReviews,
+    timeline,
+    repliesByComment,
+    task,
+    taskWorking,
+    canSendBack,
+    sendBackReviews,
+    latestAgentReview,
     totals,
     hasDraft,
     orderedFiles,
@@ -526,6 +627,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     removeDraft,
     submitReview,
     startAgentReview,
+    rereview,
+    sendBack,
     merge,
     resolveConflicts,
     close,

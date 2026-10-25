@@ -24,8 +24,10 @@ type Repository interface {
 	UpdateReview(ctx context.Context, r *Review) error
 
 	CreateComment(ctx context.Context, c *Comment) error
+	GetComment(ctx context.Context, id int64) (*Comment, error)
 	ListComments(ctx context.Context, mergeRequestID int64) ([]*Comment, error)
 	CountReviewComments(ctx context.Context, reviewID int64) (int, error)
+	CountAuthorComments(ctx context.Context, mergeRequestID int64, author Author) (int, error)
 }
 
 type repository struct {
@@ -146,8 +148,8 @@ func (r *repository) UpdateReview(ctx context.Context, rv *Review) error {
 func (r *repository) CreateComment(ctx context.Context, c *Comment) error {
 	now := time.Now()
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO merge_request_comments (merge_request_id, review_id, author, path, line, body, head_sha, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.MergeRequestID, nullableID(c.ReviewID), c.Author, c.Path, c.Line, c.Body, c.HeadSHA, now,
+		`INSERT INTO merge_request_comments (merge_request_id, review_id, reply_to, author, path, line, body, head_sha, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.MergeRequestID, nullableID(c.ReviewID), nullableID(c.ReplyTo), c.Author, c.Path, c.Line, c.Body, c.HeadSHA, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting comment: %w", err)
@@ -159,9 +161,15 @@ func (r *repository) CreateComment(ctx context.Context, c *Comment) error {
 	return nil
 }
 
+const commentColumns = `id, merge_request_id, review_id, reply_to, author, path, line, body, head_sha, created_at`
+
+func (r *repository) GetComment(ctx context.Context, id int64) (*Comment, error) {
+	return oneOrNil(scanComment(r.db.QueryRowContext(ctx, `SELECT `+commentColumns+` FROM merge_request_comments WHERE id = ?`, id)))
+}
+
 func (r *repository) ListComments(ctx context.Context, mergeRequestID int64) ([]*Comment, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, merge_request_id, review_id, author, path, line, body, head_sha, created_at FROM merge_request_comments WHERE merge_request_id = ? ORDER BY id`, mergeRequestID)
+		`SELECT `+commentColumns+` FROM merge_request_comments WHERE merge_request_id = ? ORDER BY id`, mergeRequestID)
 	if err != nil {
 		return nil, fmt.Errorf("listing comments: %w", err)
 	}
@@ -171,6 +179,14 @@ func (r *repository) ListComments(ctx context.Context, mergeRequestID int64) ([]
 func (r *repository) CountReviewComments(ctx context.Context, reviewID int64) (int, error) {
 	var n int
 	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM merge_request_comments WHERE review_id = ?`, reviewID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting comments: %w", err)
+	}
+	return n, nil
+}
+
+func (r *repository) CountAuthorComments(ctx context.Context, mergeRequestID int64, author Author) (int, error) {
+	var n int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM merge_request_comments WHERE merge_request_id = ? AND author = ?`, mergeRequestID, author).Scan(&n); err != nil {
 		return 0, fmt.Errorf("counting comments: %w", err)
 	}
 	return n, nil
@@ -206,11 +222,11 @@ func scanReview(row rowScanner) (*Review, error) {
 
 func scanComment(row rowScanner) (*Comment, error) {
 	var c Comment
-	var reviewID sql.NullInt64
-	if err := row.Scan(&c.ID, &c.MergeRequestID, &reviewID, &c.Author, &c.Path, &c.Line, &c.Body, &c.HeadSHA, &c.CreatedAt); err != nil {
+	var reviewID, replyTo sql.NullInt64
+	if err := row.Scan(&c.ID, &c.MergeRequestID, &reviewID, &replyTo, &c.Author, &c.Path, &c.Line, &c.Body, &c.HeadSHA, &c.CreatedAt); err != nil {
 		return nil, err
 	}
-	c.ReviewID = reviewID.Int64
+	c.ReviewID, c.ReplyTo = reviewID.Int64, replyTo.Int64
 	return &c, nil
 }
 

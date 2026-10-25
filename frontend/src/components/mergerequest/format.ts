@@ -1,5 +1,5 @@
 import type { RepoDiffFile } from '@/api/projects'
-import type { MergeStrategy, Review, Verdict } from '@/api/mergeRequests'
+import type { CommentAuthor, MergeStrategy, Review, Verdict } from '@/api/mergeRequests'
 import type { MrIconName } from '@/components/project/MrIcon.vue'
 
 // Presentation helpers shared by the merge request components.
@@ -32,8 +32,14 @@ export function baseName(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1)
 }
 
-export function authorName(author: Author): string {
-  return author === 'agent' ? 'Agent' : 'You'
+export function authorName(author: CommentAuthor): string {
+  if (author === 'agent') return 'Review agent'
+  if (author === 'task_agent') return 'Task agent'
+  return 'You'
+}
+
+export function authorIcon(author: CommentAuthor): MrIconName {
+  return author === 'user' ? 'user' : 'bot'
 }
 
 export function shortSha(sha: string): string {

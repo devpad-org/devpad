@@ -130,6 +130,14 @@ export function toolFriendlyName(name: string): string {
       return 'List merge requests'
     case 'get_merge_request':
       return 'Read merge request'
+    case 'comment_on_line':
+      return 'Comment on line'
+    case 'submit_review':
+      return 'Submit review'
+    case 'read_merge_request_comments':
+      return 'Read review comments'
+    case 'comment_on_merge_request':
+      return 'Comment on merge request'
     default:
       return name.replace(/_/g, ' ')
   }
