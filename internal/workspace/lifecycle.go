@@ -27,6 +27,7 @@ func (s *service) CreateSandbox(ctx context.Context, userID int64, spec SandboxS
 		ProjectID:   spec.ProjectID,
 		Kind:        spec.Kind,
 		Branch:      spec.Branch,
+		Image:       spec.Image,
 	})
 }
 
@@ -42,6 +43,7 @@ func (s *service) CreateProjectWorkspace(ctx context.Context, userID int64, spec
 		Description: spec.Description,
 		ProjectID:   spec.ProjectID,
 		Kind:        KindInteractive,
+		Image:       spec.Image,
 	})
 }
 
@@ -86,22 +88,8 @@ func (s *service) create(ctx context.Context, ws *Workspace) (*Workspace, error)
 		return nil, fmt.Errorf("creating volume: %w", err)
 	}
 
-	containerEnv := []string{
-		fmt.Sprintf("AGENT_AUTH_TOKEN=%s", agentToken),
-	}
-
-	// Inject sidecar service env vars (connection info) if any
-	// services are already attached.
-	if s.sidecar != nil {
-		svcEnv, err := s.sidecar.EnvVars(ctx, ws.ID, networkName)
-		if err != nil {
-			log.Printf("workspace %d: failed to get sidecar env vars: %v", ws.ID, err)
-		} else {
-			containerEnv = append(containerEnv, svcEnv...)
-		}
-	}
-
-	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), volumeName, networkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
+	containerEnv := s.containerEnv(ctx, ws.ID, agentToken, networkName)
+	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.Image, volumeName, networkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
 	if err != nil {
 		_ = s.container.RemoveVolume(ctx, volumeName)
 		_ = s.container.RemoveNetwork(ctx, networkName)
@@ -138,6 +126,22 @@ func (s *service) create(ctx context.Context, ws *Workspace) (*Workspace, error)
 	s.injectUserSSHKeys(ctx, ws)
 
 	return ws, nil
+}
+
+// containerEnv is the environment a workspace's container starts with: the
+// agent's token and, if any services are already attached, how to reach
+// them.
+func (s *service) containerEnv(ctx context.Context, workspaceID int64, agentToken, networkName string) []string {
+	env := []string{fmt.Sprintf("AGENT_AUTH_TOKEN=%s", agentToken)}
+	if s.sidecar != nil {
+		svcEnv, err := s.sidecar.EnvVars(ctx, workspaceID, networkName)
+		if err != nil {
+			log.Printf("workspace %d: failed to get sidecar env vars: %v", workspaceID, err)
+		} else {
+			env = append(env, svcEnv...)
+		}
+	}
+	return env
 }
 
 func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {

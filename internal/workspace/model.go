@@ -76,8 +76,11 @@ type Workspace struct {
 	Kind           Kind
 	Branch         string // the project branch a sandbox owns; empty otherwise
 	RepoSeeded     bool   // devpad has seeded the project repo into it
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// Image is the image its container was made from; empty means
+	// container.WorkspaceImage.
+	Image     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // IsSandbox reports whether the workspace is a project sandbox run by an AI
@@ -100,18 +103,22 @@ func (ws *Workspace) ReceivesUserCredentials() bool {
 	return ws.Kind == KindInteractive && ws.ProjectID == 0
 }
 
-// ProjectWorkspaceSpec describes a project workspace to create.
+// ProjectWorkspaceSpec describes a project workspace to create. An empty
+// Image means container.WorkspaceImage.
 type ProjectWorkspaceSpec struct {
 	ProjectID   int64
 	Name        string
 	Description string
+	Image       string
 }
 
-// SandboxSpec describes a project sandbox to create.
+// SandboxSpec describes a project sandbox to create. An empty Image means
+// container.WorkspaceImage.
 type SandboxSpec struct {
 	ProjectID   int64
 	Kind        Kind
 	Branch      string
 	Name        string
 	Description string
+	Image       string
 }

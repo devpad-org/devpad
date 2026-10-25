@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -124,5 +125,78 @@ func TestProjectWorkspaceOperationsRejectOtherWorkspaces(t *testing.T) {
 	}
 	if _, err := svc.BundleProjectBranch(ctx, 2, pw.ID, "main"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected ErrForbidden for another user, got %v", err)
+	}
+}
+
+func TestRebuildProjectContainerSwapsContainersKeepingTheVolume(t *testing.T) {
+	svc, _ := setupSandboxService(t)
+	cm := svc.(*service).container.(*mockContainerManager)
+	ctx := context.Background()
+	ws, err := svc.CreateProjectWorkspace(ctx, 1, ProjectWorkspaceSpec{ProjectID: 7, Name: "proj", Image: "devpad-project-7:aaa"})
+	if err != nil {
+		t.Fatalf("create project workspace: %v", err)
+	}
+	id := strconv.FormatInt(ws.ID, 10)
+	if got := cm.created[len(cm.created)-1]; got != id+" devpad-project-7:aaa" {
+		t.Fatalf("expected the container made from the project's image, got %q", got)
+	}
+	oldID := ws.ContainerID
+
+	rebuilt, err := svc.RebuildProjectContainer(ctx, 1, ws.ID, "devpad-project-7:bbb")
+	if err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	newID := "mock-container-" + id + "-next"
+	if rebuilt.ContainerID != newID || rebuilt.Image != "devpad-project-7:bbb" || rebuilt.Status != StatusRunning || rebuilt.VolumeName != ws.VolumeName {
+		t.Fatalf("unexpected rebuilt workspace: %+v", rebuilt)
+	}
+	if got := cm.created[len(cm.created)-1]; got != id+"-next devpad-project-7:bbb" {
+		t.Fatalf("expected the new container made before the old went, got %q", got)
+	}
+	if len(cm.removed) != 1 || cm.removed[0] != oldID {
+		t.Fatalf("expected the old container removed, got %v", cm.removed)
+	}
+	if len(cm.renamed) != 1 || cm.renamed[0] != newID+" devpad-ws-"+id {
+		t.Fatalf("expected the new container given the workspace's name, got %v", cm.renamed)
+	}
+	if cm.started[len(cm.started)-1] != newID {
+		t.Fatalf("expected the new container started, got %v", cm.started)
+	}
+	stored, err := svc.Get(ctx, 1, ws.ID)
+	if err != nil || stored.ContainerID != newID || stored.Image != "devpad-project-7:bbb" {
+		t.Fatalf("expected the new container recorded: %+v %v", stored, err)
+	}
+}
+
+func TestRebuildProjectContainerLeavesTheWorkspaceWhenTheOldContainerStays(t *testing.T) {
+	svc, _ := setupSandboxService(t)
+	cm := svc.(*service).container.(*mockContainerManager)
+	ctx := context.Background()
+	ws, err := svc.CreateProjectWorkspace(ctx, 1, ProjectWorkspaceSpec{ProjectID: 7, Name: "proj"})
+	if err != nil {
+		t.Fatalf("create project workspace: %v", err)
+	}
+	cm.removeErr = errors.New("docker unavailable")
+	if _, err := svc.RebuildProjectContainer(ctx, 1, ws.ID, "devpad-project-7:bbb"); err == nil {
+		t.Fatal("expected the rebuild to fail")
+	}
+	stored, _ := svc.Get(ctx, 1, ws.ID)
+	if stored.ContainerID != ws.ContainerID || stored.Image != "" {
+		t.Fatalf("a failed rebuild changed the workspace: %+v", stored)
+	}
+	if cm.started[len(cm.started)-1] != ws.ContainerID {
+		t.Fatalf("expected the old container started again, got %v", cm.started)
+	}
+}
+
+func TestRebuildProjectContainerRefusesOtherWorkspaces(t *testing.T) {
+	svc, _ := setupSandboxService(t)
+	ctx := context.Background()
+	sandbox, err := svc.CreateSandbox(ctx, 1, SandboxSpec{ProjectID: 7, Kind: KindTask, Branch: "task/1", Name: "t"})
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	if _, err := svc.RebuildProjectContainer(ctx, 1, sandbox.ID, "x"); !errors.Is(err, ErrNotProjectWorkspace) {
+		t.Fatalf("expected ErrNotProjectWorkspace, got %v", err)
 	}
 }

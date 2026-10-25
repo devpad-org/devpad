@@ -36,9 +36,28 @@ type ContainerStats struct {
 	PIDs          uint64  `json:"pids"`
 }
 
+// ImageInfo is a local image and the tags it goes by.
+type ImageInfo struct {
+	ID   string
+	Tags []string
+}
+
+// BuildOptions bounds an image build. Its RUN steps run as containers on
+// NetworkMode, within Memory and NanoCPUs.
+type BuildOptions struct {
+	NetworkMode string
+	Memory      int64
+	NanoCPUs    int64
+	Labels      map[string]string
+}
+
 // Manager handles Docker container lifecycle operations.
 type Manager interface {
-	Create(ctx context.Context, name, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (containerID string, err error)
+	// Create makes a workspace container from image, or from WorkspaceImage
+	// when image is empty.
+	Create(ctx context.Context, name, image, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (containerID string, err error)
+	// Rename gives a container a new name.
+	Rename(ctx context.Context, containerID, name string) error
 	Start(ctx context.Context, containerID string) error
 	Stop(ctx context.Context, containerID string) error
 	Restart(ctx context.Context, containerID string) error
@@ -59,6 +78,16 @@ type Manager interface {
 	ExecResize(ctx context.Context, execID string, height, width uint) error
 	CopyFileToContainer(ctx context.Context, containerID, destPath string, fileContent []byte, mode int64) error
 	BuildImage(ctx context.Context, dockerfileContent []byte, agentBinary []byte, version string) error
+	// BuildProjectImage builds tag from a Dockerfile with no other build
+	// context, and returns the end of the build's output.
+	BuildProjectImage(ctx context.Context, tag string, dockerfile []byte, opts BuildOptions) (output string, err error)
+	// ImageID returns the ID of a local image.
+	ImageID(ctx context.Context, ref string) (string, error)
+	// ListImages lists the local images carrying a label, given as key=value.
+	ListImages(ctx context.Context, label string) ([]ImageInfo, error)
+	// RemoveImage removes a tag, and the image once nothing else names it.
+	// Docker refuses while a container uses the image.
+	RemoveImage(ctx context.Context, ref string) error
 	CreateSidecar(ctx context.Context, name, imageName, volumeName, networkName string, env []string, port int) (containerID string, err error)
 }
 
@@ -92,8 +121,11 @@ func NewManager() (Manager, error) {
 	return &manager{cli: cli, attached: make(map[string]bool)}, nil
 }
 
-func (m *manager) Create(ctx context.Context, name, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
+func (m *manager) Create(ctx context.Context, name, image, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
 	containerName := fmt.Sprintf("devpad-ws-%s", name)
+	if image == "" {
+		image = WorkspaceImage
+	}
 
 	var mounts []mount.Mount
 	if volumeName != "" {
@@ -124,7 +156,7 @@ func (m *manager) Create(ctx context.Context, name, volumeName, networkName stri
 
 	resp, err := m.cli.ContainerCreate(ctx,
 		&container.Config{
-			Image: WorkspaceImage,
+			Image: image,
 			Tty:   true,
 			Env:   env,
 			Labels: map[string]string{
@@ -139,6 +171,13 @@ func (m *manager) Create(ctx context.Context, name, volumeName, networkName stri
 	}
 
 	return resp.ID, nil
+}
+
+func (m *manager) Rename(ctx context.Context, containerID, name string) error {
+	if err := m.cli.ContainerRename(ctx, containerID, name); err != nil {
+		return fmt.Errorf("renaming container: %w", err)
+	}
+	return nil
 }
 
 func (m *manager) Start(ctx context.Context, containerID string) error {

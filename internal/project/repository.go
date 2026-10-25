@@ -39,6 +39,19 @@ type Repository interface {
 	FinishSetup(ctx context.Context, st *Setup) error
 	// RunningSetups lists the setup runs not yet recorded as ended.
 	RunningSetups(ctx context.Context) ([]*Setup, error)
+	// SetEnvironmentImage records the last image a project's environment
+	// built. Update never writes it, so a build ending meanwhile is kept.
+	SetEnvironmentImage(ctx context.Context, projectID int64, image string) error
+	// ListWithEnvironment lists the projects that have an environment.
+	ListWithEnvironment(ctx context.Context) ([]*Project, error)
+	// GetBuild returns the latest build of a project's environment, or nil.
+	GetBuild(ctx context.Context, projectID int64) (*Build, error)
+	// PutBuild records a new build, replacing the last.
+	PutBuild(ctx context.Context, b *Build) error
+	// FinishBuild records how a build ended, reporting false when a newer
+	// build replaced it.
+	FinishBuild(ctx context.Context, b *Build) (bool, error)
+	DeleteBuild(ctx context.Context, projectID int64) error
 }
 
 type repository struct {
@@ -50,7 +63,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const projectColumns = `id, user_id, name, description, default_branch, upstream_url, setup_script, max_sandboxes, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at`
+const projectColumns = `id, user_id, name, description, default_branch, upstream_url, setup_script, environment, environment_image, max_sandboxes, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at`
 
 // execer is a database or a transaction.
 type execer interface {
@@ -64,8 +77,8 @@ func (r *repository) Create(ctx context.Context, p *Project) error {
 func insertProject(ctx context.Context, db execer, p *Project) error {
 	now := time.Now()
 	result, err := db.ExecContext(ctx,
-		`INSERT INTO projects (user_id, name, description, default_branch, upstream_url, setup_script, max_sandboxes, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.UserID, p.Name, p.Description, p.DefaultBranch, p.UpstreamURL, p.SetupScript, p.MaxSandboxes, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, p.RepoAgentToken, now, now,
+		`INSERT INTO projects (user_id, name, description, default_branch, upstream_url, setup_script, environment, max_sandboxes, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.UserID, p.Name, p.Description, p.DefaultBranch, p.UpstreamURL, p.SetupScript, p.Environment, p.MaxSandboxes, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, p.RepoAgentToken, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting project: %w", err)
@@ -119,8 +132,8 @@ func (r *repository) Update(ctx context.Context, p *Project) error {
 func updateProject(ctx context.Context, db execer, p *Project) error {
 	now := time.Now()
 	_, err := db.ExecContext(ctx,
-		`UPDATE projects SET name = ?, description = ?, setup_script = ?, max_sandboxes = ?, status = ?, error = ?, repo_container_id = ?, repo_volume_name = ?, repo_network_name = ?, updated_at = ? WHERE id = ?`,
-		p.Name, p.Description, p.SetupScript, p.MaxSandboxes, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, now, p.ID,
+		`UPDATE projects SET name = ?, description = ?, setup_script = ?, environment = ?, max_sandboxes = ?, status = ?, error = ?, repo_container_id = ?, repo_volume_name = ?, repo_network_name = ?, updated_at = ? WHERE id = ?`,
+		p.Name, p.Description, p.SetupScript, p.Environment, p.MaxSandboxes, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, now, p.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("updating project: %w", err)
@@ -142,7 +155,7 @@ type rowScanner interface {
 
 func scanProject(row rowScanner) (*Project, error) {
 	p := &Project{}
-	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Description, &p.DefaultBranch, &p.UpstreamURL, &p.SetupScript, &p.MaxSandboxes, &p.Status, &p.Error, &p.RepoContainerID, &p.RepoVolumeName, &p.RepoNetworkName, &p.RepoAgentToken, &p.CreatedAt, &p.UpdatedAt)
+	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Description, &p.DefaultBranch, &p.UpstreamURL, &p.SetupScript, &p.Environment, &p.EnvironmentImage, &p.MaxSandboxes, &p.Status, &p.Error, &p.RepoContainerID, &p.RepoVolumeName, &p.RepoNetworkName, &p.RepoAgentToken, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -378,4 +391,86 @@ func nullableTime(v *time.Time) any {
 		return nil
 	}
 	return *v
+}
+
+func (r *repository) SetEnvironmentImage(ctx context.Context, projectID int64, image string) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE projects SET environment_image = ? WHERE id = ?`, image, projectID); err != nil {
+		return fmt.Errorf("recording environment image: %w", err)
+	}
+	return nil
+}
+
+func (r *repository) ListWithEnvironment(ctx context.Context) ([]*Project, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+projectColumns+` FROM projects WHERE TRIM(environment) != '' ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing projects with an environment: %w", err)
+	}
+	defer rows.Close()
+	var projects []*Project
+	for rows.Next() {
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning project: %w", err)
+		}
+		projects = append(projects, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating projects: %w", err)
+	}
+	return projects, nil
+}
+
+const buildColumns = `project_id, build_id, hash, image, status, log, error, started_at, finished_at`
+
+func (r *repository) GetBuild(ctx context.Context, projectID int64) (*Build, error) {
+	b := &Build{}
+	var finishedAt sql.NullTime
+	err := r.db.QueryRowContext(ctx, `SELECT `+buildColumns+` FROM project_builds WHERE project_id = ?`, projectID).
+		Scan(&b.ProjectID, &b.ID, &b.Hash, &b.Image, &b.Status, &b.Log, &b.Error, &b.StartedAt, &finishedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying environment build: %w", err)
+	}
+	if finishedAt.Valid {
+		b.FinishedAt = &finishedAt.Time
+	}
+	return b, nil
+}
+
+func (r *repository) PutBuild(ctx context.Context, b *Build) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO project_builds (`+buildColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(project_id) DO UPDATE SET build_id = excluded.build_id, hash = excluded.hash, image = excluded.image, status = excluded.status,
+		   log = excluded.log, error = excluded.error, started_at = excluded.started_at, finished_at = excluded.finished_at`,
+		b.ProjectID, b.ID, b.Hash, b.Image, b.Status, b.Log, b.Error, b.StartedAt, nullableTime(b.FinishedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("recording environment build: %w", err)
+	}
+	return nil
+}
+
+func (r *repository) FinishBuild(ctx context.Context, b *Build) (bool, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE project_builds SET status = ?, log = ?, error = ?, finished_at = ?
+		 WHERE project_id = ? AND build_id = ? AND status = ?`,
+		b.Status, b.Log, b.Error, nullableTime(b.FinishedAt), b.ProjectID, b.ID, BuildRunning,
+	)
+	if err != nil {
+		return false, fmt.Errorf("recording end of environment build: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("recording end of environment build: %w", err)
+	}
+	return n == 1, nil
+}
+
+func (r *repository) DeleteBuild(ctx context.Context, projectID int64) error {
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM project_builds WHERE project_id = ?`, projectID); err != nil {
+		return fmt.Errorf("deleting environment build: %w", err)
+	}
+	return nil
 }

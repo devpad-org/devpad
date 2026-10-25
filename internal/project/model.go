@@ -47,22 +47,27 @@ var (
 // Project is a repo that AI agents work on in parallel sandboxes. Its
 // canonical bare repo lives in a repo container that only devpad can reach.
 type Project struct {
-	ID              int64
-	UserID          int64
-	Name            string
-	Description     string
-	DefaultBranch   string
-	UpstreamURL     string
-	SetupScript     string
-	MaxSandboxes    int
-	Status          Status
-	Error           string
-	RepoContainerID string
-	RepoVolumeName  string
-	RepoNetworkName string
-	RepoAgentToken  string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID            int64
+	UserID        int64
+	Name          string
+	Description   string
+	DefaultBranch string
+	UpstreamURL   string
+	SetupScript   string
+	// Environment is the body of a Dockerfile devpad builds on its own
+	// workspace image; EnvironmentImage is the last image that built from it,
+	// empty when none has.
+	Environment      string
+	EnvironmentImage string
+	MaxSandboxes     int
+	Status           Status
+	Error            string
+	RepoContainerID  string
+	RepoVolumeName   string
+	RepoNetworkName  string
+	RepoAgentToken   string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // CreateInput holds the fields for a new project.
@@ -72,6 +77,7 @@ type CreateInput struct {
 	DefaultBranch string
 	UpstreamURL   string
 	SetupScript   string
+	Environment   string
 	MaxSandboxes  int
 }
 
@@ -81,6 +87,7 @@ type UpdateInput struct {
 	Name         string
 	Description  string
 	SetupScript  string
+	Environment  string
 	MaxSandboxes int
 }
 

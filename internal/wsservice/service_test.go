@@ -134,7 +134,7 @@ type fakeContainerManager struct {
 	sidecarPort    int
 }
 
-func (m *fakeContainerManager) Create(_ context.Context, _, _, _ string, _ []string, _, _ int64) (string, error) {
+func (m *fakeContainerManager) Create(_ context.Context, _, _, _, _ string, _ []string, _, _ int64) (string, error) {
 	return "", nil
 }
 
@@ -214,6 +214,15 @@ func (m *fakeContainerManager) CopyFileToContainer(_ context.Context, _, _ strin
 	return nil
 }
 
+func (m *fakeContainerManager) Rename(context.Context, string, string) error { return nil }
+func (m *fakeContainerManager) BuildProjectImage(context.Context, string, []byte, containerpkg.BuildOptions) (string, error) {
+	return "", nil
+}
+func (m *fakeContainerManager) ImageID(context.Context, string) (string, error) { return "", nil }
+func (m *fakeContainerManager) ListImages(context.Context, string) ([]containerpkg.ImageInfo, error) {
+	return nil, nil
+}
+func (m *fakeContainerManager) RemoveImage(context.Context, string) error { return nil }
 func (m *fakeContainerManager) BuildImage(_ context.Context, _ []byte, _ []byte, _ string) error {
 	return nil
 }

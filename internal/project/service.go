@@ -55,6 +55,16 @@ type Service interface {
 	// AwaitSetup waits for the setup run in a sandbox to finish and returns
 	// it, or nil when none runs there.
 	AwaitSetup(ctx context.Context, userID, projectID, workspaceID int64) (*Setup, error)
+	// ProjectEnvironment returns how the project's environment stands, or
+	// nil when it has none; BuildEnvironment builds it again.
+	ProjectEnvironment(ctx context.Context, userID, projectID int64) (*Environment, error)
+	BuildEnvironment(ctx context.Context, userID, projectID int64) (*Environment, error)
+	// AwaitEnvironment waits for a build of the project's environment in
+	// progress, then returns how it stands, or nil when it has none.
+	AwaitEnvironment(ctx context.Context, userID, projectID int64) (*Environment, error)
+	// RebuildWorkspace remakes the project workspace's container from the
+	// image new workspaces get. Only /workspace survives.
+	RebuildWorkspace(ctx context.Context, userID, projectID int64) (*workspace.Workspace, error)
 	// DiscoverConversion lists what a standalone workspace holds that could
 	// become a project.
 	DiscoverConversion(ctx context.Context, userID, workspaceID int64) (*agent.RepoDiscovery, error)
@@ -110,6 +120,8 @@ type service struct {
 	// setupTimeout bounds a setup run; setupPoll paces reads of its output.
 	setupTimeout time.Duration
 	setupPoll    time.Duration
+	// buildTimeout bounds a build of a project's environment.
+	buildTimeout time.Duration
 
 	// pending holds, per project, the branches of sandboxes being created or
 	// started, so concurrent requests cannot overshoot MaxSandboxes while
@@ -130,7 +142,12 @@ type service struct {
 	// setupWatches holds the setup runs being followed, each closed once
 	// it is no longer.
 	setupWatches map[setupWatch]chan struct{}
-	publishHook  PublishHook
+	// builds holds, per project, the environment build running in this
+	// process. buildMu orders starting builds, so the recorded build is
+	// always the one that runs.
+	builds      map[int64]*environmentBuild
+	buildMu     sync.Mutex
+	publishHook PublishHook
 	// background tracks conversions being finished and setup runs being
 	// followed in the background.
 	background sync.WaitGroup
@@ -150,6 +167,7 @@ func NewService(repo Repository, cm container.Manager, workspaces Workspaces, us
 		convertTimeout: workspaceOpenTimeout,
 		setupTimeout:   defaultSetupTimeout,
 		setupPoll:      defaultSetupPoll,
+		buildTimeout:   defaultBuildTimeout,
 		pending:        make(map[int64]map[string]bool),
 
 		publishing:     make(map[int64]map[string]bool),
@@ -157,6 +175,7 @@ func NewService(repo Repository, cm container.Manager, workspaces Workspaces, us
 		converting:     make(map[int64]bool),
 		workspaceLocks: make(map[int64]*sync.Mutex),
 		setupWatches:   make(map[setupWatch]chan struct{}),
+		builds:         make(map[int64]*environmentBuild),
 	}
 }
 
@@ -216,6 +235,9 @@ func (s *service) Create(ctx context.Context, userID int64, in CreateInput) (*Pr
 	if err != nil {
 		return nil, err
 	}
+	if err := validateEnvironment(in.Environment); err != nil {
+		return nil, err
+	}
 	token, err := randomHex(32)
 	if err != nil {
 		return nil, fmt.Errorf("generating repo agent token: %w", err)
@@ -228,6 +250,7 @@ func (s *service) Create(ctx context.Context, userID int64, in CreateInput) (*Pr
 		DefaultBranch:  branch,
 		UpstreamURL:    upstream,
 		SetupScript:    in.SetupScript,
+		Environment:    in.Environment,
 		MaxSandboxes:   maxSandboxes,
 		Status:         StatusCreating,
 		RepoAgentToken: token,
@@ -250,6 +273,9 @@ func (s *service) Create(ctx context.Context, userID int64, in CreateInput) (*Pr
 	}
 	if err := s.repo.Update(ctx, p); err != nil {
 		return nil, fmt.Errorf("updating project: %w", err)
+	}
+	if p.Status == StatusReady {
+		s.ensureEnvironment(ctx, p)
 	}
 	return p, nil
 }
@@ -339,12 +365,20 @@ func (s *service) Update(ctx context.Context, userID, projectID int64, in Update
 	if err != nil {
 		return nil, err
 	}
+	if err := validateEnvironment(in.Environment); err != nil {
+		return nil, err
+	}
+	environmentChanged := in.Environment != p.Environment
 	p.Name = name
 	p.Description = in.Description
 	p.SetupScript = in.SetupScript
+	p.Environment = in.Environment
 	p.MaxSandboxes = maxSandboxes
 	if err := s.repo.Update(ctx, p); err != nil {
 		return nil, fmt.Errorf("updating project: %w", err)
+	}
+	if environmentChanged {
+		s.ensureEnvironment(ctx, p)
 	}
 	return p, nil
 }
@@ -387,6 +421,13 @@ func (s *service) Delete(ctx context.Context, userID, projectID int64) error {
 	if err := s.repo.Delete(ctx, p.ID); err != nil {
 		return fmt.Errorf("deleting project: %w", err)
 	}
+	// With its workspaces gone, nothing uses the project's images.
+	select {
+	case <-s.cancelBuild(p.ID):
+	case <-time.After(buildCleanupTimeout):
+		log.Printf("project %d: its environment build did not stop", p.ID)
+	}
+	s.pruneImages(ctx, p.ID, "")
 	return nil
 }
 
@@ -512,6 +553,7 @@ func (s *service) CreateSandbox(ctx context.Context, userID, projectID int64, in
 		Kind:      kind,
 		Branch:    branch,
 		Name:      name,
+		Image:     imageFor(p),
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {

@@ -79,6 +79,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		DefaultBranch string `json:"defaultBranch"`
 		UpstreamURL   string `json:"upstreamUrl"`
 		SetupScript   string `json:"setupScript"`
+		Environment   string `json:"environment"`
 		MaxSandboxes  int    `json:"maxSandboxes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -119,6 +120,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		Name         string `json:"name"`
 		Description  string `json:"description"`
 		SetupScript  string `json:"setupScript"`
+		Environment  string `json:"environment"`
 		MaxSandboxes int    `json:"maxSandboxes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -451,6 +453,75 @@ func (h *Handler) HandleRunWorkspaceSetup(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"setup": setupResponse(st)})
 }
 
+// HandleEnvironment returns how the project's environment stands, or null
+// when it has none.
+func (h *Handler) HandleEnvironment(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	env, err := h.service.ProjectEnvironment(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"environment": environmentResponse(env)})
+}
+
+// HandleBuildEnvironment builds the project's environment again.
+func (h *Handler) HandleBuildEnvironment(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	env, err := h.service.BuildEnvironment(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"environment": environmentResponse(env)})
+}
+
+// HandleRebuildWorkspace remakes the project workspace's container from the
+// project's current image.
+func (h *Handler) HandleRebuildWorkspace(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	ws, err := h.service.RebuildWorkspace(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workspace": sandboxResponse(ws)})
+}
+
+func environmentResponse(env *Environment) map[string]any {
+	if env == nil {
+		return nil
+	}
+	var build map[string]any
+	if b := env.Build; b != nil {
+		build = map[string]any{
+			"status":     b.Status,
+			"log":        b.Log,
+			"error":      b.Error,
+			"startedAt":  b.StartedAt,
+			"finishedAt": b.FinishedAt,
+		}
+	}
+	return map[string]any{
+		"build":          build,
+		"custom":         env.Image != "",
+		"current":        env.Current,
+		"workspaceStale": env.WorkspaceStale,
+	}
+}
+
 func setupResponse(st *Setup) map[string]any {
 	if st == nil {
 		return nil
@@ -555,6 +626,7 @@ func projectResponse(p *Project) map[string]any {
 		"defaultBranch": p.DefaultBranch,
 		"upstreamUrl":   p.UpstreamURL,
 		"setupScript":   p.SetupScript,
+		"environment":   p.Environment,
 		"maxSandboxes":  p.MaxSandboxes,
 		"status":        p.Status,
 		"error":         p.Error,

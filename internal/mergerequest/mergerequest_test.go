@@ -42,6 +42,8 @@ type fakeProjects struct {
 	setup     *project.Setup
 	setupGate chan struct{}
 	awaited   []int64
+	// environment is what AwaitEnvironment reports.
+	environment *project.Environment
 }
 
 func (f *fakeProjects) AwaitSetup(ctx context.Context, _, _, workspaceID int64) (*project.Setup, error) {
@@ -59,6 +61,12 @@ func (f *fakeProjects) AwaitSetup(ctx context.Context, _, _, workspaceID int64) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.setup, nil
+}
+
+func (f *fakeProjects) AwaitEnvironment(context.Context, int64, int64) (*project.Environment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.environment, nil
 }
 
 func (f *fakeProjects) awaitedCount() int {
@@ -853,5 +861,20 @@ func TestCloseWhileReviewSetupRunsDoesNotWaitForIt(t *testing.T) {
 	}
 	if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.Status != ReviewFailed || got.WorkspaceID != 0 {
 		t.Fatalf("expected the review ended with its sandbox removed, got %+v", got)
+	}
+}
+
+func TestReviewPromptSaysTheEnvironmentWasStillBuilding(t *testing.T) {
+	e := setup(t)
+	mr := e.openTaskMR(t)
+	e.projects.mu.Lock()
+	e.projects.environment = &project.Environment{Build: &project.Build{Status: project.BuildRunning}, Image: "devpad-project-1:abc"}
+	e.projects.mu.Unlock()
+	e.startAgentReview(t, mr, AgentReviewInput{})
+	prompt := e.runs.started()[0].Turns[0].Text()
+	for _, want := range []string{"## Environment", "still building", "the last version of it that built"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/agentbin"
+	"github.com/devpad-org/devpad/internal/container"
 )
 
 // Repo containers only hold a bare repo and serve git bundles, so they get
@@ -44,7 +45,9 @@ func (s *service) provisionRepoContainer(ctx context.Context, p *Project) error 
 	}
 
 	env := []string{"AGENT_AUTH_TOKEN=" + p.RepoAgentToken}
-	containerID, err := s.container.Create(ctx, repoContainerName(p.ID), volume, network, env, repoMemoryLimit, repoNanoCPUs)
+	// Always devpad's own image: a project's environment never runs next to
+	// the canonical repo.
+	containerID, err := s.container.Create(ctx, repoContainerName(p.ID), container.WorkspaceImage, volume, network, env, repoMemoryLimit, repoNanoCPUs)
 	if err != nil {
 		_ = s.container.RemoveVolume(ctx, volume)
 		s.removeRepoNetwork(ctx, network)

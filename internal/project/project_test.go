@@ -37,16 +37,107 @@ type fakeContainers struct {
 	// onCopy runs when a file is copied into a container, standing in for
 	// the agent binary being replaced.
 	onCopy func()
+
+	// Images: baseID is devpad's image; images maps each tag built to its
+	// labels. buildErr fails builds, buildGate holds them until closed, and
+	// builds and removedImages record what happened.
+	baseID        string
+	images        map[string]map[string]string
+	buildErr      error
+	buildOutput   string
+	buildGate     chan struct{}
+	builds        []fakeBuild
+	removedImages []string
+	inUse         map[string]bool
+}
+
+type fakeBuild struct {
+	tag        string
+	dockerfile string
+	opts       container.BuildOptions
+}
+
+func (f *fakeContainers) Rename(context.Context, string, string) error { return nil }
+
+func (f *fakeContainers) BuildProjectImage(ctx context.Context, tag string, dockerfile []byte, opts container.BuildOptions) (string, error) {
+	f.mu.Lock()
+	f.builds = append(f.builds, fakeBuild{tag: tag, dockerfile: string(dockerfile), opts: opts})
+	gate := f.buildGate
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return "Step 1/5 : FROM devpad-workspace:latest\n", ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.buildErr != nil {
+		return f.buildOutput, f.buildErr
+	}
+	f.images[tag] = opts.Labels
+	return f.buildOutput, nil
+}
+
+func (f *fakeContainers) ImageID(_ context.Context, ref string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ref == container.WorkspaceImage {
+		return f.baseID, nil
+	}
+	if _, ok := f.images[ref]; ok {
+		return "sha256:" + ref, nil
+	}
+	return "", errors.New("no such image: " + ref)
+}
+
+func (f *fakeContainers) ListImages(_ context.Context, label string) ([]container.ImageInfo, error) {
+	key, value, _ := strings.Cut(label, "=")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []container.ImageInfo
+	for tag, labels := range f.images {
+		if labels[key] == value {
+			out = append(out, container.ImageInfo{ID: "sha256:" + tag, Tags: []string{tag}})
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeContainers) RemoveImage(_ context.Context, ref string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.inUse[ref] {
+		return errors.New("conflict: image is being used by a container")
+	}
+	delete(f.images, ref)
+	f.removedImages = append(f.removedImages, ref)
+	return nil
+}
+
+func (f *fakeContainers) builtTags() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var tags []string
+	for _, b := range f.builds {
+		tags = append(tags, b.tag)
+	}
+	return tags
 }
 
 func newFakeContainers(ip string) *fakeContainers {
-	return &fakeContainers{ip: ip, networks: map[string]bool{}, volumes: map[string]bool{}}
+	return &fakeContainers{ip: ip, networks: map[string]bool{}, volumes: map[string]bool{}, baseID: "sha256:base1", images: map[string]map[string]string{}, inUse: map[string]bool{}}
 }
 
-func (f *fakeContainers) Create(_ context.Context, name, volumeName, networkName string, env []string, _, _ int64) (string, error) {
+func (f *fakeContainers) Create(_ context.Context, name, image, volumeName, networkName string, env []string, _, _ int64) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.created = append(f.created, fmt.Sprintf("%s vol=%s net=%s", name, volumeName, networkName))
+	created := fmt.Sprintf("%s vol=%s net=%s", name, volumeName, networkName)
+	if image != container.WorkspaceImage && image != "" {
+		created += " image=" + image
+	}
+	f.created = append(f.created, created)
 	return "container-" + name, nil
 }
 func (f *fakeContainers) Start(context.Context, string) error   { return nil }
@@ -249,6 +340,8 @@ type fakeWorkspaces struct {
 	// every command has exited with status 0.
 	commandOutput func(id, cursor int64) (*agent.CommandOutput, error)
 	stopped       []int64
+	// rebuilt records each project workspace rebuild as "id image".
+	rebuilt []string
 	// db, when set, mirrors deletes into the workspaces table, so rows
 	// that reference a workspace go with it.
 	db            *sql.DB
@@ -307,7 +400,7 @@ func (f *fakeWorkspaces) Get(_ context.Context, userID, id int64) (*workspace.Wo
 func (f *fakeWorkspaces) CreateSandbox(_ context.Context, userID int64, spec workspace.SandboxSpec) (*workspace.Workspace, error) {
 	return f.add(&workspace.Workspace{
 		UserID: userID, Name: spec.Name, ProjectID: spec.ProjectID, Kind: spec.Kind, Branch: spec.Branch,
-		Status: workspace.StatusRunning,
+		Status: workspace.StatusRunning, Image: spec.Image,
 	}), nil
 }
 
@@ -322,8 +415,20 @@ func (f *fakeWorkspaces) CreateProjectWorkspace(_ context.Context, userID int64,
 	f.mu.Unlock()
 	return f.add(&workspace.Workspace{
 		UserID: userID, Name: spec.Name, ProjectID: spec.ProjectID, Kind: workspace.KindInteractive,
-		Status: workspace.StatusRunning,
+		Status: workspace.StatusRunning, Image: spec.Image,
 	}), nil
+}
+
+func (f *fakeWorkspaces) RebuildProjectContainer(_ context.Context, _, id int64, image string) (*workspace.Workspace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ws, ok := f.byID[id]
+	if !ok {
+		return nil, workspace.ErrNotFound
+	}
+	ws.Image = image
+	f.rebuilt = append(f.rebuilt, fmt.Sprintf("%d %s", id, image))
+	return ws, nil
 }
 
 func (f *fakeWorkspaces) CheckoutProjectBranch(_ context.Context, _, id int64, branch string, bundle io.Reader) (*agent.RepoCheckout, error) {

@@ -24,19 +24,48 @@ type mockContainerManager struct {
 	lastCreatedID string
 	ipOverride    string // if set, GetIP returns this instead of the default
 	restarted     []string
+	// created records each container made as "name image", and removed,
+	// renamed and started what happened to containers after.
+	created   []string
+	removed   []string
+	renamed   []string
+	started   []string
+	removeErr error
 }
 
-func (m *mockContainerManager) Create(_ context.Context, name, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
+func (m *mockContainerManager) Create(_ context.Context, name, image, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
 	m.lastCreatedID = "mock-container-" + name
+	m.created = append(m.created, name+" "+image)
 	return m.lastCreatedID, nil
 }
-func (m *mockContainerManager) Start(_ context.Context, _ string) error { return nil }
-func (m *mockContainerManager) Stop(_ context.Context, _ string) error  { return nil }
+func (m *mockContainerManager) Rename(_ context.Context, id, name string) error {
+	m.renamed = append(m.renamed, id+" "+name)
+	return nil
+}
+func (m *mockContainerManager) BuildProjectImage(context.Context, string, []byte, container.BuildOptions) (string, error) {
+	return "", nil
+}
+func (m *mockContainerManager) ImageID(context.Context, string) (string, error) { return "", nil }
+func (m *mockContainerManager) ListImages(context.Context, string) ([]container.ImageInfo, error) {
+	return nil, nil
+}
+func (m *mockContainerManager) RemoveImage(context.Context, string) error { return nil }
+func (m *mockContainerManager) Start(_ context.Context, id string) error {
+	m.started = append(m.started, id)
+	return nil
+}
+func (m *mockContainerManager) Stop(_ context.Context, _ string) error { return nil }
 func (m *mockContainerManager) Restart(_ context.Context, id string) error {
 	m.restarted = append(m.restarted, id)
 	return nil
 }
-func (m *mockContainerManager) Remove(_ context.Context, _ string) error { return nil }
+func (m *mockContainerManager) Remove(_ context.Context, id string) error {
+	if m.removeErr != nil {
+		return m.removeErr
+	}
+	m.removed = append(m.removed, id)
+	return nil
+}
 func (m *mockContainerManager) UpdateResources(_ context.Context, _ string, _, _ int64) error {
 	return nil
 }
@@ -117,6 +146,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		kind TEXT NOT NULL DEFAULT 'interactive',
 		branch TEXT NOT NULL DEFAULT '',
 		repo_seeded INTEGER NOT NULL DEFAULT 0,
+		container_image TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);

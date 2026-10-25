@@ -54,6 +54,7 @@ type Projects interface {
 	Diff(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoDiff, error)
 	CreateSandbox(ctx context.Context, userID, projectID int64, in project.SandboxInput) (*workspace.Workspace, error)
 	AwaitSetup(ctx context.Context, userID, projectID, workspaceID int64) (*project.Setup, error)
+	AwaitEnvironment(ctx context.Context, userID, projectID int64) (*project.Environment, error)
 	Merge(ctx context.Context, userID, projectID int64, in project.MergeInput) (*agent.RepoMergeResult, error)
 	Push(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
 }
@@ -470,11 +471,16 @@ func orDefault(value, fallback string) string {
 }
 
 // launchReview starts a pending review's sandbox and, once the project's
-// setup script has finished there, its agent run. The review is unlocked
-// while setup runs, so closing or merging the merge request meanwhile is
-// not held up; the run starts only if the review is still pending on the
-// same sandbox after.
+// setup script has finished there, its agent run. The sandbox first waits
+// for a build of the project's environment in progress. The review is
+// unlocked while either runs, so closing or merging the merge request
+// meanwhile is not held up; the run starts only if the review is still
+// pending on the same sandbox after.
 func (s *service) launchReview(ctx context.Context, reviewID int64) {
+	env, ok := s.awaitEnvironment(ctx, reviewID)
+	if !ok {
+		return
+	}
 	ws, diff, ok := s.prepareReview(ctx, reviewID)
 	if !ok {
 		return
@@ -500,9 +506,31 @@ func (s *service) launchReview(ctx context.Context, reviewID int64) {
 	if err != nil || mr == nil {
 		return
 	}
-	if err := s.startReviewRun(ctx, mr, rv, ws, diff, setup); err != nil && s.rootCtx.Err() == nil {
+	if err := s.startReviewRun(ctx, mr, rv, ws, diff, env, setup); err != nil && s.rootCtx.Err() == nil {
 		s.failReview(ctx, mr, rv, err.Error())
 	}
+}
+
+// awaitEnvironment waits for a build of the project's environment before a
+// pending review gets its sandbox. It reports false when the review is no
+// longer pending or the service is shutting down.
+func (s *service) awaitEnvironment(ctx context.Context, reviewID int64) (*project.Environment, bool) {
+	rv, err := s.repo.GetReview(ctx, reviewID)
+	if err != nil || rv == nil || rv.Status != ReviewPending {
+		return nil, false
+	}
+	mr, err := s.repo.GetByID(ctx, rv.MergeRequestID)
+	if err != nil || mr == nil {
+		return nil, false
+	}
+	env, err := s.projects.AwaitEnvironment(ctx, mr.UserID, mr.ProjectID)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		log.Printf("review %d: waiting for the project's environment: %v", reviewID, err)
+	}
+	return env, true
 }
 
 // prepareReview reads the change a pending review is of and gives the
@@ -553,7 +581,7 @@ func (s *service) startReviewSandbox(ctx context.Context, mr *MergeRequest, rv *
 
 // startReviewRun starts the agent run of a review the caller has locked, in
 // the sandbox startReviewSandbox gave it.
-func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Review, ws *workspace.Workspace, diff *agent.RepoDiff, setup *project.Setup) error {
+func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Review, ws *workspace.Workspace, diff *agent.RepoDiff, env *project.Environment, setup *project.Setup) error {
 	p, err := s.projects.Get(ctx, mr.UserID, mr.ProjectID)
 	if err != nil {
 		return err
@@ -576,7 +604,7 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 		ConversationID: conv.ID,
 		AgentID:        rv.AgentID,
 		Model:          rv.Model,
-		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, reviewPrompt(p, mr, t, rv, ws.Branch, diff, setup))},
+		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, reviewPrompt(p, mr, t, rv, ws.Branch, diff, env, setup))},
 		Thinking:       thinking,
 	})
 	if err != nil {
@@ -592,7 +620,7 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 	return nil
 }
 
-func reviewPrompt(p *project.Project, mr *MergeRequest, t *task.Task, rv *Review, branch string, diff *agent.RepoDiff, setup *project.Setup) string {
+func reviewPrompt(p *project.Project, mr *MergeRequest, t *task.Task, rv *Review, branch string, diff *agent.RepoDiff, env *project.Environment, setup *project.Setup) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are reviewing merge request !%d in the project %q: %s\n\n", mr.ID, p.Name, mr.Title)
 	if d := strings.TrimSpace(mr.Description); d != "" {
@@ -621,6 +649,9 @@ func reviewPrompt(p *project.Project, mr *MergeRequest, t *task.Task, rv *Review
 		}
 	}
 	fmt.Fprintf(&b, "\nRun `git diff %[1]s HEAD` to read the change and `git log %[1]s..HEAD` for its commits.\n\n", diff.MergeBase)
+	if note := project.EnvironmentPrompt(env); note != "" {
+		b.WriteString(note + "\n")
+	}
 	if note := project.SetupPrompt(setup); note != "" {
 		b.WriteString(note + "\n")
 	}

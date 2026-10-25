@@ -529,7 +529,8 @@ func (s *service) conversionAttached(ctx context.Context, conv *Conversion) (att
 // part way through, such as by a crash between attaching a workspace and
 // rotating the key. Each project is marked as converting meanwhile, so it
 // cannot be deleted under it. It also follows again the setup runs the
-// previous server process was following.
+// previous server process was following, and builds the environments it
+// left building or that devpad's image has changed under.
 func (s *service) Reconcile(ctx context.Context) error {
 	conversions, err := s.repo.UnfinishedConversions(ctx)
 	if err != nil {
@@ -538,7 +539,10 @@ func (s *service) Reconcile(ctx context.Context) error {
 	for _, conv := range conversions {
 		s.resumeInBackground(conv)
 	}
-	return s.resumeSetups(ctx)
+	if err := s.resumeSetups(ctx); err != nil {
+		return err
+	}
+	return s.resumeEnvironments(ctx)
 }
 
 // resumeInBackground resumes one conversion unless it is already running or

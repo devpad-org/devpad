@@ -122,6 +122,26 @@ type fakeSandboxes struct {
 	setup     *project.Setup
 	setupGate chan struct{}
 	awaited   []int64
+	// environment is what AwaitEnvironment reports; while environmentGate
+	// is open it waits.
+	environment     *project.Environment
+	environmentGate chan struct{}
+}
+
+func (f *fakeSandboxes) AwaitEnvironment(ctx context.Context, _, _ int64) (*project.Environment, error) {
+	f.mu.Lock()
+	gate := f.environmentGate
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.environment, nil
 }
 
 func newFakeSandboxes(owner int64) *fakeSandboxes {
@@ -1383,4 +1403,50 @@ func TestSandboxStoppedDuringSetupIsRestartedForTheRun(t *testing.T) {
 	if got := e.sandboxes.snapshot().started; len(got) != 1 || got[0] != waiting.awaited[0] {
 		t.Fatalf("expected the stopped sandbox restarted, got %v", got)
 	}
+}
+
+func TestNewSandboxWaitsForTheEnvironmentAndIsToldItFailed(t *testing.T) {
+	e := setup(t)
+	gate := make(chan struct{})
+	e.sandboxes.set(func(f *fakeSandboxes) {
+		f.environmentGate = gate
+		f.environment = &project.Environment{Build: &project.Build{Status: project.BuildFailed, Error: "returned a non-zero code: 100"}}
+	})
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	time.Sleep(30 * time.Millisecond)
+	if c := e.sandboxes.snapshot(); len(c.created) != 0 {
+		t.Fatalf("a sandbox was made before the environment build ended: %+v", c.created)
+	}
+	// The task is not locked meanwhile.
+	if _, err := e.svc.Update(context.Background(), owner, 1, task.ID, UpdateInput{Title: "Add a cart", Body: "Users need a cart."}); err != nil {
+		t.Fatalf("update while waiting: %v", err)
+	}
+
+	close(gate)
+	e.waitTask(t, task.ID, hasRun)
+	prompt := e.runs.startedRequests()[0].Turns[0].Text()
+	for _, want := range []string{"## Environment", "failed to build", "non-zero code: 100", "devpad's own image"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestTaskWithASandboxDoesNotWaitForTheEnvironment(t *testing.T) {
+	e := setup(t)
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	running := e.waitTask(t, task.ID, hasRun)
+	e.runs.finish(running.RunID, domain.AgentRunCompleted, "")
+	e.waitTask(t, task.ID, status(StatusInReview))
+
+	// A build in progress only holds back new sandboxes.
+	gate := make(chan struct{})
+	defer close(gate)
+	e.sandboxes.set(func(f *fakeSandboxes) { f.environmentGate = gate })
+	if _, err := e.svc.RequestChanges(context.Background(), owner, 1, task.ID, "Handle an empty cart.", true); err != nil {
+		t.Fatalf("request changes: %v", err)
+	}
+	e.waitTask(t, task.ID, func(t *Task) bool { return t.RunID != 0 && t.RunID != running.RunID })
 }

@@ -9,6 +9,9 @@ export interface Project {
   defaultBranch: string
   upstreamUrl: string
   setupScript: string
+  // The body of a Dockerfile devpad builds on its workspace image for the
+  // project's workspaces; empty for devpad's image as it is.
+  environment: string
   maxSandboxes: number
   status: ProjectStatus
   error: string
@@ -22,6 +25,7 @@ export interface ProjectInput {
   defaultBranch?: string
   upstreamUrl?: string
   setupScript: string
+  environment?: string
   maxSandboxes: number
 }
 
@@ -94,6 +98,26 @@ export interface WorkspaceSetup {
   error: string
   startedAt: string
   finishedAt: string | null
+}
+
+// How the project's environment stands.
+export interface ProjectEnvironment {
+  // The latest build; null before the first.
+  build: {
+    status: 'building' | 'succeeded' | 'failed'
+    // The end of the build's output.
+    log: string
+    error: string
+    startedAt: string
+    finishedAt: string | null
+  } | null
+  // New workspaces get an image built from the environment; false while
+  // none has built, when they get devpad's image.
+  custom: boolean
+  // That image is built from the environment as it is now.
+  current: boolean
+  // The project workspace was made from a different image.
+  workspaceStale: boolean
 }
 
 export interface CheckoutResult {
@@ -372,6 +396,23 @@ export const projectApi = {
   // Runs the project's current setup script in the project workspace again.
   runWorkspaceSetup(id: number): Promise<{ setup: WorkspaceSetup }> {
     return apiClient.post(`/api/projects/${id}/workspace/setup`, {})
+  },
+
+  // How the project's environment stands; null when it has none.
+  async environment(id: number): Promise<ProjectEnvironment | null> {
+    const res = await apiClient.get<{ environment: ProjectEnvironment | null }>(`/api/projects/${id}/environment`)
+    return res.environment
+  },
+
+  // Builds the project's environment again.
+  buildEnvironment(id: number): Promise<{ environment: ProjectEnvironment | null }> {
+    return apiClient.post(`/api/projects/${id}/environment/build`, {})
+  },
+
+  // Remakes the project workspace's container from the project's current
+  // image. Only /workspace is kept.
+  rebuildWorkspace(id: number): Promise<{ workspace: ProjectWorkspace }> {
+    return apiClient.post(`/api/projects/${id}/workspace/rebuild`, {})
   },
 
   // Pushes made through the devpad remote after `after` in `epoch`. Without

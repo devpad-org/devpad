@@ -77,6 +77,17 @@ func (s *service) OpenWorkspace(ctx context.Context, userID, projectID int64) (w
 	if err != nil {
 		return nil, false, err
 	}
+	// A new workspace should not start on an image about to be replaced.
+	// The wait is bounded; after it, the workspace gets the last image that
+	// built, and can be rebuilt once the build ends.
+	if existing, err := s.projectWorkspace(ctx, p); errors.Is(err, ErrNoWorkspace) || (err == nil && !existing.RepoSeeded) {
+		waitCtx, cancelWait := context.WithTimeout(ctx, environmentOpenWait)
+		_ = s.awaitBuild(waitCtx, p.ID)
+		cancelWait()
+		if p, err = s.getReady(ctx, userID, projectID); err != nil {
+			return nil, false, err
+		}
+	}
 	unlock := s.lockWorkspace(p.ID)
 	defer unlock()
 	if s.isDeleting(p.ID) {
@@ -104,6 +115,7 @@ func (s *service) OpenWorkspace(ctx context.Context, userID, projectID int64) (w
 		ProjectID:   p.ID,
 		Name:        p.Name,
 		Description: p.Description,
+		Image:       imageFor(p),
 	})
 	if err != nil {
 		return nil, false, err

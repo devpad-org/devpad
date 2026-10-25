@@ -116,6 +116,9 @@ type ProjectWorkspaceService interface {
 	BundleProjectBranch(ctx context.Context, userID, workspaceID int64, branch string) (io.ReadCloser, error)
 	ProjectBranchStatus(ctx context.Context, userID, workspaceID int64, branch string) (*agent.RepoBranchStatus, error)
 	FetchProjectBranches(ctx context.Context, userID, workspaceID int64, branches []string, bundle io.Reader) ([]agent.RepoBranch, error)
+	// RebuildProjectContainer replaces the workspace's container with one
+	// made from image, keeping /workspace.
+	RebuildProjectContainer(ctx context.Context, userID, workspaceID int64, image string) (*Workspace, error)
 }
 
 // GitBridgeService carries git-remote-devpad's requests out of a project

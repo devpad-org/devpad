@@ -22,6 +22,7 @@ const description = ref('')
 const defaultBranch = ref('')
 const upstreamUrl = ref('')
 const setupScript = ref('')
+const environment = ref('')
 const maxSandboxes = ref(DEFAULT_MAX_SANDBOXES)
 const localError = ref('')
 
@@ -35,6 +36,7 @@ watch(
     defaultBranch.value = p?.defaultBranch ?? ''
     upstreamUrl.value = p?.upstreamUrl ?? ''
     setupScript.value = p?.setupScript ?? ''
+    environment.value = p?.environment ?? ''
     maxSandboxes.value = p?.maxSandboxes ?? DEFAULT_MAX_SANDBOXES
     localError.value = ''
   },
@@ -56,6 +58,7 @@ function handleSubmit() {
     name: name.value.trim(),
     description: description.value.trim(),
     setupScript: setupScript.value,
+    environment: environment.value,
     maxSandboxes: max,
   }
   if (!props.project) {
@@ -106,6 +109,18 @@ function handleSubmit() {
             <label class="form-label" for="project-setup">Setup script</label>
             <textarea id="project-setup" v-model="setupScript" class="form-input form-textarea form-mono" rows="4" placeholder="npm ci" />
             <p class="form-hint">Runs in your project workspace and each new agent sandbox after the repo is checked out. Agents start once it finishes and are told if it failed.</p>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="project-environment">Environment</label>
+            <textarea
+              id="project-environment"
+              v-model="environment"
+              class="form-input form-textarea form-mono"
+              rows="5"
+              spellcheck="false"
+              placeholder="RUN apt-get update &amp;&amp; apt-get install -y nodejs"
+            />
+            <p class="form-hint">Dockerfile lines, without <span class="mono">FROM</span>, run as root on devpad's workspace image. Workspaces are made from the result, so install toolchains and system packages here and project dependencies in the setup script.</p>
           </div>
           <div class="form-group">
             <label class="form-label" for="project-max">Concurrent sandboxes</label>

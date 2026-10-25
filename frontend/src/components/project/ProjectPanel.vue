@@ -7,6 +7,7 @@ import { useProjectStore } from '@/stores/projects'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import ConversionNotice from './ConversionNotice.vue'
 import ProjectModal from './ProjectModal.vue'
+import ProjectEnvironment from './ProjectEnvironment.vue'
 import ProjectSetup from './ProjectSetup.vue'
 import StatusBadge from './StatusBadge.vue'
 
@@ -124,6 +125,7 @@ async function push() {
         </dl>
       </div>
 
+      <ProjectEnvironment :workspace-status="workspaceStatus" />
       <ProjectSetup :workspace-status="workspaceStatus" />
 
       <div class="side-section actions">

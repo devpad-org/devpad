@@ -20,7 +20,7 @@ import (
 // mockContainerManager is a test double for container.Manager.
 type mockContainerManager struct{}
 
-func (m *mockContainerManager) Create(_ context.Context, _, _, _ string, _ []string, _, _ int64) (string, error) {
+func (m *mockContainerManager) Create(_ context.Context, _, _, _, _ string, _ []string, _, _ int64) (string, error) {
 	return "mock-container", nil
 }
 func (m *mockContainerManager) Start(_ context.Context, _ string) error   { return nil }
@@ -58,6 +58,15 @@ func (m *mockContainerManager) ExecResize(_ context.Context, _ string, _, _ uint
 func (m *mockContainerManager) CopyFileToContainer(_ context.Context, _, _ string, _ []byte, _ int64) error {
 	return nil
 }
+func (m *mockContainerManager) Rename(context.Context, string, string) error { return nil }
+func (m *mockContainerManager) BuildProjectImage(context.Context, string, []byte, container.BuildOptions) (string, error) {
+	return "", nil
+}
+func (m *mockContainerManager) ImageID(context.Context, string) (string, error) { return "", nil }
+func (m *mockContainerManager) ListImages(context.Context, string) ([]container.ImageInfo, error) {
+	return nil, nil
+}
+func (m *mockContainerManager) RemoveImage(context.Context, string) error { return nil }
 func (m *mockContainerManager) BuildImage(_ context.Context, _ []byte, _ []byte, _ string) error {
 	return nil
 }
@@ -104,6 +113,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		kind TEXT NOT NULL DEFAULT 'interactive',
 		branch TEXT NOT NULL DEFAULT '',
 		repo_seeded INTEGER NOT NULL DEFAULT 0,
+		container_image TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);

@@ -38,8 +38,8 @@ func NewRepository(db *sql.DB) Repository {
 func (r *repository) Create(ctx context.Context, ws *Workspace) error {
 	now := time.Now()
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO workspaces (user_id, name, description, status, container_id, volume_name, network_name, agent_token, default_agent_id, memory_limit, nano_cpus, project_id, kind, branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ws.UserID, ws.Name, ws.Description, ws.Status, ws.ContainerID, ws.VolumeName, ws.NetworkName, ws.AgentToken, defaultAgentID(ws.DefaultAgentID), ws.MemoryLimit, ws.NanoCPUs, nullableID(ws.ProjectID), workspaceKind(ws.Kind), ws.Branch, now, now,
+		`INSERT INTO workspaces (user_id, name, description, status, container_id, volume_name, network_name, agent_token, default_agent_id, memory_limit, nano_cpus, project_id, kind, branch, container_image, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ws.UserID, ws.Name, ws.Description, ws.Status, ws.ContainerID, ws.VolumeName, ws.NetworkName, ws.AgentToken, defaultAgentID(ws.DefaultAgentID), ws.MemoryLimit, ws.NanoCPUs, nullableID(ws.ProjectID), workspaceKind(ws.Kind), ws.Branch, ws.Image, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting workspace: %w", err)
@@ -107,8 +107,8 @@ func (r *repository) ListByProjectID(ctx context.Context, projectID int64) ([]*W
 func (r *repository) Update(ctx context.Context, ws *Workspace) error {
 	now := time.Now()
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE workspaces SET name = ?, description = ?, status = ?, container_id = ?, volume_name = ?, network_name = ?, agent_token = ?, default_agent_id = ?, memory_limit = ?, nano_cpus = ?, updated_at = ? WHERE id = ?`,
-		ws.Name, ws.Description, ws.Status, ws.ContainerID, ws.VolumeName, ws.NetworkName, ws.AgentToken, defaultAgentID(ws.DefaultAgentID), ws.MemoryLimit, ws.NanoCPUs, now, ws.ID,
+		`UPDATE workspaces SET name = ?, description = ?, status = ?, container_id = ?, volume_name = ?, network_name = ?, agent_token = ?, default_agent_id = ?, memory_limit = ?, nano_cpus = ?, container_image = ?, updated_at = ? WHERE id = ?`,
+		ws.Name, ws.Description, ws.Status, ws.ContainerID, ws.VolumeName, ws.NetworkName, ws.AgentToken, defaultAgentID(ws.DefaultAgentID), ws.MemoryLimit, ws.NanoCPUs, ws.Image, now, ws.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("updating workspace: %w", err)
@@ -197,7 +197,7 @@ func (r *repository) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-const workspaceColumns = `id, user_id, name, description, status, container_id, volume_name, network_name, agent_token, default_agent_id, memory_limit, nano_cpus, project_id, kind, branch, repo_seeded, created_at, updated_at`
+const workspaceColumns = `id, user_id, name, description, status, container_id, volume_name, network_name, agent_token, default_agent_id, memory_limit, nano_cpus, project_id, kind, branch, repo_seeded, container_image, created_at, updated_at`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -206,7 +206,7 @@ type rowScanner interface {
 func scanWorkspace(row rowScanner) (*Workspace, error) {
 	ws := &Workspace{}
 	var projectID sql.NullInt64
-	err := row.Scan(&ws.ID, &ws.UserID, &ws.Name, &ws.Description, &ws.Status, &ws.ContainerID, &ws.VolumeName, &ws.NetworkName, &ws.AgentToken, &ws.DefaultAgentID, &ws.MemoryLimit, &ws.NanoCPUs, &projectID, &ws.Kind, &ws.Branch, &ws.RepoSeeded, &ws.CreatedAt, &ws.UpdatedAt)
+	err := row.Scan(&ws.ID, &ws.UserID, &ws.Name, &ws.Description, &ws.Status, &ws.ContainerID, &ws.VolumeName, &ws.NetworkName, &ws.AgentToken, &ws.DefaultAgentID, &ws.MemoryLimit, &ws.NanoCPUs, &projectID, &ws.Kind, &ws.Branch, &ws.RepoSeeded, &ws.Image, &ws.CreatedAt, &ws.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

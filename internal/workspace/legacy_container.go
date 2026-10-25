@@ -51,7 +51,7 @@ func (s *service) ensureContainerHasToken(ctx context.Context, ws *Workspace) er
 	containerEnv := []string{
 		fmt.Sprintf("AGENT_AUTH_TOKEN=%s", ws.AgentToken),
 	}
-	newID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.VolumeName, ws.NetworkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
+	newID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.Image, ws.VolumeName, ws.NetworkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
 	if err != nil {
 		return fmt.Errorf("creating replacement container: %w", err)
 	}
