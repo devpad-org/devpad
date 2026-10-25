@@ -479,6 +479,10 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("GET /api/ai/providers", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleListProviders)))
 	mux.Handle("PUT /api/ai/providers/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleUpdateProvider)))
 
+	// Unknown API paths get a JSON 404 rather than the SPA, so a client
+	// calling a removed or mistyped endpoint sees a real error.
+	mux.HandleFunc("/api/", handleAPINotFound)
+
 	// Serve embedded frontend for all other routes
 	mux.Handle("/", web.Handler())
 }
@@ -487,6 +491,12 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, `{"status":"ok"}`)
+}
+
+func handleAPINotFound(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	fmt.Fprint(w, `{"error":"not found"}`)
 }
 
 // buildHandler wraps the app mux with the same-origin guard and frame

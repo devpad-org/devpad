@@ -6,27 +6,19 @@ export type TransitionState = 'starting' | 'stopping'
 
 export const useWorkspaceStore = defineStore('workspaces', () => {
   const workspaces = ref<Workspace[]>([])
-  const loading = ref(false)
-  const loaded = ref(false)
   const error = ref<string | null>(null)
   const transitioning = reactive(new Map<number, TransitionState>())
 
-  // Only a fetch before the first successful load shows loading, and an
-  // error stays until a fetch succeeds, so background polls don't flicker
-  // the page between its states.
+  // A failed fetch keeps the last list and reports the error until a fetch
+  // succeeds, so background polls don't flicker the page.
   async function fetchWorkspaces() {
-    const initial = !loaded.value
-    if (initial && !error.value) loading.value = true
     try {
       const response = await workspaceApi.list()
       workspaces.value = response.workspaces
-      loaded.value = true
       error.value = null
     } catch (e) {
-      if (initial) error.value = 'Failed to load workspaces'
+      error.value = e instanceof Error ? e.message : 'Failed to load workspaces'
       throw e
-    } finally {
-      loading.value = false
     }
   }
 
@@ -74,8 +66,6 @@ export const useWorkspaceStore = defineStore('workspaces', () => {
 
   return {
     workspaces,
-    loading,
-    loaded,
     error,
     transitioning,
     fetchWorkspaces,

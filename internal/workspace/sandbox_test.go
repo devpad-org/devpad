@@ -135,6 +135,42 @@ func TestCreateSandboxNeverInjectsSSHKeys(t *testing.T) {
 	}
 }
 
+// Legacy standalone workspaces keep receiving the user's SSH key each time
+// they start, which is the only way they get it now that devpad no longer
+// creates them.
+func TestLegacyWorkspaceStartInjectsSSHKeys(t *testing.T) {
+	svc, ra := setupSandboxService(t)
+	ctx := context.Background()
+
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "legacy", "")
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if _, err := svc.Stop(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	before := len(ra.paths())
+
+	if _, err := svc.Start(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	after := ra.paths()[before:]
+	if len(after) == 0 {
+		t.Fatal("start sent no agent requests; expected SSH key injection")
+	}
+	for _, p := range after {
+		if !strings.HasPrefix(p, "/api/command") {
+			t.Fatalf("unexpected agent request %q on start", p)
+		}
+	}
+	ra.mu.Lock()
+	body := ra.bodies["/api/command"]
+	ra.mu.Unlock()
+	if !strings.Contains(body, ".ssh") {
+		t.Fatalf("expected the injection commands to write ~/.ssh, last command body: %s", body)
+	}
+}
+
 func TestCreateSandboxValidation(t *testing.T) {
 	svc, _ := setupSandboxService(t)
 	tests := []struct {
