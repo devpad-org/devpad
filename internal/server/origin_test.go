@@ -1,6 +1,7 @@
 package server
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,6 +31,7 @@ type guardRequest struct {
 	contentType string
 	body        string
 	websocket   bool
+	upgrade     string
 }
 
 func (g guardRequest) build() *http.Request {
@@ -58,6 +60,9 @@ func (g guardRequest) build() *http.Request {
 	if g.websocket {
 		r.Header.Set("Connection", "keep-alive, Upgrade")
 		r.Header.Set("Upgrade", "websocket")
+		if g.upgrade != "" {
+			r.Header.Set("Upgrade", g.upgrade)
+		}
 	}
 	return r
 }
@@ -90,6 +95,7 @@ func TestSameOriginGuard(t *testing.T) {
 		{"delete from preview", guardRequest{method: http.MethodDelete, path: "/api/projects/1", secFetch: "same-site", origin: previewOrigin}, http.StatusForbidden},
 		{"websocket from app", guardRequest{method: http.MethodGet, path: "/api/workspaces/1/terminal", secFetch: "same-origin", origin: testAppOrigin, websocket: true}, http.StatusOK},
 		{"websocket from preview", guardRequest{method: http.MethodGet, path: "/api/workspaces/1/terminal", secFetch: "same-site", origin: previewOrigin, websocket: true}, http.StatusForbidden},
+		{"websocket listed among upgrade tokens", guardRequest{method: http.MethodGet, path: "/api/workspaces/1/terminal", origin: "https://evil.test", websocket: true, upgrade: "foo, WebSocket"}, http.StatusForbidden},
 		{"websocket with foreign origin only", guardRequest{method: http.MethodGet, path: "/api/workspaces/1/terminal", origin: "https://evil.test", websocket: true}, http.StatusForbidden},
 		{"json with charset", guardRequest{secFetch: "same-origin", contentType: "application/json; charset=utf-8", body: "{}"}, http.StatusOK},
 		{"text/plain body", guardRequest{secFetch: "same-origin", contentType: "text/plain", body: "{}"}, http.StatusUnsupportedMediaType},
@@ -168,5 +174,109 @@ func TestAppOrigins(t *testing.T) {
 	got := appOrigins(Config{Port: 8080})
 	if len(got) != 2 || got[0] != "http://localhost:8080" || got[1] != "http://127.0.0.1:8080" {
 		t.Fatalf("development: %v", got)
+	}
+}
+
+func TestBuildHandlerWiring(t *testing.T) {
+	cfg := Config{Domain: "devpad.example.com", PreviewDomain: "preview.example.com", Port: 443}
+	reached := false
+	app := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+	previews := preview.NewHandler(nil, cfg.PreviewDomain, cfg.Port)
+	h := buildHandler(app, http.HandlerFunc(previews.HandleProxy), cfg)
+
+	serve := func(r *http.Request) *httptest.ResponseRecorder {
+		reached = false
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+	assertFramingDenied := func(t *testing.T, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if got := rec.Header().Get("Content-Security-Policy"); got != "frame-ancestors 'none'" {
+			t.Fatalf("Content-Security-Policy = %q", got)
+		}
+		if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+			t.Fatalf("X-Frame-Options = %q", got)
+		}
+	}
+
+	t.Run("app pages cannot be framed", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/projects/1", nil)
+		r.Host = "devpad.example.com"
+		rec := serve(r)
+		if !reached || rec.Code != http.StatusOK {
+			t.Fatalf("reached=%v status=%d", reached, rec.Code)
+		}
+		assertFramingDenied(t, rec)
+	})
+
+	t.Run("refusals carry frame headers too", func(t *testing.T) {
+		r := guardRequest{secFetch: "same-site", origin: "https://3-8080.preview.example.com", contentType: "application/json", body: "{}"}.build()
+		rec := serve(r)
+		if reached || rec.Code != http.StatusForbidden {
+			t.Fatalf("same-site POST: reached=%v status=%d, want refused", reached, rec.Code)
+		}
+		assertFramingDenied(t, rec)
+	})
+
+	t.Run("previews are not given app frame headers", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Host = "3-8080.preview.example.com"
+		rec := serve(r)
+		if reached {
+			t.Fatal("preview host reached the app")
+		}
+		if rec.Header().Get("Content-Security-Policy") != "" || rec.Header().Get("X-Frame-Options") != "" {
+			t.Fatalf("preview response got app frame headers: %v", rec.Header())
+		}
+	})
+
+	t.Run("body limit applies", func(t *testing.T) {
+		body := strings.Repeat("x", 2<<20)
+		app := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := io.ReadAll(r.Body); err == nil {
+				t.Error("expected the body limit to stop the read")
+			}
+		})
+		h := buildHandler(app, http.HandlerFunc(previews.HandleProxy), cfg)
+		r := guardRequest{secFetch: "same-origin", contentType: "application/json", body: body}.build()
+		h.ServeHTTP(httptest.NewRecorder(), r)
+	})
+}
+
+func TestValidateDomains(t *testing.T) {
+	tests := []struct {
+		domain, preview string
+		wantErr         bool
+	}{
+		{"devpad.example.com", "preview.example.com", false},
+		{"devpad.example.com", "devpad-preview.net", false},
+		{"devpad.example.com", "", false},
+		{"", "preview.example.com", false},
+		{"devpad.example.com", "devpad.example.com", true},
+		{"devpad.example.com", "Example.com.", true},
+		{"app.preview.example.com", "preview.example.com", true},
+		{"notpreview.example.com", "preview.example.com", false},
+	}
+	for _, tt := range tests {
+		err := validateDomains(Config{Domain: tt.domain, PreviewDomain: tt.preview})
+		if (err != nil) != tt.wantErr {
+			t.Errorf("validateDomains(%q, %q) = %v, wantErr %v", tt.domain, tt.preview, err, tt.wantErr)
+		}
+	}
+}
+
+func TestSecureCookies(t *testing.T) {
+	if secureCookies(Config{}) {
+		t.Error("plain HTTP development must not use Secure cookies")
+	}
+	if !secureCookies(Config{Domain: "devpad.example.com"}) {
+		t.Error("a domain means HTTPS")
+	}
+	if !secureCookies(Config{PreviewDomain: "preview.example.com"}) {
+		t.Error("a preview domain forces Secure cookies")
 	}
 }

@@ -42,6 +42,10 @@ type Server struct {
 
 // New creates a new Server with the given configuration.
 func New(cfg Config) (*Server, error) {
+	if err := validateDomains(cfg); err != nil {
+		return nil, err
+	}
+
 	db, err := database.Open(cfg.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
@@ -69,9 +73,12 @@ func New(cfg Config) (*Server, error) {
 	userRepo := auth.NewUserRepository(db.Conn())
 	sessionRepo := auth.NewSessionRepository(db.Conn())
 	authService := auth.NewService(userRepo, sessionRepo)
-	secureCookie := cfg.Domain != ""
+	secureCookie := secureCookies(cfg)
+	if secureCookie && cfg.Domain == "" {
+		log.Printf("--preview-domain is set, so session cookies are Secure (%s): devpad must be served over HTTPS, as previews already require", auth.SessionCookieName(true))
+	}
 	authHandler := auth.NewHandler(authService, secureCookie)
-	authMiddleware := auth.NewMiddleware(authService)
+	authMiddleware := auth.NewMiddleware(authService, secureCookie)
 
 	// Settings layer
 	preferencesRepo := settings.NewPreferencesRepository(db.Conn())
@@ -145,14 +152,7 @@ func New(cfg Config) (*Server, error) {
 	mux := http.NewServeMux()
 	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectHandler, taskHandler, mrHandler, aiModule.Handler, previewHandler)
 
-	// Refuse state-changing requests and WebSocket upgrades from other origins,
-	// then route preview subdomain requests to the preview proxy so they never
-	// reach the app.
-	handler := hostRouter(sameOriginGuard(mux, origins), http.HandlerFunc(previewHandler.HandleProxy), cfg.PreviewDomain)
-
-	// Apply per-route body size limits to prevent memory exhaustion.
-	// Conversation message saves get 10MB; everything else gets 1MB.
-	handler = requestBodyLimit(handler)
+	handler := buildHandler(mux, http.HandlerFunc(previewHandler.HandleProxy), cfg)
 
 	// Start periodic cleanup of expired sessions and preview tokens.
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
@@ -484,6 +484,50 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, `{"status":"ok"}`)
+}
+
+// buildHandler wraps the app mux with the same-origin guard and frame
+// headers, routes preview subdomain requests to the preview proxy so they
+// never reach the app, and applies per-route body size limits to prevent
+// memory exhaustion.
+func buildHandler(appMux, previewHandler http.Handler, cfg Config) http.Handler {
+	app := denyFraming(sameOriginGuard(appMux, appOrigins(cfg)))
+	return requestBodyLimit(hostRouter(app, previewHandler, cfg.PreviewDomain))
+}
+
+// secureCookies reports whether session cookies must be Secure. A preview
+// domain forces it: previews already require HTTPS (their cookie is Secure),
+// and only a Secure cookie can carry the __Host- prefix that stops previews
+// tossing a session cookie onto the app.
+func secureCookies(cfg Config) bool {
+	return cfg.Domain != "" || cfg.PreviewDomain != ""
+}
+
+// validateDomains refuses a preview domain that would swallow the app's own
+// host: the host router sends every host under the preview domain to the
+// preview proxy, so the app would be unreachable.
+func validateDomains(cfg Config) error {
+	if cfg.Domain == "" || cfg.PreviewDomain == "" {
+		return nil
+	}
+	domain := strings.ToLower(strings.TrimSuffix(cfg.Domain, "."))
+	preview := strings.ToLower(strings.TrimSuffix(cfg.PreviewDomain, "."))
+	if domain == preview || strings.HasSuffix(domain, "."+preview) {
+		return fmt.Errorf("--domain %q must not be the preview domain %q or a subdomain of it: every host under the preview domain is served as a workspace preview", cfg.Domain, cfg.PreviewDomain)
+	}
+	return nil
+}
+
+// denyFraming stops other pages, previews included, from framing the app. A
+// framed app would load with the user's session and its own requests pass the
+// same-origin guard, so a preview could overlay it and trick the user into
+// clicking Merge or Approve.
+func denyFraming(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // hostRouter returns a handler that routes preview subdomain requests to the

@@ -104,6 +104,12 @@ When `--domain` is set, Devpad automatically obtains and renews TLS certificates
 
 You need a Cloudflare API token with **Zone → DNS → Edit** permissions for the zone(s) containing your domain and preview domain. Create one at [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens).
 
+### Preview domain isolation
+
+Workspace previews serve whatever the workspace (and the AI agents in it) puts on a port, so devpad treats them as hostile pages. It refuses requests to the app from any other origin, stops the app from being framed, strips `Domain` from cookies previews set, and names its session cookie `__Host-devpad_session` so a preview cannot shadow it. Setting `--preview-domain` makes session cookies `Secure`, so devpad must then be served over HTTPS (previews already require it).
+
+The strongest setup puts previews on a **separate registrable domain** from the app, for example `--domain devpad.example.com --preview-domain example-preview.net`. Browsers then treat previews as cross-site rather than as siblings of the app, which closes these attacks at the browser level as well. `--domain` may not be the preview domain or a subdomain of it.
+
 > **Tip:** On Linux, to bind ports 80/443 without root:
 > ```bash
 > sudo setcap cap_net_bind_service=+ep ./bin/devpad

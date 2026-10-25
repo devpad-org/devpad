@@ -604,3 +604,46 @@ func TestRepository_DeleteExpired(t *testing.T) {
 		t.Errorf("expected 0 tokens, got %d", count)
 	}
 }
+
+func TestSanitizeSetCookies(t *testing.T) {
+	h := http.Header{}
+	h.Add("Set-Cookie", "app=1; Domain=example.com; Path=/; Secure")
+	h.Add("Set-Cookie", "theme=dark; domain=.preview.example.com")
+	h.Add("Set-Cookie", "plain=2; Path=/x; HttpOnly")
+	h.Add("Set-Cookie", "devpad_session=tossed; Domain=example.com; Path=/api")
+	h.Add("Set-Cookie", "__Host-devpad_session=tossed; Path=/; Secure")
+	h.Add("Set-Cookie", "DEVPAD_PREVIEW=forged; Domain=preview.example.com")
+	h.Add("Set-Cookie", " devpad_preview =forged")
+
+	sanitizeSetCookies(h)
+
+	got := h.Values("Set-Cookie")
+	want := []string{
+		"app=1; Path=/; Secure",
+		"theme=dark",
+		"plain=2; Path=/x; HttpOnly",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Set-Cookie = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Set-Cookie[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	for _, line := range got {
+		c, err := http.ParseSetCookie(line)
+		if err != nil {
+			t.Fatalf("parsing %q: %v", line, err)
+		}
+		if c.Domain != "" {
+			t.Fatalf("%q still has a Domain", line)
+		}
+	}
+
+	empty := http.Header{}
+	sanitizeSetCookies(empty)
+	if _, ok := empty["Set-Cookie"]; ok {
+		t.Fatal("sanitizing no cookies must not add a header")
+	}
+}

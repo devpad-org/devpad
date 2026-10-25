@@ -79,7 +79,9 @@ func isStateChanging(r *http.Request) bool {
 }
 
 func isWebSocketUpgrade(r *http.Request) bool {
-	return headerHasToken(r.Header, "Connection", "upgrade") && strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+	// Token matching mirrors gorilla/websocket, so the guard sees an upgrade
+	// exactly when the WebSocket handlers would accept one.
+	return headerHasToken(r.Header, "Connection", "upgrade") && headerHasToken(r.Header, "Upgrade", "websocket")
 }
 
 func headerHasToken(h http.Header, name, token string) bool {

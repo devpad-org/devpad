@@ -200,6 +200,10 @@ func (h *Handler) proxyToContainer(w http.ResponseWriter, r *http.Request, wsID 
 				req.Header.Set("X-Devpad-Agent-Token", agentToken)
 			}
 		},
+		ModifyResponse: func(resp *http.Response) error {
+			sanitizeSetCookies(resp.Header)
+			return nil
+		},
 		// Flush immediately for streaming responses (SSE, chunked).
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -310,6 +314,49 @@ func (h *Handler) hmacSign(data string) string {
 func (h *Handler) hmacVerify(data, signature string) bool {
 	expected := h.hmacSign(data)
 	return hmac.Equal([]byte(expected), []byte(signature))
+}
+
+// reservedCookieNames are cookies devpad itself sets; a container may never
+// set them through the preview proxy.
+var reservedCookieNames = []string{"devpad_session", "__Host-devpad_session", PreviewCookieName}
+
+// sanitizeSetCookies makes every cookie a container sets host-only, by
+// dropping its Domain attribute, and drops cookies named like devpad's own.
+// Without this a preview could set a cookie for the parent domain that the
+// app (or other previews) would read in place of the real one. It is defense
+// in depth: page script can still write document.cookie, which the app's
+// __Host- session cookie name guards against.
+func sanitizeSetCookies(h http.Header) {
+	lines := h.Values("Set-Cookie")
+	if len(lines) == 0 {
+		return
+	}
+	h.Del("Set-Cookie")
+	for _, line := range lines {
+		parts := strings.Split(line, ";")
+		name, _, _ := strings.Cut(parts[0], "=")
+		if isReservedCookie(strings.TrimSpace(name)) {
+			continue
+		}
+		kept := parts[:1]
+		for _, attr := range parts[1:] {
+			key, _, _ := strings.Cut(attr, "=")
+			if strings.EqualFold(strings.TrimSpace(key), "domain") {
+				continue
+			}
+			kept = append(kept, attr)
+		}
+		h.Add("Set-Cookie", strings.Join(kept, ";"))
+	}
+}
+
+func isReservedCookie(name string) bool {
+	for _, reserved := range reservedCookieNames {
+		if strings.EqualFold(name, reserved) {
+			return true
+		}
+	}
+	return false
 }
 
 // removeCookie removes a named cookie from the request before proxying.

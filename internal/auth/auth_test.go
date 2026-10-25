@@ -230,7 +230,7 @@ func TestHandler_SetupSetsSessionCookie(t *testing.T) {
 	req.AddCookie(sessionCookie)
 	rec = httptest.NewRecorder()
 
-	middleware := NewMiddleware(svc)
+	middleware := NewMiddleware(svc, false)
 	middleware.RequireAuth(http.HandlerFunc(handler.HandleMe)).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -284,7 +284,7 @@ func TestHandler_SetupAndLogin(t *testing.T) {
 	handler.HandleMe(rec, req)
 
 	// HandleMe uses UserFromContext, so we need to go through middleware
-	middleware := NewMiddleware(svc)
+	middleware := NewMiddleware(svc, false)
 	req = httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
 	req.AddCookie(sessionCookie)
 	rec = httptest.NewRecorder()
@@ -336,7 +336,7 @@ func TestHandler_SetupValidation(t *testing.T) {
 
 func TestMiddleware_RequireAuth_NoSession(t *testing.T) {
 	svc, _ := setupTestService(t)
-	middleware := NewMiddleware(svc)
+	middleware := NewMiddleware(svc, false)
 
 	called := false
 	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -380,7 +380,7 @@ func TestMiddleware_RequireAdmin_NonAdmin(t *testing.T) {
 		t.Fatalf("creating session: %v", err)
 	}
 
-	middleware := NewMiddleware(svc)
+	middleware := NewMiddleware(svc, false)
 	called := false
 	handler := middleware.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -414,7 +414,7 @@ func TestMiddleware_RequireAdmin_Admin(t *testing.T) {
 		t.Fatalf("login failed: %v", err)
 	}
 
-	middleware := NewMiddleware(svc)
+	middleware := NewMiddleware(svc, false)
 	called := false
 	handler := middleware.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -432,5 +432,66 @@ func TestMiddleware_RequireAdmin_Admin(t *testing.T) {
 	}
 	if !called {
 		t.Error("handler should have been called for admin")
+	}
+}
+
+func TestHandler_SecureSessionCookieUsesHostPrefix(t *testing.T) {
+	svc, _ := setupTestService(t)
+	handler := NewHandler(svc, true)
+	middleware := NewMiddleware(svc, true)
+
+	body := `{"username":"admin","email":"admin@test.com","password":"password123"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.HandleSetup(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if findCookie(rec.Result().Cookies(), cookieName) != nil {
+		t.Fatal("secure handler must not set the unprefixed cookie")
+	}
+	session := findCookie(rec.Result().Cookies(), "__Host-devpad_session")
+	if session == nil {
+		t.Fatal("expected __Host-devpad_session cookie")
+	}
+	// Browsers only accept a __Host- cookie that is Secure, Path=/ and has no Domain.
+	if !session.Secure || session.Path != "/" || session.Domain != "" {
+		t.Fatalf("__Host- cookie needs Secure, Path=/ and no Domain, got secure=%v path=%q domain=%q", session.Secure, session.Path, session.Domain)
+	}
+
+	me := func(cookies ...*http.Cookie) int {
+		req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		middleware.RequireAuth(http.HandlerFunc(handler.HandleMe)).ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := me(session); code != http.StatusOK {
+		t.Fatalf("real session: status %d, want 200", code)
+	}
+	// The unprefixed name is never read, even holding a valid token, so a
+	// cookie tossed from a preview subdomain cannot stand in for the session.
+	if code := me(&http.Cookie{Name: cookieName, Value: session.Value}); code != http.StatusUnauthorized {
+		t.Fatalf("unprefixed cookie: status %d, want 401", code)
+	}
+	// A tossed cookie sent first does not shadow the real one.
+	if code := me(&http.Cookie{Name: cookieName, Value: "tossed"}, session); code != http.StatusOK {
+		t.Fatalf("tossed cookie alongside session: status %d, want 200", code)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	req.AddCookie(session)
+	rec = httptest.NewRecorder()
+	handler.HandleLogout(rec, req)
+	cleared := findCookie(rec.Result().Cookies(), "__Host-devpad_session")
+	if cleared == nil || cleared.Value != "" || !cleared.Secure || cleared.Path != "/" {
+		t.Fatalf("logout must clear the __Host- cookie, got %+v", cleared)
+	}
+	if code := me(session); code != http.StatusUnauthorized {
+		t.Fatalf("after logout: status %d, want 401", code)
 	}
 }
