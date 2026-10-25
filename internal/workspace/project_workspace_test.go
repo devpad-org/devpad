@@ -146,12 +146,17 @@ func TestRebuildProjectContainerSwapsContainersKeepingTheVolume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
-	newID := "mock-container-" + id + "-next"
+	created := cm.created[len(cm.created)-1]
+	newName, _, _ := strings.Cut(created, " ")
+	newID := "mock-container-" + newName
+	if !strings.HasPrefix(newName, id+"-") || newName == id {
+		t.Fatalf("expected the new container made under a name of its own, got %q", created)
+	}
 	if rebuilt.ContainerID != newID || rebuilt.Image != "devpad-project-7:bbb" || rebuilt.Status != StatusRunning || rebuilt.VolumeName != ws.VolumeName {
 		t.Fatalf("unexpected rebuilt workspace: %+v", rebuilt)
 	}
-	if got := cm.created[len(cm.created)-1]; got != id+"-next devpad-project-7:bbb" {
-		t.Fatalf("expected the new container made before the old went, got %q", got)
+	if !strings.HasSuffix(created, " devpad-project-7:bbb") {
+		t.Fatalf("expected the new container made from the new image, got %q", created)
 	}
 	if len(cm.removed) != 1 || cm.removed[0] != oldID {
 		t.Fatalf("expected the old container removed, got %v", cm.removed)
@@ -198,5 +203,38 @@ func TestRebuildProjectContainerRefusesOtherWorkspaces(t *testing.T) {
 	}
 	if _, err := svc.RebuildProjectContainer(ctx, 1, sandbox.ID, "x"); !errors.Is(err, ErrNotProjectWorkspace) {
 		t.Fatalf("expected ErrNotProjectWorkspace, got %v", err)
+	}
+}
+
+func TestRebuildExcludesOtherLifecycleChanges(t *testing.T) {
+	svc, _ := setupSandboxService(t)
+	s := svc.(*service)
+	ctx := context.Background()
+	ws, err := svc.CreateProjectWorkspace(ctx, 1, ProjectWorkspaceSpec{ProjectID: 7, Name: "proj"})
+	if err != nil {
+		t.Fatalf("create project workspace: %v", err)
+	}
+	done, err := s.beginRebuild(ws.ID)
+	if err != nil {
+		t.Fatalf("begin rebuild: %v", err)
+	}
+	if _, err := svc.Stop(ctx, 1, ws.ID); !errors.Is(err, ErrRebuilding) {
+		t.Fatalf("expected a stop refused mid-rebuild, got %v", err)
+	}
+	if _, err := s.UpdateResourceLimits(ctx, ws.ID, DefaultMemoryLimit, DefaultNanoCPUs); !errors.Is(err, ErrRebuilding) {
+		t.Fatalf("expected a limits change refused mid-rebuild, got %v", err)
+	}
+	if _, err := svc.RebuildProjectContainer(ctx, 1, ws.ID, "x"); !errors.Is(err, ErrLifecycleBusy) {
+		t.Fatalf("expected a second rebuild refused, got %v", err)
+	}
+	done()
+
+	stopDone, err := s.beginLifecycle(ws.ID)
+	if err != nil {
+		t.Fatalf("begin lifecycle: %v", err)
+	}
+	defer stopDone()
+	if _, err := svc.RebuildProjectContainer(ctx, 1, ws.ID, "x"); !errors.Is(err, ErrLifecycleBusy) {
+		t.Fatalf("expected a rebuild refused while a stop is in flight, got %v", err)
 	}
 }

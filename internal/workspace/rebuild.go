@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 )
@@ -10,7 +12,8 @@ import (
 // made from image, keeping its volume, network and agent token. Only
 // /workspace survives; anything else the old container held is lost. The new
 // container is made before the old one goes, so a failure leaves the
-// workspace as it was. A running workspace is started again.
+// workspace as it was. A running workspace is started again. Nothing else
+// may start, stop or delete the workspace meanwhile.
 func (s *service) RebuildProjectContainer(ctx context.Context, userID, workspaceID int64, image string) (*Workspace, error) {
 	ws, err := s.Get(ctx, userID, workspaceID)
 	if err != nil {
@@ -19,18 +22,28 @@ func (s *service) RebuildProjectContainer(ctx context.Context, userID, workspace
 	if !ws.IsProjectWorkspace() {
 		return nil, ErrNotProjectWorkspace
 	}
-	done, err := s.beginLifecycle(ws.ID)
+	done, err := s.beginRebuild(ws.ID)
 	if err != nil {
 		return nil, err
 	}
 	defer done()
+	// Read it again now that nothing else can change it.
+	if ws, err = s.Get(ctx, userID, workspaceID); err != nil {
+		return nil, err
+	}
 	if ws.ContainerID == "" {
 		return nil, fmt.Errorf("workspace has no container")
 	}
 
 	name := fmt.Sprintf("%d", ws.ID)
+	// A name of its own, so a container left by a rebuild that stopped part
+	// way, or whose rename failed, cannot block this one.
+	suffix := make([]byte, 4)
+	if _, err := rand.Read(suffix); err != nil {
+		return nil, fmt.Errorf("naming the new container: %w", err)
+	}
 	env := s.containerEnv(ctx, ws.ID, ws.AgentToken, ws.NetworkName)
-	newID, err := s.container.Create(ctx, name+"-next", image, ws.VolumeName, ws.NetworkName, env, ws.MemoryLimit, ws.NanoCPUs)
+	newID, err := s.container.Create(ctx, name+"-"+hex.EncodeToString(suffix), image, ws.VolumeName, ws.NetworkName, env, ws.MemoryLimit, ws.NanoCPUs)
 	if err != nil {
 		return nil, fmt.Errorf("creating the new container: %w", err)
 	}
@@ -75,4 +88,24 @@ func (s *service) RebuildProjectContainer(ctx context.Context, userID, workspace
 		log.Printf("workspace %d: agent update failed: %v", ws.ID, err)
 	}
 	return ws, nil
+}
+
+// beginRebuild marks a workspace's container as being replaced, refusing
+// while it is being converted, started, stopped or deleted. The caller must
+// call done.
+func (s *service) beginRebuild(workspaceID int64) (done func(), err error) {
+	s.convertMu.Lock()
+	defer s.convertMu.Unlock()
+	if s.converting[workspaceID] || s.busy[workspaceID] > 0 || s.rebuilding[workspaceID] {
+		return nil, ErrLifecycleBusy
+	}
+	if s.rebuilding == nil {
+		s.rebuilding = make(map[int64]bool)
+	}
+	s.rebuilding[workspaceID] = true
+	return func() {
+		s.convertMu.Lock()
+		defer s.convertMu.Unlock()
+		delete(s.rebuilding, workspaceID)
+	}, nil
 }

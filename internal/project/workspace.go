@@ -70,23 +70,26 @@ const workspaceOpenTimeout = 15 * time.Minute
 // crash or a failed cleanup, holds nothing of the user's yet, so it is
 // replaced.
 func (s *service) OpenWorkspace(ctx context.Context, userID, projectID int64) (ws *workspace.Workspace, created bool, err error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workspaceOpenTimeout)
-	defer cancel()
+	detached := context.WithoutCancel(ctx)
+	// A new workspace should not start on an image about to be replaced.
+	// The wait is bounded, and comes before the time making the workspace
+	// gets; after it, the workspace gets the last image that built, and can
+	// be rebuilt once the build ends.
+	waitCtx, cancelWait := context.WithTimeout(detached, environmentOpenWait)
+	if p, err := s.getReady(waitCtx, userID, projectID); err == nil {
+		if existing, err := s.projectWorkspace(waitCtx, p); errors.Is(err, ErrNoWorkspace) || (err == nil && !existing.RepoSeeded) {
+			if err := s.awaitBuild(waitCtx, p.ID); err != nil {
+				log.Printf("project %d: making its workspace without waiting longer for its environment build: %v", p.ID, err)
+			}
+		}
+	}
+	cancelWait()
 
+	ctx, cancel := context.WithTimeout(detached, workspaceOpenTimeout)
+	defer cancel()
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
 		return nil, false, err
-	}
-	// A new workspace should not start on an image about to be replaced.
-	// The wait is bounded; after it, the workspace gets the last image that
-	// built, and can be rebuilt once the build ends.
-	if existing, err := s.projectWorkspace(ctx, p); errors.Is(err, ErrNoWorkspace) || (err == nil && !existing.RepoSeeded) {
-		waitCtx, cancelWait := context.WithTimeout(ctx, environmentOpenWait)
-		_ = s.awaitBuild(waitCtx, p.ID)
-		cancelWait()
-		if p, err = s.getReady(ctx, userID, projectID); err != nil {
-			return nil, false, err
-		}
 	}
 	unlock := s.lockWorkspace(p.ID)
 	defer unlock()

@@ -128,6 +128,12 @@ type fakeSandboxes struct {
 	environmentGate chan struct{}
 }
 
+func (f *fakeSandboxes) ProjectEnvironment(context.Context, int64, int64) (*project.Environment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.environment, nil
+}
+
 func (f *fakeSandboxes) AwaitEnvironment(ctx context.Context, _, _ int64) (*project.Environment, error) {
 	f.mu.Lock()
 	gate := f.environmentGate

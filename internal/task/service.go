@@ -62,6 +62,7 @@ type Projects interface {
 	SyncSandboxBase(ctx context.Context, userID, projectID, workspaceID int64) (*agent.RepoBranch, error)
 	AwaitSetup(ctx context.Context, userID, projectID, workspaceID int64) (*project.Setup, error)
 	AwaitEnvironment(ctx context.Context, userID, projectID int64) (*project.Environment, error)
+	ProjectEnvironment(ctx context.Context, userID, projectID int64) (*project.Environment, error)
 	Compare(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoComparison, error)
 }
 
@@ -506,23 +507,27 @@ func (s *service) launch(ctx context.Context, taskID int64) {
 		}
 		return
 	}
-	if err := s.startRun(ctx, t, ws, env, setup); err != nil {
+	// The prompt describes the image the sandbox has, which can be older than
+	// the one read before it was made.
+	if err := s.startRun(ctx, t, ws, env.For(ws.Image), setup); err != nil {
 		s.failUnlessShuttingDown(ctx, t, err.Error())
 	}
 }
 
 // awaitEnvironment waits for a build of the project's environment before
-// a task without a sandbox gets one. It reports false when the task is no
-// longer queued or the service is shutting down.
+// a task without a sandbox gets one; a task with one only reads how it
+// stands. It reports false when the task is no longer queued or the service
+// is shutting down.
 func (s *service) awaitEnvironment(ctx context.Context, taskID int64) (*project.Environment, bool) {
 	t, err := s.repo.GetByID(ctx, taskID)
 	if err != nil || t == nil || t.Status != StatusQueued {
 		return nil, false
 	}
+	read := s.projects.AwaitEnvironment
 	if t.WorkspaceID != 0 {
-		return nil, true
+		read = s.projects.ProjectEnvironment
 	}
-	env, err := s.projects.AwaitEnvironment(ctx, t.UserID, t.ProjectID)
+	env, err := read(ctx, t.UserID, t.ProjectID)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, false

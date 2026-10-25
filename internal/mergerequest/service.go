@@ -506,7 +506,9 @@ func (s *service) launchReview(ctx context.Context, reviewID int64) {
 	if err != nil || mr == nil {
 		return
 	}
-	if err := s.startReviewRun(ctx, mr, rv, ws, diff, env, setup); err != nil && s.rootCtx.Err() == nil {
+	// The prompt describes the image the sandbox has, which can be older than
+	// the one read before it was made.
+	if err := s.startReviewRun(ctx, mr, rv, ws, diff, env.For(ws.Image), setup); err != nil && s.rootCtx.Err() == nil {
 		s.failReview(ctx, mr, rv, err.Error())
 	}
 }

@@ -868,11 +868,11 @@ func TestReviewPromptSaysTheEnvironmentWasStillBuilding(t *testing.T) {
 	e := setup(t)
 	mr := e.openTaskMR(t)
 	e.projects.mu.Lock()
-	e.projects.environment = &project.Environment{Build: &project.Build{Status: project.BuildRunning}, Image: "devpad-project-1:abc"}
+	e.projects.environment = &project.Environment{Build: &project.Build{Status: project.BuildRunning}}
 	e.projects.mu.Unlock()
 	e.startAgentReview(t, mr, AgentReviewInput{})
 	prompt := e.runs.started()[0].Turns[0].Text()
-	for _, want := range []string{"## Environment", "still building", "the last version of it that built"} {
+	for _, want := range []string{"## Environment", "still building", "devpad's own image without it"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}

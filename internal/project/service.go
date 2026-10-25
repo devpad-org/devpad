@@ -427,7 +427,7 @@ func (s *service) Delete(ctx context.Context, userID, projectID int64) error {
 	case <-time.After(buildCleanupTimeout):
 		log.Printf("project %d: its environment build did not stop", p.ID)
 	}
-	s.pruneImages(ctx, p.ID, "")
+	s.pruneImages(ctx, p.ID)
 	return nil
 }
 

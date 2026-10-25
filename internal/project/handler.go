@@ -585,7 +585,7 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrDefaultBranch), errors.Is(err, ErrPublishDefault):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, workspace.ErrNotStandalone), errors.Is(err, workspace.ErrConverting),
+	case errors.Is(err, workspace.ErrNotStandalone), errors.Is(err, workspace.ErrConverting), errors.Is(err, workspace.ErrRebuilding),
 		errors.Is(err, workspace.ErrAgentOutdated), errors.Is(err, workspace.ErrLifecycleBusy):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrNotReady), errors.Is(err, workspace.ErrNotRunning),

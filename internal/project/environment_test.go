@@ -486,3 +486,91 @@ func TestEnvironmentHandlers(t *testing.T) {
 		t.Fatalf("unexpected rebuild: %d %v", code, body)
 	}
 }
+
+func TestEnvironmentForAnOlderImage(t *testing.T) {
+	current := &Environment{Build: &Build{Status: BuildSucceeded}, Image: "devpad-project-1:new", Current: true}
+	if got := current.For("devpad-project-1:new"); !got.Current || EnvironmentPrompt(got) != "" {
+		t.Fatalf("a sandbox on the current image is current: %+v", got)
+	}
+	older := current.For("devpad-project-1:old")
+	if older.Current || !strings.Contains(EnvironmentPrompt(older), "the last version of it that built") {
+		t.Fatalf("a sandbox on an older image should be told: %+v\n%s", older, EnvironmentPrompt(older))
+	}
+	if current.Build.Status != BuildSucceeded {
+		t.Fatal("For must not change the environment it was called on")
+	}
+	base := current.For("")
+	if !strings.Contains(EnvironmentPrompt(base), "devpad's own image without it") {
+		t.Fatalf("a sandbox on devpad's image should be told:\n%s", EnvironmentPrompt(base))
+	}
+	var none *Environment
+	if none.For("x") != nil {
+		t.Fatal("no environment stays none")
+	}
+}
+
+func TestValidateEnvironmentReadsLinesLikeDocker(t *testing.T) {
+	for _, body := range []string{
+		"# a comment that ends in a backslash \\\nFROM ubuntu\n",
+		"FROM\tubuntu\n",
+		"RUN echo one \\\n\n  two\nFROM ubuntu\n",
+	} {
+		if err := validateEnvironment(body); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("expected FROM found in %q, got %v", body, err)
+		}
+	}
+	if err := validateEnvironment("RUN echo one \\\n\n  FROM is still the run\n"); err != nil {
+		t.Errorf("a blank line does not end a continued instruction: %v", err)
+	}
+}
+
+func TestPruneKeepsWhatABuildJustMade(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj", Environment: nodeEnvironment})
+	first := waitForBuild(t, e, p.ID, BuildSucceeded)
+
+	// A newer build has tagged its image but not yet recorded it.
+	gate := make(chan struct{})
+	e.containers.mu.Lock()
+	e.containers.buildGate = gate
+	e.containers.mu.Unlock()
+	e.updateEnvironment(t, e.project(t, p.ID), nodeEnvironment+"RUN true\n")
+	running, _ := e.svc.repo.GetBuild(ctx, p.ID)
+	e.containers.mu.Lock()
+	e.containers.images[running.Image] = map[string]string{"devpad.project": strconv.FormatInt(p.ID, 10)}
+	e.containers.mu.Unlock()
+
+	e.svc.pruneImages(ctx, p.ID)
+	e.containers.mu.Lock()
+	_, keptNew := e.containers.images[running.Image]
+	_, keptCurrent := e.containers.images[first.Image]
+	e.containers.mu.Unlock()
+	if !keptNew || !keptCurrent {
+		t.Fatalf("prune removed an image in use: new kept %v, current kept %v", keptNew, keptCurrent)
+	}
+	close(gate)
+	second := waitForBuild(t, e, p.ID, BuildSucceeded)
+
+	// The image it replaced stays one more round, for a workspace being
+	// made from it.
+	e.containers.mu.Lock()
+	_, keptPrevious := e.containers.images[first.Image]
+	e.containers.mu.Unlock()
+	if !keptPrevious || second.Image != running.Image {
+		t.Fatalf("expected the previous image kept after the build: %v", keptPrevious)
+	}
+}
+
+func TestClearingAndRestoringTheEnvironmentQuickly(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj", Environment: nodeEnvironment})
+	waitForBuild(t, e, p.ID, BuildSucceeded)
+	// Two saves close together: the stored one decides.
+	e.updateEnvironment(t, e.project(t, p.ID), "")
+	e.updateEnvironment(t, e.project(t, p.ID), nodeEnvironment)
+	b := waitForBuild(t, e, p.ID, BuildSucceeded)
+	if got := e.project(t, p.ID).EnvironmentImage; got != b.Image {
+		t.Fatalf("expected the restored environment's image recorded, got %q for %+v", got, b)
+	}
+}

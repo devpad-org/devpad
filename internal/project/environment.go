@@ -85,6 +85,24 @@ type Environment struct {
 	WorkspaceStale bool
 }
 
+// For returns how the environment stands for a workspace made from image,
+// which may be older than the image new workspaces get now.
+func (e *Environment) For(image string) *Environment {
+	if e == nil {
+		return nil
+	}
+	env := *e
+	env.Current = e.Current && image == e.Image
+	if image != e.Image {
+		env.Image = image
+		// Its image predates the latest build, whatever that build did.
+		if env.Build == nil || env.Build.Status == BuildSucceeded {
+			env.Build = &Build{Status: BuildRunning}
+		}
+	}
+	return &env
+}
+
 // environmentBuild is a build running in this process.
 type environmentBuild struct {
 	id     string
@@ -98,18 +116,24 @@ func validateEnvironment(body string) error {
 	if len(body) > environmentLimit {
 		return invalid("the environment must be at most %d KB", environmentLimit/1024)
 	}
+	// Docker drops comment lines before joining continued lines, so a
+	// comment neither continues an instruction nor ends one.
 	continued := false
 	scanner := bufio.NewScanner(strings.NewReader(body))
 	scanner.Buffer(make([]byte, 0, 4096), environmentLimit+1)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		instruction := !continued && line != "" && !strings.HasPrefix(line, "#")
-		continued = strings.HasSuffix(line, `\`) || (continued && (line == "" || strings.HasPrefix(line, "#")))
-		if !instruction {
+		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		keyword, _, _ := strings.Cut(line, " ")
-		if strings.EqualFold(keyword, "FROM") {
+		starts := !continued && line != ""
+		if line != "" {
+			continued = strings.HasSuffix(line, `\`)
+		}
+		if !starts {
+			continue
+		}
+		if fields := strings.Fields(line); strings.EqualFold(fields[0], "FROM") {
 			return invalid("the environment cannot use FROM: devpad builds it on its own workspace image")
 		}
 	}
@@ -243,29 +267,59 @@ func (s *service) BuildEnvironment(ctx context.Context, userID, projectID int64)
 	if !hasEnvironment(p) {
 		return nil, invalid("the project has no environment")
 	}
+	if err := s.buildAgain(ctx, p); err != nil {
+		return nil, err
+	}
+	return s.environment(ctx, p)
+}
+
+func (s *service) buildAgain(ctx context.Context, p *Project) error {
+	s.buildMu.Lock()
+	defer s.buildMu.Unlock()
 	s.mu.Lock()
 	running := s.builds[p.ID] != nil
 	s.mu.Unlock()
-	if !running {
-		hash, err := s.environmentHash(ctx, p)
-		if err != nil {
-			return nil, fmt.Errorf("reading devpad's workspace image: %w", err)
-		}
-		if err := s.startBuild(p, hash); err != nil {
-			return nil, err
-		}
+	if running {
+		return nil
 	}
-	return s.environment(ctx, p)
+	hash, err := s.environmentHash(ctx, p)
+	if err != nil {
+		return fmt.Errorf("reading devpad's workspace image: %w", err)
+	}
+	return s.startBuildLocked(p, hash)
 }
 
 // ensureEnvironment starts a build of p's environment unless its image is
 // already built or building. A build that failed is only tried again when
 // the Dockerfile or devpad's image changes, or the user asks.
+//
+// It decides from the project as stored, holding buildMu, so of two saves
+// close together the one written last decides what is built.
 func (s *service) ensureEnvironment(ctx context.Context, p *Project) {
-	if !hasEnvironment(p) {
-		s.dropEnvironment(ctx, p)
+	s.buildMu.Lock()
+	fresh, err := s.repo.GetByID(ctx, p.ID)
+	if err != nil || fresh == nil {
+		s.buildMu.Unlock()
+		if err != nil {
+			log.Printf("project %d: reading it to build its environment: %v", p.ID, err)
+		}
 		return
 	}
+	p = fresh
+	if !hasEnvironment(p) {
+		stopped := s.dropEnvironmentLocked(ctx, p)
+		s.buildMu.Unlock()
+		// Let a build being stopped finish tagging what it made, so the
+		// prune removes it.
+		select {
+		case <-stopped:
+		case <-time.After(buildCleanupTimeout):
+			log.Printf("project %d: its environment build did not stop", p.ID)
+		}
+		s.pruneImages(ctx, p.ID)
+		return
+	}
+	defer s.buildMu.Unlock()
 	hash, err := s.environmentHash(ctx, p)
 	if err != nil {
 		log.Printf("project %d: reading devpad's workspace image to build its environment: %v", p.ID, err)
@@ -295,14 +349,16 @@ func (s *service) ensureEnvironment(ctx context.Context, p *Project) {
 		}
 		// Building but not in this process: a previous one stopped part way.
 	}
-	if err := s.startBuild(p, hash); err != nil {
+	if err := s.startBuildLocked(p, hash); err != nil {
 		log.Printf("project %d: starting its environment build: %v", p.ID, err)
 	}
 }
 
-// startBuild builds p's environment in the background, replacing any build
-// of it in progress.
-func (s *service) startBuild(p *Project, hash string) error {
+// startBuildLocked builds p's environment in the background, replacing any
+// build of it in progress. The caller holds buildMu, so recording the build
+// and taking its place happen together, and the record always names the
+// build that runs.
+func (s *service) startBuildLocked(p *Project, hash string) error {
 	id, err := randomHex(8)
 	if err != nil {
 		return err
@@ -310,11 +366,6 @@ func (s *service) startBuild(p *Project, hash string) error {
 	b := &Build{ID: id, ProjectID: p.ID, Hash: hash, Image: projectImage(p.ID, hash), Status: BuildRunning, StartedAt: time.Now().UTC()}
 	ctx, cancel := context.WithTimeout(context.Background(), s.buildTimeout)
 	running := &environmentBuild{id: id, hash: hash, cancel: cancel, done: make(chan struct{})}
-
-	// Recording the build and taking its place happen together, so the
-	// record always names the build that runs.
-	s.buildMu.Lock()
-	defer s.buildMu.Unlock()
 	if err := s.repo.PutBuild(ctx, b); err != nil {
 		cancel()
 		return err
@@ -390,11 +441,17 @@ func (s *service) runBuild(ctx context.Context, b *Build, body string) {
 	if !current || b.Status != BuildSucceeded {
 		return
 	}
+	var previous string
+	if p, err := s.repo.GetByID(writeCtx, b.ProjectID); err == nil && p != nil {
+		previous = p.EnvironmentImage
+	}
 	if err := s.repo.SetEnvironmentImage(writeCtx, b.ProjectID, b.Image); err != nil {
 		log.Printf("project %d: recording its environment image: %v", b.ProjectID, err)
 		return
 	}
-	s.pruneImages(writeCtx, b.ProjectID, b.Image)
+	// The image it replaces stays one more round: a workspace being made
+	// may have just read it.
+	s.pruneImages(writeCtx, b.ProjectID, previous)
 }
 
 // cancelBuild stops a build of the project in progress and returns a
@@ -412,30 +469,49 @@ func (s *service) cancelBuild(projectID int64) <-chan struct{} {
 	return b.done
 }
 
-// dropEnvironment forgets the environment of a project that no longer has
-// one, so new workspaces get devpad's own image.
-func (s *service) dropEnvironment(ctx context.Context, p *Project) {
-	s.cancelBuild(p.ID)
+// dropEnvironmentLocked forgets the environment of a project that no longer
+// has one, so new workspaces get devpad's own image, and stops its build.
+// It returns a channel closed once the build has stopped. The caller holds
+// buildMu.
+func (s *service) dropEnvironmentLocked(ctx context.Context, p *Project) <-chan struct{} {
+	stopped := s.cancelBuild(p.ID)
 	if err := s.repo.DeleteBuild(ctx, p.ID); err != nil {
 		log.Printf("project %d: forgetting its environment build: %v", p.ID, err)
 	}
 	if p.EnvironmentImage != "" {
 		if err := s.repo.SetEnvironmentImage(ctx, p.ID, ""); err != nil {
 			log.Printf("project %d: forgetting its environment image: %v", p.ID, err)
-			return
 		}
-		p.EnvironmentImage = ""
 	}
-	s.pruneImages(ctx, p.ID, "")
+	return stopped
 }
 
-// pruneImages removes the project's images other than keep. Docker refuses
-// to remove one a container still uses, which leaves it for a later prune.
-func (s *service) pruneImages(ctx context.Context, projectID int64, keep string) {
+// pruneImages removes the project's images except the one new workspaces
+// get, the latest build's, and keep. Docker refuses to remove one a
+// container still uses, which leaves it for a later prune.
+func (s *service) pruneImages(ctx context.Context, projectID int64, keep ...string) {
 	images, err := s.container.ListImages(ctx, projectImageLabel(projectID))
 	if err != nil {
 		log.Printf("project %d: listing its images: %v", projectID, err)
 		return
+	}
+	// What to keep is read after listing, so an image a build tags and
+	// records meanwhile is either not listed or kept.
+	kept := map[string]bool{}
+	for _, ref := range keep {
+		kept[ref] = true
+	}
+	if p, err := s.repo.GetByID(ctx, projectID); err != nil {
+		log.Printf("project %d: reading it to prune its images: %v", projectID, err)
+		return
+	} else if p != nil {
+		kept[p.EnvironmentImage] = true
+	}
+	if b, err := s.repo.GetBuild(ctx, projectID); err != nil {
+		log.Printf("project %d: reading its build to prune its images: %v", projectID, err)
+		return
+	} else if b != nil {
+		kept[b.Image] = true
 	}
 	for _, img := range images {
 		refs := img.Tags
@@ -443,7 +519,7 @@ func (s *service) pruneImages(ctx context.Context, projectID int64, keep string)
 			refs = []string{img.ID}
 		}
 		for _, ref := range refs {
-			if ref != keep {
+			if !kept[ref] {
 				_ = s.container.RemoveImage(ctx, ref)
 			}
 		}
@@ -478,7 +554,7 @@ func (s *service) RebuildWorkspace(ctx context.Context, userID, projectID int64)
 	if err != nil {
 		return nil, err
 	}
-	s.pruneImages(ctx, p.ID, image)
+	s.pruneImages(ctx, p.ID)
 	return ws, nil
 }
 

@@ -23,6 +23,9 @@ var (
 	// ErrLifecycleBusy refuses converting a workspace while it is being
 	// started, stopped or deleted.
 	ErrLifecycleBusy = errors.New("workspace is being started, stopped or deleted; try again when it settles")
+	// ErrRebuilding refuses starting, stopping or deleting a workspace while
+	// its container is being replaced.
+	ErrRebuilding = errors.New("workspace is being rebuilt; try again when it is back")
 	// ErrAgentOutdated refuses converting a workspace whose running agent
 	// predates the conversion endpoints; restarting it updates the agent.
 	ErrAgentOutdated = errors.New("the workspace's agent is out of date; restart the workspace and try again")
@@ -141,6 +144,9 @@ func (s *service) beginLifecycle(workspaceID int64) (done func(), err error) {
 	defer s.convertMu.Unlock()
 	if s.converting[workspaceID] {
 		return nil, ErrConverting
+	}
+	if s.rebuilding[workspaceID] {
+		return nil, ErrRebuilding
 	}
 	if s.busy == nil {
 		s.busy = make(map[int64]int)

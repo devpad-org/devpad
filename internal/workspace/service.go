@@ -27,10 +27,12 @@ type service struct {
 
 	// converting holds the workspaces being converted into a project, and
 	// busy counts the starts, stops and deletes in flight for each; one
-	// excludes the other.
+	// excludes the other. rebuilding holds the project workspaces whose
+	// container is being replaced, which excludes both.
 	convertMu  sync.Mutex
 	converting map[int64]bool
 	busy       map[int64]int
+	rebuilding map[int64]bool
 }
 
 // NewService creates a new workspace Service.

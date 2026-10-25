@@ -65,6 +65,13 @@ func (s *service) SetDefaultAgent(ctx context.Context, userID, workspaceID int64
 }
 
 func (s *service) UpdateResourceLimits(ctx context.Context, workspaceID, memoryLimit, nanoCPUs int64) (*Workspace, error) {
+	// The update writes the whole record, so it must not race a rebuild
+	// replacing the container.
+	done, err := s.beginLifecycle(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
 	ws, err := s.repo.GetByID(ctx, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("getting workspace: %w", err)
