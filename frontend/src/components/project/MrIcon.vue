@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Line icons for the merge request page, drawn on a 24px grid.
+// Line icons for the project, task and merge request views, drawn on a 24px grid.
 export type MrIconName =
   | 'open'
   | 'merged'
@@ -25,6 +25,15 @@ export type MrIconName =
   | 'unified'
   | 'terminal'
   | 'clock'
+  | 'circle'
+  | 'ban'
+  | 'eye'
+  | 'pencil'
+  | 'trash'
+  | 'play'
+  | 'stop'
+  | 'send'
+  | 'retry'
 
 withDefaults(defineProps<{ name: MrIconName; size?: number; strokeWidth?: number }>(), {
   size: 14,
@@ -116,6 +125,33 @@ withDefaults(defineProps<{ name: MrIconName; size?: number; strokeWidth?: number
     </template>
     <template v-else-if="name === 'clock'">
       <circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />
+    </template>
+    <template v-else-if="name === 'circle'">
+      <circle cx="12" cy="12" r="9" />
+    </template>
+    <template v-else-if="name === 'ban'">
+      <circle cx="12" cy="12" r="10" /><path d="m4.9 4.9 14.2 14.2" />
+    </template>
+    <template v-else-if="name === 'eye'">
+      <path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0" /><circle cx="12" cy="12" r="3" />
+    </template>
+    <template v-else-if="name === 'pencil'">
+      <path d="M21.17 6.81a1 1 0 0 0-3.98-3.98L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z" /><path d="m15 5 4 4" />
+    </template>
+    <template v-else-if="name === 'trash'">
+      <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+    </template>
+    <template v-else-if="name === 'play'">
+      <path d="M6 3l14 9-14 9z" />
+    </template>
+    <template v-else-if="name === 'stop'">
+      <circle cx="12" cy="12" r="10" /><rect x="9" y="9" width="6" height="6" rx="1" />
+    </template>
+    <template v-else-if="name === 'send'">
+      <path d="M14.54 21.69a.5.5 0 0 0 .94-.03l6.5-19a.5.5 0 0 0-.64-.64l-19 6.5a.5.5 0 0 0-.02.94l7.93 3.18a2 2 0 0 1 1.11 1.11z" /><path d="m21.85 2.15-10.94 10.94" />
+    </template>
+    <template v-else-if="name === 'retry'">
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
     </template>
   </svg>
 </template>

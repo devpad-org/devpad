@@ -17,6 +17,7 @@ import MonacoDiffViewer from '@/components/ide/MonacoDiffViewer.vue'
 import AgentModelPicker from '@/components/project/AgentModelPicker.vue'
 import MrIcon, { type MrIconName } from '@/components/project/MrIcon.vue'
 import StatusBadge from '@/components/project/StatusBadge.vue'
+import { fullTime, timeAgo } from '@/utils/time'
 
 const POLL_INTERVAL_MS = 5000
 const NOTICE_MS = 6000
@@ -274,23 +275,6 @@ function reviewAction(review: Review): string {
 
 function shortSha(sha: string): string {
   return sha ? sha.slice(0, 8) : ''
-}
-
-function timeAgo(iso: string | null | undefined): string {
-  if (!iso) return ''
-  const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
-  if (seconds < 60) return 'just now'
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}d ago`
-  return new Date(iso).toLocaleDateString()
-}
-
-function fullTime(iso: string | null | undefined): string {
-  return iso ? new Date(iso).toLocaleString() : ''
 }
 
 // Five blocks split between additions and deletions, like a diffstat.
