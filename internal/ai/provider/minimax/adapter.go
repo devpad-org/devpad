@@ -42,6 +42,23 @@ type chatRequest struct {
 	ReasoningSplit  bool                    `json:"reasoning_split,omitempty"`
 	Thinking        *thinking               `json:"thinking,omitempty"`
 	ReasoningEffort string                  `json:"reasoning_effort,omitempty"`
+	StreamOptions   *streamOptions          `json:"stream_options,omitempty"`
+}
+
+// streamOptions asks for the request's usage in the stream's final chunk,
+// which MiniMax leaves out by default.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+// chatUsage is a request's usage. prompt_tokens includes the cached tokens
+// counted in prompt_tokens_details.
+type chatUsage struct {
+	PromptTokens        int64 `json:"prompt_tokens"`
+	CompletionTokens    int64 `json:"completion_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
 }
 
 type message struct {
@@ -81,6 +98,11 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 }
 
 func (a *Adapter) Models() []domain.Model {
+	// Prices are USD per million tokens from
+	// https://platform.minimax.io/docs/guides/pricing (October 2026), at the
+	// standard service tier devpad requests. A prompt over 512K tokens is
+	// billed at M3's long-context prices. Automatic caching charges nothing
+	// to write the cache.
 	return []domain.Model{
 		{
 			ID:         minimaxM31FlashModelID,
@@ -93,6 +115,7 @@ func (a *Adapter) Models() []domain.Model {
 				SupportedEfforts: []string{"low", "medium", "high", "xhigh", "max"},
 				DefaultEffort:    defaultReasoningEffort,
 			},
+			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 0.15, Output: 0.60, CacheRead: 0.015}},
 		},
 		{
 			ID:         minimaxM3ModelID,
@@ -102,6 +125,11 @@ func (a *Adapter) Models() []domain.Model {
 				Supported:        true,
 				EnabledByDefault: true,
 				CanDisable:       true,
+			},
+			Pricing: &domain.Pricing{
+				TokenPrices:          domain.TokenPrices{Input: 0.30, Output: 1.20, CacheRead: 0.06},
+				LongContextThreshold: 512_000,
+				LongContext:          &domain.TokenPrices{Input: 0.60, Output: 2.40, CacheRead: 0.12},
 			},
 		},
 	}
@@ -153,10 +181,11 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 	}
 
 	body := chatRequest{
-		Model:    req.Model,
-		Messages: messages,
-		Stream:   true,
-		Tools:    req.Tools,
+		Model:         req.Model,
+		Messages:      messages,
+		Stream:        true,
+		Tools:         req.Tools,
+		StreamOptions: &streamOptions{IncludeUsage: true},
 	}
 	if thinkingEnabled {
 		body.ReasoningSplit = true
@@ -216,6 +245,7 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	toolCallArgs := make(map[int]*strings.Builder)
 	var reasoningBuffer string
 	var contentBuffer string
+	var usage *chatUsage
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -225,12 +255,14 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
+			emitUsage(ch, usage)
 			emitToolCalls(ch, toolCalls, toolCallArgs)
 			ch <- domain.ProviderEvent{Done: true}
 			return
 		}
 
 		var chunk struct {
+			Usage   *chatUsage `json:"usage"`
 			Choices []struct {
 				Delta struct {
 					Content          string            `json:"content"`
@@ -250,6 +282,9 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
+		}
+		if chunk.Usage != nil {
+			usage = chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -309,6 +344,7 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		}
 	}
 
+	emitUsage(ch, usage)
 	if err := scanner.Err(); err != nil {
 		log.Printf("error reading MiniMax SSE stream: %v", err)
 		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
@@ -373,6 +409,20 @@ func streamDelta(previous, current string) string {
 	}
 
 	return current
+}
+
+// emitUsage sends what the request was billed for, before any error or the
+// end of the stream. Cached prompt tokens are billed at their own rate.
+func emitUsage(ch chan<- domain.ProviderEvent, usage *chatUsage) {
+	if usage == nil {
+		return
+	}
+	cached := min(usage.PromptTokensDetails.CachedTokens, usage.PromptTokens)
+	ch <- domain.ProviderEvent{Usage: &domain.Usage{
+		InputTokens:     usage.PromptTokens - cached,
+		OutputTokens:    usage.CompletionTokens,
+		CacheReadTokens: cached,
+	}}
 }
 
 func emitToolCalls(ch chan<- domain.ProviderEvent, toolCalls []domain.ToolCall, toolCallArgs map[int]*strings.Builder) {
