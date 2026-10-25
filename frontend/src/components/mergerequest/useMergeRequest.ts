@@ -1,5 +1,5 @@
 import { computed, inject, ref, watch, type InjectionKey, type Ref } from 'vue'
-import { projectApi, type RepoDiff, type RepoDiffFile } from '@/api/projects'
+import { projectApi, type RepoDiff, type RepoDiffFile, type WorkspaceBranchStatus } from '@/api/projects'
 import {
   mergeConflictsFromError,
   mergeRequestApi,
@@ -11,10 +11,14 @@ import {
   type Verdict,
 } from '@/api/mergeRequests'
 import type { MrIconName } from '@/components/project/MrIcon.vue'
+import { branchActionError } from '@/components/project/branchErrors'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { STRATEGIES, authorName, dirName, errorText, plural, type Author, type Tone } from './format'
 
 const NOTICE_MS = 6000
+// Comparing the workspace's branch reads both repos, so polling does it at
+// most this often.
+const WORKSPACE_CHECK_MS = 15000
 
 export type Section = 'overview' | 'changes'
 
@@ -75,6 +79,12 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   const sendBackNote = ref('')
   const sendBackError = ref('')
 
+  // The project workspace's copy of the source branch against the project's,
+  // or null when the workspace can't say, such as when it is stopped or has
+  // no such branch.
+  const workspaceBranch = ref<WorkspaceBranchStatus | null>(null)
+  let workspaceCheckedAt = 0
+
   const strategy = ref<MergeStrategy>('merge')
   const pushAfterMerge = ref(true)
   const conflicts = ref<string[] | null>(null)
@@ -120,6 +130,18 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   const sendBackReviews = computed(() =>
     timelineReviews.value.filter((r) => r.status === 'submitted' && r.verdict !== 'approve' && r.headSha === mr.value?.headSha),
   )
+
+  // Commits on the source branch in the project workspace that this merge
+  // request does not have yet. A sandbox's branch can't be published from
+  // the workspace, so it never has any.
+  const unpublishedCommits = computed(() => {
+    const status = workspaceBranch.value
+    if (!isOpen.value || !status || status.sandboxOwned || status.branch !== mr.value?.sourceBranch) return 0
+    return status.ahead
+  })
+  // Publishing only fast-forwards, so a workspace branch that also lacks
+  // some of the project's commits must merge them first.
+  const workspaceDiverged = computed(() => unpublishedCommits.value > 0 && (workspaceBranch.value?.behind ?? 0) > 0)
 
   const latestAgentReview = computed(() => [...timelineReviews.value].reverse().find((r) => r.author === 'agent' && r.status !== 'pending' && r.model) ?? null)
   const totals = computed(() =>
@@ -307,6 +329,23 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     } catch (e) {
       if (gen === generation) loadError.value = errorText(e, 'Failed to load the merge request')
     }
+    void loadWorkspaceBranch(gen)
+  }
+
+  async function loadWorkspaceBranch(gen: number, force = false) {
+    const m = mr.value
+    if (!m || m.status !== 'open') {
+      workspaceBranch.value = null
+      return
+    }
+    if (!force && Date.now() - workspaceCheckedAt < WORKSPACE_CHECK_MS) return
+    workspaceCheckedAt = Date.now()
+    try {
+      const status = await projectApi.workspaceBranchStatus(projectId.value, m.sourceBranch)
+      if (gen === generation) workspaceBranch.value = status
+    } catch {
+      if (gen === generation) workspaceBranch.value = null
+    }
   }
 
   async function fileAt(rev: string, path: string): Promise<string | null> {
@@ -393,6 +432,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     generation++
     mr.value = null
     diff.value = null
+    workspaceBranch.value = null
+    workspaceCheckedAt = 0
     fileCache.clear()
     drafts.value = []
     reviewBody.value = ''
@@ -479,16 +520,56 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   // Reviews the change again with the last review agent's settings, or the
   // review agent's defaults when there was none.
   function rereview() {
-    const last = latestAgentReview.value
     void act(async () => {
-      await mergeRequestApi.startAgentReview(projectId.value, mrId.value, {
-        agentId: last?.agentId || undefined,
-        model: last?.model || undefined,
-        effort: last?.effort || undefined,
-        autoFix: Boolean(last?.autoFix && mr.value?.taskId),
-      })
+      await startRereview()
       showNotice('A review agent is reading the change again.')
       await refreshAll()
+    })
+  }
+
+  async function startRereview() {
+    const last = latestAgentReview.value
+    await mergeRequestApi.startAgentReview(projectId.value, mrId.value, {
+      agentId: last?.agentId || undefined,
+      model: last?.model || undefined,
+      effort: last?.effort || undefined,
+      autoFix: Boolean(last?.autoFix && mr.value?.taskId),
+    })
+  }
+
+  // Publishes the workspace's commits on the source branch, which moves this
+  // merge request to them, and optionally has a review agent look again.
+  function publishWorkspaceCommits(thenRereview: boolean) {
+    const branch = mr.value?.sourceBranch
+    if (!branch) return
+    void act(async () => {
+      let sha: string
+      try {
+        sha = (await projectApi.publishBranch(projectId.value, branch)).sha
+      } catch (e) {
+        throw new Error(branchActionError(e, 'Failed to publish the branch'))
+      }
+      workspaceBranch.value = null
+      // The publish stands even when the review can't start, so the tab
+      // catches up with it either way and the error says it went through.
+      let reviewError: unknown = null
+      if (thenRereview) {
+        try {
+          await startRereview()
+        } catch (e) {
+          reviewError = e
+        }
+      }
+      await refreshAll()
+      await loadWorkspaceBranch(generation, true)
+      if (reviewError) {
+        throw new Error(`Published ${sha.slice(0, 8)}, but the review could not start: ${errorText(reviewError, 'request failed')}`)
+      }
+      showNotice(
+        thenRereview
+          ? `Published ${sha.slice(0, 8)}. A review agent is reading the change again.`
+          : `Published ${sha.slice(0, 8)}. This merge request now shows it.`,
+      )
     })
   }
 
@@ -602,6 +683,9 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     taskWorking,
     canSendBack,
     sendBackReviews,
+    workspaceBranch,
+    unpublishedCommits,
+    workspaceDiverged,
     latestAgentReview,
     totals,
     hasDraft,
@@ -628,6 +712,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     submitReview,
     startAgentReview,
     rereview,
+    publishWorkspaceCommits,
     sendBack,
     merge,
     resolveConflicts,

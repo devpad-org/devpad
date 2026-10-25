@@ -4,6 +4,7 @@ import MrIcon from '@/components/project/MrIcon.vue'
 import MrChanges from './MrChanges.vue'
 import MrHeader from './MrHeader.vue'
 import MrOverview from './MrOverview.vue'
+import MrPublishBanner from './MrPublishBanner.vue'
 import MrReviewPopover from './MrReviewPopover.vue'
 import { statBlocks } from './format'
 import { createMergeRequestState, mergeRequestKey } from './useMergeRequest'
@@ -76,6 +77,7 @@ onUnmounted(() => {
 
       <template v-else>
         <MrHeader />
+        <MrPublishBanner />
 
         <p v-if="loadError" class="notice notice-error">{{ loadError }}</p>
         <p v-if="actionError" class="notice notice-error">{{ actionError }}</p>
