@@ -1,0 +1,443 @@
+package project
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
+	"regexp"
+	"strings"
+	"sync"
+
+	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/container"
+	"github.com/devpad-org/devpad/internal/encrypt"
+	"github.com/devpad-org/devpad/internal/workspace"
+)
+
+// Service defines project and sandbox operations.
+type Service interface {
+	Create(ctx context.Context, userID int64, in CreateInput) (*Project, error)
+	List(ctx context.Context, userID int64) ([]*Project, error)
+	Get(ctx context.Context, userID, projectID int64) (*Project, error)
+	Update(ctx context.Context, userID, projectID int64, in UpdateInput) (*Project, error)
+	Delete(ctx context.Context, userID, projectID int64) error
+	Branches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error)
+	ListSandboxes(ctx context.Context, userID, projectID int64) ([]*workspace.Workspace, error)
+	CreateSandbox(ctx context.Context, userID, projectID int64, in SandboxInput) (*workspace.Workspace, error)
+	PublishSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*agent.RepoBranch, error)
+}
+
+// Workspaces is the workspace service surface projects need to run sandboxes.
+type Workspaces interface {
+	workspace.AccessService
+	workspace.SandboxService
+	Delete(ctx context.Context, userID, workspaceID int64) error
+	StartCommand(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
+}
+
+type service struct {
+	repo       Repository
+	container  container.Manager
+	workspaces Workspaces
+	users      auth.UserRepository
+	cipher     *encrypt.Cipher
+	agentPort  int
+
+	// pending counts sandboxes being created per project, so concurrent
+	// requests cannot overshoot MaxSandboxes while Docker work is in flight.
+	mu      sync.Mutex
+	pending map[int64]int
+}
+
+// NewService creates a new project Service.
+func NewService(repo Repository, cm container.Manager, workspaces Workspaces, users auth.UserRepository, cipher *encrypt.Cipher) Service {
+	return &service{
+		repo:       repo,
+		container:  cm,
+		workspaces: workspaces,
+		users:      users,
+		cipher:     cipher,
+		agentPort:  agent.DefaultPort,
+		pending:    make(map[int64]int),
+	}
+}
+
+var branchNamePattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+
+// validBranchName is a conservative pre-check; the agent runs git's own
+// check-ref-format before using any name.
+func validBranchName(name string) bool {
+	return branchNamePattern.MatchString(name) &&
+		!strings.HasPrefix(name, "-") && !strings.HasPrefix(name, "/") &&
+		!strings.HasSuffix(name, "/") && !strings.HasSuffix(name, ".") && !strings.HasSuffix(name, ".lock") &&
+		!strings.Contains(name, "..") && !strings.Contains(name, "//")
+}
+
+func invalid(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidInput, fmt.Sprintf(format, args...))
+}
+
+func normalizeMaxSandboxes(n int) (int, error) {
+	if n == 0 {
+		return DefaultMaxSandboxes, nil
+	}
+	if n < 1 || n > MaxSandboxesLimit {
+		return 0, invalid("maxSandboxes must be between 1 and %d", MaxSandboxesLimit)
+	}
+	return n, nil
+}
+
+func (s *service) Create(ctx context.Context, userID int64, in CreateInput) (*Project, error) {
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return nil, invalid("name is required")
+	}
+	branch := strings.TrimSpace(in.DefaultBranch)
+	if branch == "" {
+		branch = DefaultBranch
+	}
+	if !validBranchName(branch) {
+		return nil, invalid("defaultBranch is not a valid branch name")
+	}
+	upstream := strings.TrimSpace(in.UpstreamURL)
+	if strings.HasPrefix(upstream, "-") {
+		return nil, invalid("upstreamUrl must not start with '-'")
+	}
+	maxSandboxes, err := normalizeMaxSandboxes(in.MaxSandboxes)
+	if err != nil {
+		return nil, err
+	}
+	token, err := randomHex(32)
+	if err != nil {
+		return nil, fmt.Errorf("generating repo agent token: %w", err)
+	}
+
+	p := &Project{
+		UserID:         userID,
+		Name:           name,
+		Description:    in.Description,
+		DefaultBranch:  branch,
+		UpstreamURL:    upstream,
+		SetupScript:    in.SetupScript,
+		MaxSandboxes:   maxSandboxes,
+		Status:         StatusCreating,
+		RepoAgentToken: token,
+	}
+	// Insert first so Docker resource names can use the stable project ID.
+	if err := s.repo.Create(ctx, p); err != nil {
+		return nil, fmt.Errorf("creating project: %w", err)
+	}
+	if err := s.provisionRepoContainer(ctx, p); err != nil {
+		_ = s.repo.Delete(ctx, p.ID)
+		return nil, err
+	}
+
+	// From here on the Docker resources exist, so failures are recorded on
+	// the project instead of rolled back; the user can inspect and delete it.
+	p.Status, p.Error = StatusReady, ""
+	if err := s.initRepo(ctx, p); err != nil {
+		log.Printf("project %d: repo init failed: %v", p.ID, err)
+		p.Status, p.Error = StatusError, err.Error()
+	}
+	if err := s.repo.Update(ctx, p); err != nil {
+		return nil, fmt.Errorf("updating project: %w", err)
+	}
+	return p, nil
+}
+
+func (s *service) initRepo(ctx context.Context, p *Project) error {
+	c, err := s.waitForRepoAgent(ctx, p)
+	if err != nil {
+		return err
+	}
+	// Only the repo container gets the user's SSH key, and only when it has
+	// to clone a private upstream. It never runs project code.
+	if p.UpstreamURL != "" {
+		user, err := s.users.GetByID(ctx, p.UserID)
+		if err != nil {
+			return fmt.Errorf("looking up user: %w", err)
+		}
+		if err := workspace.WriteSSHKeys(ctx, c, user, s.cipher); err != nil {
+			return fmt.Errorf("injecting SSH keys into repo container: %w", err)
+		}
+	}
+	if _, err := c.RepoInit(ctx, p.DefaultBranch, p.UpstreamURL); err != nil {
+		return fmt.Errorf("initializing repo: %w", err)
+	}
+	return nil
+}
+
+func (s *service) List(ctx context.Context, userID int64) ([]*Project, error) {
+	projects, err := s.repo.ListByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("listing projects: %w", err)
+	}
+	return projects, nil
+}
+
+func (s *service) Get(ctx context.Context, userID, projectID int64) (*Project, error) {
+	p, err := s.repo.GetByID(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("getting project: %w", err)
+	}
+	if p == nil {
+		return nil, ErrNotFound
+	}
+	if p.UserID != userID {
+		return nil, ErrForbidden
+	}
+	return p, nil
+}
+
+func (s *service) getReady(ctx context.Context, userID, projectID int64) (*Project, error) {
+	p, err := s.Get(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if p.Status != StatusReady {
+		return nil, ErrNotReady
+	}
+	return p, nil
+}
+
+func (s *service) Update(ctx context.Context, userID, projectID int64, in UpdateInput) (*Project, error) {
+	p, err := s.Get(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return nil, invalid("name is required")
+	}
+	maxSandboxes, err := normalizeMaxSandboxes(in.MaxSandboxes)
+	if err != nil {
+		return nil, err
+	}
+	p.Name = name
+	p.Description = in.Description
+	p.SetupScript = in.SetupScript
+	p.MaxSandboxes = maxSandboxes
+	if err := s.repo.Update(ctx, p); err != nil {
+		return nil, fmt.Errorf("updating project: %w", err)
+	}
+	return p, nil
+}
+
+// Delete removes every sandbox through the workspace lifecycle, then the
+// repo container and the project. Published branches are lost with the repo.
+func (s *service) Delete(ctx context.Context, userID, projectID int64) error {
+	p, err := s.Get(ctx, userID, projectID)
+	if err != nil {
+		return err
+	}
+	sandboxes, err := s.workspaces.ListByProject(ctx, userID, p.ID)
+	if err != nil {
+		return err
+	}
+	for _, ws := range sandboxes {
+		if err := s.workspaces.Delete(ctx, userID, ws.ID); err != nil {
+			return fmt.Errorf("deleting sandbox %d: %w", ws.ID, err)
+		}
+	}
+	if err := s.removeRepoContainer(ctx, p); err != nil {
+		return err
+	}
+	if err := s.repo.Delete(ctx, p.ID); err != nil {
+		return fmt.Errorf("deleting project: %w", err)
+	}
+	return nil
+}
+
+func (s *service) Branches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error) {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoRefs(ctx)
+}
+
+func (s *service) ListSandboxes(ctx context.Context, userID, projectID int64) ([]*workspace.Workspace, error) {
+	if _, err := s.Get(ctx, userID, projectID); err != nil {
+		return nil, err
+	}
+	return s.workspaces.ListByProject(ctx, userID, projectID)
+}
+
+// CreateSandbox starts a sandbox that owns one branch of the project. A
+// branch that already exists in the canonical repo is resumed; otherwise it
+// starts from the default branch. The setup script, if any, starts as a
+// background command once the repo is seeded.
+func (s *service) CreateSandbox(ctx context.Context, userID, projectID int64, in SandboxInput) (*workspace.Workspace, error) {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	kind := workspace.Kind(in.Kind)
+	if kind == "" {
+		kind = workspace.KindTask
+	}
+	if kind == workspace.KindInteractive || !kind.Valid() {
+		return nil, invalid("kind must be %q or %q", workspace.KindTask, workspace.KindReview)
+	}
+	branch := strings.TrimSpace(in.Branch)
+	if branch == "" {
+		suffix, err := randomHex(3)
+		if err != nil {
+			return nil, err
+		}
+		branch = "sandbox-" + suffix
+	}
+	if !validBranchName(branch) {
+		return nil, invalid("branch is not a valid branch name")
+	}
+	if branch == p.DefaultBranch {
+		return nil, ErrDefaultBranch
+	}
+
+	if err := s.reserveSandbox(ctx, p, branch); err != nil {
+		return nil, err
+	}
+	defer s.releaseSandbox(p.ID)
+
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	refs, err := c.RepoRefs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	base := p.DefaultBranch
+	for _, ref := range refs.Branches {
+		if ref.Name == branch {
+			base = branch
+		}
+	}
+
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		name = p.Name + ": " + branch
+	}
+	ws, err := s.workspaces.CreateSandbox(ctx, userID, workspace.SandboxSpec{
+		ProjectID: p.ID,
+		Kind:      kind,
+		Branch:    branch,
+		Name:      name,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return nil, ErrBranchInUse
+		}
+		return nil, err
+	}
+
+	if err := s.seedSandbox(ctx, c, userID, ws.ID, base); err != nil {
+		if delErr := s.workspaces.Delete(ctx, userID, ws.ID); delErr != nil {
+			log.Printf("project %d: removing unseeded sandbox %d: %v", p.ID, ws.ID, delErr)
+		}
+		return nil, fmt.Errorf("seeding sandbox: %w", err)
+	}
+
+	if strings.TrimSpace(p.SetupScript) != "" {
+		if _, err := s.workspaces.StartCommand(ctx, userID, ws.ID, p.SetupScript, ""); err != nil {
+			log.Printf("project %d: starting setup script in sandbox %d: %v", p.ID, ws.ID, err)
+		}
+	}
+	return ws, nil
+}
+
+// seedSandbox streams a bundle of base from the repo container straight into
+// the sandbox; devpad never buffers it.
+func (s *service) seedSandbox(ctx context.Context, repo *agent.Client, userID, workspaceID int64, base string) error {
+	bundle, err := repo.RepoBundle(ctx, base)
+	if err != nil {
+		return err
+	}
+	defer bundle.Close()
+	_, err = s.workspaces.SeedSandboxRepo(ctx, userID, workspaceID, base, bundle)
+	return err
+}
+
+// reserveSandbox checks the sandbox limit and branch ownership, counting
+// creations still in flight.
+func (s *service) reserveSandbox(ctx context.Context, p *Project, branch string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, err := s.workspaces.ListByProject(ctx, p.UserID, p.ID)
+	if err != nil {
+		return err
+	}
+	if len(existing)+s.pending[p.ID] >= p.MaxSandboxes {
+		return ErrSandboxLimit
+	}
+	for _, ws := range existing {
+		if ws.Branch == branch {
+			return ErrBranchInUse
+		}
+	}
+	s.pending[p.ID]++
+	return nil
+}
+
+func (s *service) releaseSandbox(projectID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pending[projectID]--; s.pending[projectID] <= 0 {
+		delete(s.pending, projectID)
+	}
+}
+
+// PublishSandbox copies the sandbox's branch into the canonical repo. Devpad
+// pulls a bundle of the branch it recorded for the sandbox and imports only
+// that branch, so a sandbox cannot write any other ref.
+func (s *service) PublishSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*agent.RepoBranch, error) {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	ws, err := s.workspaces.Get(ctx, userID, workspaceID)
+	if err != nil {
+		if errors.Is(err, workspace.ErrNotFound) || errors.Is(err, workspace.ErrForbidden) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if ws.ProjectID != p.ID || !ws.IsSandbox() {
+		return nil, ErrNotFound
+	}
+	if ws.Branch == "" || ws.Branch == p.DefaultBranch {
+		return nil, ErrDefaultBranch
+	}
+
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	branch, bundle, err := s.workspaces.BundleSandboxBranch(ctx, userID, ws.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer bundle.Close()
+	if branch != ws.Branch {
+		return nil, fmt.Errorf("sandbox branch changed from %q to %q", ws.Branch, branch)
+	}
+	return c.RepoImport(ctx, ws.Branch, bundle)
+}
+
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}

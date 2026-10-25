@@ -99,6 +99,15 @@ type InfoService interface {
 	Info(ctx context.Context, userID, workspaceID int64) (*WorkspaceInfo, error)
 }
 
+// SandboxService defines project sandbox creation and branch transfer. The
+// project service uses it to seed sandboxes and collect their work.
+type SandboxService interface {
+	CreateSandbox(ctx context.Context, userID int64, spec SandboxSpec) (*Workspace, error)
+	ListByProject(ctx context.Context, userID, projectID int64) ([]*Workspace, error)
+	SeedSandboxRepo(ctx context.Context, userID, workspaceID int64, base string, bundle io.Reader) (*agent.RepoBranch, error)
+	BundleSandboxBranch(ctx context.Context, userID, workspaceID int64) (branch string, bundle io.ReadCloser, err error)
+}
+
 // SidecarBinder injects the sidecar service lifecycle dependency.
 type SidecarBinder interface {
 	SetSidecarService(sidecar SidecarService)
@@ -117,6 +126,7 @@ type Service interface {
 	GitService
 	AgentResolver
 	InfoService
+	SandboxService
 	SidecarBinder
 }
 

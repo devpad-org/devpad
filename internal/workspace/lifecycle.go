@@ -9,6 +9,37 @@ import (
 )
 
 func (s *service) Create(ctx context.Context, userID int64, name, description string) (*Workspace, error) {
+	return s.create(ctx, &Workspace{
+		UserID:      userID,
+		Name:        name,
+		Description: description,
+		Kind:        KindInteractive,
+	})
+}
+
+// CreateSandbox creates a workspace that belongs to a project and owns one of
+// its branches. The repo is seeded separately via SeedSandboxRepo.
+func (s *service) CreateSandbox(ctx context.Context, userID int64, spec SandboxSpec) (*Workspace, error) {
+	if spec.ProjectID == 0 {
+		return nil, fmt.Errorf("sandbox requires a project")
+	}
+	if spec.Kind == KindInteractive || !spec.Kind.Valid() {
+		return nil, fmt.Errorf("invalid sandbox kind %q", spec.Kind)
+	}
+	if spec.Branch == "" {
+		return nil, fmt.Errorf("sandbox requires a branch")
+	}
+	return s.create(ctx, &Workspace{
+		UserID:      userID,
+		Name:        spec.Name,
+		Description: spec.Description,
+		ProjectID:   spec.ProjectID,
+		Kind:        spec.Kind,
+		Branch:      spec.Branch,
+	})
+}
+
+func (s *service) create(ctx context.Context, ws *Workspace) (*Workspace, error) {
 	// Generate a cryptographically random token for agent authentication.
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -19,15 +50,10 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 	// Insert the workspace record first to obtain a stable ID for naming
 	// Docker resources. This decouples container/volume names from the
 	// user-facing workspace name (which may contain spaces or be renamed).
-	ws := &Workspace{
-		UserID:      userID,
-		Name:        name,
-		Description: description,
-		Status:      StatusCreating,
-		AgentToken:  agentToken,
-		MemoryLimit: DefaultMemoryLimit,
-		NanoCPUs:    DefaultNanoCPUs,
-	}
+	ws.Status = StatusCreating
+	ws.AgentToken = agentToken
+	ws.MemoryLimit = DefaultMemoryLimit
+	ws.NanoCPUs = DefaultNanoCPUs
 	if err := s.repo.Create(ctx, ws); err != nil {
 		return nil, fmt.Errorf("creating workspace: %w", err)
 	}
@@ -103,10 +129,7 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 		log.Printf("workspace %d: agent not ready after create: %v", ws.ID, err)
 	}
 
-	// Inject SSH keys if the user has them configured. Best-effort.
-	if err := s.injectSSHKeys(ctx, ws); err != nil {
-		log.Printf("workspace %d: SSH key injection failed: %v", ws.ID, err)
-	}
+	s.injectUserSSHKeys(ctx, ws)
 
 	return ws, nil
 }
@@ -199,10 +222,7 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 		log.Printf("workspace %d: agent update failed: %v", ws.ID, err)
 	}
 
-	// Inject SSH keys if the user has them configured. Best-effort.
-	if err := s.injectSSHKeys(ctx, ws); err != nil {
-		log.Printf("workspace %d: SSH key injection failed: %v", ws.ID, err)
-	}
+	s.injectUserSSHKeys(ctx, ws)
 
 	// Start attached sidecar services. Best-effort.
 	if s.sidecar != nil {
@@ -241,4 +261,16 @@ func (s *service) Stop(ctx context.Context, userID, workspaceID int64) (*Workspa
 		return nil, fmt.Errorf("updating workspace status: %w", err)
 	}
 	return ws, nil
+}
+
+// injectUserSSHKeys injects the user's SSH keys if they have them configured.
+// Sandboxes never get them, so an agent cannot push anywhere on the user's
+// behalf. Best-effort.
+func (s *service) injectUserSSHKeys(ctx context.Context, ws *Workspace) {
+	if ws.IsSandbox() {
+		return
+	}
+	if err := s.injectSSHKeys(ctx, ws); err != nil {
+		log.Printf("workspace %d: SSH key injection failed: %v", ws.ID, err)
+	}
 }

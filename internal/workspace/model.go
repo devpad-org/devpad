@@ -14,6 +14,25 @@ const (
 	StatusStopped  Status = "stopped"
 )
 
+// Kind distinguishes a user's own workspace from project sandboxes that AI
+// agents work in.
+type Kind string
+
+const (
+	KindInteractive Kind = "interactive"
+	KindTask        Kind = "task"
+	KindReview      Kind = "review"
+)
+
+// Valid reports whether k is a known workspace kind.
+func (k Kind) Valid() bool {
+	switch k {
+	case KindInteractive, KindTask, KindReview:
+		return true
+	}
+	return false
+}
+
 // DefaultAgentID is the baked-in AI agent identifier used when a workspace has
 // no custom default agent selected.
 const DefaultAgentID = "default"
@@ -48,6 +67,24 @@ type Workspace struct {
 	DefaultAgentID string
 	MemoryLimit    int64 // bytes; 0 means use default
 	NanoCPUs       int64 // billionths of a CPU; 0 means use default
+	ProjectID      int64 // 0 when the workspace belongs to no project
+	Kind           Kind
+	Branch         string // the project branch a sandbox owns; empty otherwise
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+// IsSandbox reports whether the workspace is a project sandbox run by an AI
+// agent. Sandboxes are untrusted: they never receive the user's SSH keys.
+func (ws *Workspace) IsSandbox() bool {
+	return ws.Kind != KindInteractive
+}
+
+// SandboxSpec describes a project sandbox to create.
+type SandboxSpec struct {
+	ProjectID   int64
+	Kind        Kind
+	Branch      string
+	Name        string
+	Description string
 }

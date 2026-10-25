@@ -67,6 +67,13 @@ func main() {
 	authedMux.HandleFunc("GET /api/git/remotes", handleGitRemotes)
 	authedMux.HandleFunc("POST /api/git/action", handleGitAction)
 
+	// Project repo transfers (bundles between the canonical repo and sandboxes)
+	authedMux.HandleFunc("POST /api/repo/init", handleRepoInit)
+	authedMux.HandleFunc("GET /api/repo/refs", handleRepoRefs)
+	authedMux.HandleFunc("GET /api/repo/bundle", handleRepoBundle)
+	authedMux.HandleFunc("POST /api/repo/seed", handleRepoSeed)
+	authedMux.HandleFunc("POST /api/repo/import", handleRepoImport)
+
 	// Terminal WebSocket
 	authedMux.HandleFunc("GET /ws/terminal", handleTerminal)
 

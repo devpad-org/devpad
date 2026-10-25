@@ -242,6 +242,9 @@ func workspaceResponse(ws *Workspace) map[string]any {
 		"defaultAgentId": ws.DefaultAgentID,
 		"memoryLimit":    ws.MemoryLimit,
 		"nanoCpus":       ws.NanoCPUs,
+		"projectId":      ws.ProjectID,
+		"kind":           ws.Kind,
+		"branch":         ws.Branch,
 		"createdAt":      ws.CreatedAt,
 		"updatedAt":      ws.UpdatedAt,
 	}

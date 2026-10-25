@@ -4,6 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+
+	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/encrypt"
 )
 
 // knownHosts contains SSH host keys for common Git hosting providers.
@@ -32,14 +36,29 @@ func (s *service) injectSSHKeys(ctx context.Context, ws *Workspace) error {
 		return nil
 	}
 
-	privateKey, err := s.cipher.Decrypt(user.SSHPrivateKey)
-	if err != nil {
-		return fmt.Errorf("decrypting SSH private key: %w", err)
-	}
-
 	c, err := s.getAgent(ctx, ws.UserID, ws.ID)
 	if err != nil {
 		return fmt.Errorf("getting agent client: %w", err)
+	}
+
+	if err := WriteSSHKeys(ctx, c, user, s.cipher); err != nil {
+		return err
+	}
+	log.Printf("workspace %d: SSH keys injected", ws.ID)
+	return nil
+}
+
+// WriteSSHKeys writes the user's SSH identity, known_hosts, and ssh config
+// into the container behind c. It does nothing if the user has no key. Only
+// call it for containers that never run untrusted code.
+func WriteSSHKeys(ctx context.Context, c *agent.Client, user *auth.User, cipher *encrypt.Cipher) error {
+	if user == nil || user.SSHPrivateKey == "" {
+		return nil
+	}
+
+	privateKey, err := cipher.Decrypt(user.SSHPrivateKey)
+	if err != nil {
+		return fmt.Errorf("decrypting SSH private key: %w", err)
 	}
 
 	commands := []struct {
@@ -62,7 +81,5 @@ func (s *service) injectSSHKeys(ctx context.Context, ws *Workspace) error {
 			return fmt.Errorf("%s: exit code %d: %s", cmd.desc, result.ExitCode, result.Error)
 		}
 	}
-
-	log.Printf("workspace %d: SSH keys injected", ws.ID)
 	return nil
 }

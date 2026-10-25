@@ -19,6 +19,7 @@ import (
 	"github.com/devpad-org/devpad/internal/dockerfile"
 	"github.com/devpad-org/devpad/internal/encrypt"
 	"github.com/devpad-org/devpad/internal/preview"
+	"github.com/devpad-org/devpad/internal/project"
 	"github.com/devpad-org/devpad/internal/settings"
 	"github.com/devpad-org/devpad/internal/workspace"
 	"github.com/devpad-org/devpad/internal/wsservice"
@@ -116,6 +117,11 @@ func New(cfg Config) (*Server, error) {
 	workspaceHandler := workspace.NewHandler(workspaceService, wsOrigins)
 	wsServiceHandler := wsservice.NewHandler(wsServiceService, workspaceService)
 
+	// Project layer (canonical repos and the sandboxes seeded from them)
+	projectRepo := project.NewRepository(db.Conn())
+	projectService := project.NewService(projectRepo, containerManager, workspaceService, userRepo, cipher)
+	projectHandler := project.NewHandler(projectService)
+
 	// AI layer
 	aiModule := ai.NewModule(db.Conn(), workspaceService)
 
@@ -128,7 +134,7 @@ func New(cfg Config) (*Server, error) {
 	authRateLimiter := auth.NewRateLimiter(rate.Limit(5), 10)
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, aiModule.Handler, previewHandler)
+	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectHandler, aiModule.Handler, previewHandler)
 
 	// Wrap the mux with host-based routing to intercept preview subdomain requests.
 	handler := hostRouter(mux, previewHandler, cfg.PreviewDomain)
@@ -296,7 +302,7 @@ type aiRouteHandler interface {
 }
 
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, projectHandler *project.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
@@ -375,6 +381,17 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/workspaces/{id}/services/{serviceId}/start", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleStart)))
 	mux.Handle("POST /api/workspaces/{id}/services/{serviceId}/stop", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleStop)))
 	mux.Handle("DELETE /api/workspaces/{id}/services/{serviceId}", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleDelete)))
+
+	// Project routes
+	mux.Handle("GET /api/projects", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleList)))
+	mux.Handle("POST /api/projects", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleCreate)))
+	mux.Handle("GET /api/projects/{id}", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleGet)))
+	mux.Handle("PUT /api/projects/{id}", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleUpdate)))
+	mux.Handle("DELETE /api/projects/{id}", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDelete)))
+	mux.Handle("GET /api/projects/{id}/branches", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleBranches)))
+	mux.Handle("GET /api/projects/{id}/sandboxes", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleListSandboxes)))
+	mux.Handle("POST /api/projects/{id}/sandboxes", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleCreateSandbox)))
+	mux.Handle("POST /api/projects/{id}/sandboxes/{workspaceId}/publish", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandlePublishSandbox)))
 
 	// AI API routes
 	mux.Handle("GET /api/ai/models", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListModels)))

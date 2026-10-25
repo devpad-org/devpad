@@ -100,6 +100,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 		default_agent_id TEXT NOT NULL DEFAULT 'default',
 		memory_limit INTEGER NOT NULL DEFAULT 2147483648,
 		nano_cpus INTEGER NOT NULL DEFAULT 2000000000,
+		project_id INTEGER,
+		kind TEXT NOT NULL DEFAULT 'interactive',
+		branch TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);

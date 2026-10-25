@@ -1,0 +1,653 @@
+package project
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/agentbin"
+	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/container"
+	appdb "github.com/devpad-org/devpad/internal/database"
+	"github.com/devpad-org/devpad/internal/workspace"
+)
+
+// fakeContainers records the Docker resources a project creates and removes.
+type fakeContainers struct {
+	mu       sync.Mutex
+	ip       string
+	created  []string
+	networks map[string]bool
+	volumes  map[string]bool
+	removed  []string
+}
+
+func newFakeContainers(ip string) *fakeContainers {
+	return &fakeContainers{ip: ip, networks: map[string]bool{}, volumes: map[string]bool{}}
+}
+
+func (f *fakeContainers) Create(_ context.Context, name, volumeName, networkName string, env []string, _, _ int64) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.created = append(f.created, fmt.Sprintf("%s vol=%s net=%s", name, volumeName, networkName))
+	return "container-" + name, nil
+}
+func (f *fakeContainers) Start(context.Context, string) error   { return nil }
+func (f *fakeContainers) Stop(context.Context, string) error    { return nil }
+func (f *fakeContainers) Restart(context.Context, string) error { return nil }
+func (f *fakeContainers) Remove(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed = append(f.removed, id)
+	return nil
+}
+func (f *fakeContainers) UpdateResources(context.Context, string, int64, int64) error { return nil }
+func (f *fakeContainers) GetIP(context.Context, string, string) (string, error)       { return f.ip, nil }
+func (f *fakeContainers) GetEnv(context.Context, string) ([]string, error)            { return nil, nil }
+func (f *fakeContainers) Stats(context.Context, string) (*container.ContainerStats, error) {
+	return &container.ContainerStats{}, nil
+}
+func (f *fakeContainers) CreateNetwork(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.networks[name] = true
+	return nil
+}
+func (f *fakeContainers) RemoveNetwork(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.networks, name)
+	return nil
+}
+func (f *fakeContainers) ConnectToNetwork(context.Context, string, string) error { return nil }
+func (f *fakeContainers) EnsureSelfAttached(context.Context, string) error       { return nil }
+func (f *fakeContainers) DetachSelf(context.Context, string) error               { return nil }
+func (f *fakeContainers) CreateVolume(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.volumes[name] = true
+	return nil
+}
+func (f *fakeContainers) RemoveVolume(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.volumes, name)
+	return nil
+}
+func (f *fakeContainers) Exec(context.Context, string, []string) (string, error) { return "", nil }
+func (f *fakeContainers) ExecAttach(context.Context, string) (container.HijackedResponse, error) {
+	return container.HijackedResponse{}, nil
+}
+func (f *fakeContainers) ExecResize(context.Context, string, uint, uint) error { return nil }
+func (f *fakeContainers) CopyFileToContainer(context.Context, string, string, []byte, int64) error {
+	return nil
+}
+func (f *fakeContainers) BuildImage(context.Context, []byte, []byte, string) error { return nil }
+func (f *fakeContainers) CreateSidecar(context.Context, string, string, string, string, []string, int) (string, error) {
+	return "", nil
+}
+
+// fakeRepoAgent stands in for the agent in a project's repo container.
+type fakeRepoAgent struct {
+	mu        sync.Mutex
+	token     string
+	initErr   string
+	initReq   map[string]string
+	branches  []agent.RepoRef
+	bundled   []string // branches requested as bundles
+	imported  map[string][]byte
+	importErr string
+}
+
+func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/healthz":
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+	case "/api/version":
+		json.NewEncoder(w).Encode(map[string]string{"version": agentbin.Version})
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.token == "" || r.Header.Get("X-Devpad-Agent-Token") != a.token {
+		http.Error(w, `{"error":"invalid agent token"}`, http.StatusUnauthorized)
+		return
+	}
+	switch r.URL.Path {
+	case "/api/repo/init":
+		json.NewDecoder(r.Body).Decode(&a.initReq)
+		if a.initErr != "" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": a.initErr})
+			return
+		}
+		json.NewEncoder(w).Encode(agent.RepoRefs{DefaultBranch: a.initReq["defaultBranch"]})
+	case "/api/repo/refs":
+		json.NewEncoder(w).Encode(agent.RepoRefs{DefaultBranch: "main", Branches: a.branches})
+	case "/api/repo/bundle":
+		branch := r.URL.Query().Get("branch")
+		a.bundled = append(a.bundled, branch)
+		w.Write([]byte("bundle-of-" + branch))
+	case "/api/repo/import":
+		if a.importErr != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": a.importErr})
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		branch := r.URL.Query().Get("branch")
+		a.imported[branch] = body
+		json.NewEncoder(w).Encode(agent.RepoBranch{Branch: branch, SHA: "abc123"})
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// fakeWorkspaces is an in-memory workspace service for sandboxes.
+type fakeWorkspaces struct {
+	mu            sync.Mutex
+	nextID        int64
+	byID          map[int64]*workspace.Workspace
+	seeds         map[int64]string // workspace ID -> base branch + bundle seen
+	seedErr       error
+	commands      map[int64]string
+	deleted       []int64
+	sandboxBundle string
+}
+
+func newFakeWorkspaces() *fakeWorkspaces {
+	return &fakeWorkspaces{nextID: 100, byID: map[int64]*workspace.Workspace{}, seeds: map[int64]string{}, commands: map[int64]string{}}
+}
+
+func (f *fakeWorkspaces) add(ws *workspace.Workspace) *workspace.Workspace {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextID++
+	ws.ID = f.nextID
+	f.byID[ws.ID] = ws
+	return ws
+}
+
+func (f *fakeWorkspaces) Get(_ context.Context, userID, id int64) (*workspace.Workspace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ws, ok := f.byID[id]
+	if !ok {
+		return nil, workspace.ErrNotFound
+	}
+	if ws.UserID != userID {
+		return nil, workspace.ErrForbidden
+	}
+	return ws, nil
+}
+
+func (f *fakeWorkspaces) CreateSandbox(_ context.Context, userID int64, spec workspace.SandboxSpec) (*workspace.Workspace, error) {
+	return f.add(&workspace.Workspace{
+		UserID: userID, Name: spec.Name, ProjectID: spec.ProjectID, Kind: spec.Kind, Branch: spec.Branch,
+		Status: workspace.StatusRunning,
+	}), nil
+}
+
+func (f *fakeWorkspaces) ListByProject(_ context.Context, userID, projectID int64) ([]*workspace.Workspace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []*workspace.Workspace
+	for _, ws := range f.byID {
+		if ws.ProjectID == projectID && ws.UserID == userID {
+			out = append(out, ws)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeWorkspaces) SeedSandboxRepo(_ context.Context, _, id int64, base string, bundle io.Reader) (*agent.RepoBranch, error) {
+	body, _ := io.ReadAll(bundle)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.seedErr != nil {
+		return nil, f.seedErr
+	}
+	f.seeds[id] = base + " <- " + string(body)
+	return &agent.RepoBranch{Branch: f.byID[id].Branch}, nil
+}
+
+func (f *fakeWorkspaces) BundleSandboxBranch(_ context.Context, _, id int64) (string, io.ReadCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.byID[id].Branch, io.NopCloser(strings.NewReader(f.sandboxBundle)), nil
+}
+
+func (f *fakeWorkspaces) Delete(_ context.Context, _, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.byID, id)
+	f.deleted = append(f.deleted, id)
+	return nil
+}
+
+func (f *fakeWorkspaces) StartCommand(_ context.Context, _, id int64, command, _ string) (*agent.ManagedCommand, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commands[id] = command
+	return &agent.ManagedCommand{}, nil
+}
+
+type testEnv struct {
+	svc        *service
+	db         *appdb.DB
+	containers *fakeContainers
+	repoAgent  *fakeRepoAgent
+	workspaces *fakeWorkspaces
+	userID     int64
+	otherID    int64
+}
+
+func setupTest(t *testing.T) *testEnv {
+	t.Helper()
+	db, err := appdb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	ra := &fakeRepoAgent{imported: map[string][]byte{}}
+	srv := httptest.NewServer(ra)
+	t.Cleanup(srv.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+
+	containers := newFakeContainers(host)
+	workspaces := newFakeWorkspaces()
+	svc := NewService(NewRepository(db.Conn()), containers, workspaces, auth.NewUserRepository(db.Conn()), nil).(*service)
+	svc.agentPort = port
+
+	return &testEnv{
+		svc: svc, db: db, containers: containers, repoAgent: ra, workspaces: workspaces,
+		userID: insertUser(t, db, "owner"), otherID: insertUser(t, db, "other"),
+	}
+}
+
+func insertUser(t *testing.T, db *appdb.DB, name string) int64 {
+	t.Helper()
+	res, err := db.Conn().Exec(`INSERT INTO users (username, email, password) VALUES (?, ?, 'x')`, name, name+"@example.com")
+	if err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// createProject creates a ready project, wiring the fake repo agent to the
+// token the service generated.
+func (e *testEnv) createProject(t *testing.T, in CreateInput) *Project {
+	t.Helper()
+	e.svc.repo = &tokenCapturingRepo{Repository: NewRepository(e.db.Conn()), agent: e.repoAgent}
+	p, err := e.svc.Create(context.Background(), e.userID, in)
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	return p
+}
+
+// tokenCapturingRepo hands the generated repo agent token to the fake agent
+// as soon as the project row is inserted, like the env var on a real container.
+type tokenCapturingRepo struct {
+	Repository
+	agent *fakeRepoAgent
+}
+
+func (r *tokenCapturingRepo) Create(ctx context.Context, p *Project) error {
+	r.agent.mu.Lock()
+	r.agent.token = p.RepoAgentToken
+	r.agent.mu.Unlock()
+	return r.Repository.Create(ctx, p)
+}
+
+func TestCreateProvisionsIsolatedRepoContainer(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "  Devpad ", UpstreamURL: "https://example.com/repo.git"})
+
+	if p.Status != StatusReady || p.Error != "" {
+		t.Fatalf("expected ready project, got %s %q", p.Status, p.Error)
+	}
+	if p.Name != "Devpad" || p.DefaultBranch != DefaultBranch || p.MaxSandboxes != DefaultMaxSandboxes {
+		t.Fatalf("unexpected defaults: %+v", p)
+	}
+	want := fmt.Sprintf("repo-%d vol=devpad-repo-vol-%d net=devpad-repo-net-%d", p.ID, p.ID, p.ID)
+	if len(e.containers.created) != 1 || e.containers.created[0] != want {
+		t.Fatalf("created %v, want [%s]", e.containers.created, want)
+	}
+	if e.repoAgent.initReq["defaultBranch"] != "main" || e.repoAgent.initReq["upstreamUrl"] != "https://example.com/repo.git" {
+		t.Fatalf("unexpected init request: %v", e.repoAgent.initReq)
+	}
+
+	stored, err := e.svc.Get(context.Background(), e.userID, p.ID)
+	if err != nil || stored.Status != StatusReady || stored.RepoContainerID == "" {
+		t.Fatalf("stored project not ready: %+v, %v", stored, err)
+	}
+}
+
+func TestCreateRecordsRepoInitFailure(t *testing.T) {
+	e := setupTest(t)
+	e.repoAgent.initErr = "cloning upstream: repository not found"
+	p := e.createProject(t, CreateInput{Name: "broken", UpstreamURL: "git@example.com:missing.git"})
+
+	if p.Status != StatusError || !strings.Contains(p.Error, "repository not found") {
+		t.Fatalf("expected recorded error, got %s %q", p.Status, p.Error)
+	}
+	if _, err := e.svc.CreateSandbox(context.Background(), e.userID, p.ID, SandboxInput{}); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("expected ErrNotReady for sandbox on broken project, got %v", err)
+	}
+}
+
+func TestCreateValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		in   CreateInput
+	}{
+		{"empty name", CreateInput{Name: " "}},
+		{"flag branch", CreateInput{Name: "x", DefaultBranch: "-main"}},
+		{"bad branch", CreateInput{Name: "x", DefaultBranch: "a..b"}},
+		{"flag upstream", CreateInput{Name: "x", UpstreamURL: "--upload-pack=evil"}},
+		{"too many sandboxes", CreateInput{Name: "x", MaxSandboxes: MaxSandboxesLimit + 1}},
+		{"negative sandboxes", CreateInput{Name: "x", MaxSandboxes: -1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := setupTest(t)
+			if _, err := e.svc.Create(context.Background(), e.userID, tt.in); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("expected ErrInvalidInput, got %v", err)
+			}
+			if len(e.containers.created) != 0 {
+				t.Fatalf("invalid input created containers: %v", e.containers.created)
+			}
+		})
+	}
+}
+
+func TestGetChecksOwnership(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "mine"})
+	if _, err := e.svc.Get(context.Background(), e.otherID, p.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+	if _, err := e.svc.Get(context.Background(), e.userID, p.ID+99); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestCreateSandboxSeedsFromDefaultBranch(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj", SetupScript: "npm ci"})
+
+	ws, err := e.svc.CreateSandbox(context.Background(), e.userID, p.ID, SandboxInput{})
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	if ws.Kind != workspace.KindTask || !strings.HasPrefix(ws.Branch, "sandbox-") || ws.ProjectID != p.ID {
+		t.Fatalf("unexpected sandbox: %+v", ws)
+	}
+	if got := e.workspaces.seeds[ws.ID]; got != "main <- bundle-of-main" {
+		t.Fatalf("seed = %q", got)
+	}
+	if got := e.workspaces.commands[ws.ID]; got != "npm ci" {
+		t.Fatalf("setup command = %q", got)
+	}
+}
+
+func TestCreateSandboxResumesExistingBranch(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main"}, {Name: "feature/login"}}
+
+	ws, err := e.svc.CreateSandbox(context.Background(), e.userID, p.ID, SandboxInput{Branch: "feature/login", Kind: "review"})
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	if ws.Kind != workspace.KindReview {
+		t.Fatalf("expected review sandbox, got %s", ws.Kind)
+	}
+	if got := e.workspaces.seeds[ws.ID]; got != "feature/login <- bundle-of-feature/login" {
+		t.Fatalf("seed = %q", got)
+	}
+}
+
+func TestCreateSandboxRejections(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj", MaxSandboxes: 2})
+	ctx := context.Background()
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "taken"}); err != nil {
+		t.Fatalf("first sandbox: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		in   SandboxInput
+		want error
+	}{
+		{"default branch", SandboxInput{Branch: "main"}, ErrDefaultBranch},
+		{"branch in use", SandboxInput{Branch: "taken"}, ErrBranchInUse},
+		{"interactive kind", SandboxInput{Kind: "interactive"}, ErrInvalidInput},
+		{"unknown kind", SandboxInput{Kind: "root"}, ErrInvalidInput},
+		{"flag branch", SandboxInput{Branch: "-D"}, ErrInvalidInput},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, tt.in); !errors.Is(err, tt.want) {
+				t.Fatalf("expected %v, got %v", tt.want, err)
+			}
+		})
+	}
+
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{}); err != nil {
+		t.Fatalf("second sandbox: %v", err)
+	}
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{}); !errors.Is(err, ErrSandboxLimit) {
+		t.Fatalf("expected ErrSandboxLimit, got %v", err)
+	}
+	if _, err := e.svc.CreateSandbox(ctx, e.otherID, p.ID, SandboxInput{}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for other user, got %v", err)
+	}
+}
+
+func TestCreateSandboxLimitHoldsUnderConcurrency(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj", MaxSandboxes: 3})
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	created := 0
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := e.svc.CreateSandbox(context.Background(), e.userID, p.ID, SandboxInput{}); err == nil {
+				mu.Lock()
+				created++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if created != 3 {
+		t.Fatalf("created %d sandboxes, limit is 3", created)
+	}
+}
+
+func TestCreateSandboxRemovesSandboxWhenSeedFails(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	e.workspaces.seedErr = errors.New("clone failed")
+
+	if _, err := e.svc.CreateSandbox(context.Background(), e.userID, p.ID, SandboxInput{}); err == nil {
+		t.Fatal("expected seed failure")
+	}
+	if len(e.workspaces.deleted) != 1 || len(e.workspaces.byID) != 0 {
+		t.Fatalf("expected unseeded sandbox removed, deleted=%v remaining=%d", e.workspaces.deleted, len(e.workspaces.byID))
+	}
+}
+
+func TestPublishSandboxImportsOnlyItsOwnBranch(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	ws, err := e.svc.CreateSandbox(context.Background(), e.userID, p.ID, SandboxInput{Branch: "feature"})
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	e.workspaces.sandboxBundle = "sandbox-bundle"
+
+	result, err := e.svc.PublishSandbox(context.Background(), e.userID, p.ID, ws.ID)
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if result.Branch != "feature" || string(e.repoAgent.imported["feature"]) != "sandbox-bundle" || len(e.repoAgent.imported) != 1 {
+		t.Fatalf("unexpected import: %+v %v", result, e.repoAgent.imported)
+	}
+}
+
+func TestPublishSandboxRejections(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	other := e.createProject(t, CreateInput{Name: "other"})
+	foreign, err := e.svc.CreateSandbox(ctx, e.userID, other.ID, SandboxInput{})
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	interactive := e.workspaces.add(&workspace.Workspace{UserID: e.userID, Kind: workspace.KindInteractive})
+
+	tests := []struct {
+		name        string
+		workspaceID int64
+	}{
+		{"sandbox of another project", foreign.ID},
+		{"interactive workspace", interactive.ID},
+		{"missing workspace", 9999},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := e.svc.PublishSandbox(ctx, e.userID, p.ID, tt.workspaceID); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("expected ErrNotFound, got %v", err)
+			}
+		})
+	}
+	if len(e.repoAgent.imported) != 0 {
+		t.Fatalf("rejected publishes imported: %v", e.repoAgent.imported)
+	}
+}
+
+func TestDeleteRemovesSandboxesThenRepo(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	for i := 0; i < 2; i++ {
+		if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{}); err != nil {
+			t.Fatalf("create sandbox: %v", err)
+		}
+	}
+
+	if err := e.svc.Delete(ctx, e.userID, p.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(e.workspaces.deleted) != 2 {
+		t.Fatalf("expected 2 sandboxes deleted, got %v", e.workspaces.deleted)
+	}
+	if len(e.containers.volumes) != 0 || len(e.containers.networks) != 0 || len(e.containers.removed) != 1 {
+		t.Fatalf("repo resources left: volumes=%v networks=%v removed=%v", e.containers.volumes, e.containers.networks, e.containers.removed)
+	}
+	if _, err := e.svc.Get(ctx, e.userID, p.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected project gone, got %v", err)
+	}
+}
+
+func TestMigrationEnforcesSandboxBranchOwnership(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	repo := workspace.NewRepository(e.db.Conn())
+
+	insert := func(projectID int64, branch string) error {
+		return repo.Create(ctx, &workspace.Workspace{UserID: e.userID, Name: "ws", ProjectID: projectID, Kind: workspace.KindTask, Branch: branch, Status: workspace.StatusRunning})
+	}
+	if err := insert(p.ID, "feature"); err != nil {
+		t.Fatalf("first sandbox: %v", err)
+	}
+	if err := insert(p.ID, "feature"); err == nil {
+		t.Fatal("expected duplicate branch in one project to fail")
+	}
+	// Plain workspaces have no project and no branch; any number may exist.
+	for i := 0; i < 2; i++ {
+		if err := repo.Create(ctx, &workspace.Workspace{UserID: e.userID, Name: "plain", Status: workspace.StatusRunning}); err != nil {
+			t.Fatalf("plain workspace: %v", err)
+		}
+	}
+	// A project with sandboxes cannot be deleted out from under them.
+	if err := NewRepository(e.db.Conn()).Delete(ctx, p.ID); err == nil {
+		t.Fatal("expected project delete to fail while sandboxes reference it")
+	}
+
+	got, err := repo.ListByProjectID(ctx, p.ID)
+	if err != nil || len(got) != 1 || got[0].Branch != "feature" || got[0].Kind != workspace.KindTask {
+		t.Fatalf("unexpected project workspaces: %+v, %v", got, err)
+	}
+}
+
+func TestHandlerNeverExposesRepoToken(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	h := NewHandler(e.svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+strconv.FormatInt(p.ID, 10), nil)
+	req.SetPathValue("id", strconv.FormatInt(p.ID, 10))
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: e.userID}))
+	rec := httptest.NewRecorder()
+	h.HandleGet(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte(p.RepoAgentToken)) {
+		t.Fatal("response leaked the repo agent token")
+	}
+}
+
+func TestHandlerMapsErrors(t *testing.T) {
+	tests := []struct {
+		err  error
+		want int
+	}{
+		{ErrNotFound, http.StatusNotFound},
+		{workspace.ErrForbidden, http.StatusForbidden},
+		{invalid("bad"), http.StatusBadRequest},
+		{ErrDefaultBranch, http.StatusBadRequest},
+		{ErrSandboxLimit, http.StatusConflict},
+		{ErrBranchInUse, http.StatusConflict},
+		{ErrNotReady, http.StatusConflict},
+		{&agent.AgentError{StatusCode: 400, Message: "invalid bundle"}, http.StatusBadGateway},
+		{errors.New("boom"), http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.err.Error(), func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handleServiceError(rec, tt.err)
+			if rec.Code != tt.want {
+				t.Fatalf("expected %d, got %d", tt.want, rec.Code)
+			}
+		})
+	}
+}
