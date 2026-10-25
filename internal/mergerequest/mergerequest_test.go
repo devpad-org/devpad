@@ -579,6 +579,37 @@ func TestMergeMergesReviewedHeadAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestBranchPublishedMovesTheOpenMergeRequest(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+
+	// The user adds a commit to the branch from the project workspace.
+	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	got, _ := e.svc.repo.GetByID(ctx, mr.ID)
+	if got.HeadSHA != "head2" {
+		t.Fatalf("expected the merge request to follow the published head, got %q", got.HeadSHA)
+	}
+	// Other users' branches and branches without an open request are left be.
+	e.svc.BranchPublished(ctx, e.stranger, e.pid(), "task/1", "evil")
+	e.svc.BranchPublished(ctx, e.owner, e.pid(), "feature", "f2")
+	if got, _ := e.svc.repo.GetByID(ctx, mr.ID); got.HeadSHA != "head2" {
+		t.Fatalf("unexpected head after unrelated publishes: %q", got.HeadSHA)
+	}
+
+	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if len(e.projects.merges) != 1 || e.projects.merges[0].ExpectedSourceSHA != "head2" {
+		t.Fatalf("expected the merge pinned to the published head, got %+v", e.projects.merges)
+	}
+	// A merged request no longer follows the branch.
+	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head3")
+	if got, _ := e.svc.repo.GetByID(ctx, mr.ID); got.HeadSHA != "head2" || got.Status != StatusMerged {
+		t.Fatalf("a merged request moved: %+v", got)
+	}
+}
+
 func TestMergeFailuresKeepTheRequestOpen(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()

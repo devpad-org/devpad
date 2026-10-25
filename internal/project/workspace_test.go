@@ -2,10 +2,18 @@ package project
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
 
@@ -184,10 +192,10 @@ func TestPublishingBranchBlocksSandboxClaim(t *testing.T) {
 	if err := e.svc.reservePublish(ctx, p, "feature"); err != nil {
 		t.Fatalf("reserve publish: %v", err)
 	}
-	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "feature"}); !errors.Is(err, ErrBranchInUse) {
-		t.Fatalf("expected ErrBranchInUse while publishing, got %v", err)
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "feature"}); !errors.Is(err, ErrBranchPublishing) {
+		t.Fatalf("expected ErrBranchPublishing while publishing, got %v", err)
 	}
-	if err := e.svc.reservePublish(ctx, p, "feature"); !errors.Is(err, ErrBranchInUse) {
+	if err := e.svc.reservePublish(ctx, p, "feature"); !errors.Is(err, ErrBranchPublishing) {
 		t.Fatalf("expected concurrent publishes of one branch refused, got %v", err)
 	}
 	e.svc.releasePublish(p.ID, "feature")
@@ -262,5 +270,217 @@ func TestMigrationAllowsOneProjectWorkspace(t *testing.T) {
 	}
 	if err := insert(workspace.KindReview, "feature"); err == nil {
 		t.Fatal("expected sandboxes to still own their branch")
+	}
+}
+
+func TestOpenWorkspaceOutlivesTheRequest(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+
+	// The client went away before the workspace was made.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ws, created, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID)
+	if err != nil || !created || !ws.RepoSeeded {
+		t.Fatalf("open with a cancelled request: ws=%+v created=%v err=%v", ws, created, err)
+	}
+	if e.workspaces.seeds[ws.ID] != "main <- bundle-of-main" {
+		t.Fatalf("expected the workspace seeded, got %q", e.workspaces.seeds[ws.ID])
+	}
+}
+
+func TestOpenWorkspaceReplacesUnseededWorkspace(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+
+	// Seeding and the cleanup after it both fail, leaving an unseeded
+	// workspace behind.
+	e.workspaces.seedErr = errors.New("seed failed")
+	e.workspaces.deleteErr = errors.New("docker unavailable")
+	if _, _, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID); err == nil {
+		t.Fatal("expected a seed failure")
+	}
+	stale, err := e.svc.Workspace(ctx, e.userID, p.ID)
+	if err != nil || stale.RepoSeeded {
+		t.Fatalf("expected an unseeded workspace left behind, got %+v %v", stale, err)
+	}
+
+	// While it cannot be removed, opening fails rather than handing it out.
+	e.workspaces.seedErr = nil
+	if _, _, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID); err == nil {
+		t.Fatal("expected an unremovable unseeded workspace to fail the open")
+	}
+
+	e.workspaces.deleteErr = nil
+	ws, created, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID)
+	if err != nil || !created || ws.ID == stale.ID || !ws.RepoSeeded {
+		t.Fatalf("expected a fresh workspace replacing %d: ws=%+v created=%v err=%v", stale.ID, ws, created, err)
+	}
+	if len(e.workspaces.deleted) != 1 || e.workspaces.deleted[0] != stale.ID {
+		t.Fatalf("expected the unseeded workspace removed, got %v", e.workspaces.deleted)
+	}
+	again, created, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID)
+	if err != nil || created || again.ID != ws.ID {
+		t.Fatalf("reopen: ws=%+v created=%v err=%v", again, created, err)
+	}
+}
+
+type recordingPublishHook struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (h *recordingPublishHook) BranchPublished(_ context.Context, userID, projectID int64, branch, sha string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls = append(h.calls, strings.Join([]string{branch, sha}, "@"))
+}
+
+func TestPublishWorkspaceBranchNotifiesHook(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	hook := &recordingPublishHook{}
+	e.svc.SetPublishHook(hook)
+	if _, _, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	if _, err := e.svc.PublishWorkspaceBranch(ctx, e.userID, p.ID, "feature"); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if len(hook.calls) != 1 || hook.calls[0] != "feature@abc123" {
+		t.Fatalf("expected the hook told of the new head, got %v", hook.calls)
+	}
+
+	// A refused publish moves nothing, so nobody is told.
+	e.repoAgent.importErr, e.repoAgent.importStatus = "feature has commits the published branch lacks", http.StatusConflict
+	if _, err := e.svc.PublishWorkspaceBranch(ctx, e.userID, p.ID, "feature"); err == nil {
+		t.Fatal("expected the non-fast-forward publish refused")
+	}
+	if len(hook.calls) != 1 {
+		t.Fatalf("a refused publish reached the hook: %v", hook.calls)
+	}
+}
+
+func TestNonFastForwardPublishIsAConflict(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	if _, _, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	e.repoAgent.importErr, e.repoAgent.importStatus = "feature has commits the published branch lacks; merge devpad/feature first", http.StatusConflict
+
+	_, err := e.svc.PublishWorkspaceBranch(ctx, e.userID, p.ID, "feature")
+	var agentErr *agent.AgentError
+	if !errors.As(err, &agentErr) || agentErr.StatusCode != http.StatusConflict {
+		t.Fatalf("expected the repo agent's 409, got %v", err)
+	}
+
+	id := strconv.FormatInt(p.ID, 10)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+id+"/workspace/publish", strings.NewReader(`{"branch":"feature"}`))
+	req.SetPathValue("id", id)
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: e.userID}))
+	rec := httptest.NewRecorder()
+	NewHandler(e.svc).HandlePublishWorkspaceBranch(rec, req)
+	var body map[string]string
+	json.NewDecoder(rec.Body).Decode(&body)
+	if rec.Code != http.StatusConflict || !strings.Contains(body["error"], "merge devpad/feature first") {
+		t.Fatalf("expected 409 with the agent's message, got %d %v", rec.Code, body)
+	}
+}
+
+func TestPendingSandboxBlocksPublish(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	if _, _, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	if err := e.svc.reserveSandbox(ctx, p, "feature", false); err != nil {
+		t.Fatalf("reserve sandbox: %v", err)
+	}
+	if _, err := e.svc.PublishWorkspaceBranch(ctx, e.userID, p.ID, "feature"); !errors.Is(err, ErrBranchInUse) {
+		t.Fatalf("expected ErrBranchInUse while a sandbox is being created, got %v", err)
+	}
+	e.svc.releaseSandbox(p.ID, "feature")
+	if _, err := e.svc.PublishWorkspaceBranch(ctx, e.userID, p.ID, "feature"); err != nil {
+		t.Fatalf("publish once the claim is released: %v", err)
+	}
+}
+
+func TestDeleteRefusesWhileBusyAndBlocksNewWork(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+
+	if err := e.svc.reserveSandbox(ctx, p, "task/1", false); err != nil {
+		t.Fatalf("reserve sandbox: %v", err)
+	}
+	if err := e.svc.Delete(ctx, e.userID, p.ID); !errors.Is(err, ErrBusy) {
+		t.Fatalf("expected ErrBusy with a sandbox being created, got %v", err)
+	}
+	e.svc.releaseSandbox(p.ID, "task/1")
+	if err := e.svc.reservePublish(ctx, p, "feature"); err != nil {
+		t.Fatalf("reserve publish: %v", err)
+	}
+	if err := e.svc.Delete(ctx, e.userID, p.ID); !errors.Is(err, ErrBusy) {
+		t.Fatalf("expected ErrBusy with a branch being published, got %v", err)
+	}
+	e.svc.releasePublish(p.ID, "feature")
+
+	if err := e.svc.beginDelete(p.ID); err != nil {
+		t.Fatalf("begin delete: %v", err)
+	}
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "task/2"}); !errors.Is(err, ErrDeleting) {
+		t.Fatalf("expected ErrDeleting for a new sandbox, got %v", err)
+	}
+	if _, _, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID); !errors.Is(err, ErrDeleting) {
+		t.Fatalf("expected ErrDeleting for opening the workspace, got %v", err)
+	}
+	if err := e.svc.reservePublish(ctx, p, "feature"); !errors.Is(err, ErrDeleting) {
+		t.Fatalf("expected ErrDeleting for a publish, got %v", err)
+	}
+	if err := e.svc.Delete(ctx, e.userID, p.ID); !errors.Is(err, ErrDeleting) {
+		t.Fatalf("expected a second delete refused, got %v", err)
+	}
+	e.svc.endDelete(p.ID)
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "task/2"}); err != nil {
+		t.Fatalf("create sandbox after an abandoned delete: %v", err)
+	}
+}
+
+func TestDeleteWaitsForWorkspaceOpenInFlight(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+
+	// Stand in for an open that has taken the lock and is about to insert
+	// the project workspace.
+	unlock := e.svc.lockWorkspace(p.ID)
+	done := make(chan error, 1)
+	go func() { done <- e.svc.Delete(ctx, e.userID, p.ID) }()
+
+	time.Sleep(50 * time.Millisecond)
+	e.containers.mu.Lock()
+	removed := len(e.containers.removed)
+	e.containers.mu.Unlock()
+	if removed != 0 {
+		t.Fatal("delete removed the repo container while an open was in flight")
+	}
+	ws := e.workspaces.add(&workspace.Workspace{UserID: e.userID, ProjectID: p.ID, Kind: workspace.KindInteractive, Status: workspace.StatusRunning, RepoSeeded: true})
+	unlock()
+
+	if err := <-done; err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(e.workspaces.deleted) != 1 || e.workspaces.deleted[0] != ws.ID {
+		t.Fatalf("expected the workspace the open made removed, got %v", e.workspaces.deleted)
+	}
+	if _, err := e.svc.Get(ctx, e.userID, p.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected the project gone, got %v", err)
 	}
 }

@@ -257,7 +257,8 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrInvalidInput), errors.Is(err, project.ErrInvalidInput), errors.Is(err, task.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrInvalidState), errors.Is(err, task.ErrInvalidState),
-		errors.Is(err, project.ErrNotReady), errors.Is(err, project.ErrSandboxLimit):
+		errors.Is(err, project.ErrNotReady), errors.Is(err, project.ErrSandboxLimit),
+		errors.Is(err, project.ErrBranchInUse), errors.Is(err, project.ErrBranchPublishing), errors.Is(err, project.ErrDeleting):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.As(err, &agentErr):
 		project.WriteAgentError(w, agentErr)

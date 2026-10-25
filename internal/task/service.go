@@ -372,7 +372,9 @@ func (s *service) launch(ctx context.Context, taskID int64) {
 		return
 	}
 	if err := s.startRun(ctx, t); err != nil {
-		if errors.Is(err, project.ErrSandboxLimit) {
+		// The task stays queued for the next dispatch when no sandbox slot is
+		// free or its branch is being published from the project workspace.
+		if errors.Is(err, project.ErrSandboxLimit) || errors.Is(err, project.ErrBranchPublishing) {
 			return
 		}
 		s.failUnlessShuttingDown(ctx, t, err.Error())

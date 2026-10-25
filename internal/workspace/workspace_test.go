@@ -112,6 +112,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		project_id INTEGER,
 		kind TEXT NOT NULL DEFAULT 'interactive',
 		branch TEXT NOT NULL DEFAULT '',
+		repo_seeded INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);

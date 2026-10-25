@@ -41,6 +41,16 @@ type Service interface {
 	CheckoutWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoCheckout, error)
 	PublishWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error)
 	SyncWorkspaceBase(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
+	// SetPublishHook registers who is told when a branch is published from
+	// the project workspace.
+	SetPublishHook(h PublishHook)
+}
+
+// PublishHook is told each time a branch is published from the project
+// workspace, with the commit it now points at, so an open merge request for
+// the branch can follow it.
+type PublishHook interface {
+	BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string)
 }
 
 // Workspaces is the workspace service surface projects need to run sandboxes
@@ -70,8 +80,12 @@ type service struct {
 	// publishing holds, per project, the branches being published from the
 	// project workspace, which no sandbox may claim meanwhile.
 	publishing map[int64]map[string]bool
+	// deleting holds the projects being deleted, which take no new
+	// sandboxes, publishes or project workspace.
+	deleting map[int64]bool
 	// workspaceLocks serialize opening each project's workspace.
 	workspaceLocks map[int64]*sync.Mutex
+	publishHook    PublishHook
 }
 
 // NewService creates a new project Service.
@@ -86,8 +100,15 @@ func NewService(repo Repository, cm container.Manager, workspaces Workspaces, us
 		pending:    make(map[int64]map[string]bool),
 
 		publishing:     make(map[int64]map[string]bool),
+		deleting:       make(map[int64]bool),
 		workspaceLocks: make(map[int64]*sync.Mutex),
 	}
+}
+
+func (s *service) SetPublishHook(h PublishHook) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.publishHook = h
 }
 
 var branchNamePattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
@@ -257,12 +278,22 @@ func (s *service) Update(ctx context.Context, userID, projectID int64, in Update
 
 // Delete removes every sandbox and the project workspace through the
 // workspace lifecycle, then the repo container and the project. Published
-// branches are lost with the repo.
+// branches are lost with the repo. Sandbox creations and publishes in flight
+// make it fail; once it starts, new ones are refused, and it waits for an
+// open of the project workspace to finish, so the list of workspaces it
+// removes is final before the repo goes.
 func (s *service) Delete(ctx context.Context, userID, projectID int64) error {
 	p, err := s.Get(ctx, userID, projectID)
 	if err != nil {
 		return err
 	}
+	if err := s.beginDelete(p.ID); err != nil {
+		return err
+	}
+	defer s.endDelete(p.ID)
+	unlock := s.lockWorkspace(p.ID)
+	defer unlock()
+
 	sandboxes, err := s.workspaces.ListByProject(ctx, userID, p.ID)
 	if err != nil {
 		return err
@@ -279,6 +310,27 @@ func (s *service) Delete(ctx context.Context, userID, projectID int64) error {
 		return fmt.Errorf("deleting project: %w", err)
 	}
 	return nil
+}
+
+// beginDelete marks a project as being deleted, unless sandboxes are being
+// created or branches published, which would add to what Delete removes.
+func (s *service) beginDelete(projectID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deleting[projectID] {
+		return ErrDeleting
+	}
+	if len(s.pending[projectID]) > 0 || len(s.publishing[projectID]) > 0 {
+		return fmt.Errorf("%w: wait for sandboxes being created and branches being published", ErrBusy)
+	}
+	s.deleting[projectID] = true
+	return nil
+}
+
+func (s *service) endDelete(projectID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.deleting, projectID)
 }
 
 func (s *service) Branches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error) {
@@ -426,9 +478,15 @@ func (s *service) reserveSandbox(ctx context.Context, p *Project, branch string,
 	if err != nil {
 		return err
 	}
+	if s.deleting[p.ID] {
+		return ErrDeleting
+	}
 	pending := s.pending[p.ID]
-	if pending[branch] || s.publishing[p.ID][branch] {
+	if pending[branch] {
 		return ErrBranchInUse
+	}
+	if s.publishing[p.ID][branch] {
+		return ErrBranchPublishing
 	}
 	active := 0
 	for _, ws := range existing {

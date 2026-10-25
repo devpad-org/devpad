@@ -21,11 +21,21 @@ const (
 )
 
 var (
-	ErrNotFound      = errors.New("project not found")
-	ErrForbidden     = errors.New("access denied")
-	ErrNotReady      = errors.New("project repo is not ready")
-	ErrSandboxLimit  = errors.New("project sandbox limit reached")
-	ErrBranchInUse   = errors.New("branch already belongs to a sandbox")
+	ErrNotFound     = errors.New("project not found")
+	ErrForbidden    = errors.New("access denied")
+	ErrNotReady     = errors.New("project repo is not ready")
+	ErrSandboxLimit = errors.New("project sandbox limit reached")
+	ErrBranchInUse  = errors.New("branch already belongs to a sandbox")
+	// ErrBranchPublishing refuses claiming a branch while it is being
+	// published from the project workspace. It is temporary, so callers may
+	// retry.
+	ErrBranchPublishing = errors.New("branch is being published from the project workspace")
+	// ErrDeleting refuses new sandboxes, publishes and the project workspace
+	// while the project is being deleted.
+	ErrDeleting = errors.New("project is being deleted")
+	// ErrBusy refuses deleting a project while sandboxes are being created
+	// or branches published.
+	ErrBusy          = errors.New("project is busy")
 	ErrDefaultBranch = errors.New("sandboxes cannot own the default branch")
 	// ErrPublishDefault refuses publishing the default branch from the
 	// project workspace; it only moves through a merge.

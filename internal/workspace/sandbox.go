@@ -77,8 +77,9 @@ func (s *service) projectWorkspaceAgent(ctx context.Context, userID, workspaceID
 }
 
 // SeedSandboxRepo clones a bundle of the project's base branch into a sandbox
-// or project workspace, committing as the user. A sandbox checks out the
-// branch it owns; a project workspace, which owns none, stays on base.
+// or project workspace, committing as the user, and records that the repo is
+// seeded. A sandbox checks out the branch it owns; a project workspace, which
+// owns none, stays on base.
 func (s *service) SeedSandboxRepo(ctx context.Context, userID, workspaceID int64, base string, bundle io.Reader) (*agent.RepoBranch, error) {
 	ws, c, err := s.projectAgent(ctx, userID, workspaceID)
 	if err != nil {
@@ -92,7 +93,15 @@ func (s *service) SeedSandboxRepo(ctx context.Context, userID, workspaceID int64
 	if user, err := s.users.GetByID(ctx, ws.UserID); err == nil && user != nil {
 		name, email = user.Username, user.Email
 	}
-	return c.RepoSeed(ctx, base, branch, name, email, bundle)
+	seeded, err := c.RepoSeed(ctx, base, branch, name, email, bundle)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repo.MarkRepoSeeded(ctx, ws.ID); err != nil {
+		return nil, err
+	}
+	ws.RepoSeeded = true
+	return seeded, nil
 }
 
 // BundleSandboxBranch streams a bundle of the branch the sandbox owns. The

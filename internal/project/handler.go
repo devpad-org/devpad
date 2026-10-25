@@ -407,7 +407,8 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrDefaultBranch), errors.Is(err, ErrPublishDefault):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrNotReady), errors.Is(err, workspace.ErrNotRunning),
-		errors.Is(err, ErrSandboxLimit), errors.Is(err, ErrBranchInUse):
+		errors.Is(err, ErrSandboxLimit), errors.Is(err, ErrBranchInUse), errors.Is(err, ErrBranchPublishing),
+		errors.Is(err, ErrDeleting), errors.Is(err, ErrBusy):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		var agentErr *agent.AgentError

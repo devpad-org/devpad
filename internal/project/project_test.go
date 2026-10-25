@@ -124,6 +124,8 @@ type fakeRepoAgent struct {
 	bundled   []string // branches requested as bundles
 	imported  map[string][]byte
 	importErr string
+	// importStatus is the status returned with importErr; 400 when unset.
+	importStatus int
 	// importedFF lists branches imported fast-forward only.
 	importedFF []string
 }
@@ -187,7 +189,11 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(agent.RepoComparison{Base: q.Get("base"), Head: q.Get("head"), Ahead: a.ahead[q.Get("head")]})
 	case "/api/repo/import":
 		if a.importErr != "" {
-			w.WriteHeader(http.StatusBadRequest)
+			status := a.importStatus
+			if status == 0 {
+				status = http.StatusBadRequest
+			}
+			w.WriteHeader(status)
 			json.NewEncoder(w).Encode(map[string]string{"error": a.importErr})
 			return
 		}
@@ -210,6 +216,7 @@ type fakeWorkspaces struct {
 	byID          map[int64]*workspace.Workspace
 	seeds         map[int64]string // workspace ID -> base branch + bundle seen
 	seedErr       error
+	deleteErr     error
 	commands      map[int64]string
 	deleted       []int64
 	sandboxBundle string
@@ -291,14 +298,18 @@ func (f *fakeWorkspaces) ListByProject(_ context.Context, userID, projectID int6
 	return out, nil
 }
 
-func (f *fakeWorkspaces) SeedSandboxRepo(_ context.Context, _, id int64, base string, bundle io.Reader) (*agent.RepoBranch, error) {
+func (f *fakeWorkspaces) SeedSandboxRepo(ctx context.Context, _, id int64, base string, bundle io.Reader) (*agent.RepoBranch, error) {
 	body, _ := io.ReadAll(bundle)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if f.seedErr != nil {
 		return nil, f.seedErr
 	}
 	f.seeds[id] = base + " <- " + string(body)
+	f.byID[id].RepoSeeded = true
 	return &agent.RepoBranch{Branch: f.byID[id].Branch}, nil
 }
 
@@ -319,6 +330,9 @@ func (f *fakeWorkspaces) FetchSandboxBase(_ context.Context, _, id int64, branch
 func (f *fakeWorkspaces) Delete(_ context.Context, _, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
 	delete(f.byID, id)
 	f.deleted = append(f.deleted, id)
 	return nil
@@ -956,6 +970,9 @@ func TestHandlerMapsErrors(t *testing.T) {
 		{ErrDefaultBranch, http.StatusBadRequest},
 		{ErrSandboxLimit, http.StatusConflict},
 		{ErrBranchInUse, http.StatusConflict},
+		{ErrBranchPublishing, http.StatusConflict},
+		{ErrDeleting, http.StatusConflict},
+		{fmt.Errorf("%w: wait", ErrBusy), http.StatusConflict},
 		{ErrNotReady, http.StatusConflict},
 		{&agent.AgentError{StatusCode: 400, Message: "invalid bundle"}, http.StatusBadRequest},
 		{&agent.AgentError{StatusCode: 409, Message: "conflicts", Conflicts: []string{"a.go"}}, http.StatusConflict},

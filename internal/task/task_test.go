@@ -740,6 +740,22 @@ func TestAdoptsSandboxThatOwnsTheTaskBranch(t *testing.T) {
 	}
 }
 
+func TestTaskWaitsWhileItsBranchIsBeingPublished(t *testing.T) {
+	e := setup(t)
+	task := e.createTask(t)
+	e.sandboxes.set(func(f *fakeSandboxes) { f.createErr = project.ErrBranchPublishing })
+
+	e.start(t, task.ID, StartInput{})
+	time.Sleep(50 * time.Millisecond)
+	if got, _ := e.repo.GetByID(context.Background(), task.ID); got.Status != StatusQueued || got.Error != "" {
+		t.Fatalf("expected the task to stay queued while its branch is published, got %+v", got)
+	}
+
+	e.sandboxes.set(func(f *fakeSandboxes) { f.createErr = nil })
+	e.svc.kick()
+	e.waitTask(t, task.ID, hasRun)
+}
+
 func TestLaunchFailuresAreRecorded(t *testing.T) {
 	e := setup(t)
 	task := e.createTask(t)

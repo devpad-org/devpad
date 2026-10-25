@@ -137,6 +137,7 @@ func New(cfg Config) (*Server, error) {
 	// Merge request layer (reviews by users and review agents, and merging)
 	mrService := mergerequest.NewService(mergerequest.NewRepository(db.Conn()), projectService, workspaceService, taskService, aiModule.AgentRunService, aiModule.ConversationService)
 	taskService.SetReviewHook(mrService)
+	projectService.SetPublishHook(mrService)
 	aiModule.OnAgentRunFinished(mrService.RunFinished)
 	aiModule.AddToolProvider(mrService)
 	mrHandler := mergerequest.NewHandler(mrService)

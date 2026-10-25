@@ -75,6 +75,7 @@ type Workspace struct {
 	ProjectID      int64 // 0 when the workspace belongs to no project
 	Kind           Kind
 	Branch         string // the project branch a sandbox owns; empty otherwise
+	RepoSeeded     bool   // devpad has seeded the project repo into it
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }

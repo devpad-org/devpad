@@ -19,6 +19,7 @@ type Repository interface {
 	ListAll(ctx context.Context) ([]*Workspace, error)
 	Update(ctx context.Context, ws *Workspace) error
 	SetDefaultAgentID(ctx context.Context, userID, workspaceID int64, agentID string) (bool, error)
+	MarkRepoSeeded(ctx context.Context, id int64) error
 	Delete(ctx context.Context, id int64) error
 }
 
@@ -113,6 +114,13 @@ func (r *repository) Update(ctx context.Context, ws *Workspace) error {
 	return nil
 }
 
+func (r *repository) MarkRepoSeeded(ctx context.Context, id int64) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE workspaces SET repo_seeded = 1, updated_at = ? WHERE id = ?`, time.Now(), id); err != nil {
+		return fmt.Errorf("marking workspace repo seeded: %w", err)
+	}
+	return nil
+}
+
 func (r *repository) SetDefaultAgentID(ctx context.Context, userID, workspaceID int64, agentID string) (bool, error) {
 	now := time.Now()
 	agentID = defaultAgentID(agentID)
@@ -170,7 +178,7 @@ func (r *repository) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-const workspaceColumns = `id, user_id, name, description, status, container_id, volume_name, network_name, agent_token, default_agent_id, memory_limit, nano_cpus, project_id, kind, branch, created_at, updated_at`
+const workspaceColumns = `id, user_id, name, description, status, container_id, volume_name, network_name, agent_token, default_agent_id, memory_limit, nano_cpus, project_id, kind, branch, repo_seeded, created_at, updated_at`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -179,7 +187,7 @@ type rowScanner interface {
 func scanWorkspace(row rowScanner) (*Workspace, error) {
 	ws := &Workspace{}
 	var projectID sql.NullInt64
-	err := row.Scan(&ws.ID, &ws.UserID, &ws.Name, &ws.Description, &ws.Status, &ws.ContainerID, &ws.VolumeName, &ws.NetworkName, &ws.AgentToken, &ws.DefaultAgentID, &ws.MemoryLimit, &ws.NanoCPUs, &projectID, &ws.Kind, &ws.Branch, &ws.CreatedAt, &ws.UpdatedAt)
+	err := row.Scan(&ws.ID, &ws.UserID, &ws.Name, &ws.Description, &ws.Status, &ws.ContainerID, &ws.VolumeName, &ws.NetworkName, &ws.AgentToken, &ws.DefaultAgentID, &ws.MemoryLimit, &ws.NanoCPUs, &projectID, &ws.Kind, &ws.Branch, &ws.RepoSeeded, &ws.CreatedAt, &ws.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

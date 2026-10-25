@@ -49,9 +49,15 @@ func TestProjectWorkspaceRepoOperations(t *testing.T) {
 		t.Fatalf("create project workspace: %v", err)
 	}
 
+	if ws.RepoSeeded {
+		t.Fatal("a new project workspace should not be marked seeded")
+	}
 	// Owning no branch, it is seeded onto the base branch itself.
 	if _, err := svc.SeedSandboxRepo(ctx, 1, ws.ID, "main", strings.NewReader("main-bundle")); err != nil {
 		t.Fatalf("seed: %v", err)
+	}
+	if got, err := svc.Get(ctx, 1, ws.ID); err != nil || !got.RepoSeeded {
+		t.Fatalf("expected the seed recorded: %+v %v", got, err)
 	}
 	if got := ra.paths(); len(got) != 1 || got[0] != "/api/repo/seed?base=main&branch=main&email=test%40test.com&name=testuser" {
 		t.Fatalf("unexpected seed request: %v", got)

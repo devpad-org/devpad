@@ -34,6 +34,9 @@ type Service interface {
 
 	// TaskReadyForReview opens or updates the task's merge request.
 	TaskReadyForReview(ctx context.Context, t *task.Task, summary string)
+	// BranchPublished moves the open merge request for a branch published
+	// from the project workspace to the new commit.
+	BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string)
 	// Tools and ExecuteTool give review agents their review tools.
 	aitools.ToolProvider
 	// RunFinished is the agent runner's completion hook.
@@ -250,6 +253,34 @@ func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary 
 	if summary != "" {
 		mr.Description = summary
 	}
+	return s.repo.Update(ctx, mr)
+}
+
+func (s *service) BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string) {
+	if err := s.branchPublished(ctx, userID, projectID, branch, sha); err != nil {
+		log.Printf("project %d: updating merge request for published branch %s: %v", projectID, branch, err)
+	}
+}
+
+// branchPublished points the branch's open merge request at sha, as task
+// collection does, so the new commits are what gets reviewed and merged.
+// Reviews of the old head stay, recorded against it.
+func (s *service) branchPublished(ctx context.Context, userID, projectID int64, branch, sha string) error {
+	if sha == "" {
+		return nil
+	}
+	open, err := s.repo.GetOpenBySource(ctx, projectID, branch)
+	if err != nil || open == nil || open.UserID != userID {
+		return err
+	}
+	unlock := s.lock("mr", open.ID)
+	defer unlock()
+	// Reload under the lock, so a merge or close that just finished wins.
+	mr, err := s.repo.GetByID(ctx, open.ID)
+	if err != nil || mr == nil || mr.Status != StatusOpen || mr.HeadSHA == sha {
+		return err
+	}
+	mr.HeadSHA = sha
 	return s.repo.Update(ctx, mr)
 }
 

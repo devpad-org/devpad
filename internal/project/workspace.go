@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/workspace"
@@ -56,20 +57,44 @@ func (s *service) runningWorkspace(ctx context.Context, p *Project) (*workspace.
 	return ws, nil
 }
 
+// workspaceOpenTimeout bounds creating and seeding a project workspace,
+// which runs on after the request that asked for it goes away.
+const workspaceOpenTimeout = 15 * time.Minute
+
 // OpenWorkspace returns the project's workspace, creating it on first use
 // with the default branch checked out and the setup script started. created
 // reports whether it is new. The workspace does not count against the
 // sandbox limit.
+//
+// Creating and seeding outlive the request, so a client that goes away
+// cannot leave a half-made workspace behind. One left unseeded anyway, by a
+// crash or a failed cleanup, holds nothing of the user's yet, so it is
+// replaced.
 func (s *service) OpenWorkspace(ctx context.Context, userID, projectID int64) (ws *workspace.Workspace, created bool, err error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workspaceOpenTimeout)
+	defer cancel()
+
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
 		return nil, false, err
 	}
 	unlock := s.lockWorkspace(p.ID)
 	defer unlock()
+	if s.isDeleting(p.ID) {
+		return nil, false, ErrDeleting
+	}
 
-	if ws, err := s.projectWorkspace(ctx, p); !errors.Is(err, ErrNoWorkspace) {
-		return ws, false, err
+	existing, err := s.projectWorkspace(ctx, p)
+	switch {
+	case err == nil && existing.RepoSeeded:
+		return existing, false, nil
+	case err == nil:
+		log.Printf("project %d: replacing unseeded workspace %d", p.ID, existing.ID)
+		if err := s.workspaces.Delete(ctx, userID, existing.ID); err != nil {
+			return nil, false, fmt.Errorf("removing unseeded workspace: %w", err)
+		}
+	case !errors.Is(err, ErrNoWorkspace):
+		return nil, false, err
 	}
 
 	c, err := s.repoAgent(ctx, p)
@@ -90,6 +115,7 @@ func (s *service) OpenWorkspace(ctx context.Context, userID, projectID int64) (w
 		}
 		return nil, false, fmt.Errorf("seeding workspace: %w", err)
 	}
+	ws.RepoSeeded = true
 	if strings.TrimSpace(p.SetupScript) != "" {
 		if _, err := s.workspaces.StartCommand(ctx, userID, ws.ID, p.SetupScript, ""); err != nil {
 			log.Printf("project %d: starting setup script in workspace %d: %v", p.ID, ws.ID, err)
@@ -98,8 +124,14 @@ func (s *service) OpenWorkspace(ctx context.Context, userID, projectID int64) (w
 	return ws, true, nil
 }
 
+func (s *service) isDeleting(projectID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deleting[projectID]
+}
+
 // lockWorkspace serializes opening a project's workspace, so concurrent
-// opens create it once.
+// opens create it once, and Delete waits for an open in flight.
 func (s *service) lockWorkspace(projectID int64) func() {
 	s.mu.Lock()
 	l, ok := s.workspaceLocks[projectID]
@@ -167,7 +199,8 @@ func (s *service) SyncWorkspaceBase(ctx context.Context, userID, projectID int64
 // the canonical repo under the same name. The name comes from the request and
 // is checked here, never taken from the workspace. The default branch and
 // branches owned by sandboxes are refused, and the import only
-// fast-forwards an existing branch.
+// fast-forwards an existing branch. An open merge request for the branch
+// then follows the new commit.
 func (s *service) PublishWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error) {
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
@@ -197,7 +230,17 @@ func (s *service) PublishWorkspaceBranch(ctx context.Context, userID, projectID 
 		return nil, err
 	}
 	defer bundle.Close()
-	return c.RepoImportFastForward(ctx, branch, bundle)
+	published, err := c.RepoImportFastForward(ctx, branch, bundle)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	hook := s.publishHook
+	s.mu.Unlock()
+	if hook != nil {
+		hook.BranchPublished(ctx, userID, p.ID, branch, published.SHA)
+	}
+	return published, nil
 }
 
 // reservePublish refuses a branch that a sandbox owns or is being created
@@ -208,8 +251,14 @@ func (s *service) reservePublish(ctx context.Context, p *Project, branch string)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.pending[p.ID][branch] || s.publishing[p.ID][branch] {
+	if s.deleting[p.ID] {
+		return ErrDeleting
+	}
+	if s.pending[p.ID][branch] {
 		return ErrBranchInUse
+	}
+	if s.publishing[p.ID][branch] {
+		return ErrBranchPublishing
 	}
 	existing, err := s.workspaces.ListByProject(ctx, p.UserID, p.ID)
 	if err != nil {
