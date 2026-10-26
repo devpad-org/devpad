@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 )
@@ -47,5 +48,49 @@ func TestPricingCostWithoutLongContextPrices(t *testing.T) {
 	got := pricing.Cost(Usage{InputTokens: 5_000_000, OutputTokens: 1_000_000})
 	if math.Abs(got-10) > 1e-9 {
 		t.Fatalf("Cost() = %v, want 10", got)
+	}
+}
+
+func TestModelPricingJSON(t *testing.T) {
+	tests := []struct {
+		name  string
+		model Model
+		want  string
+	}{
+		{
+			name: "long-context prices",
+			model: Model{ID: "m", Pricing: &Pricing{
+				TokenPrices:          TokenPrices{Input: 2.5, Output: 15, CacheRead: 0.25},
+				LongContextThreshold: 272_000,
+				LongContext:          &TokenPrices{Input: 5, Output: 22.5, CacheRead: 0.5},
+			}},
+			want: `{"input":2.5,"output":15,"cacheRead":0.25,"cacheWrite":0,"longContextThreshold":272000,"longContext":{"input":5,"output":22.5,"cacheRead":0.5,"cacheWrite":0}}`,
+		},
+		{
+			name:  "standard prices only",
+			model: Model{ID: "m", Pricing: &Pricing{TokenPrices: TokenPrices{Input: 1, Output: 5, CacheRead: 0.1, CacheWrite: 1.25}}},
+			want:  `{"input":1,"output":5,"cacheRead":0.1,"cacheWrite":1.25}`,
+		},
+		{
+			name:  "unknown prices",
+			model: Model{ID: "m"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := json.Marshal(tt.model)
+			if err != nil {
+				t.Fatalf("Marshal() error = %v", err)
+			}
+			var got struct {
+				Pricing json.RawMessage `json:"pricing"`
+			}
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			if string(got.Pricing) != tt.want {
+				t.Fatalf("pricing = %s, want %s", got.Pricing, tt.want)
+			}
+		})
 	}
 }

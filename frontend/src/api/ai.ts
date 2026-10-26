@@ -17,6 +17,23 @@ export interface AIModel {
   providerName: string
   configured: boolean
   thinking: ThinkingCapability
+  // Absent when devpad doesn't know the model's prices.
+  pricing?: ModelPricing
+}
+
+// USD per million tokens.
+export interface TokenPrices {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
+
+export interface ModelPricing extends TokenPrices {
+  // longContext replaces the standard prices for a request whose prompt is
+  // over longContextThreshold tokens.
+  longContextThreshold?: number
+  longContext?: TokenPrices
 }
 
 export interface ThinkingCapability {

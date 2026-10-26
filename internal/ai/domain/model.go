@@ -7,7 +7,7 @@ type Model struct {
 	ProviderID string             `json:"providerId"`
 	Thinking   ThinkingCapability `json:"thinking"`
 	// Pricing is nil when the model's prices are not known.
-	Pricing *Pricing `json:"-"`
+	Pricing *Pricing `json:"pricing,omitempty"`
 }
 
 // ThinkingCapability describes whether a model supports reasoning/thinking mode.

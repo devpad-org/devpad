@@ -20,10 +20,10 @@ func (u Usage) PromptTokens() int64 {
 
 // TokenPrices are USD per million tokens.
 type TokenPrices struct {
-	Input      float64
-	Output     float64
-	CacheRead  float64
-	CacheWrite float64
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cacheRead"`
+	CacheWrite float64 `json:"cacheWrite"`
 }
 
 // Pricing is what a model costs per token. Prices are kept with each
@@ -33,8 +33,8 @@ type Pricing struct {
 	TokenPrices
 	// LongContext replaces the standard prices for a request whose prompt is
 	// over LongContextThreshold tokens.
-	LongContextThreshold int64
-	LongContext          *TokenPrices
+	LongContextThreshold int64        `json:"longContextThreshold,omitempty"`
+	LongContext          *TokenPrices `json:"longContext,omitempty"`
 }
 
 // Cost returns the USD cost of a single request's usage.

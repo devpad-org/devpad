@@ -4,7 +4,7 @@ import { useAdminStore } from '@/stores/admin'
 import { useAuthStore } from '@/stores/auth'
 import type { AdminUser } from '@/api/admin'
 import type { AdminWorkspace } from '@/api/admin'
-import { aiApi, type AIModel, type AIProvider, type BuiltInAgentDefaults } from '@/api/ai'
+import { aiApi, type AIModel, type AIProvider, type BuiltInAgentDefaults, type TokenPrices } from '@/api/ai'
 import { useAiModelStore } from '@/stores/aiModels'
 import { thinkingEffortLabel } from '@/utils/aiModels'
 
@@ -41,11 +41,15 @@ const aiSubmitting = ref<string | null>(null)
 // AI agent defaults
 const agentDefaults = ref<BuiltInAgentDefaults[]>([])
 const agentDefaultForms = ref<Record<string, { model: string; effort: string }>>({})
-const allAIModels = ref<AIModel[]>([])
 const agentDefaultsLoading = ref(false)
 const agentDefaultsError = ref('')
 const agentDefaultsSuccess = ref('')
 const agentDefaultsSubmitting = ref<string | null>(null)
+
+// Every model, configured or not, for agent defaults and the pricing table
+const allAIModels = ref<AIModel[]>([])
+const modelsLoading = ref(false)
+const modelsError = ref('')
 
 // Workspace limits modal
 const showLimitsModal = ref(false)
@@ -67,8 +71,43 @@ onMounted(() => {
   admin.fetchUsers()
   admin.fetchWorkspaces()
   loadAIProviders()
+  loadAIModels()
   loadAgentDefaults()
 })
+
+async function loadAIModels() {
+  modelsLoading.value = true
+  try {
+    allAIModels.value = (await aiApi.listModels()).models
+  } catch {
+    modelsError.value = 'Failed to load AI models'
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
+const priceFormat = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4,
+})
+
+// A price of zero means the provider doesn't bill that kind of token on its own.
+function formatPrice(prices: TokenPrices, key: keyof TokenPrices): string {
+  return prices[key] > 0 ? priceFormat.format(prices[key]) : '—'
+}
+
+function formatTokenCount(tokens: number): string {
+  return tokens >= 1000 && tokens % 1000 === 0 ? `${tokens / 1000}K` : tokens.toLocaleString()
+}
+
+const priceColumns: { key: keyof TokenPrices; label: string }[] = [
+  { key: 'input', label: 'Input' },
+  { key: 'output', label: 'Output' },
+  { key: 'cacheRead', label: 'Cache read' },
+  { key: 'cacheWrite', label: 'Cache write' },
+]
 
 async function loadAIProviders() {
   aiLoading.value = true
@@ -114,8 +153,7 @@ async function saveProvider(providerId: string) {
 async function loadAgentDefaults() {
   agentDefaultsLoading.value = true
   try {
-    const [defaults, models] = await Promise.all([aiApi.listAgentDefaults(), aiApi.listModels()])
-    allAIModels.value = models.models
+    const defaults = await aiApi.listAgentDefaults()
     agentDefaults.value = defaults.agents
     for (const a of defaults.agents) {
       agentDefaultForms.value[a.agentId] = { model: a.model, effort: a.effort }
@@ -653,6 +691,59 @@ function isSelf(user: AdminUser): boolean {
       </div>
     </div>
 
+    <!-- AI Model Pricing Section -->
+    <div class="admin-container" style="margin-top: var(--space-6);">
+      <div class="admin-header">
+        <div>
+          <h1 class="admin-title">AI Model Pricing</h1>
+          <p class="admin-subtitle">USD per million tokens, used to work out what each agent run costs. Prices are built into devpad.</p>
+        </div>
+      </div>
+
+      <div v-if="modelsError" class="alert alert-error">{{ modelsError }}</div>
+
+      <div v-if="modelsLoading" class="loading-state">Loading models...</div>
+
+      <div v-else-if="!modelsError" class="users-table-wrap">
+        <table class="users-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Provider</th>
+              <th v-for="col in priceColumns" :key="col.key" class="cell-price">{{ col.label }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="model in allAIModels" :key="model.providerId + '/' + model.id">
+              <td class="cell-username">
+                {{ model.name }}
+                <div class="cell-model-id">{{ model.id }}</div>
+              </td>
+              <td>
+                {{ model.providerName }}
+                <span v-if="!model.configured" class="badge-role user">Inactive</span>
+              </td>
+              <template v-if="model.pricing">
+                <td v-for="col in priceColumns" :key="col.key" class="cell-limit cell-price">
+                  {{ formatPrice(model.pricing, col.key) }}
+                  <div v-if="model.pricing.longContext && model.pricing.longContextThreshold" class="cell-long-context">
+                    {{ formatPrice(model.pricing.longContext, col.key) }} over {{ formatTokenCount(model.pricing.longContextThreshold) }}
+                  </div>
+                </td>
+              </template>
+              <td v-else :colspan="priceColumns.length" class="cell-date">Prices unknown, so runs aren't costed</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="allAIModels.length === 0" class="empty-state">
+          No models found.
+        </div>
+      </div>
+      <p class="field-hint">
+        — means the provider doesn't bill that kind of token separately. Where a second price is shown, it replaces the first for a request whose prompt is over that many tokens.
+      </p>
+    </div>
+
     <!-- AI Agent Defaults Section -->
     <div class="admin-container" style="margin-top: var(--space-6);">
       <div class="admin-header">
@@ -1073,6 +1164,24 @@ function isSelf(user: AdminUser): boolean {
   margin-bottom: var(--space-4);
   border-radius: var(--radius-md);
   font-size: 0.85rem;
+}
+
+/* AI model pricing */
+.cell-price {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.cell-model-id {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.cell-long-context {
+  font-size: 0.72rem;
+  color: var(--text-muted);
 }
 
 /* AI agent defaults */
