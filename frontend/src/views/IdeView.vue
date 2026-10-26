@@ -22,7 +22,6 @@ import WorkspaceGate, { type WorkspaceGateState } from '@/components/ide/Workspa
 import GitPushToasts from '@/components/project/GitPushToasts.vue'
 import ProjectAgentsPanel from '@/components/project/ProjectAgentsPanel.vue'
 import ProjectBoard from '@/components/project/ProjectBoard.vue'
-import ProjectBranchActions from '@/components/project/ProjectBranchActions.vue'
 import ProjectInboxPanel from '@/components/project/ProjectInboxPanel.vue'
 import ProjectMergeRequestsPanel from '@/components/project/ProjectMergeRequestsPanel.vue'
 import ProjectPanel from '@/components/project/ProjectPanel.vue'
@@ -105,6 +104,14 @@ const activeView = ref<ViewTabId | null>(null)
 const dirtyViews = ref(new Set<string>())
 const selectedGitCommit = ref<GitCommit | null>(null)
 const gitDiffRequest = ref<GitDiffRequest | null>(null)
+// The file whose diff the Git Graph shows, for the Source Control panel.
+const activeGitDiff = computed(() => {
+  const req = gitDiffRequest.value
+  if (!req) return null
+  return req.kind === 'working'
+    ? { kind: 'working' as const, path: req.path, staged: req.staged }
+    : { kind: 'commit' as const, path: req.file.path }
+})
 const focusedAgentRunId = ref<number | null>(null)
 const selectedAgentId = ref('default')
 const previewModalVisible = ref(false)
@@ -1546,24 +1553,19 @@ const backLabel = computed(() => {
             :workspace-name="workspace?.name ?? ''"
             @select="handleFileSelect"
           />
-          <div v-show="activeActivity === 'git'" class="git-sidebar">
-            <ProjectBranchActions
-              v-if="isProjectMode"
-              :workspace-id="workspace?.id ?? 0"
-              :active="activeActivity === 'git'"
-              :revision="gitRevision"
-              @changed="branchChanged"
-            />
-            <GitPanel
-              :key="`git-${gitRevision}`"
-              class="git-sidebar-panel"
-              :workspace-id="workspace?.id ?? 0"
-              :selected-commit="selectedGitCommit"
-              @commit-file-select="handleGitCommitFileSelect"
-              @working-file-select="handleGitWorkingFileSelect"
-              @clear-commit="clearSelectedGitCommit"
-            />
-          </div>
+          <GitPanel
+            v-show="activeActivity === 'git'"
+            :workspace-id="workspace?.id ?? 0"
+            :selected-commit="selectedGitCommit"
+            :active-diff="activeGitDiff"
+            :project-mode="isProjectMode"
+            :active="activeActivity === 'git'"
+            :revision="gitRevision"
+            @commit-file-select="handleGitCommitFileSelect"
+            @working-file-select="handleGitWorkingFileSelect"
+            @clear-commit="clearSelectedGitCommit"
+            @changed="branchChanged"
+          />
           <WorkspaceInfoPanel
             v-show="activeActivity === 'info'"
             :workspace-id="workspace?.id ?? 0"
@@ -2115,19 +2117,6 @@ const backLabel = computed(() => {
   background: var(--bg-surface);
   display: flex;
   flex-direction: column;
-}
-
-.git-sidebar {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-}
-
-.git-sidebar > .git-sidebar-panel {
-  flex: 1;
-  min-height: 0;
-  height: auto;
 }
 
 .ide-center {
