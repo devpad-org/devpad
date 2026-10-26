@@ -56,6 +56,8 @@ const ACTIVE = new Set(['queued', 'in_progress'])
 const editing = ref(false)
 const title = ref('')
 const body = ref('')
+// The budget as typed, in USD; empty or zero means no limit.
+const budget = ref('')
 const message = ref('')
 const model = ref('')
 const effort = ref('')
@@ -64,6 +66,7 @@ const confirmingDelete = ref(false)
 const composerOpen = ref(true)
 const error = ref('')
 const titleInput = ref<HTMLInputElement | null>(null)
+const budgetInput = ref<HTMLInputElement | null>(null)
 
 const projectStore = useActiveProjectStore()
 const confirmDiscard = inject(confirmDiscardKey, () => Promise.resolve(true))
@@ -109,6 +112,13 @@ const info = computed(() => (props.task ? STATUS[props.task.status] : STATUS.tod
 const canStart = computed(() => props.task !== null && STARTABLE.has(props.task.status))
 const canCancel = computed(() => props.task !== null && props.task.status !== 'merged' && props.task.status !== 'cancelled')
 const canEdit = computed(() => props.task !== null && !ACTIVE.has(props.task.status) && props.task.status !== 'merged')
+// The task's agents have spent its budget, so it cannot start until it is raised.
+const overBudget = computed(() => !!props.task && props.task.budgetUsd > 0 && props.task.costUsd >= props.task.budgetUsd)
+
+function formatUsd(usd: number): string {
+  if (usd > 0 && usd < 0.01) return '<$0.01'
+  return `$${usd.toFixed(2)}`
+}
 
 const steps = computed(() => {
   const t = props.task
@@ -191,6 +201,7 @@ watch(
     message.value = ''
     title.value = t?.title ?? ''
     body.value = t?.body ?? ''
+    budget.value = t && t.budgetUsd > 0 ? String(t.budgetUsd) : ''
     model.value = t?.model ?? ''
     effort.value = t?.effort ?? ''
   },
@@ -218,13 +229,14 @@ async function run(action: () => Promise<void>) {
   }
 }
 
-function startEditing() {
+function startEditing(focus: 'title' | 'budget' = 'title') {
   if (!props.task) return
   title.value = props.task.title
   body.value = props.task.body
+  budget.value = props.task.budgetUsd > 0 ? String(props.task.budgetUsd) : ''
   error.value = ''
   editing.value = true
-  void nextTick(() => titleInput.value?.focus())
+  void nextTick(() => (focus === 'budget' ? budgetInput.value : titleInput.value)?.focus())
 }
 
 function save() {
@@ -233,16 +245,21 @@ function save() {
     error.value = 'Title is required'
     return
   }
+  const budgetUsd = budget.value.trim() === '' ? 0 : Number(budget.value)
+  if (!Number.isFinite(budgetUsd) || budgetUsd < 0) {
+    error.value = 'The budget must be an amount in USD, or empty for no limit'
+    return
+  }
   const id = props.task.id
   void run(async () => {
-    const res = await taskApi.update(props.projectId, id, title.value.trim(), body.value)
+    const res = await taskApi.update(props.projectId, id, { title: title.value.trim(), body: body.value, budgetUsd })
     editing.value = false
     emit('changed', res.task)
   })
 }
 
 function start() {
-  if (!props.task || busy.value || !model.value) return
+  if (!props.task || busy.value || !model.value || overBudget.value) return
   const id = props.task.id
   void run(async () => {
     const res = await taskApi.start(props.projectId, id, {
@@ -364,7 +381,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 <MrIcon name="file" :size="13" />
                 <strong>{{ editing ? 'Edit task' : 'Description' }}</strong>
                 <span class="card-header-end">
-                  <button v-if="canEdit && !editing" class="icon-button" aria-label="Edit task" title="Edit" @click="startEditing">
+                  <button v-if="canEdit && !editing" class="icon-button" aria-label="Edit task" title="Edit" @click="startEditing()">
                     <MrIcon name="pencil" :size="13" />
                   </button>
                 </span>
@@ -386,6 +403,24 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                     @keydown.ctrl.enter.prevent="save"
                   />
                 </div>
+                <div class="form-group">
+                  <label class="form-label" for="task-budget">Budget (USD)</label>
+                  <input
+                    id="task-budget"
+                    ref="budgetInput"
+                    v-model="budget"
+                    class="form-input budget-input"
+                    type="number"
+                    min="0"
+                    step="any"
+                    inputmode="decimal"
+                    placeholder="No limit"
+                  />
+                  <span class="form-hint">
+                    What the agent may spend on this task across all its runs, counting only models with known prices.
+                    Spent so far: {{ formatUsd(task.costUsd) }}.
+                  </span>
+                </div>
                 <div class="card-actions">
                   <span class="form-hint"><kbd>Ctrl</kbd> <kbd>Enter</kbd> to save &middot; <kbd>Esc</kbd> to cancel</span>
                   <button type="button" class="btn btn-secondary btn-sm" :disabled="busy" @click="editing = false">Cancel</button>
@@ -396,7 +431,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 <MarkdownMessage v-if="task.body" :content="task.body" />
                 <div v-else class="empty-description">
                   <p class="muted">No description yet.</p>
-                  <button v-if="canEdit" class="text-button" @click="startEditing">Add one so the agent knows what to do</button>
+                  <button v-if="canEdit" class="text-button" @click="startEditing()">Add one so the agent knows what to do</button>
                 </div>
               </div>
             </article>
@@ -410,6 +445,14 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 <MarkdownMessage :content="task.pendingMessage" />
               </div>
             </article>
+
+            <p v-if="canStart && overBudget && !editing" class="notice notice-warning notice-row">
+              <MrIcon name="warning" :size="14" />
+              <span class="budget-notice-text">
+                The agent has spent this task's {{ formatUsd(task.budgetUsd) }} budget. Raise it to start the agent again.
+              </span>
+              <button class="btn btn-secondary btn-sm" @click="startEditing('budget')">Raise budget</button>
+            </p>
 
             <template v-if="canStart && !editing">
               <button v-if="!composerOpen" class="composer-toggle" @click="composerOpen = true">
@@ -441,7 +484,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                   />
                   <div class="composer-footer">
                     <AgentModelPicker v-model:model="model" v-model:effort="effort" :agent-id="task.agentId || undefined" />
-                    <button class="btn btn-primary" :disabled="busy || !model" @click="start">
+                    <button class="btn btn-primary" :disabled="busy || !model || overBudget" @click="start">
                       <span v-if="busy" class="spinner spinner-sm spinner-on-accent" />
                       <MrIcon v-else :name="composer.icon" :size="13" />
                       {{ composer.action }}
@@ -485,6 +528,12 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                   <dt>Effort</dt>
                   <dd>{{ task.effort }}</dd>
                 </template>
+                <dt>Spent</dt>
+                <dd class="spend" :class="{ 'over-budget': overBudget }">
+                  {{ formatUsd(task.costUsd) }}
+                  <span v-if="task.budgetUsd > 0" :class="{ muted: !overBudget }">of {{ formatUsd(task.budgetUsd) }}</span>
+                  <span v-else class="muted">&middot; no limit</span>
+                </dd>
                 <dt>Created</dt>
                 <dd :title="fullTime(task.createdAt)">{{ timeAgo(task.createdAt) }}</dd>
                 <dt>Updated</dt>
@@ -547,7 +596,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 </div>
               </div>
               <div v-else class="action-list">
-                <button v-if="canEdit && !editing" class="action" :disabled="busy" @click="startEditing">
+                <button v-if="canEdit && !editing" class="action" :disabled="busy" @click="startEditing()">
                   <MrIcon name="pencil" :size="13" />
                   Edit task
                 </button>
@@ -1124,6 +1173,22 @@ kbd {
   align-items: center;
   min-width: 0;
   color: var(--text-primary);
+}
+
+.details dd.spend {
+  gap: var(--space-1);
+}
+
+.details dd.over-budget {
+  color: var(--error);
+}
+
+.budget-notice-text {
+  flex: 1;
+}
+
+.budget-input {
+  max-width: 10rem;
 }
 
 .ellipsis {

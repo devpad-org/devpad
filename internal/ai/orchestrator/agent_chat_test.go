@@ -643,7 +643,7 @@ func TestAgentChatOrchestrator_CancellationStopsToolExecution(t *testing.T) {
 	}
 }
 
-func TestAgentChatOrchestrator_MaxIterationsEmitsWarning(t *testing.T) {
+func TestAgentChatOrchestrator_MaxIterationsFailsTheRun(t *testing.T) {
 	callCount := 0
 	orch := &agentChatOrchestrator{
 		service: &mockChatService{
@@ -682,22 +682,84 @@ func TestAgentChatOrchestrator_MaxIterationsEmitsWarning(t *testing.T) {
 		t.Fatalf("expected 2 chat iterations, got %d", callCount)
 	}
 
-	warningFound := false
+	errorFound := false
 	doneFound := false
 	for _, event := range events {
-		if strings.Contains(event.TextDelta, "Reached the maximum number of tool call iterations") {
-			warningFound = true
+		if strings.Contains(event.ErrorMessage, "the agent made 2 model requests") {
+			errorFound = true
 		}
 		if event.Done {
 			doneFound = true
 		}
 	}
 
-	if !warningFound {
-		t.Fatalf("expected max-iterations warning in events: %+v", events)
+	if !errorFound {
+		t.Fatalf("expected the run to fail on its request limit: %+v", events)
 	}
 	if !doneFound {
 		t.Fatalf("expected done event in events: %+v", events)
+	}
+}
+
+func TestAgentChatOrchestrator_StopsWhenTheBudgetIsSpent(t *testing.T) {
+	callCount := 0
+	orch := &agentChatOrchestrator{
+		service: &mockChatService{
+			findModelFn: func(id string) (domain.Model, error) {
+				// $1 per million input tokens, so each request costs $0.40.
+				return domain.Model{ID: id, Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1}}}, nil
+			},
+			chatStreamFn: func(_ context.Context, _ domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+				callCount++
+				ch := make(chan domain.ProviderEvent, 3)
+				ch <- domain.ProviderEvent{Usage: &domain.Usage{InputTokens: 400_000}}
+				ch <- domain.ProviderEvent{ToolCalls: []domain.ToolCall{{
+					ID:       fmt.Sprintf("tc-%d", callCount),
+					Type:     "function",
+					Function: domain.ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.txt"}`},
+				}}}
+				ch <- domain.ProviderEvent{Done: true}
+				close(ch)
+				return ch, nil
+			},
+		},
+		toolCatalog:       fakeToolCatalog{},
+		toolExecutor:      &mockToolExecutor{},
+		approvals:         &mockApprovalBroker{},
+		questions:         &mockQuestionBroker{},
+		maxToolIterations: defaultMaxToolIterations,
+	}
+
+	var recorded float64
+	budget := domain.NewBudget(1, 0.1, func(cost float64) { recorded += cost })
+	stream, err := orch.Stream(context.Background(), AgentChatRequest{
+		UserID:      1,
+		WorkspaceID: 1,
+		Model:       "test-model",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")},
+		Budget:      budget,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	events := collectEvents(t, stream)
+
+	// $0.10 already spent plus two requests is $0.90, under the limit; the
+	// third takes it to $1.30, and no fourth is made.
+	if callCount != 3 {
+		t.Fatalf("expected 3 requests, got %d", callCount)
+	}
+	if recorded < 1.19 || recorded > 1.21 {
+		t.Fatalf("expected $1.20 recorded as spent, got %v", recorded)
+	}
+	last := events[len(events)-1]
+	stop := events[len(events)-2]
+	if !last.Done || !strings.Contains(stop.ErrorMessage, "budget of $1.00 is spent ($1.30)") {
+		t.Fatalf("expected the run to fail on its budget, got %+v then %+v", stop, last)
+	}
+	// The last request's tool call ran, so the transcript can be continued.
+	if events[len(events)-3].ToolResult == nil {
+		t.Fatalf("expected the last tool call's result before the stop, got %+v", events[len(events)-3])
 	}
 }
 

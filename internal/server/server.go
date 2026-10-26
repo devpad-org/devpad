@@ -126,12 +126,12 @@ func New(cfg Config) (*Server, error) {
 	aiModule := ai.NewModule(db.Conn(), workspaceService)
 
 	// Task layer (agents implementing tasks in project sandboxes)
-	taskService := task.NewService(task.NewRepository(db.Conn()), projectService, workspaceService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults)
+	taskService := task.NewService(task.NewRepository(db.Conn()), projectService, workspaceService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults, aiModule.BudgetDefaults)
 	aiModule.OnAgentRunFinished(taskService.RunFinished)
 	taskHandler := task.NewHandler(taskService)
 
 	// Merge request layer (reviews by users and review agents, and merging)
-	mrService := mergerequest.NewService(mergerequest.NewRepository(db.Conn()), projectService, workspaceService, taskService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults)
+	mrService := mergerequest.NewService(mergerequest.NewRepository(db.Conn()), projectService, workspaceService, taskService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults, aiModule.BudgetDefaults)
 	taskService.SetReviewHook(mrService)
 	projectService.SetPublishHook(mrService)
 	aiModule.OnAgentRunFinished(mrService.RunFinished)
@@ -355,6 +355,8 @@ type aiRouteHandler interface {
 	HandleUpdateProvider(http.ResponseWriter, *http.Request)
 	HandleListAgentDefaults(http.ResponseWriter, *http.Request)
 	HandleSetAgentDefaults(http.ResponseWriter, *http.Request)
+	HandleGetBudgetDefaults(http.ResponseWriter, *http.Request)
+	HandleSetBudgetDefaults(http.ResponseWriter, *http.Request)
 }
 
 // registerRoutes sets up all HTTP routes.
@@ -517,6 +519,8 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("PUT /api/ai/providers/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleUpdateProvider)))
 	mux.Handle("GET /api/ai/agent-defaults", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleListAgentDefaults)))
 	mux.Handle("PUT /api/ai/agent-defaults/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleSetAgentDefaults)))
+	mux.Handle("GET /api/ai/budgets", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleGetBudgetDefaults)))
+	mux.Handle("PUT /api/ai/budgets", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleSetBudgetDefaults)))
 
 	// Unknown API paths get a JSON 404 rather than the SPA, so a client
 	// calling a removed or mistyped endpoint sees a real error.

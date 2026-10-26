@@ -118,11 +118,12 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleUpdate edits a task's title and body.
+// HandleUpdate edits a task's title, body and budget.
 func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
+		Title     string   `json:"title"`
+		Body      string   `json:"body"`
+		BudgetUSD *float64 `json:"budgetUsd"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -239,6 +240,8 @@ func taskResponse(t *Task) map[string]any {
 		"headSha":        t.HeadSHA,
 		"baseBranch":     t.BaseBranch,
 		"handedOff":      t.Handoff != "",
+		"budgetUsd":      t.BudgetUSD,
+		"costUsd":        t.CostUSD,
 		"error":          t.Error,
 		"createdAt":      t.CreatedAt,
 		"updatedAt":      t.UpdatedAt,

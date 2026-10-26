@@ -353,6 +353,13 @@ type env struct {
 // support every effort except "unsupported".
 type fakeDefaults map[string]domain.AgentDefaults
 
+// fakeBudgets is the admin's budget defaults.
+type fakeBudgets struct{ defaults domain.BudgetDefaults }
+
+func (f fakeBudgets) BudgetDefaults(context.Context) (domain.BudgetDefaults, error) {
+	return f.defaults, nil
+}
+
 func (f fakeDefaults) DefaultsFor(_ context.Context, agentID, effort string) (*domain.AgentDefaults, error) {
 	if agentID == "" {
 		agentID = domain.DefaultAgentID
@@ -403,7 +410,7 @@ func setup(t *testing.T) *env {
 		stranger:   stranger,
 		taskID:     taskID,
 	}
-	e.svc = NewService(NewRepository(conn), e.projects, e.workspaces, e.tasks, e.runs, fakeConversations{conn}, e.defaults).(*service)
+	e.svc = NewService(NewRepository(conn), e.projects, e.workspaces, e.tasks, e.runs, fakeConversations{conn}, e.defaults, fakeBudgets{domain.BudgetDefaults{ReviewUSD: 5}}).(*service)
 	e.runs.onFinish = e.svc.RunFinished
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -668,6 +675,15 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	}
 	if req.WorkspaceID != rv.WorkspaceID || req.AgentID != domain.ReviewAgentID || req.ConversationID == 0 || req.Thinking == nil || req.Thinking.Effort != "high" {
 		t.Fatalf("unexpected run request: %+v", req)
+	}
+	// The review gets the admin's review budget, $5 in these tests.
+	req.Budget.Spend(4.99)
+	if req.Budget.Exhausted() {
+		t.Fatal("review budget exhausted early")
+	}
+	req.Budget.Spend(0.01)
+	if !req.Budget.Exhausted() {
+		t.Fatal("expected the review budget to be $5")
 	}
 
 	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID); len(got) != 3 {

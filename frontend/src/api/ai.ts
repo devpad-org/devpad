@@ -94,6 +94,15 @@ export interface BuiltInAgentDefaults {
   effort: string
 }
 
+// What agents may spend, in USD, as an admin set it. Zero means no limit.
+// A new task starts with taskUsd as its budget; reviewUsd covers one review
+// agent and assistantUsd one reply of the assistant.
+export interface BudgetDefaults {
+  taskUsd: number
+  reviewUsd: number
+  assistantUsd: number
+}
+
 export interface AIAgent {
   id: string
   userId?: number
@@ -452,6 +461,14 @@ export const aiApi = {
 
   setAgentDefaults(agentId: string, model: string, effort: string): Promise<{ agent: BuiltInAgentDefaults }> {
     return apiClient.put<{ agent: BuiltInAgentDefaults }>(`/api/ai/agent-defaults/${encodeURIComponent(agentId)}`, { model, effort })
+  },
+
+  getBudgets(): Promise<{ budgets: BudgetDefaults }> {
+    return apiClient.get<{ budgets: BudgetDefaults }>('/api/ai/budgets')
+  },
+
+  setBudgets(budgets: BudgetDefaults): Promise<{ budgets: BudgetDefaults }> {
+    return apiClient.put<{ budgets: BudgetDefaults }>('/api/ai/budgets', budgets)
   },
 
   async chatStream(

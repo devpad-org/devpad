@@ -13,7 +13,10 @@ import (
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 )
 
-const defaultMaxToolIterations = 100
+// defaultMaxToolIterations bounds the model requests one run makes. A run's
+// budget is what normally stops it; this catches runs a budget cannot, such
+// as those on models without known prices.
+const defaultMaxToolIterations = 500
 
 type agentChatOrchestrator struct {
 	service           ChatService
@@ -85,8 +88,18 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 		toolDefinitions = scoped.DefinitionsFor(ctx, req.UserID, req.WorkspaceID)
 	}
 
-	for i := 0; i < o.maxToolIterations; i++ {
+	for i := 0; ; i++ {
 		if ctx.Err() != nil {
+			return
+		}
+		// Both limits are checked between requests, after the last one's tool
+		// calls ran, so the transcript stays one a later run can continue.
+		if req.Budget.Exhausted() {
+			emitStop(ctx, out, req.Budget.ExhaustedMessage())
+			return
+		}
+		if i == o.maxToolIterations {
+			emitStop(ctx, out, fmt.Sprintf("the agent made %d model requests, the most one run may make", o.maxToolIterations))
 			return
 		}
 
@@ -130,7 +143,11 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 					return
 				}
 				if event.Usage != nil {
-					if !emitEvent(ctx, out, domain.ClientEvent{Usage: pricedUsage(model, *event.Usage)}) {
+					usage := pricedUsage(model, *event.Usage)
+					if usage.CostUSD != nil {
+						req.Budget.Spend(*usage.CostUSD)
+					}
+					if !emitEvent(ctx, out, domain.ClientEvent{Usage: usage}) {
 						return
 					}
 				}
@@ -191,14 +208,6 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 
 		for _, toolCall := range toolCalls {
 			if !o.handleToolCall(ctx, req, toolCall, &turns, out) {
-				return
-			}
-		}
-
-		if i == o.maxToolIterations-1 {
-			if !emitEvent(ctx, out, domain.ClientEvent{
-				TextDelta: fmt.Sprintf("\n\n⚠️ Reached the maximum number of tool call iterations (%d). Stopping here.", o.maxToolIterations),
-			}) {
 				return
 			}
 		}
@@ -453,6 +462,14 @@ func pricedUsage(model domain.Model, usage domain.Usage) *domain.Usage {
 		usage.CostUSD = &cost
 	}
 	return &usage
+}
+
+// emitStop ends a run that hit a limit. It fails, so whoever started it does
+// not take the unfinished work for finished.
+func emitStop(ctx context.Context, out chan<- domain.ClientEvent, message string) {
+	if emitEvent(ctx, out, domain.ClientEvent{ErrorMessage: message}) {
+		emitEvent(ctx, out, domain.ClientEvent{Done: true})
+	}
 }
 
 func emitApprovalResult(ctx context.Context, out chan<- domain.ClientEvent, request domain.ApprovalRequest, status string) bool {

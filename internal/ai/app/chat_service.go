@@ -29,6 +29,8 @@ type AgentChatRequest struct {
 	Turns          []domain.Turn
 	Thinking       *domain.ThinkingConfig
 	AgentPrompt    string
+	// Budget stops the run once spent. Nil means no limit.
+	Budget *domain.Budget
 }
 
 // WorkspaceInstructionSource reads project-local agent instructions.
@@ -86,6 +88,7 @@ func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-
 		Thinking:              req.Thinking,
 		AgentPrompt:           req.AgentPrompt,
 		WorkspaceInstructions: workspaceInstructions,
+		Budget:                req.Budget,
 	})
 }
 

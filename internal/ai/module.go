@@ -27,6 +27,7 @@ type Module struct {
 	CatalogService      app.CatalogService
 	AgentService        app.AgentService
 	AgentDefaults       app.AgentDefaultsService
+	BudgetDefaults      app.BudgetDefaultsService
 	ChatService         app.ChatService
 	AgentRunService     app.AgentRunService
 	ConversationService app.ConversationService
@@ -56,6 +57,7 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	catalogService := app.NewCatalogService(providerConfigs, registry)
 	agentService := app.NewAgentService(agents)
 	agentDefaultsService := app.NewAgentDefaultsService(storage.NewAgentDefaultsRepository(db), catalogService)
+	budgetDefaultsService := app.NewBudgetDefaultsService(storage.NewBudgetDefaultsRepository(db))
 	conversationService := app.NewConversationService(conversations)
 	toolExecutor := aitools.NewWorkspaceExecutor(workspaceOps)
 	approvalBroker := approval.NewMemoryBroker()
@@ -73,11 +75,12 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 		CatalogService:      catalogService,
 		AgentService:        agentService,
 		AgentDefaults:       agentDefaultsService,
+		BudgetDefaults:      budgetDefaultsService,
 		ChatService:         chatService,
 		AgentRunService:     agentRunService,
 		ConversationService: conversationService,
 		ToolExecutor:        toolExecutor,
-		Handler:             httptransport.NewHandler(catalogService, agentService, agentDefaultsService, chatService, agentRunService, conversationService, approvalBroker, questionBroker),
+		Handler:             httptransport.NewHandler(catalogService, agentService, agentDefaultsService, budgetDefaultsService, chatService, agentRunService, conversationService, approvalBroker, questionBroker),
 		runListeners:        agentRunService,
 		toolCatalog:         toolCatalog,
 		toolExecutor:        toolExecutor,

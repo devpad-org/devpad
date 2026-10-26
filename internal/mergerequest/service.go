@@ -103,6 +103,11 @@ type AgentDefaults interface {
 	DefaultsFor(ctx context.Context, agentID, effort string) (*domain.AgentDefaults, error)
 }
 
+// Budgets looks up the limits an admin set on what agents may spend.
+type Budgets interface {
+	BudgetDefaults(ctx context.Context) (domain.BudgetDefaults, error)
+}
+
 // cancelWait bounds how long closing a merge request waits for a review run
 // to stop before removing its sandbox.
 const cancelWait = 15 * time.Second
@@ -119,6 +124,7 @@ type service struct {
 	runs          Runs
 	conversations Conversations
 	defaults      AgentDefaults
+	budgets       Budgets
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
@@ -131,7 +137,7 @@ type service struct {
 
 // NewService creates a merge request Service. Background work stops on
 // Shutdown.
-func NewService(repo Repository, projects Projects, workspaces Workspaces, tasks Tasks, runs Runs, conversations Conversations, defaults AgentDefaults) Service {
+func NewService(repo Repository, projects Projects, workspaces Workspaces, tasks Tasks, runs Runs, conversations Conversations, defaults AgentDefaults, budgets Budgets) Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &service{
 		repo:          repo,
@@ -141,6 +147,7 @@ func NewService(repo Repository, projects Projects, workspaces Workspaces, tasks
 		runs:          runs,
 		conversations: conversations,
 		defaults:      defaults,
+		budgets:       budgets,
 		rootCtx:       ctx,
 		rootCancel:    cancel,
 		locks:         make(map[string]*sync.Mutex),
@@ -733,6 +740,10 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 	if rv.Effort != "" {
 		thinking = &domain.ThinkingConfig{Effort: rv.Effort}
 	}
+	budgets, err := s.budgets.BudgetDefaults(ctx)
+	if err != nil {
+		return err
+	}
 	run, err := s.runs.StartRun(ctx, app.StartAgentRunRequest{
 		UserID:         mr.UserID,
 		WorkspaceID:    ws.ID,
@@ -741,6 +752,7 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 		Model:          rv.Model,
 		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, reviewPrompt(p, mr, t, rv, ws.Branch, diff, env, setup, earlier))},
 		Thinking:       thinking,
+		Budget:         domain.NewBudget(budgets.ReviewUSD, 0, nil),
 	})
 	if err != nil {
 		return fmt.Errorf("starting review agent: %w", err)

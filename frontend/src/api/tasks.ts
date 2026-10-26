@@ -29,6 +29,10 @@ export interface Task {
   baseBranch: string
   // The task continues a conversation handed off from the project workspace.
   handedOff: boolean
+  // What every round of the task's agent may spend in all, in USD; zero
+  // means no limit. costUsd counts only models with known prices.
+  budgetUsd: number
+  costUsd: number
   error: string
   createdAt: string
   updatedAt: string
@@ -58,8 +62,8 @@ export const taskApi = {
     return apiClient.post(`/api/projects/${projectId}/tasks/handoff`, input)
   },
 
-  update(projectId: number, id: number, title: string, body: string): Promise<{ task: Task }> {
-    return apiClient.put(`/api/projects/${projectId}/tasks/${id}`, { title, body })
+  update(projectId: number, id: number, input: { title: string; body: string; budgetUsd?: number }): Promise<{ task: Task }> {
+    return apiClient.put(`/api/projects/${projectId}/tasks/${id}`, input)
   },
 
   delete(projectId: number, id: number): Promise<void> {

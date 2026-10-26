@@ -79,10 +79,22 @@ func (r *memRepo) filter(keep func(Task) bool) []*Task {
 	return out
 }
 
+// Update keeps the stored cost, as the SQLite repository does.
 func (r *memRepo) Update(_ context.Context, t *Task) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.tasks[t.ID] = *t
+	stored := *t
+	stored.CostUSD = r.tasks[t.ID].CostUSD
+	r.tasks[t.ID] = stored
+	return nil
+}
+
+func (r *memRepo) AddCost(_ context.Context, id int64, costUSD float64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t := r.tasks[id]
+	t.CostUSD += costUSD
+	r.tasks[id] = t
 	return nil
 }
 
@@ -507,6 +519,14 @@ type env struct {
 	runs      *fakeRuns
 	convs     *fakeConversations
 	defaults  fakeDefaults
+	budgets   *fakeBudgets
+}
+
+// fakeBudgets is the admin's budget defaults.
+type fakeBudgets struct{ defaults domain.BudgetDefaults }
+
+func (f *fakeBudgets) BudgetDefaults(context.Context) (domain.BudgetDefaults, error) {
+	return f.defaults, nil
 }
 
 // fakeDefaults is the admin's agent defaults, keyed by agent ID. Its models
@@ -537,8 +557,9 @@ func setup(t *testing.T) *env {
 		runs:      newFakeRuns(),
 		convs:     &fakeConversations{turns: map[int64][]domain.Turn{}, convs: map[int64]domain.Conversation{}},
 		defaults:  fakeDefaults{},
+		budgets:   &fakeBudgets{},
 	}
-	e.svc = NewService(e.repo, e.sandboxes, workspaceLifecycle{e.sandboxes}, e.runs, e.convs, e.defaults).(*service)
+	e.svc = NewService(e.repo, e.sandboxes, workspaceLifecycle{e.sandboxes}, e.runs, e.convs, e.defaults, e.budgets).(*service)
 	e.runs.onFinish = e.svc.RunFinished
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -727,6 +748,81 @@ func TestRequestChangesQueuesOrStartsFeedback(t *testing.T) {
 	e.waitTask(t, task.ID, func(t *Task) bool { return t.RunID != second.RunID && t.RunID != 0 })
 	if text := lastText(e.runs.startedRequests()[2].Turns); !strings.Contains(text, "Add a test.") {
 		t.Fatalf("immediate feedback not delivered: %q", text)
+	}
+}
+
+func TestTaskBudgetCoversEveryRoundOfItsAgent(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.budgets.defaults = domain.BudgetDefaults{TaskUSD: 2}
+	task := e.createTask(t)
+	if task.BudgetUSD != 2 {
+		t.Fatalf("expected a new task to get the default budget, got %v", task.BudgetUSD)
+	}
+
+	e.start(t, task.ID, StartInput{})
+	first := e.waitTask(t, task.ID, hasRun)
+	// The run's budget is what is left of the task's, and what it spends is
+	// added to the task as it goes.
+	budget := e.runs.startedRequests()[0].Budget
+	budget.Spend(1.5)
+	if got, _ := e.repo.GetByID(ctx, task.ID); got.CostUSD != 1.5 {
+		t.Fatalf("expected the task to have spent $1.50, got %v", got.CostUSD)
+	}
+	if budget.Exhausted() {
+		t.Fatal("budget exhausted early")
+	}
+	budget.Spend(0.75)
+	if !budget.Exhausted() {
+		t.Fatal("expected the budget to be spent")
+	}
+	e.runs.finish(first.RunID, domain.AgentRunFailed, budget.ExhaustedMessage())
+	failed := e.waitTask(t, task.ID, status(StatusFailed))
+	if !strings.Contains(failed.Error, "budget of $2.00 is spent") {
+		t.Fatalf("unexpected error: %q", failed.Error)
+	}
+
+	// Over budget, the task cannot start again until its budget is raised.
+	if _, err := e.svc.Start(ctx, owner, 1, task.ID, StartInput{}); !errors.Is(err, ErrInvalidState) || !strings.Contains(err.Error(), "spent $2.25 of its $2.00 budget") {
+		t.Fatalf("expected an over-budget start refused, got %v", err)
+	}
+	negative := -1.0
+	if _, err := e.svc.Update(ctx, owner, 1, task.ID, UpdateInput{Title: task.Title, BudgetUSD: &negative}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected a negative budget refused, got %v", err)
+	}
+	raised := 5.0
+	if updated, err := e.svc.Update(ctx, owner, 1, task.ID, UpdateInput{Title: task.Title, BudgetUSD: &raised}); err != nil || updated.BudgetUSD != 5 || updated.CostUSD != 2.25 {
+		t.Fatalf("raise budget: %+v %v", updated, err)
+	}
+	e.start(t, task.ID, StartInput{})
+	e.waitTask(t, task.ID, func(t *Task) bool { return t.RunID != first.RunID && t.RunID != 0 })
+	next := e.runs.startedRequests()[1].Budget
+	next.Spend(2.74)
+	if next.Exhausted() {
+		t.Fatal("expected $0.01 of the raised budget left")
+	}
+}
+
+func TestFeedbackForATaskOverBudgetWaitsForItsBudget(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.budgets.defaults = domain.BudgetDefaults{TaskUSD: 1}
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	running := e.waitTask(t, task.ID, hasRun)
+	e.runs.startedRequests()[0].Budget.Spend(1)
+	e.runs.finish(running.RunID, domain.AgentRunCompleted, "")
+	e.waitTask(t, task.ID, status(StatusInReview))
+
+	if _, err := e.svc.RequestChanges(ctx, owner, 1, task.ID, "Add a test.", true); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected the agent not to start over budget, got %v", err)
+	}
+	held, _ := e.repo.GetByID(ctx, task.ID)
+	if held.Status != StatusChangesRequested || held.PendingMessage != "Add a test." {
+		t.Fatalf("expected the feedback kept for later, got %+v", held)
+	}
+	if n := len(e.runs.startedRequests()); n != 1 {
+		t.Fatalf("expected no new run, got %d runs", n)
 	}
 }
 
@@ -1369,9 +1465,21 @@ func TestRepositoryAgainstMigratedSchema(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
+	// Only AddCost changes the cost, so a stale task saved later keeps it.
+	task.BudgetUSD = 20
+	if err := repo.AddCost(ctx, task.ID, 1.25); err != nil {
+		t.Fatalf("add cost: %v", err)
+	}
+	if err := repo.Update(ctx, task); err != nil {
+		t.Fatalf("update with stale cost: %v", err)
+	}
+
 	got, err := repo.GetByRunID(ctx, runID)
 	if err != nil || got == nil {
 		t.Fatalf("get by run: %v %v", got, err)
+	}
+	if got.BudgetUSD != 20 || got.CostUSD != 1.25 {
+		t.Fatalf("expected budget 20 and cost 1.25, got %v and %v", got.BudgetUSD, got.CostUSD)
 	}
 	if got.Branch != "task/1" || got.WorkspaceID != wsID || got.ConversationID != convID || got.Effort != "high" || got.HeadSHA != "abc" || got.Error != "e" {
 		t.Fatalf("round trip mismatch: %+v", got)

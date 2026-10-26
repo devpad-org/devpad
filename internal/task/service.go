@@ -88,6 +88,11 @@ type Conversations interface {
 	GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error)
 }
 
+// Budgets looks up the limits an admin set on what agents may spend.
+type Budgets interface {
+	BudgetDefaults(ctx context.Context) (domain.BudgetDefaults, error)
+}
+
 // AgentDefaults looks up the model and effort an admin set for a built-in
 // agent, or nil when it has none a run could use. An effort picked without
 // a model is kept when the default model supports it.
@@ -111,6 +116,7 @@ type service struct {
 	workspaces    Workspaces
 	runs          Runs
 	defaults      AgentDefaults
+	budgets       Budgets
 	conversations Conversations
 
 	rootCtx    context.Context
@@ -127,7 +133,7 @@ type service struct {
 }
 
 // NewService creates a task Service. Background work stops on Shutdown.
-func NewService(repo Repository, projects Projects, workspaces Workspaces, runs Runs, conversations Conversations, defaults AgentDefaults) Service {
+func NewService(repo Repository, projects Projects, workspaces Workspaces, runs Runs, conversations Conversations, defaults AgentDefaults, budgets Budgets) Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &service{
 		repo:          repo,
@@ -135,6 +141,7 @@ func NewService(repo Repository, projects Projects, workspaces Workspaces, runs 
 		workspaces:    workspaces,
 		runs:          runs,
 		defaults:      defaults,
+		budgets:       budgets,
 		conversations: conversations,
 		rootCtx:       ctx,
 		rootCancel:    cancel,
@@ -259,6 +266,10 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 	if err != nil {
 		return nil, err
 	}
+	budgets, err := s.budgets.BudgetDefaults(ctx)
+	if err != nil {
+		return nil, err
+	}
 	t := &Task{
 		ProjectID:  projectID,
 		UserID:     userID,
@@ -270,6 +281,7 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 		Effort:     in.Effort,
 		BaseBranch: base,
 		Handoff:    in.Handoff,
+		BudgetUSD:  budgets.TaskUSD,
 	}
 	if err := s.repo.Create(ctx, t); err != nil {
 		return nil, err
@@ -366,6 +378,12 @@ func (s *service) Update(ctx context.Context, userID, projectID, taskID int64, i
 		return nil, invalid("title is required")
 	}
 	t.Title, t.Body = title, in.Body
+	if in.BudgetUSD != nil {
+		if err := domain.ValidateBudget(*in.BudgetUSD); err != nil {
+			return nil, invalid("%v", err)
+		}
+		t.BudgetUSD = *in.BudgetUSD
+	}
 	if err := s.repo.Update(ctx, t); err != nil {
 		return nil, err
 	}
@@ -389,6 +407,9 @@ func (s *service) Start(ctx context.Context, userID, projectID, taskID int64, in
 func (s *service) start(ctx context.Context, t *Task, in StartInput) (*Task, error) {
 	if !t.Status.Startable() {
 		return nil, fmt.Errorf("%w: task is %s", ErrInvalidState, t.Status)
+	}
+	if t.OverBudget() {
+		return nil, t.budgetError()
 	}
 	p, err := s.projects.Get(ctx, t.UserID, t.ProjectID)
 	if err != nil {
@@ -451,12 +472,17 @@ func (s *service) RequestChanges(ctx context.Context, userID, projectID, taskID 
 	if feedback == "" {
 		return nil, invalid("feedback is required")
 	}
-	if start {
+	if start && !t.OverBudget() {
 		return s.start(ctx, t, StartInput{Message: feedback})
 	}
+	// Feedback for a task over budget waits, like feedback not sent to the
+	// agent, for a Start once its budget is raised.
 	t.Status, t.PendingMessage = StatusChangesRequested, feedback
 	if err := s.repo.Update(ctx, t); err != nil {
 		return nil, err
+	}
+	if start {
+		return nil, t.budgetError()
 	}
 	return t, nil
 }
@@ -655,6 +681,7 @@ func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace
 		Model:          t.Model,
 		Turns:          turns,
 		Thinking:       thinking,
+		Budget:         s.runBudget(t),
 	})
 	if err != nil {
 		return fmt.Errorf("starting agent: %w", err)
@@ -670,6 +697,19 @@ func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace
 		s.settle(ctx, t, run)
 	}
 	return nil
+}
+
+// runBudget is the budget of a run of the task's agent: what is left of the
+// task's, with each request's cost added to the task as it is spent.
+func (s *service) runBudget(t *Task) *domain.Budget {
+	taskID := t.ID
+	return domain.NewBudget(t.BudgetUSD, t.CostUSD, func(costUSD float64) {
+		// Losing a request's cost undercounts the task but must not stop
+		// its agent.
+		if err := s.repo.AddCost(context.Background(), taskID, costUSD); err != nil {
+			log.Printf("task %d: recording the agent's cost: %v", taskID, err)
+		}
+	})
 }
 
 // ensureSandbox returns the task's sandbox, restarting it if stopped, or

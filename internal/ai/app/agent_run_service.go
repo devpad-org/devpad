@@ -39,6 +39,9 @@ type StartAgentRunRequest struct {
 	Model          string
 	Turns          []domain.Turn
 	Thinking       *domain.ThinkingConfig
+	// Budget stops the run once spent. Nil means no limit. A child run
+	// shares its parent's budget instead.
+	Budget *domain.Budget
 }
 
 // AgentRunService manages browser-independent AI agent execution.
@@ -81,6 +84,9 @@ type agentRunService struct {
 
 	mu      sync.Mutex
 	cancels map[int64]context.CancelFunc
+	// budgets holds the budget of each active run that has one, for the
+	// child runs it starts.
+	budgets map[int64]*domain.Budget
 
 	listenersMu sync.Mutex
 	listeners   []func(domain.AgentRun)
@@ -100,6 +106,7 @@ func NewAgentRunService(ctx context.Context, repo AgentRunRepository, chat ChatS
 		rootCtx:       rootCtx,
 		rootCancel:    cancel,
 		cancels:       make(map[int64]context.CancelFunc),
+		budgets:       make(map[int64]*domain.Budget),
 	}
 	service.reconcileInterruptedRuns()
 	return service
@@ -172,6 +179,7 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 		if err := s.ensureChildRunCapacity(ctx, req.UserID, req.WorkspaceID, req.ParentRunID); err != nil {
 			return nil, err
 		}
+		req.Budget = s.budgetForRun(req.ParentRunID)
 	}
 	agent, err := s.resolveAgent(ctx, req)
 	if err != nil {
@@ -199,7 +207,7 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 	}
 
 	runCtx, cancel := context.WithCancel(s.rootCtx)
-	s.registerCancel(run.ID, cancel)
+	s.registerCancel(run.ID, cancel, req.Budget)
 
 	stream, err := s.chat.StreamAgent(runCtx, AgentChatRequest{
 		UserID:         req.UserID,
@@ -210,6 +218,7 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 		Turns:          cloneTurns(req.Turns),
 		Thinking:       cloneThinking(req.Thinking),
 		AgentPrompt:    agent.Instructions,
+		Budget:         req.Budget,
 	})
 	if err != nil {
 		s.unregisterCancel(run.ID)
@@ -644,16 +653,27 @@ func (s *agentRunService) getOwnedRun(ctx context.Context, userID, runID int64) 
 	return run, nil
 }
 
-func (s *agentRunService) registerCancel(runID int64, cancel context.CancelFunc) {
+func (s *agentRunService) registerCancel(runID int64, cancel context.CancelFunc, budget *domain.Budget) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cancels[runID] = cancel
+	if budget != nil {
+		s.budgets[runID] = budget
+	}
 }
 
 func (s *agentRunService) unregisterCancel(runID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.cancels, runID)
+	delete(s.budgets, runID)
+}
+
+// budgetForRun returns an active run's budget, or nil when it has none.
+func (s *agentRunService) budgetForRun(runID int64) *domain.Budget {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.budgets[runID]
 }
 
 func (s *agentRunService) cancelForRun(runID int64) (context.CancelFunc, bool) {

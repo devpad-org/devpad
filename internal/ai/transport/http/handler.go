@@ -22,6 +22,7 @@ type Handler struct {
 	catalog     app.CatalogService
 	agents      app.AgentService
 	defaults    app.AgentDefaultsService
+	budgets     app.BudgetDefaultsService
 	chat        app.ChatService
 	runs        app.AgentRunService
 	convService app.ConversationService
@@ -30,11 +31,12 @@ type Handler struct {
 }
 
 // NewHandler creates a new AI handler.
-func NewHandler(catalog app.CatalogService, agents app.AgentService, defaults app.AgentDefaultsService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, approvals approval.Broker, questions question.Broker) *Handler {
+func NewHandler(catalog app.CatalogService, agents app.AgentService, defaults app.AgentDefaultsService, budgets app.BudgetDefaultsService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, approvals approval.Broker, questions question.Broker) *Handler {
 	return &Handler{
 		catalog:     catalog,
 		agents:      agents,
 		defaults:    defaults,
+		budgets:     budgets,
 		chat:        chat,
 		runs:        runs,
 		convService: convService,
@@ -212,6 +214,11 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		}
 		agentPrompt = agent.Instructions
 	}
+	budget, err := h.assistantBudget(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to look up the assistant's budget")
+		return
+	}
 	stream, err := h.chat.StreamAgent(r.Context(), app.AgentChatRequest{
 		UserID:      user.ID,
 		WorkspaceID: req.WorkspaceID,
@@ -219,6 +226,7 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		Model:       model,
 		Turns:       ToDomainTurns(req.Turns),
 		Thinking:    thinking,
+		Budget:      budget,
 	})
 	if err != nil {
 		switch {

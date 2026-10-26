@@ -14,7 +14,11 @@ type Repository interface {
 	GetByRunID(ctx context.Context, runID int64) (*Task, error)
 	ListByProjectID(ctx context.Context, projectID int64) ([]*Task, error)
 	ListByStatus(ctx context.Context, status Status) ([]*Task, error)
+	// Update saves the task's fields except CostUSD, which only AddCost
+	// changes.
 	Update(ctx context.Context, t *Task) error
+	// AddCost adds to what the task's agents have spent.
+	AddCost(ctx context.Context, id int64, costUSD float64) error
 	Delete(ctx context.Context, id int64) error
 }
 
@@ -27,13 +31,13 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const taskColumns = `id, project_id, user_id, title, body, status, branch, workspace_id, conversation_id, run_id, agent_id, model, effort, pending_message, head_sha, error, base_branch, base_sha, handoff, created_at, updated_at`
+const taskColumns = `id, project_id, user_id, title, body, status, branch, workspace_id, conversation_id, run_id, agent_id, model, effort, pending_message, head_sha, error, base_branch, base_sha, handoff, budget_usd, cost_usd, created_at, updated_at`
 
 func (r *repository) Create(ctx context.Context, t *Task) error {
 	now := time.Now()
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO tasks (project_id, user_id, title, body, status, branch, workspace_id, conversation_id, run_id, agent_id, model, effort, pending_message, head_sha, error, base_branch, base_sha, handoff, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ProjectID, t.UserID, t.Title, t.Body, t.Status, t.Branch, nullableID(t.WorkspaceID), nullableID(t.ConversationID), nullableID(t.RunID), t.AgentID, t.Model, t.Effort, t.PendingMessage, t.HeadSHA, t.Error, t.BaseBranch, t.BaseSHA, t.Handoff, now, now,
+		`INSERT INTO tasks (project_id, user_id, title, body, status, branch, workspace_id, conversation_id, run_id, agent_id, model, effort, pending_message, head_sha, error, base_branch, base_sha, handoff, budget_usd, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ProjectID, t.UserID, t.Title, t.Body, t.Status, t.Branch, nullableID(t.WorkspaceID), nullableID(t.ConversationID), nullableID(t.RunID), t.AgentID, t.Model, t.Effort, t.PendingMessage, t.HeadSHA, t.Error, t.BaseBranch, t.BaseSHA, t.Handoff, t.BudgetUSD, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting task: %w", err)
@@ -99,13 +103,20 @@ func (r *repository) list(ctx context.Context, query string, arg any) ([]*Task, 
 func (r *repository) Update(ctx context.Context, t *Task) error {
 	now := time.Now()
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE tasks SET title = ?, body = ?, status = ?, branch = ?, workspace_id = ?, conversation_id = ?, run_id = ?, agent_id = ?, model = ?, effort = ?, pending_message = ?, head_sha = ?, error = ?, base_sha = ?, updated_at = ? WHERE id = ?`,
-		t.Title, t.Body, t.Status, t.Branch, nullableID(t.WorkspaceID), nullableID(t.ConversationID), nullableID(t.RunID), t.AgentID, t.Model, t.Effort, t.PendingMessage, t.HeadSHA, t.Error, t.BaseSHA, now, t.ID,
+		`UPDATE tasks SET title = ?, body = ?, status = ?, branch = ?, workspace_id = ?, conversation_id = ?, run_id = ?, agent_id = ?, model = ?, effort = ?, pending_message = ?, head_sha = ?, error = ?, base_sha = ?, budget_usd = ?, updated_at = ? WHERE id = ?`,
+		t.Title, t.Body, t.Status, t.Branch, nullableID(t.WorkspaceID), nullableID(t.ConversationID), nullableID(t.RunID), t.AgentID, t.Model, t.Effort, t.PendingMessage, t.HeadSHA, t.Error, t.BaseSHA, t.BudgetUSD, now, t.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("updating task: %w", err)
 	}
 	t.UpdatedAt = now
+	return nil
+}
+
+func (r *repository) AddCost(ctx context.Context, id int64, costUSD float64) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE tasks SET cost_usd = cost_usd + ? WHERE id = ?`, costUSD, id); err != nil {
+		return fmt.Errorf("adding to task cost: %w", err)
+	}
 	return nil
 }
 
@@ -123,7 +134,7 @@ type rowScanner interface {
 func scanTask(row rowScanner) (*Task, error) {
 	var t Task
 	var workspaceID, conversationID, runID sql.NullInt64
-	if err := row.Scan(&t.ID, &t.ProjectID, &t.UserID, &t.Title, &t.Body, &t.Status, &t.Branch, &workspaceID, &conversationID, &runID, &t.AgentID, &t.Model, &t.Effort, &t.PendingMessage, &t.HeadSHA, &t.Error, &t.BaseBranch, &t.BaseSHA, &t.Handoff, &t.CreatedAt, &t.UpdatedAt); err != nil {
+	if err := row.Scan(&t.ID, &t.ProjectID, &t.UserID, &t.Title, &t.Body, &t.Status, &t.Branch, &workspaceID, &conversationID, &runID, &t.AgentID, &t.Model, &t.Effort, &t.PendingMessage, &t.HeadSHA, &t.Error, &t.BaseBranch, &t.BaseSHA, &t.Handoff, &t.BudgetUSD, &t.CostUSD, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.WorkspaceID = workspaceID.Int64

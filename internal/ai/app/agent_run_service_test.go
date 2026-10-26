@@ -689,6 +689,60 @@ func TestAgentRunService_StartChildRunPersistsParentRun(t *testing.T) {
 	}
 }
 
+func TestAgentRunService_ChildRunSharesItsParentsBudget(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	var mu sync.Mutex
+	var budgets []*domain.Budget
+	release := make(chan struct{})
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(ctx context.Context, req AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			mu.Lock()
+			budgets = append(budgets, req.Budget)
+			mu.Unlock()
+			// Each run stays active until the test ends.
+			ch := make(chan domain.ClientEvent)
+			go func() {
+				defer close(ch)
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+			}()
+			return ch, nil
+		},
+	}, nil)
+	defer shutdownRunner(t, service)
+	defer close(release)
+
+	budget := domain.NewBudget(5, 0, nil)
+	parent, err := service.StartRun(context.Background(), StartAgentRunRequest{
+		UserID:      8,
+		WorkspaceID: 3,
+		Model:       "gpt-5.4",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "parent")},
+		Budget:      budget,
+	})
+	if err != nil {
+		t.Fatalf("start parent: %v", err)
+	}
+	// A child asking for a budget of its own still gets its parent's.
+	if _, err := service.StartChildRun(context.Background(), parent.ID, StartAgentRunRequest{
+		UserID:      8,
+		WorkspaceID: 3,
+		Model:       "gpt-5.4",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "child")},
+		Budget:      domain.NewBudget(100, 0, nil),
+	}); err != nil {
+		t.Fatalf("start child: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(budgets) != 2 || budgets[0] != budget || budgets[1] != budget {
+		t.Fatalf("expected parent and child to share the parent's budget, got %v", budgets)
+	}
+}
+
 func TestAgentRunService_StartChildRunLimitsActiveChildren(t *testing.T) {
 	repo := newFakeAgentRunRepository()
 	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{

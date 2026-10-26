@@ -4,7 +4,7 @@ import { useAdminStore } from '@/stores/admin'
 import { useAuthStore } from '@/stores/auth'
 import type { AdminUser } from '@/api/admin'
 import type { AdminWorkspace } from '@/api/admin'
-import { aiApi, type AIModel, type AIProvider, type BuiltInAgentDefaults, type TokenPrices } from '@/api/ai'
+import { aiApi, type AIModel, type AIProvider, type BudgetDefaults, type BuiltInAgentDefaults, type TokenPrices } from '@/api/ai'
 import { useAiModelStore } from '@/stores/aiModels'
 import { thinkingEffortLabel } from '@/utils/aiModels'
 
@@ -46,6 +46,14 @@ const agentDefaultsError = ref('')
 const agentDefaultsSuccess = ref('')
 const agentDefaultsSubmitting = ref<string | null>(null)
 
+// AI agent budgets, as typed, in USD; empty or zero means no limit
+type BudgetForm = Record<keyof BudgetDefaults, string>
+const budgetForm = ref<BudgetForm>({ taskUsd: '', reviewUsd: '', assistantUsd: '' })
+const budgetsLoading = ref(false)
+const budgetsError = ref('')
+const budgetsSuccess = ref('')
+const budgetsSubmitting = ref(false)
+
 // Every model, configured or not, for agent defaults and the pricing table
 const allAIModels = ref<AIModel[]>([])
 const modelsLoading = ref(false)
@@ -73,6 +81,7 @@ onMounted(() => {
   loadAIProviders()
   loadAIModels()
   loadAgentDefaults()
+  loadBudgets()
 })
 
 async function loadAIModels() {
@@ -206,6 +215,46 @@ async function saveAgentDefaults(agentId: string) {
     agentDefaultsError.value = e instanceof Error ? e.message : 'Failed to save agent defaults'
   } finally {
     agentDefaultsSubmitting.value = null
+  }
+}
+
+function toBudgetForm(b: BudgetDefaults): BudgetForm {
+  const field = (usd: number) => (usd > 0 ? String(usd) : '')
+  return { taskUsd: field(b.taskUsd), reviewUsd: field(b.reviewUsd), assistantUsd: field(b.assistantUsd) }
+}
+
+async function loadBudgets() {
+  budgetsLoading.value = true
+  try {
+    budgetForm.value = toBudgetForm((await aiApi.getBudgets()).budgets)
+  } catch {
+    budgetsError.value = 'Failed to load AI agent budgets'
+  } finally {
+    budgetsLoading.value = false
+  }
+}
+
+async function saveBudgets() {
+  budgetsError.value = ''
+  budgetsSuccess.value = ''
+  const parse = (value: string) => (value.trim() === '' ? 0 : Number(value))
+  const budgets: BudgetDefaults = {
+    taskUsd: parse(budgetForm.value.taskUsd),
+    reviewUsd: parse(budgetForm.value.reviewUsd),
+    assistantUsd: parse(budgetForm.value.assistantUsd),
+  }
+  if (Object.values(budgets).some((usd) => !Number.isFinite(usd) || usd < 0)) {
+    budgetsError.value = 'Each budget must be an amount in USD, or empty for no limit'
+    return
+  }
+  budgetsSubmitting.value = true
+  try {
+    budgetForm.value = toBudgetForm((await aiApi.setBudgets(budgets)).budgets)
+    budgetsSuccess.value = 'Budgets saved'
+  } catch (e) {
+    budgetsError.value = e instanceof Error ? e.message : 'Failed to save budgets'
+  } finally {
+    budgetsSubmitting.value = false
   }
 }
 
@@ -802,6 +851,47 @@ function isSelf(user: AdminUser): boolean {
           </form>
         </div>
       </div>
+    </div>
+
+    <!-- AI Agent Budgets Section -->
+    <div class="admin-container" style="margin-top: var(--space-6);">
+      <div class="admin-header">
+        <div>
+          <h1 class="admin-title">AI Agent Budgets</h1>
+          <p class="admin-subtitle">What agents may spend before they stop, counting the agents they start. Leave a budget empty for no limit. Requests to models without prices aren't counted, so those runs stop only at devpad's limit of 500 model requests per run.</p>
+        </div>
+      </div>
+
+      <div v-if="budgetsError" class="alert alert-error">{{ budgetsError }}</div>
+      <div v-if="budgetsSuccess" class="alert alert-success">{{ budgetsSuccess }}</div>
+
+      <div v-if="budgetsLoading" class="loading-state">Loading budgets...</div>
+
+      <form v-else class="ai-provider-card" @submit.prevent="saveBudgets">
+        <div class="agent-default-fields">
+          <div class="form-field">
+            <label for="budget-task">Per task (USD)</label>
+            <input id="budget-task" v-model="budgetForm.taskUsd" type="number" min="0" step="any" placeholder="No limit" />
+            <p class="field-hint">Every run of a task's agent, across retries and rounds of feedback. New tasks start with this; it can be raised on each task.</p>
+          </div>
+          <div class="form-field">
+            <label for="budget-review">Per review (USD)</label>
+            <input id="budget-review" v-model="budgetForm.reviewUsd" type="number" min="0" step="any" placeholder="No limit" />
+            <p class="field-hint">One review agent's run on a merge request.</p>
+          </div>
+          <div class="form-field">
+            <label for="budget-assistant">Per assistant reply (USD)</label>
+            <input id="budget-assistant" v-model="budgetForm.assistantUsd" type="number" min="0" step="any" placeholder="No limit" />
+            <p class="field-hint">The assistant's work on one message in a workspace.</p>
+          </div>
+        </div>
+        <div class="ai-provider-actions">
+          <span class="agent-default-hint">A run that reaches its budget stops with an error after its current request.</span>
+          <button type="submit" class="btn-primary" :disabled="budgetsSubmitting">
+            {{ budgetsSubmitting ? 'Saving...' : 'Save' }}
+          </button>
+        </div>
+      </form>
     </div>
   </div>
 </template>

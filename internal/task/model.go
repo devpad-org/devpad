@@ -70,7 +70,12 @@ type Task struct {
 	BaseSHA string
 	// Handoff is the conversation the task was handed off from, given to its
 	// agent as context when a conversation starts.
-	Handoff   string
+	Handoff string
+	// BudgetUSD is what every round of the task's agent, with the sub-agents
+	// they start, may spend in all; zero means no limit. CostUSD is what
+	// they have spent on requests to models with known prices.
+	BudgetUSD float64
+	CostUSD   float64
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -78,6 +83,16 @@ type Task struct {
 // BranchName is the branch a task's sandbox works on.
 func BranchName(taskID int64) string {
 	return fmt.Sprintf("task/%d", taskID)
+}
+
+// OverBudget reports whether the task's agents have spent its budget.
+func (t *Task) OverBudget() bool {
+	return t.BudgetUSD > 0 && t.CostUSD >= t.BudgetUSD
+}
+
+// budgetError refuses to start the agent of a task that is over budget.
+func (t *Task) budgetError() error {
+	return fmt.Errorf("%w: the task has spent $%.2f of its $%.2f budget; raise its budget to continue", ErrInvalidState, t.CostUSD, t.BudgetUSD)
 }
 
 // AgentSettings selects the agent, model and thinking effort for a run.
@@ -117,6 +132,8 @@ type HandoffInput struct {
 type UpdateInput struct {
 	Title string
 	Body  string
+	// BudgetUSD, when set, replaces the task's budget. Zero means no limit.
+	BudgetUSD *float64
 }
 
 // StartInput starts or continues an agent on a task. Message is sent to the

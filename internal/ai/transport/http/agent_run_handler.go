@@ -49,6 +49,12 @@ func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A child run shares its parent's budget instead.
+	budget, err := h.assistantBudget(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to look up the assistant's budget")
+		return
+	}
 	run, err := h.runs.StartRun(r.Context(), app.StartAgentRunRequest{
 		UserID:         user.ID,
 		WorkspaceID:    req.WorkspaceID,
@@ -58,6 +64,7 @@ func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 		Model:          model,
 		Turns:          ToDomainTurns(req.Turns),
 		Thinking:       thinking,
+		Budget:         budget,
 	})
 	if err != nil {
 		h.writeAgentRunError(w, err)

@@ -55,6 +55,9 @@ type AgentChatRequest struct {
 	Thinking              *domain.ThinkingConfig
 	AgentPrompt           string
 	WorkspaceInstructions string
+	// Budget, shared with the run's sub-agents, stops the run once spent.
+	// Nil means no limit.
+	Budget *domain.Budget
 }
 
 // AgentChatOrchestrator owns the agent runtime state machine outside HTTP transport.
