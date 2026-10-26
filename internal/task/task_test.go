@@ -814,8 +814,10 @@ func TestFeedbackForATaskOverBudgetWaitsForItsBudget(t *testing.T) {
 	e.runs.finish(running.RunID, domain.AgentRunCompleted, "")
 	e.waitTask(t, task.ID, status(StatusInReview))
 
-	if _, err := e.svc.RequestChanges(ctx, owner, 1, task.ID, "Add a test.", true); !errors.Is(err, ErrInvalidState) {
-		t.Fatalf("expected the agent not to start over budget, got %v", err)
+	// The feedback is saved, so the call succeeds, but the agent waits.
+	returned, err := e.svc.RequestChanges(ctx, owner, 1, task.ID, "Add a test.", true)
+	if err != nil || returned.Status != StatusChangesRequested {
+		t.Fatalf("expected the feedback saved without starting the agent, got %+v %v", returned, err)
 	}
 	held, _ := e.repo.GetByID(ctx, task.ID)
 	if held.Status != StatusChangesRequested || held.PendingMessage != "Add a test." {
@@ -823,6 +825,49 @@ func TestFeedbackForATaskOverBudgetWaitsForItsBudget(t *testing.T) {
 	}
 	if n := len(e.runs.startedRequests()); n != 1 {
 		t.Fatalf("expected no new run, got %d runs", n)
+	}
+}
+
+func TestTaskBudgetChangedMidRunTakesEffect(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.budgets.defaults = domain.BudgetDefaults{TaskUSD: 20}
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	running := e.waitTask(t, task.ID, hasRun)
+	budget := e.runs.startedRequests()[0].Budget
+	budget.Spend(6)
+
+	lowered := 5.0
+	if _, err := e.svc.Update(ctx, owner, 1, task.ID, UpdateInput{Title: task.Title, BudgetUSD: &lowered}); err != nil {
+		t.Fatalf("lower budget: %v", err)
+	}
+	if !budget.Exhausted() {
+		t.Fatal("expected the running agent to be over its lowered budget")
+	}
+	raised := 10.0
+	if _, err := e.svc.Update(ctx, owner, 1, task.ID, UpdateInput{Title: task.Title, BudgetUSD: &raised}); err != nil {
+		t.Fatalf("raise budget: %v", err)
+	}
+	if budget.Exhausted() {
+		t.Fatal("expected the running agent to have its raised budget")
+	}
+
+	// The next round shares the budget, so what sub-agents left over from
+	// this one spend still counts against it.
+	e.runs.finish(running.RunID, domain.AgentRunCompleted, "")
+	e.waitTask(t, task.ID, status(StatusInReview))
+	if _, err := e.svc.RequestChanges(ctx, owner, 1, task.ID, "Again.", true); err != nil {
+		t.Fatalf("request changes: %v", err)
+	}
+	e.waitTask(t, task.ID, func(t *Task) bool { return t.RunID != running.RunID && t.RunID != 0 })
+	next := e.runs.startedRequests()[1].Budget
+	if next != budget {
+		t.Fatal("expected every round to share the task's budget")
+	}
+	budget.Spend(4)
+	if !next.Exhausted() {
+		t.Fatal("expected leftover spend to count against the next round")
 	}
 }
 

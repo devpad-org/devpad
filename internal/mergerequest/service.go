@@ -1069,6 +1069,16 @@ func (s *service) ResolveConflicts(ctx context.Context, userID, projectID, mrID 
 	if mr.TaskID == 0 {
 		return invalid("this merge request has no task to send the conflicts to")
 	}
+	// RequestChanges would keep the conflicts for a task over budget until
+	// it is started again; refuse instead, so the user is not told the agent
+	// is resolving them.
+	t, err := s.tasks.Get(ctx, userID, projectID, mr.TaskID)
+	if err != nil {
+		return err
+	}
+	if t.OverBudget() {
+		return fmt.Errorf("%w: the task has spent $%.2f of its $%.2f budget; raise its budget to send it the conflicts", ErrInvalidState, t.CostUSD, t.BudgetUSD)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Your branch `%s` conflicts with `%s`, so it cannot be merged.", mr.SourceBranch, mr.TargetBranch)
 	if len(files) > 0 {

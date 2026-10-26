@@ -39,8 +39,9 @@ type StartAgentRunRequest struct {
 	Model          string
 	Turns          []domain.Turn
 	Thinking       *domain.ThinkingConfig
-	// Budget stops the run once spent. Nil means no limit. A child run
-	// shares its parent's budget instead.
+	// Budget stops the run once spent. Nil means no limit. A child of an
+	// active run with a budget shares that budget instead; a child of a
+	// finished run, such as the next reply in a conversation, keeps this one.
 	Budget *domain.Budget
 }
 
@@ -179,7 +180,9 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 		if err := s.ensureChildRunCapacity(ctx, req.UserID, req.WorkspaceID, req.ParentRunID); err != nil {
 			return nil, err
 		}
-		req.Budget = s.budgetForRun(req.ParentRunID)
+		if budget := s.budgetForRun(req.ParentRunID); budget != nil {
+			req.Budget = budget
+		}
 	}
 	agent, err := s.resolveAgent(ctx, req)
 	if err != nil {

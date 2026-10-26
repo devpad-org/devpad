@@ -649,8 +649,12 @@ func (p *Provider) requestChanges(ctx context.Context, req aitools.ExecutionRequ
 	if err != nil {
 		return taskError(req.ToolName, args.TaskID, err)
 	}
+	message := fmt.Sprintf("Sent the feedback to task #%d's agent, which is starting again.", t.ID)
+	if t.OverBudget() {
+		message = fmt.Sprintf("Saved the feedback on task #%d, but it has spent $%.2f of its $%.2f budget, so its agent gets the feedback only once the user raises the budget and starts it.", t.ID, t.CostUSD, t.BudgetUSD)
+	}
 	return toolResult(req.ToolName, map[string]any{
-		"message": fmt.Sprintf("Sent the feedback to task #%d's agent, which is starting again.", t.ID),
+		"message": message,
 		"task":    summarizeTask(t, nil),
 	})
 }

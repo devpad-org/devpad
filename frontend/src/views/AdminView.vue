@@ -46,8 +46,9 @@ const agentDefaultsError = ref('')
 const agentDefaultsSuccess = ref('')
 const agentDefaultsSubmitting = ref<string | null>(null)
 
-// AI agent budgets, as typed, in USD; empty or zero means no limit
-type BudgetForm = Record<keyof BudgetDefaults, string>
+// AI agent budgets, as typed, in USD; empty or zero means no limit. v-model
+// on a number input stores a number once anything is typed.
+type BudgetForm = Record<keyof BudgetDefaults, number | string>
 const budgetForm = ref<BudgetForm>({ taskUsd: '', reviewUsd: '', assistantUsd: '' })
 const budgetsLoading = ref(false)
 const budgetsError = ref('')
@@ -237,7 +238,7 @@ async function loadBudgets() {
 async function saveBudgets() {
   budgetsError.value = ''
   budgetsSuccess.value = ''
-  const parse = (value: string) => (value.trim() === '' ? 0 : Number(value))
+  const parse = (value: number | string) => (String(value).trim() === '' ? 0 : Number(value))
   const budgets: BudgetDefaults = {
     taskUsd: parse(budgetForm.value.taskUsd),
     reviewUsd: parse(budgetForm.value.reviewUsd),

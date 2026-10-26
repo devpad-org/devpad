@@ -23,10 +23,10 @@ func ValidateBudget(limitUSD float64) error {
 // all. Requests to models without known prices cost nothing here, and a nil
 // Budget has no limit.
 type Budget struct {
-	limitUSD float64
-	onSpend  func(costUSD float64)
+	onSpend func(costUSD float64)
 
 	mu       sync.Mutex
+	limitUSD float64
 	spentUSD float64
 }
 
@@ -36,6 +36,14 @@ type Budget struct {
 // counts.
 func NewBudget(limitUSD, spentUSD float64, onSpend func(costUSD float64)) *Budget {
 	return &Budget{limitUSD: limitUSD, spentUSD: spentUSD, onSpend: onSpend}
+}
+
+// SetLimit replaces the limit, for a budget raised or lowered while its runs
+// go on. A limit of zero or less means no limit.
+func (b *Budget) SetLimit(limitUSD float64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.limitUSD = limitUSD
 }
 
 // Spend records the cost of a request.
@@ -53,12 +61,12 @@ func (b *Budget) Spend(costUSD float64) {
 
 // Exhausted reports whether the budget has a limit and has spent it.
 func (b *Budget) Exhausted() bool {
-	if b == nil || b.limitUSD <= 0 {
+	if b == nil {
 		return false
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.spentUSD >= b.limitUSD
+	return b.limitUSD > 0 && b.spentUSD >= b.limitUSD
 }
 
 // ExhaustedMessage is the error of a run stopped because its budget is spent.

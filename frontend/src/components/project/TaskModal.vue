@@ -56,8 +56,9 @@ const ACTIVE = new Set(['queued', 'in_progress'])
 const editing = ref(false)
 const title = ref('')
 const body = ref('')
-// The budget as typed, in USD; empty or zero means no limit.
-const budget = ref('')
+// The budget as typed, in USD; empty or zero means no limit. v-model on a
+// number input stores a number once anything is typed.
+const budget = ref<number | string>('')
 const message = ref('')
 const model = ref('')
 const effort = ref('')
@@ -245,7 +246,7 @@ function save() {
     error.value = 'Title is required'
     return
   }
-  const budgetUsd = budget.value.trim() === '' ? 0 : Number(budget.value)
+  const budgetUsd = String(budget.value).trim() === '' ? 0 : Number(budget.value)
   if (!Number.isFinite(budgetUsd) || budgetUsd < 0) {
     error.value = 'The budget must be an amount in USD, or empty for no limit'
     return

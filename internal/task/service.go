@@ -29,7 +29,9 @@ type Service interface {
 	// the project workspace.
 	Handoff(ctx context.Context, userID, projectID int64, in HandoffInput) (*Task, error)
 	// RequestChanges hands review feedback to the task's agent, starting it
-	// now or leaving it for the next Start.
+	// now or leaving it for the next Start. Feedback for a task over budget
+	// is left for the next Start even when start is set; the task returned
+	// is then changes_requested rather than queued.
 	RequestChanges(ctx context.Context, userID, projectID, taskID int64, feedback string, start bool) (*Task, error)
 	// Merged closes a task whose branch has been merged and removes its sandbox.
 	Merged(ctx context.Context, userID, projectID, taskID int64) (*Task, error)
@@ -128,7 +130,12 @@ type service struct {
 	locks  map[int64]*sync.Mutex
 	// launching holds the tasks being launched, so a dispatch while one
 	// waits for its sandbox's setup does not launch it again.
-	launching  map[int64]bool
+	launching map[int64]bool
+	// runBudgets holds the budget of each task whose agent has run since
+	// devpad started. Every round of the agent, the sub-agents a round leaves
+	// running, and Update share it, so one limit covers them all and a
+	// budget changed mid-run takes effect at once.
+	runBudgets map[int64]*domain.Budget
 	reviewHook ReviewHook
 }
 
@@ -147,6 +154,7 @@ func NewService(repo Repository, projects Projects, workspaces Workspaces, runs 
 		rootCancel:    cancel,
 		locks:         make(map[int64]*sync.Mutex),
 		launching:     make(map[int64]bool),
+		runBudgets:    make(map[int64]*domain.Budget),
 	}
 	s.spawn(func(ctx context.Context) {
 		ticker := time.NewTicker(dispatchInterval)
@@ -387,6 +395,11 @@ func (s *service) Update(ctx context.Context, userID, projectID, taskID int64, i
 	if err := s.repo.Update(ctx, t); err != nil {
 		return nil, err
 	}
+	s.mu.Lock()
+	if b := s.runBudgets[t.ID]; b != nil {
+		b.SetLimit(t.BudgetUSD)
+	}
+	s.mu.Unlock()
 	return t, nil
 }
 
@@ -480,9 +493,6 @@ func (s *service) RequestChanges(ctx context.Context, userID, projectID, taskID 
 	t.Status, t.PendingMessage = StatusChangesRequested, feedback
 	if err := s.repo.Update(ctx, t); err != nil {
 		return nil, err
-	}
-	if start {
-		return nil, t.budgetError()
 	}
 	return t, nil
 }
@@ -699,17 +709,25 @@ func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace
 	return nil
 }
 
-// runBudget is the budget of a run of the task's agent: what is left of the
-// task's, with each request's cost added to the task as it is spent.
+// runBudget is the budget of a run of the task's agent: the task's, shared
+// with its earlier rounds, with each request's cost added to the task as it
+// is spent.
 func (s *service) runBudget(t *Task) *domain.Budget {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b := s.runBudgets[t.ID]; b != nil {
+		return b
+	}
 	taskID := t.ID
-	return domain.NewBudget(t.BudgetUSD, t.CostUSD, func(costUSD float64) {
+	b := domain.NewBudget(t.BudgetUSD, t.CostUSD, func(costUSD float64) {
 		// Losing a request's cost undercounts the task but must not stop
 		// its agent.
 		if err := s.repo.AddCost(context.Background(), taskID, costUSD); err != nil {
 			log.Printf("task %d: recording the agent's cost: %v", taskID, err)
 		}
 	})
+	s.runBudgets[taskID] = b
+	return b
 }
 
 // ensureSandbox returns the task's sandbox, restarting it if stopped, or
@@ -1070,6 +1088,7 @@ func (s *service) Delete(ctx context.Context, userID, projectID, taskID int64) e
 	}
 	s.mu.Lock()
 	delete(s.locks, t.ID)
+	delete(s.runBudgets, t.ID)
 	s.mu.Unlock()
 	s.kick()
 	return nil

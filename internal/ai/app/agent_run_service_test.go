@@ -743,6 +743,64 @@ func TestAgentRunService_ChildRunSharesItsParentsBudget(t *testing.T) {
 	}
 }
 
+func TestAgentRunService_ChildOfAFinishedRunKeepsItsOwnBudget(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	var mu sync.Mutex
+	var budgets []*domain.Budget
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(_ context.Context, req AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			mu.Lock()
+			budgets = append(budgets, req.Budget)
+			mu.Unlock()
+			ch := make(chan domain.ClientEvent, 1)
+			ch <- domain.ClientEvent{Done: true}
+			close(ch)
+			return ch, nil
+		},
+	}, nil)
+	defer shutdownRunner(t, service)
+
+	parent, err := service.StartRun(context.Background(), StartAgentRunRequest{
+		UserID:      8,
+		WorkspaceID: 3,
+		Model:       "gpt-5.4",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "parent")},
+		Budget:      domain.NewBudget(5, 0, nil),
+	})
+	if err != nil {
+		t.Fatalf("start parent: %v", err)
+	}
+	waitForRunStatus(t, repo, parent.ID, domain.AgentRunCompleted)
+	for deadline := time.Now().Add(2 * time.Second); service.budgetForRun(parent.ID) != nil; {
+		if time.Now().After(deadline) {
+			t.Fatal("finished run kept its budget")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The next reply in a conversation names the finished run as its parent,
+	// and must not lose the limit it was started with.
+	own := domain.NewBudget(2, 0, nil)
+	child, err := service.StartRun(context.Background(), StartAgentRunRequest{
+		UserID:      8,
+		WorkspaceID: 3,
+		ParentRunID: parent.ID,
+		Model:       "gpt-5.4",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "next reply")},
+		Budget:      own,
+	})
+	if err != nil {
+		t.Fatalf("start child: %v", err)
+	}
+	waitForRunStatus(t, repo, child.ID, domain.AgentRunCompleted)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(budgets) != 2 || budgets[1] != own {
+		t.Fatalf("expected the child of a finished run to keep its own budget, got %v", budgets)
+	}
+}
+
 func TestAgentRunService_StartChildRunLimitsActiveChildren(t *testing.T) {
 	repo := newFakeAgentRunRepository()
 	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{

@@ -49,7 +49,7 @@ func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A child run shares its parent's budget instead.
+	// A child of an active run with a budget shares that budget instead.
 	budget, err := h.assistantBudget(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to look up the assistant's budget")
