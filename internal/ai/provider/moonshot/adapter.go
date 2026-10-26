@@ -34,6 +34,13 @@ type chatRequest struct {
 	Tools           []domain.ToolDefinition `json:"tools,omitempty"`
 	Thinking        *thinking               `json:"thinking,omitempty"`
 	ReasoningEffort string                  `json:"reasoning_effort,omitempty"`
+	StreamOptions   *streamOptions          `json:"stream_options,omitempty"`
+}
+
+// streamOptions asks for the request's usage in a final chunk, which Moonshot
+// leaves out of the stream by default.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type message struct {
@@ -65,6 +72,10 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 }
 
 func (a *Adapter) Models() []domain.Model {
+	// Prices are USD per million tokens from
+	// https://platform.kimi.ai/docs/pricing/chat (October 2026). Caching is
+	// automatic with a 5-minute TTL: K3 bills cache writes at the 5-minute
+	// rate, and K2 models charge nothing beyond the input price to write.
 	return []domain.Model{
 		{
 			ID:         k3ModelID,
@@ -77,6 +88,7 @@ func (a *Adapter) Models() []domain.Model {
 				SupportedEfforts: []string{"low", "high", "max"},
 				DefaultEffort:    defaultReasoningEffort,
 			},
+			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 3, Output: 15, CacheRead: 0.30, CacheWrite: 3}},
 		},
 		{
 			ID:         "kimi-k2.7-code",
@@ -87,6 +99,7 @@ func (a *Adapter) Models() []domain.Model {
 				EnabledByDefault: true,
 				CanDisable:       false,
 			},
+			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 0.95, Output: 4, CacheRead: 0.19, CacheWrite: 0.95}},
 		},
 		{
 			ID:         "kimi-k2.6",
@@ -97,6 +110,7 @@ func (a *Adapter) Models() []domain.Model {
 				EnabledByDefault: true,
 				CanDisable:       true,
 			},
+			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 0.95, Output: 4, CacheRead: 0.16, CacheWrite: 0.95}},
 		},
 	}
 }
@@ -153,10 +167,11 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 	}
 
 	body := chatRequest{
-		Model:    req.Model,
-		Messages: messages,
-		Stream:   true,
-		Tools:    req.Tools,
+		Model:         req.Model,
+		Messages:      messages,
+		Stream:        true,
+		Tools:         req.Tools,
+		StreamOptions: &streamOptions{IncludeUsage: true},
 	}
 	switch {
 	case usesReasoningEffort(model):

@@ -49,10 +49,22 @@ func (a *Adapter) Models() []domain.Model {
 		DefaultEffort:    defaultReasoningEffort,
 	}
 
+	// Prices are USD per million tokens from
+	// https://docs.mistral.ai/inference/pricing (October 2026); cached prompt
+	// tokens cost a tenth of the input price. Devstral and Mistral Large are
+	// unpriced because their -latest aliases no longer name one listed model:
+	// Devstral 2 was retired in July 2026 and Mistral Large 4 was released
+	// beside Mistral Large 3, at a different price.
 	return []domain.Model{
 		{ID: "devstral-medium-latest", Name: "Devstral", ProviderID: providerID},
-		{ID: "mistral-small-latest", Name: "Mistral Small 4", ProviderID: providerID, Thinking: adjustableThinking},
-		{ID: "mistral-medium-3-5", Name: "Mistral Medium 3.5", ProviderID: providerID, Thinking: adjustableThinking},
+		{
+			ID: "mistral-small-latest", Name: "Mistral Small 4", ProviderID: providerID, Thinking: adjustableThinking,
+			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 0.15, Output: 0.60, CacheRead: 0.015}},
+		},
+		{
+			ID: "mistral-medium-3-5", Name: "Mistral Medium 3.5", ProviderID: providerID, Thinking: adjustableThinking,
+			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1.50, Output: 7.50, CacheRead: 0.15}},
+		},
 		{ID: "mistral-large-latest", Name: "Mistral Large", ProviderID: providerID},
 	}
 }

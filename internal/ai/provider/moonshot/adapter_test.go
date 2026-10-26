@@ -205,3 +205,23 @@ func TestBuildChatRequest_K3PreservesReasoningWhenThinkingDisableRequested(t *te
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+func TestBuildChatRequest_AsksForStreamUsage(t *testing.T) {
+	model, _ := domain.ModelByID(NewAdapter().Models(), "kimi-k3")
+	body := buildChatRequest(aiprovider.StreamRequest{
+		Model: "kimi-k3",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+	}, model)
+
+	if body.StreamOptions == nil || !body.StreamOptions.IncludeUsage {
+		t.Fatalf("expected stream_options.include_usage, got %+v", body.StreamOptions)
+	}
+}
+
+func TestAdapterModelsArePriced(t *testing.T) {
+	for _, model := range NewAdapter().Models() {
+		if model.Pricing == nil || model.Pricing.Input <= 0 || model.Pricing.Output <= 0 {
+			t.Fatalf("model %s has no prices", model.ID)
+		}
+	}
+}

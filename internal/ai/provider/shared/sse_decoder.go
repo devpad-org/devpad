@@ -11,6 +11,19 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
+// chatUsage is a chat completion's usage. prompt_tokens includes the cached
+// tokens and, where the provider reports them, the tokens written to its
+// cache. Moonshot also reports cached_tokens at the top level.
+type chatUsage struct {
+	PromptTokens        int64 `json:"prompt_tokens"`
+	CompletionTokens    int64 `json:"completion_tokens"`
+	CachedTokens        int64 `json:"cached_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens     int64 `json:"cached_tokens"`
+		CacheWriteTokens int64 `json:"cache_write_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
 // ReadSSEStream reads an OpenAI-compatible SSE stream and emits normalized events.
 func ReadSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	defer close(ch)
@@ -21,6 +34,7 @@ func ReadSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 
 	var toolCalls []domain.ToolCall
 	toolCallArgs := make(map[int]*strings.Builder)
+	var usage *chatUsage
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -30,12 +44,14 @@ func ReadSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
+			emitUsage(ch, usage)
 			emitToolCalls(ch, toolCalls, toolCallArgs)
 			ch <- domain.ProviderEvent{Done: true}
 			return
 		}
 
 		var chunk struct {
+			Usage   *chatUsage `json:"usage"`
 			Choices []struct {
 				Delta struct {
 					ReasoningContent string          `json:"reasoning_content"`
@@ -54,6 +70,9 @@ func ReadSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
+		}
+		if chunk.Usage != nil {
+			usage = chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -108,6 +127,7 @@ func ReadSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		}
 	}
 
+	emitUsage(ch, usage)
 	if err := scanner.Err(); err != nil {
 		log.Printf("error reading SSE stream: %v", err)
 		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
@@ -116,6 +136,27 @@ func ReadSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 
 	emitToolCalls(ch, toolCalls, toolCallArgs)
 	ch <- domain.ProviderEvent{Done: true}
+}
+
+// emitUsage sends what the request was billed for, before any error or the
+// end of the stream, with the cached and cache-written prompt tokens split out
+// to be billed at their own rates.
+func emitUsage(ch chan<- domain.ProviderEvent, usage *chatUsage) {
+	if usage == nil {
+		return
+	}
+	cached := usage.PromptTokensDetails.CachedTokens
+	if cached == 0 {
+		cached = usage.CachedTokens
+	}
+	cached = min(cached, usage.PromptTokens)
+	written := min(usage.PromptTokensDetails.CacheWriteTokens, usage.PromptTokens-cached)
+	ch <- domain.ProviderEvent{Usage: &domain.Usage{
+		InputTokens:      usage.PromptTokens - cached - written,
+		OutputTokens:     usage.CompletionTokens,
+		CacheReadTokens:  cached,
+		CacheWriteTokens: written,
+	}}
 }
 
 func emitToolCalls(ch chan<- domain.ProviderEvent, toolCalls []domain.ToolCall, toolCallArgs map[int]*strings.Builder) {

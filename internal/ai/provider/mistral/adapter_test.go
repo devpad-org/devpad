@@ -166,3 +166,18 @@ func TestBuildChatRequest_OmitsReasoningEffortForNonThinkingMistralModel(t *test
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+func TestAdapterModelsPricedOnlyWhenTheirPriceIsKnown(t *testing.T) {
+	unpriced := map[string]bool{"devstral-medium-latest": true, "mistral-large-latest": true}
+	for _, model := range NewAdapter().Models() {
+		if unpriced[model.ID] {
+			if model.Pricing != nil {
+				t.Fatalf("model %s should have no prices", model.ID)
+			}
+			continue
+		}
+		if model.Pricing == nil || model.Pricing.Input <= 0 || model.Pricing.Output <= 0 {
+			t.Fatalf("model %s has no prices", model.ID)
+		}
+	}
+}
