@@ -289,6 +289,35 @@ func TestRepoPushUpdatesUpstreamWithoutForcing(t *testing.T) {
 	}
 }
 
+func TestRepoSetHeadMovesTheDefaultBranch(t *testing.T) {
+	canonical := initCanonical(t)
+	head := runGit(t, canonical, "rev-parse", "main")
+	runGit(t, canonical, "branch", "develop", head)
+
+	rec := repoRequest(t, canonical, handleRepoSetHead, http.MethodPost, "/api/repo/head?branch=develop", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set head: %d %s", rec.Code, rec.Body)
+	}
+	if got := runGit(t, canonical, "symbolic-ref", "--short", "HEAD"); got != "develop" {
+		t.Fatalf("HEAD = %s, want develop", got)
+	}
+	// Imports into the new default branch are refused.
+	rec = repoRequest(t, canonical, handleRepoImport, http.MethodPost, "/api/repo/import?branch=develop", strings.NewReader(""))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("import into develop: expected 403, got %d %s", rec.Code, rec.Body)
+	}
+
+	for _, branch := range []string{"nope", "-x", "a..b"} {
+		rec := repoRequest(t, canonical, handleRepoSetHead, http.MethodPost, "/api/repo/head?branch="+branch, nil)
+		if rec.Code != http.StatusNotFound && rec.Code != http.StatusBadRequest {
+			t.Fatalf("branch %q: expected 400 or 404, got %d %s", branch, rec.Code, rec.Body)
+		}
+	}
+	if got := runGit(t, canonical, "symbolic-ref", "--short", "HEAD"); got != "develop" {
+		t.Fatalf("refused requests moved HEAD to %s", got)
+	}
+}
+
 func TestRepoFetchBaseRefreshesSandboxCopy(t *testing.T) {
 	canonical := initCanonical(t)
 	sandbox := seedSandbox(t, canonical, "task/1")

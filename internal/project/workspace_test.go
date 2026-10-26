@@ -142,12 +142,17 @@ func TestPublishWorkspaceBranch(t *testing.T) {
 	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "task/1"}); err != nil {
 		t.Fatalf("create sandbox: %v", err)
 	}
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "release", SHA: "r"}}
+	if _, err := e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{ProtectedBranches: []string{"release"}}); err != nil {
+		t.Fatalf("protect release: %v", err)
+	}
 	tests := []struct {
 		name   string
 		branch string
 		want   error
 	}{
-		{"default branch", "main", ErrPublishDefault},
+		{"default branch", "main", ErrPublishProtected},
+		{"protected branch", "release", ErrPublishProtected},
 		{"sandbox branch", "task/1", ErrBranchInUse},
 		{"flag", "-f", ErrInvalidInput},
 		{"invalid", "a..b", ErrInvalidInput},
@@ -179,7 +184,7 @@ func TestPublishWorkspaceBranchWithoutWorkspace(t *testing.T) {
 	if _, err := e.svc.CheckoutWorkspaceBranch(context.Background(), e.userID, p.ID, "main"); !errors.Is(err, ErrNoWorkspace) {
 		t.Fatalf("expected ErrNoWorkspace, got %v", err)
 	}
-	if _, err := e.svc.SyncWorkspaceBase(context.Background(), e.userID, p.ID); !errors.Is(err, ErrNoWorkspace) {
+	if _, err := e.svc.SyncWorkspaceBase(context.Background(), e.userID, p.ID, ""); !errors.Is(err, ErrNoWorkspace) {
 		t.Fatalf("expected ErrNoWorkspace, got %v", err)
 	}
 }
@@ -228,7 +233,7 @@ func TestCheckoutAndSyncWorkspace(t *testing.T) {
 		t.Fatalf("expected ErrInvalidInput, got %v", err)
 	}
 
-	synced, err := e.svc.SyncWorkspaceBase(ctx, e.userID, p.ID)
+	synced, err := e.svc.SyncWorkspaceBase(ctx, e.userID, p.ID, "")
 	if err != nil || synced.Branch != "devpad/main" || e.workspaces.seeds[ws.ID] != "devpad/main <- bundle-of-main" {
 		t.Fatalf("sync: %+v %v seed=%q", synced, err, e.workspaces.seeds[ws.ID])
 	}

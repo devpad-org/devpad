@@ -422,6 +422,26 @@ func handleRepoPush(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, repoBranchResult{Branch: branch, SHA: sha})
 }
 
+// handleRepoSetHead makes an existing branch the canonical repo's default
+// branch. Devpad moves it when the user picks a new default branch; imports
+// into the default branch are refused from then on.
+func handleRepoSetHead(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
+	defer cancel()
+
+	branch := r.URL.Query().Get("branch")
+	sha, err := resolveBranch(ctx, branch, "branch")
+	if err != nil {
+		writeRevError(w, err)
+		return
+	}
+	if out, err := gitOutput(ctx, "symbolic-ref", "HEAD", "refs/heads/"+branch); err != nil {
+		writeErr(w, http.StatusInternalServerError, "setting HEAD: "+strings.TrimSpace(out))
+		return
+	}
+	writeJSON(w, http.StatusOK, repoBranchResult{Branch: branch, SHA: sha})
+}
+
 // handleRepoFetchBase updates a sandbox's copy of a canonical branch, as
 // devpad/<branch>, from a bundle devpad streams in. The sandbox's own
 // branches are untouched.

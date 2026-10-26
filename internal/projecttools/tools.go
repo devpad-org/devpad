@@ -102,7 +102,7 @@ var definitions = []domain.ToolDefinition{
 		Type: "function",
 		Function: domain.ToolFunction{
 			Name:        listMergeRequestsTool,
-			Description: "List the project's merge requests. Each proposes merging a branch into the default branch; only the user can merge.",
+			Description: "List the project's merge requests. Each proposes merging a branch into one of the project's protected branches, usually the default branch; only the user can merge.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"status":{"type":"string","enum":["open","merged","closed","all"],"description":"Defaults to open."}}}`),
 		},
 	},
@@ -224,6 +224,9 @@ func (p *Provider) Prompt(ctx context.Context, userID, workspaceID int64) string
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Project context:\nYou are working in the user's own workspace for the project %q. /workspace is a git checkout of the project; its default branch is `%s`.", proj.Name, proj.DefaultBranch)
+	if len(proj.ProtectedBranches) > 0 {
+		fmt.Fprintf(&b, " Its protected branches, which change only through merge requests, are %s.", codeList(proj.Protected()))
+	}
 	// The branch is a nicety: a slow workspace must not hold up the run.
 	statusCtx, cancel := context.WithTimeout(ctx, promptStatusTimeout)
 	defer cancel()
@@ -233,7 +236,7 @@ func (p *Provider) Prompt(ctx context.Context, userID, workspaceID int64) string
 		}
 	}
 	b.WriteString(`
-- The repo has a devpad remote. git fetch devpad refreshes the project's branches as devpad/<branch>, and git push devpad <branch> publishes a branch exactly as the IDE's Publish button does: never the default branch, fast-forward only, and an open merge request for the branch moves to the new commit. Push only when the user asks you to publish.
+- The repo has a devpad remote. git fetch devpad refreshes the project's branches as devpad/<branch>, and git push devpad <branch> publishes a branch exactly as the IDE's Publish button does: never a protected branch, fast-forward only, and an open merge request for the branch moves to the new commit. Push only when the user asks you to publish.
 - Background agents implement tasks from the project's board on their own branches. Use list_tasks, get_task, list_merge_requests and get_merge_request to see the board, and create_task to add work for them. Starting an agent (create_task with start, start_task, request_task_changes) asks the user first.
 - add_merge_request_comment comments on an open merge request or replies to one of its comments, for example to say how you addressed a review comment. Comments are shown as yours, not the user's.
 - Only the user merges, closes or approves. You have no tools for those.`)
@@ -858,4 +861,13 @@ func toolResult(name string, v any) domain.ToolResultPart {
 // to show a tool call as failed.
 func toolError(name, format string, args ...any) domain.ToolResultPart {
 	return domain.ToolResultPart{Name: name, Content: "Error: " + fmt.Sprintf(format, args...), IsError: true}
+}
+
+// codeList formats names as a list of code spans.
+func codeList(names []string) string {
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = "`" + n + "`"
+	}
+	return strings.Join(quoted, ", ")
 }

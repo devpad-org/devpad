@@ -4,7 +4,7 @@
 // does the work through the project service, and posts the results back.
 //
 // A push is only ever a request: devpad pulls the branch by bundle and
-// publishes it exactly as the Publish button does, so the default branch,
+// publishes it exactly as the Publish button does, so protected branches,
 // branches owned by sandboxes and non-fast-forward updates are refused there.
 // The IDE assistant runs in the same workspace and can push the same way;
 // that gives it nothing the Publish button does not.
@@ -552,8 +552,8 @@ func (b *Bridge) handle(ctx context.Context, ws *workspace.Workspace, req agent.
 func (b *Bridge) message(ws *workspace.Workspace, err error) string {
 	var agentErr *agent.AgentError
 	switch {
-	case errors.Is(err, project.ErrPublishDefault):
-		return "the default branch only changes through a merge request"
+	case errors.Is(err, project.ErrPublishProtected):
+		return "this branch is protected; it only changes through a merge request"
 	case errors.Is(err, project.ErrBranchInUse):
 		return "an agent's sandbox owns this branch"
 	case errors.Is(err, project.ErrBranchPublishing):

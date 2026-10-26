@@ -107,6 +107,7 @@ function handleSubmit() {
               <span class="mono">{{ project.upstreamUrl || 'no upstream' }}</span> &middot;
               default branch <span class="mono">{{ project.defaultBranch }}</span>
             </p>
+            <p class="form-hint">Change the default and protected branches from Branches in the project panel.</p>
           </div>
           <div class="form-group">
             <label class="form-label" for="project-setup">Setup script</label>

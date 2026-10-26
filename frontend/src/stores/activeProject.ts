@@ -51,6 +51,16 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   const openMergeRequests = computed(() => mergeRequests.value.filter((mr) => mr.status === 'open'))
   const activeSandboxes = computed(() => sandboxes.value.filter((s) => s.status !== 'stopped').length)
   const branchNames = computed(() => new Set(branches.value.map((b) => b.name)))
+  // Branches that change only through merge requests, the default first.
+  const protectedBranches = computed(() => {
+    const p = project.value
+    if (!p) return []
+    return p.protectedBranches?.length ? p.protectedBranches : [p.defaultBranch]
+  })
+
+  function isProtected(branch: string): boolean {
+    return protectedBranches.value.includes(branch)
+  }
 
   // A task's newest merge request, open ones first.
   const mergeRequestByTask = computed(() => {
@@ -241,6 +251,8 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     openMergeRequests,
     activeSandboxes,
     branchNames,
+    protectedBranches,
+    isProtected,
     mergeRequestByTask,
     columns,
     sandboxTask,

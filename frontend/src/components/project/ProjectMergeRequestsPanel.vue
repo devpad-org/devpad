@@ -2,6 +2,7 @@
 import { computed, inject, ref } from 'vue'
 import { ideShellKey, mergeRequestTab, useOpenMergeRequest } from '@/components/ide/viewTabs'
 import { useActiveProjectStore } from '@/stores/activeProject'
+import NewMergeRequestModal from './NewMergeRequestModal.vue'
 import StatusBadge from './StatusBadge.vue'
 
 // The project's merge requests in the IDE side bar. Each opens as a tab.
@@ -9,6 +10,7 @@ const store = useActiveProjectStore()
 const shell = inject(ideShellKey, null)
 const openMergeRequest = useOpenMergeRequest()
 const showClosed = ref(false)
+const showNew = ref(false)
 
 const visible = computed(() => (showClosed.value ? store.mergeRequests : store.openMergeRequests))
 </script>
@@ -25,10 +27,18 @@ const visible = computed(() => (showClosed.value ? store.mergeRequests : store.o
         </svg>
         Merge requests
       </span>
-      <label class="form-check closed-toggle" title="Show merged and closed">
-        <input v-model="showClosed" type="checkbox" />
-        All
-      </label>
+      <div class="side-header-actions">
+        <label class="form-check closed-toggle" title="Show merged and closed">
+          <input v-model="showClosed" type="checkbox" />
+          All
+        </label>
+        <button class="icon-btn" :disabled="!store.ready" title="New merge request" aria-label="New merge request" @click="showNew = true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
+          </svg>
+        </button>
+      </div>
     </div>
 
     <div class="side-body">
@@ -54,6 +64,8 @@ const visible = computed(() => (showClosed.value ? store.mergeRequests : store.o
         </p>
       </div>
     </div>
+
+    <NewMergeRequestModal :show="showNew" @close="showNew = false" />
   </div>
 </template>
 

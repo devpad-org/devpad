@@ -316,7 +316,7 @@ func TestPushWritesTheCurrentKey(t *testing.T) {
 		e.repoAgent.mu.Lock()
 		e.repoAgent.commands = nil
 		e.repoAgent.mu.Unlock()
-		if _, err := e.svc.Push(context.Background(), e.userID, p.ID); err != nil {
+		if _, err := e.svc.Push(context.Background(), e.userID, p.ID, ""); err != nil {
 			t.Fatalf("push: %v", err)
 		}
 		e.repoAgent.mu.Lock()

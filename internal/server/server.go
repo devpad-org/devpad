@@ -444,6 +444,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("PUT /api/projects/{id}", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleUpdate)))
 	mux.Handle("DELETE /api/projects/{id}", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDelete)))
 	mux.Handle("GET /api/projects/{id}/branches", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleBranches)))
+	mux.Handle("PUT /api/projects/{id}/branches", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleSetBranches)))
 	mux.Handle("GET /api/projects/{id}/sandboxes", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleListSandboxes)))
 	mux.Handle("POST /api/projects/{id}/sandboxes", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleCreateSandbox)))
 	mux.Handle("POST /api/projects/{id}/sandboxes/{workspaceId}/publish", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandlePublishSandbox)))

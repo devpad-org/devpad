@@ -396,7 +396,7 @@ func TestPushesGoThroughThePublishRules(t *testing.T) {
 		err  error
 		want string
 	}{
-		{project.ErrPublishDefault, "merge request"},
+		{project.ErrPublishProtected, "merge request"},
 		{project.ErrBranchInUse, "sandbox owns"},
 		{project.ErrBranchPublishing, "already being published"},
 		{&agent.AgentError{StatusCode: 409, Message: "feature has commits the published branch lacks; merge devpad/feature first"}, "merge devpad/feature first"},

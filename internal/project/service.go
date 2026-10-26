@@ -27,6 +27,9 @@ type Service interface {
 	Overviews(ctx context.Context, userID int64) ([]*Overview, []*WorkspaceLink, error)
 	Get(ctx context.Context, userID, projectID int64) (*Project, error)
 	Update(ctx context.Context, userID, projectID int64, in UpdateInput) (*Project, error)
+	// SetBranches changes the project's default branch and the other
+	// branches it protects.
+	SetBranches(ctx context.Context, userID, projectID int64, in BranchesInput) (*Project, error)
 	Delete(ctx context.Context, userID, projectID int64) error
 	Branches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error)
 	ListSandboxes(ctx context.Context, userID, projectID int64) ([]*workspace.Workspace, error)
@@ -38,12 +41,12 @@ type Service interface {
 	Diff(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoDiff, error)
 	FileAt(ctx context.Context, userID, projectID int64, rev, path string) ([]byte, error)
 	Merge(ctx context.Context, userID, projectID int64, in MergeInput) (*agent.RepoMergeResult, error)
-	Push(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
+	Push(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error)
 	Workspace(ctx context.Context, userID, projectID int64) (*workspace.Workspace, error)
 	OpenWorkspace(ctx context.Context, userID, projectID int64) (ws *workspace.Workspace, created bool, err error)
 	CheckoutWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoCheckout, error)
 	PublishWorkspaceBranch(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error)
-	SyncWorkspaceBase(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
+	SyncWorkspaceBase(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error)
 	// FetchWorkspaceBranches refreshes the project workspace's devpad/<branch>
 	// copies of canonical branches, for git fetch through the devpad remote.
 	FetchWorkspaceBranches(ctx context.Context, userID, projectID int64, branches []string) error
@@ -148,6 +151,9 @@ type service struct {
 	builds      map[int64]*environmentBuild
 	buildMu     sync.Mutex
 	publishHook PublishHook
+	// branchLocks serialize changes to each project's branches, which may
+	// move its canonical repo's HEAD.
+	branchLocks map[int64]*sync.Mutex
 	// background tracks conversions being finished and setup runs being
 	// followed in the background.
 	background sync.WaitGroup
@@ -174,6 +180,7 @@ func NewService(repo Repository, cm container.Manager, workspaces Workspaces, us
 		deleting:       make(map[int64]bool),
 		converting:     make(map[int64]bool),
 		workspaceLocks: make(map[int64]*sync.Mutex),
+		branchLocks:    make(map[int64]*sync.Mutex),
 		setupWatches:   make(map[setupWatch]chan struct{}),
 		builds:         make(map[int64]*environmentBuild),
 	}
@@ -385,6 +392,128 @@ func (s *service) Update(ctx context.Context, userID, projectID int64, in Update
 	return p, nil
 }
 
+// SetBranches changes the project's default branch and the other branches
+// it protects; every one must exist in the canonical repo. A branch only
+// becomes protected while no sandbox owns it and nothing is publishing it,
+// and from then on no sandbox can claim it and the project workspace cannot
+// publish it. Open merge requests keep their targets; one whose target is no
+// longer protected cannot be merged.
+func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in BranchesInput) (*Project, error) {
+	unlock := s.lockBranches(projectID)
+	defer unlock()
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defaultBranch := strings.TrimSpace(in.DefaultBranch)
+	if defaultBranch == "" {
+		defaultBranch = p.DefaultBranch
+	}
+	if !validBranchName(defaultBranch) {
+		return nil, invalid("defaultBranch is not a valid branch name")
+	}
+	protected := []string{}
+	seen := map[string]bool{defaultBranch: true}
+	for _, b := range in.ProtectedBranches {
+		b = strings.TrimSpace(b)
+		if b == "" || seen[b] {
+			continue
+		}
+		if !validBranchName(b) {
+			return nil, invalid("%q is not a valid branch name", b)
+		}
+		seen[b] = true
+		protected = append(protected, b)
+	}
+	if len(protected) > MaxProtectedBranches {
+		return nil, invalid("a project can protect at most %d branches besides its default branch", MaxProtectedBranches)
+	}
+
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	refs, err := c.RepoRefs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	exists := make(map[string]bool, len(refs.Branches))
+	for _, ref := range refs.Branches {
+		exists[ref.Name] = true
+	}
+	next := &Project{DefaultBranch: defaultBranch, ProtectedBranches: protected}
+	for _, b := range next.Protected() {
+		if !exists[b] {
+			return nil, invalid("branch %q does not exist in the project", b)
+		}
+	}
+
+	// HEAD moves first: until the new branches are recorded, the repo
+	// refuses imports into the new default branch as well as the old.
+	moveHead := defaultBranch != p.DefaultBranch
+	if moveHead {
+		if err := c.RepoSetHead(ctx, defaultBranch); err != nil {
+			return nil, fmt.Errorf("setting the repo's default branch: %w", err)
+		}
+	}
+	if err := s.protectBranches(ctx, p, next); err != nil {
+		if moveHead {
+			if headErr := c.RepoSetHead(context.WithoutCancel(ctx), p.DefaultBranch); headErr != nil {
+				log.Printf("project %d: restoring the repo's default branch: %v", p.ID, headErr)
+			}
+		}
+		return nil, err
+	}
+	p.DefaultBranch, p.ProtectedBranches = next.DefaultBranch, next.ProtectedBranches
+	return p, nil
+}
+
+func (s *service) lockBranches(projectID int64) func() {
+	s.mu.Lock()
+	l, ok := s.branchLocks[projectID]
+	if !ok {
+		l = &sync.Mutex{}
+		s.branchLocks[projectID] = l
+	}
+	s.mu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
+
+// protectBranches records next's branches as p's, refusing a newly
+// protected branch that a sandbox owns, or that a sandbox is being created
+// for or the project workspace is publishing. It holds s.mu, as
+// reserveSandbox and reservePublish do, so neither can claim a branch while
+// it becomes protected.
+func (s *service) protectBranches(ctx context.Context, p *Project, next *Project) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deleting[p.ID] {
+		return ErrDeleting
+	}
+	existing, err := s.workspaces.ListByProject(ctx, p.UserID, p.ID)
+	if err != nil {
+		return err
+	}
+	for _, b := range next.Protected() {
+		if p.IsProtected(b) {
+			continue
+		}
+		if s.publishing[p.ID][b] {
+			return fmt.Errorf("%w: %s", ErrBranchPublishing, b)
+		}
+		if s.pending[p.ID][b] {
+			return fmt.Errorf("%w: %s", ErrBranchInUse, b)
+		}
+		for _, ws := range existing {
+			if ws.IsSandbox() && ws.Branch == b {
+				return fmt.Errorf("%w: %s; finish its task or delete the sandbox first", ErrBranchInUse, b)
+			}
+		}
+	}
+	return s.repo.SetBranches(ctx, p.ID, next.DefaultBranch, next.ProtectedBranches)
+}
+
 // Delete removes every sandbox and the project workspace through the
 // workspace lifecycle, then the repo container and the project. Published
 // branches are lost with the repo. Sandbox creations and publishes in flight
@@ -486,10 +615,10 @@ func (s *service) ListSandboxes(ctx context.Context, userID, projectID int64) ([
 	return sandboxes, nil
 }
 
-// CreateSandbox starts a sandbox that owns one branch of the project. A
-// branch that already exists in the canonical repo is resumed; otherwise it
-// starts from the default branch. The setup script, if any, starts once the
-// repo is seeded; AwaitSetup waits for it to finish.
+// CreateSandbox starts a sandbox that owns one branch of the project, never
+// a protected one. A branch that already exists in the canonical repo is
+// resumed; otherwise it starts from the default branch. The setup script,
+// if any, starts once the repo is seeded; AwaitSetup waits for it to finish.
 func (s *service) CreateSandbox(ctx context.Context, userID, projectID int64, in SandboxInput) (*workspace.Workspace, error) {
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
@@ -514,8 +643,8 @@ func (s *service) CreateSandbox(ctx context.Context, userID, projectID int64, in
 	if !validBranchName(branch) {
 		return nil, invalid("branch is not a valid branch name")
 	}
-	if branch == p.DefaultBranch {
-		return nil, ErrDefaultBranch
+	if p.IsProtected(branch) {
+		return nil, ErrProtectedBranch
 	}
 
 	if err := s.reserveSandbox(ctx, p, branch, false); err != nil {
@@ -604,6 +733,13 @@ func (s *service) reserveSandbox(ctx context.Context, p *Project, branch string,
 	if s.deleting[p.ID] {
 		return ErrDeleting
 	}
+	// SetBranches protects a branch under the same lock, so read the
+	// project's branches again: they may have changed since p was read.
+	if !starting {
+		if err := s.checkUnprotected(ctx, p.ID, branch, ErrProtectedBranch); err != nil {
+			return err
+		}
+	}
 	pending := s.pending[p.ID]
 	if pending[branch] {
 		return ErrBranchInUse
@@ -634,6 +770,22 @@ func (s *service) reserveSandbox(ctx context.Context, p *Project, branch string,
 		s.pending[p.ID] = pending
 	}
 	pending[branch] = true
+	return nil
+}
+
+// checkUnprotected returns refusal when branch is protected now. The caller
+// holds s.mu.
+func (s *service) checkUnprotected(ctx context.Context, projectID int64, branch string, refusal error) error {
+	current, err := s.repo.GetByID(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		return ErrNotFound
+	}
+	if current.IsProtected(branch) {
+		return refusal
+	}
 	return nil
 }
 
@@ -720,8 +872,8 @@ func (s *service) PublishSandbox(ctx context.Context, userID, projectID, workspa
 	if ws.Kind != workspace.KindTask {
 		return nil, invalid("only task sandboxes publish their branch")
 	}
-	if ws.Branch == "" || ws.Branch == p.DefaultBranch {
-		return nil, ErrDefaultBranch
+	if ws.Branch == "" || p.IsProtected(ws.Branch) {
+		return nil, ErrProtectedBranch
 	}
 
 	c, err := s.repoAgent(ctx, p)
@@ -796,14 +948,27 @@ func (s *service) FileAt(ctx context.Context, userID, projectID int64, rev, path
 	return c.RepoFile(ctx, rev, path)
 }
 
-// Merge merges a branch into the default branch, committing as the user.
+// Merge merges a branch into a protected branch, committing as the user.
+// The source can itself be protected, as when develop is released into
+// main, but then it is never squashed: its commits would be left out of the
+// target's history, and every later merge of the two would conflict.
 func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeInput) (*agent.RepoMergeResult, error) {
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
 		return nil, err
 	}
-	if !validBranchName(in.Source) || in.Source == p.DefaultBranch {
-		return nil, invalid("source must be a branch other than the default branch")
+	target := in.Target
+	if target == "" {
+		target = p.DefaultBranch
+	}
+	if !p.IsProtected(target) {
+		return nil, invalid("%s is not a protected branch, so nothing merges into it", target)
+	}
+	if !validBranchName(in.Source) || in.Source == target {
+		return nil, invalid("source must be a branch other than %s", target)
+	}
+	if in.Strategy == "squash" && p.IsProtected(in.Source) {
+		return nil, invalid("%s is a protected branch, so it merges with a merge commit or a fast-forward, never a squash", in.Source)
 	}
 	user, err := s.users.GetByID(ctx, userID)
 	if err != nil || user == nil {
@@ -815,7 +980,7 @@ func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeIn
 	}
 	return c.RepoMerge(ctx, agent.RepoMergeRequest{
 		Source:            in.Source,
-		Target:            p.DefaultBranch,
+		Target:            target,
 		Strategy:          in.Strategy,
 		Message:           in.Message,
 		ExpectedSourceSHA: in.ExpectedSourceSHA,
@@ -824,14 +989,21 @@ func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeIn
 	})
 }
 
-// Push pushes the default branch to the project's upstream. It never forces.
-func (s *service) Push(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error) {
+// Push pushes a protected branch, the default branch unless given, to the
+// project's upstream. It never forces.
+func (s *service) Push(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error) {
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
 		return nil, err
 	}
 	if p.UpstreamURL == "" {
 		return nil, invalid("the project has no upstream")
+	}
+	if branch == "" {
+		branch = p.DefaultBranch
+	}
+	if !p.IsProtected(branch) {
+		return nil, invalid("only protected branches are pushed upstream")
 	}
 	c, err := s.repoAgent(ctx, p)
 	if err != nil {
@@ -846,7 +1018,7 @@ func (s *service) Push(ctx context.Context, userID, projectID int64) (*agent.Rep
 	if err := workspace.WriteSSHKeys(ctx, c, user, s.cipher); err != nil {
 		return nil, fmt.Errorf("injecting SSH keys into repo container: %w", err)
 	}
-	return c.RepoPush(ctx, p.DefaultBranch)
+	return c.RepoPush(ctx, branch)
 }
 
 var hashPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)

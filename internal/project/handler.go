@@ -3,6 +3,7 @@ package project
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -130,6 +131,30 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, err := h.service.Update(r.Context(), user.ID, id, UpdateInput(req))
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"project": projectResponse(p)})
+}
+
+// HandleSetBranches changes a project's default branch and the other
+// branches it protects.
+func (h *Handler) HandleSetBranches(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		DefaultBranch     string   `json:"defaultBranch"`
+		ProtectedBranches []string `json:"protectedBranches"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	p, err := h.service.SetBranches(r.Context(), user.ID, id, BranchesInput(req))
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -296,7 +321,13 @@ func (h *Handler) HandlePush(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	result, err := h.service.Push(r.Context(), user.ID, id)
+	var req struct {
+		Branch string `json:"branch"`
+	}
+	if !decodeOptional(w, r, &req) {
+		return
+	}
+	result, err := h.service.Push(r.Context(), user.ID, id, req.Branch)
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -407,15 +438,21 @@ func (h *Handler) HandlePublishWorkspaceBranch(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, result)
 }
 
-// HandleSyncWorkspace refreshes the project workspace's copy of the default
-// branch.
+// HandleSyncWorkspace refreshes the project workspace's copy of a project
+// branch, the default branch unless the body names another.
 func (h *Handler) HandleSyncWorkspace(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	id, ok := pathID(w, r, "id")
 	if !ok {
 		return
 	}
-	result, err := h.service.SyncWorkspaceBase(r.Context(), user.ID, id)
+	var req struct {
+		Branch string `json:"branch"`
+	}
+	if !decodeOptional(w, r, &req) {
+		return
+	}
+	result, err := h.service.SyncWorkspaceBase(r.Context(), user.ID, id, req.Branch)
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -585,7 +622,7 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "access denied")
 	case errors.Is(err, ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrDefaultBranch), errors.Is(err, ErrPublishDefault):
+	case errors.Is(err, ErrProtectedBranch), errors.Is(err, ErrPublishProtected):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrNotStandalone), errors.Is(err, workspace.ErrConverting), errors.Is(err, workspace.ErrRebuilding),
 		errors.Is(err, workspace.ErrAgentOutdated), errors.Is(err, workspace.ErrLifecycleBusy):
@@ -626,15 +663,17 @@ func projectResponse(p *Project) map[string]any {
 		"name":          p.Name,
 		"description":   p.Description,
 		"defaultBranch": p.DefaultBranch,
-		"upstreamUrl":   p.UpstreamURL,
-		"setupScript":   p.SetupScript,
-		"environment":   p.Environment,
-		"maxSandboxes":  p.MaxSandboxes,
-		"autoReview":    p.AutoReview,
-		"status":        p.Status,
-		"error":         p.Error,
-		"createdAt":     p.CreatedAt,
-		"updatedAt":     p.UpdatedAt,
+		// Every protected branch, the default first.
+		"protectedBranches": p.Protected(),
+		"upstreamUrl":       p.UpstreamURL,
+		"setupScript":       p.SetupScript,
+		"environment":       p.Environment,
+		"maxSandboxes":      p.MaxSandboxes,
+		"autoReview":        p.AutoReview,
+		"status":            p.Status,
+		"error":             p.Error,
+		"createdAt":         p.CreatedAt,
+		"updatedAt":         p.UpdatedAt,
 	}
 }
 
@@ -649,6 +688,16 @@ func sandboxResponse(ws *workspace.Workspace) map[string]any {
 		"createdAt": ws.CreatedAt,
 		"updatedAt": ws.UpdatedAt,
 	}
+}
+
+// decodeOptional decodes a JSON body that may be empty, writing the error
+// and reporting false when it is malformed.
+func decodeOptional(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

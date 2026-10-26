@@ -36,8 +36,11 @@ type fakeProjects struct {
 	diffs     [][2]string
 	merges    []project.MergeInput
 	mergeErr  error
-	pushes    int
-	pushErr   error
+	// landed, when set, is where a merge leaves its target instead of the
+	// merge commit, as if another merge landed on top before anyone looked.
+	landed  string
+	pushed  []string
+	pushErr error
 	// setup is what AwaitSetup reports; while setupGate is open (non-nil
 	// and not closed) it waits. awaited records each wait's sandbox.
 	setup     *project.Setup
@@ -90,7 +93,9 @@ func (f *fakeProjects) Get(_ context.Context, userID, projectID int64) (*project
 }
 
 func (f *fakeProjects) Branches(context.Context, int64, int64) (*agent.RepoRefs, error) {
-	return &agent.RepoRefs{DefaultBranch: "main", Branches: f.branches}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return &agent.RepoRefs{DefaultBranch: f.project.DefaultBranch, Branches: append([]agent.RepoRef(nil), f.branches...)}, nil
 }
 
 func (f *fakeProjects) Compare(_ context.Context, _, _ int64, base, head string) (*agent.RepoComparison, error) {
@@ -126,17 +131,31 @@ func (f *fakeProjects) Merge(_ context.Context, _, _ int64, in project.MergeInpu
 	if f.mergeErr != nil {
 		return nil, f.mergeErr
 	}
-	return &agent.RepoMergeResult{Target: "main", SHA: "mergecommit", MergeBase: "mergebase"}, nil
+	target := in.Target
+	if target == "" {
+		target = f.project.DefaultBranch
+	}
+	// The target moves to the merge commit, as it does in the canonical repo.
+	moved := "mergecommit"
+	if f.landed != "" {
+		moved = f.landed
+	}
+	for i := range f.branches {
+		if f.branches[i].Name == target {
+			f.branches[i].SHA = moved
+		}
+	}
+	return &agent.RepoMergeResult{Target: target, SHA: "mergecommit", MergeBase: "mergebase"}, nil
 }
 
-func (f *fakeProjects) Push(context.Context, int64, int64) (*agent.RepoBranch, error) {
+func (f *fakeProjects) Push(_ context.Context, _, _ int64, branch string) (*agent.RepoBranch, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.pushes++
+	f.pushed = append(f.pushed, branch)
 	if f.pushErr != nil {
 		return nil, f.pushErr
 	}
-	return &agent.RepoBranch{Branch: "main"}, nil
+	return &agent.RepoBranch{Branch: branch}, nil
 }
 
 type fakeWorkspaces struct {
@@ -487,6 +506,103 @@ func TestCreateOpensMergeRequestForPublishedBranch(t *testing.T) {
 	}
 }
 
+// gitFlow makes the project's default branch develop, with main protected
+// for releases.
+func (e *env) gitFlow() {
+	e.projects.project.DefaultBranch = "develop"
+	e.projects.project.ProtectedBranches = []string{"main"}
+	e.projects.branches = []agent.RepoRef{{Name: "main", SHA: "m1"}, {Name: "develop", SHA: "d1"}, {Name: "feature", SHA: "f1"}, {Name: "staging", SHA: "s1"}}
+}
+
+func TestCreateTargetsAProtectedBranch(t *testing.T) {
+	e := setup(t)
+	e.gitFlow()
+	ctx := context.Background()
+
+	feature, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Feature", SourceBranch: "feature"})
+	if err != nil || feature.TargetBranch != "develop" {
+		t.Fatalf("expected the default branch as target: %+v %v", feature, err)
+	}
+	// A release merges one protected branch into another.
+	release, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Release", SourceBranch: "develop", TargetBranch: "main"})
+	if err != nil || release.SourceBranch != "develop" || release.TargetBranch != "main" || release.HeadSHA != "d1" {
+		t.Fatalf("release: %+v %v", release, err)
+	}
+	tests := []struct {
+		name string
+		in   CreateInput
+	}{
+		{"unprotected target", CreateInput{Title: "x", SourceBranch: "staging", TargetBranch: "feature"}},
+		{"missing target", CreateInput{Title: "x", SourceBranch: "staging", TargetBranch: "nope"}},
+		{"into itself", CreateInput{Title: "x", SourceBranch: "main", TargetBranch: "main"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := e.svc.Create(ctx, e.owner, e.pid(), tt.in); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("expected ErrInvalidInput, got %v", err)
+			}
+		})
+	}
+}
+
+func TestMergeIntoAProtectedBranchMovesItsMergeRequest(t *testing.T) {
+	e := setup(t)
+	e.gitFlow()
+	ctx := context.Background()
+	feature, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Feature", SourceBranch: "feature"})
+	if err != nil {
+		t.Fatalf("create feature: %v", err)
+	}
+	release, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Release", SourceBranch: "develop", TargetBranch: "main"})
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+
+	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), feature.ID, MergeInput{Push: true}); err != nil {
+		t.Fatalf("merge feature: %v", err)
+	}
+	if got := e.projects.merges[0]; got.Source != "feature" || got.Target != "develop" {
+		t.Fatalf("expected feature merged into develop, got %+v", got)
+	}
+	if len(e.projects.pushed) != 1 || e.projects.pushed[0] != "develop" {
+		t.Fatalf("expected develop pushed, got %v", e.projects.pushed)
+	}
+	// develop moved, so the release now proposes the merged commit.
+	if got, _ := e.svc.repo.GetByID(ctx, release.ID); got.HeadSHA != "mergecommit" {
+		t.Fatalf("expected the release to follow develop, got %q", got.HeadSHA)
+	}
+
+	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), release.ID, MergeInput{}); err != nil {
+		t.Fatalf("merge release: %v", err)
+	}
+	if got := e.projects.merges[1]; got.Source != "develop" || got.Target != "main" || got.ExpectedSourceSHA != "mergecommit" {
+		t.Fatalf("expected develop merged into main at the merged commit, got %+v", got)
+	}
+}
+
+func TestMergedTargetFollowsTheCanonicalBranch(t *testing.T) {
+	e := setup(t)
+	e.gitFlow()
+	ctx := context.Background()
+	feature, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Feature", SourceBranch: "feature"})
+	if err != nil {
+		t.Fatalf("create feature: %v", err)
+	}
+	release, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Release", SourceBranch: "develop", TargetBranch: "main"})
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+	// Another merge into develop lands before this one's follow-up runs:
+	// the release must propose develop as it is, not this merge's commit.
+	e.projects.landed = "later"
+	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), feature.ID, MergeInput{}); err != nil {
+		t.Fatalf("merge feature: %v", err)
+	}
+	if got, _ := e.svc.repo.GetByID(ctx, release.ID); got.HeadSHA != "later" {
+		t.Fatalf("expected the release on develop's current commit, got %q", got.HeadSHA)
+	}
+}
+
 func TestUserReviewRequestingChangesFeedsTheTask(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
@@ -645,9 +761,12 @@ func TestMergeMergesReviewedHeadAndCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
-	want := project.MergeInput{Source: "task/1", Strategy: "squash", Message: "Merge !1: Add a cart", ExpectedSourceSHA: "head1"}
+	want := project.MergeInput{Source: "task/1", Target: "main", Strategy: "squash", Message: "Merge !1: Add a cart", ExpectedSourceSHA: "head1"}
 	if len(e.projects.merges) != 1 || e.projects.merges[0] != want {
 		t.Fatalf("merge input = %+v", e.projects.merges)
+	}
+	if len(e.projects.pushed) != 1 || e.projects.pushed[0] != "main" {
+		t.Fatalf("expected main pushed, got %v", e.projects.pushed)
 	}
 	got := result.MergeRequest
 	if got.Status != StatusMerged || got.MergeSHA != "mergecommit" || got.BaseSHA != "mergebase" || got.MergedAt == nil || !result.Pushed {

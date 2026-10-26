@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
-import { STRATEGIES, shortSha } from './format'
+import { shortSha } from './format'
 import { useMergeRequest } from './useMergeRequest'
 
 // The merge widget for an open merge request: its checks, any conflicts, the
@@ -14,6 +14,7 @@ const {
   checks,
   conflicts,
   strategy,
+  strategies,
   strategyHint,
   pushAfterMerge,
   mergeError,
@@ -54,7 +55,7 @@ const {
         <div class="merge-options">
           <div class="segmented" role="radiogroup" aria-label="Merge strategy">
             <button
-              v-for="s in STRATEGIES"
+              v-for="s in strategies"
               :key="s.value"
               type="button"
               role="radio"

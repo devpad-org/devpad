@@ -257,6 +257,17 @@ func (c *Client) RepoPush(ctx context.Context, branch string) (*RepoBranch, erro
 	return &result, nil
 }
 
+// RepoSetHead makes an existing branch the canonical repo's default branch.
+func (c *Client) RepoSetHead(ctx context.Context, branch string) error {
+	u := fmt.Sprintf("%s/api/repo/head?branch=%s", c.baseURL, url.QueryEscape(branch))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+	if err != nil {
+		return err
+	}
+	var result RepoBranch
+	return c.doRepoJSON(req, "repo set head", &result)
+}
+
 // RepoFetchBase updates a sandbox's devpad/<branch> from a bundle of the
 // canonical branch.
 func (c *Client) RepoFetchBase(ctx context.Context, branch string, bundle io.Reader) (*RepoBranch, error) {

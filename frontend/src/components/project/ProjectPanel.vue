@@ -6,6 +6,7 @@ import { useActiveProjectStore } from '@/stores/activeProject'
 import { useProjectStore } from '@/stores/projects'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import ConversionNotice from './ConversionNotice.vue'
+import ProjectBranchesModal from './ProjectBranchesModal.vue'
 import ProjectModal from './ProjectModal.vue'
 import ProjectEnvironment from './ProjectEnvironment.vue'
 import ProjectSetup from './ProjectSetup.vue'
@@ -22,11 +23,13 @@ const store = useActiveProjectStore()
 const projects = useProjectStore()
 
 const showEdit = ref(false)
+const showBranches = ref(false)
 const savingProject = ref(false)
 const editError = ref('')
 const showDelete = ref(false)
 const deleting = ref(false)
-const pushing = ref(false)
+// The branch being pushed upstream, if any.
+const pushing = ref('')
 const actionError = ref('')
 const notice = ref('')
 
@@ -67,18 +70,18 @@ async function dismissConversion() {
   }
 }
 
-async function push() {
+async function push(branch: string) {
   if (store.projectId === null) return
-  pushing.value = true
+  pushing.value = branch
   actionError.value = ''
   notice.value = ''
   try {
-    const res = await projectApi.push(store.projectId)
+    const res = await projectApi.push(store.projectId, branch)
     notice.value = `Pushed ${res.branch} (${res.sha.slice(0, 8)}) upstream.`
   } catch (e) {
     actionError.value = e instanceof Error ? e.message : 'Push failed'
   } finally {
-    pushing.value = false
+    pushing.value = ''
   }
 }
 </script>
@@ -119,6 +122,10 @@ async function push() {
         <dl class="facts">
           <dt>Default branch</dt>
           <dd class="mono">{{ store.project.defaultBranch }}</dd>
+          <template v-if="store.protectedBranches.length > 1">
+            <dt>Protected</dt>
+            <dd class="mono">{{ store.protectedBranches.slice(1).join(', ') }}</dd>
+          </template>
           <dt>Upstream</dt>
           <dd class="mono">{{ store.project.upstreamUrl || 'local only' }}</dd>
           <dt>Sandboxes</dt>
@@ -132,14 +139,18 @@ async function push() {
       <ProjectSetup :workspace-status="workspaceStatus" />
 
       <div class="side-section actions">
-        <button
-          v-if="store.project.upstreamUrl && store.ready"
-          class="btn btn-secondary btn-sm"
-          :disabled="pushing"
-          @click="push"
-        >
-          {{ pushing ? 'Pushing...' : `Push ${store.project.defaultBranch} upstream` }}
-        </button>
+        <template v-if="store.project.upstreamUrl && store.ready">
+          <button
+            v-for="branch in store.protectedBranches"
+            :key="branch"
+            class="btn btn-secondary btn-sm"
+            :disabled="!!pushing"
+            @click="push(branch)"
+          >
+            {{ pushing === branch ? 'Pushing...' : `Push ${branch} upstream` }}
+          </button>
+        </template>
+        <button v-if="store.ready" class="btn btn-secondary btn-sm" @click="showBranches = true">Branches</button>
         <button class="btn btn-secondary btn-sm" @click="editError = ''; showEdit = true">Edit project</button>
         <button class="btn btn-danger btn-sm" @click="showDelete = true">Delete project</button>
       </div>
@@ -153,6 +164,8 @@ async function push() {
       @close="showEdit = false"
       @submit="saveProject"
     />
+
+    <ProjectBranchesModal :show="showBranches" @close="showBranches = false" />
 
     <ConfirmModal
       :show="showDelete"

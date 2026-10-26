@@ -7,6 +7,9 @@ export interface Project {
   name: string
   description: string
   defaultBranch: string
+  // Every branch that changes only through merge requests, the default
+  // first. Merge requests can target any of them.
+  protectedBranches: string[]
   upstreamUrl: string
   setupScript: string
   // The body of a Dockerfile devpad builds on its workspace image for the
@@ -60,6 +63,12 @@ export interface ProjectWorkspace {
 export interface RepoBranch {
   name: string
   sha: string
+}
+
+export interface BranchesInput {
+  defaultBranch: string
+  // May include the default branch; it is always protected.
+  protectedBranches: string[]
 }
 
 export interface PushResult {
@@ -330,6 +339,11 @@ export const projectApi = {
     return apiClient.delete(`/api/projects/${id}`)
   },
 
+  // Changes the default branch and the other protected branches.
+  setBranches(id: number, input: BranchesInput): Promise<{ project: Project }> {
+    return apiClient.put(`/api/projects/${id}/branches`, input)
+  },
+
   branches(id: number): Promise<{ defaultBranch: string; branches: RepoBranch[] }> {
     return apiClient.get(`/api/projects/${id}/branches`)
   },
@@ -342,8 +356,9 @@ export const projectApi = {
     return apiClient.post(`/api/projects/${id}/sandboxes/${workspaceId}/start`, {})
   },
 
-  push(id: number): Promise<PushResult> {
-    return apiClient.post(`/api/projects/${id}/push`, {})
+  // Pushes a protected branch upstream, the default branch unless given.
+  push(id: number, branch?: string): Promise<PushResult> {
+    return apiClient.post(`/api/projects/${id}/push`, branch ? { branch } : {})
   },
 
   // Returns the project workspace, or null before it is first opened.
@@ -373,9 +388,10 @@ export const projectApi = {
     return apiClient.post(`/api/projects/${id}/workspace/publish`, { branch })
   },
 
-  // Refreshes devpad/<default branch> in the project workspace.
-  syncWorkspace(id: number): Promise<BranchResult> {
-    return apiClient.post(`/api/projects/${id}/workspace/sync`, {})
+  // Refreshes devpad/<branch> in the project workspace, the default branch
+  // unless given.
+  syncWorkspace(id: number, branch?: string): Promise<BranchResult> {
+    return apiClient.post(`/api/projects/${id}/workspace/sync`, branch ? { branch } : {})
   },
 
   // Compares a branch of the project workspace with the project's, after

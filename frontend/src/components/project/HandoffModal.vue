@@ -51,7 +51,8 @@ const changedFiles = ref(0)
 const status = ref<WorkspaceBranchStatus | null>(null)
 
 const defaultBranch = computed(() => store.project?.defaultBranch ?? 'main')
-const onDefault = computed(() => currentBranch.value === defaultBranch.value)
+// Protected branches, the default among them, only change by merging.
+const onProtected = computed(() => !!currentBranch.value && store.isProtected(currentBranch.value))
 // Not on a branch at all, such as after checking out a commit.
 const detached = computed(() => !currentBranch.value)
 const dirty = computed(() => changedFiles.value > 0)
@@ -66,10 +67,10 @@ const localWork = computed(() => dirty.value || ahead.value > 0)
 const unsaved = computed(() => !!shell?.unsavedFiles.value)
 
 // Work that can't be published to the branch it's on moves to a new one:
-// the default branch only changes by merging, an agent's sandbox owns its
+// protected branches only change by merging, an agent's sandbox owns its
 // branch, and a branch the project moved on can't be fast-forwarded.
 const needsNewBranch = computed(
-  () => base.value === 'current' && localWork.value && (onDefault.value || detached.value || sandboxOwned.value || diverged.value),
+  () => base.value === 'current' && localWork.value && (onProtected.value || detached.value || sandboxOwned.value || diverged.value),
 )
 const handoffBranch = computed(() => {
   if (base.value === 'default') return defaultBranch.value
@@ -80,7 +81,7 @@ const needsCommit = computed(() => base.value === 'current' && dirty.value)
 const needsPublish = computed(
   () =>
     base.value === 'current' &&
-    handoffBranch.value !== defaultBranch.value &&
+    !store.isProtected(handoffBranch.value) &&
     (needsNewBranch.value || localWork.value || !published.value),
 )
 const ready = computed(() => !loading.value && (base.value === 'default' || status.value !== null || detached.value))
@@ -105,7 +106,7 @@ const notes = computed(() => {
     return out
   }
   if (needsNewBranch.value) {
-    if (onDefault.value) out.push(`${defaultBranch.value} only changes by merging, so your work moves to a branch first.`)
+    if (onProtected.value) out.push(`${currentBranch.value} only changes by merging, so your work moves to a branch first.`)
     else if (detached.value) out.push("Your workspace isn't on a branch, so your work moves to one first.")
     else if (sandboxOwned.value) out.push(`An agent's sandbox owns ${currentBranch.value}, so your work moves to a branch of its own.`)
     else if (diverged.value) out.push(`The project's ${currentBranch.value} has ${behind.value} ${behind.value === 1 ? 'commit' : 'commits'} yours doesn't, so your work moves to a new branch rather than overwrite them.`)

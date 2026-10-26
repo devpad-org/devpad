@@ -76,7 +76,8 @@ var (
 	ErrCommentLimit = errors.New("too many comments on this merge request")
 )
 
-// MergeRequest proposes merging a branch into the project's default branch.
+// MergeRequest proposes merging a branch into one of the project's protected
+// branches.
 type MergeRequest struct {
 	ID           int64
 	ProjectID    int64
@@ -154,6 +155,8 @@ type CreateInput struct {
 	Title        string
 	Description  string
 	SourceBranch string
+	// TargetBranch is a protected branch; empty means the default branch.
+	TargetBranch string
 }
 
 // CommentInput is a comment in a user review.
@@ -199,7 +202,7 @@ type SendBackInput struct {
 type MergeInput struct {
 	Strategy string
 	Message  string
-	// Push sends the default branch upstream after merging.
+	// Push sends the target branch upstream after merging.
 	Push bool
 }
 

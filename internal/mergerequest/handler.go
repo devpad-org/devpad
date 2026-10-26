@@ -53,6 +53,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		Title        string `json:"title"`
 		Description  string `json:"description"`
 		SourceBranch string `json:"sourceBranch"`
+		TargetBranch string `json:"targetBranch"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -163,7 +164,7 @@ func (h *Handler) HandleAgentReview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"review": reviewResponse(rv)})
 }
 
-// HandleMerge merges a merge request into the default branch.
+// HandleMerge merges a merge request into its target branch.
 func (h *Handler) HandleMerge(w http.ResponseWriter, r *http.Request) {
 	user, projectID, mrID, ok := params(w, r)
 	if !ok {

@@ -131,12 +131,20 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     timelineReviews.value.filter((r) => r.status === 'submitted' && r.verdict !== 'approve' && r.headSha === mr.value?.headSha),
   )
 
+  // A protected source, such as develop released into main, is never
+  // squashed or published from the workspace: it changes through merges.
+  const sourceProtected = computed(() => !!mr.value && projectStore.isProtected(mr.value.sourceBranch))
+  const strategies = computed(() => (sourceProtected.value ? STRATEGIES.filter((s) => s.value !== 'squash') : STRATEGIES))
+  watch(strategies, (list) => {
+    if (!list.some((s) => s.value === strategy.value)) strategy.value = 'merge'
+  })
+
   // Commits on the source branch in the project workspace that this merge
-  // request does not have yet. A sandbox's branch can't be published from
-  // the workspace, so it never has any.
+  // request does not have yet. Neither a sandbox's branch nor a protected
+  // branch can be published from the workspace, so they never have any.
   const unpublishedCommits = computed(() => {
     const status = workspaceBranch.value
-    if (!isOpen.value || !status || status.sandboxOwned || status.branch !== mr.value?.sourceBranch) return 0
+    if (!isOpen.value || !status || status.sandboxOwned || sourceProtected.value || status.branch !== mr.value?.sourceBranch) return 0
     return status.ahead
   })
   // Publishing only fast-forwards, so a workspace branch that also lacks
@@ -617,7 +625,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     void act(async () => {
       await mergeRequestApi.resolveConflicts(projectId.value, mrId.value, files)
       conflicts.value = null
-      showNotice('The task agent is merging the default branch in and resolving the conflicts.')
+      showNotice(`The task agent is merging ${mr.value?.targetBranch ?? 'the target branch'} in and resolving the conflicts.`)
       await refreshAll()
     }, mergeError)
   }
@@ -699,6 +707,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     latestReviews,
     checks,
     strategyHint,
+    strategies,
     statusIcon,
     commentCount,
     reviewComments,

@@ -65,7 +65,7 @@ type Projects interface {
 	AwaitSetup(ctx context.Context, userID, projectID, workspaceID int64) (*project.Setup, error)
 	AwaitEnvironment(ctx context.Context, userID, projectID int64) (*project.Environment, error)
 	Merge(ctx context.Context, userID, projectID int64, in project.MergeInput) (*agent.RepoMergeResult, error)
-	Push(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error)
+	Push(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error)
 }
 
 // Workspaces is the workspace surface review sandboxes, and the tools of
@@ -210,7 +210,8 @@ func (s *service) List(ctx context.Context, userID, projectID int64) ([]*MergeRe
 }
 
 // Create opens a merge request for a branch already in the canonical repo,
-// such as one published from a sandbox by hand.
+// such as one published from a sandbox by hand, into a protected branch.
+// The source can be protected too, as when develop is released into main.
 func (s *service) Create(ctx context.Context, userID, projectID int64, in CreateInput) (*MergeRequest, error) {
 	p, err := s.projects.Get(ctx, userID, projectID)
 	if err != nil {
@@ -220,8 +221,15 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 	if title == "" {
 		return nil, invalid("title is required")
 	}
-	if in.SourceBranch == "" || in.SourceBranch == p.DefaultBranch {
-		return nil, invalid("sourceBranch must be a branch other than %s", p.DefaultBranch)
+	target := strings.TrimSpace(in.TargetBranch)
+	if target == "" {
+		target = p.DefaultBranch
+	}
+	if !p.IsProtected(target) {
+		return nil, invalid("targetBranch must be a protected branch: %s", strings.Join(p.Protected(), ", "))
+	}
+	if in.SourceBranch == "" || in.SourceBranch == target {
+		return nil, invalid("sourceBranch must be a branch other than %s", target)
 	}
 	refs, err := s.projects.Branches(ctx, userID, projectID)
 	if err != nil {
@@ -238,7 +246,7 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 	}
 	mr := &MergeRequest{
 		ProjectID: projectID, UserID: userID, Title: title, Description: in.Description,
-		SourceBranch: in.SourceBranch, TargetBranch: p.DefaultBranch, Status: StatusOpen, HeadSHA: head,
+		SourceBranch: in.SourceBranch, TargetBranch: target, Status: StatusOpen, HeadSHA: head,
 	}
 	if err := s.repo.Create(ctx, mr); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -330,6 +338,14 @@ func (s *service) branchPublished(ctx context.Context, userID, projectID int64, 
 	if sha == "" {
 		return nil
 	}
+	return s.followBranch(ctx, userID, projectID, branch, func() (string, error) { return sha, nil })
+}
+
+// followBranch points the branch's open merge request at the commit head
+// returns, which is read under the merge request's lock. A merge into the
+// branch reads it from the canonical repo there, so merges racing into the
+// same branch cannot leave the merge request on an older commit.
+func (s *service) followBranch(ctx context.Context, userID, projectID int64, branch string, head func() (string, error)) error {
 	open, err := s.repo.GetOpenBySource(ctx, projectID, branch)
 	if err != nil || open == nil || open.UserID != userID {
 		return err
@@ -338,7 +354,11 @@ func (s *service) branchPublished(ctx context.Context, userID, projectID int64, 
 	defer unlock()
 	// Reload under the lock, so a merge or close that just finished wins.
 	mr, err := s.repo.GetByID(ctx, open.ID)
-	if err != nil || mr == nil || mr.Status != StatusOpen || mr.HeadSHA == sha {
+	if err != nil || mr == nil || mr.Status != StatusOpen {
+		return err
+	}
+	sha, err := head()
+	if err != nil || sha == "" || mr.HeadSHA == sha {
 		return err
 	}
 	mr.HeadSHA = sha
@@ -872,10 +892,44 @@ func (s *service) stopReviewSandbox(ctx context.Context, mr *MergeRequest, rv *R
 	}
 }
 
-// Merge merges the reviewed head of the merge request into the default
+// Merge merges the reviewed head of the merge request into its target
 // branch. It fails if the source branch has moved since, so only what was
 // reviewed is merged. The task is closed and the review sandboxes removed.
 func (s *service) Merge(ctx context.Context, userID, projectID, mrID int64, in MergeInput) (*MergeResult, error) {
+	out, err := s.merge(ctx, userID, projectID, mrID, in)
+	if err != nil {
+		return nil, err
+	}
+	// The target moved, so its own open merge request, such as a release of
+	// develop into main, now proposes what was merged. That takes the other
+	// merge request's lock, so it waits until this one's is released:
+	// merging the two at once would otherwise take their locks in opposite
+	// orders.
+	branch := out.MergeRequest.TargetBranch
+	if err := s.followBranch(ctx, userID, projectID, branch, func() (string, error) {
+		return s.canonicalSHA(ctx, userID, projectID, branch)
+	}); err != nil {
+		log.Printf("project %d: updating merge request for merged branch %s: %v", projectID, branch, err)
+	}
+	return out, nil
+}
+
+// canonicalSHA returns a branch's commit in the canonical repo, or "" when
+// it has no such branch.
+func (s *service) canonicalSHA(ctx context.Context, userID, projectID int64, branch string) (string, error) {
+	refs, err := s.projects.Branches(ctx, userID, projectID)
+	if err != nil {
+		return "", err
+	}
+	for _, b := range refs.Branches {
+		if b.Name == branch {
+			return b.SHA, nil
+		}
+	}
+	return "", nil
+}
+
+func (s *service) merge(ctx context.Context, userID, projectID, mrID int64, in MergeInput) (*MergeResult, error) {
 	unlock := s.lock("mr", mrID)
 	defer unlock()
 	mr, err := s.getOpen(ctx, userID, projectID, mrID)
@@ -890,7 +944,7 @@ func (s *service) Merge(ctx context.Context, userID, projectID, mrID int64, in M
 		message = fmt.Sprintf("Merge !%d: %s", mr.ID, mr.Title)
 	}
 	result, err := s.projects.Merge(ctx, userID, projectID, project.MergeInput{
-		Source: mr.SourceBranch, Strategy: in.Strategy, Message: message, ExpectedSourceSHA: mr.HeadSHA,
+		Source: mr.SourceBranch, Target: mr.TargetBranch, Strategy: in.Strategy, Message: message, ExpectedSourceSHA: mr.HeadSHA,
 	})
 	if err != nil {
 		return nil, err
@@ -909,7 +963,7 @@ func (s *service) Merge(ctx context.Context, userID, projectID, mrID int64, in M
 
 	out := &MergeResult{MergeRequest: mr}
 	if in.Push {
-		if _, err := s.projects.Push(ctx, userID, projectID); err != nil {
+		if _, err := s.projects.Push(ctx, userID, projectID, mr.TargetBranch); err != nil {
 			out.PushError = err.Error()
 		} else {
 			out.Pushed = true

@@ -16,10 +16,10 @@ import (
 // untrusted as a sandbox, since the IDE assistant runs in it: it never
 // reaches the canonical repo, and devpad moves every commit with bundles.
 // Unlike a sandbox it owns no branch. It can check out any canonical branch,
-// and publish any local branch except the default branch and branches owned
+// and publish any local branch except protected branches and branches owned
 // by sandboxes. Publishing only fast-forwards, so it can add commits to an
-// agent's or merge request's branch but never rewrite them; the default
-// branch still moves only through a merge.
+// agent's or merge request's branch but never rewrite them; protected
+// branches still move only through a merge.
 
 // Workspace returns the project's workspace, or ErrNoWorkspace before it has
 // been opened.
@@ -184,12 +184,19 @@ func (s *service) CheckoutWorkspaceBranch(ctx context.Context, userID, projectID
 	return s.workspaces.CheckoutProjectBranch(ctx, userID, ws.ID, branch, bundle)
 }
 
-// SyncWorkspaceBase refreshes devpad/<default branch> in the project
-// workspace, so the user can merge in work that has landed since.
-func (s *service) SyncWorkspaceBase(ctx context.Context, userID, projectID int64) (*agent.RepoBranch, error) {
+// SyncWorkspaceBase refreshes devpad/<branch> in the project workspace, the
+// default branch unless given, so the user can merge in work that has
+// landed since.
+func (s *service) SyncWorkspaceBase(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error) {
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
 		return nil, err
+	}
+	if branch == "" {
+		branch = p.DefaultBranch
+	}
+	if !validBranchName(branch) {
+		return nil, invalid("branch is not a valid branch name")
 	}
 	ws, err := s.runningWorkspace(ctx, p)
 	if err != nil {
@@ -199,12 +206,12 @@ func (s *service) SyncWorkspaceBase(ctx context.Context, userID, projectID int64
 	if err != nil {
 		return nil, err
 	}
-	bundle, err := c.RepoBundle(ctx, p.DefaultBranch)
+	bundle, err := c.RepoBundle(ctx, branch)
 	if err != nil {
 		return nil, err
 	}
 	defer bundle.Close()
-	return s.workspaces.FetchSandboxBase(ctx, userID, ws.ID, p.DefaultBranch, bundle)
+	return s.workspaces.FetchSandboxBase(ctx, userID, ws.ID, branch, bundle)
 }
 
 // maxFetchBranches bounds one fetch through the devpad remote.
@@ -269,7 +276,7 @@ func (s *service) FetchWorkspaceBranches(ctx context.Context, userID, projectID 
 
 // PublishWorkspaceBranch copies a local branch of the project workspace into
 // the canonical repo under the same name. The name comes from the request and
-// is checked here, never taken from the workspace. The default branch and
+// is checked here, never taken from the workspace. Protected branches and
 // branches owned by sandboxes are refused, and the import only
 // fast-forwards an existing branch. An open merge request for the branch
 // then follows the new commit.
@@ -281,8 +288,8 @@ func (s *service) PublishWorkspaceBranch(ctx context.Context, userID, projectID 
 	if !validBranchName(branch) {
 		return nil, invalid("branch is not a valid branch name")
 	}
-	if branch == p.DefaultBranch {
-		return nil, ErrPublishDefault
+	if p.IsProtected(branch) {
+		return nil, ErrPublishProtected
 	}
 	ws, err := s.runningWorkspace(ctx, p)
 	if err != nil {
@@ -385,8 +392,8 @@ func (s *service) WorkspaceBranchStatus(ctx context.Context, userID, projectID i
 	return status, nil
 }
 
-// reservePublish refuses a branch that a sandbox owns or is being created
-// for, and holds it until releasePublish so no sandbox can claim it while the
+// reservePublish refuses a protected branch, or one that a sandbox owns or
+// is being created for, and holds it until releasePublish so no sandbox can claim it while the
 // import is in flight. A sandbox force-publishes its branch, so it would
 // otherwise discard what the user published.
 func (s *service) reservePublish(ctx context.Context, p *Project, branch string) error {
@@ -395,6 +402,9 @@ func (s *service) reservePublish(ctx context.Context, p *Project, branch string)
 
 	if s.deleting[p.ID] {
 		return ErrDeleting
+	}
+	if err := s.checkUnprotected(ctx, p.ID, branch, ErrPublishProtected); err != nil {
+		return err
 	}
 	if s.pending[p.ID][branch] {
 		return ErrBranchInUse

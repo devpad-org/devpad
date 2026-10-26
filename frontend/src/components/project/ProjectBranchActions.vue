@@ -13,7 +13,8 @@ const DEVPAD_REMOTE = 'devpad'
 
 // How the project workspace's branch stands against the project's copy, and
 // the one thing to do about it: publish, pull, or start a branch. Below it,
-// the branch's merge request and a way to bring in the latest default branch.
+// the branch's merge request and a way to bring in the latest of the branch
+// it merges into.
 const props = defineProps<{
   workspaceId: number
   // The checked-out branch; '' or 'HEAD' when detached.
@@ -39,6 +40,7 @@ const statusError = ref('')
 const busy = ref<'' | 'publish' | 'pull' | 'update' | 'mr'>('')
 const showMrForm = ref(false)
 const mrTitle = ref('')
+const mrTarget = ref('')
 const mrInput = ref<HTMLInputElement | null>(null)
 
 let timer: ReturnType<typeof setInterval> | null = null
@@ -47,8 +49,13 @@ let loadSeq = 0
 
 const defaultBranch = computed(() => store.project?.defaultBranch ?? 'main')
 const detached = computed(() => props.branch === '' || props.branch === 'HEAD')
-const onDefault = computed(() => props.branch === defaultBranch.value)
+// Protected branches, the default among them, change only through merges.
+const onProtected = computed(() => store.isProtected(props.branch))
 const openMr = computed(() => (detached.value ? undefined : store.openMergeRequestFor(props.branch)))
+// The branches a merge request from this one can target.
+const mrTargets = computed(() => store.protectedBranches.filter((b) => b !== props.branch))
+// The branch this one merges into, whose latest work "Update from" brings in.
+const baseBranch = computed(() => openMr.value?.targetBranch ?? defaultBranch.value)
 const ahead = computed(() => status.value?.ahead ?? 0)
 const behind = computed(() => status.value?.behind ?? 0)
 
@@ -67,17 +74,18 @@ const view = computed<{ tone: Tone; title: string; detail: string; primary: Prim
   const s = status.value
   if (!s) {
     return statusError.value
-      ? { tone: 'neutral', title: "Couldn't compare with the project", detail: statusError.value, primary: onDefault.value ? 'branch' : 'publish' }
+      ? { tone: 'neutral', title: "Couldn't compare with the project", detail: statusError.value, primary: onProtected.value ? 'branch' : 'publish' }
       : { tone: 'neutral', title: 'Comparing with the project…', detail: '', primary: null }
   }
-  if (onDefault.value) {
+  if (onProtected.value) {
     if (s.behind > 0) {
       return { tone: 'pending', title: `${plural(s.behind, 'new commit')} on the project`, detail: `Pull them into your ${props.branch}.`, primary: 'pull' }
     }
     if (s.ahead > 0) {
       return { tone: 'attention', title: `${plural(s.ahead, 'commit')} only on your ${props.branch}`, detail: `${props.branch} changes only through merge requests. Move them to a new branch.`, primary: 'branch' }
     }
-    return { tone: 'neutral', title: `${props.branch} is the default branch`, detail: 'It changes through merge requests. Start a branch to make changes.', primary: 'branch' }
+    const kind = props.branch === defaultBranch.value ? 'the default branch' : 'a protected branch'
+    return { tone: 'neutral', title: `${props.branch} is ${kind}`, detail: 'It changes through merge requests. Start a branch to make changes.', primary: 'branch' }
   }
   if (s.sandboxOwned) {
     return {
@@ -102,7 +110,11 @@ const view = computed<{ tone: Tone; title: string; detail: string; primary: Prim
   return { tone: 'synced', title: 'Up to date with the project', detail: '', primary: null }
 })
 
-const canStartMr = computed(() => !detached.value && !onDefault.value && !status.value?.sandboxOwned)
+const canStartMr = computed(() => !detached.value && mrTargets.value.length > 0 && !status.value?.sandboxOwned)
+// A protected branch can't be published, so its merge request proposes the
+// project's copy as it is.
+const publishForMr = computed(() => !onProtected.value && (!status.value?.published || ahead.value > 0))
+const showUpdate = computed(() => !detached.value && !onProtected.value && !status.value?.sandboxOwned)
 
 async function load() {
   if (detached.value) {
@@ -182,19 +194,21 @@ async function pull() {
   }
 }
 
-// Fetches the project's default branch and merges it into this one.
-async function updateFromDefault() {
+// Fetches the project's copy of the branch this one merges into and merges
+// it into this one.
+async function updateFromBase() {
   if (store.projectId === null) return
   if (!(await confirmDiscard('Merging reloads your open files from disk, so their unsaved changes will be lost.'))) return
+  const base = baseBranch.value
   begin('update')
   try {
-    await projectApi.syncWorkspace(store.projectId)
+    await projectApi.syncWorkspace(store.projectId, base)
     emit('changed', 'sync')
-    const outcome = await mergeFromProject(defaultBranch.value)
-    if (outcome === 'merged') emit('notify', { tone: 'success', text: `Merged the latest ${defaultBranch.value} into ${props.branch}` })
-    if (outcome === 'current') emit('notify', { tone: 'info', text: `${props.branch} already has the latest ${defaultBranch.value}` })
+    const outcome = await mergeFromProject(base)
+    if (outcome === 'merged') emit('notify', { tone: 'success', text: `Merged the latest ${base} into ${props.branch}` })
+    if (outcome === 'current') emit('notify', { tone: 'info', text: `${props.branch} already has the latest ${base}` })
   } catch (e) {
-    emit('notify', { tone: 'error', text: branchActionError(e, `Failed to update from ${defaultBranch.value}`) })
+    emit('notify', { tone: 'error', text: branchActionError(e, `Failed to update from ${base}`) })
   } finally {
     busy.value = ''
     void load()
@@ -210,7 +224,15 @@ function runPrimary() {
 }
 
 function startMr() {
-  mrTitle.value = props.branch.replace(/^[^/]+\//, '').replace(/[-_]+/g, ' ')
+  // A protected branch is usually released into the next one, such as
+  // develop into main; any other branch merges into the default branch.
+  if (onProtected.value) {
+    mrTarget.value = mrTargets.value.find((b) => b !== defaultBranch.value) ?? mrTargets.value[0] ?? ''
+    mrTitle.value = `Release ${props.branch} into ${mrTarget.value}`
+  } else {
+    mrTarget.value = mrTargets.value.includes(defaultBranch.value) ? defaultBranch.value : mrTargets.value[0] ?? ''
+    mrTitle.value = props.branch.replace(/^[^/]+\//, '').replace(/[-_]+/g, ' ')
+  }
   showMrForm.value = true
   void nextTick(() => mrInput.value?.select())
 }
@@ -218,14 +240,15 @@ function startMr() {
 // Publishes the branch if it has unpublished commits, then opens a merge
 // request for it.
 async function createMr() {
-  if (store.projectId === null || !mrTitle.value.trim()) return
+  if (store.projectId === null || !mrTitle.value.trim() || !mrTarget.value) return
   begin('mr')
   try {
-    if (!status.value?.published || ahead.value > 0) await publishCurrent()
+    if (publishForMr.value) await publishCurrent()
     const res = await mergeRequestApi.create(store.projectId, {
       title: mrTitle.value.trim(),
       description: '',
       sourceBranch: props.branch,
+      targetBranch: mrTarget.value,
     })
     showMrForm.value = false
     void store.refresh()
@@ -240,7 +263,7 @@ async function createMr() {
 
 const mrSubmitLabel = computed(() => {
   if (busy.value === 'mr') return 'Opening…'
-  return status.value?.published && ahead.value === 0 ? 'Open' : 'Publish and open'
+  return publishForMr.value ? 'Publish and open' : 'Open'
 })
 
 const primaryLabel = computed(() => {
@@ -324,7 +347,11 @@ onUnmounted(stopTimer)
 
     <form v-if="showMrForm && !openMr" class="mr-form" @submit.prevent="createMr" @keydown.esc="showMrForm = false">
       <label class="mr-label" for="git-mr-title">
-        Merge <code>{{ branch }}</code> into <code>{{ defaultBranch }}</code>
+        Merge <code>{{ branch }}</code> into
+        <select v-if="mrTargets.length > 1" v-model="mrTarget" class="mr-target" aria-label="Target branch">
+          <option v-for="b in mrTargets" :key="b" :value="b">{{ b }}</option>
+        </select>
+        <code v-else>{{ mrTarget }}</code>
       </label>
       <input id="git-mr-title" ref="mrInput" v-model="mrTitle" class="mr-input" type="text" placeholder="Title" />
       <div class="mr-actions">
@@ -333,7 +360,7 @@ onUnmounted(stopTimer)
       </div>
     </form>
 
-    <div v-else-if="!detached && !onDefault && (openMr || !status?.sandboxOwned)" class="project-links">
+    <div v-else-if="openMr || canStartMr || showUpdate" class="project-links">
       <button
         v-if="openMr"
         type="button"
@@ -352,7 +379,7 @@ onUnmounted(stopTimer)
         type="button"
         class="project-link"
         :disabled="!!busy"
-        :title="`Ask to merge ${branch} into ${defaultBranch}`"
+        :title="`Ask to merge ${branch} into a protected branch`"
         @click="startMr"
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -361,18 +388,18 @@ onUnmounted(stopTimer)
         Merge request
       </button>
       <button
-        v-if="!status?.sandboxOwned"
+        v-if="showUpdate"
         type="button"
         class="project-link"
         :disabled="!!busy"
-        :title="`Fetch the project's ${defaultBranch} and merge it into ${branch}`"
-        @click="updateFromDefault"
+        :title="`Fetch the project's ${baseBranch} and merge it into ${branch}`"
+        @click="updateFromBase"
       >
         <span v-if="busy === 'update'" class="spinner" />
         <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" />
         </svg>
-        Update from {{ defaultBranch }}
+        Update from {{ baseBranch }}
       </button>
     </div>
   </section>
@@ -557,6 +584,22 @@ onUnmounted(stopTimer)
 .mr-label code {
   font-size: 0.68rem;
   color: var(--text-secondary);
+}
+
+.mr-target {
+  max-width: 100%;
+  padding: 1px var(--space-1);
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+}
+
+.mr-target:focus {
+  outline: none;
+  border-color: var(--accent-blue);
 }
 
 .mr-input {

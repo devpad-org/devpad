@@ -227,6 +227,8 @@ type fakeRepoAgent struct {
 	// commands records commands run in the repo container, such as writing
 	// SSH keys before a push.
 	commands []string
+	// heads records each branch made the repo's default branch.
+	heads []string
 }
 
 func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -288,6 +290,9 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&req)
 		a.commands = append(a.commands, req.Command)
 		json.NewEncoder(w).Encode(map[string]any{"output": "", "exit_code": 0})
+	case "/api/repo/head":
+		a.heads = append(a.heads, r.URL.Query().Get("branch"))
+		json.NewEncoder(w).Encode(agent.RepoBranch{Branch: r.URL.Query().Get("branch"), SHA: "abc"})
 	case "/api/repo/push":
 		a.pushed = append(a.pushed, r.URL.Query().Get("branch"))
 		json.NewEncoder(w).Encode(agent.RepoBranch{Branch: r.URL.Query().Get("branch"), SHA: "pushed"})
@@ -847,7 +852,7 @@ func TestCreateSandboxRejections(t *testing.T) {
 		in   SandboxInput
 		want error
 	}{
-		{"default branch", SandboxInput{Branch: "main"}, ErrDefaultBranch},
+		{"default branch", SandboxInput{Branch: "main"}, ErrProtectedBranch},
 		{"branch in use", SandboxInput{Branch: "taken"}, ErrBranchInUse},
 		{"interactive kind", SandboxInput{Kind: "interactive"}, ErrInvalidInput},
 		{"unknown kind", SandboxInput{Kind: "root"}, ErrInvalidInput},
@@ -1136,15 +1141,121 @@ func TestPushRequiresUpstream(t *testing.T) {
 	e := setupTest(t)
 	ctx := context.Background()
 	local := e.createProject(t, CreateInput{Name: "local"})
-	if _, err := e.svc.Push(ctx, e.userID, local.ID); !errors.Is(err, ErrInvalidInput) {
+	if _, err := e.svc.Push(ctx, e.userID, local.ID, ""); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput without an upstream, got %v", err)
 	}
 	cloned := e.createProject(t, CreateInput{Name: "cloned", UpstreamURL: "https://example.com/repo.git"})
-	if _, err := e.svc.Push(ctx, e.userID, cloned.ID); err != nil {
+	if _, err := e.svc.Push(ctx, e.userID, cloned.ID, ""); err != nil {
 		t.Fatalf("push: %v", err)
 	}
 	if len(e.repoAgent.pushed) != 1 || e.repoAgent.pushed[0] != "main" {
 		t.Fatalf("pushed = %v", e.repoAgent.pushed)
+	}
+}
+
+func TestSetBranchesProtectsBranches(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj", UpstreamURL: "https://example.com/repo.git"})
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "develop", SHA: "d"}, {Name: "feature", SHA: "f"}}
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "task/1"}); err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	e.repoAgent.branches = append(e.repoAgent.branches, agent.RepoRef{Name: "task/1", SHA: "t"})
+
+	got, err := e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop", ProtectedBranches: []string{"main", "develop", " main "}})
+	if err != nil {
+		t.Fatalf("set branches: %v", err)
+	}
+	if got.DefaultBranch != "develop" || strings.Join(got.Protected(), ",") != "develop,main" {
+		t.Fatalf("unexpected branches: %q %v", got.DefaultBranch, got.ProtectedBranches)
+	}
+	if strings.Join(e.repoAgent.heads, ",") != "develop" {
+		t.Fatalf("expected the repo's HEAD moved to develop, got %v", e.repoAgent.heads)
+	}
+	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); stored.DefaultBranch != "develop" || !stored.IsProtected("main") || stored.IsProtected("feature") {
+		t.Fatalf("branches not stored: %+v", stored)
+	}
+
+	// The old default branch stays protected because it was listed.
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "main"}); !errors.Is(err, ErrProtectedBranch) {
+		t.Fatalf("expected ErrProtectedBranch for a sandbox on main, got %v", err)
+	}
+
+	refusals := []struct {
+		name string
+		in   BranchesInput
+		want error
+	}{
+		{"sandbox branch", BranchesInput{ProtectedBranches: []string{"main", "task/1"}}, ErrBranchInUse},
+		{"sandbox branch as default", BranchesInput{DefaultBranch: "task/1", ProtectedBranches: []string{"main"}}, ErrBranchInUse},
+		{"missing branch", BranchesInput{ProtectedBranches: []string{"nope"}}, ErrInvalidInput},
+		{"invalid name", BranchesInput{ProtectedBranches: []string{"a..b"}}, ErrInvalidInput},
+	}
+	for _, tt := range refusals {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := e.svc.SetBranches(ctx, e.userID, p.ID, tt.in); !errors.Is(err, tt.want) {
+				t.Fatalf("expected %v, got %v", tt.want, err)
+			}
+		})
+	}
+	// The refused default branch was put back.
+	if strings.Join(e.repoAgent.heads, ",") != "develop,task/1,develop" {
+		t.Fatalf("expected the repo's HEAD restored, got %v", e.repoAgent.heads)
+	}
+	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); stored.DefaultBranch != "develop" || strings.Join(stored.Protected(), ",") != "develop,main" {
+		t.Fatalf("refusals changed the branches: %+v", stored)
+	}
+	if _, err := e.svc.SetBranches(ctx, e.otherID, p.ID, BranchesInput{}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for another user, got %v", err)
+	}
+
+	// Only protected branches are pushed.
+	if _, err := e.svc.Push(ctx, e.userID, p.ID, "main"); err != nil {
+		t.Fatalf("push main: %v", err)
+	}
+	if _, err := e.svc.Push(ctx, e.userID, p.ID, ""); err != nil {
+		t.Fatalf("push default: %v", err)
+	}
+	if _, err := e.svc.Push(ctx, e.userID, p.ID, "feature"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput pushing an unprotected branch, got %v", err)
+	}
+	if strings.Join(e.repoAgent.pushed, ",") != "main,develop" {
+		t.Fatalf("pushed = %v", e.repoAgent.pushed)
+	}
+}
+
+func TestMergeIntoAProtectedTarget(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "develop", SHA: "d"}, {Name: "feature", SHA: "f"}}
+	if _, err := e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop", ProtectedBranches: []string{"main"}}); err != nil {
+		t.Fatalf("set branches: %v", err)
+	}
+
+	if _, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: "feature", Strategy: "squash"}); err != nil {
+		t.Fatalf("merge feature: %v", err)
+	}
+	// Releasing develop into main keeps develop's history.
+	if _, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: "develop", Target: "main"}); err != nil {
+		t.Fatalf("merge release: %v", err)
+	}
+	if got := e.repoAgent.merges; len(got) != 2 || got[0].Target != "develop" || got[1].Source != "develop" || got[1].Target != "main" {
+		t.Fatalf("merge requests = %+v", got)
+	}
+	refusals := []MergeInput{
+		{Source: "develop", Target: "main", Strategy: "squash"},
+		{Source: "main", Target: "feature"},
+		{Source: "main", Target: "main"},
+	}
+	for _, in := range refusals {
+		if _, err := e.svc.Merge(ctx, e.userID, p.ID, in); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("%+v: expected ErrInvalidInput, got %v", in, err)
+		}
+	}
+	if len(e.repoAgent.merges) != 2 {
+		t.Fatalf("refused merges reached the repo: %+v", e.repoAgent.merges)
 	}
 }
 
@@ -1239,7 +1350,7 @@ func TestHandlerMapsErrors(t *testing.T) {
 		{ErrNotFound, http.StatusNotFound},
 		{workspace.ErrForbidden, http.StatusForbidden},
 		{invalid("bad"), http.StatusBadRequest},
-		{ErrDefaultBranch, http.StatusBadRequest},
+		{ErrProtectedBranch, http.StatusBadRequest},
 		{ErrSandboxLimit, http.StatusConflict},
 		{ErrBranchInUse, http.StatusConflict},
 		{ErrBranchPublishing, http.StatusConflict},

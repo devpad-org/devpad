@@ -42,6 +42,10 @@ type Repository interface {
 	// SetEnvironmentImage records the last image a project's environment
 	// built. Update never writes it, so a build ending meanwhile is kept.
 	SetEnvironmentImage(ctx context.Context, projectID int64, image string) error
+	// SetBranches records a project's default branch and the other branches
+	// it protects. Update never writes them, so a stale copy of a project
+	// cannot undo a change.
+	SetBranches(ctx context.Context, projectID int64, defaultBranch string, protected []string) error
 	// ListWithEnvironment lists the projects that have an environment.
 	ListWithEnvironment(ctx context.Context) ([]*Project, error)
 	// GetBuild returns the latest build of a project's environment, or nil.
@@ -63,7 +67,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const projectColumns = `id, user_id, name, description, default_branch, upstream_url, setup_script, environment, environment_image, max_sandboxes, auto_review, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at`
+const projectColumns = `id, user_id, name, description, default_branch, protected_branches, upstream_url, setup_script, environment, environment_image, max_sandboxes, auto_review, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at`
 
 // execer is a database or a transaction.
 type execer interface {
@@ -75,10 +79,14 @@ func (r *repository) Create(ctx context.Context, p *Project) error {
 }
 
 func insertProject(ctx context.Context, db execer, p *Project) error {
+	protected, err := branchList(p.ProtectedBranches)
+	if err != nil {
+		return err
+	}
 	now := time.Now()
 	result, err := db.ExecContext(ctx,
-		`INSERT INTO projects (user_id, name, description, default_branch, upstream_url, setup_script, environment, max_sandboxes, auto_review, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.UserID, p.Name, p.Description, p.DefaultBranch, p.UpstreamURL, p.SetupScript, p.Environment, p.MaxSandboxes, p.AutoReview, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, p.RepoAgentToken, now, now,
+		`INSERT INTO projects (user_id, name, description, default_branch, protected_branches, upstream_url, setup_script, environment, max_sandboxes, auto_review, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.UserID, p.Name, p.Description, p.DefaultBranch, protected, p.UpstreamURL, p.SetupScript, p.Environment, p.MaxSandboxes, p.AutoReview, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, p.RepoAgentToken, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting project: %w", err)
@@ -155,11 +163,38 @@ type rowScanner interface {
 
 func scanProject(row rowScanner) (*Project, error) {
 	p := &Project{}
-	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Description, &p.DefaultBranch, &p.UpstreamURL, &p.SetupScript, &p.Environment, &p.EnvironmentImage, &p.MaxSandboxes, &p.AutoReview, &p.Status, &p.Error, &p.RepoContainerID, &p.RepoVolumeName, &p.RepoNetworkName, &p.RepoAgentToken, &p.CreatedAt, &p.UpdatedAt)
+	var protected string
+	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Description, &p.DefaultBranch, &protected, &p.UpstreamURL, &p.SetupScript, &p.Environment, &p.EnvironmentImage, &p.MaxSandboxes, &p.AutoReview, &p.Status, &p.Error, &p.RepoContainerID, &p.RepoVolumeName, &p.RepoNetworkName, &p.RepoAgentToken, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	if err := json.Unmarshal([]byte(protected), &p.ProtectedBranches); err != nil {
+		return nil, fmt.Errorf("decoding protected branches: %w", err)
+	}
 	return p, nil
+}
+
+// branchList encodes a list of branches for a JSON column.
+func branchList(branches []string) (string, error) {
+	if branches == nil {
+		branches = []string{}
+	}
+	b, err := json.Marshal(branches)
+	if err != nil {
+		return "", fmt.Errorf("encoding branches: %w", err)
+	}
+	return string(b), nil
+}
+
+func (r *repository) SetBranches(ctx context.Context, projectID int64, defaultBranch string, protected []string) error {
+	list, err := branchList(protected)
+	if err != nil {
+		return err
+	}
+	if _, err := r.db.ExecContext(ctx, `UPDATE projects SET default_branch = ?, protected_branches = ?, updated_at = ? WHERE id = ?`, defaultBranch, list, time.Now(), projectID); err != nil {
+		return fmt.Errorf("recording branches: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) CreateConverting(ctx context.Context, p *Project, c *Conversion) error {
