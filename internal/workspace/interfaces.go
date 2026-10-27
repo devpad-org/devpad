@@ -14,6 +14,7 @@ type LifecycleService interface {
 	Delete(ctx context.Context, userID, workspaceID int64) error
 	Start(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
 	Stop(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
+	Restart(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
 }
 
 // AccessService checks workspace access and ownership.

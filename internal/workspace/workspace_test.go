@@ -31,6 +31,10 @@ type mockContainerManager struct {
 	renamed   []string
 	started   []string
 	removeErr error
+	// copied records each file copied in as "id path"; onRestart, if set,
+	// runs on each restart.
+	copied    []string
+	onRestart func()
 }
 
 func (m *mockContainerManager) Create(_ context.Context, name, image, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
@@ -57,6 +61,9 @@ func (m *mockContainerManager) Start(_ context.Context, id string) error {
 func (m *mockContainerManager) Stop(_ context.Context, _ string) error { return nil }
 func (m *mockContainerManager) Restart(_ context.Context, id string) error {
 	m.restarted = append(m.restarted, id)
+	if m.onRestart != nil {
+		m.onRestart()
+	}
 	return nil
 }
 func (m *mockContainerManager) Remove(_ context.Context, id string) error {
@@ -97,7 +104,8 @@ func (m *mockContainerManager) ExecAttach(_ context.Context, _ string) (containe
 func (m *mockContainerManager) ExecResize(_ context.Context, _ string, _, _ uint) error {
 	return nil
 }
-func (m *mockContainerManager) CopyFileToContainer(_ context.Context, _, _ string, _ []byte, _ int64) error {
+func (m *mockContainerManager) CopyFileToContainer(_ context.Context, id, path string, _ []byte, _ int64) error {
+	m.copied = append(m.copied, id+" "+path)
 	return nil
 }
 func (m *mockContainerManager) BuildImage(_ context.Context, _ []byte, _ []byte, _ string) error {

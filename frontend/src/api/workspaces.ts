@@ -107,6 +107,11 @@ export const workspaceApi = {
     return apiClient.post<WorkspaceResponse>(`/api/workspaces/${id}/stop`, {})
   },
 
+  // Restarts the container, updating its agent; a stopped workspace starts.
+  restart(id: number): Promise<WorkspaceResponse> {
+    return apiClient.post<WorkspaceResponse>(`/api/workspaces/${id}/restart`, {})
+  },
+
   listFiles(id: number, path: string, options: ListFilesOptions = {}): Promise<FileListResponse> {
     const params = new URLSearchParams({ path })
     if (options.recursive) {

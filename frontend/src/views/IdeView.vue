@@ -57,7 +57,7 @@ const isProjectMode = computed(() => projectId.value !== null)
 const workspace = ref<Workspace | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
-const workspaceAction = ref<'' | 'creating' | 'starting'>('')
+const workspaceAction = ref<'' | 'creating' | 'starting' | 'stopping' | 'restarting'>('')
 const workspaceError = ref('')
 // Bumped when the workspace's branch moves, to reload the git panels.
 const gitRevision = ref(0)
@@ -70,7 +70,8 @@ const workspaceLive = computed(() =>
 )
 
 const gateState = computed<WorkspaceGateState>(() => {
-  if (workspaceAction.value) return workspaceAction.value
+  const action = workspaceAction.value
+  if (action === 'creating' || action === 'starting') return action
   const project = projectStore.project
   if (project?.status === 'error') return 'error'
   if (!projectStore.ready) return 'not-ready'
@@ -474,20 +475,30 @@ async function createWorkspace() {
   }
 }
 
-async function startWorkspace() {
+const workspaceLifecycle = {
+  starting: { call: workspaceApi.start, failure: 'Failed to start the workspace' },
+  stopping: { call: workspaceApi.stop, failure: 'Failed to stop the workspace' },
+  restarting: { call: workspaceApi.restart, failure: 'Failed to restart the workspace' },
+}
+
+async function changeWorkspace(action: keyof typeof workspaceLifecycle) {
   if (!workspace.value || workspaceAction.value) return
   const seq = loadSeq
-  workspaceAction.value = 'starting'
+  workspaceAction.value = action
   workspaceError.value = ''
   try {
-    const ws = (await workspaceApi.start(workspace.value.id)).workspace
+    const ws = (await workspaceLifecycle[action].call(workspace.value.id)).workspace
     if (seq === loadSeq) setWorkspace(ws)
   } catch (e) {
-    if (seq === loadSeq) workspaceError.value = e instanceof Error ? e.message : 'Failed to start the workspace'
+    if (seq === loadSeq) workspaceError.value = e instanceof Error ? e.message : workspaceLifecycle[action].failure
   } finally {
     if (seq === loadSeq) workspaceAction.value = ''
   }
 }
+
+const startWorkspace = () => changeWorkspace('starting')
+const stopWorkspace = () => changeWorkspace('stopping')
+const restartWorkspace = () => changeWorkspace('restarting')
 
 // Keeps the project workspace's status current, so the panels follow it
 // being created, started or stopped elsewhere.
@@ -1507,6 +1518,11 @@ const backLabel = computed(() => {
           <WorkspaceInfoPanel
             v-show="activeActivity === 'info'"
             :workspace-id="workspace?.id ?? 0"
+            :can-stop="isProjectMode"
+            :busy="workspaceAction === 'stopping' || workspaceAction === 'restarting' ? workspaceAction : ''"
+            :action-error="workspaceError"
+            @stop="stopWorkspace"
+            @restart="restartWorkspace"
           />
           <ServiceCatalogPanel
             v-show="activeActivity === 'services'"

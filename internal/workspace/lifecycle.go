@@ -204,6 +204,11 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 		return nil, err
 	}
 	defer done()
+	return s.start(ctx, ws)
+}
+
+// start starts a workspace's container under the caller's lifecycle hold.
+func (s *service) start(ctx context.Context, ws *Workspace) (*Workspace, error) {
 	if ws.Status == StatusRunning {
 		return ws, nil
 	}
@@ -286,6 +291,46 @@ func (s *service) Stop(ctx context.Context, userID, workspaceID int64) (*Workspa
 	if err := s.repo.Update(ctx, ws); err != nil {
 		return nil, fmt.Errorf("updating workspace status: %w", err)
 	}
+	return ws, nil
+}
+
+// Restart restarts a running workspace's container, installing the current
+// agent first if it is outdated, so one restart brings it up to date.
+// Terminals and running processes restart with it; the volume and attached
+// services are untouched. A stopped workspace is started.
+func (s *service) Restart(ctx context.Context, userID, workspaceID int64) (*Workspace, error) {
+	ws, err := s.Get(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	done, err := s.beginLifecycle(ws.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	if ws.Status != StatusRunning {
+		return s.start(ctx, ws)
+	}
+	if ws.ContainerID == "" {
+		return nil, fmt.Errorf("workspace has no container")
+	}
+
+	// Best-effort: an agent that can't be replaced now still restarts, and
+	// the check after the restart tries again.
+	if _, err := s.installAgentIfOutdated(ctx, ws); err != nil {
+		log.Printf("workspace %d: agent update before restart failed: %v", ws.ID, err)
+	}
+	if err := s.container.Restart(ctx, ws.ContainerID); err != nil {
+		return nil, fmt.Errorf("restarting container: %w", err)
+	}
+	if err := s.waitForAgent(ctx, ws); err != nil {
+		log.Printf("workspace %d: agent not ready after restart: %v", ws.ID, err)
+	}
+	if err := s.ensureAgentUpdated(ctx, ws); err != nil {
+		log.Printf("workspace %d: agent update failed: %v", ws.ID, err)
+	}
+
+	s.injectUserSSHKeys(ctx, ws)
 	return ws, nil
 }
 

@@ -1,10 +1,27 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { workspaceApi, type WorkspaceInfo } from '@/api/workspaces'
+import ConfirmModal from '@/components/ConfirmModal.vue'
 
 const props = defineProps<{
   workspaceId: number
+  // Stopping leaves the IDE without a workspace, which only project mode
+  // copes with.
+  canStop: boolean
+  // The lifecycle action in progress, and the last one's error.
+  busy: '' | 'stopping' | 'restarting'
+  actionError: string
 }>()
+
+const emit = defineEmits<{
+  stop: []
+  restart: []
+}>()
+
+const confirming = ref<'' | 'stop' | 'restart'>('')
+const agentOutdated = computed(() =>
+  !!info.value?.agentVersion && !!info.value.expectedAgentVersion && info.value.agentVersion !== info.value.expectedAgentVersion,
+)
 
 const info = ref<WorkspaceInfo | null>(null)
 const loading = ref(false)
@@ -37,6 +54,18 @@ function formatPercent(val: number): string {
   return val.toFixed(1) + '%'
 }
 
+function confirmAction() {
+  const action = confirming.value
+  confirming.value = ''
+  if (action === 'stop') emit('stop')
+  else if (action === 'restart') emit('restart')
+}
+
+// Show the agent a restart brought up, rather than wait for the next poll.
+watch(() => props.busy, (busy, was) => {
+  if (!busy && was === 'restarting') void refresh()
+})
+
 onMounted(() => {
   refresh()
   pollTimer = setInterval(refresh, 5000)
@@ -59,13 +88,34 @@ onUnmounted(() => {
         </svg>
         Workspace
       </span>
-      <button class="info-refresh" @click="refresh" title="Refresh">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
-          <path d="M21 3v5h-5" />
-        </svg>
-      </button>
+      <div class="info-header-actions">
+        <button
+          class="info-action"
+          :disabled="!!busy"
+          title="Restart the workspace's container"
+          @click="confirming = 'restart'"
+        >
+          {{ busy === 'restarting' ? 'Restarting…' : 'Restart' }}
+        </button>
+        <button
+          v-if="canStop"
+          class="info-action"
+          :disabled="!!busy"
+          title="Stop the workspace's container"
+          @click="confirming = 'stop'"
+        >
+          {{ busy === 'stopping' ? 'Stopping…' : 'Stop' }}
+        </button>
+        <button class="info-refresh" @click="refresh" title="Refresh">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+            <path d="M21 3v5h-5" />
+          </svg>
+        </button>
+      </div>
     </div>
+
+    <div v-if="actionError" class="info-error">{{ actionError }}</div>
 
     <div v-if="loading && !info" class="info-loading">
       <div class="info-spinner" />
@@ -82,8 +132,11 @@ onUnmounted(() => {
           <span class="info-label">Version</span>
           <span class="info-value mono">{{ info.agentVersion || 'unknown' }}</span>
         </div>
-        <div v-if="info.agentVersion && info.expectedAgentVersion && info.agentVersion !== info.expectedAgentVersion" class="info-warning">
-          Expected {{ info.expectedAgentVersion }} — restart workspace to update
+        <div v-if="agentOutdated" class="info-warning">
+          <span>Expected {{ info.expectedAgentVersion }}. Restart the workspace to update it.</span>
+          <button class="info-warning-action" :disabled="!!busy" @click="confirming = 'restart'">
+            {{ busy === 'restarting' ? 'Restarting…' : 'Restart now' }}
+          </button>
         </div>
       </div>
 
@@ -150,6 +203,24 @@ onUnmounted(() => {
         Container stats unavailable
       </div>
     </div>
+
+    <ConfirmModal
+      :show="confirming === 'restart'"
+      title="Restart Workspace"
+      message="Restarting ends every process in the workspace: terminals, running commands and anything the assistant started. All files are kept, and devpad installs its current agent if this one is out of date. Terminals reconnect once it's back."
+      confirm-label="Restart"
+      @confirm="confirmAction"
+      @cancel="confirming = ''"
+    />
+    <ConfirmModal
+      :show="confirming === 'stop'"
+      title="Stop Workspace"
+      message="Stopping ends every process in the workspace and stops its services. All files are kept. The editor, terminals and assistant need it running, so start it again from any of their panels."
+      confirm-label="Stop"
+      variant="danger"
+      @confirm="confirmAction"
+      @cancel="confirming = ''"
+    />
   </div>
 </template>
 
@@ -186,6 +257,32 @@ onUnmounted(() => {
 .panel-icon {
   color: var(--ide-header-icon);
   flex-shrink: 0;
+}
+
+.info-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.info-action {
+  height: 22px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  transition: all var(--transition-fast);
+}
+
+.info-action:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.info-action:disabled,
+.info-warning-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .info-refresh {
@@ -320,5 +417,24 @@ onUnmounted(() => {
   border-radius: var(--radius-sm);
   color: var(--accent-amber);
   font-size: 0.72rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.info-warning-action {
+  flex-shrink: 0;
+  padding: 2px var(--space-2);
+  border: 0.5px solid var(--warning-border);
+  border-radius: var(--radius-sm);
+  color: var(--accent-amber);
+  font-size: 0.72rem;
+  font-weight: 500;
+  transition: background var(--transition-fast);
+}
+
+.info-warning-action:hover:not(:disabled) {
+  background: var(--warning-bg);
 }
 </style>

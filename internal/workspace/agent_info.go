@@ -61,34 +61,11 @@ func (s *service) waitForAgent(ctx context.Context, ws *Workspace) error {
 
 // ensureAgentUpdated checks whether the in-container agent is running the
 // expected version and, if not, copies the embedded binary into the container
-// and restarts it. An empty or unreachable version response is treated as
-// outdated (the agent predates the /api/version endpoint).
+// and restarts it.
 func (s *service) ensureAgentUpdated(ctx context.Context, ws *Workspace) error {
-	if ws.ContainerID == "" {
-		return nil
-	}
-
-	ip, err := s.containerIP(ctx, ws)
-	if err != nil {
-		return fmt.Errorf("resolving container address for update check: %w", err)
-	}
-
-	c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
-	remoteVersion, err := c.Version(ctx)
-	if err != nil {
-		// Agent is unreachable or too old to respond — treat as needing update.
-		log.Printf("workspace %d: agent version check failed (%v), updating agent", ws.ID, err)
-		remoteVersion = ""
-	}
-
-	if remoteVersion == agentbin.Version {
-		return nil
-	}
-
-	log.Printf("workspace %d: updating agent from %q to %q", ws.ID, remoteVersion, agentbin.Version)
-
-	if err := s.container.CopyFileToContainer(ctx, ws.ContainerID, "usr/local/bin/devpad-agent", agentbin.Binary, 0755); err != nil {
-		return fmt.Errorf("copying agent binary to container: %w", err)
+	installed, err := s.installAgentIfOutdated(ctx, ws)
+	if err != nil || !installed {
+		return err
 	}
 
 	if err := s.container.Restart(ctx, ws.ContainerID); err != nil {
@@ -102,6 +79,41 @@ func (s *service) ensureAgentUpdated(ctx context.Context, ws *Workspace) error {
 
 	log.Printf("workspace %d: agent updated and container restarted", ws.ID)
 	return nil
+}
+
+// installAgentIfOutdated copies the embedded agent binary into the container
+// when the running agent is not the expected version, reporting whether it
+// did. The new agent runs from the container's next restart. An empty or
+// unreachable version response is treated as outdated (the agent predates
+// the /api/version endpoint).
+func (s *service) installAgentIfOutdated(ctx context.Context, ws *Workspace) (bool, error) {
+	if ws.ContainerID == "" {
+		return false, nil
+	}
+
+	ip, err := s.containerIP(ctx, ws)
+	if err != nil {
+		return false, fmt.Errorf("resolving container address for update check: %w", err)
+	}
+
+	c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
+	remoteVersion, err := c.Version(ctx)
+	if err != nil {
+		// Agent is unreachable or too old to respond — treat as needing update.
+		log.Printf("workspace %d: agent version check failed (%v), updating agent", ws.ID, err)
+		remoteVersion = ""
+	}
+
+	if remoteVersion == agentbin.Version {
+		return false, nil
+	}
+
+	log.Printf("workspace %d: updating agent from %q to %q", ws.ID, remoteVersion, agentbin.Version)
+
+	if err := s.container.CopyFileToContainer(ctx, ws.ContainerID, "usr/local/bin/devpad-agent", agentbin.Binary, 0755); err != nil {
+		return false, fmt.Errorf("copying agent binary to container: %w", err)
+	}
+	return true, nil
 }
 
 func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (string, string, error) {
