@@ -1,16 +1,14 @@
 import { inject, type InjectionKey, type Ref } from 'vue'
 
-// A view tab is an editor tab the IDE shell renders itself, such as the
-// project board or a merge request. View ids never start with "/", so they
-// can't collide with file tabs, whose ids are absolute workspace paths.
-export type ViewTabId = 'board' | `mr:${number}`
+// A view tab is an editor tab the IDE shell renders itself, such as a merge
+// request. View ids never start with "/", so they can't collide with file
+// tabs, whose ids are absolute workspace paths.
+export type ViewTabId = `mr:${number}`
 
 export interface ViewTab {
   id: ViewTabId
   name: string
 }
-
-export const BOARD_TAB: ViewTabId = 'board'
 
 export function mergeRequestTab(id: number): ViewTabId {
   return `mr:${id}`
@@ -24,7 +22,6 @@ export function mergeRequestTabId(id: string): number | null {
 
 // Reads a view id from untrusted input such as the URL query.
 export function parseViewTabId(value: unknown): ViewTabId | null {
-  if (value === BOARD_TAB) return BOARD_TAB
   if (typeof value !== 'string') return null
   const mr = mergeRequestTabId(value)
   return mr === null ? null : mergeRequestTab(mr)

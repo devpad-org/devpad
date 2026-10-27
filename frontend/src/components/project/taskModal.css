@@ -1,0 +1,258 @@
+/* The task modals' frame: header, a main column with a sidebar beside it,
+ * and flat sections inside both. It follows the app's other modals: one
+ * surface, hairline dividers, and labelled form fields rather than cards.
+ * TaskModal and NewTaskModal include it as a scoped style. */
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 920px;
+  background: var(--bg-surface);
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-strong);
+  overflow: hidden;
+}
+
+/* Header */
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 0.5px solid var(--border-default);
+}
+
+.heading {
+  min-width: 0;
+  flex: 1;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.modal-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  margin: -2px calc(var(--space-1) * -1) 0 0;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  transition: all var(--transition-fast);
+}
+
+.modal-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  transition: all var(--transition-fast);
+}
+
+.icon-button:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+/* Body: the main column, then the sidebar behind a hairline. */
+.modal-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+}
+
+.main-col,
+.side-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.main-col {
+  gap: var(--space-5);
+  padding: var(--space-5);
+}
+
+.side-col {
+  padding: var(--space-2) var(--space-5);
+  border-left: 0.5px solid var(--border-default);
+}
+
+@media (max-width: 760px) {
+  .modal-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .side-col {
+    border-left: none;
+    border-top: 0.5px solid var(--border-default);
+  }
+
+  .modal-header,
+  .main-col,
+  .side-col,
+  .modal-footer {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+}
+
+.main-col .notice {
+  margin-bottom: 0;
+}
+
+.notice-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.notice-row .mr-icon {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+/* A section of the main column: a label row, then its content. */
+.field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.field-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 24px;
+  margin-bottom: var(--space-2);
+}
+
+.field-head .form-label {
+  margin-bottom: 0;
+}
+
+.field-head-end {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+/* Sidebar sections, divided by hairlines. */
+.side-section {
+  padding: var(--space-4) 0;
+}
+
+.side-section + .side-section {
+  border-top: 0.5px solid var(--border-hairline);
+}
+
+.side-title {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: var(--space-3);
+}
+
+.side-section .form-hint {
+  margin-top: var(--space-2);
+}
+
+/* Footer */
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-top: 0.5px solid var(--border-default);
+}
+
+.footer-hint {
+  margin: 0 auto 0 0;
+}
+
+@media (max-width: 760px) {
+  .footer-hint {
+    display: none;
+  }
+}
+
+kbd {
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  border: 0.5px solid var(--border-strong);
+  background: var(--bg-raised);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+}
+
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--spinner-track);
+  border-top-color: var(--accent-blue);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.spinner-sm {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+}
+
+.spinner-on-accent {
+  border-color: color-mix(in srgb, var(--text-on-accent) 30%, transparent);
+  border-top-color: var(--text-on-accent);
+}
+
+.btn-danger-solid {
+  background: var(--error);
+  color: var(--text-on-accent);
+}
+
+.btn-danger-solid:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error) 85%, var(--gruvbox-fg0));
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

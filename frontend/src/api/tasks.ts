@@ -49,7 +49,11 @@ export const taskApi = {
     return apiClient.get(`/api/projects/${projectId}/tasks`)
   },
 
-  create(projectId: number, input: { title: string; body: string; start: boolean; baseBranch?: string } & AgentSettings): Promise<{ task: Task }> {
+  // Without budgetUsd the task gets the admin's default budget; zero means no limit.
+  create(
+    projectId: number,
+    input: { title: string; body: string; start: boolean; baseBranch?: string; budgetUsd?: number } & AgentSettings,
+  ): Promise<{ task: Task }> {
     return apiClient.post(`/api/projects/${projectId}/tasks`, input)
   },
 

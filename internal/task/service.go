@@ -256,6 +256,11 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 	if len(in.Handoff) > maxHandoffBytes {
 		return nil, invalid("the handed-off conversation is too long")
 	}
+	if in.BudgetUSD != nil {
+		if err := domain.ValidateBudget(*in.BudgetUSD); err != nil {
+			return nil, invalid("%v", err)
+		}
+	}
 	// A task created to start at once is checked first, so a start that
 	// cannot happen leaves no task behind.
 	if in.Start {
@@ -274,9 +279,15 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 	if err != nil {
 		return nil, err
 	}
-	budgets, err := s.budgets.BudgetDefaults(ctx)
-	if err != nil {
-		return nil, err
+	budgetUSD := 0.0
+	if in.BudgetUSD != nil {
+		budgetUSD = *in.BudgetUSD
+	} else {
+		budgets, err := s.budgets.BudgetDefaults(ctx)
+		if err != nil {
+			return nil, err
+		}
+		budgetUSD = budgets.TaskUSD
 	}
 	t := &Task{
 		ProjectID:  projectID,
@@ -289,7 +300,7 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 		Effort:     in.Effort,
 		BaseBranch: base,
 		Handoff:    in.Handoff,
-		BudgetUSD:  budgets.TaskUSD,
+		BudgetUSD:  budgetUSD,
 	}
 	if err := s.repo.Create(ctx, t); err != nil {
 		return nil, err

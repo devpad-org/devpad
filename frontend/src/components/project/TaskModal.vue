@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { taskApi, type Task, type TaskStatus } from '@/api/tasks'
+import { taskApi, type Task } from '@/api/tasks'
 import { projectApi } from '@/api/projects'
 import type { MergeRequest } from '@/api/mergeRequests'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
@@ -10,6 +10,7 @@ import { branchActionError } from './branchErrors'
 import AgentModelPicker from './AgentModelPicker.vue'
 import MrIcon, { type MrIconName } from './MrIcon.vue'
 import StatusBadge from './StatusBadge.vue'
+import { TASK_STAGES, TASK_STATUS } from './taskStatus'
 import { formatUsd } from '@/utils/cost'
 import { fullTime, timeAgo } from '@/utils/time'
 
@@ -28,8 +29,6 @@ const emit = defineEmits<{
   'checked-out': [branch: string]
 }>()
 
-type Tone = 'neutral' | 'active' | 'review' | 'attention' | 'error' | 'success'
-
 const openMergeRequest = useOpenMergeRequest()
 
 // The merge request opens as a tab behind the modal, so the modal gets out
@@ -37,18 +36,6 @@ const openMergeRequest = useOpenMergeRequest()
 function reviewMergeRequest(id: number) {
   openMergeRequest(id)
   emit('close')
-}
-
-// Where each status sits on the to do → agent → review → done track.
-const STATUS: Record<TaskStatus, { step: number; tone: Tone; icon: MrIconName; label: string }> = {
-  todo: { step: 0, tone: 'neutral', icon: 'circle', label: 'To do' },
-  queued: { step: 1, tone: 'active', icon: 'clock', label: 'Queued' },
-  in_progress: { step: 1, tone: 'active', icon: 'bot', label: 'Agent working' },
-  failed: { step: 1, tone: 'error', icon: 'alert', label: 'Failed' },
-  in_review: { step: 2, tone: 'review', icon: 'eye', label: 'In review' },
-  changes_requested: { step: 2, tone: 'attention', icon: 'comment', label: 'Changes requested' },
-  merged: { step: 3, tone: 'success', icon: 'merged', label: 'Merged' },
-  cancelled: { step: 3, tone: 'neutral', icon: 'ban', label: 'Cancelled' },
 }
 
 const STARTABLE = new Set(['todo', 'failed', 'changes_requested', 'in_review'])
@@ -110,7 +97,7 @@ async function checkoutBranch() {
   }
 }
 
-const info = computed(() => (props.task ? STATUS[props.task.status] : STATUS.todo))
+const info = computed(() => TASK_STATUS[props.task?.status ?? 'todo'])
 const canStart = computed(() => props.task !== null && STARTABLE.has(props.task.status))
 const canCancel = computed(() => props.task !== null && props.task.status !== 'merged' && props.task.status !== 'cancelled')
 const canEdit = computed(() => props.task !== null && !ACTIVE.has(props.task.status) && props.task.status !== 'merged')
@@ -120,7 +107,7 @@ const overBudget = computed(() => !!props.task && props.task.budgetUsd > 0 && pr
 const steps = computed(() => {
   const t = props.task
   const last = t?.status === 'cancelled' ? 'Cancelled' : 'Merged'
-  return ['To do', 'Agent', 'Review', last].map((label, i) => {
+  return [...TASK_STAGES.slice(0, -1), last].map((label, i) => {
     let state: 'done' | 'current' | 'upcoming' | 'skipped' = 'upcoming'
     if (i === info.value.step) state = 'current'
     else if (i < info.value.step) state = t?.status === 'cancelled' ? 'skipped' : 'done'
@@ -325,7 +312,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               </span>
             </div>
           </div>
-          <button class="icon-button close-button" aria-label="Close" title="Close (Esc)" @click="emit('close')">
+          <button class="modal-close" aria-label="Close" title="Close (Esc)" @click="emit('close')">
             <MrIcon name="close" :size="16" />
           </button>
         </header>
@@ -373,75 +360,75 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               {{ extraWarning }}
             </p>
 
-            <article class="card">
-              <div class="card-header">
-                <MrIcon name="file" :size="13" />
-                <strong>{{ editing ? 'Edit task' : 'Description' }}</strong>
-                <span class="card-header-end">
-                  <button v-if="canEdit && !editing" class="icon-button" aria-label="Edit task" title="Edit" @click="startEditing()">
+            <form v-if="editing" class="edit-form" @submit.prevent="save">
+              <div class="field">
+                <label class="form-label" for="task-title">Title</label>
+                <input id="task-title" ref="titleInput" v-model="title" class="form-input" type="text" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label class="form-label" for="task-body">Description</label>
+                <textarea
+                  id="task-body"
+                  v-model="body"
+                  class="form-input form-textarea"
+                  rows="10"
+                  placeholder="What should the agent do? Markdown works."
+                  @keydown.meta.enter.prevent="save"
+                  @keydown.ctrl.enter.prevent="save"
+                />
+              </div>
+              <div class="field">
+                <label class="form-label" for="task-budget">Budget (USD)</label>
+                <input
+                  id="task-budget"
+                  ref="budgetInput"
+                  v-model="budget"
+                  class="form-input budget-input"
+                  type="number"
+                  min="0"
+                  step="any"
+                  inputmode="decimal"
+                  placeholder="No limit"
+                />
+                <span class="form-hint">
+                  What the agent may spend on this task across all its runs, counting only models with known prices.
+                  Spent so far: {{ formatUsd(task.costUsd) }}.
+                </span>
+              </div>
+              <div class="edit-actions">
+                <span class="form-hint"><kbd>Ctrl</kbd> <kbd>Enter</kbd> to save &middot; <kbd>Esc</kbd> to cancel</span>
+                <button type="button" class="btn btn-secondary btn-sm" :disabled="busy" @click="editing = false">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm" :disabled="busy">Save</button>
+              </div>
+            </form>
+
+            <section v-else class="field">
+              <div class="field-head">
+                <h3 class="form-label">Description</h3>
+                <span class="field-head-end">
+                  <button v-if="canEdit" class="icon-button" aria-label="Edit task" title="Edit" @click="startEditing()">
                     <MrIcon name="pencil" :size="13" />
                   </button>
                 </span>
               </div>
-              <form v-if="editing" class="card-body edit-form" @submit.prevent="save">
-                <div class="form-group">
-                  <label class="form-label" for="task-title">Title</label>
-                  <input id="task-title" ref="titleInput" v-model="title" class="form-input" type="text" autocomplete="off" />
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="task-body">Description</label>
-                  <textarea
-                    id="task-body"
-                    v-model="body"
-                    class="form-input form-textarea"
-                    rows="10"
-                    placeholder="What should the agent do? Markdown works."
-                    @keydown.meta.enter.prevent="save"
-                    @keydown.ctrl.enter.prevent="save"
-                  />
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="task-budget">Budget (USD)</label>
-                  <input
-                    id="task-budget"
-                    ref="budgetInput"
-                    v-model="budget"
-                    class="form-input budget-input"
-                    type="number"
-                    min="0"
-                    step="any"
-                    inputmode="decimal"
-                    placeholder="No limit"
-                  />
-                  <span class="form-hint">
-                    What the agent may spend on this task across all its runs, counting only models with known prices.
-                    Spent so far: {{ formatUsd(task.costUsd) }}.
-                  </span>
-                </div>
-                <div class="card-actions">
-                  <span class="form-hint"><kbd>Ctrl</kbd> <kbd>Enter</kbd> to save &middot; <kbd>Esc</kbd> to cancel</span>
-                  <button type="button" class="btn btn-secondary btn-sm" :disabled="busy" @click="editing = false">Cancel</button>
-                  <button type="submit" class="btn btn-primary btn-sm" :disabled="busy">Save</button>
-                </div>
-              </form>
-              <div v-else class="card-body description">
+              <div class="description">
                 <MarkdownMessage v-if="task.body" :content="task.body" />
                 <div v-else class="empty-description">
                   <p class="muted">No description yet.</p>
                   <button v-if="canEdit" class="text-button" @click="startEditing()">Add one so the agent knows what to do</button>
                 </div>
               </div>
-            </article>
+            </section>
 
-            <article v-if="task.pendingMessage && !editing" class="card edge-attention">
-              <div class="card-header">
+            <section v-if="task.pendingMessage && !editing" class="field">
+              <div class="field-head">
                 <MrIcon name="comment" :size="13" class="attention-icon" />
-                <strong>Feedback for the next run</strong>
+                <h3 class="form-label">Feedback for the next run</h3>
               </div>
-              <div class="card-body feedback">
+              <div class="feedback">
                 <MarkdownMessage :content="task.pendingMessage" />
               </div>
-            </article>
+            </section>
 
             <p v-if="canStart && overBudget && !editing" class="notice notice-warning notice-row">
               <MrIcon name="warning" :size="14" />
@@ -451,7 +438,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               <button class="btn btn-secondary btn-sm" @click="startEditing('budget')">Raise budget</button>
             </p>
 
-            <template v-if="canStart && !editing">
+            <section v-if="canStart && !editing" class="composer">
               <button v-if="!composerOpen" class="composer-toggle" @click="composerOpen = true">
                 <span class="avatar avatar-agent"><MrIcon name="bot" :size="13" /></span>
                 <span class="composer-toggle-text">
@@ -460,36 +447,36 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 </span>
                 <MrIcon name="chevron-down" :size="14" class="muted" />
               </button>
-              <article v-else class="card composer">
-                <div class="card-header">
-                  <span class="avatar avatar-agent avatar-sm"><MrIcon name="bot" :size="11" /></span>
-                  <strong>{{ composer.title }}</strong>
-                  <span class="muted composer-hint">{{ composer.hint }}</span>
+              <template v-else>
+                <div class="composer-head">
+                  <span class="avatar avatar-agent"><MrIcon name="bot" :size="13" /></span>
+                  <span class="composer-head-text">
+                    <strong>{{ composer.title }}</strong>
+                    <span class="muted">{{ composer.hint }}</span>
+                  </span>
                 </div>
-                <div class="card-body">
-                  <label class="sr-only" for="task-message">{{ composer.label }}</label>
-                  <textarea
-                    id="task-message"
-                    v-model="message"
-                    class="form-input form-textarea composer-input"
-                    rows="3"
-                    :placeholder="task.pendingMessage
-                      ? `${composer.label} (optional). Replaces the feedback above.`
-                      : `${composer.label} (optional)`"
-                    @keydown.meta.enter.prevent="start"
-                    @keydown.ctrl.enter.prevent="start"
-                  />
-                  <div class="composer-footer">
-                    <AgentModelPicker v-model:model="model" v-model:effort="effort" :agent-id="task.agentId || undefined" />
-                    <button class="btn btn-primary" :disabled="busy || !model || overBudget" @click="start">
-                      <span v-if="busy" class="spinner spinner-sm spinner-on-accent" />
-                      <MrIcon v-else :name="composer.icon" :size="13" />
-                      {{ composer.action }}
-                    </button>
-                  </div>
+                <label class="sr-only" for="task-message">{{ composer.label }}</label>
+                <textarea
+                  id="task-message"
+                  v-model="message"
+                  class="form-input form-textarea composer-input"
+                  rows="3"
+                  :placeholder="task.pendingMessage
+                    ? `${composer.label} (optional). Replaces the feedback above.`
+                    : `${composer.label} (optional)`"
+                  @keydown.meta.enter.prevent="start"
+                  @keydown.ctrl.enter.prevent="start"
+                />
+                <div class="composer-footer">
+                  <AgentModelPicker v-model:model="model" v-model:effort="effort" :agent-id="task.agentId || undefined" />
+                  <button class="btn btn-primary" :disabled="busy || !model || overBudget" @click="start">
+                    <span v-if="busy" class="spinner spinner-sm spinner-on-accent" />
+                    <MrIcon v-else :name="composer.icon" :size="13" />
+                    {{ composer.action }}
+                  </button>
                 </div>
-              </article>
-            </template>
+              </template>
+            </section>
 
             <p v-if="error" class="notice notice-error notice-row">
               <MrIcon name="alert" :size="14" />
@@ -498,7 +485,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
           </div>
 
           <aside class="side-col">
-            <section class="card side-card">
+            <section class="side-section">
               <h3 class="side-title">Details</h3>
               <dl class="details">
                 <dt>Status</dt>
@@ -538,7 +525,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               </dl>
             </section>
 
-            <section v-if="task.workspaceId || mergeRequest || branchPublished" class="card side-card">
+            <section v-if="task.workspaceId || mergeRequest || branchPublished" class="side-section">
               <h3 class="side-title">Linked</h3>
               <div class="links">
                 <button
@@ -583,7 +570,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               </div>
             </section>
 
-            <section class="card side-card">
+            <section class="side-section">
               <h3 class="side-title">Actions</h3>
               <div v-if="confirmingDelete" class="confirm">
                 <p class="confirm-text">Delete this task and its sandbox? This can't be undone.</p>
@@ -615,64 +602,11 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 </template>
 
 <style scoped src="./shared.css"></style>
+<style scoped src="./taskModal.css"></style>
 <style scoped>
-.modal {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  max-width: 920px;
-  background: var(--bg-base);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-strong), inset 0 1px 0 var(--border-top-highlight);
-  overflow: hidden;
-  animation: modal-in 160ms ease-out;
-}
-
-@keyframes modal-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.99);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .modal {
-    animation: none;
-  }
-}
-
-/* Header */
-.modal-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-5) var(--space-5) var(--space-4);
-  background: var(--bg-surface);
-}
-
-.heading {
-  min-width: 0;
-  flex: 1;
-}
-
-.eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 0.72rem;
-  font-weight: 500;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-}
-
 .modal-title {
   margin: var(--space-1) 0 var(--space-2);
-  font-size: 1.2rem;
-  font-weight: 600;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
+  font-size: 1.1rem;
 }
 
 .summary {
@@ -715,35 +649,12 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   color: var(--text-muted);
 }
 
-.icon-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  transition: all var(--transition-fast);
-}
-
-.icon-button:hover:not(:disabled) {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.close-button {
-  width: 30px;
-  height: 30px;
-  margin: calc(var(--space-1) * -1) calc(var(--space-1) * -1) 0 0;
-}
-
 /* Lifecycle: stepper plus a banner with what's next */
 .lifecycle {
   --tone: var(--text-secondary);
   --tone-bg: var(--bg-neutral);
   --tone-border: var(--border-default);
-  padding: var(--space-3) var(--space-5) var(--space-4);
-  background: var(--bg-surface);
+  padding: var(--space-4) var(--space-5);
   border-bottom: 0.5px solid var(--border-default);
 }
 
@@ -905,89 +816,17 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   display: none;
 }
 
-/* Body */
-.modal-body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 248px;
-  gap: var(--space-4);
-  align-items: start;
-  padding: var(--space-4) var(--space-5) var(--space-5);
-}
-
 @media (max-width: 760px) {
-  .modal-body {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .modal-header,
-  .lifecycle,
-  .modal-body {
+  .lifecycle {
     padding-left: var(--space-4);
     padding-right: var(--space-4);
   }
 }
 
-.main-col,
-.side-col {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-width: 0;
-}
-
-.main-col > .notice {
-  margin-bottom: 0;
-}
-
-.notice-row {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-}
-
-.notice-row .mr-icon {
-  margin-top: 2px;
-}
-
-.card {
-  background: var(--bg-surface);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  box-shadow: inset 0 1px 0 var(--border-top-highlight);
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 36px;
-  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-3);
-  border-bottom: 0.5px solid var(--border-hairline);
-  font-size: 0.78rem;
-  color: var(--text-muted);
-}
-
-.card-header strong {
-  color: var(--text-primary);
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.card-header-end {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-left: auto;
-}
-
-.card-body {
-  padding: var(--space-3) var(--space-4);
-  font-size: 0.85rem;
-}
-
 .description {
   max-height: 45vh;
   overflow-y: auto;
+  font-size: 0.85rem;
 }
 
 .empty-description {
@@ -995,7 +834,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-1);
-  padding: var(--space-2) 0;
+  font-size: 0.85rem;
 }
 
 .text-button {
@@ -1007,11 +846,17 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   text-decoration: underline;
 }
 
-.edit-form .form-group:last-of-type {
-  margin-bottom: var(--space-3);
+.edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }
 
-.card-actions {
+.edit-form .form-hint {
+  margin-top: var(--space-2);
+}
+
+.edit-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -1019,45 +864,38 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   gap: var(--space-2);
 }
 
-.card-actions .form-hint {
+.edit-actions .form-hint {
   margin: 0 auto 0 0;
-}
-
-kbd {
-  padding: 0 4px;
-  border-radius: var(--radius-sm);
-  border: 0.5px solid var(--border-strong);
-  background: var(--bg-raised);
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-}
-
-.edge-attention {
-  border-left: 2px solid var(--attention);
 }
 
 .attention-icon {
   color: var(--attention);
 }
 
+/* The feedback reads as a quote of what the reviewer asked for. */
 .feedback {
+  padding: var(--space-1) 0 var(--space-1) var(--space-3);
+  border-left: 2px solid var(--attention-border);
   font-size: 0.8rem;
 }
 
-/* Agent composer */
+/* Agent composer, set off from the task above by a hairline. */
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-5);
+  border-top: 0.5px solid var(--border-hairline);
+}
+
 .avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   flex-shrink: 0;
-}
-
-.avatar-sm {
-  width: 20px;
-  height: 20px;
 }
 
 .avatar-agent {
@@ -1065,15 +903,26 @@ kbd {
   background: color-mix(in srgb, var(--accent-purple) 16%, transparent);
 }
 
-.composer {
-  border-color: color-mix(in srgb, var(--accent-blue) 30%, var(--border-default));
+.composer-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
 }
 
-.composer-hint {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.composer-head-text,
+.composer-toggle-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   min-width: 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.composer-head-text strong,
+.composer-toggle-text strong {
+  font-size: 0.85rem;
+  font-weight: 500;
 }
 
 .composer-input {
@@ -1086,72 +935,22 @@ kbd {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-top: var(--space-3);
 }
 
 .composer-toggle {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  width: 100%;
-  padding: var(--space-3);
+  width: calc(100% + var(--space-4));
+  margin: calc(var(--space-2) * -1);
+  padding: var(--space-2);
   text-align: left;
-  border: 0.5px dashed var(--border-strong);
-  border-radius: var(--radius-lg);
-  transition: all var(--transition-fast);
+  border-radius: var(--radius-md);
+  transition: background var(--transition-fast);
 }
 
 .composer-toggle:hover {
-  border-color: var(--accent-purple);
   background: var(--bg-hover);
-}
-
-.composer-toggle-text {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-  font-size: 0.78rem;
-}
-
-.composer-toggle-text strong {
-  font-weight: 500;
-}
-
-.spinner {
-  display: inline-block;
-  width: 16px;
-  height: 16px;
-  border: 2px solid var(--spinner-track);
-  border-top-color: var(--accent-blue);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  flex-shrink: 0;
-}
-
-.spinner-sm {
-  width: 12px;
-  height: 12px;
-  border-width: 1.5px;
-}
-
-.spinner-on-accent {
-  border-color: color-mix(in srgb, var(--text-on-accent) 30%, transparent);
-  border-top-color: var(--text-on-accent);
-}
-
-/* Sidebar */
-.side-card {
-  padding: var(--space-3);
-}
-
-.side-title {
-  font-size: 0.68rem;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  margin-bottom: var(--space-3);
 }
 
 .details {
@@ -1342,23 +1141,5 @@ button.link-row:disabled {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
-}
-
-.btn-danger-solid {
-  background: var(--error);
-  color: var(--text-on-accent);
-}
-
-.btn-danger-solid:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--error) 85%, var(--gruvbox-fg0));
-}
-
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
 }
 </style>

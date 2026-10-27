@@ -21,16 +21,14 @@ import WorkspaceServicesPanel from '@/components/ide/WorkspaceServicesPanel.vue'
 import WorkspaceGate, { type WorkspaceGateState } from '@/components/ide/WorkspaceGate.vue'
 import GitPushToasts from '@/components/project/GitPushToasts.vue'
 import ProjectAgentsPanel from '@/components/project/ProjectAgentsPanel.vue'
-import ProjectBoard from '@/components/project/ProjectBoard.vue'
 import ProjectInboxPanel from '@/components/project/ProjectInboxPanel.vue'
 import ProjectMergeRequestsPanel from '@/components/project/ProjectMergeRequestsPanel.vue'
 import ProjectPanel from '@/components/project/ProjectPanel.vue'
-import ProjectTasksPanel from '@/components/project/ProjectTasksPanel.vue'
+import ProjectTaskTable from '@/components/project/ProjectTaskTable.vue'
 import TaskModal from '@/components/project/TaskModal.vue'
 import MergeRequestTab from '@/components/mergerequest/MergeRequestTab.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import {
-  BOARD_TAB,
   confirmDiscardKey,
   ideShellKey,
   mergeRequestTabId,
@@ -96,7 +94,7 @@ const workspaceStatusLabel = computed(() => workspace.value?.status ?? 'none')
 const activeFile = ref<string | null>(null)
 const terminalMinimized = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
-// The shell owns its view tabs, such as the board, and mirrors them and the
+// The shell owns its view tabs, such as merge requests, and mirrors them and the
 // active one into the URL so they survive reloads and back/forward.
 const viewTabs = ref<ViewTab[]>([])
 const activeView = ref<ViewTabId | null>(null)
@@ -133,10 +131,6 @@ const PROJECT_ACTIVITIES: ActivityTab[] = ['inbox', 'tasks', 'merge-requests', '
 const activeActivity = ref<ActivityTab>('ai')
 const serviceCount = computed(() => serviceStore.services.length)
 const isProjectActivity = computed(() => PROJECT_ACTIVITIES.includes(activeActivity.value))
-// The editor and its tabs, including the board, sit behind the explorer and
-// the project panels.
-const editorSurfaceVisible = computed(() => activeActivity.value === 'explorer' || isProjectActivity.value)
-
 // On narrow screens the side panels become slide-over drawers and the activity
 // bar moves to the bottom, leaving the primary surface the full width.
 const isMobile = useIsMobile()
@@ -147,6 +141,14 @@ const mobileRunsOpen = ref(false)
 // layout: a bottom tab bar of the project's lists, each shown full screen,
 // with the editor and the rest of the IDE under More.
 const mobileProject = computed(() => isMobile.value && isProjectMode.value)
+// The tasks table has a surface of its own, like the Git Graph; on a
+// phone's project it is the tasks list instead.
+const taskSurfaceVisible = computed(() => activeActivity.value === 'tasks' && !mobileProject.value)
+// The editor and its tabs, such as merge requests, sit behind the explorer
+// and the other project panels.
+const editorSurfaceVisible = computed(
+  () => activeActivity.value === 'explorer' || (isProjectActivity.value && !taskSurfaceVisible.value),
+)
 const mobileMoreOpen = ref(false)
 // The bottom tabs; everything else lives under More.
 const MOBILE_TABS: ActivityTab[] = ['inbox', 'tasks', 'merge-requests', 'agents', 'ai']
@@ -261,11 +263,6 @@ function dismissMore() {
 function moreActivity(tab: ActivityTab) {
   mobileMoreOpen.value = false
   selectActivity(tab)
-}
-
-function moreBoard() {
-  mobileMoreOpen.value = false
-  showBoard()
 }
 
 function moreTerminal() {
@@ -394,7 +391,7 @@ async function loadProject(id: number, seq: number) {
   // Open files don't survive a reload, so a view takes the editor instead.
   if (!activeView.value) activeView.value = viewTabs.value[0]?.id ?? null
   // A link to a particular tab shows it.
-  if (activeView.value && route.query.tab) revealView(activeView.value)
+  if (activeView.value && route.query.tab) revealView()
   loading.value = false
   startWorkspacePolling()
 }
@@ -539,7 +536,6 @@ const MR_TAB_TITLE_LENGTH = 28
 // The name of a view tab the shell can render, or null for one it can't. A
 // merge request tab is named after its title once the project's list has it.
 function viewTabName(id: ViewTabId): string | null {
-  if (id === BOARD_TAB) return 'Board'
   const mrId = mergeRequestTabId(id)
   if (mrId === null) return null
   const title = projectStore.mergeRequests.find((m) => m.id === mrId)?.title
@@ -559,7 +555,7 @@ function openView(id: ViewTabId) {
     viewTabs.value = [...viewTabs.value, { id, name }]
   }
   activeView.value = id
-  revealView(id)
+  revealView()
 }
 
 async function closeView(id: string) {
@@ -605,24 +601,16 @@ function openFile(path: string) {
 
 // View tabs sit on the editor surface, behind the project panels. On a phone
 // the tab bar follows the view, so going back returns to its list.
-function revealView(id: ViewTabId) {
-  if (!editorSurfaceVisible.value || mobileProject.value) {
-    activeActivity.value = id.startsWith('mr:') ? 'merge-requests' : 'tasks'
-  }
+function revealView() {
+  if (!editorSurfaceVisible.value || mobileProject.value) activeActivity.value = 'merge-requests'
   closeMobilePanels()
 }
 
-function showBoard() {
-  openView(BOARD_TAB)
-}
-
 // The query holds the open view tabs and the active one, as
-// ?tabs=board,mr:12&tab=mr:12. Without ?tabs the project opens on its board;
-// an empty ?tabs= means every view tab was closed.
-const DEFAULT_VIEWS: ViewTabId[] = [BOARD_TAB]
-
+// ?tabs=mr:3,mr:12&tab=mr:12. Ids the shell no longer has, such as the old
+// board tab, are dropped.
 function queryViews(query: LocationQuery): { ids: ViewTabId[]; active: ViewTabId | null } {
-  if (typeof query.tabs !== 'string') return { ids: DEFAULT_VIEWS, active: DEFAULT_VIEWS[0] ?? null }
+  if (typeof query.tabs !== 'string') return { ids: [], active: null }
   const ids: ViewTabId[] = []
   for (const part of query.tabs.split(',')) {
     const id = parseViewTabId(part)
@@ -643,7 +631,7 @@ function applyViewQuery(query: LocationQuery) {
 
 function viewQuery(): { tabs?: string; tab?: string } {
   const ids = viewTabs.value.map((t) => t.id)
-  if (ids.join() === DEFAULT_VIEWS.join() && activeView.value === DEFAULT_VIEWS[0]) return {}
+  if (ids.length === 0) return {}
   return { tabs: ids.join(','), tab: activeView.value ?? undefined }
 }
 
@@ -690,7 +678,7 @@ watch([viewTabs, activeView, mobileBackList], async () => {
 watch(() => [route.query.tabs, route.query.tab], () => {
   if (!isProjectMode.value || loading.value) return
   applyViewQuery(route.query)
-  if (activeView.value && route.query.tab) revealView(activeView.value)
+  if (activeView.value && route.query.tab) revealView()
 })
 
 watch(() => route.query.view, (view, prev) => {
@@ -1072,7 +1060,7 @@ const backLabel = computed(() => {
       - ide-toolbar: top toolbar/title bar
       - ide-activity-bar: far-left activity switcher
       - ide-left-panel: left side panel next to the activity bar
-      - ide-primary-surface: AI chat, editor, or git graph surface
+      - ide-primary-surface: AI chat, editor, tasks table, or git graph surface
       - ide-right-panel: far-right side panel region
       - ide-terminal-panel: bottom terminal panel
       - ide-status-bar: bottom status bar (declared in GitStatusBar.vue)
@@ -1456,14 +1444,6 @@ const backLabel = computed(() => {
         aria-label="More"
         @keydown.esc="dismissMore"
       >
-        <button class="more-item" @click="moreBoard">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <rect width="18" height="18" x="3" y="3" rx="2" />
-            <path d="M9 3v18" />
-            <path d="M15 3v18" />
-          </svg>
-          Board
-        </button>
         <button class="more-item" @click="moreActivity('explorer')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 4h5l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" />
@@ -1532,7 +1512,7 @@ const backLabel = computed(() => {
       <aside
         id="ide-left-panel"
         class="ide-sidebar"
-        :class="{ open: mobileSidebarOpen }"
+        :class="{ open: mobileSidebarOpen, collapsed: taskSurfaceVisible }"
         aria-label="Left side panel"
         :style="isMobile ? undefined : { width: sidebar.size.value + 'px' }"
       >
@@ -1592,7 +1572,7 @@ const backLabel = computed(() => {
             :workspace-id="workspace?.id ?? null"
             @open-chat="handleAgentRunFocus"
           />
-          <ProjectTasksPanel v-show="activeActivity === 'tasks'" @open-board="showBoard" />
+          <ProjectTaskTable v-if="mobileProject" v-show="activeActivity === 'tasks'" />
           <ProjectMergeRequestsPanel v-show="activeActivity === 'merge-requests'" />
           <ProjectAgentsPanel
             v-show="activeActivity === 'agents'"
@@ -1604,6 +1584,7 @@ const backLabel = computed(() => {
         </template>
       </aside>
       <div
+        v-show="!taskSurfaceVisible"
         class="resize-handle resize-handle--horizontal"
         :class="{ active: sidebar.isDragging.value }"
         @pointerdown="sidebar.onPointerDown"
@@ -1632,6 +1613,9 @@ const backLabel = computed(() => {
               @start="startWorkspace"
             />
           </div>
+          <div v-if="isProjectMode && !mobileProject" v-show="taskSurfaceVisible" class="ide-surface-pane">
+            <ProjectTaskTable />
+          </div>
           <div v-show="editorSurfaceVisible" class="ide-surface-pane">
             <EditorPanel
               ref="editorPanel"
@@ -1645,9 +1629,8 @@ const backLabel = computed(() => {
               <!-- The slot's `active` says the tab is showing; with
                    editorSurfaceVisible it tells a view when it can pause. -->
               <template #view="{ id, active }">
-                <ProjectBoard v-if="id === BOARD_TAB" />
                 <MergeRequestTab
-                  v-else-if="projectId !== null && mergeRequestTabId(id) !== null"
+                  v-if="projectId !== null && mergeRequestTabId(id) !== null"
                   :project-id="projectId"
                   :mr-id="mergeRequestTabId(id)!"
                   :active="active && editorSurfaceVisible && !(mobileProject && mobileSidebarOpen)"
@@ -1655,12 +1638,7 @@ const backLabel = computed(() => {
                 />
               </template>
               <template #view-icon="{ id }">
-                <svg v-if="id === BOARD_TAB" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <rect width="18" height="18" x="3" y="3" rx="2" />
-                  <path d="M9 3v18" />
-                  <path d="M15 3v18" />
-                </svg>
-                <svg v-else-if="mergeRequestTabId(id) !== null" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg v-if="mergeRequestTabId(id) !== null" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="18" cy="18" r="3" />
                   <circle cx="6" cy="6" r="3" />
                   <path d="M13 6h3a2 2 0 0 1 2 2v7" />
@@ -2117,6 +2095,11 @@ const backLabel = computed(() => {
   background: var(--bg-surface);
   display: flex;
   flex-direction: column;
+}
+
+/* The tasks table takes the side panel's room too. */
+.ide-sidebar.collapsed {
+  display: none;
 }
 
 .ide-center {

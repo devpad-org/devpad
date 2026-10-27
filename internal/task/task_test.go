@@ -808,6 +808,34 @@ func TestTaskBudgetCoversEveryRoundOfItsAgent(t *testing.T) {
 	}
 }
 
+func TestTaskCreatedWithItsOwnBudget(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.budgets.defaults = domain.BudgetDefaults{TaskUSD: 2}
+	for _, tc := range []struct {
+		name   string
+		budget float64
+	}{
+		{"own budget", 7.5},
+		{"no limit", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			budget := tc.budget
+			task, err := e.svc.Create(ctx, owner, 1, CreateInput{Title: "Add a cart", BudgetUSD: &budget})
+			if err != nil {
+				t.Fatalf("create task: %v", err)
+			}
+			if task.BudgetUSD != tc.budget {
+				t.Fatalf("expected a budget of %v, got %v", tc.budget, task.BudgetUSD)
+			}
+		})
+	}
+	negative := -1.0
+	if _, err := e.svc.Create(ctx, owner, 1, CreateInput{Title: "Add a cart", BudgetUSD: &negative}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected a negative budget refused, got %v", err)
+	}
+}
+
 func TestFeedbackForATaskOverBudgetWaitsForItsBudget(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()

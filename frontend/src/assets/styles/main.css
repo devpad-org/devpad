@@ -188,6 +188,13 @@ pre {
   box-shadow: 0 0 0 3px var(--accent-glow), 0 0 0 1px var(--accent-border);
 }
 
+/* Text fields show focus with their own border colour; the yellow ring on top
+   of a blue border reads as a gradient. :where keeps this as weak as the rule
+   above, so a field that styles its own focus shadow still gets it. */
+:where(input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']), textarea, select):focus-visible {
+  box-shadow: none;
+}
+
 ::selection {
   background: var(--accent-glow);
 }

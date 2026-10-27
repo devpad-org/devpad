@@ -59,10 +59,11 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		agentSettingsRequest
-		Title      string `json:"title"`
-		Body       string `json:"body"`
-		Start      bool   `json:"start"`
-		BaseBranch string `json:"baseBranch"`
+		Title      string   `json:"title"`
+		Body       string   `json:"body"`
+		Start      bool     `json:"start"`
+		BaseBranch string   `json:"baseBranch"`
+		BudgetUSD  *float64 `json:"budgetUsd"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -70,6 +71,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := h.service.Create(r.Context(), user.ID, projectID, CreateInput{
 		Title: req.Title, Body: req.Body, AgentSettings: req.settings(), Start: req.Start, BaseBranch: req.BaseBranch,
+		BudgetUSD: req.BudgetUSD,
 	})
 	if err != nil {
 		handleServiceError(w, err)

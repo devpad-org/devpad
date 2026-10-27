@@ -4,17 +4,10 @@ import { projectApi, type ConversionNotice, type GitPushEvent, type Project, typ
 
 // A push notice, keyed by devpad's epoch and the push's sequence number.
 export type GitPushNotice = GitPushEvent & { key: string }
-import { taskApi, type Task, type TaskStatus } from '@/api/tasks'
+import { taskApi, type Task } from '@/api/tasks'
 import { mergeRequestApi, type MergeRequest } from '@/api/mergeRequests'
 
 const POLL_INTERVAL_MS = 4000
-
-export const TASK_COLUMNS: { title: string; statuses: TaskStatus[] }[] = [
-  { title: 'To do', statuses: ['todo', 'failed'] },
-  { title: 'In progress', statuses: ['queued', 'in_progress'] },
-  { title: 'Review', statuses: ['in_review', 'changes_requested'] },
-  { title: 'Done', statuses: ['merged', 'cancelled'] },
-]
 
 // The project open in the IDE shell: its tasks, merge requests and agent
 // sandboxes, polled while the shell is mounted.
@@ -74,15 +67,6 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     }
     return byTask
   })
-
-  const columns = computed(() =>
-    TASK_COLUMNS.map((column) => ({
-      ...column,
-      tasks: tasks.value
-        .filter((t) => column.statuses.includes(t.status))
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-    })),
-  )
 
   function sandboxTask(sandboxId: number): Task | undefined {
     return tasks.value.find((t) => t.workspaceId === sandboxId)
@@ -254,7 +238,6 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     protectedBranches,
     isProtected,
     mergeRequestByTask,
-    columns,
     sandboxTask,
     openMergeRequestFor,
     refresh,

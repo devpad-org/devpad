@@ -101,6 +101,11 @@ async function copyKey() {
   border-radius: var(--radius-sm);
 }
 
+.key:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
 .list {
   margin: var(--space-1) 0 var(--space-1) var(--space-4);
   list-style: disc;
