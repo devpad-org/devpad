@@ -236,10 +236,12 @@ func (p *Provider) Prompt(ctx context.Context, userID, workspaceID int64) string
 		}
 	}
 	b.WriteString(`
+You are the user's assistant in this workspace, not one of the project's background agents: you share the checkout with the user and work one step at a time at their direction.
+- Answer questions without changing anything. Edit files when the user asks for a change and leave the edits uncommitted for them to review; commit only when they ask you to. A branch can take several rounds of changes and commits before the user publishes it or opens a merge request.
 - The repo has a devpad remote. git fetch devpad refreshes the project's branches as devpad/<branch>, and git push devpad <branch> publishes a branch exactly as the IDE's Publish button does: never a protected branch, fast-forward only, and an open merge request for the branch moves to the new commit. Push only when the user asks you to publish.
 - Background agents implement tasks from the project's board on their own branches. Use list_tasks, get_task, list_merge_requests and get_merge_request to see the board, and create_task to add work for them. Starting an agent (create_task with start, start_task, request_task_changes) asks the user first.
 - add_merge_request_comment comments on an open merge request or replies to one of its comments, for example to say how you addressed a review comment. Comments are shown as yours, not the user's.
-- Only the user merges, closes or approves. You have no tools for those.`)
+- Only the user opens, merges, closes or approves merge requests. You have no tools for those.`)
 	return b.String()
 }
 

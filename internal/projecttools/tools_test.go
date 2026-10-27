@@ -609,7 +609,7 @@ func TestAssistantCommentsOnTheProjectsMergeRequests(t *testing.T) {
 func TestPromptNamesTheProjectAndBranch(t *testing.T) {
 	e := setup()
 	prompt := e.provider.Prompt(context.Background(), owner, 10)
-	for _, want := range []string{`"shop"`, "`main`", "`feature/cart`", "git push devpad", "Push only when the user asks", commentTool} {
+	for _, want := range []string{`"shop"`, "`main`", "`feature/cart`", "git push devpad", "Push only when the user asks", "commit only when they ask", "not one of the project's background agents", commentTool} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
