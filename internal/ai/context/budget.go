@@ -10,6 +10,7 @@ const (
 	anthropicHaikuInputBudgetTokens = 200000
 	openAIReasoningInputTokens      = 1050000
 	long256KInputBudgetTokens       = 256000
+	mistralLarge4InputBudgetTokens  = 1000000
 	minimaxM3InputBudgetTokens      = 1000000
 	moonshotK3InputBudgetTokens     = 1000000
 )
@@ -37,7 +38,7 @@ func BudgetFor(providerID, modelID string) Budget {
 			inputTokens = anthropicInputBudget(model)
 		case provider == "openai" || strings.HasPrefix(model, "gpt-"):
 			inputTokens = openAIInputBudget(model)
-		case provider == "mistral" || strings.Contains(model, "mistral") || strings.Contains(model, "devstral"):
+		case provider == "mistral" || strings.Contains(model, "mistral"):
 			inputTokens = mistralInputBudget(model)
 		case provider == "moonshot" || strings.Contains(model, "kimi"):
 			inputTokens = moonshotInputBudget(model)
@@ -79,8 +80,10 @@ func openAIInputBudget(model string) int {
 }
 
 func mistralInputBudget(model string) int {
-	if strings.Contains(model, "devstral") ||
-		strings.Contains(model, "mistral-small-4") ||
+	if strings.Contains(model, "mistral-large-4") {
+		return mistralLarge4InputBudgetTokens
+	}
+	if strings.Contains(model, "mistral-small-4") ||
 		strings.Contains(model, "mistral-small-2603") ||
 		strings.Contains(model, "mistral-medium-3") ||
 		strings.Contains(model, "mistral-large") {
@@ -117,21 +120,17 @@ func knownModelInputBudget(model string) (int, bool) {
 	case "gpt-5.4",
 		"gpt-5.5":
 		return openAIReasoningInputTokens, true
-	case "devstral-medium-latest",
-		"devstral-latest",
-		"devstral-2512",
-		"mistral-small-latest",
+	case "mistral-small-latest",
 		"mistral-small-2603",
 		"mistral-medium-3-5",
 		"mistral-medium-3",
-		"mistral-large-latest",
 		"mistral-large-2512":
 		return long256KInputBudgetTokens, true
+	case "mistral-large-4",
+		"mistral-large-4-0":
+		return mistralLarge4InputBudgetTokens, true
 	case "kimi-k3":
 		return moonshotK3InputBudgetTokens, true
-	case "kimi-k2.7-code",
-		"kimi-k2.6":
-		return long256KInputBudgetTokens, true
 	case "minimax-m3",
 		"minimax-m3.1-flash":
 		return minimaxM3InputBudgetTokens, true

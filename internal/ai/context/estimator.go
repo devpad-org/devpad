@@ -280,7 +280,7 @@ func profileFor(providerID, modelID string) profile {
 		p.toolCallOverhead = 10
 		p.toolResultOverhead = 10
 		p.thinkingOverhead = 8
-	case provider == "mistral" || strings.Contains(model, "mistral") || strings.Contains(model, "devstral"):
+	case provider == "mistral" || strings.Contains(model, "mistral"):
 		p.requestOverhead = 12
 	case provider == "moonshot" || strings.Contains(model, "kimi"):
 		p.requestOverhead = 12

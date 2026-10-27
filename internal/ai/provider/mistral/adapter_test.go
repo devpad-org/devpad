@@ -22,9 +22,9 @@ func TestAdapterContract(t *testing.T) {
 		ExpectedProviderID:   "mistral",
 		ExpectedProviderName: "Mistral AI",
 		ExpectedProtocol:     aiprovider.ProtocolOpenAIChat,
-		ExpectedModelIDs:     []string{"devstral-medium-latest", "mistral-small-latest", "mistral-medium-3-5", "mistral-large-latest"},
+		ExpectedModelIDs:     []string{"mistral-small-latest", "mistral-medium-3-5", "mistral-large-4-0"},
 		Request: aiprovider.StreamRequest{
-			Model: "devstral-medium-latest",
+			Model: "mistral-medium-3-5",
 			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 		},
 	})
@@ -38,6 +38,7 @@ func TestAdjustableThinkingMetadata(t *testing.T) {
 	}{
 		{modelID: "mistral-small-latest", name: "Mistral Small 4"},
 		{modelID: "mistral-medium-3-5", name: "Mistral Medium 3.5"},
+		{modelID: "mistral-large-4-0", name: "Mistral Large 4"},
 	}
 
 	for _, tt := range tests {
@@ -77,7 +78,7 @@ func TestAdjustableThinkingMetadata(t *testing.T) {
 }
 
 func TestBuildChatRequest_AdjustableReasoningEffort(t *testing.T) {
-	modelIDs := []string{"mistral-small-latest", "mistral-medium-3-5"}
+	modelIDs := []string{"mistral-small-latest", "mistral-medium-3-5", "mistral-large-4-0"}
 
 	for _, modelID := range modelIDs {
 		model, ok := domain.ModelByID(NewAdapter().Models(), modelID)
@@ -149,33 +150,10 @@ func assertAdjustableReasoningEffort(t *testing.T, model domain.Model) {
 	}
 }
 
-func TestBuildChatRequest_OmitsReasoningEffortForNonThinkingMistralModel(t *testing.T) {
-	model, ok := domain.ModelByID(NewAdapter().Models(), "mistral-large-latest")
-	if !ok {
-		t.Fatal("expected mistral-large-latest model")
-	}
-
-	body := buildChatRequest(aiprovider.StreamRequest{
-		Model: "mistral-large-latest",
-		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
-	}, model)
-
-	if _, ok := body["reasoning_effort"]; ok {
-		t.Fatalf("expected reasoning_effort to be omitted for non-thinking model, got %v", body["reasoning_effort"])
-	}
-}
-
 func boolPtr(v bool) *bool { return &v }
 
-func TestAdapterModelsPricedOnlyWhenTheirPriceIsKnown(t *testing.T) {
-	unpriced := map[string]bool{"devstral-medium-latest": true, "mistral-large-latest": true}
+func TestAdapterModelsArePriced(t *testing.T) {
 	for _, model := range NewAdapter().Models() {
-		if unpriced[model.ID] {
-			if model.Pricing != nil {
-				t.Fatalf("model %s should have no prices", model.ID)
-			}
-			continue
-		}
 		if model.Pricing == nil || model.Pricing.Input <= 0 || model.Pricing.Output <= 0 {
 			t.Fatalf("model %s has no prices", model.ID)
 		}
