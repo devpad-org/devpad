@@ -106,6 +106,7 @@ type SandboxService interface {
 	SeedSandboxRepo(ctx context.Context, userID, workspaceID int64, base string, bundle io.Reader) (*agent.RepoBranch, error)
 	BundleSandboxBranch(ctx context.Context, userID, workspaceID int64) (branch string, bundle io.ReadCloser, err error)
 	FetchSandboxBase(ctx context.Context, userID, workspaceID int64, branch string, bundle io.Reader) (*agent.RepoBranch, error)
+	StartSandbox(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
 }
 
 // ProjectWorkspaceService defines a project's own interactive workspace and

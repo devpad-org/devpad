@@ -79,18 +79,56 @@ func TestRestartUpdatesAgentWithOneRestart(t *testing.T) {
 		t.Fatalf("after second restart: copied %v, restarted %d times", cm.copied, len(cm.restarted))
 	}
 
-	// A stopped workspace is started rather than restarted.
+	// A stopped workspace is left stopped, so restart can't start a sandbox
+	// outside its project.
 	if _, err := svc.Stop(ctx, 1, ws.ID); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	startedBefore := len(cm.started)
-	got, err = svc.Restart(ctx, 1, ws.ID)
-	if err != nil {
-		t.Fatalf("restart stopped: %v", err)
+	if _, err := svc.Restart(ctx, 1, ws.ID); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("restart stopped: got %v, want ErrNotRunning", err)
 	}
-	if got.Status != StatusRunning || len(cm.started) != startedBefore+1 || len(cm.restarted) != 2 {
-		t.Fatalf("restarting a stopped workspace: status %q, started %d more, restarted %d times",
-			got.Status, len(cm.started)-startedBefore, len(cm.restarted))
+	if len(cm.started) != startedBefore || len(cm.restarted) != 2 {
+		t.Fatalf("restarting a stopped workspace started it %d times, restarted it %d times",
+			len(cm.started)-startedBefore, len(cm.restarted)-2)
+	}
+}
+
+// A sandbox starts only through StartSandbox, which its project calls after
+// counting it against the sandbox limit; StartSandbox starts nothing else.
+func TestStartRefusesSandboxes(t *testing.T) {
+	svc, _ := setupSandboxService(t)
+	ctx := context.Background()
+
+	sb, err := svc.CreateSandbox(ctx, 1, sandboxSpec("feature"))
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	if _, err := svc.Stop(ctx, 1, sb.ID); err != nil {
+		t.Fatalf("stop sandbox: %v", err)
+	}
+	if _, err := svc.Start(ctx, 1, sb.ID); !errors.Is(err, ErrSandboxStart) {
+		t.Fatalf("start sandbox: got %v, want ErrSandboxStart", err)
+	}
+	if got, err := svc.Get(ctx, 1, sb.ID); err != nil || got.Status != StatusStopped {
+		t.Fatalf("sandbox after refused start: %+v, %v", got, err)
+	}
+	if got, err := svc.StartSandbox(ctx, 1, sb.ID); err != nil || got.Status != StatusRunning {
+		t.Fatalf("StartSandbox: %+v, %v", got, err)
+	}
+
+	pw, err := svc.CreateProjectWorkspace(ctx, 1, ProjectWorkspaceSpec{ProjectID: 7, Name: "project"})
+	if err != nil {
+		t.Fatalf("create project workspace: %v", err)
+	}
+	if _, err := svc.Stop(ctx, 1, pw.ID); err != nil {
+		t.Fatalf("stop project workspace: %v", err)
+	}
+	if _, err := svc.StartSandbox(ctx, 1, pw.ID); err == nil {
+		t.Fatal("StartSandbox started a project workspace")
+	}
+	if _, err := svc.Start(ctx, 1, pw.ID); err != nil {
+		t.Fatalf("start project workspace: %v", err)
 	}
 }
 

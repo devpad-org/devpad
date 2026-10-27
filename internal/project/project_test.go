@@ -535,7 +535,7 @@ func (f *fakeWorkspaces) Delete(_ context.Context, _, id int64) error {
 	return nil
 }
 
-func (f *fakeWorkspaces) Start(_ context.Context, _, id int64) (*workspace.Workspace, error) {
+func (f *fakeWorkspaces) StartSandbox(_ context.Context, _, id int64) (*workspace.Workspace, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.byID[id].Status = workspace.StatusRunning

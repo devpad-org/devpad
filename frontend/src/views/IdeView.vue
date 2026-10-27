@@ -337,16 +337,21 @@ async function loadWorkspace(id: number, seq: number) {
       void router.replace({ name: 'project', params: { id: ws.projectId }, query: route.query })
       return
     }
-    // Auto-start the container if it's stopped
+    // Auto-start the container if it's stopped. A sandbox starts through its
+    // project, which counts it against the project's sandbox limit.
     if (ws.status === 'stopped') {
-      const startRes = await workspaceApi.start(id)
-      ws = startRes.workspace
+      if (ws.projectId && ws.kind !== 'interactive') {
+        await projectApi.startSandbox(ws.projectId, id)
+        ws = (await workspaceApi.get(id)).workspace
+      } else {
+        ws = (await workspaceApi.start(id)).workspace
+      }
     }
     if (seq !== loadSeq) return
     setWorkspace(ws)
-  } catch {
+  } catch (e) {
     if (seq !== loadSeq) return
-    error.value = 'Failed to load workspace'
+    error.value = e instanceof Error ? e.message : 'Failed to load workspace'
   }
   loading.value = false
 }

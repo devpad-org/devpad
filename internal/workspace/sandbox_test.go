@@ -119,7 +119,7 @@ func TestCreateSandboxNeverInjectsSSHKeys(t *testing.T) {
 	if _, err := svc.Stop(ctx, 1, ws.ID); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if _, err := svc.Start(ctx, 1, ws.ID); err != nil {
+	if _, err := svc.StartSandbox(ctx, 1, ws.ID); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if got := ra.paths(); len(got) != 0 {

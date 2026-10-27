@@ -104,7 +104,6 @@ type Workspaces interface {
 	workspace.ProjectWorkspaceService
 	workspace.ConversionService
 	Delete(ctx context.Context, userID, workspaceID int64) error
-	Start(ctx context.Context, userID, workspaceID int64) (*workspace.Workspace, error)
 	StartCommand(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
 	ReadCommandOutput(ctx context.Context, userID, workspaceID int64, commandID string, cursor int64, maxBytes, waitMS int) (*agent.CommandOutput, error)
 	StopCommand(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
@@ -816,7 +815,7 @@ func (s *service) StartSandbox(ctx context.Context, userID, projectID, workspace
 		return nil, err
 	}
 	defer s.releaseSandbox(p.ID, ws.Branch)
-	return s.workspaces.Start(ctx, userID, ws.ID)
+	return s.workspaces.StartSandbox(ctx, userID, ws.ID)
 }
 
 // getSandbox loads a workspace and checks that it is a sandbox of p.

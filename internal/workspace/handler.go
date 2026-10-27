@@ -172,7 +172,7 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "workspace is not running")
 		return
 	}
-	if errors.Is(err, ErrConverting) || errors.Is(err, ErrRebuilding) {
+	if errors.Is(err, ErrConverting) || errors.Is(err, ErrRebuilding) || errors.Is(err, ErrSandboxStart) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}

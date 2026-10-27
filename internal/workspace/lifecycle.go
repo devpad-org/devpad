@@ -194,10 +194,33 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 	return nil
 }
 
+// Start starts a project or standalone workspace. Sandboxes start through
+// StartSandbox, so their project can count them.
 func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Workspace, error) {
 	ws, err := s.Get(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
+	}
+	if ws.IsSandbox() {
+		return nil, ErrSandboxStart
+	}
+	done, err := s.beginLifecycle(ws.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	return s.start(ctx, ws)
+}
+
+// StartSandbox starts a sandbox. The caller has counted it against its
+// project's sandbox limit.
+func (s *service) StartSandbox(ctx context.Context, userID, workspaceID int64) (*Workspace, error) {
+	ws, err := s.Get(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if !ws.IsSandbox() {
+		return nil, fmt.Errorf("starting workspace %d: it is not a sandbox", ws.ID)
 	}
 	done, err := s.beginLifecycle(ws.ID)
 	if err != nil {
@@ -297,7 +320,8 @@ func (s *service) Stop(ctx context.Context, userID, workspaceID int64) (*Workspa
 // Restart restarts a running workspace's container, installing the current
 // agent first if it is outdated, so one restart brings it up to date.
 // Terminals and running processes restart with it; the volume and attached
-// services are untouched. A stopped workspace is started.
+// services are untouched. A stopped workspace is refused rather than
+// started, so a sandbox cannot start this way.
 func (s *service) Restart(ctx context.Context, userID, workspaceID int64) (*Workspace, error) {
 	ws, err := s.Get(ctx, userID, workspaceID)
 	if err != nil {
@@ -309,7 +333,7 @@ func (s *service) Restart(ctx context.Context, userID, workspaceID int64) (*Work
 	}
 	defer done()
 	if ws.Status != StatusRunning {
-		return s.start(ctx, ws)
+		return nil, ErrNotRunning
 	}
 	if ws.ContainerID == "" {
 		return nil, fmt.Errorf("workspace has no container")

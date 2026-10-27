@@ -15,6 +15,10 @@ var (
 	ErrForbidden            = errors.New("access denied")
 	ErrNotRunning           = errors.New("workspace is not running")
 	ErrDefaultAgentNotFound = errors.New("default agent not found")
+
+	// ErrSandboxStart refuses starting a sandbox outside its project, which
+	// counts it against the project's sandbox limit.
+	ErrSandboxStart = errors.New("a sandbox can only be started from its project")
 )
 
 type service struct {
