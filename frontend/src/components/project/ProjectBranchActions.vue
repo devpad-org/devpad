@@ -5,7 +5,7 @@ import { projectApi, type WorkspaceBranchStatus } from '@/api/projects'
 import { mergeRequestApi } from '@/api/mergeRequests'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { branchActionError } from './branchErrors'
-import { confirmDiscardKey, useOpenMergeRequest, type BranchChange } from '@/components/ide/viewTabs'
+import { confirmDiscardKey, type BranchChange } from '@/components/ide/ideShell'
 import type { GitNotice } from '@/components/ide/gitNotice'
 
 const REFRESH_INTERVAL_MS = 10000
@@ -32,7 +32,6 @@ const emit = defineEmits<{
 }>()
 
 const store = useActiveProjectStore()
-const openMergeRequest = useOpenMergeRequest()
 const confirmDiscard = inject(confirmDiscardKey, () => Promise.resolve(true))
 
 const status = ref<WorkspaceBranchStatus | null>(null)
@@ -252,7 +251,7 @@ async function createMr() {
     })
     showMrForm.value = false
     void store.refresh()
-    openMergeRequest(res.mergeRequest.id)
+    store.selectedMergeRequestId = res.mergeRequest.id
   } catch (e) {
     emit('notify', { tone: 'error', text: branchActionError(e, 'Failed to open the merge request') })
   } finally {
@@ -366,7 +365,7 @@ onUnmounted(stopTimer)
         type="button"
         class="project-link project-link--mr"
         :title="`Open merge request !${openMr.id}`"
-        @click="openMergeRequest(openMr.id)"
+        @click="store.selectedMergeRequestId = openMr.id"
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M13 6h3a2 2 0 0 1 2 2v7" /><path d="M6 9v12" />

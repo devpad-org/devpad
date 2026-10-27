@@ -6,6 +6,7 @@ import { useMergeRequest } from './useMergeRequest'
 
 // The Review button and the popover where the user finishes a review: a
 // summary, a verdict and the line comments gathered on the Changes tab.
+// Escape closes it through the modal, which knows what is on top.
 const { mr, busy, reviewOpen, reviewBody, verdict, drafts, sendToAgent, reviewError, jumpToComment, submitReview } = useMergeRequest()
 
 const box = ref<HTMLElement | null>(null)
@@ -14,18 +15,12 @@ function onDocumentPointer(e: PointerEvent) {
   if (reviewOpen.value && box.value && !box.value.contains(e.target as Node)) reviewOpen.value = false
 }
 
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') reviewOpen.value = false
-}
-
 onMounted(() => {
   document.addEventListener('pointerdown', onDocumentPointer)
-  document.addEventListener('keydown', onKeydown)
 })
 
 onUnmounted(() => {
   document.removeEventListener('pointerdown', onDocumentPointer)
-  document.removeEventListener('keydown', onKeydown)
 })
 </script>
 
@@ -113,7 +108,7 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--space-3);
   width: 420px;
-  /* The tab is a size container, so the popover never outgrows it. */
+  /* The modal is a size container, so the popover never outgrows it. */
   max-width: calc(100cqw - 2 * var(--space-4));
   padding: var(--space-4);
   background: var(--bg-elevated);
@@ -246,7 +241,7 @@ onUnmounted(() => {
   margin: 0;
 }
 
-/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: the popover spans the tab. */
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: the popover spans the modal. */
 @media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
   .review-pop {
     width: calc(100cqw - 2 * var(--space-4));

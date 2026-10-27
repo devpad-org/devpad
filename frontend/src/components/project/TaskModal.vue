@@ -4,7 +4,7 @@ import { taskApi, type Task } from '@/api/tasks'
 import { projectApi } from '@/api/projects'
 import type { MergeRequest } from '@/api/mergeRequests'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
-import { confirmDiscardKey, useOpenMergeRequest } from '@/components/ide/viewTabs'
+import { confirmDiscardKey } from '@/components/ide/ideShell'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { branchActionError } from './branchErrors'
 import AgentModelPicker from './AgentModelPicker.vue'
@@ -29,12 +29,9 @@ const emit = defineEmits<{
   'checked-out': [branch: string]
 }>()
 
-const openMergeRequest = useOpenMergeRequest()
-
-// The merge request opens as a tab behind the modal, so the modal gets out
-// of the way.
+// The merge request opens in its own modal, so this one gets out of the way.
 function reviewMergeRequest(id: number) {
-  openMergeRequest(id)
+  projectStore.selectedMergeRequestId = id
   emit('close')
 }
 
@@ -275,8 +272,10 @@ function remove() {
 }
 
 // Escape backs out of the innermost state first: delete confirm, edit, then the modal.
+// Handling it marks it handled, so a merge request under the task stays open.
 function onKeydown(e: KeyboardEvent) {
-  if (e.key !== 'Escape' || !props.task) return
+  if (e.key !== 'Escape' || !props.task || e.defaultPrevented) return
+  e.preventDefault()
   if (confirmingDelete.value) confirmingDelete.value = false
   else if (editing.value) editing.value = false
   else emit('close')

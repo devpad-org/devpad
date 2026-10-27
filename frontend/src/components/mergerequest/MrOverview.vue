@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
-import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
 import MrActivity from './MrActivity.vue'
 import MrMergeCard from './MrMergeCard.vue'
@@ -8,26 +7,23 @@ import MrSidebar from './MrSidebar.vue'
 import { useMergeRequest } from './useMergeRequest'
 
 // The Overview section: description, merge widget and activity, with the
-// details sidebar beside them.
+// details sidebar beside them. Each column scrolls on its own.
 const { mr } = useMergeRequest()
 </script>
 
 <template>
   <div v-if="mr" class="overview">
     <div class="main-col">
-      <article class="card">
-        <div class="card-header">
-          <span class="avatar avatar-user"><MrIcon name="user" :size="13" /></span>
-          <span class="card-header-text">
-            <strong>Description</strong>
-            <span class="muted" :title="fullTime(mr.createdAt)">&middot; {{ timeAgo(mr.createdAt) }}</span>
-          </span>
+      <section class="field">
+        <div class="field-head">
+          <h3 class="form-label">Description</h3>
+          <span class="field-head-end muted" :title="fullTime(mr.createdAt)">{{ timeAgo(mr.createdAt) }}</span>
         </div>
-        <div class="card-body description">
+        <div class="description">
           <MarkdownMessage v-if="mr.description" :content="mr.description" />
           <p v-else class="muted">No description provided.</p>
         </div>
-      </article>
+      </section>
 
       <MrMergeCard />
       <MrActivity />
@@ -38,32 +34,46 @@ const { mr } = useMergeRequest()
 </template>
 
 <style scoped src="@/components/project/shared.css"></style>
+<style scoped src="@/components/project/taskModal.css"></style>
 <style scoped src="./mergerequest.css"></style>
 <style scoped>
 .overview {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
-  gap: var(--space-5);
-  align-items: start;
-}
-
-/* The tab, not the window, decides the layout: the IDE's side panels take
-   part of the width. */
-@container (max-width: 900px) {
-  .overview {
-    grid-template-columns: minmax(0, 1fr);
-  }
+  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-rows: minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
 }
 
 .main-col {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  min-width: 0;
+  overflow-y: auto;
+}
+
+.field-head-end {
+  font-size: 0.72rem;
 }
 
 .description {
-  max-height: 50vh;
-  overflow-y: auto;
+  font-size: 0.85rem;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+/* The modal, not the window, decides the layout: on a phone it is the
+   screen, and the body scrolls as one. */
+@container (max-width: 900px) {
+  .overview {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    flex: none;
+  }
+
+  .main-col {
+    overflow: visible;
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
 }
 </style>

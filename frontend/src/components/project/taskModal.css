@@ -1,7 +1,8 @@
-/* The task modals' frame: header, a main column with a sidebar beside it,
- * and flat sections inside both. It follows the app's other modals: one
- * surface, hairline dividers, and labelled form fields rather than cards.
- * TaskModal and NewTaskModal include it as a scoped style. */
+/* The task and merge request modals' frame: header, a main column with a
+ * sidebar beside it, and flat sections inside both. It follows the app's
+ * other modals: one surface, hairline dividers, and labelled form fields
+ * rather than cards. TaskModal, NewTaskModal and the merge request modal's
+ * components include it as a scoped style. */
 .modal {
   display: flex;
   flex-direction: column;

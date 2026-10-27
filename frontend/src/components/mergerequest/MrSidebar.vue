@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AgentModelPicker from '@/components/project/AgentModelPicker.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
@@ -9,7 +10,8 @@ import { fullTime, timeAgo } from '@/utils/time'
 import { authorName, plural, shortSha } from './format'
 import { useMergeRequest } from './useMergeRequest'
 
-// The merge request's details, its reviewers, and the agent review controls.
+// The merge request's details, its reviewers, the agent review controls and
+// closing it.
 const {
   mr,
   isOpen,
@@ -23,28 +25,39 @@ const {
   agentEffort,
   autoFix,
   startAgentReview,
+  close,
 } = useMergeRequest()
 
 const projectStore = useActiveProjectStore()
 const route = useRoute()
 const router = useRouter()
+const confirmingClose = ref(false)
+
+watch(() => mr.value?.id, () => {
+  confirmingClose.value = false
+})
 
 // A real link to the task, so it can be copied or opened in a new tab.
 function taskHref(id: number): string {
   return router.resolve({ query: { ...route.query, task: id } }).href
 }
 
-// A plain click opens the task over the project without navigating.
+// A plain click opens the task over this modal without navigating.
 function openTask(e: MouseEvent, id: number) {
   if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
   e.preventDefault()
   projectStore.selectedTaskId = id
 }
+
+function closeMergeRequest() {
+  confirmingClose.value = false
+  close()
+}
 </script>
 
 <template>
   <aside v-if="mr" class="side-col">
-    <section class="card side-card">
+    <section class="side-section">
       <h3 class="side-title">Details</h3>
       <dl class="details">
         <dt>Source</dt>
@@ -83,7 +96,7 @@ function openTask(e: MouseEvent, id: number) {
       </dl>
     </section>
 
-    <section class="card side-card">
+    <section class="side-section">
       <h3 class="side-title">Reviewers</h3>
       <div v-for="author in (['user', 'agent'] as const)" :key="author" class="reviewer">
         <span class="avatar" :class="`avatar-${author}`">
@@ -101,11 +114,8 @@ function openTask(e: MouseEvent, id: number) {
       </div>
     </section>
 
-    <section v-if="isOpen" class="card side-card">
-      <h3 class="side-title">
-        <MrIcon name="bot" :size="14" />
-        Agent review
-      </h3>
+    <section v-if="isOpen" class="side-section">
+      <h3 class="side-title">Agent review</h3>
       <p class="form-hint side-hint">
         An agent reads the change in its own sandbox and leaves line comments and a verdict.
       </p>
@@ -114,39 +124,38 @@ function openTask(e: MouseEvent, id: number) {
         <input v-model="autoFix" type="checkbox" />
         Send requested changes to the task's agent
       </label>
-      <button class="btn btn-secondary side-button" :disabled="busy || pendingAgentReview || !agentModel" @click="startAgentReview">
+      <button class="btn btn-secondary btn-sm side-button" :disabled="busy || pendingAgentReview || !agentModel" @click="startAgentReview">
         <span v-if="pendingAgentReview" class="spinner spinner-sm" />
+        <MrIcon v-else name="bot" :size="13" />
         {{ pendingAgentReview ? 'Review in progress...' : 'Start agent review' }}
       </button>
+    </section>
+
+    <section v-if="isOpen" class="side-section">
+      <h3 class="side-title">Actions</h3>
+      <div v-if="confirmingClose" class="confirm">
+        <p class="confirm-text">Close this merge request without merging? It can't be reopened; its branch stays.</p>
+        <div class="confirm-actions">
+          <button class="btn btn-secondary btn-sm" :disabled="busy" @click="confirmingClose = false">Keep open</button>
+          <button class="btn btn-danger-solid btn-sm" :disabled="busy" @click="closeMergeRequest">Close</button>
+        </div>
+      </div>
+      <div v-else class="action-list">
+        <button class="action action-danger" :disabled="busy" @click="confirmingClose = true">
+          <MrIcon name="closed" :size="13" />
+          Close merge request
+        </button>
+      </div>
     </section>
   </aside>
 </template>
 
 <style scoped src="@/components/project/shared.css"></style>
+<style scoped src="@/components/project/taskModal.css"></style>
 <style scoped src="./mergerequest.css"></style>
 <style scoped>
 .side-col {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  position: sticky;
-  top: var(--space-4);
-}
-
-.side-card {
-  padding: var(--space-3) var(--space-4);
-}
-
-.side-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  margin-bottom: var(--space-3);
+  overflow-y: auto;
 }
 
 .details {
@@ -166,6 +175,14 @@ function openTask(e: MouseEvent, id: number) {
   gap: 6px;
   min-width: 0;
   color: var(--text-primary);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.muted {
+  color: var(--text-muted);
 }
 
 .warn {
@@ -204,7 +221,7 @@ function openTask(e: MouseEvent, id: number) {
   font-size: 0.72rem;
 }
 
-.side-hint {
+.side-section .side-hint {
   margin: 0 0 var(--space-3);
 }
 
@@ -221,9 +238,68 @@ function openTask(e: MouseEvent, id: number) {
   width: 100%;
 }
 
+.action-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 calc(var(--space-2) * -1);
+}
+
+.action {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px var(--space-2);
+  border-radius: var(--radius-md);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  text-align: left;
+  transition: all var(--transition-fast);
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.action-danger {
+  color: var(--error);
+}
+
+.action-danger:hover:not(:disabled) {
+  color: var(--error);
+  background: var(--error-bg);
+}
+
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--error-bg);
+  border: 0.5px solid var(--error-border);
+}
+
+.confirm-text {
+  font-size: 0.75rem;
+  color: var(--text-primary);
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* In one column the sidebar follows the main column, behind a hairline. */
 @container (max-width: 900px) {
   .side-col {
-    position: static;
+    overflow: visible;
+    border-left: none;
+    border-top: 0.5px solid var(--border-default);
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
   }
 }
 </style>

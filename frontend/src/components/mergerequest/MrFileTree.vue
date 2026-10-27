@@ -8,7 +8,7 @@ const { fileFilter, fileGroups, selectedPath, commentCount, selectFile } = useMe
 </script>
 
 <template>
-  <nav class="file-tree card" aria-label="Changed files">
+  <nav class="file-tree" aria-label="Changed files">
     <div class="tree-search">
       <MrIcon name="search" :size="13" />
       <input v-model="fileFilter" type="text" placeholder="Filter files" aria-label="Filter files" />
@@ -48,19 +48,20 @@ const { fileFilter, fileGroups, selectedPath, commentCount, selectFile } = useMe
 <style scoped src="@/components/project/shared.css"></style>
 <style scoped src="./mergerequest.css"></style>
 <style scoped>
+/* A pane down the modal's side, or above the file when it is narrow. */
 .file-tree {
   display: flex;
   flex-direction: column;
-  max-height: 70vh;
-  position: sticky;
-  top: var(--space-4);
+  min-height: 0;
+  border-right: 0.5px solid var(--border-hairline);
   overflow: hidden;
 }
 
 @container (max-width: 800px) {
   .file-tree {
-    position: static;
     max-height: 40vh;
+    border-right: none;
+    border-bottom: 0.5px solid var(--border-hairline);
   }
 }
 
@@ -68,6 +69,7 @@ const { fileFilter, fileGroups, selectedPath, commentCount, selectFile } = useMe
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex-shrink: 0;
   padding: var(--space-2) var(--space-3);
   border-bottom: 0.5px solid var(--border-hairline);
   color: var(--text-muted);
@@ -92,6 +94,8 @@ const { fileFilter, fileGroups, selectedPath, commentCount, selectFile } = useMe
 }
 
 .tree-body {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--space-1);
 }

@@ -16,7 +16,7 @@ import ProjectBranchActions from '@/components/project/ProjectBranchActions.vue'
 import GitBranchPicker from './GitBranchPicker.vue'
 import GitConfigModal from './GitConfigModal.vue'
 import GitSshHostKeyModal from './GitSshHostKeyModal.vue'
-import { ideShellKey, type BranchChange } from './viewTabs'
+import { ideShellKey, type BranchChange } from './ideShell'
 import type { GitNotice } from './gitNotice'
 
 // The Source Control side bar: the current branch, how it stands against the

@@ -22,6 +22,8 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   const branches = ref<RepoBranch[]>([])
   const loadError = ref('')
   const selectedTaskId = ref<number | null>(null)
+  // The merge request open in its modal, which loads it by id.
+  const selectedMergeRequestId = ref<number | null>(null)
   // What converting a workspace into this project did, until dismissed.
   const conversion = ref<ConversionNotice | null>(null)
   let conversionLoaded = false
@@ -133,7 +135,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
       if (restarted || gitActivitySeq === null || res.latest > gitActivitySeq) gitActivitySeq = res.latest
       gitActivityEpoch = res.epoch
     } catch {
-      // Push notices are a convenience; the board still loads without them.
+      // Push notices are a convenience; the lists still load without them.
     } finally {
       gitActivityLoading = false
     }
@@ -174,6 +176,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     branches.value = []
     loadError.value = ''
     selectedTaskId.value = null
+    selectedMergeRequestId.value = null
     conversion.value = null
     conversionLoaded = false
     gitPushes.value = []
@@ -228,6 +231,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     branches,
     loadError,
     selectedTaskId,
+    selectedMergeRequestId,
     conversion,
     gitPushes,
     ready,

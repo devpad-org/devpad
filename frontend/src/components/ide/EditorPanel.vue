@@ -3,41 +3,26 @@ import { computed, ref, reactive, watch, nextTick, onUnmounted } from 'vue'
 import { workspaceApi } from '@/api/workspaces'
 import { useMonacoEditor } from '@/composables/useMonacoEditor'
 import { useIsMobile } from '@/composables/useMediaQuery'
-import type { ViewTab } from './viewTabs'
-
-// A tab is a workspace file, or a view the parent owns and renders through the
-// `view` slot, such as a project board. A file tab's id is its path; view ids
-// never start with "/".
+// A tab is an open workspace file; its id is the file's path.
 interface Tab {
   id: string
-  kind: 'file' | 'view'
   name: string
 }
 
-const props = withDefaults(defineProps<{
+const props = defineProps<{
   workspaceId: number
   filePath: string | null
-  // The parent's open view tabs, and the one to show (v-model:active-view).
-  views?: ViewTab[]
-  activeView?: string | null
-}>(), {
-  views: () => [],
-  activeView: null,
-})
+}>()
 
 const emit = defineEmits<{
   (e: 'save', path: string, content: string): void
   (e: 'activeChange', path: string | null): void
-  (e: 'update:activeView', id: string | null): void
-  (e: 'closeView', id: string): void
 }>()
 
 const openTabs = reactive<Tab[]>([])
 const activeTab = ref<string | null>(null)
 
-const activeIsFile = computed(() => openTabs.some((t) => t.id === activeTab.value && t.kind === 'file'))
-const activeIsView = computed(() => openTabs.some((t) => t.id === activeTab.value && t.kind === 'view'))
-const viewTabs = computed(() => openTabs.filter((t) => t.kind === 'view'))
+const activeIsFile = computed(() => openTabs.some((t) => t.id === activeTab.value))
 
 const editorContainer = ref<HTMLElement | null>(null)
 const loading = ref(false)
@@ -64,17 +49,12 @@ function tabName(path: string): string {
   return path.split('/').pop() ?? path
 }
 
-function isFileTab(tab: Tab | undefined | null): boolean {
-  return tab?.kind === 'file'
-}
-
-// Activates a tab and tells the parent which file or view is showing.
+// Activates a tab and tells the parent which file is showing.
 function activate(tab: Tab) {
   activeTab.value = tab.id
   error.value = null
-  if (isFileTab(tab)) switchToFile(tab.id)
-  emit('activeChange', isFileTab(tab) ? tab.id : null)
-  emit('update:activeView', isFileTab(tab) ? null : tab.id)
+  switchToFile(tab.id)
+  emit('activeChange', tab.id)
 }
 
 function selectTab(id: string) {
@@ -89,8 +69,8 @@ function removeTab(id: string) {
   const idx = openTabs.findIndex((t) => t.id === id)
   if (idx === -1) return
 
-  const [closed] = openTabs.splice(idx, 1)
-  if (isFileTab(closed)) closeFile(id)
+  openTabs.splice(idx, 1)
+  closeFile(id)
 
   if (activeTab.value === id) {
     // Switch to an adjacent tab, preferring the one to the left
@@ -100,40 +80,13 @@ function removeTab(id: string) {
     } else {
       activeTab.value = null
       emit('activeChange', null)
-      emit('update:activeView', null)
     }
   }
 }
 
-// The parent owns view tabs, so closing one asks it to drop the view.
 function closeTab(tab: Tab, event?: MouseEvent) {
   event?.stopPropagation()
-  if (isFileTab(tab)) removeTab(tab.id)
-  else emit('closeView', tab.id)
-}
-
-// Follows the parent's view tabs: new ones are appended, renamed ones
-// updated, and dropped ones removed.
-watch(() => props.views.map((v) => `${v.id}\u0000${v.name}`).join('\u0001'), () => {
-  const wanted = new Map(props.views.map((v) => [v.id as string, v.name]))
-  for (const tab of viewTabs.value) {
-    if (!wanted.has(tab.id)) removeTab(tab.id)
-  }
-  for (const view of props.views) {
-    const tab = openTabs.find((t) => t.id === view.id && t.kind === 'view')
-    if (tab) tab.name = view.name
-    else openTabs.push({ id: view.id, kind: 'view', name: view.name })
-  }
-  showActiveView()
-}, { immediate: true })
-
-watch(() => props.activeView, () => showActiveView())
-
-function showActiveView() {
-  const id = props.activeView
-  if (!id || activeTab.value === id) return
-  const tab = openTabs.find((t) => t.id === id && t.kind === 'view')
-  if (tab) activate(tab)
+  removeTab(tab.id)
 }
 
 async function saveActiveFile() {
@@ -172,7 +125,7 @@ async function saveAllFiles() {
 // Re-reads every open file from disk, dropping unsaved edits, such as after
 // the workspace switched branches. Files that no longer exist are closed.
 async function reloadFiles() {
-  const files = openTabs.filter(isFileTab).map((t) => t.id)
+  const files = openTabs.map((t) => t.id)
   await Promise.all(files.map(async (path) => {
     try {
       const content = await workspaceApi.readFile(props.workspaceId, path)
@@ -209,7 +162,7 @@ watch(() => props.filePath, async (newPath) => {
   if (!newPath) return
 
   // If already open, just switch to it
-  const existing = openTabs.find((t) => t.id === newPath && t.kind === 'file')
+  const existing = openTabs.find((t) => t.id === newPath)
   if (existing) {
     selectTab(newPath)
     return
@@ -226,12 +179,11 @@ watch(() => props.filePath, async (newPath) => {
   try {
     const content = await workspaceApi.readFile(props.workspaceId, newPath, signal)
     if (signal.aborted) return
-    openTabs.push({ id: newPath, kind: 'file', name: tabName(newPath) })
+    openTabs.push({ id: newPath, name: tabName(newPath) })
     activeTab.value = newPath
     await nextTick()
     setContent(content, newPath)
     emit('activeChange', newPath)
-    emit('update:activeView', null)
   } catch (e) {
     if (e instanceof DOMException && e.name === 'AbortError') return
     error.value = e instanceof Error ? e.message : 'Failed to load file'
@@ -255,12 +207,11 @@ onUnmounted(() => {
         v-for="tab in openTabs"
         :key="tab.id"
         class="editor-tab"
-        :class="{ active: tab.id === activeTab, 'editor-tab--view': tab.kind === 'view' }"
+        :class="{ active: tab.id === activeTab }"
         @click="selectTab(tab.id)"
       >
         <span class="tab-icon">
-          <slot v-if="tab.kind === 'view'" name="view-icon" :id="tab.id" />
-          <span v-else-if="isFileDirty(tab.id)" class="dot-modified" />
+          <span v-if="isFileDirty(tab.id)" class="dot-modified" />
         </span>
         <span class="tab-name">{{ tab.name }}</span>
         <button
@@ -279,29 +230,13 @@ onUnmounted(() => {
       class="editor-container"
     />
 
-    <!-- A failed file load or save over a view keeps the view showing -->
-    <div v-if="error && activeIsView && !loading" class="editor-error-bar" role="alert">
-      <span class="error-text">{{ error }}</span>
-      <button class="tab-close" title="Dismiss" @click="error = null">×</button>
-    </div>
-
-    <!-- View tabs stay mounted so they keep their state between visits -->
-    <div
-      v-for="tab in viewTabs"
-      v-show="tab.id === activeTab && !loading"
-      :key="tab.id"
-      class="editor-view"
-    >
-      <slot name="view" :id="tab.id" :active="tab.id === activeTab" />
-    </div>
-
     <!-- Loading state -->
     <div v-if="loading" class="editor-empty">
       <span class="loading-text">Loading...</span>
     </div>
 
     <!-- Error state -->
-    <div v-else-if="error && !activeIsView" class="editor-empty">
+    <div v-else-if="error" class="editor-empty">
       <span class="error-text">{{ error }}</span>
     </div>
 
@@ -384,15 +319,6 @@ onUnmounted(() => {
   width: 6px;
 }
 
-.editor-tab--view .tab-icon {
-  width: auto;
-  color: var(--text-muted);
-}
-
-.editor-tab--view.active .tab-icon {
-  color: var(--accent);
-}
-
 .dot-modified {
   display: block;
   width: 6px;
@@ -422,22 +348,6 @@ onUnmounted(() => {
 /* Monaco container */
 .editor-container {
   flex: 1;
-  overflow: hidden;
-}
-
-.editor-error-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border-bottom: 0.5px solid var(--border-hairline);
-  flex-shrink: 0;
-}
-
-.editor-view {
-  flex: 1;
-  min-height: 0;
   overflow: hidden;
 }
 

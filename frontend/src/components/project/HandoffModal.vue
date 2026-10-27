@@ -4,7 +4,7 @@ import { gitApi, type GitActionResult } from '@/api/git'
 import { projectApi, type WorkspaceBranchStatus } from '@/api/projects'
 import { taskApi, type Task } from '@/api/tasks'
 import { useActiveProjectStore } from '@/stores/activeProject'
-import { ideShellKey, type BranchChange } from '@/components/ide/viewTabs'
+import { ideShellKey, type BranchChange } from '@/components/ide/ideShell'
 import AgentModelPicker from './AgentModelPicker.vue'
 import { branchActionError } from './branchErrors'
 

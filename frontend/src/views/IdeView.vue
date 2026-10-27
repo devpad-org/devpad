@@ -22,21 +22,13 @@ import WorkspaceGate, { type WorkspaceGateState } from '@/components/ide/Workspa
 import GitPushToasts from '@/components/project/GitPushToasts.vue'
 import ProjectAgentsPanel from '@/components/project/ProjectAgentsPanel.vue'
 import ProjectInboxPanel from '@/components/project/ProjectInboxPanel.vue'
-import ProjectMergeRequestsPanel from '@/components/project/ProjectMergeRequestsPanel.vue'
+import ProjectMergeRequestTable from '@/components/project/ProjectMergeRequestTable.vue'
 import ProjectPanel from '@/components/project/ProjectPanel.vue'
 import ProjectTaskTable from '@/components/project/ProjectTaskTable.vue'
 import TaskModal from '@/components/project/TaskModal.vue'
-import MergeRequestTab from '@/components/mergerequest/MergeRequestTab.vue'
+import MergeRequestModal from '@/components/mergerequest/MergeRequestModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
-import {
-  confirmDiscardKey,
-  ideShellKey,
-  mergeRequestTabId,
-  parseViewTabId,
-  type BranchChange,
-  type ViewTab,
-  type ViewTabId,
-} from '@/components/ide/viewTabs'
+import { confirmDiscardKey, ideShellKey, type BranchChange } from '@/components/ide/ideShell'
 import { useServiceStore } from '@/stores/services'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useAttentionStore } from '@/stores/attention'
@@ -94,12 +86,8 @@ const workspaceStatusLabel = computed(() => workspace.value?.status ?? 'none')
 const activeFile = ref<string | null>(null)
 const terminalMinimized = ref(false)
 const editorPanel = ref<InstanceType<typeof EditorPanel> | null>(null)
-// The shell owns its view tabs, such as merge requests, and mirrors them and the
-// active one into the URL so they survive reloads and back/forward.
-const viewTabs = ref<ViewTab[]>([])
-const activeView = ref<ViewTabId | null>(null)
-// View tabs holding work that closing them would lose, such as a review draft.
-const dirtyViews = ref(new Set<string>())
+// The merge request modal holds a review draft that closing it would lose.
+const mergeRequestDirty = ref(false)
 const selectedGitCommit = ref<GitCommit | null>(null)
 const gitDiffRequest = ref<GitDiffRequest | null>(null)
 // The file whose diff the Git Graph shows, for the Source Control panel.
@@ -141,13 +129,15 @@ const mobileRunsOpen = ref(false)
 // layout: a bottom tab bar of the project's lists, each shown full screen,
 // with the editor and the rest of the IDE under More.
 const mobileProject = computed(() => isMobile.value && isProjectMode.value)
-// The tasks table has a surface of its own, like the Git Graph; on a
-// phone's project it is the tasks list instead.
+// The tasks and merge requests tables have surfaces of their own, like the
+// Git Graph, and take the side panel's room too; on a phone's project they
+// are its lists instead.
 const taskSurfaceVisible = computed(() => activeActivity.value === 'tasks' && !mobileProject.value)
-// The editor and its tabs, such as merge requests, sit behind the explorer
-// and the other project panels.
+const mergeRequestSurfaceVisible = computed(() => activeActivity.value === 'merge-requests' && !mobileProject.value)
+const tableSurfaceVisible = computed(() => taskSurfaceVisible.value || mergeRequestSurfaceVisible.value)
+// The editor sits behind the explorer and the other project panels.
 const editorSurfaceVisible = computed(
-  () => activeActivity.value === 'explorer' || (isProjectActivity.value && !taskSurfaceVisible.value),
+  () => activeActivity.value === 'explorer' || (isProjectActivity.value && !tableSurfaceVisible.value),
 )
 const mobileMoreOpen = ref(false)
 // The bottom tabs; everything else lives under More.
@@ -155,8 +145,8 @@ const MOBILE_TABS: ActivityTab[] = ['inbox', 'tasks', 'merge-requests', 'agents'
 // Surfaces whose side list leads on a phone's project.
 const MOBILE_LIST_FIRST: ActivityTab[] = ['git', 'services', 'info']
 
-// On a phone a detail, such as a merge request, a file or a diff, covers its
-// list; back returns to the list before leaving the project.
+// On a phone a detail, such as a file or a diff, covers its list; back
+// returns to the list before leaving the project.
 const MOBILE_LIST_NAMES: Partial<Record<ActivityTab, string>> = {
   inbox: 'inbox',
   tasks: 'tasks',
@@ -372,7 +362,13 @@ async function loadProject(id: number, seq: number) {
   recordProjectOpened(id)
   await loadProjectWorkspace(id, seq)
   if (seq !== loadSeq) return
+  const legacy = legacyTabQuery(route.query)
+  if (legacy) {
+    await router.replace({ query: legacy })
+    if (seq !== loadSeq) return
+  }
   applyTaskQuery()
+  applyMergeRequestQuery()
   if (isMobile.value && !attention.loaded) {
     await attention.refresh()
     if (seq !== loadSeq) return
@@ -387,11 +383,6 @@ async function loadProject(id: number, seq: number) {
   } else {
     activeActivity.value = desktopActivity()
   }
-  applyViewQuery(route.query)
-  // Open files don't survive a reload, so a view takes the editor instead.
-  if (!activeView.value) activeView.value = viewTabs.value[0]?.id ?? null
-  // A link to a particular tab shows it.
-  if (activeView.value && route.query.tab) revealView()
   loading.value = false
   startWorkspacePolling()
 }
@@ -425,13 +416,12 @@ function resetShell() {
   gitDiffRequest.value = null
   focusedAgentRunId.value = null
   defaultAgentError.value = null
-  viewTabs.value = []
-  activeView.value = null
-  dirtyViews.value = new Set()
+  mergeRequestDirty.value = false
   closeMobilePanels()
   detailPushed = false
   taskPushed = false
   reuseTaskEntry = false
+  mergeRequestPushed = false
 }
 
 async function load() {
@@ -531,154 +521,35 @@ function stopWorkspacePolling() {
   }
 }
 
-const MR_TAB_TITLE_LENGTH = 28
-
-// The name of a view tab the shell can render, or null for one it can't. A
-// merge request tab is named after its title once the project's list has it.
-function viewTabName(id: ViewTabId): string | null {
-  const mrId = mergeRequestTabId(id)
-  if (mrId === null) return null
-  const title = projectStore.mergeRequests.find((m) => m.id === mrId)?.title
-  if (!title) return `!${mrId}`
-  const short = title.length > MR_TAB_TITLE_LENGTH ? `${title.slice(0, MR_TAB_TITLE_LENGTH - 1)}…` : title
-  return `!${mrId} ${short}`
-}
-
-// The open view tabs with their current names, which follow renames.
-const namedViewTabs = computed(() => viewTabs.value.map((t) => ({ id: t.id, name: viewTabName(t.id) ?? t.name })))
-
-// Opens a view tab, or focuses it if it is already open, and shows it.
-function openView(id: ViewTabId) {
-  if (!viewTabs.value.some((t) => t.id === id)) {
-    const name = viewTabName(id)
-    if (!name) return
-    viewTabs.value = [...viewTabs.value, { id, name }]
-  }
-  activeView.value = id
-  revealView()
-}
-
-async function closeView(id: string) {
-  if (dirtyViews.value.has(id)) {
-    const ok = await askConfirm({
-      title: 'Discard your review?',
-      message: 'This merge request has a review you haven\'t submitted. Close it and lose the summary and line comments?',
-      confirmLabel: 'Discard review',
-    })
-    if (!ok) return
-  }
-  setViewDirty(id, false)
-  viewTabs.value = viewTabs.value.filter((t) => t.id !== id)
-  if (activeView.value === id) activeView.value = null
-}
-
-function setViewDirty(id: string, dirty: boolean) {
-  if (dirty === dirtyViews.value.has(id)) return
-  const next = new Set(dirtyViews.value)
-  if (dirty) next.add(id)
-  else next.delete(id)
-  dirtyViews.value = next
-}
-
-// A tab can close without closeView, when the URL's tab list changes, e.g.
-// on back/forward. The leave guard has asked about any draft by then, so the
-// tab's dirty mark just goes with it.
-watch(viewTabs, (tabs) => {
-  const open = new Set<string>(tabs.map((t) => t.id))
-  for (const id of dirtyViews.value) {
-    if (!open.has(id)) setViewDirty(id, false)
-  }
-})
-
 // Something in the shell would be lost by leaving it: unsaved files or a
-// review draft in a merge request tab.
-const hasUnsavedWork = computed(() => !!editorPanel.value?.hasDirtyFiles || dirtyViews.value.size > 0)
+// review draft in the merge request modal.
+const hasUnsavedWork = computed(() => !!editorPanel.value?.hasDirtyFiles || mergeRequestDirty.value)
 
 function openFile(path: string) {
   activeFile.value = path
   mobileSidebarOpen.value = false
 }
 
-// View tabs sit on the editor surface, behind the project panels. On a phone
-// the tab bar follows the view, so going back returns to its list.
-function revealView() {
-  if (!editorSurfaceVisible.value || mobileProject.value) activeActivity.value = 'merge-requests'
-  closeMobilePanels()
+// Panels and modals open files through the shell: a merge request in front
+// of the editor closes first, and the editor comes forward if it is hidden.
+async function openFileFromShell(path: string) {
+  if (!(await closeMergeRequest())) return
+  if (!editorSurfaceVisible.value) activeActivity.value = 'explorer'
+  openFile(path)
 }
 
-// The query holds the open view tabs and the active one, as
-// ?tabs=mr:3,mr:12&tab=mr:12. Ids the shell no longer has, such as the old
-// board tab, are dropped.
-function queryViews(query: LocationQuery): { ids: ViewTabId[]; active: ViewTabId | null } {
-  if (typeof query.tabs !== 'string') return { ids: [], active: null }
-  const ids: ViewTabId[] = []
-  for (const part of query.tabs.split(',')) {
-    const id = parseViewTabId(part)
-    if (id && viewTabName(id) && !ids.includes(id)) ids.push(id)
-  }
-  const active = parseViewTabId(query.tab)
-  return { ids, active: active && ids.includes(active) ? active : null }
-}
-
-function applyViewQuery(query: LocationQuery) {
-  const { ids, active } = queryViews(query)
-  const current = viewTabs.value.map((t) => t.id)
-  if (ids.join() !== current.join()) {
-    viewTabs.value = ids.map((id) => ({ id, name: viewTabName(id) ?? id }))
-  }
-  if (active && active !== activeView.value) activeView.value = active
-}
-
-function viewQuery(): { tabs?: string; tab?: string } {
-  const ids = viewTabs.value.map((t) => t.id)
-  if (ids.length === 0) return {}
-  return { tabs: ids.join(','), tab: activeView.value ?? undefined }
-}
-
-// On a phone a detail shown over its list, such as a merge request, a file
-// or a diff, has its own history entry marked view=detail, so the system back
-// gesture returns to the list. Only then does `tab` name the view tab
-// showing, so a reload or a shared link from the list opens the list.
+// On a phone a detail shown over its list, such as a file or a diff, has its
+// own history entry marked view=detail, so the system back gesture returns
+// to the list.
 let detailPushed = false
 
-function wantedViewQuery(): { tabs?: string; tab?: string; view?: string } {
-  const next = viewQuery()
-  if (!mobileProject.value) return next
-  if (mobileBackList.value === null) return { tabs: next.tabs }
-  return { tabs: next.tabs, tab: isProjectActivity.value ? next.tab : undefined, view: 'detail' }
-}
-
-watch([viewTabs, activeView, mobileBackList], async () => {
+watch(mobileBackList, async (list) => {
   if (!isProjectMode.value || loading.value) return
-  const want = wantedViewQuery()
-  const q = route.query
-  const reuse = reuseTaskEntry
-  if (want.tabs === q.tabs && want.tab === q.tab && want.view === q.view) return
-  const query = { ...q, tabs: want.tabs, tab: want.tab, view: want.view }
-  // A task closed on its way to a detail, such as its merge request, hands
-  // its history entry to that detail.
-  if (reuse) {
-    reuseTaskEntry = false
-    await router.replace({ query: { ...query, task: undefined } })
-    return
-  }
-  if (want.view === 'detail' && q.view !== 'detail') {
-    // The list's own entry takes the new tab list first, so going back
-    // closes no tabs.
-    if (want.tabs !== q.tabs || q.tab !== undefined) {
-      await router.replace({ query: { ...q, tabs: want.tabs, tab: undefined } })
-    }
-    await router.push({ query })
-    return
-  }
-  await router.replace({ query })
-})
-
-// Back/forward and links within the project change only the query.
-watch(() => [route.query.tabs, route.query.tab], () => {
-  if (!isProjectMode.value || loading.value) return
-  applyViewQuery(route.query)
-  if (activeView.value && route.query.tab) revealView()
+  const view = list === null ? undefined : 'detail'
+  if (view === route.query.view) return
+  const query = { ...route.query, view }
+  if (view === 'detail') await router.push({ query })
+  else await router.replace({ query })
 })
 
 watch(() => route.query.view, (view, prev) => {
@@ -735,6 +606,86 @@ function closeTask() {
   void router.replace({ query: { ...route.query, task: undefined } })
 }
 
+// ?mr=<id> opens that merge request in its modal over the project, so a
+// reload, back and forward, or a shared link shows it again. The URL leads:
+// opening one asks to navigate, and the modal follows the query, so the leave
+// guard can keep a review draft from being dropped.
+function queryMergeRequestId(query: LocationQuery): number | null {
+  const id = Number(query.mr)
+  return Number.isInteger(id) && id > 0 ? id : null
+}
+
+const shownMergeRequestId = computed(() => (isProjectMode.value ? queryMergeRequestId(route.query) : null))
+
+// Links from when merge requests opened as editor tabs name them as
+// ?tabs=mr:3,mr:12&tab=mr:12; the one that was showing opens in the modal.
+function legacyTabQuery(query: LocationQuery): LocationQuery | null {
+  if (query.tabs === undefined && query.tab === undefined) return null
+  const tab = typeof query.tab === 'string' ? /^mr:([1-9]\d*)$/.exec(query.tab) : null
+  const { tabs: _tabs, tab: _tab, ...rest } = query
+  return tab && rest.mr === undefined ? { ...rest, mr: tab[1] } : rest
+}
+
+function applyMergeRequestQuery() {
+  projectStore.selectedMergeRequestId = shownMergeRequestId.value
+}
+
+// On a phone a merge request is a full-screen sheet, so, like a task, opening
+// one adds a history entry and closing it goes back.
+let mergeRequestPushed = false
+
+watch(() => projectStore.selectedMergeRequestId, async (id) => {
+  if (id === null || !isProjectMode.value || loading.value || id === shownMergeRequestId.value) return
+  // A task closed on its way here, such as by its Review button, leaves the
+  // URL with the task.
+  const query = {
+    ...route.query,
+    mr: String(id),
+    task: projectStore.selectedTaskId === null ? undefined : route.query.task,
+  }
+  let failure
+  if (reuseTaskEntry) {
+    // The task's own history entry goes to the merge request.
+    reuseTaskEntry = false
+    mergeRequestPushed = true
+    failure = await router.replace({ query })
+  } else if (mobileProject.value && !mergeRequestPushed) {
+    mergeRequestPushed = true
+    failure = await router.push({ query })
+  } else {
+    failure = await router.replace({ query })
+  }
+  // The user kept a review draft in the one showing.
+  if (failure) projectStore.selectedMergeRequestId = shownMergeRequestId.value
+})
+
+watch(shownMergeRequestId, (id) => {
+  if (id === null) mergeRequestPushed = false
+  if (!loading.value) projectStore.selectedMergeRequestId = id
+})
+
+const DISCARD_REVIEW = {
+  title: 'Discard your review?',
+  message: 'This merge request has a review you haven\'t submitted. Close it and lose the summary and line comments?',
+  confirmLabel: 'Discard review',
+}
+
+// Closes the merge request modal once the user agrees to lose any review
+// draft in it, resolving false when they keep it.
+async function closeMergeRequest(): Promise<boolean> {
+  if (shownMergeRequestId.value === null) return true
+  if (discardPrompt.value) return false
+  if (mergeRequestDirty.value && !(await askConfirm(DISCARD_REVIEW))) return false
+  mergeRequestDirty.value = false
+  if (mergeRequestPushed) {
+    mergeRequestPushed = false
+    router.back()
+    return true
+  }
+  await router.replace({ query: { ...route.query, mr: undefined } })
+  return true
+}
+
 function taskChanged(task: Task) {
   projectStore.upsertTask(task)
   void projectStore.refresh()
@@ -786,11 +737,11 @@ function confirmDiscard(message: string): Promise<boolean> {
   return askConfirm({ ...UNSAVED_FILES, message })
 }
 
-// Leaving the shell also loses review drafts in merge request tabs.
+// Leaving the shell also loses a review draft in the merge request modal.
 function confirmLeave(): Promise<boolean> {
   if (!hasUnsavedWork.value) return Promise.resolve(true)
   const files = !!editorPanel.value?.hasDirtyFiles
-  const reviews = dirtyViews.value.size > 0
+  const reviews = mergeRequestDirty.value
   if (files && !reviews) {
     return askConfirm({ ...UNSAVED_FILES, message: 'You have unsaved changes in open files. Leave and lose them?' })
   }
@@ -803,17 +754,15 @@ function confirmLeave(): Promise<boolean> {
   })
 }
 
-// A navigation within the shell changes only the query, but a new tab list
-// can still close merge request tabs that hold a review draft.
-function confirmDropViews(query: LocationQuery): boolean | Promise<boolean> {
-  if (!isProjectMode.value || dirtyViews.value.size === 0) return true
-  const kept = new Set<string>(queryViews(query).ids)
-  if ([...dirtyViews.value].every((id) => kept.has(id))) return true
-  return askConfirm({
-    title: 'Discard your review?',
-    message: 'This closes a merge request with a review you haven\'t submitted. Close it and lose the summary and line comments?',
-    confirmLabel: 'Discard review',
-  })
+// A navigation within the shell changes only the query, but it can still
+// close or replace a merge request that holds a review draft, e.g. on back.
+async function confirmDropMergeRequest(query: LocationQuery): Promise<boolean> {
+  if (!isProjectMode.value || !mergeRequestDirty.value) return true
+  if (queryMergeRequestId(query) === shownMergeRequestId.value) return true
+  const ok = await askConfirm(DISCARD_REVIEW)
+  // The next merge request starts without a draft.
+  if (ok) mergeRequestDirty.value = false
+  return ok
 }
 
 function answerDiscard(ok: boolean) {
@@ -824,9 +773,7 @@ function answerDiscard(ok: boolean) {
 
 provide(confirmDiscardKey, confirmDiscard)
 provide(ideShellKey, {
-  openView,
-  openFile,
-  activeView,
+  openFile: (path) => void openFileFromShell(path),
   liveWorkspaceId: computed(() => (isProjectMode.value && workspaceLive.value ? workspace.value?.id ?? null : null)),
   unsavedFiles: computed(() => !!editorPanel.value?.hasDirtyFiles),
   async saveAllFiles() {
@@ -866,7 +813,7 @@ onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('beforeunload', handleBeforeUnload)
   removeLeaveGuard = router.beforeEach((to, from) => {
-    if (to.name === from.name && to.params.id === from.params.id) return confirmDropViews(to.query)
+    if (to.name === from.name && to.params.id === from.params.id) return confirmDropMergeRequest(to.query)
     return confirmLeave()
   })
   if (isMobile.value) terminalMinimized.value = true
@@ -1060,7 +1007,7 @@ const backLabel = computed(() => {
       - ide-toolbar: top toolbar/title bar
       - ide-activity-bar: far-left activity switcher
       - ide-left-panel: left side panel next to the activity bar
-      - ide-primary-surface: AI chat, editor, tasks table, or git graph surface
+      - ide-primary-surface: AI chat, editor, tasks or merge requests table, or git graph surface
       - ide-right-panel: far-right side panel region
       - ide-terminal-panel: bottom terminal panel
       - ide-status-bar: bottom status bar (declared in GitStatusBar.vue)
@@ -1512,7 +1459,7 @@ const backLabel = computed(() => {
       <aside
         id="ide-left-panel"
         class="ide-sidebar"
-        :class="{ open: mobileSidebarOpen, collapsed: taskSurfaceVisible }"
+        :class="{ open: mobileSidebarOpen, collapsed: tableSurfaceVisible }"
         aria-label="Left side panel"
         :style="isMobile ? undefined : { width: sidebar.size.value + 'px' }"
       >
@@ -1573,7 +1520,7 @@ const backLabel = computed(() => {
             @open-chat="handleAgentRunFocus"
           />
           <ProjectTaskTable v-if="mobileProject" v-show="activeActivity === 'tasks'" />
-          <ProjectMergeRequestsPanel v-show="activeActivity === 'merge-requests'" />
+          <ProjectMergeRequestTable v-if="mobileProject" v-show="activeActivity === 'merge-requests'" />
           <ProjectAgentsPanel
             v-show="activeActivity === 'agents'"
             :workspace-live="workspaceLive"
@@ -1584,7 +1531,7 @@ const backLabel = computed(() => {
         </template>
       </aside>
       <div
-        v-show="!taskSurfaceVisible"
+        v-show="!tableSurfaceVisible"
         class="resize-handle resize-handle--horizontal"
         :class="{ active: sidebar.isDragging.value }"
         @pointerdown="sidebar.onPointerDown"
@@ -1616,36 +1563,16 @@ const backLabel = computed(() => {
           <div v-if="isProjectMode && !mobileProject" v-show="taskSurfaceVisible" class="ide-surface-pane">
             <ProjectTaskTable />
           </div>
+          <div v-if="isProjectMode && !mobileProject" v-show="mergeRequestSurfaceVisible" class="ide-surface-pane">
+            <ProjectMergeRequestTable />
+          </div>
           <div v-show="editorSurfaceVisible" class="ide-surface-pane">
             <EditorPanel
               ref="editorPanel"
-              v-model:active-view="activeView"
               :workspace-id="workspace?.id ?? 0"
               :file-path="activeFile"
-              :views="namedViewTabs"
               @active-change="(p: string | null) => activeFile = p"
-              @close-view="closeView"
-            >
-              <!-- The slot's `active` says the tab is showing; with
-                   editorSurfaceVisible it tells a view when it can pause. -->
-              <template #view="{ id, active }">
-                <MergeRequestTab
-                  v-if="projectId !== null && mergeRequestTabId(id) !== null"
-                  :project-id="projectId"
-                  :mr-id="mergeRequestTabId(id)!"
-                  :active="active && editorSurfaceVisible && !(mobileProject && mobileSidebarOpen)"
-                  @dirty="(dirty: boolean) => setViewDirty(id, dirty)"
-                />
-              </template>
-              <template #view-icon="{ id }">
-                <svg v-if="mergeRequestTabId(id) !== null" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="18" cy="18" r="3" />
-                  <circle cx="6" cy="6" r="3" />
-                  <path d="M13 6h3a2 2 0 0 1 2 2v7" />
-                  <path d="M6 9v12" />
-                </svg>
-              </template>
-            </EditorPanel>
+            />
           </div>
           <template v-if="workspaceLive">
             <div v-show="activeActivity === 'info'" class="ide-surface-pane">
@@ -1731,6 +1658,18 @@ const backLabel = computed(() => {
       :workspace-id="workspace?.id ?? 0"
       @open-git="openGitPanel"
     />
+    <!-- The shell teleports the merge request modal, before the task modal's
+         own teleport, so a task opened from a merge request shows on top. -->
+    <Teleport to="body">
+      <MergeRequestModal
+        v-if="projectId !== null && shownMergeRequestId !== null"
+        :key="shownMergeRequestId"
+        :project-id="projectId"
+        :mr-id="shownMergeRequestId"
+        @close="closeMergeRequest"
+        @dirty="(dirty: boolean) => (mergeRequestDirty = dirty)"
+      />
+    </Teleport>
     <TaskModal
       v-if="isProjectMode && projectId !== null"
       :task="projectStore.selectedTask"
@@ -2097,7 +2036,7 @@ const backLabel = computed(() => {
   flex-direction: column;
 }
 
-/* The tasks table takes the side panel's room too. */
+/* The tasks and merge requests tables take the side panel's room too. */
 .ide-sidebar.collapsed {
   display: none;
 }

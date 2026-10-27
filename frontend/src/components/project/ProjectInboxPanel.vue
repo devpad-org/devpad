@@ -4,7 +4,6 @@ import type { AgentRun, AttentionItem } from '@/api/ai'
 import { attentionItemKey } from '@/stores/attention'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useProjectStore } from '@/stores/projects'
-import { useOpenMergeRequest } from '@/components/ide/viewTabs'
 import AttentionItemCard from '@/components/ide/AttentionItemCard.vue'
 
 // The agents in this project waiting for the user, answered in place. Each
@@ -20,7 +19,6 @@ const emit = defineEmits<{ 'open-chat': [run: AgentRun] }>()
 
 const store = useActiveProjectStore()
 const projects = useProjectStore()
-const openMergeRequest = useOpenMergeRequest()
 
 interface ItemSource {
   detail: string
@@ -82,7 +80,7 @@ watch(
           <button
             v-else-if="source(item).mergeRequestId"
             class="btn btn-secondary btn-sm"
-            @click="openMergeRequest(source(item).mergeRequestId!)"
+            @click="store.selectedMergeRequestId = source(item).mergeRequestId"
           >
             Open merge request
           </button>

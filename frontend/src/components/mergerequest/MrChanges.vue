@@ -3,19 +3,16 @@ import { computed, inject, onMounted, ref, watch } from 'vue'
 import { gitApi } from '@/api/git'
 import MonacoDiffViewer from '@/components/ide/MonacoDiffViewer.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
-import { ideShellKey } from '@/components/ide/viewTabs'
+import { ideShellKey } from '@/components/ide/ideShell'
 import { useIsMobile } from '@/composables/useMediaQuery'
 import MrFileComments from './MrFileComments.vue'
 import MrFileTree from './MrFileTree.vue'
 import { baseName, dirName, fileStatusLabel, statBlocks } from './format'
 import { useMergeRequest } from './useMergeRequest'
 
-// The Changes section: the file tree and the selected file's diff and
-// comments.
-const props = defineProps<{
-  // The tab is showing, so the workspace's branch is worth checking.
-  active: boolean
-}>()
+// The Changes section: the file tree, the selected file's diff filling the
+// modal's height, and the file's comments beside it, or under it when the
+// modal is narrower.
 
 const {
   mr,
@@ -85,26 +82,28 @@ async function loadWorkspaceBranch() {
   }
 }
 
-watch(() => [props.active, workspaceId.value, mr.value?.headSha] as const, ([active]) => {
-  if (active) void loadWorkspaceBranch()
-}, { immediate: true })
+watch(() => [workspaceId.value, mr.value?.headSha], () => void loadWorkspaceBranch(), { immediate: true })
 
+// The shell closes the modal, asking first about a review draft, and shows
+// the file in the editor.
 function openInEditor() {
   const file = selectedFile.value
   if (!file || !shell) return
   shell.openFile(`/workspace/${file.path}`)
-  void loadWorkspaceBranch()
 }
 
+// Side by side needs room: the diff gets the modal's width less the file
+// tree, and less the comments column too on the widest screens.
+const SIDE_BY_SIDE_MIN_WIDTH = 1100
+
 onMounted(() => {
-  // Side by side needs room; the tab may be narrower than the window.
-  if (sideBySide.value === null) sideBySide.value = (root.value?.clientWidth ?? 0) >= 1000
+  if (sideBySide.value === null) sideBySide.value = (root.value?.clientWidth ?? 0) >= SIDE_BY_SIDE_MIN_WIDTH
 })
 </script>
 
 <template>
   <div ref="root" class="changes-tab">
-    <div v-if="files.length === 0" class="card empty-card">
+    <div v-if="files.length === 0" class="empty-card">
       <MrIcon name="file" :size="28" :stroke-width="1.5" />
       <p>This branch changes nothing.</p>
     </div>
@@ -176,27 +175,31 @@ onMounted(() => {
           of this file.
         </p>
 
-        <p v-if="fileError" class="notice notice-error">{{ fileError }}</p>
-        <div v-else-if="selectedFile.binary" class="card empty-card">
-          <MrIcon name="file" :size="28" :stroke-width="1.5" />
-          <p>Binary file; no preview.</p>
-        </div>
-        <div v-else class="diff-frame" :class="{ loading: fileLoading }">
-          <MonacoDiffViewer
-            :old-content="oldContent"
-            :new-content="newContent"
-            :old-file-name="selectedFile.oldPath || selectedFile.path"
-            :new-file-name="selectedFile.path"
-            :side-by-side="!isMobile && (sideBySide ?? true)"
-            :marked-lines="markedLines"
-            :reveal="reveal"
-            :commentable="isOpen"
-            @line-click="startComment"
-          />
-          <span v-if="fileLoading" class="diff-loading"><span class="spinner spinner-sm" /></span>
-        </div>
+        <div class="file-main">
+          <p v-if="fileError" class="notice notice-error file-error">{{ fileError }}</p>
+          <div v-else-if="selectedFile.binary" class="empty-card">
+            <MrIcon name="file" :size="28" :stroke-width="1.5" />
+            <p>Binary file; no preview.</p>
+          </div>
+          <div v-else class="diff-frame" :class="{ loading: fileLoading }">
+            <MonacoDiffViewer
+              :old-content="oldContent"
+              :new-content="newContent"
+              :old-file-name="selectedFile.oldPath || selectedFile.path"
+              :new-file-name="selectedFile.path"
+              :side-by-side="!isMobile && (sideBySide ?? true)"
+              :marked-lines="markedLines"
+              :reveal="reveal"
+              :commentable="isOpen"
+              @line-click="startComment"
+            />
+            <span v-if="fileLoading" class="diff-loading"><span class="spinner spinner-sm" /></span>
+          </div>
 
-        <MrFileComments />
+          <div class="comments-pane">
+            <MrFileComments />
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -205,75 +208,32 @@ onMounted(() => {
 <style scoped src="@/components/project/shared.css"></style>
 <style scoped src="./mergerequest.css"></style>
 <style scoped>
+.changes-tab {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* The tree and the file share the modal's height; each scrolls on its own. */
 .changes {
   display: grid;
-  grid-template-columns: minmax(200px, 270px) minmax(0, 1fr);
-  gap: var(--space-4);
-  align-items: start;
-}
-
-@container (max-width: 800px) {
-  .changes {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-.changes--phone {
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-3);
-}
-
-.tree-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 44px;
-  padding: 0 var(--space-3);
-  background: var(--bg-surface);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  color: var(--text-secondary);
-  font-size: 0.85rem;
-  text-align: left;
-}
-
-.tree-toggle-label {
+  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   flex: 1;
+  min-height: 0;
 }
 
-.tree-toggle-chevron {
-  transition: transform var(--transition-fast);
-}
-
-.tree-toggle-chevron.open {
-  transform: rotate(180deg);
-}
-
-/* A phone shows the unified diff only; side by side has no room. The path
-   takes its own line, with the status, stats and pager under it. */
-.changes--phone .segmented-icons {
-  display: none;
-}
-
-.changes--phone .file-bar-path {
-  flex-basis: 100%;
-  order: -1;
-}
-
-.changes--phone .file-bar-end {
-  margin-left: auto;
-}
-
-.changes--phone .diff-frame {
-  height: 60dvh;
-  min-height: 300px;
+.empty-card {
+  flex: 1;
+  justify-content: center;
 }
 
 .file-view {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
   min-width: 0;
+  min-height: 0;
 }
 
 .file-bar {
@@ -281,10 +241,9 @@ onMounted(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-surface);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-lg);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 0.5px solid var(--border-hairline);
+  flex-shrink: 0;
 }
 
 .file-status-pill {
@@ -338,16 +297,27 @@ onMounted(() => {
 }
 
 .branch-note {
-  margin: 0;
+  margin: var(--space-2) var(--space-4) 0;
+  flex-shrink: 0;
+}
+
+/* The diff fills the rest of the height, with the file's comments in a
+   column of their own beside it. */
+.file-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-rows: minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+}
+
+.file-error {
+  margin: var(--space-4);
 }
 
 .diff-frame {
   position: relative;
-  height: 65vh;
-  min-height: 360px;
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
+  min-height: 0;
   transition: opacity var(--transition-fast);
 }
 
@@ -359,5 +329,127 @@ onMounted(() => {
   position: absolute;
   top: var(--space-3);
   right: var(--space-3);
+}
+
+.comments-pane {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4);
+  border-left: 0.5px solid var(--border-hairline);
+}
+
+/* Narrower: the comments go under the diff, and the file scrolls. */
+@container (max-width: 1399px) {
+  .file-view {
+    overflow-y: auto;
+  }
+
+  .file-main {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+  }
+
+  .diff-frame {
+    flex: none;
+    height: 70dvh;
+    min-height: 360px;
+  }
+
+  .comments-pane {
+    overflow: visible;
+    border-left: none;
+    border-top: 0.5px solid var(--border-hairline);
+  }
+}
+
+/* Narrower still: the tree goes above the file, and the modal's body
+   scrolls as one. */
+@container (max-width: 800px) {
+  .changes-tab,
+  .changes {
+    flex: none;
+  }
+
+  .changes {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+  }
+
+  .file-view {
+    overflow: visible;
+  }
+}
+
+/* A phone folds the file list behind a toggle and shows the unified diff
+   only; side by side has no room. The path takes its own line, with the
+   status, stats and pager under it. */
+.tree-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  border-bottom: 0.5px solid var(--border-hairline);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+.tree-toggle-label {
+  flex: 1;
+}
+
+.tree-toggle-chevron {
+  transition: transform var(--transition-fast);
+}
+
+.tree-toggle-chevron.open {
+  transform: rotate(180deg);
+}
+
+/* A phone's sheet may be wide when held sideways; it still stacks. */
+.changes--phone {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: none;
+}
+
+.changes-tab:has(.changes--phone),
+.changes--phone,
+.changes--phone .file-main {
+  flex: none;
+}
+
+.changes--phone .file-view {
+  overflow: visible;
+}
+
+.changes--phone .file-main {
+  display: flex;
+  flex-direction: column;
+}
+
+.changes--phone .comments-pane {
+  overflow: visible;
+  border-left: none;
+  border-top: 0.5px solid var(--border-hairline);
+}
+
+.changes--phone .segmented-icons {
+  display: none;
+}
+
+.changes--phone .file-bar-path {
+  flex-basis: 100%;
+  order: -1;
+}
+
+.changes--phone .file-bar-end {
+  margin-left: auto;
+}
+
+.changes--phone .diff-frame {
+  height: 60dvh;
+  min-height: 300px;
 }
 </style>

@@ -2,7 +2,6 @@
 import { computed, ref, watch } from 'vue'
 import { mergeRequestApi } from '@/api/mergeRequests'
 import { useActiveProjectStore } from '@/stores/activeProject'
-import { useOpenMergeRequest } from '@/components/ide/viewTabs'
 
 // Opens a merge request between two branches the project already has, such
 // as a release of develop into main. Branches only in the project
@@ -16,7 +15,6 @@ const emit = defineEmits<{
 }>()
 
 const store = useActiveProjectStore()
-const openMergeRequest = useOpenMergeRequest()
 
 const source = ref('')
 const target = ref('')
@@ -93,7 +91,7 @@ async function submit() {
     })
     void store.refresh()
     emit('close')
-    openMergeRequest(res.mergeRequest.id)
+    store.selectedMergeRequestId = res.mergeRequest.id
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to open the merge request'
   } finally {

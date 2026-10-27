@@ -14,7 +14,7 @@ import {
   type ProjectRef,
   type ToolGroupDisplay,
 } from '@/components/ide/aiToolDisplay'
-import { ideShellKey, mergeRequestTab } from '@/components/ide/viewTabs'
+import { ideShellKey } from '@/components/ide/ideShell'
 import { useActiveProjectStore } from '@/stores/activeProject'
 
 defineProps<{
@@ -22,13 +22,13 @@ defineProps<{
 }>()
 
 // In the project shell, tasks and merge requests that project tools mention
-// open in place: a task in its modal, a merge request in its tab.
+// open in place, each in its modal.
 const shell = inject(ideShellKey, null)
 const projectStore = useActiveProjectStore()
 
 function openRef(ref: ProjectRef) {
   if (ref.kind === 'task') projectStore.selectedTaskId = ref.id
-  else shell?.openView(mergeRequestTab(ref.id))
+  else projectStore.selectedMergeRequestId = ref.id
 }
 </script>
 

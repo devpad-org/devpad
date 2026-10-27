@@ -36,7 +36,7 @@ export interface Check {
 }
 
 // One merge request's state and actions, shared by the components that make
-// up its tab. The tab creates it and provides it to its children.
+// up its modal. The modal creates it and provides it to its children.
 export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number>) {
   const projectStore = useActiveProjectStore()
 
@@ -54,7 +54,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   const newContent = ref('')
   const fileLoading = ref(false)
   const fileError = ref('')
-  // Decided from the tab's width the first time the changes are shown.
+  // Decided from the modal's width the first time the changes are shown.
   const sideBySide = ref<boolean | null>(null)
   const reveal = ref<{ line: number } | null>(null)
   const fileCache = new Map<string, string | null>()
@@ -159,7 +159,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     }),
   )
 
-  // Unsubmitted review text or line comments, which closing the tab would lose.
+  // Unsubmitted review text or line comments, which closing the modal would lose.
   // Only an open merge request can still be reviewed.
   const hasDraft = computed(
     () =>
@@ -306,7 +306,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     noticeTimer = setTimeout(() => (notice.value = ''), NOTICE_MS)
   }
 
-  // Bumped whenever the tab switches to another merge request, so responses
+  // Bumped whenever the modal switches to another merge request, so responses
   // for the previous one are dropped.
   let generation = 0
 
@@ -485,8 +485,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     }
   }
 
-  // Refreshes this merge request and the project's lists, whose badges and
-  // board reflect what just happened.
+  // Refreshes this merge request and the project's lists, whose tables
+  // reflect what just happened.
   async function refreshAll() {
     void projectStore.refresh()
     await refresh()
@@ -558,7 +558,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
         throw new Error(branchActionError(e, 'Failed to publish the branch'))
       }
       workspaceBranch.value = null
-      // The publish stands even when the review can't start, so the tab
+      // The publish stands even when the review can't start, so the modal
       // catches up with it either way and the error says it went through.
       let reviewError: unknown = null
       if (thenRereview) {
@@ -734,9 +734,9 @@ export type MergeRequestState = ReturnType<typeof createMergeRequestState>
 
 export const mergeRequestKey: InjectionKey<MergeRequestState> = Symbol('mergeRequest')
 
-// The state of the merge request whose tab this component sits in.
+// The state of the merge request whose modal this component sits in.
 export function useMergeRequest(): MergeRequestState {
   const state = inject(mergeRequestKey)
-  if (!state) throw new Error('useMergeRequest needs a MergeRequestTab ancestor')
+  if (!state) throw new Error('useMergeRequest needs a MergeRequestModal ancestor')
   return state
 }

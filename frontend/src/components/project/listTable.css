@@ -1,0 +1,423 @@
+/* The project's lists as tables on a surface of their own, like the Git
+ * Graph: a header, filters and search, then a sortable table that folds into
+ * two-line rows on a phone. ProjectTaskTable and ProjectMergeRequestTable
+ * include it as a scoped style; each sets its columns and --ide-header-icon. */
+.list-surface {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ide-surface-bg);
+  container-type: inline-size;
+}
+
+/* Header, matching the Git Graph's */
+.list-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 38px;
+  padding: 0 var(--space-3);
+  border-bottom: 0.5px solid var(--border-default);
+  background: var(--ide-header-bg);
+  flex-shrink: 0;
+}
+
+.list-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  font-size: var(--ide-header-title-size);
+  color: var(--text-primary);
+}
+
+.list-title-icon {
+  color: var(--ide-header-icon);
+  line-height: 0;
+}
+
+.list-title-text {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.list-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-left: var(--space-2);
+  border-left: 0.5px solid var(--border-default);
+  color: var(--text-secondary);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.list-summary > span + span::before {
+  content: '·';
+  margin-right: var(--space-2);
+  color: var(--text-dim);
+}
+
+.new-btn,
+.btn-primary-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--accent-blue);
+  color: var(--bg-primary);
+  font-size: 0.72rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background var(--transition-fast);
+}
+
+.new-btn:hover:not(:disabled),
+.btn-primary-sm:hover {
+  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+}
+
+.new-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Filters and search */
+.list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 0.5px solid var(--border-hairline);
+  flex-shrink: 0;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+}
+
+.filter:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.filter.active {
+  color: var(--text-primary);
+  background: var(--bg-raised);
+}
+
+.filter-count {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--bg-neutral);
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  line-height: 16px;
+  text-align: center;
+}
+
+.filter.active .filter-count {
+  color: var(--text-secondary);
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 240px;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 var(--space-2);
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  transition: border-color var(--transition-fast);
+}
+
+.search:focus-within {
+  border-color: var(--accent-blue);
+}
+
+.search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.78rem;
+}
+
+.search input:focus {
+  outline: none;
+}
+
+/* Table */
+.list-scroll {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.list-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.8rem;
+}
+
+.list-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0 var(--space-3);
+  height: 30px;
+  background: var(--ide-surface-bg);
+  border-bottom: 0.5px solid var(--border-default);
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: inherit;
+  font: inherit;
+}
+
+.sort:hover,
+.sort.sorted {
+  color: var(--text-primary);
+}
+
+.sort-icon {
+  opacity: 0;
+  transition: transform var(--transition-fast), opacity var(--transition-fast);
+}
+
+.sort:hover .sort-icon,
+.sort.sorted .sort-icon {
+  opacity: 1;
+}
+
+.sort-icon.up {
+  transform: rotate(180deg);
+}
+
+.list-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 0.5px solid var(--border-hairline);
+  vertical-align: middle;
+  color: var(--text-secondary);
+}
+
+.list-row {
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.list-row:hover {
+  background: var(--bg-hover);
+}
+
+.list-row.selected {
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+}
+
+.list-row.created {
+  animation: created 2.4s ease-out;
+}
+
+@keyframes created {
+  from {
+    background: color-mix(in srgb, var(--accent-blue) 18%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .list-row.created {
+    animation: none;
+  }
+}
+
+.row-title {
+  display: block;
+  max-width: 100%;
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 0.82rem;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-title:focus-visible {
+  outline: 1px solid var(--accent-blue);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.row-sub {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-top: 2px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.row-note {
+  margin-top: 2px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-note-error {
+  color: var(--error);
+}
+
+.col-updated {
+  width: 96px;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.none {
+  color: var(--text-dim);
+}
+
+.list-empty {
+  padding: var(--space-6) var(--space-4);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.list-empty-first {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@container (max-width: 720px) {
+  .col-updated {
+    display: none;
+  }
+
+  .list-summary > span:not(:first-child) {
+    display: none;
+  }
+}
+
+/* A phone, or a narrow pane: each row is a small grid, its title over the
+   rest. Each table lays out its own grid areas. */
+@container (max-width: 540px) {
+  .list-table,
+  .list-table tbody {
+    display: block;
+  }
+
+  .list-table thead {
+    display: none;
+  }
+
+  .list-row {
+    display: grid;
+    align-items: center;
+    column-gap: var(--space-3);
+    row-gap: var(--space-2);
+    padding: var(--space-3);
+    border-bottom: 0.5px solid var(--border-hairline);
+  }
+
+  .list-table td {
+    display: block;
+    width: auto;
+    padding: 0;
+    border: none;
+  }
+
+  .list-table td.col-updated {
+    display: none;
+  }
+
+  .row-title {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .search {
+    width: 100%;
+  }
+
+  .filters {
+    flex-wrap: nowrap;
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .filter {
+    height: 32px;
+    flex-shrink: 0;
+  }
+}

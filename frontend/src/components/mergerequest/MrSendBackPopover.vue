@@ -6,6 +6,7 @@ import { useMergeRequest } from './useMergeRequest'
 
 // The Send back button and the popover that starts the task's agent again
 // on the feedback for the current commit, with a note from the user.
+// Escape closes it through the modal, which knows what is on top.
 const { busy, sendBackOpen, sendBackNote, sendBackError, sendBackReviews, reviewComments, sendBack } = useMergeRequest()
 
 const box = ref<HTMLElement | null>(null)
@@ -22,25 +23,19 @@ function onDocumentPointer(e: PointerEvent) {
   if (sendBackOpen.value && box.value && !box.value.contains(e.target as Node)) sendBackOpen.value = false
 }
 
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') sendBackOpen.value = false
-}
-
 onMounted(() => {
   document.addEventListener('pointerdown', onDocumentPointer)
-  document.addEventListener('keydown', onKeydown)
 })
 
 onUnmounted(() => {
   document.removeEventListener('pointerdown', onDocumentPointer)
-  document.removeEventListener('keydown', onKeydown)
 })
 </script>
 
 <template>
   <div ref="box" class="send-anchor">
-    <button class="btn btn-secondary" :aria-expanded="sendBackOpen" @click="sendBackOpen = !sendBackOpen">
-      <MrIcon name="send" :size="14" />
+    <button class="btn btn-secondary btn-sm" :aria-expanded="sendBackOpen" @click="sendBackOpen = !sendBackOpen">
+      <MrIcon name="send" :size="13" />
       Send back to agent
     </button>
     <Transition name="pop">
@@ -98,7 +93,7 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--space-3);
   width: 400px;
-  /* The tab is a size container, so the popover never outgrows it. */
+  /* The modal is a size container, so the popover never outgrows it. */
   max-width: calc(100cqw - 2 * var(--space-4));
   padding: var(--space-4);
   background: var(--bg-elevated);
@@ -132,7 +127,7 @@ onUnmounted(() => {
   margin: 0;
 }
 
-/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: the popover spans the tab. */
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: the popover spans the modal. */
 @media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
   .send-pop {
     width: calc(100cqw - 2 * var(--space-4));

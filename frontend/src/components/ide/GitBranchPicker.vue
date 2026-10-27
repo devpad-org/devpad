@@ -7,7 +7,7 @@ import { useActiveProjectStore } from '@/stores/activeProject'
 import { branchActionError } from '@/components/project/branchErrors'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import GitSshHostKeyModal from './GitSshHostKeyModal.vue'
-import { confirmDiscardKey, type BranchChange } from './viewTabs'
+import { confirmDiscardKey, type BranchChange } from './ideShell'
 import type { GitNotice } from './gitNotice'
 
 // The current branch, and a palette to switch to, create, merge or delete

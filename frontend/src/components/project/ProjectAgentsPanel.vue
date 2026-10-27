@@ -4,7 +4,7 @@ import { projectApi, type Sandbox } from '@/api/projects'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import StatusBadge from './StatusBadge.vue'
 import { branchActionError } from './branchErrors'
-import { confirmDiscardKey } from '@/components/ide/viewTabs'
+import { confirmDiscardKey } from '@/components/ide/ideShell'
 
 // The agents' sandboxes in the IDE side bar. Each can be opened to debug the
 // agent, or its branch checked out in the project workspace.

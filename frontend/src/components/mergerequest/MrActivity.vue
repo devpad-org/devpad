@@ -13,7 +13,7 @@ const { mr, isOpen, timeline, repliesByComment, statusIcon, reviewComments, jump
 
 <template>
   <section v-if="mr" class="activity">
-    <h2 class="section-title activity-title">Activity</h2>
+    <h3 class="form-label activity-title">Activity</h3>
     <ol class="timeline">
       <li class="event event-small">
         <span class="event-node tone-active"><MrIcon name="open" :size="13" /></span>
@@ -125,7 +125,7 @@ const { mr, isOpen, timeline, repliesByComment, statusIcon, reviewComments, jump
 <style scoped src="./mergerequest.css"></style>
 <style scoped>
 .activity-title {
-  margin: var(--space-2) 0 var(--space-3);
+  margin-bottom: var(--space-3);
 }
 
 .timeline {
@@ -164,7 +164,7 @@ const { mr, isOpen, timeline, repliesByComment, statusIcon, reviewComments, jump
   border-radius: 50%;
   color: var(--text-secondary);
   background: var(--bg-neutral);
-  box-shadow: 0 0 0 4px var(--ide-surface-bg);
+  box-shadow: 0 0 0 4px var(--bg-surface);
 }
 
 .event-node::after {
@@ -172,7 +172,7 @@ const { mr, isOpen, timeline, repliesByComment, statusIcon, reviewComments, jump
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background: var(--ide-surface-bg);
+  background: var(--bg-surface);
   z-index: -1;
 }
 

@@ -5,7 +5,6 @@ import type { AttentionItem } from '@/api/ai'
 import { attentionItemKey, useAttentionStore } from '@/stores/attention'
 import { useProjectStore } from '@/stores/projects'
 import { useWorkspaceStore } from '@/stores/workspaces'
-import { mergeRequestTab } from '@/components/ide/viewTabs'
 import AttentionItemCard from '@/components/ide/AttentionItemCard.vue'
 
 // Agents waiting for the user, across every project and workspace. Each item
@@ -55,11 +54,10 @@ function source(item: AttentionItem): ItemSource {
     }
   }
   if (link.kind === 'review' && link.mergeRequestId) {
-    const tab = mergeRequestTab(link.mergeRequestId)
     return {
       label,
       detail: `review of !${link.mergeRequestId}`,
-      to: { ...project, query: { tabs: tab, tab } },
+      to: { ...project, query: { mr: String(link.mergeRequestId) } },
       toLabel: 'Open merge request',
       sandbox: ide,
     }
