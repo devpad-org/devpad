@@ -24,6 +24,8 @@ type Service interface {
 	Create(ctx context.Context, userID, projectID int64, in CreateInput) (*MergeRequest, error)
 	Get(ctx context.Context, userID, projectID, mrID int64) (*Detail, error)
 	Diff(ctx context.Context, userID, projectID, mrID int64) (*agent.RepoDiff, error)
+	// Commits lists the commits the merge request proposes, newest first.
+	Commits(ctx context.Context, userID, projectID, mrID int64) (*agent.RepoLog, error)
 	Review(ctx context.Context, userID, projectID, mrID int64, in ReviewInput) (*Review, error)
 	StartAgentReview(ctx context.Context, userID, projectID, mrID int64, in AgentReviewInput) (*Review, error)
 	Merge(ctx context.Context, userID, projectID, mrID int64, in MergeInput) (*MergeResult, error)
@@ -67,6 +69,7 @@ type Projects interface {
 	Branches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error)
 	Compare(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoComparison, error)
 	Diff(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoDiff, error)
+	Log(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoLog, error)
 	CreateSandbox(ctx context.Context, userID, projectID int64, in project.SandboxInput) (*workspace.Workspace, error)
 	AwaitSetup(ctx context.Context, userID, projectID, workspaceID int64) (*project.Setup, error)
 	AwaitEnvironment(ctx context.Context, userID, projectID int64) (*project.Environment, error)
@@ -331,9 +334,12 @@ func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary 
 	}
 	unlockMR := s.lock("mr", mr.ID)
 	defer unlockMR()
-	mr.Title, mr.HeadSHA = t.Title, t.HeadSHA
+	mr.Title = t.Title
 	if summary != "" {
 		mr.Description = summary
+	}
+	if t.HeadSHA != "" && t.HeadSHA != mr.HeadSHA {
+		return s.repo.UpdateHead(ctx, mr, t.HeadSHA, PushTask)
 	}
 	return s.repo.Update(ctx, mr)
 }
@@ -351,14 +357,15 @@ func (s *service) branchPublished(ctx context.Context, userID, projectID int64, 
 	if sha == "" {
 		return nil
 	}
-	return s.followBranch(ctx, userID, projectID, branch, func() (string, error) { return sha, nil })
+	return s.followBranch(ctx, userID, projectID, branch, PushWorkspace, func() (string, error) { return sha, nil })
 }
 
 // followBranch points the branch's open merge request at the commit head
-// returns, which is read under the merge request's lock. A merge into the
-// branch reads it from the canonical repo there, so merges racing into the
-// same branch cannot leave the merge request on an older commit.
-func (s *service) followBranch(ctx context.Context, userID, projectID int64, branch string, head func() (string, error)) error {
+// returns, which is read under the merge request's lock, and records the
+// push as source's. A merge into the branch reads it from the canonical repo
+// there, so merges racing into the same branch cannot leave the merge
+// request on an older commit.
+func (s *service) followBranch(ctx context.Context, userID, projectID int64, branch string, source PushSource, head func() (string, error)) error {
 	open, err := s.repo.GetOpenBySource(ctx, projectID, branch)
 	if err != nil || open == nil || open.UserID != userID {
 		return err
@@ -374,8 +381,7 @@ func (s *service) followBranch(ctx context.Context, userID, projectID int64, bra
 	if err != nil || sha == "" || mr.HeadSHA == sha {
 		return err
 	}
-	mr.HeadSHA = sha
-	return s.repo.Update(ctx, mr)
+	return s.repo.UpdateHead(ctx, mr, sha, source)
 }
 
 func (s *service) Get(ctx context.Context, userID, projectID, mrID int64) (*Detail, error) {
@@ -388,6 +394,9 @@ func (s *service) Get(ctx context.Context, userID, projectID, mrID int64) (*Deta
 		return nil, err
 	}
 	if d.Comments, err = s.repo.ListComments(ctx, mr.ID); err != nil {
+		return nil, err
+	}
+	if d.Pushes, err = s.repo.ListPushes(ctx, mr.ID); err != nil {
 		return nil, err
 	}
 	if mr.TaskID != 0 {
@@ -417,6 +426,24 @@ func (s *service) Diff(ctx context.Context, userID, projectID, mrID int64) (*age
 		base = mr.BaseSHA
 	}
 	return s.projects.Diff(ctx, userID, projectID, base, mr.HeadSHA)
+}
+
+// Commits lists the commits the merge request proposes, newest first: those
+// its head has that the target branch lacks, or, once merged, that the merge
+// base it was merged from lacked.
+func (s *service) Commits(ctx context.Context, userID, projectID, mrID int64) (*agent.RepoLog, error) {
+	mr, err := s.get(ctx, userID, projectID, mrID)
+	if err != nil {
+		return nil, err
+	}
+	if mr.HeadSHA == "" {
+		return &agent.RepoLog{Commits: []agent.RepoCommit{}}, nil
+	}
+	base := mr.TargetBranch
+	if mr.Status == StatusMerged && mr.BaseSHA != "" {
+		base = mr.BaseSHA
+	}
+	return s.projects.Log(ctx, userID, projectID, base, mr.HeadSHA)
 }
 
 // Review records a user's review. Requesting changes hands the feedback to
@@ -1054,7 +1081,7 @@ func (s *service) Merge(ctx context.Context, userID, projectID, mrID int64, in M
 	// merging the two at once would otherwise take their locks in opposite
 	// orders.
 	branch := out.MergeRequest.TargetBranch
-	if err := s.followBranch(ctx, userID, projectID, branch, func() (string, error) {
+	if err := s.followBranch(ctx, userID, projectID, branch, PushMerge, func() (string, error) {
 		return s.canonicalSHA(ctx, userID, projectID, branch)
 	}); err != nil {
 		log.Printf("project %d: updating merge request for merged branch %s: %v", projectID, branch, err)

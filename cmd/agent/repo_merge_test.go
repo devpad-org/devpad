@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // publish imports a sandbox branch into the canonical repo.
@@ -82,6 +83,61 @@ func TestRepoDiffListsChangesSinceMergeBase(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &diff)
 	if len(diff.Files) != 1 || diff.Files[0] != (repoDiffFile{Path: "b.txt", OldPath: "a.txt", Status: "R"}) {
 		t.Fatalf("expected one rename, got %+v", diff.Files)
+	}
+}
+
+func TestRepoLogListsCommitsBaseLacks(t *testing.T) {
+	canonical := initCanonical(t)
+	sandbox := seedSandbox(t, canonical, "task/1")
+	first := commitFile(t, sandbox, "a.txt", "one")
+	second := commitFile(t, sandbox, "b.txt", "two")
+	publish(t, canonical, sandbox, "task/1")
+	// Work merged to main after the branch was cut is not listed.
+	advanceMain(t, canonical, "other.txt", "main work")
+
+	get := func(query string) (int, repoLog) {
+		rec := repoRequest(t, canonical, handleRepoLog, http.MethodGet, "/api/repo/log?"+query, nil)
+		var log repoLog
+		json.Unmarshal(rec.Body.Bytes(), &log)
+		return rec.Code, log
+	}
+	code, log := get("base=main&head=task/1")
+	if code != http.StatusOK || log.Truncated || len(log.Commits) != 2 {
+		t.Fatalf("log: %d %+v", code, log)
+	}
+	if c := log.Commits[0]; c.SHA != second || c.Subject != "add b.txt" || !slices.Equal(c.Parents, []string{first}) || c.Author == "" || c.AuthoredAt.IsZero() {
+		t.Fatalf("unexpected newest commit: %+v", c)
+	}
+	if log.Commits[1].SHA != first {
+		t.Fatalf("expected the older commit last, got %+v", log.Commits[1])
+	}
+
+	// A commit hash pins either side.
+	if code, log := get("base=" + first + "&head=" + second); code != http.StatusOK || len(log.Commits) != 1 || log.Commits[0].SHA != second {
+		t.Fatalf("log between commits: %d %+v", code, log)
+	}
+	if code, log := get("base=task/1&head=task/1"); code != http.StatusOK || log.Commits == nil || len(log.Commits) != 0 {
+		t.Fatalf("expected an empty list, got %d %+v", code, log)
+	}
+	for _, query := range []string{"base=main&head=nope", "base=--all&head=task/1"} {
+		if code, _ := get(query); code == http.StatusOK {
+			t.Errorf("%s: expected an error", query)
+		}
+	}
+}
+
+func TestParseRepoLogCapsSubjects(t *testing.T) {
+	long := strings.Repeat("é", maxCommitSubjectBytes)
+	out := "abc\x1fp1 p2\x1fAda\x1f1700000000\x1f" + long + "\x00\ndef\x1f\x1fBo\x1fnot-a-time\x1fsubject\x00"
+	log := parseRepoLog(out)
+	if len(log.Commits) != 2 {
+		t.Fatalf("expected two commits, got %+v", log.Commits)
+	}
+	if c := log.Commits[0]; len(c.Subject) > maxCommitSubjectBytes || !utf8.ValidString(c.Subject) || !slices.Equal(c.Parents, []string{"p1", "p2"}) || c.AuthoredAt.Unix() != 1700000000 {
+		t.Fatalf("unexpected first commit: %+v", c)
+	}
+	if c := log.Commits[1]; c.SHA != "def" || c.Parents == nil || len(c.Parents) != 0 || !c.AuthoredAt.IsZero() {
+		t.Fatalf("unexpected root commit: %+v", c)
 	}
 }
 

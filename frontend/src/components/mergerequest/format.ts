@@ -1,5 +1,5 @@
 import type { RepoDiffFile } from '@/api/projects'
-import type { CommentAuthor, MergeStrategy, Review, Verdict } from '@/api/mergeRequests'
+import type { CommentAuthor, MergeStrategy, Push, Review, Verdict } from '@/api/mergeRequests'
 import type { MrIconName } from '@/components/project/MrIcon.vue'
 
 // Presentation helpers shared by the merge request components.
@@ -58,6 +58,20 @@ export function statBlocks(additions: number, deletions: number): ('add' | 'del'
   if (total === 0) return Array(5).fill('none')
   const add = Math.round((additions / total) * 5)
   return Array.from({ length: 5 }, (_, i) => (i < add ? 'add' : 'del'))
+}
+
+// What a push did, given how many of its commits are still on the branch;
+// none means it only moved the branch, as a rewrite or a reset does.
+export function pushSummary(push: Push, commits: number, branch: string): string {
+  const head = shortSha(push.headSha)
+  switch (push.source) {
+    case 'task':
+      return commits ? `Task agent added ${plural(commits, 'commit')}` : `Task agent moved ${branch} to ${head}`
+    case 'workspace':
+      return commits ? `Published ${plural(commits, 'commit')} from the project workspace` : `Published ${head} from the project workspace`
+    default:
+      return commits ? `A merge into ${branch} added ${plural(commits, 'commit')}` : `A merge into ${branch} moved it to ${head}`
+  }
 }
 
 export function reviewTone(review: Review): Tone {

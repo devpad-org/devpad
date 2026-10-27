@@ -14,6 +14,10 @@ type Repository interface {
 	GetOpenBySource(ctx context.Context, projectID int64, sourceBranch string) (*MergeRequest, error)
 	ListByProjectID(ctx context.Context, projectID int64) ([]*MergeRequest, error)
 	Update(ctx context.Context, mr *MergeRequest) error
+	// UpdateHead moves mr to head and records the push in the same
+	// transaction.
+	UpdateHead(ctx context.Context, mr *MergeRequest, head string, source PushSource) error
+	ListPushes(ctx context.Context, mergeRequestID int64) ([]*Push, error)
 
 	CreateReview(ctx context.Context, r *Review) error
 	GetReview(ctx context.Context, id int64) (*Review, error)
@@ -87,6 +91,45 @@ func (r *repository) Update(ctx context.Context, mr *MergeRequest) error {
 	}
 	mr.UpdatedAt = now
 	return nil
+}
+
+func (r *repository) UpdateHead(ctx context.Context, mr *MergeRequest, head string, source PushSource) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO merge_request_pushes (merge_request_id, source, before_sha, head_sha, created_at) VALUES (?, ?, ?, ?, ?)`,
+		mr.ID, source, mr.HeadSHA, head, now,
+	); err != nil {
+		return fmt.Errorf("inserting push: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE merge_requests SET title = ?, description = ?, head_sha = ?, updated_at = ? WHERE id = ?`,
+		mr.Title, mr.Description, head, now, mr.ID,
+	); err != nil {
+		return fmt.Errorf("updating merge request: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing push: %w", err)
+	}
+	mr.HeadSHA, mr.UpdatedAt = head, now
+	return nil
+}
+
+func (r *repository) ListPushes(ctx context.Context, mergeRequestID int64) ([]*Push, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, merge_request_id, source, before_sha, head_sha, created_at FROM merge_request_pushes WHERE merge_request_id = ? ORDER BY id`, mergeRequestID)
+	if err != nil {
+		return nil, fmt.Errorf("listing pushes: %w", err)
+	}
+	return collect(rows, func(row rowScanner) (*Push, error) {
+		var p Push
+		err := row.Scan(&p.ID, &p.MergeRequestID, &p.Source, &p.BeforeSHA, &p.HeadSHA, &p.CreatedAt)
+		return &p, err
+	})
 }
 
 const reviewColumns = `id, merge_request_id, author, status, verdict, body, head_sha, workspace_id, run_id, agent_id, model, effort, auto_fix, error, created_at, updated_at`

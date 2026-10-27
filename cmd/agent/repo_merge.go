@@ -11,7 +11,9 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Merge request endpoints. Diff, file, merge and push run in a project's
@@ -124,6 +126,91 @@ func handleRepoDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, diff)
+}
+
+const (
+	// maxRepoLogCommits caps the commits a merge request lists.
+	maxRepoLogCommits = 250
+	// maxCommitSubjectBytes caps each listed commit's subject, which a
+	// sandbox's agent wrote.
+	maxCommitSubjectBytes = 500
+)
+
+type repoCommit struct {
+	SHA     string   `json:"sha"`
+	Parents []string `json:"parents"`
+	Author  string   `json:"author"`
+	// AuthoredAt is the commit's own author date, which whoever made the
+	// commit chose.
+	AuthoredAt time.Time `json:"authoredAt"`
+	Subject    string    `json:"subject"`
+}
+
+type repoLog struct {
+	Commits []repoCommit `json:"commits"`
+	// Truncated says head has more commits base lacks than were listed.
+	Truncated bool `json:"truncated"`
+}
+
+// handleRepoLog lists the commits head has that base lacks, newest first, the
+// way a merge request shows them.
+func handleRepoLog(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
+	defer cancel()
+
+	q := r.URL.Query()
+	baseSHA, err := resolveRev(ctx, q.Get("base"), "base")
+	if err != nil {
+		writeRevError(w, err)
+		return
+	}
+	headSHA, err := resolveRev(ctx, q.Get("head"), "head")
+	if err != nil {
+		writeRevError(w, err)
+		return
+	}
+	out, err := gitStdout(ctx, "log", "--topo-order", "--no-color", "--no-show-signature", "-z",
+		"--format=%H%x1f%P%x1f%an%x1f%at%x1f%s", "-n", strconv.Itoa(maxRepoLogCommits+1), headSHA, "^"+baseSHA)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "listing commits: "+err.Error())
+		return
+	}
+	result := parseRepoLog(out)
+	if len(result.Commits) > maxRepoLogCommits {
+		result.Commits, result.Truncated = result.Commits[:maxRepoLogCommits], true
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func parseRepoLog(out string) repoLog {
+	result := repoLog{Commits: []repoCommit{}}
+	for _, record := range strings.Split(strings.TrimSuffix(out, "\x00"), "\x00") {
+		fields := strings.SplitN(strings.TrimPrefix(record, "\n"), "\x1f", 5)
+		if len(fields) != 5 {
+			continue
+		}
+		parents := strings.Fields(fields[1])
+		if parents == nil {
+			parents = []string{}
+		}
+		c := repoCommit{SHA: fields[0], Parents: parents, Author: fields[2], Subject: truncateUTF8(fields[4], maxCommitSubjectBytes)}
+		if secs, err := strconv.ParseInt(fields[3], 10, 64); err == nil {
+			c.AuthoredAt = time.Unix(secs, 0).UTC()
+		}
+		result.Commits = append(result.Commits, c)
+	}
+	return result
+}
+
+// truncateUTF8 cuts s to at most n bytes without splitting a character.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func diffFiles(ctx context.Context, from, to string) ([]repoDiffFile, error) {

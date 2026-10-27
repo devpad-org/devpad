@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,7 @@ type fakeProjects struct {
 	files     []agent.RepoDiffFile
 	sandboxes []project.SandboxInput
 	diffs     [][2]string
+	logs      [][2]string
 	merges    []project.MergeInput
 	mergeErr  error
 	// landed, when set, is where a merge leaves its target instead of the
@@ -107,6 +109,13 @@ func (f *fakeProjects) Diff(_ context.Context, _, _ int64, base, head string) (*
 	defer f.mu.Unlock()
 	f.diffs = append(f.diffs, [2]string{base, head})
 	return &agent.RepoDiff{BaseSHA: base, HeadSHA: head, MergeBase: "mergebase", Files: f.files}, nil
+}
+
+func (f *fakeProjects) Log(_ context.Context, _, _ int64, base, head string) (*agent.RepoLog, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.logs = append(f.logs, [2]string{base, head})
+	return &agent.RepoLog{Commits: []agent.RepoCommit{{SHA: head, Parents: []string{base}, Subject: "work"}}}, nil
 }
 
 func (f *fakeProjects) CreateSandbox(_ context.Context, userID, projectID int64, in project.SandboxInput) (*workspace.Workspace, error) {
@@ -583,6 +592,9 @@ func TestMergeIntoAProtectedBranchMovesItsMergeRequest(t *testing.T) {
 	if got, _ := e.svc.repo.GetByID(ctx, release.ID); got.HeadSHA != "mergecommit" {
 		t.Fatalf("expected the release to follow develop, got %q", got.HeadSHA)
 	}
+	if pushes, _ := e.svc.repo.ListPushes(ctx, release.ID); len(pushes) != 1 || *pushes[0] != (Push{ID: pushes[0].ID, MergeRequestID: release.ID, Source: PushMerge, BeforeSHA: "d1", HeadSHA: "mergecommit", CreatedAt: pushes[0].CreatedAt}) {
+		t.Fatalf("expected the merge recorded as a push, got %+v", pushes)
+	}
 
 	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), release.ID, MergeInput{}); err != nil {
 		t.Fatalf("merge release: %v", err)
@@ -862,6 +874,72 @@ func TestBranchPublishedMovesTheOpenMergeRequest(t *testing.T) {
 	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head3")
 	if got, _ := e.svc.repo.GetByID(ctx, mr.ID); got.HeadSHA != "head2" || got.Status != StatusMerged {
 		t.Fatalf("a merged request moved: %+v", got)
+	}
+}
+
+func TestEachMoveOfTheHeadIsRecordedAsAPush(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	if d, err := e.svc.Get(ctx, e.owner, e.pid(), mr.ID); err != nil || len(d.Pushes) != 0 {
+		t.Fatalf("a new merge request has no pushes: %+v %v", d, err)
+	}
+
+	tk, _ := e.tasks.Get(ctx, e.owner, e.pid(), e.taskID)
+	tk.HeadSHA = "head2"
+	e.svc.TaskReadyForReview(ctx, tk, "")
+	// A round that changes nothing, and a publish of the same commit, move
+	// nothing.
+	e.svc.TaskReadyForReview(ctx, tk, "Still a cart.")
+	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head3")
+	e.svc.BranchPublished(ctx, e.stranger, e.pid(), "task/1", "evil")
+
+	d, err := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	type move struct {
+		source       PushSource
+		before, head string
+	}
+	var got []move
+	for _, p := range d.Pushes {
+		got = append(got, move{p.Source, p.BeforeSHA, p.HeadSHA})
+		if p.CreatedAt.IsZero() {
+			t.Errorf("push %d has no time", p.ID)
+		}
+	}
+	want := []move{{PushTask, "head1", "head2"}, {PushWorkspace, "head2", "head3"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("pushes = %+v, want %+v", got, want)
+	}
+	if d.MergeRequest.HeadSHA != "head3" || d.MergeRequest.Description != "Still a cart." {
+		t.Fatalf("unexpected merge request: %+v", d.MergeRequest)
+	}
+}
+
+func TestCommitsListFromTheTargetUntilMerged(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+
+	log, err := e.svc.Commits(ctx, e.owner, e.pid(), mr.ID)
+	if err != nil || len(log.Commits) != 1 || log.Commits[0].SHA != "head1" {
+		t.Fatalf("commits: %+v %v", log, err)
+	}
+	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if _, err := e.svc.Commits(ctx, e.owner, e.pid(), mr.ID); err != nil {
+		t.Fatalf("commits after merge: %v", err)
+	}
+	want := [][2]string{{"main", "head1"}, {"mergebase", "head1"}}
+	if !slices.Equal(e.projects.logs, want) {
+		t.Fatalf("logs = %v, want %v", e.projects.logs, want)
+	}
+	if _, err := e.svc.Commits(ctx, e.stranger, e.pid(), mr.ID); err == nil {
+		t.Fatal("a stranger listed the commits")
 	}
 }
 

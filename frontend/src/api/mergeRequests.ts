@@ -63,6 +63,37 @@ export interface ReviewComment {
   resolvedAt: string | null
 }
 
+// What moved a merge request's source branch: a task's agent finishing a
+// round, a publish from the project workspace, or a merge into the branch.
+export type PushSource = 'task' | 'workspace' | 'merge'
+
+// The source branch moving from beforeSha to headSha, at the time devpad
+// saw it.
+export interface Push {
+  id: number
+  source: PushSource
+  beforeSha: string
+  headSha: string
+  createdAt: string
+}
+
+// A commit the merge request proposes. authoredAt is the commit's own date,
+// which whoever made it chose.
+export interface Commit {
+  sha: string
+  parents: string[]
+  author: string
+  authoredAt: string
+  subject: string
+}
+
+// The commits a merge request proposes, newest first. truncated says there
+// were more than listed: the oldest are left out.
+export interface CommitLog {
+  commits: Commit[]
+  truncated: boolean
+}
+
 // What a merge request shows of its task.
 export interface MergeRequestTask {
   id: number
@@ -74,6 +105,8 @@ export interface MergeRequestTask {
 export interface MergeRequestDetail extends MergeRequest {
   reviews: Review[]
   comments: ReviewComment[]
+  // The moves of the source branch since it was opened, oldest first.
+  pushes: Push[]
   ahead: number
   behind: number
   task: MergeRequestTask | null
@@ -120,6 +153,10 @@ export const mergeRequestApi = {
 
   diff(projectId: number, id: number): Promise<RepoDiff> {
     return apiClient.get(`/api/projects/${projectId}/merge-requests/${id}/diff`)
+  },
+
+  commits(projectId: number, id: number): Promise<CommitLog> {
+    return apiClient.get(`/api/projects/${projectId}/merge-requests/${id}/commits`)
   },
 
   review(projectId: number, id: number, input: { verdict: Verdict; body: string; comments: CommentInput[]; sendToAgent: boolean }): Promise<{ review: Review }> {

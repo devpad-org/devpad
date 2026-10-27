@@ -3,10 +3,13 @@ import { projectApi, type RepoDiff, type RepoDiffFile, type WorkspaceBranchStatu
 import {
   mergeConflictsFromError,
   mergeRequestApi,
+  type Commit,
   type CommentInput,
+  type CommitLog,
   type MergeRequestDetail,
   type MergeStrategy,
   type NewComment,
+  type Push,
   type Review,
   type ReviewComment,
   type Verdict,
@@ -30,8 +33,18 @@ export interface Thread {
   replies: ReviewComment[]
 }
 
-// An entry in the activity timeline: a review's verdict, or a thread.
-export type TimelineItem = { kind: 'review'; at: string; review: Review } | { kind: 'thread'; at: string; thread: Thread }
+// A move of the source branch and the commits it added that are still on
+// the branch, newest first.
+export interface PushEvent {
+  push: Push
+  commits: Commit[]
+}
+
+// An entry in the activity timeline: a review's verdict, a thread, or a push.
+export type TimelineItem =
+  | { kind: 'review'; at: string; review: Review }
+  | { kind: 'thread'; at: string; thread: Thread }
+  | { kind: 'push'; at: string; event: PushEvent }
 
 // What the activity shows: everything, or only the threads still open.
 export type ActivityFilter = 'all' | 'open'
@@ -52,6 +65,9 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
 
   const mr = ref<MergeRequestDetail | null>(null)
   const diff = ref<RepoDiff | null>(null)
+  // The commits the merge request proposes, or null until they load or when
+  // the repo can't list them.
+  const commitLog = ref<CommitLog | null>(null)
   const loadError = ref('')
   const actionError = ref('')
   const notice = ref('')
@@ -128,11 +144,46 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   })
   const openThreads = computed(() => threads.value.filter((t) => !t.root.resolvedBy))
 
+  // Which push added each commit still on the branch: each push takes the
+  // commits its head reaches that its old head does not, newest push first
+  // so a commit pushed again after a rewrite sits with its latest push. What
+  // no push added, the merge request was opened with. Commit dates are left
+  // out of it, since whoever made a commit chose its date.
+  const commitGroups = computed(() => {
+    const commits = commitLog.value?.commits ?? []
+    const bySha = new Map(commits.map((c) => [c.sha, c]))
+    const reach = (sha: string) => {
+      const seen = new Set<string>()
+      const stack = [sha]
+      while (stack.length) {
+        const c = bySha.get(stack.pop() as string)
+        if (!c || seen.has(c.sha)) continue
+        seen.add(c.sha)
+        stack.push(...c.parents)
+      }
+      return seen
+    }
+    const assigned = new Set<string>()
+    const byPush = new Map<number, Commit[]>()
+    for (const push of [...(mr.value?.pushes ?? [])].reverse()) {
+      const before = reach(push.beforeSha)
+      const added = new Set([...reach(push.headSha)].filter((sha) => !before.has(sha) && !assigned.has(sha)))
+      for (const sha of added) assigned.add(sha)
+      byPush.set(push.id, commits.filter((c) => added.has(c.sha)))
+    }
+    return { opened: commits.filter((c) => !assigned.has(c.sha)), byPush }
+  })
+  const openedCommits = computed(() => commitGroups.value.opened)
+
   // A review's verdict sits where it was started, and each thread where it
-  // was started, so a review agent's threads follow its verdict card.
+  // was started, so a review agent's threads follow its verdict card. A
+  // push sits where devpad saw the branch move.
   const timeline = computed<TimelineItem[]>(() => {
     const items: TimelineItem[] = timelineReviews.value.map((review) => ({ kind: 'review', at: review.createdAt, review }))
     for (const thread of threads.value) items.push({ kind: 'thread', at: thread.root.createdAt, thread })
+    for (const push of mr.value?.pushes ?? []) {
+      items.push({ kind: 'push', at: push.createdAt, event: { push, commits: commitGroups.value.byPush.get(push.id) ?? [] } })
+    }
     return items.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
   })
 
@@ -355,7 +406,18 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     if (gen !== generation) return
     const headChanged = mr.value?.headSha !== res.mergeRequest.headSha || mr.value?.status !== res.mergeRequest.status
     mr.value = res.mergeRequest
-    if (headChanged || !diff.value) await loadDiff(gen)
+    if (headChanged || !diff.value) await Promise.all([loadDiff(gen), loadCommits(gen)])
+  }
+
+  // The commits only add to the timeline, so it shows without them when
+  // the repo can't list them.
+  async function loadCommits(gen: number) {
+    try {
+      const res = await mergeRequestApi.commits(projectId.value, mrId.value)
+      if (gen === generation) commitLog.value = res
+    } catch {
+      if (gen === generation) commitLog.value = null
+    }
   }
 
   async function loadDiff(gen: number) {
@@ -482,6 +544,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     generation++
     mr.value = null
     diff.value = null
+    commitLog.value = null
     workspaceBranch.value = null
     workspaceCheckedAt = 0
     fileCache.clear()
@@ -743,6 +806,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     project,
     mr,
     diff,
+    commitLog,
     loadError,
     actionError,
     notice,
@@ -784,6 +848,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     pendingAgentReview,
     timelineReviews,
     timeline,
+    openedCommits,
     threads,
     openThreads,
     task,

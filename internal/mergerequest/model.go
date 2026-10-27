@@ -147,11 +147,38 @@ func (c *Comment) Resolved() bool {
 	return c.ResolvedBy != ""
 }
 
-// Detail is a merge request with its reviews and comments.
+// PushSource is what moved a merge request's source branch.
+type PushSource string
+
+const (
+	// PushTask is a task's agent finishing a round.
+	PushTask PushSource = "task"
+	// PushWorkspace is a publish from the project workspace, by the user or
+	// its assistant.
+	PushWorkspace PushSource = "workspace"
+	// PushMerge is another merge request merged into the source branch.
+	PushMerge PushSource = "merge"
+)
+
+// Push records an open merge request's source branch moving from BeforeSHA
+// to HeadSHA, at the time devpad moved the merge request.
+type Push struct {
+	ID             int64
+	MergeRequestID int64
+	Source         PushSource
+	BeforeSHA      string
+	HeadSHA        string
+	CreatedAt      time.Time
+}
+
+// Detail is a merge request with its reviews, comments and pushes.
 type Detail struct {
 	MergeRequest *MergeRequest
 	Reviews      []*Review
 	Comments     []*Comment
+	// Pushes are the moves of the source branch after it was opened, oldest
+	// first.
+	Pushes []*Push
 	// Task is the merge request's task, nil when it has none or the task is
 	// gone.
 	Task *task.Task

@@ -86,7 +86,11 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		comments = append(comments, commentResponse(c))
 	}
 	body := mergeRequestResponse(d.MergeRequest)
-	body["reviews"], body["comments"] = reviews, comments
+	pushes := make([]map[string]any, 0, len(d.Pushes))
+	for _, p := range d.Pushes {
+		pushes = append(pushes, pushResponse(p))
+	}
+	body["reviews"], body["comments"], body["pushes"] = reviews, comments, pushes
 	body["ahead"], body["behind"] = d.Ahead, d.Behind
 	body["task"] = nil
 	if d.Task != nil {
@@ -108,6 +112,20 @@ func (h *Handler) HandleDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, diff)
+}
+
+// HandleCommits lists the commits a merge request proposes.
+func (h *Handler) HandleCommits(w http.ResponseWriter, r *http.Request) {
+	user, projectID, mrID, ok := params(w, r)
+	if !ok {
+		return
+	}
+	commits, err := h.service.Commits(r.Context(), user.ID, projectID, mrID)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, commits)
 }
 
 // HandleReview records the user's review.
@@ -395,6 +413,16 @@ func commentResponse(c *Comment) map[string]any {
 		"createdAt":  c.CreatedAt,
 		"resolvedBy": c.ResolvedBy,
 		"resolvedAt": c.ResolvedAt,
+	}
+}
+
+func pushResponse(p *Push) map[string]any {
+	return map[string]any{
+		"id":        p.ID,
+		"source":    p.Source,
+		"beforeSha": p.BeforeSHA,
+		"headSha":   p.HeadSHA,
+		"createdAt": p.CreatedAt,
 	}
 }
 

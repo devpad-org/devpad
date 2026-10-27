@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // RepoRef is a branch and the commit it points at.
@@ -184,6 +185,38 @@ func (c *Client) RepoDiff(ctx context.Context, base, head string) (*RepoDiff, er
 		return nil, err
 	}
 	return &diff, nil
+}
+
+// RepoCommit is a commit a merge request proposes.
+type RepoCommit struct {
+	SHA     string   `json:"sha"`
+	Parents []string `json:"parents"`
+	Author  string   `json:"author"`
+	// AuthoredAt is the commit's own date, which whoever made it chose.
+	AuthoredAt time.Time `json:"authoredAt"`
+	Subject    string    `json:"subject"`
+}
+
+// RepoLog lists the commits head has that base lacks, newest first.
+type RepoLog struct {
+	Commits []RepoCommit `json:"commits"`
+	// Truncated says there were more commits than the agent lists.
+	Truncated bool `json:"truncated"`
+}
+
+// RepoLog lists the commits head has that base lacks. Both are branch names
+// or full commit hashes.
+func (c *Client) RepoLog(ctx context.Context, base, head string) (*RepoLog, error) {
+	q := url.Values{"base": {base}, "head": {head}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/repo/log?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	var log RepoLog
+	if err := c.doRepoJSON(req, "repo log", &log); err != nil {
+		return nil, err
+	}
+	return &log, nil
 }
 
 // RepoFile returns a file's contents at a branch or full commit hash.

@@ -39,6 +39,7 @@ type Service interface {
 	SyncSandboxBase(ctx context.Context, userID, projectID, workspaceID int64) (*agent.RepoBranch, error)
 	Compare(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoComparison, error)
 	Diff(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoDiff, error)
+	Log(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoLog, error)
 	FileAt(ctx context.Context, userID, projectID int64, rev, path string) ([]byte, error)
 	Merge(ctx context.Context, userID, projectID int64, in MergeInput) (*agent.RepoMergeResult, error)
 	Push(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error)
@@ -929,6 +930,23 @@ func (s *service) Diff(ctx context.Context, userID, projectID int64, base, head 
 		return nil, err
 	}
 	return c.RepoDiff(ctx, base, head)
+}
+
+// Log lists the commits head has that base lacks in the canonical repo. Both
+// are branch names or full commit hashes.
+func (s *service) Log(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoLog, error) {
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !validRev(base) || !validRev(head) {
+		return nil, invalid("base and head must be branch names or commit hashes")
+	}
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoLog(ctx, base, head)
 }
 
 // FileAt returns a file's contents at a branch or commit of the canonical repo.

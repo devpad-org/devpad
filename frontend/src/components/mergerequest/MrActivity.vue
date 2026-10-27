@@ -3,19 +3,40 @@ import { computed, ref } from 'vue'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
+import MrCommits from './MrCommits.vue'
 import MrThread from './MrThread.vue'
-import { authorIcon, authorName, errorText, plural, reviewAction, reviewIcon, reviewTone, shortSha } from './format'
-import { useMergeRequest } from './useMergeRequest'
+import { authorIcon, authorName, errorText, plural, pushSummary, reviewAction, reviewIcon, reviewTone, shortSha } from './format'
+import { useMergeRequest, type TimelineItem } from './useMergeRequest'
 
-// The merge request's timeline: opened, each review's verdict, every
-// thread, on a line or on the whole change, and how it ended. It can show
-// only the threads still open, and ends with a box for a new comment.
-const { mr, isOpen, timeline, threads, openThreads, activityFilter, newComment, statusIcon, reviewCommentCount, postComment } = useMergeRequest()
+// The merge request's timeline: opened with its first commits, each push of
+// more, each review's verdict, every thread, on a line or on the whole
+// change, and how it ended. It can show only the threads still open, and
+// ends with a box for a new comment.
+const {
+  mr,
+  isOpen,
+  timeline,
+  openedCommits,
+  commitLog,
+  threads,
+  openThreads,
+  activityFilter,
+  newComment,
+  statusIcon,
+  reviewCommentCount,
+  postComment,
+} = useMergeRequest()
 
 const items = computed(() =>
   activityFilter.value === 'open' ? timeline.value.filter((item) => item.kind === 'thread' && !item.thread.root.resolvedBy) : timeline.value,
 )
 const showAll = computed(() => activityFilter.value === 'all')
+
+function itemKey(item: TimelineItem): string {
+  if (item.kind === 'review') return `review-${item.review.id}`
+  if (item.kind === 'push') return `push-${item.event.push.id}`
+  return `thread-${item.thread.root.id}`
+}
 
 const posting = ref(false)
 const commentError = ref('')
@@ -51,16 +72,20 @@ async function submitComment() {
       </div>
     </div>
     <ol class="timeline">
-      <li v-if="showAll" class="event event-small">
+      <li v-if="showAll" class="event" :class="{ 'event-small': !openedCommits.length }">
         <span class="event-node tone-active"><MrIcon name="open" :size="13" /></span>
-        <span class="event-line">
-          Opened from <span class="mono">{{ mr.sourceBranch }}</span>
-          <template v-if="mr.taskId"> by task #{{ mr.taskId }}</template>
-          <span class="muted" :title="fullTime(mr.createdAt)"> &middot; {{ timeAgo(mr.createdAt) }}</span>
-        </span>
+        <div class="event-content">
+          <span class="event-line">
+            Opened from <span class="mono">{{ mr.sourceBranch }}</span>
+            <template v-if="mr.taskId"> by task #{{ mr.taskId }}</template>
+            <template v-if="openedCommits.length"> with {{ plural(openedCommits.length, 'commit') }}</template>
+            <span class="muted" :title="fullTime(mr.createdAt)"> &middot; {{ timeAgo(mr.createdAt) }}</span>
+          </span>
+          <MrCommits v-if="openedCommits.length" :commits="openedCommits" :truncated="commitLog?.truncated" />
+        </div>
       </li>
 
-      <template v-for="item in items" :key="item.kind === 'review' ? `review-${item.review.id}` : `thread-${item.thread.root.id}`">
+      <template v-for="item in items" :key="itemKey(item)">
         <li v-if="item.kind === 'review'" class="event">
           <span class="event-node" :class="`tone-${reviewTone(item.review)}`">
             <MrIcon :name="reviewIcon(item.review)" :size="13" />
@@ -95,6 +120,17 @@ async function submitComment() {
               </RouterLink>
             </div>
           </article>
+        </li>
+
+        <li v-else-if="item.kind === 'push'" class="event" :class="{ 'event-small': !item.event.commits.length }">
+          <span class="event-node tone-neutral"><MrIcon name="commit" :size="13" /></span>
+          <div class="event-content">
+            <span class="event-line">
+              {{ pushSummary(item.event.push, item.event.commits.length, mr.sourceBranch) }}
+              <span class="muted" :title="fullTime(item.event.push.createdAt)"> &middot; {{ timeAgo(item.event.push.createdAt) }}</span>
+            </span>
+            <MrCommits v-if="item.event.commits.length" :commits="item.event.commits" />
+          </div>
         </li>
 
         <li v-else class="event">
@@ -208,6 +244,17 @@ async function submitComment() {
 .event-line {
   font-size: 0.8rem;
   color: var(--text-secondary);
+}
+
+.event-content {
+  min-width: 0;
+}
+
+/* Lines up the text with the middle of the node beside it, when commits
+ * follow it below. */
+.event:not(.event-small) .event-content > .event-line {
+  display: block;
+  padding-top: 5px;
 }
 
 .review-card {

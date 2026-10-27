@@ -484,6 +484,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/projects/{id}/merge-requests", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleCreate)))
 	mux.Handle("GET /api/projects/{id}/merge-requests/{mrId}", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleGet)))
 	mux.Handle("GET /api/projects/{id}/merge-requests/{mrId}/diff", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleDiff)))
+	mux.Handle("GET /api/projects/{id}/merge-requests/{mrId}/commits", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleCommits)))
 	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/reviews", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleReview)))
 	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/comments", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleComment)))
 	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/comments/{commentId}/resolve", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleResolveThread)))
