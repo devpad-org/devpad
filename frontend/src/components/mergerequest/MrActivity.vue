@@ -1,21 +1,57 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
-import MrReplies from './MrReplies.vue'
-import { authorIcon, authorName, reviewAction, reviewIcon, reviewTone, shortSha } from './format'
+import MrThread from './MrThread.vue'
+import { authorIcon, authorName, errorText, plural, reviewAction, reviewIcon, reviewTone, shortSha } from './format'
 import { useMergeRequest } from './useMergeRequest'
 
-// The merge request's timeline: opened, each review with its line comments,
-// comments on the whole change, the replies to both, and how it ended.
-const { mr, isOpen, timeline, repliesByComment, statusIcon, reviewComments, jumpToComment } = useMergeRequest()
+// The merge request's timeline: opened, each review's verdict, every
+// thread, on a line or on the whole change, and how it ended. It can show
+// only the threads still open, and ends with a box for a new comment.
+const { mr, isOpen, timeline, threads, openThreads, activityFilter, newComment, statusIcon, reviewCommentCount, postComment } = useMergeRequest()
+
+const items = computed(() =>
+  activityFilter.value === 'open' ? timeline.value.filter((item) => item.kind === 'thread' && !item.thread.root.resolvedBy) : timeline.value,
+)
+const showAll = computed(() => activityFilter.value === 'all')
+
+const posting = ref(false)
+const commentError = ref('')
+
+async function submitComment() {
+  const body = newComment.value.trim()
+  if (!body || posting.value) return
+  posting.value = true
+  commentError.value = ''
+  try {
+    await postComment({ body })
+    newComment.value = ''
+  } catch (e) {
+    commentError.value = errorText(e, 'Failed to comment')
+  } finally {
+    posting.value = false
+  }
+}
 </script>
 
 <template>
   <section v-if="mr" class="activity">
-    <h3 class="form-label activity-title">Activity</h3>
+    <div class="activity-head">
+      <h3 class="form-label">Activity</h3>
+      <div v-if="threads.length" class="segmented" role="radiogroup" aria-label="Show">
+        <button type="button" role="radio" class="segment" :class="{ active: showAll }" :aria-checked="showAll" @click="activityFilter = 'all'">
+          All activity
+        </button>
+        <button type="button" role="radio" class="segment" :class="{ active: !showAll }" :aria-checked="!showAll" @click="activityFilter = 'open'">
+          Open threads
+          <span class="segment-count">{{ openThreads.length }}</span>
+        </button>
+      </div>
+    </div>
     <ol class="timeline">
-      <li class="event event-small">
+      <li v-if="showAll" class="event event-small">
         <span class="event-node tone-active"><MrIcon name="open" :size="13" /></span>
         <span class="event-line">
           Opened from <span class="mono">{{ mr.sourceBranch }}</span>
@@ -24,7 +60,7 @@ const { mr, isOpen, timeline, repliesByComment, statusIcon, reviewComments, jump
         </span>
       </li>
 
-      <template v-for="item in timeline" :key="item.kind === 'review' ? `review-${item.review.id}` : `comment-${item.comment.id}`">
+      <template v-for="item in items" :key="item.kind === 'review' ? `review-${item.review.id}` : `thread-${item.thread.root.id}`">
         <li v-if="item.kind === 'review'" class="event">
           <span class="event-node" :class="`tone-${reviewTone(item.review)}`">
             <MrIcon :name="reviewIcon(item.review)" :size="13" />
@@ -40,29 +76,15 @@ const { mr, isOpen, timeline, repliesByComment, statusIcon, reviewComments, jump
                 <span class="muted" :title="fullTime(item.review.createdAt)">&middot; {{ timeAgo(item.review.createdAt) }}</span>
               </span>
               <span class="card-header-end">
+                <span v-if="reviewCommentCount(item.review)" class="tag">{{ plural(reviewCommentCount(item.review), 'comment') }}</span>
                 <span v-if="item.review.model" class="tag">{{ item.review.model }}</span>
                 <span v-if="item.review.headSha && item.review.headSha !== mr.headSha" class="tag tag-outdated" :title="`Reviewed ${shortSha(item.review.headSha)}`">outdated</span>
                 <span v-if="item.review.status === 'pending'" class="spinner spinner-sm" />
               </span>
             </div>
-            <div
-              v-if="item.review.error || item.review.body || reviewComments(item.review).length || (item.review.workspaceId && item.review.status === 'pending')"
-              class="card-body"
-            >
+            <div v-if="item.review.error || item.review.body || (item.review.workspaceId && item.review.status === 'pending')" class="card-body">
               <p v-if="item.review.error" class="notice notice-error">{{ item.review.error }}</p>
               <MarkdownMessage v-if="item.review.body" :content="item.review.body" />
-              <div v-if="reviewComments(item.review).length" class="thread-list">
-                <div v-for="c in reviewComments(item.review)" :key="c.id" class="thread">
-                  <button class="thread-location" :title="`Open ${c.path} at line ${c.line}`" @click="jumpToComment(c.path, c.line)">
-                    <MrIcon name="file" :size="12" />
-                    <span class="mono">{{ c.path }}</span>
-                    <span class="line-chip">L{{ c.line }}</span>
-                    <MrIcon name="chevron-right" :size="12" class="thread-go" />
-                  </button>
-                  <div class="thread-body"><MarkdownMessage :content="c.body" /></div>
-                  <MrReplies v-if="repliesByComment.get(c.id)" :replies="repliesByComment.get(c.id)!" />
-                </div>
-              </div>
               <RouterLink
                 v-if="item.review.workspaceId && item.review.status === 'pending'"
                 class="btn btn-secondary btn-sm watch-link"
@@ -76,30 +98,14 @@ const { mr, isOpen, timeline, repliesByComment, statusIcon, reviewComments, jump
         </li>
 
         <li v-else class="event">
-          <span class="event-node tone-neutral">
-            <MrIcon name="comment" :size="13" />
+          <span class="event-node" :class="item.thread.root.resolvedBy ? 'tone-success' : 'tone-neutral'">
+            <MrIcon :name="item.thread.root.resolvedBy ? 'check-circle' : 'comment'" :size="13" />
           </span>
-          <article class="card comment-card">
-            <div class="card-header">
-              <span class="avatar" :class="`avatar-${item.comment.author}`">
-                <MrIcon :name="authorIcon(item.comment.author)" :size="13" />
-              </span>
-              <span class="card-header-text">
-                <strong>{{ authorName(item.comment.author) }}</strong>
-                <span>commented</span>
-                <span class="muted" :title="fullTime(item.comment.createdAt)">&middot; {{ timeAgo(item.comment.createdAt) }}</span>
-              </span>
-              <span class="card-header-end">
-                <span v-if="item.comment.headSha && item.comment.headSha !== mr.headSha" class="tag tag-outdated" :title="`On ${shortSha(item.comment.headSha)}`">outdated</span>
-              </span>
-            </div>
-            <div class="card-body"><MarkdownMessage :content="item.comment.body" /></div>
-            <MrReplies v-if="repliesByComment.get(item.comment.id)" :replies="repliesByComment.get(item.comment.id)!" />
-          </article>
+          <MrThread :thread="item.thread" />
         </li>
       </template>
 
-      <li v-if="mr.status !== 'open'" class="event event-small">
+      <li v-if="showAll && mr.status !== 'open'" class="event event-small">
         <span class="event-node" :class="mr.status === 'merged' ? 'tone-success' : 'tone-neutral'">
           <MrIcon :name="statusIcon" :size="13" />
         </span>
@@ -114,20 +120,39 @@ const { mr, isOpen, timeline, repliesByComment, statusIcon, reviewComments, jump
           </template>
         </span>
       </li>
+
+      <li v-if="isOpen && showAll && timeline.length === 0" class="event event-small">
+        <span class="event-node tone-neutral"><MrIcon name="comment" :size="13" /></span>
+        <span class="event-line">No reviews or comments yet. Use <strong>Review</strong> above, or start an agent review from the sidebar.</span>
+      </li>
+
+      <li v-if="isOpen && showAll" class="event">
+        <span class="event-node tone-active"><MrIcon name="user" :size="13" /></span>
+        <form class="card composer" @submit.prevent="submitComment">
+          <textarea
+            v-model="newComment"
+            class="form-input form-textarea"
+            rows="3"
+            placeholder="Comment on the merge request... (Markdown)"
+            aria-label="New comment"
+            @keydown.meta.enter.prevent="submitComment"
+            @keydown.ctrl.enter.prevent="submitComment"
+          />
+          <div class="composer-footer">
+            <span v-if="commentError" class="form-error">{{ commentError }}</span>
+            <span v-else class="form-hint">Starts a thread that can be replied to and resolved. To comment on a line, click its number on the Changes tab.</span>
+            <button type="submit" class="btn btn-primary btn-sm" :disabled="posting || !newComment.trim()">Comment</button>
+          </div>
+        </form>
+      </li>
     </ol>
-    <p v-if="timeline.length === 0 && isOpen" class="empty-text timeline-empty">
-      No reviews yet. Use <strong>Review</strong> above, or start an agent review from the sidebar.
-    </p>
+    <p v-if="!showAll && items.length === 0" class="empty-text timeline-empty">Every thread is resolved.</p>
   </section>
 </template>
 
 <style scoped src="@/components/project/shared.css"></style>
 <style scoped src="./mergerequest.css"></style>
 <style scoped>
-.activity-title {
-  margin-bottom: var(--space-3);
-}
-
 .timeline {
   list-style: none;
   position: relative;
@@ -189,10 +214,6 @@ const { mr, isOpen, timeline, repliesByComment, statusIcon, reviewComments, jump
   border-left-width: 2px;
 }
 
-.comment-card {
-  overflow: hidden;
-}
-
 .edge-success {
   border-left-color: var(--success);
 }
@@ -213,65 +234,45 @@ const { mr, isOpen, timeline, repliesByComment, statusIcon, reviewComments, jump
   border-left-color: var(--error);
 }
 
-.thread-list {
+.activity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.activity-head .form-label {
+  margin: 0;
+}
+
+.segment-count {
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-neutral);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.composer {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  margin-top: var(--space-3);
+  padding: var(--space-3);
 }
 
-.thread-list:first-child {
-  margin-top: 0;
-}
-
-.thread {
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-
-.thread-location {
+.composer-footer {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 5px var(--space-3);
-  background: var(--bg-raised);
-  color: var(--text-secondary);
-  text-align: left;
-  transition: all var(--transition-fast);
+  justify-content: space-between;
+  gap: var(--space-3);
 }
 
-.thread-location .mono {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.thread-location:hover {
-  color: var(--text-primary);
-  background: color-mix(in srgb, var(--accent-blue) 10%, var(--bg-raised));
-}
-
-.thread-go {
-  margin-left: auto;
-  opacity: 0;
-  transition: opacity var(--transition-fast);
-}
-
-.thread-location:hover .thread-go {
-  opacity: 1;
-}
-
-.thread-body {
-  padding: var(--space-2) var(--space-3);
-  font-size: 0.82rem;
-}
-
-/* Replies to a line comment sit inside its thread. */
-.thread :deep(.replies) {
-  background: color-mix(in srgb, var(--bg-raised) 50%, transparent);
+.composer-footer .form-hint,
+.composer-footer .form-error {
+  margin: 0;
 }
 
 .watch-link {

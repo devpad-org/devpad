@@ -7,12 +7,13 @@ import { useMergeRequest } from './useMergeRequest'
 // The Send back button and the popover that starts the task's agent again
 // on the feedback for the current commit, with a note from the user.
 // Escape closes it through the modal, which knows what is on top.
-const { busy, sendBackOpen, sendBackNote, sendBackError, sendBackReviews, reviewComments, sendBack } = useMergeRequest()
+const { busy, sendBackOpen, sendBackNote, sendBackError, sendBackReviews, openThreads, sendBack } = useMergeRequest()
 
 const box = ref<HTMLElement | null>(null)
 const input = ref<HTMLTextAreaElement | null>(null)
 
-const lineComments = computed(() => sendBackReviews.value.reduce((n, r) => n + reviewComments(r).length, 0))
+// Feedback the agent gets without a note: reviews of this commit, or threads left open.
+const hasFeedback = computed(() => sendBackReviews.value.length > 0 || openThreads.value.length > 0)
 
 watch(sendBackOpen, (open) => {
   sendBackError.value = ''
@@ -46,9 +47,12 @@ onUnmounted(() => {
             <MrIcon name="close" :size="14" />
           </button>
         </div>
-        <p v-if="sendBackReviews.length" class="form-hint pop-hint">
-          The agent gets the {{ plural(sendBackReviews.length, 'review') }} of this commit<template v-if="lineComments">
-            with {{ plural(lineComments, 'line comment') }}</template>, and can read and reply to every comment.
+        <p v-if="hasFeedback" class="form-hint pop-hint">
+          The agent gets
+          <template v-if="sendBackReviews.length">the {{ plural(sendBackReviews.length, 'review') }} of this commit</template>
+          <template v-if="sendBackReviews.length && openThreads.length"> and </template>
+          <template v-if="openThreads.length">the {{ plural(openThreads.length, 'open thread') }}</template>, and can read and
+          reply to every comment. Resolved threads are left out.
         </p>
         <p v-else class="form-hint pop-hint">
           Nothing on this commit has been reviewed yet, so tell the agent what to change. It can read and reply to every earlier comment.
@@ -58,7 +62,7 @@ onUnmounted(() => {
           v-model="sendBackNote"
           class="form-input form-textarea"
           rows="4"
-          :placeholder="sendBackReviews.length ? 'Anything to add? (optional, Markdown)' : 'What should the agent change? (Markdown)'"
+          :placeholder="hasFeedback ? 'Anything to add? (optional, Markdown)' : 'What should the agent change? (Markdown)'"
           aria-label="Note for the agent"
           @keydown.meta.enter.prevent="sendBack"
           @keydown.ctrl.enter.prevent="sendBack"

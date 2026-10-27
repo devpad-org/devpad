@@ -138,6 +138,11 @@
   background: color-mix(in srgb, var(--accent-green) 16%, transparent);
 }
 
+.avatar-assistant {
+  color: var(--accent-amber);
+  background: color-mix(in srgb, var(--accent-amber) 16%, transparent);
+}
+
 .tag {
   padding: 0 6px;
   border-radius: var(--radius-sm);

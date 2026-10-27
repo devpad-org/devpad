@@ -141,6 +141,55 @@ func (h *Handler) HandleReview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"review": reviewResponse(rv)})
 }
 
+// HandleComment leaves the user's comment at once, outside a review: a
+// reply in a thread, or a new thread on a line or on the whole change.
+func (h *Handler) HandleComment(w http.ResponseWriter, r *http.Request) {
+	user, projectID, mrID, ok := params(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		ReplyTo int64  `json:"replyTo"`
+		Path    string `json:"path"`
+		Line    int    `json:"line"`
+		Body    string `json:"body"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	c, err := h.service.Comment(r.Context(), user.ID, projectID, mrID, UserCommentInput(req))
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"comment": commentResponse(c)})
+}
+
+// HandleResolveThread resolves the thread a comment is in, or opens it
+// again, and returns the thread's first comment.
+func (h *Handler) HandleResolveThread(w http.ResponseWriter, r *http.Request) {
+	user, projectID, mrID, ok := params(w, r)
+	if !ok {
+		return
+	}
+	commentID, ok := pathID(w, r, "commentId")
+	if !ok {
+		return
+	}
+	var req struct {
+		Resolved bool `json:"resolved"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	c, err := h.service.ResolveThread(r.Context(), user.ID, projectID, mrID, commentID, req.Resolved)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"comment": commentResponse(c)})
+}
+
 // HandleAgentReview starts a review agent.
 func (h *Handler) HandleAgentReview(w http.ResponseWriter, r *http.Request) {
 	user, projectID, mrID, ok := params(w, r)
@@ -335,15 +384,17 @@ func reviewResponse(rv *Review) map[string]any {
 
 func commentResponse(c *Comment) map[string]any {
 	return map[string]any{
-		"id":        c.ID,
-		"reviewId":  c.ReviewID,
-		"replyTo":   c.ReplyTo,
-		"author":    c.Author,
-		"path":      c.Path,
-		"line":      c.Line,
-		"body":      c.Body,
-		"headSha":   c.HeadSHA,
-		"createdAt": c.CreatedAt,
+		"id":         c.ID,
+		"reviewId":   c.ReviewID,
+		"replyTo":    c.ReplyTo,
+		"author":     c.Author,
+		"path":       c.Path,
+		"line":       c.Line,
+		"body":       c.Body,
+		"headSha":    c.HeadSHA,
+		"createdAt":  c.CreatedAt,
+		"resolvedBy": c.ResolvedBy,
+		"resolvedAt": c.ResolvedAt,
 	}
 }
 

@@ -39,6 +39,11 @@ export function authorName(author: CommentAuthor): string {
   return 'You'
 }
 
+// Who resolved a thread, for the middle of a sentence.
+export function resolverName(author: CommentAuthor | ''): string {
+  return !author || author === 'user' ? 'you' : authorName(author).toLowerCase()
+}
+
 export function authorIcon(author: CommentAuthor): MrIconName {
   return author === 'user' ? 'user' : 'bot'
 }

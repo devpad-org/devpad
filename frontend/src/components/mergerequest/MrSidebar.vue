@@ -117,7 +117,7 @@ function closeMergeRequest() {
     <section v-if="isOpen" class="side-section">
       <h3 class="side-title">Agent review</h3>
       <p class="form-hint side-hint">
-        An agent reads the change in its own sandbox and leaves line comments and a verdict.
+        An agent reads the change in its own sandbox, leaves comments and a verdict, and resolves the threads the change addresses.
       </p>
       <AgentModelPicker v-model:model="agentModel" v-model:effort="agentEffort" :agent-id="REVIEW_AGENT_ID" class="side-picker" />
       <label v-if="mr.taskId" class="form-check side-check">

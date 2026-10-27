@@ -48,7 +48,8 @@ export type CommentAuthor = Review['author'] | 'task_agent' | 'assistant'
 export interface ReviewComment {
   id: number
   reviewId: number
-  // The first comment of the thread this one answers, or 0.
+  // The first comment of the thread this one answers, or 0 when this one
+  // starts a thread.
   replyTo: number
   author: CommentAuthor
   path: string
@@ -56,6 +57,10 @@ export interface ReviewComment {
   body: string
   headSha: string
   createdAt: string
+  // Who resolved the thread this comment starts, and when; empty while it
+  // is open, and always on a reply.
+  resolvedBy: CommentAuthor | ''
+  resolvedAt: string | null
 }
 
 // What a merge request shows of its task.
@@ -78,6 +83,15 @@ export interface CommentInput {
   path: string
   line: number
   body: string
+}
+
+// A comment left at once, outside a review: a reply in the thread of
+// replyTo, else a new thread on a line of path, or on the whole change.
+export interface NewComment {
+  body: string
+  replyTo?: number
+  path?: string
+  line?: number
 }
 
 export interface MergeResult {
@@ -110,6 +124,16 @@ export const mergeRequestApi = {
 
   review(projectId: number, id: number, input: { verdict: Verdict; body: string; comments: CommentInput[]; sendToAgent: boolean }): Promise<{ review: Review }> {
     return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/reviews`, input)
+  },
+
+  comment(projectId: number, id: number, input: NewComment): Promise<{ comment: ReviewComment }> {
+    return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/comments`, input)
+  },
+
+  // Resolves the thread a comment is in, or opens it again, and returns the
+  // thread's first comment.
+  resolveThread(projectId: number, id: number, commentId: number, resolved: boolean): Promise<{ comment: ReviewComment }> {
+    return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/comments/${commentId}/resolve`, { resolved })
   },
 
   startAgentReview(projectId: number, id: number, input: AgentSettings & { autoFix: boolean }): Promise<{ review: Review }> {

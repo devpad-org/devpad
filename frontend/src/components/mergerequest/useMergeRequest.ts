@@ -6,6 +6,7 @@ import {
   type CommentInput,
   type MergeRequestDetail,
   type MergeStrategy,
+  type NewComment,
   type Review,
   type ReviewComment,
   type Verdict,
@@ -22,9 +23,18 @@ const WORKSPACE_CHECK_MS = 15000
 
 export type Section = 'overview' | 'changes'
 
-// An entry in the activity timeline: a review, or a comment on the whole
-// change that is not part of one.
-export type TimelineItem = { kind: 'review'; at: string; review: Review } | { kind: 'comment'; at: string; comment: ReviewComment }
+// A comment that starts a thread, on a line or on the whole change, and the
+// replies to it, oldest first. The first comment carries the resolution.
+export interface Thread {
+  root: ReviewComment
+  replies: ReviewComment[]
+}
+
+// An entry in the activity timeline: a review's verdict, or a thread.
+export type TimelineItem = { kind: 'review'; at: string; review: Review } | { kind: 'thread'; at: string; thread: Thread }
+
+// What the activity shows: everything, or only the threads still open.
+export type ActivityFilter = 'all' | 'open'
 
 export interface Check {
   key: string
@@ -71,6 +81,12 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   const draftFocus = ref(0)
   const sendToAgent = ref(true)
 
+  // Comments being written outside a review: one on the whole change, and a
+  // reply for each thread, by its first comment's id.
+  const newComment = ref('')
+  const replyDrafts = ref<Record<number, string>>({})
+  const activityFilter = ref<ActivityFilter>('all')
+
   const agentModel = ref('')
   const agentEffort = ref('')
   const autoFix = ref(true)
@@ -98,24 +114,25 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   const pendingAgentReview = computed(() => mr.value?.reviews.some((r) => r.author === 'agent' && r.status === 'pending') ?? false)
   const timelineReviews = computed(() => [...(mr.value?.reviews ?? [])].sort((a, b) => a.id - b.id))
 
-  // Replies to each comment that starts a thread, oldest first.
-  const repliesByComment = computed(() => {
-    const byParent = new Map<number, ReviewComment[]>()
-    for (const c of mr.value?.comments ?? []) {
-      if (!c.replyTo) continue
-      const list = byParent.get(c.replyTo) ?? []
-      list.push(c)
-      byParent.set(c.replyTo, list)
+  // Every thread, oldest first.
+  const threads = computed<Thread[]>(() => {
+    const comments = [...(mr.value?.comments ?? [])].sort((a, b) => a.id - b.id)
+    const byRoot = new Map<number, Thread>()
+    for (const c of comments) {
+      if (!c.replyTo) byRoot.set(c.id, { root: c, replies: [] })
     }
-    for (const list of byParent.values()) list.sort((a, b) => a.id - b.id)
-    return byParent
+    for (const c of comments) {
+      if (c.replyTo) byRoot.get(c.replyTo)?.replies.push(c)
+    }
+    return [...byRoot.values()]
   })
+  const openThreads = computed(() => threads.value.filter((t) => !t.root.resolvedBy))
 
+  // A review's verdict sits where it was started, and each thread where it
+  // was started, so a review agent's threads follow its verdict card.
   const timeline = computed<TimelineItem[]>(() => {
     const items: TimelineItem[] = timelineReviews.value.map((review) => ({ kind: 'review', at: review.createdAt, review }))
-    for (const comment of mr.value?.comments ?? []) {
-      if (!comment.reviewId && !comment.replyTo) items.push({ kind: 'comment', at: comment.createdAt, comment })
-    }
+    for (const thread of threads.value) items.push({ kind: 'thread', at: thread.root.createdAt, thread })
     return items.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
   })
 
@@ -159,12 +176,17 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     }),
   )
 
-  // Unsubmitted review text or line comments, which closing the modal would lose.
-  // Only an open merge request can still be reviewed.
+  // Unsubmitted review text, comments or replies, which closing the modal
+  // would lose. Only an open merge request can still be commented on.
   const hasDraft = computed(
     () =>
       isOpen.value &&
-      (reviewBody.value.trim() !== '' || drafts.value.length > 0 || draftBody.value.trim() !== '' || sendBackNote.value.trim() !== ''),
+      (reviewBody.value.trim() !== '' ||
+        drafts.value.length > 0 ||
+        draftBody.value.trim() !== '' ||
+        sendBackNote.value.trim() !== '' ||
+        newComment.value.trim() !== '' ||
+        Object.values(replyDrafts.value).some((d) => d.trim() !== '')),
   )
 
   // Files sorted so each directory's files sit together, as a tree would show them.
@@ -188,22 +210,25 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   const selectedIndex = computed(() => orderedFiles.value.findIndex((f) => f.path === selectedPath.value))
   const selectedFile = computed(() => orderedFiles.value[selectedIndex.value] ?? null)
 
-  const commentsByPath = computed(() => {
-    const byPath = new Map<string, ReviewComment[]>()
-    for (const c of mr.value?.comments ?? []) {
-      const list = byPath.get(c.path) ?? []
-      list.push(c)
-      byPath.set(c.path, list)
+  // Each file's line threads, in line order.
+  const threadsByPath = computed(() => {
+    const byPath = new Map<string, Thread[]>()
+    for (const t of threads.value) {
+      if (!t.root.path) continue
+      const list = byPath.get(t.root.path) ?? []
+      list.push(t)
+      byPath.set(t.root.path, list)
     }
-    // Each reply follows the comment it answers.
-    for (const list of byPath.values()) list.sort((a, b) => a.line - b.line || (a.replyTo || a.id) - (b.replyTo || b.id) || a.id - b.id)
+    for (const list of byPath.values()) list.sort((a, b) => a.root.line - b.root.line || a.root.id - b.root.id)
     return byPath
   })
 
-  const selectedComments = computed(() => commentsByPath.value.get(selectedPath.value) ?? [])
+  const selectedThreads = computed(() => threadsByPath.value.get(selectedPath.value) ?? [])
   const selectedDrafts = computed(() => drafts.value.filter((d) => d.path === selectedPath.value))
+  // Lines of the current version with an open thread or a pending comment.
+  // A thread on an older version may point at a line that has moved since.
   const markedLines = computed(() => [
-    ...selectedComments.value.filter((c) => c.headSha === mr.value?.headSha).map((c) => c.line),
+    ...selectedThreads.value.filter((t) => !t.root.resolvedBy && t.root.headSha === mr.value?.headSha).map((t) => t.root.line),
     ...selectedDrafts.value.map((d) => d.line),
   ])
 
@@ -241,6 +266,18 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
       list.push({ key: 'review', tone: 'warning', icon: 'clock', title: 'Approved an older commit', detail: 'New commits landed after the approval.' })
     } else {
       list.push({ key: 'review', tone: 'neutral', icon: 'comment', title: 'Not approved yet', detail: 'Review the changes or ask an agent to.' })
+    }
+    const open = openThreads.value.length
+    if (open > 0) {
+      list.push({
+        key: 'threads',
+        tone: 'warning',
+        icon: 'comment',
+        title: plural(open, 'open thread'),
+        detail: 'Resolve the threads that are addressed, or have a review agent check them.',
+      })
+    } else if (threads.value.length > 0) {
+      list.push({ key: 'threads', tone: 'success', icon: 'check-circle', title: 'All threads resolved' })
     }
     if (pendingAgentReview.value) {
       list.push({ key: 'agent', tone: 'active', icon: 'bot', title: 'Agent review in progress', detail: 'An agent is reading the change.', spin: true })
@@ -292,12 +329,15 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     return 'open'
   })
 
+  // A file's open threads and pending comments.
   function commentCount(path: string): number {
-    return (commentsByPath.value.get(path)?.length ?? 0) + drafts.value.filter((d) => d.path === path).length
+    const open = threadsByPath.value.get(path)?.filter((t) => !t.root.resolvedBy).length ?? 0
+    return open + drafts.value.filter((d) => d.path === path).length
   }
 
-  function reviewComments(review: Review): ReviewComment[] {
-    return (mr.value?.comments ?? []).filter((c) => c.reviewId === review.id).sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
+  // How many comments a review left, its replies in others' threads included.
+  function reviewCommentCount(review: Review): number {
+    return (mr.value?.comments ?? []).filter((c) => c.reviewId === review.id).length
   }
 
   function showNotice(text: string) {
@@ -433,6 +473,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
       draftLine.value = null
       draftBody.value = ''
       draftError.value = ''
+      newComment.value = ''
+      replyDrafts.value = {}
     },
   )
 
@@ -449,6 +491,9 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     reviewOpen.value = false
     sendBackOpen.value = false
     sendBackNote.value = ''
+    newComment.value = ''
+    replyDrafts.value = {}
+    activityFilter.value = 'all'
     void refresh()
   })
 
@@ -470,6 +515,56 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
 
   function removeDraft(draft: CommentInput) {
     drafts.value = drafts.value.filter((d) => d !== draft)
+  }
+
+  // Leaves a comment at once, outside a review. It throws, so the form that
+  // sent it can say what went wrong where it is.
+  async function postComment(input: NewComment) {
+    await mergeRequestApi.comment(projectId.value, mrId.value, input)
+    await refresh()
+  }
+
+  // Posts the line comment being written on the Changes tab at once,
+  // instead of holding it for the review.
+  async function commentNow() {
+    const line = Number(draftLine.value)
+    if (!selectedPath.value || !Number.isInteger(line) || line < 1) {
+      draftError.value = 'Pick a line in the new version of the file'
+      return
+    }
+    if (!draftBody.value.trim()) {
+      draftError.value = 'A comment needs some text'
+      return
+    }
+    draftError.value = ''
+    try {
+      await postComment({ path: selectedPath.value, line, body: draftBody.value.trim() })
+      draftLine.value = null
+      draftBody.value = ''
+    } catch (e) {
+      draftError.value = errorText(e, 'Failed to comment')
+    }
+  }
+
+  // Replies in a thread, resolving it or opening it again after when
+  // toggle is set. The reply stands even if the toggle fails.
+  async function reply(thread: Thread, toggle: boolean) {
+    const id = thread.root.id
+    const body = (replyDrafts.value[id] ?? '').trim()
+    if (body) {
+      await mergeRequestApi.comment(projectId.value, mrId.value, { replyTo: id, body })
+      delete replyDrafts.value[id]
+    }
+    try {
+      if (toggle) await mergeRequestApi.resolveThread(projectId.value, mrId.value, id, !thread.root.resolvedBy)
+    } finally {
+      await refresh()
+    }
+  }
+
+  async function setResolved(thread: Thread, resolved: boolean) {
+    await mergeRequestApi.resolveThread(projectId.value, mrId.value, thread.root.id, resolved)
+    await refresh()
   }
 
   async function act(action: () => Promise<void>, error = actionError) {
@@ -582,7 +677,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   }
 
   function sendBack() {
-    if (!sendBackNote.value.trim() && sendBackReviews.value.length === 0) {
+    if (!sendBackNote.value.trim() && sendBackReviews.value.length === 0 && openThreads.value.length === 0) {
       sendBackError.value = 'There is no feedback on this commit yet: tell the agent what to change'
       return
     }
@@ -671,6 +766,9 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     draftError,
     draftFocus,
     sendToAgent,
+    newComment,
+    replyDrafts,
+    activityFilter,
     agentModel,
     agentEffort,
     autoFix,
@@ -686,7 +784,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     pendingAgentReview,
     timelineReviews,
     timeline,
-    repliesByComment,
+    threads,
+    openThreads,
     task,
     taskWorking,
     canSendBack,
@@ -701,7 +800,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     fileGroups,
     selectedIndex,
     selectedFile,
-    selectedComments,
+    selectedThreads,
     selectedDrafts,
     markedLines,
     latestReviews,
@@ -710,7 +809,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     strategies,
     statusIcon,
     commentCount,
-    reviewComments,
+    reviewCommentCount,
     refresh,
     selectFile,
     stepFile,
@@ -718,6 +817,10 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     startComment,
     addDraft,
     removeDraft,
+    postComment,
+    commentNow,
+    reply,
+    setResolved,
     submitReview,
     startAgentReview,
     rereview,

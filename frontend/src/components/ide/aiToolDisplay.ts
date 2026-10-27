@@ -132,6 +132,8 @@ export function toolFriendlyName(name: string): string {
       return 'Read merge request'
     case 'comment_on_line':
       return 'Comment on line'
+    case 'resolve_comment_thread':
+      return 'Resolve thread'
     case 'submit_review':
       return 'Submit review'
     case 'read_merge_request_comments':

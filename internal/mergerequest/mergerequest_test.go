@@ -710,7 +710,7 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 		t.Fatal("expected the review budget to be $5")
 	}
 
-	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID); len(got) != 3 {
+	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID); len(got) != len(reviewTools) {
 		t.Fatalf("expected the review tools in the review sandbox, got %d", len(got))
 	}
 	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID+1); got != nil {
@@ -961,6 +961,8 @@ func TestHandler(t *testing.T) {
 	mux.HandleFunc("POST /api/projects/{id}/merge-requests/{mrId}/reviews", h.HandleReview)
 	mux.HandleFunc("POST /api/projects/{id}/merge-requests/{mrId}/merge", h.HandleMerge)
 	mux.HandleFunc("POST /api/projects/{id}/merge-requests/{mrId}/send-back", h.HandleSendBack)
+	mux.HandleFunc("POST /api/projects/{id}/merge-requests/{mrId}/comments", h.HandleComment)
+	mux.HandleFunc("POST /api/projects/{id}/merge-requests/{mrId}/comments/{commentId}/resolve", h.HandleResolveThread)
 
 	do := func(userID int64, method, path, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -997,6 +999,15 @@ func TestHandler(t *testing.T) {
 		t.Fatalf("expected the task in the detail: %s", rec.Body)
 	}
 
+	rec = do(e.owner, http.MethodPost, one+"/comments", `{"replyTo":`+itoa(int64(got.MergeRequest.Comments[0]["id"].(float64)))+`,"body":"Fixed."}`)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"replyTo":1`) {
+		t.Fatalf("reply: %d %s", rec.Code, rec.Body)
+	}
+	rec = do(e.owner, http.MethodPost, one+"/comments/2/resolve", `{"resolved":true}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":1`) || !strings.Contains(rec.Body.String(), `"resolvedBy":"user"`) {
+		t.Fatalf("resolve: %d %s", rec.Code, rec.Body)
+	}
+
 	e.projects.mergeErr = &agent.AgentError{StatusCode: http.StatusConflict, Message: "task/1 conflicts with main", Conflicts: []string{"cart.go"}}
 	rec = do(e.owner, http.MethodPost, one+"/merge", "")
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"conflicts":["cart.go"]`) {
@@ -1016,6 +1027,10 @@ func TestHandler(t *testing.T) {
 		{"other user's project", e.stranger, http.MethodGet, base, "", http.StatusForbidden},
 		{"bad verdict", e.owner, http.MethodPost, one + "/reviews", `{"verdict":"meh"}`, http.StatusBadRequest},
 		{"bad id", e.owner, http.MethodGet, base + "/x", "", http.StatusBadRequest},
+		{"empty comment", e.owner, http.MethodPost, one + "/comments", `{"body":" "}`, http.StatusBadRequest},
+		{"other user's comment", e.stranger, http.MethodPost, one + "/comments", `{"body":"x"}`, http.StatusNotFound},
+		{"resolve a comment elsewhere", e.owner, http.MethodPost, one + "/comments/999/resolve", `{"resolved":true}`, http.StatusBadRequest},
+		{"bad comment id", e.owner, http.MethodPost, one + "/comments/x/resolve", `{"resolved":true}`, http.StatusBadRequest},
 		{"send back", e.owner, http.MethodPost, one + "/send-back", `{"message":"Fix the typo."}`, http.StatusAccepted},
 		{"send back while the agent works", e.owner, http.MethodPost, one + "/send-back", `{"message":"Again."}`, http.StatusConflict},
 	}
@@ -1272,7 +1287,7 @@ func TestSendBackStartsTheTaskAgentWithTheFeedback(t *testing.T) {
 		t.Fatalf("expected the task's agent started once, got %+v", starts)
 	}
 	msg := starts[0].Message
-	for _, want := range []string{"!1", "Also add tests.", "The reviewer left comments.", "Rename the cart.", "cart.go:4: Call it basket.", readCommentsTool, taskCommentTool} {
+	for _, want := range []string{"!1", "Also add tests.", "The reviewer left comments.", "Rename the cart.", "cart.go:4: Call it basket.", readCommentsTool, mrCommentTool} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message missing %q:\n%s", want, msg)
 		}
@@ -1341,7 +1356,7 @@ func TestTaskAgentReadsAndAnswersTheComments(t *testing.T) {
 	if got := e.svc.Tools(ctx, e.stranger, wsID); got != nil {
 		t.Fatal("another user's runs must not get the tools")
 	}
-	if prompt := e.svc.Prompt(ctx, e.owner, wsID); !strings.Contains(prompt, "!1") || !strings.Contains(prompt, taskCommentTool) {
+	if prompt := e.svc.Prompt(ctx, e.owner, wsID); !strings.Contains(prompt, "!1") || !strings.Contains(prompt, mrCommentTool) {
 		t.Fatalf("unexpected prompt: %q", prompt)
 	}
 	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{
@@ -1380,11 +1395,11 @@ func TestTaskAgentReadsAndAnswersTheComments(t *testing.T) {
 		t.Fatalf("unexpected discussion: %s", result.Content)
 	}
 
-	reply, _ := e.tool(e.owner, wsID, taskCommentTool, fmt.Sprintf(`{"reply_to":%d,"body":"Added a nil check."}`, lineComment.ID))
+	reply, _ := e.tool(e.owner, wsID, mrCommentTool, fmt.Sprintf(`{"reply_to":%d,"body":"Added a nil check."}`, lineComment.ID))
 	if reply.IsError {
 		t.Fatalf("reply: %+v", reply)
 	}
-	if general, _ := e.tool(e.owner, wsID, taskCommentTool, `{"body":"Ready for another look."}`); general.IsError {
+	if general, _ := e.tool(e.owner, wsID, mrCommentTool, `{"body":"Ready for another look."}`); general.IsError {
 		t.Fatalf("comment: %+v", general)
 	}
 	d, _ = e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
@@ -1399,7 +1414,7 @@ func TestTaskAgentReadsAndAnswersTheComments(t *testing.T) {
 		t.Fatalf("unexpected general comment: %+v", general)
 	}
 	// A reply to a reply answers the thread.
-	if r, _ := e.tool(e.owner, wsID, taskCommentTool, fmt.Sprintf(`{"reply_to":%d,"body":"And a test."}`, answer.ID)); r.IsError {
+	if r, _ := e.tool(e.owner, wsID, mrCommentTool, fmt.Sprintf(`{"reply_to":%d,"body":"And a test."}`, answer.ID)); r.IsError {
 		t.Fatalf("reply to reply: %+v", r)
 	}
 	if d, _ = e.svc.Get(ctx, e.owner, e.pid(), mr.ID); d.Comments[3].ReplyTo != lineComment.ID {
@@ -1407,11 +1422,11 @@ func TestTaskAgentReadsAndAnswersTheComments(t *testing.T) {
 	}
 
 	for _, args := range []string{`{"body":"  "}`, `{"reply_to":999,"body":"x"}`, `{"body":"` + strings.Repeat("x", maxCommentBytes+1) + `"}`} {
-		if r, _ := e.tool(e.owner, wsID, taskCommentTool, args); !r.IsError {
+		if r, _ := e.tool(e.owner, wsID, mrCommentTool, args); !r.IsError {
 			t.Errorf("%.40s: expected refused, got %+v", args, r)
 		}
 	}
-	if r, _ := e.tool(e.stranger, wsID, taskCommentTool, `{"body":"x"}`); !r.IsError {
+	if r, _ := e.tool(e.stranger, wsID, mrCommentTool, `{"body":"x"}`); !r.IsError {
 		t.Fatalf("another user must not comment: %+v", r)
 	}
 
@@ -1422,7 +1437,7 @@ func TestTaskAgentReadsAndAnswersTheComments(t *testing.T) {
 	if got := e.svc.Tools(ctx, e.owner, wsID); got != nil {
 		t.Fatal("a sandbox the task no longer has must not get the tools")
 	}
-	if r, _ := e.tool(e.owner, wsID, taskCommentTool, `{"body":"x"}`); !r.IsError {
+	if r, _ := e.tool(e.owner, wsID, mrCommentTool, `{"body":"x"}`); !r.IsError {
 		t.Fatalf("expected refused: %+v", r)
 	}
 }
@@ -1501,5 +1516,219 @@ func TestAssistantCommentsOnAHandMadeMergeRequest(t *testing.T) {
 	}
 	if _, err := e.svc.AssistantComment(ctx, e.owner, e.pid(), mr.ID, AgentCommentInput{Body: "x"}); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("expected a closed merge request refused: %v", err)
+	}
+}
+
+func TestUserCommentsAndResolvesThreads(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+
+	general, err := e.svc.Comment(ctx, e.owner, e.pid(), mr.ID, UserCommentInput{Body: "  Looks close.  "})
+	if err != nil || general.Author != AuthorUser || general.Body != "Looks close." || general.Path != "" || general.ReviewID != 0 || general.HeadSHA != "head1" {
+		t.Fatalf("general comment: %+v %v", general, err)
+	}
+	line, err := e.svc.Comment(ctx, e.owner, e.pid(), mr.ID, UserCommentInput{Path: "cart.go", Line: 7, Body: "Off by one."})
+	if err != nil || line.Path != "cart.go" || line.Line != 7 {
+		t.Fatalf("line comment: %+v %v", line, err)
+	}
+	answer, err := e.svc.AssistantComment(ctx, e.owner, e.pid(), mr.ID, AgentCommentInput{ReplyTo: line.ID, Body: "Fixed."})
+	if err != nil {
+		t.Fatalf("assistant reply: %v", err)
+	}
+	// A reply to a reply joins the thread, where the thread sits.
+	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	reply, err := e.svc.Comment(ctx, e.owner, e.pid(), mr.ID, UserCommentInput{ReplyTo: answer.ID, Path: "other.go", Line: 1, Body: "Thanks."})
+	if err != nil || reply.ReplyTo != line.ID || reply.Path != "cart.go" || reply.Line != 7 || reply.HeadSHA != "head1" {
+		t.Fatalf("reply: %+v %v", reply, err)
+	}
+
+	for _, in := range []UserCommentInput{
+		{Body: " "},
+		{Path: "../x", Line: 1, Body: "x"},
+		{Path: "cart.go", Line: 0, Body: "x"},
+		{ReplyTo: 999, Body: "x"},
+		{Body: strings.Repeat("x", maxCommentBytes+1)},
+	} {
+		if _, err := e.svc.Comment(ctx, e.owner, e.pid(), mr.ID, in); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%.40v: expected ErrInvalidInput, got %v", in, err)
+		}
+	}
+	if _, err := e.svc.Comment(ctx, e.stranger, e.pid(), mr.ID, UserCommentInput{Body: "x"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another user must not comment: %v", err)
+	}
+
+	// Resolving through a reply resolves its thread, once.
+	root, err := e.svc.ResolveThread(ctx, e.owner, e.pid(), mr.ID, reply.ID, true)
+	if err != nil || root.ID != line.ID || root.ResolvedBy != AuthorUser || root.ResolvedAt == nil {
+		t.Fatalf("resolve: %+v %v", root, err)
+	}
+	if again, err := e.svc.ResolveThread(ctx, e.owner, e.pid(), mr.ID, line.ID, true); err != nil || !again.ResolvedAt.Equal(*root.ResolvedAt) {
+		t.Fatalf("resolving again should keep the first resolution: %+v %v", again, err)
+	}
+	if got, _ := e.svc.repo.GetComment(ctx, reply.ID); got.Resolved() {
+		t.Fatal("a reply is never resolved itself")
+	}
+	d, _ := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	if n := openThreads(d.Comments); n != 1 {
+		t.Fatalf("expected the general thread still open, got %d open", n)
+	}
+	if reopened, err := e.svc.ResolveThread(ctx, e.owner, e.pid(), mr.ID, line.ID, false); err != nil || reopened.Resolved() || reopened.ResolvedAt != nil {
+		t.Fatalf("reopen: %+v %v", reopened, err)
+	}
+	if _, err := e.svc.ResolveThread(ctx, e.stranger, e.pid(), mr.ID, line.ID, true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another user must not resolve: %v", err)
+	}
+	if _, err := e.svc.ResolveThread(ctx, e.owner, e.pid(), mr.ID, 999, true); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected an unknown comment refused: %v", err)
+	}
+
+	if _, err := e.svc.Close(ctx, e.owner, e.pid(), mr.ID); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := e.svc.Comment(ctx, e.owner, e.pid(), mr.ID, UserCommentInput{Body: "x"}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected a closed merge request refused: %v", err)
+	}
+	if _, err := e.svc.ResolveThread(ctx, e.owner, e.pid(), mr.ID, general.ID, true); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected a closed merge request refused: %v", err)
+	}
+}
+
+func TestReviewAgentResolvesAddressedThreads(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{
+		Verdict: VerdictRequestChanges,
+		Comments: []CommentInput{
+			{Path: "cart.go", Line: 12, Body: "This panics on nil."},
+			{Path: "cart.go", Line: 30, Body: "Needs a test."},
+		},
+	}); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	d, _ := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	nilCheck, test := d.Comments[0], d.Comments[1]
+	answer, err := e.svc.AssistantComment(ctx, e.owner, e.pid(), mr.ID, AgentCommentInput{ReplyTo: nilCheck.ID, Body: "Added a nil check."})
+	if err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+
+	rv := e.startAgentReview(t, mr, AgentReviewInput{})
+	prompt := e.runs.started()[0].Turns[0].Text()
+	for _, want := range []string{"2 comment threads on it are still open", resolveTool, mrCommentTool} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+
+	read, _ := e.tool(e.owner, rv.WorkspaceID, readCommentsTool, `{}`)
+	if read.IsError || !strings.Contains(read.Content, `"open_threads":2`) || !strings.Contains(read.Content, `"resolved":false`) {
+		t.Fatalf("the agent should see the open threads: %+v", read)
+	}
+
+	// The thread is resolved through any of its comments, with a note.
+	result, _ := e.tool(e.owner, rv.WorkspaceID, resolveTool, fmt.Sprintf(`{"comment_id":%d,"reply":"The nil check covers it."}`, answer.ID))
+	if result.IsError || !strings.Contains(result.Content, fmt.Sprintf("Resolved thread %d.", nilCheck.ID)) {
+		t.Fatalf("resolve: %+v", result)
+	}
+	if again, _ := e.tool(e.owner, rv.WorkspaceID, resolveTool, fmt.Sprintf(`{"comment_id":%d}`, nilCheck.ID)); !again.IsError || !strings.Contains(again.Content, "already resolved") {
+		t.Fatalf("expected a resolved thread refused: %+v", again)
+	}
+	if unknown, _ := e.tool(e.owner, rv.WorkspaceID, resolveTool, `{"comment_id":999}`); !unknown.IsError {
+		t.Fatalf("expected an unknown comment refused: %+v", unknown)
+	}
+	// The open thread gets a reply from the review instead, and a new
+	// problem a thread of its own.
+	if r, _ := e.tool(e.owner, rv.WorkspaceID, mrCommentTool, fmt.Sprintf(`{"reply_to":%d,"body":"Still no test."}`, test.ID)); r.IsError {
+		t.Fatalf("reply: %+v", r)
+	}
+	if r, _ := e.tool(e.owner, rv.WorkspaceID, mrCommentTool, `{"body":"The README is out of date."}`); r.IsError {
+		t.Fatalf("comment: %+v", r)
+	}
+
+	d, _ = e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	byID := map[int64]*Comment{}
+	for _, c := range d.Comments {
+		byID[c.ID] = c
+	}
+	if got := byID[nilCheck.ID]; got.ResolvedBy != AuthorAgent || got.ResolvedAt == nil {
+		t.Fatalf("expected the thread resolved by the review agent: %+v", got)
+	}
+	if byID[test.ID].Resolved() {
+		t.Fatal("the other thread should stay open")
+	}
+	var note, still, readme *Comment
+	for _, c := range d.Comments[3:] {
+		switch c.Body {
+		case "The nil check covers it.":
+			note = c
+		case "Still no test.":
+			still = c
+		case "The README is out of date.":
+			readme = c
+		}
+	}
+	if note == nil || note.ReplyTo != nilCheck.ID || note.ReviewID != rv.ID || note.Author != AuthorAgent || note.Line != 12 {
+		t.Fatalf("the resolving note should be a reply in the thread: %+v", note)
+	}
+	if still == nil || still.ReplyTo != test.ID || still.ReviewID != rv.ID || still.Path != "cart.go" {
+		t.Fatalf("the reply should sit in its thread: %+v", still)
+	}
+	if readme == nil || readme.ReplyTo != 0 || readme.Path != "" || readme.ReviewID != rv.ID || readme.Resolved() {
+		t.Fatalf("the general comment should start an open thread: %+v", readme)
+	}
+
+	if r, _ := e.tool(e.owner, rv.WorkspaceID, submitTool, `{"verdict":"request_changes","body":"One thread left, one new."}`); r.IsError {
+		t.Fatalf("submit: %+v", r)
+	}
+	reqs := e.tasks.changeRequests()
+	last := reqs[len(reqs)-1].feedback
+	for _, want := range []string{fmt.Sprintf("in reply to comment %d: Still no test.", test.ID), "The README is out of date."} {
+		if !strings.Contains(last, want) {
+			t.Errorf("feedback missing %q:\n%s", want, last)
+		}
+	}
+	if r, _ := e.tool(e.owner, rv.WorkspaceID, resolveTool, fmt.Sprintf(`{"comment_id":%d}`, test.ID)); !r.IsError {
+		t.Fatalf("a submitted review must not resolve threads: %+v", r)
+	}
+}
+
+func TestSendBackLeavesOutResolvedThreads(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{
+		Verdict: VerdictComment,
+		Comments: []CommentInput{
+			{Path: "cart.go", Line: 4, Body: "Call it basket."},
+			{Path: "cart.go", Line: 9, Body: "Spelling."},
+		},
+	}); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	d, _ := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	if _, err := e.svc.ResolveThread(ctx, e.owner, e.pid(), mr.ID, d.Comments[1].ID, true); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, err := e.svc.SendBack(ctx, e.owner, e.pid(), mr.ID, SendBackInput{}); err != nil {
+		t.Fatalf("send back: %v", err)
+	}
+	msg := e.tasks.started()[0].Message
+	if !strings.Contains(msg, "Call it basket.") || strings.Contains(msg, "Spelling.") || !strings.Contains(msg, "1 comment thread on the merge request is still open") {
+		t.Fatalf("expected only the open thread sent back:\n%s", msg)
+	}
+}
+
+func TestSendBackWithOnlyAnOpenThreadFromAnEarlierRound(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	if _, err := e.svc.Comment(ctx, e.owner, e.pid(), mr.ID, UserCommentInput{Path: "cart.go", Line: 4, Body: "Call it basket."}); err != nil {
+		t.Fatalf("comment: %v", err)
+	}
+	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	if _, err := e.svc.SendBack(ctx, e.owner, e.pid(), mr.ID, SendBackInput{}); err != nil {
+		t.Fatalf("an open thread is feedback to send back: %v", err)
 	}
 }

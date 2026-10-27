@@ -1,17 +1,15 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
-import { fullTime, timeAgo } from '@/utils/time'
-import { authorIcon, authorName } from './format'
+import MrThread from './MrThread.vue'
 import { useMergeRequest } from './useMergeRequest'
 
-// The selected file's comments, the user's pending line comments, and the
-// form that adds one to the review.
+// The selected file's threads, the user's pending line comments, and the
+// form that adds a line comment to the review or posts it at once.
 const {
   mr,
   isOpen,
-  selectedComments,
+  selectedThreads,
   selectedDrafts,
   draftLine,
   draftBody,
@@ -20,9 +18,21 @@ const {
   selectFile,
   addDraft,
   removeDraft,
+  commentNow,
 } = useMergeRequest()
 
 const draftInput = ref<HTMLTextAreaElement | null>(null)
+const posting = ref(false)
+
+async function postNow() {
+  if (posting.value) return
+  posting.value = true
+  try {
+    await commentNow()
+  } finally {
+    posting.value = false
+  }
+}
 
 // Clicking a line number in the diff starts a comment here.
 watch(draftFocus, () => void nextTick(() => draftInput.value?.focus()))
@@ -32,25 +42,13 @@ watch(draftFocus, () => void nextTick(() => draftInput.value?.focus()))
   <section v-if="mr" class="file-comments-section">
     <div class="file-comments-header">
       <span class="section-title">
-        Comments on this file
-        <span class="muted">{{ selectedComments.length + selectedDrafts.length }}</span>
+        Threads on this file
+        <span class="muted">{{ selectedThreads.length + selectedDrafts.length }}</span>
       </span>
       <span v-if="isOpen" class="form-hint">Click a line number in the new version to comment on it.</span>
     </div>
 
-    <div v-for="c in selectedComments" :key="c.id" class="comment" :class="{ outdated: c.headSha !== mr.headSha, reply: c.replyTo }">
-      <div class="comment-meta">
-        <span class="avatar avatar-sm" :class="`avatar-${c.author}`">
-          <MrIcon :name="authorIcon(c.author)" :size="11" />
-        </span>
-        <span class="comment-author">{{ authorName(c.author) }}</span>
-        <span v-if="c.replyTo" class="muted">replied</span>
-        <button class="line-chip line-chip-button" :title="`Show line ${c.line}`" @click="selectFile(c.path, c.line)">L{{ c.line }}</button>
-        <span v-if="c.headSha !== mr.headSha" class="tag tag-outdated">outdated</span>
-        <span class="muted comment-time" :title="fullTime(c.createdAt)">{{ timeAgo(c.createdAt) }}</span>
-      </div>
-      <MarkdownMessage :content="c.body" />
-    </div>
+    <MrThread v-for="t in selectedThreads" :key="t.root.id" :thread="t" in-file />
 
     <div v-for="(d, i) in selectedDrafts" :key="`draft-${i}`" class="comment draft">
       <div class="comment-meta">
@@ -91,8 +89,11 @@ watch(draftFocus, () => void nextTick(() => draftInput.value?.focus()))
       </div>
       <div class="draft-form-footer">
         <span v-if="draftError" class="form-error draft-error">{{ draftError }}</span>
-        <span v-else class="form-hint">Comments are held until you submit your review.</span>
-        <button type="submit" class="btn btn-secondary btn-sm">Add to review</button>
+        <span v-else class="form-hint">A review holds its comments until you submit it.</span>
+        <span class="draft-buttons">
+          <button type="button" class="btn btn-secondary btn-sm" :disabled="posting" @click="postNow">Comment now</button>
+          <button type="submit" class="btn btn-primary btn-sm">Add to review</button>
+        </span>
       </div>
     </form>
   </section>
@@ -127,15 +128,6 @@ watch(draftFocus, () => void nextTick(() => draftInput.value?.focus()))
   font-size: 0.82rem;
 }
 
-.comment.outdated {
-  opacity: 0.75;
-}
-
-/* A reply sits indented under the comment it answers. */
-.comment.reply {
-  margin-left: var(--space-5);
-}
-
 .comment.draft {
   border-style: dashed;
   border-color: color-mix(in srgb, var(--accent-blue) 45%, transparent);
@@ -155,7 +147,6 @@ watch(draftFocus, () => void nextTick(() => draftInput.value?.focus()))
   color: var(--text-primary);
 }
 
-.comment-time,
 .comment-remove {
   margin-left: auto;
 }
@@ -202,11 +193,18 @@ watch(draftFocus, () => void nextTick(() => draftInput.value?.focus()))
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 
 .draft-form-footer .form-hint,
 .draft-error {
   margin: 0;
+}
+
+.draft-buttons {
+  display: inline-flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
 }
 </style>

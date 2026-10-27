@@ -110,7 +110,7 @@ var definitions = []domain.ToolDefinition{
 		Type: "function",
 		Function: domain.ToolFunction{
 			Name:        getMergeRequestTool,
-			Description: "Get a merge request with its reviews and comments. It does not include the diff: check out the branch to read the code.",
+			Description: "Get a merge request with its reviews and comments. A comment without replyTo starts a thread, and resolved says whether that thread is resolved. It does not include the diff: check out the branch to read the code.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"merge_request_id":{"type":"integer","minimum":1}},"required":["merge_request_id"]}`),
 		},
 	},
@@ -742,6 +742,8 @@ func (p *Provider) getMergeRequest(ctx context.Context, req aitools.ExecutionReq
 		}
 		if c.ReplyTo != 0 {
 			comment["replyTo"] = c.ReplyTo
+		} else {
+			comment["resolved"] = c.Resolved()
 		}
 		if c.Path != "" {
 			comment["path"], comment["line"] = c.Path, c.Line

@@ -11,6 +11,7 @@ export type MrIconName =
   | 'chevron-right'
   | 'chevron-down'
   | 'check'
+  | 'check-circle'
   | 'comment'
   | 'alert'
   | 'warning'
@@ -83,6 +84,10 @@ withDefaults(defineProps<{ name: MrIconName; size?: number; strokeWidth?: number
     </template>
     <template v-else-if="name === 'check'">
       <path d="M20 6 9 17l-5-5" />
+    </template>
+    <template v-else-if="name === 'check-circle'">
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8.5 12 2.5 2.5 4.5-5" />
     </template>
     <template v-else-if="name === 'comment'">
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />

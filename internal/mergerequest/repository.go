@@ -28,6 +28,9 @@ type Repository interface {
 	ListComments(ctx context.Context, mergeRequestID int64) ([]*Comment, error)
 	CountReviewComments(ctx context.Context, reviewID int64) (int, error)
 	CountAuthorComments(ctx context.Context, mergeRequestID int64, author Author) (int, error)
+	// SetResolved resolves the thread a comment starts, or opens it again
+	// when by is empty. It does nothing to a reply.
+	SetResolved(ctx context.Context, commentID int64, by Author) error
 }
 
 type repository struct {
@@ -161,7 +164,7 @@ func (r *repository) CreateComment(ctx context.Context, c *Comment) error {
 	return nil
 }
 
-const commentColumns = `id, merge_request_id, review_id, reply_to, author, path, line, body, head_sha, created_at`
+const commentColumns = `id, merge_request_id, review_id, reply_to, author, path, line, body, head_sha, created_at, resolved_by, resolved_at`
 
 func (r *repository) GetComment(ctx context.Context, id int64) (*Comment, error) {
 	return oneOrNil(scanComment(r.db.QueryRowContext(ctx, `SELECT `+commentColumns+` FROM merge_request_comments WHERE id = ?`, id)))
@@ -190,6 +193,19 @@ func (r *repository) CountAuthorComments(ctx context.Context, mergeRequestID int
 		return 0, fmt.Errorf("counting comments: %w", err)
 	}
 	return n, nil
+}
+
+func (r *repository) SetResolved(ctx context.Context, commentID int64, by Author) error {
+	var at any
+	if by != "" {
+		at = time.Now()
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE merge_request_comments SET resolved_by = ?, resolved_at = ? WHERE id = ? AND reply_to IS NULL`, by, at, commentID,
+	); err != nil {
+		return fmt.Errorf("resolving comment: %w", err)
+	}
+	return nil
 }
 
 type rowScanner interface {
@@ -223,10 +239,14 @@ func scanReview(row rowScanner) (*Review, error) {
 func scanComment(row rowScanner) (*Comment, error) {
 	var c Comment
 	var reviewID, replyTo sql.NullInt64
-	if err := row.Scan(&c.ID, &c.MergeRequestID, &reviewID, &replyTo, &c.Author, &c.Path, &c.Line, &c.Body, &c.HeadSHA, &c.CreatedAt); err != nil {
+	var resolvedAt sql.NullTime
+	if err := row.Scan(&c.ID, &c.MergeRequestID, &reviewID, &replyTo, &c.Author, &c.Path, &c.Line, &c.Body, &c.HeadSHA, &c.CreatedAt, &c.ResolvedBy, &resolvedAt); err != nil {
 		return nil, err
 	}
 	c.ReviewID, c.ReplyTo = reviewID.Int64, replyTo.Int64
+	if resolvedAt.Valid {
+		c.ResolvedAt = &resolvedAt.Time
+	}
 	return &c, nil
 }
 

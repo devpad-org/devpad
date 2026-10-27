@@ -121,20 +121,30 @@ type Review struct {
 }
 
 // Comment is a remark on a line of a changed file, or on the whole change
-// when Path is empty.
+// when Path is empty. A comment without ReplyTo starts a thread, which can be
+// replied to and resolved.
 type Comment struct {
 	ID             int64
 	MergeRequestID int64
 	ReviewID       int64
 	// ReplyTo is the first comment of the thread this one answers. A reply
 	// sits where that comment does: same path, line and head.
-	ReplyTo int64
-	Author  Author
-	Path           string
-	Line           int
-	Body           string
-	HeadSHA        string
-	CreatedAt      time.Time
+	ReplyTo   int64
+	Author    Author
+	Path      string
+	Line      int
+	Body      string
+	HeadSHA   string
+	CreatedAt time.Time
+	// ResolvedBy and ResolvedAt say who resolved the thread this comment
+	// starts, and when; ResolvedBy is empty while it is open.
+	ResolvedBy Author
+	ResolvedAt *time.Time
+}
+
+// Resolved reports whether the thread c starts has been resolved.
+func (c *Comment) Resolved() bool {
+	return c.ResolvedBy != ""
 }
 
 // Detail is a merge request with its reviews and comments.
@@ -170,6 +180,16 @@ type CommentInput struct {
 // to the comment ReplyTo.
 type AgentCommentInput struct {
 	ReplyTo int64
+	Body    string
+}
+
+// UserCommentInput is a comment the user leaves at once, outside a review:
+// a reply to the thread of ReplyTo, else a new thread on Line of Path, or on
+// the whole change when Path is empty.
+type UserCommentInput struct {
+	ReplyTo int64
+	Path    string
+	Line    int
 	Body    string
 }
 
