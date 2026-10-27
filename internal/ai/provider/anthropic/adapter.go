@@ -180,13 +180,23 @@ func buildAnthropicRequest(req aiprovider.StreamRequest, model domain.Model) map
 		"messages":   messages,
 		"max_tokens": maxTokensFor(req.Model),
 		"stream":     true,
+		// Automatic caching puts a breakpoint on the last block and moves it
+		// forward as the conversation grows, so each request in an agent loop
+		// reads the transcript the previous one wrote.
+		"cache_control": ephemeralCache(),
 	}
 	if usesServerSideFallback(req.Model) {
 		body["fallbacks"] = "default"
 	}
 
 	if systemPrompt != "" {
-		body["system"] = systemPrompt
+		// Tools render before the system prompt, so this breakpoint caches
+		// both, and the entry survives whatever happens later in messages.
+		body["system"] = []map[string]any{{
+			"type":          "text",
+			"text":          systemPrompt,
+			"cache_control": ephemeralCache(),
+		}}
 	}
 
 	// Add tools if present
@@ -397,6 +407,12 @@ func buildThinkingConfig(req aiprovider.StreamRequest, model domain.Model) map[s
 	}
 
 	return nil
+}
+
+// ephemeralCache is a cache breakpoint with the default 5-minute TTL, which
+// every request that reads the entry refreshes.
+func ephemeralCache() map[string]any {
+	return map[string]any{"type": "ephemeral"}
 }
 
 func usesAdaptiveThinking(modelID string) bool {

@@ -20,8 +20,8 @@ func TestBuildAnthropicRequest_SystemPromptMapping(t *testing.T) {
 
 	body := buildAnthropicRequest(req, mustAnthropicModel(t, req.Model))
 
-	if body["system"] != "You are a helpful assistant." {
-		t.Fatalf("expected system prompt to be extracted, got %v", body["system"])
+	if got := systemText(t, body); got != "You are a helpful assistant." {
+		t.Fatalf("expected system prompt to be extracted, got %v", got)
 	}
 
 	messages := body["messages"].([]map[string]any)
@@ -46,9 +46,66 @@ func TestBuildAnthropicRequest_MultipleSystemPrompts(t *testing.T) {
 	body := buildAnthropicRequest(req, mustAnthropicModel(t, req.Model))
 
 	expected := "First system prompt.\n\nSecond system prompt."
-	if body["system"] != expected {
-		t.Fatalf("expected combined system prompt, got %v", body["system"])
+	if got := systemText(t, body); got != expected {
+		t.Fatalf("expected combined system prompt, got %v", got)
 	}
+}
+
+func TestBuildAnthropicRequest_PromptCaching(t *testing.T) {
+	ephemeral := map[string]any{"type": "ephemeral"}
+
+	t.Run("with system prompt", func(t *testing.T) {
+		req := aiprovider.StreamRequest{
+			Model: "claude-sonnet-5-5",
+			Turns: []domain.Turn{
+				domain.NewTextTurn(domain.RoleSystem, "You are a helpful assistant."),
+				domain.NewTextTurn(domain.RoleUser, "Hello"),
+			},
+		}
+
+		body := buildAnthropicRequest(req, mustAnthropicModel(t, req.Model))
+
+		if !reflect.DeepEqual(body["cache_control"], ephemeral) {
+			t.Fatalf("expected automatic caching, got %v", body["cache_control"])
+		}
+		system := body["system"].([]map[string]any)
+		if !reflect.DeepEqual(system[len(system)-1]["cache_control"], ephemeral) {
+			t.Fatalf("expected a breakpoint on the last system block, got %v", system[len(system)-1]["cache_control"])
+		}
+	})
+
+	t.Run("without system prompt", func(t *testing.T) {
+		req := aiprovider.StreamRequest{
+			Model: "claude-sonnet-5-5",
+			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
+		}
+
+		body := buildAnthropicRequest(req, mustAnthropicModel(t, req.Model))
+
+		if !reflect.DeepEqual(body["cache_control"], ephemeral) {
+			t.Fatalf("expected automatic caching, got %v", body["cache_control"])
+		}
+		if _, ok := body["system"]; ok {
+			t.Fatalf("expected no system blocks, got %v", body["system"])
+		}
+	})
+}
+
+// systemText returns the text of a request's system blocks.
+func systemText(t *testing.T, body map[string]any) string {
+	t.Helper()
+	blocks, ok := body["system"].([]map[string]any)
+	if !ok {
+		t.Fatalf("expected system blocks, got %T", body["system"])
+	}
+	var text string
+	for _, block := range blocks {
+		if block["type"] != "text" {
+			t.Fatalf("expected a text block, got %v", block["type"])
+		}
+		text += block["text"].(string)
+	}
+	return text
 }
 
 func TestBuildAnthropicRequest_ToolDefinitions(t *testing.T) {
