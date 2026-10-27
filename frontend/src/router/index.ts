@@ -5,6 +5,7 @@ import LoginView from '@/views/LoginView.vue'
 import SetupView from '@/views/SetupView.vue'
 import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
+import InboxView from '@/views/InboxView.vue'
 const IdeView = () => import('@/views/IdeView.vue')
 
 export const router = createRouter({
@@ -22,7 +23,7 @@ export const router = createRouter({
       component: SettingsView,
       meta: { requiresAuth: true },
     },
-    // The launcher at / lists projects and holds the inbox.
+    // The launcher at / lists projects.
     {
       path: '/projects',
       name: 'projects',
@@ -48,7 +49,8 @@ export const router = createRouter({
     {
       path: '/inbox',
       name: 'inbox',
-      redirect: { name: 'home', hash: '#inbox' },
+      component: InboxView,
+      meta: { requiresAuth: true },
     },
     {
       path: '/login',

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { watch } from 'vue'
 import type { AgentRun, AttentionItem } from '@/api/ai'
-import { attentionItemKey } from '@/stores/attention'
+import { attentionItemKey, useAttentionStore } from '@/stores/attention'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useProjectStore } from '@/stores/projects'
 import AttentionItemCard from '@/components/ide/AttentionItemCard.vue'
@@ -17,6 +17,7 @@ const props = defineProps<{
 // Opening the chat focuses the run that is waiting.
 const emit = defineEmits<{ 'open-chat': [run: AgentRun] }>()
 
+const attention = useAttentionStore()
 const store = useActiveProjectStore()
 const projects = useProjectStore()
 
@@ -65,7 +66,7 @@ watch(
         </svg>
         Needs you
       </span>
-      <RouterLink :to="{ name: 'home', hash: '#inbox' }" class="all-link">All projects</RouterLink>
+      <button class="all-link" @click="attention.panelOpen = true">All projects</button>
     </div>
     <div class="side-body inbox-body">
       <p v-if="items.length === 0" class="side-empty">Nothing in this project needs you right now.</p>

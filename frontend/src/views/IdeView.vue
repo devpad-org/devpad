@@ -22,6 +22,7 @@ import WorkspaceGate, { type WorkspaceGateState } from '@/components/ide/Workspa
 import GitPushToasts from '@/components/project/GitPushToasts.vue'
 import ProjectAgentsPanel from '@/components/project/ProjectAgentsPanel.vue'
 import ProjectInboxPanel from '@/components/project/ProjectInboxPanel.vue'
+import InboxPopover from '@/components/inbox/InboxPopover.vue'
 import ProjectMergeRequestTable from '@/components/project/ProjectMergeRequestTable.vue'
 import ProjectPanel from '@/components/project/ProjectPanel.vue'
 import ProjectTaskTable from '@/components/project/ProjectTaskTable.vue'
@@ -113,7 +114,7 @@ type GitDiffRequest =
 
 type ActivityTab = 'ai' | 'explorer' | 'git' | 'info' | 'services' | ProjectActivity
 // The inbox is a phone-only activity; on wider screens the title bar's inbox
-// link covers it.
+// button covers it.
 type ProjectActivity = 'inbox' | 'tasks' | 'merge-requests' | 'agents' | 'project'
 const PROJECT_ACTIVITIES: ActivityTab[] = ['inbox', 'tasks', 'merge-requests', 'agents', 'project']
 const activeActivity = ref<ActivityTab>('ai')
@@ -569,7 +570,7 @@ watch(() => route.query.view, (view, prev) => {
 })
 
 // ?task=<id> opens that task over the project, e.g. from a merge request's
-// task link or the launcher's inbox.
+// task link or the inbox.
 function applyTaskQuery() {
   const task = Number(route.query.task)
   if (task) projectStore.selectedTaskId = task
@@ -1044,19 +1045,29 @@ const backLabel = computed(() => {
         <span class="titlebar-status-text">{{ workspaceStatusLabel === 'none' ? 'no workspace' : workspaceStatusLabel }}</span>
       </span>
       <div class="titlebar-actions">
-        <RouterLink
-          :to="{ name: 'home', hash: '#inbox' }"
-          class="titlebar-btn titlebar-inbox"
-          :class="{ 'has-items': attention.count > 0 }"
-          :title="attention.count > 0 ? `Inbox: ${attention.count} waiting for you` : 'Inbox'"
-          :aria-label="attention.count > 0 ? `Inbox, ${attention.count} waiting for you` : 'Inbox'"
+        <InboxPopover
+          :current-project-id="projectId"
+          :current-workspace-id="workspace?.id ?? null"
+          @open-chat="handleAgentRunFocus"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M22 12h-6l-2 3h-4l-2-3H2" />
-            <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
-          </svg>
-          <span v-if="attention.count > 0" class="titlebar-badge">{{ attention.count }}</span>
-        </RouterLink>
+          <template #trigger="{ open, toggle }">
+            <button
+              class="titlebar-btn titlebar-inbox"
+              :class="{ 'has-items': attention.count > 0, active: open }"
+              :title="attention.count > 0 ? `Inbox: ${attention.count} waiting for you` : 'Inbox'"
+              :aria-label="attention.count > 0 ? `Inbox, ${attention.count} waiting for you` : 'Inbox'"
+              :aria-expanded="open"
+              aria-haspopup="dialog"
+              @click="toggle"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+                <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+              </svg>
+              <span v-if="attention.count > 0" class="titlebar-badge">{{ attention.count }}</span>
+            </button>
+          </template>
+        </InboxPopover>
       <template v-if="workspaceLive">
         <div class="titlebar-separator" />
         <button
@@ -1881,6 +1892,10 @@ const backLabel = computed(() => {
 
 .titlebar-inbox.has-items {
   color: var(--attention);
+}
+
+.titlebar-inbox.active {
+  background: var(--bg-hover);
 }
 
 .titlebar-separator {

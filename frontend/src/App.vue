@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { computed, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useAttentionStore } from '@/stores/attention'
+import InboxPopover from '@/components/inbox/InboxPopover.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -24,12 +25,6 @@ watch(
   { immediate: true },
 )
 
-// Clicking the badge while already on /#inbox is not a navigation, so the
-// launcher's hash watcher can't scroll; scroll here instead.
-function scrollToInbox() {
-  if (route.name === 'home') document.getElementById('inbox')?.scrollIntoView({ block: 'start' })
-}
-
 async function handleLogout() {
   await auth.logout()
   router.push({ name: 'login' })
@@ -41,21 +36,30 @@ async function handleLogout() {
     <div class="header-left">
       <RouterLink to="/" class="header-brand">Devpad</RouterLink>
       <nav class="header-nav">
-        <RouterLink
-          v-if="attention.count > 0"
-          :to="{ name: 'home', hash: '#inbox' }"
-          class="nav-badge"
-          :title="`${attention.count} waiting for you`"
-          :aria-label="`Inbox, ${attention.count} waiting for you`"
-          @click="scrollToInbox"
-        >
-          {{ attention.count }}
-        </RouterLink>
         <RouterLink to="/settings" class="nav-link">Settings</RouterLink>
         <RouterLink v-if="auth.isAdmin" to="/admin" class="nav-link">Admin</RouterLink>
       </nav>
     </div>
     <div class="header-user">
+      <InboxPopover>
+        <template #trigger="{ open, toggle }">
+          <button
+            class="nav-inbox"
+            :class="{ 'has-items': attention.count > 0, active: open }"
+            :title="attention.count > 0 ? `Inbox: ${attention.count} waiting for you` : 'Inbox'"
+            :aria-label="attention.count > 0 ? `Inbox, ${attention.count} waiting for you` : 'Inbox'"
+            :aria-expanded="open"
+            aria-haspopup="dialog"
+            @click="toggle"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+              <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+            </svg>
+            <span v-if="attention.count > 0" class="nav-inbox-badge">{{ attention.count }}</span>
+          </button>
+        </template>
+      </InboxPopover>
       <span class="header-username">{{ auth.user?.username }}</span>
       <button class="btn-logout" @click="handleLogout">Sign out</button>
     </div>
@@ -107,24 +111,43 @@ async function handleLogout() {
   background: var(--bg-hover);
 }
 
-/* How many agents are waiting for the user; links to the launcher's inbox. */
-.nav-badge {
-  display: inline-block;
-  min-width: 20px;
-  margin-right: var(--space-2);
-  padding: 0 var(--space-1);
-  border-radius: var(--radius-sm);
-  background: var(--attention);
-  color: var(--text-on-accent);
-  font-size: 0.75rem;
-  font-weight: 600;
-  line-height: 20px;
-  text-align: center;
+/* Opens the inbox, with how many agents are waiting for the user. */
+.nav-inbox {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
 }
 
-.nav-badge:hover {
+.nav-inbox:hover,
+.nav-inbox.active {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.nav-inbox.has-items {
+  color: var(--attention);
+}
+
+.nav-inbox-badge {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--attention);
   color: var(--text-on-accent);
-  filter: brightness(1.1);
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
 }
 
 .nav-link.router-link-active {

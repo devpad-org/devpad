@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAttentionStore } from '@/stores/attention'
 import { useProjectStore } from '@/stores/projects'
 import type { Project, ProjectInput } from '@/api/projects'
@@ -8,15 +8,13 @@ import { projectsOpenedAt } from '@/utils/recentProjects'
 import { fullTime, timeAgo } from '@/utils/time'
 import ProjectModal from '@/components/project/ProjectModal.vue'
 import StatusBadge from '@/components/project/StatusBadge.vue'
-import InboxSection from '@/components/home/InboxSection.vue'
 import WorkspacesToConvert from '@/components/home/WorkspacesToConvert.vue'
 
-// The launcher: every project with what needs the user in it, the inbox of
-// agents waiting on the user, and workspaces that belong to no project.
+// The launcher: every project with what needs the user in it, and workspaces
+// that belong to no project. The inbox opens from the header.
 
 const POLL_INTERVAL_MS = 5000
 
-const route = useRoute()
 const router = useRouter()
 const attention = useAttentionStore()
 const projects = useProjectStore()
@@ -106,17 +104,6 @@ onUnmounted(() => {
   if (timer !== null) clearInterval(timer)
 })
 
-// /inbox, and links to it, land here with #inbox.
-watch(
-  () => [route.hash, attention.loaded] as const,
-  async ([hash]) => {
-    if (hash !== '#inbox') return
-    await nextTick()
-    document.getElementById('inbox')?.scrollIntoView({ block: 'start' })
-  },
-  { immediate: true },
-)
-
 async function handleCreate(input: ProjectInput) {
   saving.value = true
   createError.value = ''
@@ -148,67 +135,63 @@ async function handleCreate(input: ProjectInput) {
       </button>
     </div>
 
-    <div class="launcher-main">
-      <InboxSection class="launcher-inbox" />
+    <section class="section">
+      <p v-if="!projects.loaded && !projects.error" class="empty-text">Loading projects...</p>
+      <p v-else-if="projects.error && projects.projects.length === 0" class="notice notice-error">{{ projects.error }}</p>
+      <div v-else-if="projects.projects.length === 0" class="panel empty-state">
+        <p class="empty-title">No projects yet</p>
+        <p class="empty-text">Create a project from a repository, or a scratch one from nothing, then work in it and give agents tasks to do in parallel.</p>
+      </div>
 
-      <section class="section launcher-projects">
-        <p v-if="!projects.loaded && !projects.error" class="empty-text">Loading projects...</p>
-        <p v-else-if="projects.error && projects.projects.length === 0" class="notice notice-error">{{ projects.error }}</p>
-        <div v-else-if="projects.projects.length === 0" class="panel empty-state">
-          <p class="empty-title">No projects yet</p>
-          <p class="empty-text">Create a project from a repository, or a scratch one from nothing, then work in it and give agents tasks to do in parallel.</p>
-        </div>
+      <div v-else class="project-grid">
+        <RouterLink
+          v-for="card in cards"
+          :key="card.project.id"
+          :to="{ name: 'project', params: { id: card.project.id } }"
+          class="panel project-card"
+          :class="{ 'needs-you': card.needsYou > 0 }"
+        >
+          <div class="card-header">
+            <h2 class="card-title">{{ card.project.name }}</h2>
+            <span v-if="card.needsYou > 0" class="needs-badge" :title="needsYouTitle(card)">
+              {{ card.needsYou }} need{{ card.needsYou === 1 ? 's' : '' }} you
+            </span>
+            <StatusBadge v-else-if="card.project.status !== 'ready'" :status="card.project.status" />
+          </div>
+          <p v-if="card.project.description" class="card-description">{{ card.project.description }}</p>
+          <p v-if="card.project.status === 'error' && card.project.error" class="card-error">{{ card.project.error }}</p>
 
-        <div v-else class="project-grid">
-          <RouterLink
-            v-for="card in cards"
-            :key="card.project.id"
-            :to="{ name: 'project', params: { id: card.project.id } }"
-            class="panel project-card"
-            :class="{ 'needs-you': card.needsYou > 0 }"
-          >
-            <div class="card-header">
-              <h2 class="card-title">{{ card.project.name }}</h2>
-              <span v-if="card.needsYou > 0" class="needs-badge" :title="needsYouTitle(card)">
-                {{ card.needsYou }} need{{ card.needsYou === 1 ? 's' : '' }} you
-              </span>
-              <StatusBadge v-else-if="card.project.status !== 'ready'" :status="card.project.status" />
-            </div>
-            <p v-if="card.project.description" class="card-description">{{ card.project.description }}</p>
-            <p v-if="card.project.status === 'error' && card.project.error" class="card-error">{{ card.project.error }}</p>
+          <div class="card-stats">
+            <span v-if="card.waiting" class="stat stat-attention">
+              {{ card.waiting }} waiting
+            </span>
+            <span v-if="card.awaitingReview" class="stat stat-attention">
+              {{ card.awaitingReview }} to review
+            </span>
+            <span v-if="card.runningAgents" class="stat stat-active">
+              <span class="pulse" />
+              {{ card.runningAgents }} agent{{ card.runningAgents === 1 ? '' : 's' }} running
+            </span>
+            <span v-if="card.activeTasks" class="stat">
+              {{ card.activeTasks }} task{{ card.activeTasks === 1 ? '' : 's' }} in progress
+            </span>
+            <span v-if="card.openMergeRequests" class="stat">
+              {{ card.openMergeRequests }} open MR{{ card.openMergeRequests === 1 ? '' : 's' }}
+            </span>
+          </div>
 
-            <div class="card-stats">
-              <span v-if="card.waiting" class="stat stat-attention">
-                {{ card.waiting }} waiting
-              </span>
-              <span v-if="card.awaitingReview" class="stat stat-attention">
-                {{ card.awaitingReview }} to review
-              </span>
-              <span v-if="card.runningAgents" class="stat stat-active">
-                <span class="pulse" />
-                {{ card.runningAgents }} agent{{ card.runningAgents === 1 ? '' : 's' }} running
-              </span>
-              <span v-if="card.activeTasks" class="stat">
-                {{ card.activeTasks }} task{{ card.activeTasks === 1 ? '' : 's' }} in progress
-              </span>
-              <span v-if="card.openMergeRequests" class="stat">
-                {{ card.openMergeRequests }} open MR{{ card.openMergeRequests === 1 ? '' : 's' }}
-              </span>
-            </div>
-
-            <div class="meta-row">
-              <span class="mono">{{ card.project.defaultBranch }}</span>
-              <span>&middot;</span>
-              <span class="mono card-upstream">{{ card.project.upstreamUrl || 'local only' }}</span>
-              <span>&middot;</span>
-              <span>{{ card.project.maxSandboxes }} sandbox{{ card.project.maxSandboxes === 1 ? '' : 'es' }} max</span>
-              <span>&middot;</span>
-              <span :title="fullTime(card.lastActivityAt)">{{ timeAgo(card.lastActivityAt) }}</span>
-            </div>
-          </RouterLink>
-        </div>
-      </section>
-    </div>
+          <div class="meta-row">
+            <span class="mono">{{ card.project.defaultBranch }}</span>
+            <span>&middot;</span>
+            <span class="mono card-upstream">{{ card.project.upstreamUrl || 'local only' }}</span>
+            <span>&middot;</span>
+            <span>{{ card.project.maxSandboxes }} sandbox{{ card.project.maxSandboxes === 1 ? '' : 'es' }} max</span>
+            <span>&middot;</span>
+            <span :title="fullTime(card.lastActivityAt)">{{ timeAgo(card.lastActivityAt) }}</span>
+          </div>
+        </RouterLink>
+      </div>
+    </section>
 
     <WorkspacesToConvert />
 
@@ -226,30 +209,6 @@ async function handleCreate(input: ProjectInput) {
 <style scoped>
 .launcher {
   max-width: 1200px;
-}
-
-.launcher-main {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0 var(--space-6);
-}
-
-/* Wide screens put the inbox beside the projects; narrow ones stack it
- * first, since it is what needs the user. */
-@media (min-width: 1100px) {
-  .launcher-main {
-    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-  }
-
-  .launcher-projects {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  .launcher-inbox {
-    grid-column: 2;
-    grid-row: 1;
-  }
 }
 
 .project-grid {

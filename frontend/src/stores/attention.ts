@@ -14,6 +14,8 @@ export function attentionItemKey(item: AttentionItem): string {
 export const useAttentionStore = defineStore('attention', () => {
   const items = ref<AttentionItem[]>([])
   const loaded = ref(false)
+  // Whether the inbox is open over the page, so a link anywhere can open it.
+  const panelOpen = ref(false)
   const count = computed(() => items.value.length)
   let timer: ReturnType<typeof setInterval> | null = null
   let watchers = 0
@@ -44,5 +46,5 @@ export const useAttentionStore = defineStore('attention', () => {
     }
   }
 
-  return { items, loaded, count, refresh, watch, unwatch }
+  return { items, loaded, panelOpen, count, refresh, watch, unwatch }
 })

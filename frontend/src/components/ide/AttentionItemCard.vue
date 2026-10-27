@@ -7,8 +7,10 @@ import ApprovalDetails from '@/components/ide/ApprovalDetails.vue'
 
 // One agent run waiting for the user: an approval to grant or deny, or a
 // question to answer, in place. The caller says where the run comes from and
-// where its work lives through the source and links slots.
-const props = defineProps<{ item: AttentionItem }>()
+// where its work lives through the source and links slots. Embedded, it sits
+// under a row that already names it, so it drops its own frame and heading
+// and puts its links last.
+const props = defineProps<{ item: AttentionItem; embedded?: boolean }>()
 
 const attention = useAttentionStore()
 const busy = ref(false)
@@ -31,8 +33,8 @@ async function decide(approved: boolean) {
 </script>
 
 <template>
-  <div class="panel item">
-    <div class="item-header">
+  <div class="item" :class="{ panel: !embedded }">
+    <div v-if="!embedded" class="item-header">
       <div class="item-source">
         <span class="item-kind">{{ item.approval ? item.approval.title || 'Approve a command' : 'Answer a question' }}</span>
         <span class="meta-row">
@@ -68,6 +70,10 @@ async function decide(approved: boolean) {
     />
 
     <p v-if="error" class="form-error">{{ error }}</p>
+
+    <div v-if="embedded && $slots.links" class="item-links item-links-end">
+      <slot name="links" />
+    </div>
   </div>
 </template>
 
@@ -109,6 +115,11 @@ async function decide(approved: boolean) {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+.item-links-end {
+  padding-top: var(--space-3);
+  border-top: 0.5px solid var(--border-default);
 }
 
 .item-prompt {
