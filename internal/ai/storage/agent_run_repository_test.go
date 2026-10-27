@@ -86,6 +86,11 @@ func TestAgentRunRepository_PersistsRunsAndOrderedEvents(t *testing.T) {
 	if len(events) != 1 || events[0].Sequence != 2 || !events[0].Event.Done {
 		t.Fatalf("unexpected listed events: %+v", events)
 	}
+	// An event with no reasoning state must read back without one, or the
+	// transcript rebuilt from the events parts tool results from their calls.
+	if events[0].Event.ReasoningState != nil {
+		t.Fatalf("expected no reasoning state, got %q", events[0].Event.ReasoningState)
+	}
 
 	if err := repo.UpdateStatus(ctx, run.ID, domain.AgentRunWaitingUser, ""); err != nil {
 		t.Fatalf("update waiting user status: %v", err)

@@ -422,6 +422,13 @@ func scanAgentRunEvent(scanner agentRunEventScanner) (domain.AgentRunEvent, erro
 	if err := json.Unmarshal([]byte(eventJSON), &event.Event); err != nil {
 		return domain.AgentRunEvent{}, fmt.Errorf("unmarshalling agent run event: %w", err)
 	}
+	// An event without reasoning state is stored as "ReasoningState":null,
+	// which unmarshals to the literal null rather than an empty state. Read
+	// as state, it would start a new round at every event when the run's
+	// transcript is rebuilt, parting tool results from their calls.
+	if string(event.Event.ReasoningState) == "null" {
+		event.Event.ReasoningState = nil
+	}
 	return event, nil
 }
 
