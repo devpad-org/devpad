@@ -731,7 +731,7 @@ func TestAgentChatOrchestrator_StopsWhenTheBudgetIsSpent(t *testing.T) {
 	}
 
 	var recorded float64
-	budget := domain.NewBudget(1, 0.1, func(cost float64) { recorded += cost })
+	budget := domain.NewBudget(1, 0.1, func(spent float64) { recorded = spent })
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
 		UserID:      1,
 		WorkspaceID: 1,
@@ -749,8 +749,8 @@ func TestAgentChatOrchestrator_StopsWhenTheBudgetIsSpent(t *testing.T) {
 	if callCount != 3 {
 		t.Fatalf("expected 3 requests, got %d", callCount)
 	}
-	if recorded < 1.19 || recorded > 1.21 {
-		t.Fatalf("expected $1.20 recorded as spent, got %v", recorded)
+	if recorded < 1.29 || recorded > 1.31 {
+		t.Fatalf("expected $1.30 recorded as spent in all, got %v", recorded)
 	}
 	last := events[len(events)-1]
 	stop := events[len(events)-2]

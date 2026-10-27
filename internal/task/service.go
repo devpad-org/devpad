@@ -550,6 +550,9 @@ func (s *service) launch(ctx context.Context, taskID int64) {
 		return
 	}
 	defer s.endLaunch(taskID)
+	if s.failOverBudget(ctx, taskID) {
+		return
+	}
 	env, ok := s.awaitEnvironment(ctx, taskID)
 	if !ok {
 		return
@@ -590,6 +593,21 @@ func (s *service) launch(ctx context.Context, taskID int64) {
 	if err := s.startRun(ctx, t, ws, env.For(ws.Image), setup); err != nil {
 		s.failUnlessShuttingDown(ctx, t, err.Error())
 	}
+}
+
+// failOverBudget fails a queued task that is over budget before it is given
+// a sandbox, and reports whether it did. Start refuses such a task, but one
+// requeued after a restart can have spent its budget in the run that was
+// interrupted.
+func (s *service) failOverBudget(ctx context.Context, taskID int64) bool {
+	unlock := s.lock(taskID)
+	defer unlock()
+	t, err := s.repo.GetByID(ctx, taskID)
+	if err != nil || t == nil || t.Status != StatusQueued || !t.OverBudget() {
+		return false
+	}
+	s.fail(ctx, t, t.budgetMessage())
+	return true
 }
 
 // awaitEnvironment waits for a build of the project's environment before
@@ -710,8 +728,9 @@ func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace
 }
 
 // runBudget is the budget of a run of the task's agent: the task's, shared
-// with its earlier rounds, with each request's cost added to the task as it
-// is spent.
+// with its earlier rounds, with what it has spent saved on the task after
+// each request. Each save writes the whole total, so one that fails is made
+// good by the next.
 func (s *service) runBudget(t *Task) *domain.Budget {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -719,10 +738,10 @@ func (s *service) runBudget(t *Task) *domain.Budget {
 		return b
 	}
 	taskID := t.ID
-	b := domain.NewBudget(t.BudgetUSD, t.CostUSD, func(costUSD float64) {
-		// Losing a request's cost undercounts the task but must not stop
-		// its agent.
-		if err := s.repo.AddCost(context.Background(), taskID, costUSD); err != nil {
+	b := domain.NewBudget(t.BudgetUSD, t.CostUSD, func(spentUSD float64) {
+		// A failed save must not stop the agent; the budget itself still
+		// counts every request.
+		if err := s.repo.RecordCost(context.Background(), taskID, spentUSD); err != nil {
 			log.Printf("task %d: recording the agent's cost: %v", taskID, err)
 		}
 	})

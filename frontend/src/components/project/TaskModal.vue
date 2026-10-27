@@ -10,6 +10,7 @@ import { branchActionError } from './branchErrors'
 import AgentModelPicker from './AgentModelPicker.vue'
 import MrIcon, { type MrIconName } from './MrIcon.vue'
 import StatusBadge from './StatusBadge.vue'
+import { formatUsd } from '@/utils/cost'
 import { fullTime, timeAgo } from '@/utils/time'
 
 const props = defineProps<{
@@ -115,11 +116,6 @@ const canCancel = computed(() => props.task !== null && props.task.status !== 'm
 const canEdit = computed(() => props.task !== null && !ACTIVE.has(props.task.status) && props.task.status !== 'merged')
 // The task's agents have spent its budget, so it cannot start until it is raised.
 const overBudget = computed(() => !!props.task && props.task.budgetUsd > 0 && props.task.costUsd >= props.task.budgetUsd)
-
-function formatUsd(usd: number): string {
-  if (usd > 0 && usd < 0.01) return '<$0.01'
-  return `$${usd.toFixed(2)}`
-}
 
 const steps = computed(() => {
   const t = props.task

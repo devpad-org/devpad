@@ -25,6 +25,8 @@ type memRepo struct {
 	mu     sync.Mutex
 	nextID int64
 	tasks  map[int64]Task
+	// costErr fails RecordCost when set.
+	costErr error
 }
 
 func newMemRepo() *memRepo { return &memRepo{tasks: map[int64]Task{}} }
@@ -89,11 +91,14 @@ func (r *memRepo) Update(_ context.Context, t *Task) error {
 	return nil
 }
 
-func (r *memRepo) AddCost(_ context.Context, id int64, costUSD float64) error {
+func (r *memRepo) RecordCost(_ context.Context, id int64, spentUSD float64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.costErr != nil {
+		return r.costErr
+	}
 	t := r.tasks[id]
-	t.CostUSD += costUSD
+	t.CostUSD = max(t.CostUSD, spentUSD)
 	r.tasks[id] = t
 	return nil
 }
@@ -828,6 +833,28 @@ func TestFeedbackForATaskOverBudgetWaitsForItsBudget(t *testing.T) {
 	}
 }
 
+func TestTaskCostLostToAFailedSaveIsMadeGood(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.budgets.defaults = domain.BudgetDefaults{TaskUSD: 20}
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	e.waitTask(t, task.ID, hasRun)
+	budget := e.runs.startedRequests()[0].Budget
+
+	e.repo.mu.Lock()
+	e.repo.costErr = errors.New("database is locked")
+	e.repo.mu.Unlock()
+	budget.Spend(3)
+	e.repo.mu.Lock()
+	e.repo.costErr = nil
+	e.repo.mu.Unlock()
+	budget.Spend(1)
+	if got, _ := e.repo.GetByID(ctx, task.ID); got.CostUSD != 4 {
+		t.Fatalf("expected the next save to record all $4 spent, got %v", got.CostUSD)
+	}
+}
+
 func TestTaskBudgetChangedMidRunTakesEffect(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
@@ -1352,6 +1379,30 @@ func TestReconcileSettlesInterruptedTasks(t *testing.T) {
 	}
 }
 
+func TestInterruptedTaskOverBudgetFailsWithoutRelaunching(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.sandboxes.byID[101] = &workspace.Workspace{ID: 101, UserID: owner, ProjectID: 1, Branch: "task/x", Status: workspace.StatusStopped}
+	e.runs.runs[8] = &domain.AgentRun{ID: 8, UserID: owner, Status: domain.AgentRunFailed, Error: domain.AgentRunInterruptedError}
+	// The interrupted run spent the task's budget before the restart.
+	task := &Task{ProjectID: 1, UserID: owner, Title: "t", Status: StatusInProgress, Branch: "task/x", WorkspaceID: 101, RunID: 8, Model: "m", BudgetUSD: 2, CostUSD: 2}
+	e.repo.Create(ctx, task)
+
+	if err := e.svc.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	failed := e.waitTask(t, task.ID, status(StatusFailed))
+	if !strings.Contains(failed.Error, "spent $2.00 of its $2.00 budget") {
+		t.Fatalf("expected the task failed on its budget, got %q", failed.Error)
+	}
+	if n := len(e.runs.startedRequests()); n != 0 {
+		t.Fatalf("expected no run started, got %d", n)
+	}
+	if got := e.sandboxes.snapshot().started; len(got) != 0 {
+		t.Fatalf("expected the sandbox left stopped, got starts %v", got)
+	}
+}
+
 func TestShutdownLeavesInterruptedLaunchesForReconcile(t *testing.T) {
 	e := setup(t)
 	task := e.createTask(t)
@@ -1510,10 +1561,14 @@ func TestRepositoryAgainstMigratedSchema(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	// Only AddCost changes the cost, so a stale task saved later keeps it.
+	// Only RecordCost changes the cost, so a stale task saved later keeps
+	// it, and so does a total recorded late.
 	task.BudgetUSD = 20
-	if err := repo.AddCost(ctx, task.ID, 1.25); err != nil {
-		t.Fatalf("add cost: %v", err)
+	if err := repo.RecordCost(ctx, task.ID, 1.25); err != nil {
+		t.Fatalf("record cost: %v", err)
+	}
+	if err := repo.RecordCost(ctx, task.ID, 1); err != nil {
+		t.Fatalf("record late cost: %v", err)
 	}
 	if err := repo.Update(ctx, task); err != nil {
 		t.Fatalf("update with stale cost: %v", err)

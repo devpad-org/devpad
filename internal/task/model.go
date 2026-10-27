@@ -92,7 +92,12 @@ func (t *Task) OverBudget() bool {
 
 // budgetError refuses to start the agent of a task that is over budget.
 func (t *Task) budgetError() error {
-	return fmt.Errorf("%w: the task has spent $%.2f of its $%.2f budget; raise its budget to continue", ErrInvalidState, t.CostUSD, t.BudgetUSD)
+	return fmt.Errorf("%w: %s", ErrInvalidState, t.budgetMessage())
+}
+
+// budgetMessage says that the task is over budget and what to do about it.
+func (t *Task) budgetMessage() string {
+	return fmt.Sprintf("the task has spent $%.2f of its $%.2f budget; raise its budget to continue", t.CostUSD, t.BudgetUSD)
 }
 
 // AgentSettings selects the agent, model and thinking effort for a run.

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { type AgentRun, useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
 import type { Usage } from '@/api/ai'
 import { useAiModelStore } from '@/stores/aiModels'
+import { formatUsd } from '@/utils/cost'
 
 const treeStepPx = 18
 const treeNodeSizePx = 14
@@ -152,15 +153,10 @@ function usageTokenCount(usage: UsageTotals): number {
   return usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens
 }
 
-function formatCost(costUsd: number): string {
-  if (costUsd > 0 && costUsd < 0.01) return '<$0.01'
-  return `$${costUsd.toFixed(2)}`
-}
-
 const compactNumber = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
 
 function formatUsage(usage: UsageTotals): string {
-  if (usage.priced) return usage.unpriced ? `${formatCost(usage.costUsd)}+` : formatCost(usage.costUsd)
+  if (usage.priced) return usage.unpriced ? `${formatUsd(usage.costUsd)}+` : formatUsd(usage.costUsd)
   return `${compactNumber.format(usageTokenCount(usage))} tokens`
 }
 

@@ -14,11 +14,13 @@ type Repository interface {
 	GetByRunID(ctx context.Context, runID int64) (*Task, error)
 	ListByProjectID(ctx context.Context, projectID int64) ([]*Task, error)
 	ListByStatus(ctx context.Context, status Status) ([]*Task, error)
-	// Update saves the task's fields except CostUSD, which only AddCost
+	// Update saves the task's fields except CostUSD, which only RecordCost
 	// changes.
 	Update(ctx context.Context, t *Task) error
-	// AddCost adds to what the task's agents have spent.
-	AddCost(ctx context.Context, id int64, costUSD float64) error
+	// RecordCost saves the total the task's agents have spent. It never
+	// lowers the stored total, so a total recorded late cannot undo a later
+	// one.
+	RecordCost(ctx context.Context, id int64, spentUSD float64) error
 	Delete(ctx context.Context, id int64) error
 }
 
@@ -113,9 +115,9 @@ func (r *repository) Update(ctx context.Context, t *Task) error {
 	return nil
 }
 
-func (r *repository) AddCost(ctx context.Context, id int64, costUSD float64) error {
-	if _, err := r.db.ExecContext(ctx, `UPDATE tasks SET cost_usd = cost_usd + ? WHERE id = ?`, costUSD, id); err != nil {
-		return fmt.Errorf("adding to task cost: %w", err)
+func (r *repository) RecordCost(ctx context.Context, id int64, spentUSD float64) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE tasks SET cost_usd = MAX(cost_usd, ?) WHERE id = ?`, spentUSD, id); err != nil {
+		return fmt.Errorf("recording task cost: %w", err)
 	}
 	return nil
 }

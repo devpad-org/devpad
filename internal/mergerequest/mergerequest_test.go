@@ -344,6 +344,7 @@ type env struct {
 	tasks      *fakeTasks
 	runs       *fakeRuns
 	defaults   fakeDefaults
+	budgets    *fakeBudgets
 	owner      int64
 	stranger   int64
 	taskID     int64
@@ -353,11 +354,14 @@ type env struct {
 // support every effort except "unsupported".
 type fakeDefaults map[string]domain.AgentDefaults
 
-// fakeBudgets is the admin's budget defaults.
-type fakeBudgets struct{ defaults domain.BudgetDefaults }
+// fakeBudgets is the admin's budget defaults, or err when it is set.
+type fakeBudgets struct {
+	defaults domain.BudgetDefaults
+	err      error
+}
 
-func (f fakeBudgets) BudgetDefaults(context.Context) (domain.BudgetDefaults, error) {
-	return f.defaults, nil
+func (f *fakeBudgets) BudgetDefaults(context.Context) (domain.BudgetDefaults, error) {
+	return f.defaults, f.err
 }
 
 func (f fakeDefaults) DefaultsFor(_ context.Context, agentID, effort string) (*domain.AgentDefaults, error) {
@@ -406,11 +410,12 @@ func setup(t *testing.T) *env {
 		tasks:      &fakeTasks{tasks: map[int64]*task.Task{taskID: {ID: taskID, ProjectID: projectID, UserID: owner, Title: "Add a cart", Body: "Users need a cart.", Status: task.StatusInReview, Branch: "task/1", Model: "claude-opus-5-5", Effort: "high"}}},
 		runs:       &fakeRuns{db: conn},
 		defaults:   fakeDefaults{},
+		budgets:    &fakeBudgets{defaults: domain.BudgetDefaults{ReviewUSD: 5}},
 		owner:      owner,
 		stranger:   stranger,
 		taskID:     taskID,
 	}
-	e.svc = NewService(NewRepository(conn), e.projects, e.workspaces, e.tasks, e.runs, fakeConversations{conn}, e.defaults, fakeBudgets{domain.BudgetDefaults{ReviewUSD: 5}}).(*service)
+	e.svc = NewService(NewRepository(conn), e.projects, e.workspaces, e.tasks, e.runs, fakeConversations{conn}, e.defaults, e.budgets).(*service)
 	e.runs.onFinish = e.svc.RunFinished
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -650,6 +655,25 @@ func TestUserReviewRequestingChangesFeedsTheTask(t *testing.T) {
 	}
 	if len(d.Comments) != 1 || d.Ahead != 2 || d.Behind != 1 {
 		t.Fatalf("unexpected detail: %+v", d)
+	}
+}
+
+func TestAgentReviewThatCannotStartLeavesNoConversation(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	e.budgets.err = errors.New("database is locked")
+
+	rv := e.startAgentReview(t, mr, AgentReviewInput{})
+	if rv.Status != ReviewFailed || !strings.Contains(rv.Error, "database is locked") {
+		t.Fatalf("expected the review to fail on the budget lookup, got %+v", rv)
+	}
+	var conversations int
+	if err := e.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ai_conversations`).Scan(&conversations); err != nil {
+		t.Fatal(err)
+	}
+	if conversations != 0 {
+		t.Fatalf("expected no conversation left in the review sandbox, got %d", conversations)
 	}
 }
 

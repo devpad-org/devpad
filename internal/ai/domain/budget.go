@@ -23,7 +23,7 @@ func ValidateBudget(limitUSD float64) error {
 // all. Requests to models without known prices cost nothing here, and a nil
 // Budget has no limit.
 type Budget struct {
-	onSpend func(costUSD float64)
+	onSpend func(spentUSD float64)
 
 	mu       sync.Mutex
 	limitUSD float64
@@ -31,10 +31,10 @@ type Budget struct {
 }
 
 // NewBudget returns a budget of limitUSD, of which spentUSD is already
-// spent. onSpend, which may be nil, is called with the cost of each request
-// as it is spent. A limit of zero or less means no limit, so the budget only
-// counts.
-func NewBudget(limitUSD, spentUSD float64, onSpend func(costUSD float64)) *Budget {
+// spent. onSpend, which may be nil, is called after each priced request with
+// the total spent so far; calls for requests spent at once can arrive out of
+// order. A limit of zero or less means no limit, so the budget only counts.
+func NewBudget(limitUSD, spentUSD float64, onSpend func(spentUSD float64)) *Budget {
 	return &Budget{limitUSD: limitUSD, spentUSD: spentUSD, onSpend: onSpend}
 }
 
@@ -53,9 +53,10 @@ func (b *Budget) Spend(costUSD float64) {
 	}
 	b.mu.Lock()
 	b.spentUSD += costUSD
+	spent := b.spentUSD
 	b.mu.Unlock()
 	if b.onSpend != nil {
-		b.onSpend(costUSD)
+		b.onSpend(spent)
 	}
 }
 

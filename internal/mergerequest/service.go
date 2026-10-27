@@ -720,11 +720,9 @@ func (s *service) startReviewSandbox(ctx context.Context, mr *MergeRequest, rv *
 // startReviewRun starts the agent run of a review the caller has locked, in
 // the sandbox startReviewSandbox gave it.
 func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Review, ws *workspace.Workspace, diff *agent.RepoDiff, env *project.Environment, setup *project.Setup) error {
+	// Everything is read before the conversation is made, so a failed lookup
+	// does not leave an empty one in the sandbox.
 	p, err := s.projects.Get(ctx, mr.UserID, mr.ProjectID)
-	if err != nil {
-		return err
-	}
-	conv, err := s.conversations.CreateConversation(ctx, mr.UserID, ws.ID, rv.Model)
 	if err != nil {
 		return err
 	}
@@ -736,11 +734,15 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 	if err != nil {
 		return err
 	}
+	budgets, err := s.budgets.BudgetDefaults(ctx)
+	if err != nil {
+		return err
+	}
 	var thinking *domain.ThinkingConfig
 	if rv.Effort != "" {
 		thinking = &domain.ThinkingConfig{Effort: rv.Effort}
 	}
-	budgets, err := s.budgets.BudgetDefaults(ctx)
+	conv, err := s.conversations.CreateConversation(ctx, mr.UserID, ws.ID, rv.Model)
 	if err != nil {
 		return err
 	}
