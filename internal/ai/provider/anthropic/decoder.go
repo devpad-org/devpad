@@ -2,7 +2,6 @@ package anthropic
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,42 +12,18 @@ import (
 	"strings"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
+	"github.com/devpad-org/devpad/internal/ai/provider/shared"
 )
 
 // startAnthropicStream initiates an Anthropic Messages API streaming request.
 func startAnthropicStream(ctx context.Context, client *http.Client, url, apiKey string, payload map[string]any, betas []string) (<-chan domain.ProviderEvent, error) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshalling request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", apiKey)
-	httpReq.Header.Set("anthropic-version", apiVersion)
-	httpReq.Header.Set("Accept", "text/event-stream")
+	headers := http.Header{}
+	headers.Set("x-api-key", apiKey)
+	headers.Set("anthropic-version", apiVersion)
 	if len(betas) > 0 {
-		httpReq.Header.Set("anthropic-beta", strings.Join(betas, ","))
+		headers.Set("anthropic-beta", strings.Join(betas, ","))
 	}
-
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("%s API error (status %d): %s", providerID, resp.StatusCode, string(respBody))
-	}
-
-	ch := make(chan domain.ProviderEvent, 64)
-	go readAnthropicStream(resp.Body, ch)
-	return ch, nil
+	return shared.StartStreamRequestWithHeaders(ctx, client, url, headers, providerID, payload, readAnthropicStream)
 }
 
 // The reasoning state saved with an assistant turn is a JSON array of the

@@ -39,9 +39,18 @@ func NewStreamingClient() *http.Client {
 	return &http.Client{Transport: transport}
 }
 
-// StartStreamRequest posts a JSON body to a streaming endpoint and delegates decoding.
-// Transient provider failures are retried with exponential backoff.
+// StartStreamRequest posts a JSON body to a streaming endpoint that takes a
+// bearer API key and delegates decoding.
 func StartStreamRequest(ctx context.Context, client *http.Client, url, apiKey, errorLabel string, payload any, decode StreamDecoder) (<-chan domain.ProviderEvent, error) {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+apiKey)
+	return StartStreamRequestWithHeaders(ctx, client, url, headers, errorLabel, payload, decode)
+}
+
+// StartStreamRequestWithHeaders posts a JSON body to a streaming endpoint with
+// the provider's own auth and version headers and delegates decoding.
+// Transient provider failures are retried with exponential backoff.
+func StartStreamRequestWithHeaders(ctx context.Context, client *http.Client, url string, headers http.Header, errorLabel string, payload any, decode StreamDecoder) (<-chan domain.ProviderEvent, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshalling request: %w", err)
@@ -49,7 +58,7 @@ func StartStreamRequest(ctx context.Context, client *http.Client, url, apiKey, e
 
 	var lastErr error
 	for attempt := 0; attempt < maxStreamAttempts; attempt++ {
-		resp, err := sendStreamRequest(ctx, client, url, apiKey, body)
+		resp, err := sendStreamRequest(ctx, client, url, headers, body)
 		if err != nil {
 			// A request that failed before any response, such as one timing
 			// out awaiting headers, is retried unless the caller gave up.
@@ -84,13 +93,15 @@ func StartStreamRequest(ctx context.Context, client *http.Client, url, apiKey, e
 	return nil, lastErr
 }
 
-func sendStreamRequest(ctx context.Context, client *http.Client, url, apiKey string, body []byte) (*http.Response, error) {
+func sendStreamRequest(ctx context.Context, client *http.Client, url string, headers http.Header, body []byte) (*http.Response, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
+	for name, values := range headers {
+		httpReq.Header[name] = values
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	return client.Do(httpReq)

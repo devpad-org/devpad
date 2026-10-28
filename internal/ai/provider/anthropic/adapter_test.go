@@ -331,6 +331,40 @@ data: {"type":"message_stop"}
 	}
 }
 
+func TestAnthropicAdapter_RetriesOverloadedAPI(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(529)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_stop
+data: {"type":"message_stop"}
+`))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter()
+	adapter.baseURL = server.URL
+	adapter.client = server.Client()
+
+	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
+		Model: "claude-opus-4-7",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("expected the overloaded request to be retried, got %v", err)
+	}
+	collectEvents(stream)
+	if calls != 2 {
+		t.Fatalf("expected 2 attempts, got %d", calls)
+	}
+}
+
 func TestAnthropicAdapter_StreamThinkingContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
