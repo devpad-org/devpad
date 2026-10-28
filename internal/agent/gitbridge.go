@@ -22,11 +22,19 @@ type GitBridgeRequest struct {
 	Op       string   `json:"op"`
 	Branches []string `json:"branches,omitempty"`
 	Force    bool     `json:"force,omitempty"`
+	// Remote is "" for the devpad remote and GitBridgeUpstream for the
+	// origin remote, the read-only view of the project's upstream.
+	Remote string `json:"remote,omitempty"`
 }
 
-// GitBridgeResult is devpad's answer to a GitBridgeRequest.
+// GitBridgeUpstream is the Remote of a request made through origin.
+const GitBridgeUpstream = "upstream"
+
+// GitBridgeResult is devpad's answer to a GitBridgeRequest. Warning is shown
+// alongside a result that is not an error.
 type GitBridgeResult struct {
 	Error         string    `json:"error,omitempty"`
+	Warning       string    `json:"warning,omitempty"`
 	DefaultBranch string    `json:"defaultBranch,omitempty"`
 	Refs          []RepoRef `json:"refs,omitempty"`
 	SHA           string    `json:"sha,omitempty"`
@@ -75,13 +83,28 @@ func (c *Client) GitBridgeRespond(ctx context.Context, session, id string, resul
 	return c.doNoContent(req, "git bridge result")
 }
 
+// GitBridgeRemotes describes the project to GitBridgeConfigureRemote.
+// UpstreamURLHash is the hex SHA-256 of the upstream URL, so an origin
+// already pointing at it can be recognized without the workspace being sent
+// the URL.
+type GitBridgeRemotes struct {
+	Upstream        bool   `json:"upstream"`
+	UpstreamURLHash string `json:"upstreamUrlHash,omitempty"`
+}
+
 // GitBridgeConfigureRemote installs git-remote-devpad and points the repo's
-// devpad remote at it.
-func (c *Client) GitBridgeConfigureRemote(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/git-bridge/remote", nil)
+// devpad remote at it, and its origin remote too when the project has an
+// upstream.
+func (c *Client) GitBridgeConfigureRemote(ctx context.Context, remotes GitBridgeRemotes) error {
+	payload, err := json.Marshal(remotes)
+	if err != nil {
+		return fmt.Errorf("marshaling request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/git-bridge/remote", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Content-Type", "application/json")
 	return c.doNoContent(req, "git bridge remote")
 }
 

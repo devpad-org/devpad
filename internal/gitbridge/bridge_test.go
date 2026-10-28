@@ -25,6 +25,7 @@ type fakeAgent struct {
 	queued     []agent.GitBridgeRequest
 	polls      int
 	configured int
+	remotes    agent.GitBridgeRemotes
 	responses  map[string]agent.GitBridgeResult
 	sessions   map[string]string
 	pollErr    error
@@ -70,10 +71,11 @@ func (a *fakeAgent) GitBridgeRespond(ctx context.Context, session, id string, re
 	return nil
 }
 
-func (a *fakeAgent) GitBridgeConfigureRemote(ctx context.Context) error {
+func (a *fakeAgent) GitBridgeConfigureRemote(ctx context.Context, remotes agent.GitBridgeRemotes) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.configured++
+	a.remotes = remotes
 	return nil
 }
 
@@ -171,6 +173,46 @@ type fakeProjects struct {
 	fetched    [][]string
 	publishErr error
 	listed     []int64
+	// upstreamURL is every project's upstream; warning what a stale sync
+	// returns; syncErr what a forced sync fails with.
+	upstreamURL     string
+	warning         string
+	syncErr         error
+	synced          int
+	upstreamFetched [][]string
+}
+
+func (f *fakeProjects) Get(ctx context.Context, userID, projectID int64) (*project.Project, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return &project.Project{ID: projectID, UserID: userID, DefaultBranch: "main", UpstreamURL: f.upstreamURL}, nil
+}
+
+func (f *fakeProjects) SyncUpstream(ctx context.Context, userID, projectID int64) (*project.UpstreamStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.synced++
+	if f.syncErr != nil {
+		return nil, f.syncErr
+	}
+	return &project.UpstreamStatus{}, nil
+}
+
+func (f *fakeProjects) SyncUpstreamIfStale(ctx context.Context, userID, projectID int64, wait time.Duration) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.warning
+}
+
+func (f *fakeProjects) UpstreamBranches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error) {
+	return &agent.RepoRefs{DefaultBranch: "main", Branches: []agent.RepoRef{{Name: "main", SHA: "ccc"}, {Name: "theirs", SHA: "ddd"}}}, nil
+}
+
+func (f *fakeProjects) FetchWorkspaceUpstreamBranches(ctx context.Context, userID, projectID int64, branches []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.upstreamFetched = append(f.upstreamFetched, branches)
+	return nil
 }
 
 func (f *fakeProjects) Branches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error) {
@@ -739,5 +781,93 @@ func TestBridgeLogsAreCleanAndLimited(t *testing.T) {
 	b.logf(1, "later")
 	if !strings.Contains(logs.String(), "later (90 earlier lines suppressed)") {
 		t.Fatalf("suppressed lines not counted:\n%s", logs)
+	}
+}
+
+func TestRemotesAreSetUpForTheProjectsUpstream(t *testing.T) {
+	for _, upstream := range []string{"", "git@github.com:example/project.git"} {
+		fw := newFakeWorkspaces(projectWorkspace(1, 10))
+		b := newTestBridge(fw, &fakeProjects{upstreamURL: upstream})
+		ctx, cancel := context.WithCancel(context.Background())
+		b.reconcile(ctx)
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			a := fw.agents[1]
+			a.mu.Lock()
+			configured, remotes := a.configured, a.remotes
+			a.mu.Unlock()
+			if configured > 0 {
+				if remotes.Upstream != (upstream != "") {
+					t.Errorf("upstream %q: remotes %+v", upstream, remotes)
+				}
+				// The workspace gets a hash of the URL, never the URL.
+				if upstream != "" && (len(remotes.UpstreamURLHash) != 64 || strings.Contains(remotes.UpstreamURLHash, "github")) {
+					t.Errorf("upstream hash %q", remotes.UpstreamURLHash)
+				}
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the remotes were never set up")
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		stopAll(t, b, cancel)
+	}
+}
+
+func TestOriginIsTheReadOnlyUpstream(t *testing.T) {
+	ps := &fakeProjects{upstreamURL: "git@github.com:example/project.git"}
+	b := newTestBridge(newFakeWorkspaces(), ps)
+	captureLog(t)
+	ws := projectWorkspace(1, 10)
+	ctx := context.Background()
+	up := func(op string, branches ...string) agent.GitBridgeResult {
+		return b.handle(ctx, ws, agent.GitBridgeRequest{ID: "u1", Op: op, Branches: branches, Remote: agent.GitBridgeUpstream})
+	}
+
+	// Listing origin syncs, then lists the upstream's branches.
+	if res := up("list"); res.Error != "" || len(res.Refs) != 2 || res.Refs[1].Name != "theirs" || ps.synced != 1 {
+		t.Fatalf("list result %+v, synced %d", res, ps.synced)
+	}
+	if res := up("fetch", "theirs"); res.Error != "" || len(ps.upstreamFetched) != 1 || ps.upstreamFetched[0][0] != "theirs" {
+		t.Fatalf("fetch result %+v, fetched %v", res, ps.upstreamFetched)
+	}
+	if len(ps.fetched) != 0 {
+		t.Fatal("an origin fetch reached the devpad remote")
+	}
+	// Pushes are refused, and are not recorded as the IDE's pushes.
+	if res := up("push", "main"); !strings.Contains(res.Error, "read-only") {
+		t.Fatalf("push result %+v", res)
+	}
+	if events, _, _ := b.Activity(7, 10, 0, ""); len(events) != 0 || len(ps.published) != 0 {
+		t.Fatalf("an origin push was recorded: %v %v", events, ps.published)
+	}
+	for _, req := range []agent.GitBridgeRequest{
+		{Op: "fetch", Remote: agent.GitBridgeUpstream},
+		{Op: "fetch", Remote: agent.GitBridgeUpstream, Branches: []string{"--all"}},
+		{Op: "list", Remote: "elsewhere"},
+	} {
+		if res := b.handle(ctx, ws, req); res.Error == "" {
+			t.Errorf("request %+v was accepted", req)
+		}
+	}
+
+	// A failed sync fails the list without its detail.
+	ps.syncErr = &agent.AgentError{StatusCode: 502, Message: "fetching from upstream: Permission denied (publickey) for /home/devpad/.ssh/id_ed25519"}
+	if res := up("list"); res.Error != errSync {
+		t.Fatalf("failed sync result %+v", res)
+	}
+	ps.syncErr = project.ErrNoUpstream
+	if res := up("list"); !strings.Contains(res.Error, "no upstream") {
+		t.Fatalf("no upstream result %+v", res)
+	}
+}
+
+func TestListingDevpadWarnsOfAFailedSync(t *testing.T) {
+	ps := &fakeProjects{warning: "could not fetch from the upstream"}
+	b := newTestBridge(newFakeWorkspaces(), ps)
+	res := b.handle(context.Background(), projectWorkspace(1, 10), agent.GitBridgeRequest{Op: "list"})
+	if res.Error != "" || res.Warning != ps.warning || len(res.Refs) != 1 {
+		t.Fatalf("list result %+v", res)
 	}
 }

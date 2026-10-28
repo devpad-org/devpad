@@ -1101,10 +1101,39 @@ func actionCommit(ctx context.Context, req gitActionRequest) (string, error) {
 	return gitOutput(ctx, "commit", "-m", req.Msg)
 }
 
+// defaultRemote is the remote git itself would use for the current branch:
+// for a push, remote.pushDefault or the branch's push remote first; then
+// the remote the branch tracks; then origin. In a project workspace that
+// sends pushes to devpad while origin, the upstream, is read-only.
+func defaultRemote(ctx context.Context, push bool) string {
+	branch := ""
+	if out, err := gitOutput(ctx, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+		branch = strings.TrimSpace(out)
+	}
+	var keys []string
+	if push {
+		if branch != "" {
+			keys = append(keys, "branch."+branch+".pushRemote")
+		}
+		keys = append(keys, "remote.pushDefault")
+	}
+	if branch != "" {
+		keys = append(keys, "branch."+branch+".remote")
+	}
+	for _, key := range keys {
+		out, err := gitOutput(ctx, "config", "--get", key)
+		// "." means the local repo, which a remote action has no use for.
+		if remote := strings.TrimSpace(out); err == nil && remote != "" && remote != "." && validateGitRef(remote, "remote") == nil {
+			return remote
+		}
+	}
+	return "origin"
+}
+
 func actionPush(ctx context.Context, req gitActionRequest) (string, error) {
 	remote := req.Remote
 	if remote == "" {
-		remote = "origin"
+		remote = defaultRemote(ctx, true)
 	}
 	args := []string{"push", remote}
 	if req.Branch != "" {
@@ -1116,7 +1145,7 @@ func actionPush(ctx context.Context, req gitActionRequest) (string, error) {
 func actionPull(ctx context.Context, req gitActionRequest) (string, error) {
 	remote := req.Remote
 	if remote == "" {
-		remote = "origin"
+		remote = defaultRemote(ctx, false)
 	}
 	args := []string{"pull", remote}
 	if req.Branch != "" {
@@ -1128,7 +1157,7 @@ func actionPull(ctx context.Context, req gitActionRequest) (string, error) {
 func actionFetch(ctx context.Context, req gitActionRequest) (string, error) {
 	remote := req.Remote
 	if remote == "" {
-		remote = "origin"
+		remote = defaultRemote(ctx, false)
 	}
 	args := []string{"fetch", remote}
 	if req.Branch != "" {

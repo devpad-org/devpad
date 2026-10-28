@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { projectApi, type ProjectInput } from '@/api/projects'
+import type { ProjectInput } from '@/api/projects'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useProjectStore } from '@/stores/projects'
 import ConfirmModal from '@/components/ConfirmModal.vue'
@@ -10,6 +10,7 @@ import ProjectBranchesModal from './ProjectBranchesModal.vue'
 import ProjectModal from './ProjectModal.vue'
 import ProjectEnvironment from './ProjectEnvironment.vue'
 import ProjectSetup from './ProjectSetup.vue'
+import ProjectUpstream from './ProjectUpstream.vue'
 import StatusBadge from './StatusBadge.vue'
 
 // The project's details and settings in the IDE side bar.
@@ -28,10 +29,7 @@ const savingProject = ref(false)
 const editError = ref('')
 const showDelete = ref(false)
 const deleting = ref(false)
-// The branch being pushed upstream, if any.
-const pushing = ref('')
 const actionError = ref('')
-const notice = ref('')
 
 async function saveProject(input: ProjectInput) {
   if (store.projectId === null) return
@@ -69,21 +67,6 @@ async function dismissConversion() {
     actionError.value = e instanceof Error ? e.message : 'Failed to dismiss'
   }
 }
-
-async function push(branch: string) {
-  if (store.projectId === null) return
-  pushing.value = branch
-  actionError.value = ''
-  notice.value = ''
-  try {
-    const res = await projectApi.push(store.projectId, branch)
-    notice.value = `Pushed ${res.branch} (${res.sha.slice(0, 8)}) upstream.`
-  } catch (e) {
-    actionError.value = e instanceof Error ? e.message : 'Push failed'
-  } finally {
-    pushing.value = ''
-  }
-}
 </script>
 
 <template>
@@ -113,7 +96,6 @@ async function push(branch: string) {
       <p v-if="store.project.status === 'error'" class="notice notice-error side-notice">{{ store.project.error || 'The project failed to set up.' }}</p>
       <p v-if="store.loadError" class="notice notice-error side-notice">{{ store.loadError }}</p>
       <p v-if="actionError" class="notice notice-error side-notice">{{ actionError }}</p>
-      <p v-if="notice" class="notice notice-success side-notice">{{ notice }}</p>
 
       <ConversionNotice v-if="store.conversion" :conversion="store.conversion" @dismiss="dismissConversion" />
 
@@ -135,21 +117,11 @@ async function push(branch: string) {
         </dl>
       </div>
 
+      <ProjectUpstream />
       <ProjectEnvironment :workspace-status="workspaceStatus" />
       <ProjectSetup :workspace-status="workspaceStatus" />
 
       <div class="side-section actions">
-        <template v-if="store.project.upstreamUrl && store.ready">
-          <button
-            v-for="branch in store.protectedBranches"
-            :key="branch"
-            class="btn btn-secondary btn-sm"
-            :disabled="!!pushing"
-            @click="push(branch)"
-          >
-            {{ pushing === branch ? 'Pushing...' : `Push ${branch} upstream` }}
-          </button>
-        </template>
         <button v-if="store.ready" class="btn btn-secondary btn-sm" @click="showBranches = true">Branches</button>
         <button class="btn btn-secondary btn-sm" @click="editError = ''; showEdit = true">Edit project</button>
         <button class="btn btn-danger btn-sm" @click="showDelete = true">Delete project</button>

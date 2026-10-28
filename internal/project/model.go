@@ -45,6 +45,7 @@ var (
 	ErrPublishProtected = errors.New("protected branches cannot be published; merge into them through a merge request")
 	ErrNoWorkspace      = errors.New("project has no workspace yet")
 	ErrInvalidInput     = errors.New("invalid input")
+	ErrNoUpstream       = errors.New("the project has no upstream")
 )
 
 // Project is a repo that AI agents work on in parallel sandboxes. Its

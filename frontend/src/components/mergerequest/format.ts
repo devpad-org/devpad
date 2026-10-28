@@ -69,6 +69,8 @@ export function pushSummary(push: Push, commits: number, branch: string): string
       return commits ? `Task agent added ${plural(commits, 'commit')}` : `Task agent moved ${branch} to ${head}`
     case 'workspace':
       return commits ? `Published ${plural(commits, 'commit')} from the project workspace` : `Published ${head} from the project workspace`
+    case 'upstream':
+      return commits ? `Fast-forwarded ${branch} by ${plural(commits, 'commit')} from the upstream` : `Fast-forwarded ${branch} to ${head} from the upstream`
     default:
       return commits ? `A merge into ${branch} added ${plural(commits, 'commit')}` : `A merge into ${branch} moved it to ${head}`
   }

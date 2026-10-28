@@ -28,6 +28,9 @@ const (
 	// sandboxBaseRemote is the ref namespace a sandbox's copy of the default
 	// branch lives under, as in devpad/main.
 	sandboxBaseRemote = "devpad"
+	// upstreamRemote is the project workspace's read-only view of the
+	// project's upstream, as in origin/main.
+	upstreamRemote = "origin"
 )
 
 type revError struct {
@@ -506,6 +509,9 @@ func handleRepoPush(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "pushing to upstream: "+strings.TrimSpace(out))
 		return
 	}
+	// The upstream now has the branch at sha; record it so the branch shows
+	// as in step without another fetch.
+	gitExec(ctx, "update-ref", upstreamRefPrefix+branch, sha)
 	writeJSON(w, http.StatusOK, repoBranchResult{Branch: branch, SHA: sha})
 }
 
@@ -566,11 +572,22 @@ func handleRepoFetchBase(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRepoFetchBases refreshes devpad/<branch> for each named branch from
-// one bundle of them, for git fetch through the devpad remote.
+// one bundle of them, for git fetch through the devpad remote. With
+// source=upstream the bundle holds the upstream's branches and they land as
+// origin/<branch>, for git fetch through the origin remote.
 func handleRepoFetchBases(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
 	defer cancel()
 
+	srcPrefix, remote := "refs/heads/", sandboxBaseRemote
+	switch source := r.URL.Query().Get("source"); source {
+	case "":
+	case "upstream":
+		srcPrefix, remote = upstreamRefPrefix, upstreamRemote
+	default:
+		writeErr(w, http.StatusBadRequest, "unknown source "+source)
+		return
+	}
 	branches := r.URL.Query()["branch"]
 	if len(branches) == 0 || len(branches) > maxBundleBranches {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("fetch between 1 and %d branches", maxBundleBranches))
@@ -586,7 +603,7 @@ func handleRepoFetchBases(w http.ResponseWriter, r *http.Request) {
 		if !seen[branch] {
 			seen[branch] = true
 			unique = append(unique, branch)
-			refspecs = append(refspecs, "refs/heads/"+branch+":refs/remotes/"+sandboxBaseRemote+"/"+branch)
+			refspecs = append(refspecs, srcPrefix+branch+":refs/remotes/"+remote+"/"+branch)
 		}
 	}
 	if gitExec(ctx, "rev-parse", "--git-dir") != nil {
@@ -607,13 +624,13 @@ func handleRepoFetchBases(w http.ResponseWriter, r *http.Request) {
 	}
 	results := make([]repoBranchResult, 0, len(unique))
 	for _, branch := range unique {
-		ref := "refs/remotes/" + sandboxBaseRemote + "/" + branch
+		ref := "refs/remotes/" + remote + "/" + branch
 		sha, err := gitOutput(ctx, "rev-parse", ref)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "resolving "+ref)
 			return
 		}
-		results = append(results, repoBranchResult{Branch: sandboxBaseRemote + "/" + branch, SHA: strings.TrimSpace(sha)})
+		results = append(results, repoBranchResult{Branch: remote + "/" + branch, SHA: strings.TrimSpace(sha)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"branches": results})
 }

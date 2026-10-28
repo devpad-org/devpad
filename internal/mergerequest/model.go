@@ -158,6 +158,9 @@ const (
 	PushWorkspace PushSource = "workspace"
 	// PushMerge is another merge request merged into the source branch.
 	PushMerge PushSource = "merge"
+	// PushUpstream is devpad fast-forwarding the source branch, a protected
+	// branch, to commits that landed in the project's upstream.
+	PushUpstream PushSource = "upstream"
 )
 
 // Push records an open merge request's source branch moving from BeforeSHA

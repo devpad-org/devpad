@@ -23,7 +23,7 @@ func main() {
 	// Linked as git-remote-devpad, the binary is git's helper for the devpad
 	// remote, run by git inside the workspace.
 	if filepath.Base(os.Args[0]) == remoteHelperName {
-		os.Exit(runRemoteHelper(os.Stdin, os.Stdout, os.Stderr))
+		os.Exit(runRemoteHelper(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
 
 	port := os.Getenv("AGENT_PORT")
@@ -89,6 +89,9 @@ func main() {
 	authedMux.HandleFunc("POST /api/repo/head", handleRepoSetHead)
 	authedMux.HandleFunc("POST /api/repo/fetch-base", handleRepoFetchBase)
 	authedMux.HandleFunc("POST /api/repo/fetch-bases", handleRepoFetchBases)
+	authedMux.HandleFunc("POST /api/repo/upstream/fetch", handleRepoUpstreamFetch)
+	authedMux.HandleFunc("GET /api/repo/upstream/status", handleRepoUpstreamStatus)
+	authedMux.HandleFunc("GET /api/repo/upstream/refs", handleRepoUpstreamRefs)
 	authedMux.HandleFunc("POST /api/repo/checkout", handleRepoCheckout)
 	authedMux.HandleFunc("GET /api/repo/branch-status", handleRepoBranchStatus)
 	authedMux.HandleFunc("GET /api/repo/discover", handleRepoDiscover)

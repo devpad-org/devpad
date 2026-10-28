@@ -98,6 +98,10 @@ func TestRepoCheckoutCreatesAndSwitchesBranch(t *testing.T) {
 	if got := runGit(t, work, "rev-parse", "refs/remotes/devpad/task/1"); got != taskSHA {
 		t.Fatalf("devpad/task/1 = %s, want %s", got, taskSHA)
 	}
+	// The new branch tracks the project's copy, so git pull works.
+	if remote, merge := runGit(t, work, "config", "branch.task/1.remote"), runGit(t, work, "config", "branch.task/1.merge"); remote != "devpad" || merge != "refs/heads/task/1" {
+		t.Fatalf("task/1 tracks %s %s", remote, merge)
+	}
 }
 
 func TestRepoCheckoutKeepsLocalWork(t *testing.T) {

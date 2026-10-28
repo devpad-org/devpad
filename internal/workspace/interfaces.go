@@ -118,6 +118,9 @@ type ProjectWorkspaceService interface {
 	BundleProjectBranch(ctx context.Context, userID, workspaceID int64, branch string) (io.ReadCloser, error)
 	ProjectBranchStatus(ctx context.Context, userID, workspaceID int64, branch string) (*agent.RepoBranchStatus, error)
 	FetchProjectBranches(ctx context.Context, userID, workspaceID int64, branches []string, bundle io.Reader) ([]agent.RepoBranch, error)
+	// FetchProjectUpstreamBranches refreshes origin/<branch> in a project
+	// workspace for each branch, from one bundle of the upstream's copies.
+	FetchProjectUpstreamBranches(ctx context.Context, userID, workspaceID int64, branches []string, bundle io.Reader) ([]agent.RepoBranch, error)
 	// RebuildProjectContainer replaces the workspace's container with one
 	// made from image, keeping /workspace.
 	RebuildProjectContainer(ctx context.Context, userID, workspaceID int64, image string) (*Workspace, error)

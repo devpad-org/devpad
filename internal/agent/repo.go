@@ -95,7 +95,11 @@ func (c *Client) RepoBundle(ctx context.Context, branch string) (io.ReadCloser, 
 // RepoBundleBranches streams one bundle of several branches. The caller must
 // close it.
 func (c *Client) RepoBundleBranches(ctx context.Context, branches []string) (io.ReadCloser, error) {
-	u := c.baseURL + "/api/repo/bundle?" + url.Values{"branch": branches}.Encode()
+	return c.repoBundle(ctx, url.Values{"branch": branches})
+}
+
+func (c *Client) repoBundle(ctx context.Context, q url.Values) (io.ReadCloser, error) {
+	u := c.baseURL + "/api/repo/bundle?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -320,7 +324,11 @@ func (c *Client) RepoFetchBase(ctx context.Context, branch string, bundle io.Rea
 // RepoFetchBases refreshes devpad/<branch> for each branch from one bundle of
 // them.
 func (c *Client) RepoFetchBases(ctx context.Context, branches []string, bundle io.Reader) ([]RepoBranch, error) {
-	u := c.baseURL + "/api/repo/fetch-bases?" + url.Values{"branch": branches}.Encode()
+	return c.repoFetchBases(ctx, url.Values{"branch": branches}, bundle)
+}
+
+func (c *Client) repoFetchBases(ctx context.Context, q url.Values, bundle io.Reader) ([]RepoBranch, error) {
+	u := c.baseURL + "/api/repo/fetch-bases?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bundle)
 	if err != nil {
 		return nil, err

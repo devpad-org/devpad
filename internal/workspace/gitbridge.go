@@ -12,7 +12,7 @@ import (
 type GitBridgeAgent interface {
 	GitBridgeRequests(ctx context.Context, session string, wait time.Duration) ([]agent.GitBridgeRequest, error)
 	GitBridgeRespond(ctx context.Context, session, id string, result agent.GitBridgeResult) error
-	GitBridgeConfigureRemote(ctx context.Context) error
+	GitBridgeConfigureRemote(ctx context.Context, remotes agent.GitBridgeRemotes) error
 }
 
 // GitBridgeAgent returns devpad's current record of a running project

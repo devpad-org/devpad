@@ -49,8 +49,10 @@ type Service interface {
 	// TaskReadyForReview opens or updates the task's merge request.
 	TaskReadyForReview(ctx context.Context, t *task.Task, summary string)
 	// BranchPublished moves the open merge request for a branch published
-	// from the project workspace to the new commit.
+	// from the project workspace to the new commit, and BranchFastForwarded
+	// for a protected branch fast-forwarded from the upstream.
 	BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string)
+	BranchFastForwarded(ctx context.Context, userID, projectID int64, branch, sha string)
 	// Tools and ExecuteTool give review agents their review tools, and task
 	// agents the tools to read and answer their merge request's comments,
 	// which Prompt tells them about.
@@ -347,6 +349,20 @@ func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary 
 func (s *service) BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string) {
 	if err := s.branchPublished(ctx, userID, projectID, branch, sha); err != nil {
 		log.Printf("project %d: updating merge request for published branch %s: %v", projectID, branch, err)
+	}
+}
+
+// BranchFastForwarded reads the branch from the canonical repo under the
+// merge request's lock, as a merge into it does, so a merge racing the
+// fast-forward cannot leave the merge request on the older commit.
+func (s *service) BranchFastForwarded(ctx context.Context, userID, projectID int64, branch, sha string) {
+	if sha == "" {
+		return
+	}
+	if err := s.followBranch(ctx, userID, projectID, branch, PushUpstream, func() (string, error) {
+		return s.canonicalSHA(ctx, userID, projectID, branch)
+	}); err != nil {
+		log.Printf("project %d: updating merge request for %s fast-forwarded from the upstream: %v", projectID, branch, err)
 	}
 }
 

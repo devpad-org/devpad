@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,13 +20,30 @@ import (
 // agent binary is linked under it and acts as the helper when run that way.
 const remoteHelperName = "git-remote-devpad"
 
+// errUpstreamReadOnly refuses pushes to the origin remote.
+var errUpstreamReadOnly = errors.New("origin is the project's upstream and is read-only here; push your branch to devpad instead (git push devpad <branch>). Protected branches reach the upstream from the project panel once they are merged")
+
 // runRemoteHelper speaks git's remote-helper protocol (see
 // gitremote-helpers(7)) on in and out, turning list, fetch and push into
-// requests to devpad through the agent's git bridge. Only the project repo
-// at /workspace can use it, since that is the repo devpad bundles from and
-// into.
-func runRemoteHelper(in io.Reader, out io.Writer, errOut io.Writer) int {
+// requests to devpad through the agent's git bridge. args are git's: the
+// remote's name and the address after "devpad::", which picks the remote:
+// "project" is the devpad remote, "upstream" the read-only origin remote.
+// Only the project repo at /workspace can use it, since that is the repo
+// devpad bundles from and into.
+func runRemoteHelper(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 	h := &remoteHelper{out: bufio.NewWriter(out), errOut: errOut, client: bridgeClient(gitBridgeSocketPath())}
+	address := ""
+	if len(args) >= 2 {
+		address = args[1]
+	}
+	switch address {
+	case "project":
+	case "upstream":
+		h.remote = remoteUpstream
+	default:
+		fmt.Fprintf(errOut, "fatal: unknown devpad remote %q\n", address)
+		return 1
+	}
 	if err := h.checkRepo(); err != nil {
 		fmt.Fprintf(errOut, "fatal: %v\n", err)
 		return 1
@@ -41,6 +59,8 @@ type remoteHelper struct {
 	out    *bufio.Writer
 	errOut io.Writer
 	client *http.Client
+	// remote is "" for the devpad remote and remoteUpstream for origin.
+	remote string
 }
 
 func bridgeClient(socket string) *http.Client {
@@ -91,6 +111,8 @@ func (h *remoteHelper) run(in *bufio.Reader) error {
 			return nil
 		case line == "capabilities":
 			h.out.WriteString("fetch\npush\n\n")
+		case line == "list for-push" && h.remote == remoteUpstream:
+			return errUpstreamReadOnly
 		case line == "list" || line == "list for-push":
 			if err := h.list(); err != nil {
 				return err
@@ -137,6 +159,7 @@ func batch(first string, in *bufio.Reader) ([]string, error) {
 }
 
 func (h *remoteHelper) request(req gitBridgeRequest) (gitBridgeResult, error) {
+	req.Remote = h.remote
 	body, err := json.Marshal(req)
 	if err != nil {
 		return gitBridgeResult{}, err
@@ -163,6 +186,9 @@ func (h *remoteHelper) list() error {
 	}
 	if res.Error != "" {
 		return fmt.Errorf("devpad: %s", res.Error)
+	}
+	if res.Warning != "" {
+		fmt.Fprintf(h.errOut, "warning: devpad: %s\n", oneLine(res.Warning))
 	}
 	hasDefault := false
 	for _, ref := range res.Refs {
@@ -235,6 +261,11 @@ func (h *remoteHelper) push(first string, in *bufio.Reader) error {
 		if !ok {
 			return fmt.Errorf("unexpected push command %q", line)
 		}
+		if h.remote == remoteUpstream {
+			_, dst, _ := strings.Cut(spec, ":")
+			fmt.Fprintf(h.out, "error %s %s\n", dst, oneLine(errUpstreamReadOnly.Error()))
+			continue
+		}
 		dst, why := h.pushOne(spec)
 		if why == "" {
 			fmt.Fprintf(h.out, "ok %s\n", dst)
@@ -270,7 +301,22 @@ func (h *remoteHelper) pushOne(spec string) (dst, why string) {
 	if err != nil {
 		return dst, err.Error()
 	}
+	if res.Error == "" {
+		trackAfterPush(branch)
+	}
 	return dst, res.Error
+}
+
+// trackAfterPush has a branch that tracks nothing track devpad/<branch>
+// after its first push, as push.autoSetupRemote would; that setting does
+// not apply to a remote with a push refspec of its own. It is best effort:
+// the push itself succeeded.
+func trackAfterPush(branch string) {
+	if exec.Command("git", "config", "--get", "branch."+branch+".remote").Run() == nil {
+		return
+	}
+	exec.Command("git", "config", "branch."+branch+".remote", sandboxBaseRemote).Run()
+	exec.Command("git", "config", "branch."+branch+".merge", "refs/heads/"+branch).Run()
 }
 
 func oneLine(s string) string {

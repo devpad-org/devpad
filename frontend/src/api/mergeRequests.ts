@@ -65,7 +65,7 @@ export interface ReviewComment {
 
 // What moved a merge request's source branch: a task's agent finishing a
 // round, a publish from the project workspace, or a merge into the branch.
-export type PushSource = 'task' | 'workspace' | 'merge'
+export type PushSource = 'task' | 'workspace' | 'merge' | 'upstream'
 
 // The source branch moving from beforeSha to headSha, at the time devpad
 // saw it.

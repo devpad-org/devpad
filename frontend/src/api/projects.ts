@@ -76,6 +76,27 @@ export interface PushResult {
   sha: string
 }
 
+// A protected branch against the upstream's copy as last fetched. ahead
+// counts the project's commits the upstream lacks, behind the reverse.
+// Either sha is empty when that side has no such branch.
+export interface UpstreamBranch {
+  branch: string
+  sha: string
+  upstreamSha: string
+  ahead: number
+  behind: number
+  fastForwarded?: boolean
+}
+
+export interface UpstreamStatus {
+  fetchedAt?: string
+  syncing: boolean
+  // The last sync's error, if it failed.
+  error?: string
+  errorAt?: string
+  branches: UpstreamBranch[]
+}
+
 // A branch moved in the canonical repo or a workspace.
 export interface BranchResult {
   branch: string
@@ -359,6 +380,16 @@ export const projectApi = {
   // Pushes a protected branch upstream, the default branch unless given.
   push(id: number, branch?: string): Promise<PushResult> {
     return apiClient.post(`/api/projects/${id}/push`, branch ? { branch } : {})
+  },
+
+  // How the protected branches stand against the upstream as last fetched.
+  upstreamStatus(id: number): Promise<UpstreamStatus> {
+    return apiClient.get(`/api/projects/${id}/upstream`)
+  },
+
+  // Fetches the upstream and fast-forwards the protected branches it can.
+  syncUpstream(id: number): Promise<UpstreamStatus> {
+    return apiClient.post(`/api/projects/${id}/upstream/sync`, {})
   },
 
   // Returns the project workspace, or null before it is first opened.

@@ -314,7 +314,8 @@ func WriteFileContent(w http.ResponseWriter, content []byte) {
 	w.Write(content)
 }
 
-// HandlePush pushes the default branch to the project's upstream.
+// HandlePush pushes a protected branch, the default unless given, to the
+// project's upstream.
 func (h *Handler) HandlePush(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	id, ok := pathID(w, r, "id")
@@ -333,6 +334,38 @@ func (h *Handler) HandlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// HandleUpstreamStatus reports how the protected branches stand against the
+// upstream as last fetched.
+func (h *Handler) HandleUpstreamStatus(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	status, err := h.service.UpstreamStatus(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+// HandleSyncUpstream fetches the upstream and fast-forwards the protected
+// branches it can.
+func (h *Handler) HandleSyncUpstream(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	status, err := h.service.SyncUpstream(r.Context(), user.ID, id)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 // HandleStartSandbox restarts a stopped sandbox within the project's limit.
@@ -620,7 +653,7 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, ErrForbidden), errors.Is(err, workspace.ErrForbidden):
 		writeError(w, http.StatusForbidden, "access denied")
-	case errors.Is(err, ErrInvalidInput):
+	case errors.Is(err, ErrInvalidInput), errors.Is(err, ErrNoUpstream):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrProtectedBranch), errors.Is(err, ErrPublishProtected):
 		writeError(w, http.StatusBadRequest, err.Error())

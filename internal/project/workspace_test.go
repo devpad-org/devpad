@@ -342,6 +342,12 @@ func (h *recordingPublishHook) BranchPublished(_ context.Context, userID, projec
 	h.calls = append(h.calls, strings.Join([]string{branch, sha}, "@"))
 }
 
+func (h *recordingPublishHook) BranchFastForwarded(_ context.Context, userID, projectID int64, branch, sha string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls = append(h.calls, "upstream:"+strings.Join([]string{branch, sha}, "@"))
+}
+
 func TestPublishWorkspaceBranchNotifiesHook(t *testing.T) {
 	e := setupTest(t)
 	ctx := context.Background()

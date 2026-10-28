@@ -17,9 +17,10 @@ type repoCheckoutResult struct {
 
 // handleRepoCheckout runs in a project workspace. It stores a bundle of a
 // canonical branch as devpad/<branch>, creates the local branch from it if
-// the workspace does not have one, and switches to the local branch. An
-// existing local branch is never moved, so local commits survive; git switch
-// refuses rather than overwrite uncommitted changes.
+// the workspace does not have one, tracking devpad/<branch>, and switches
+// to the local branch. An existing local branch is never moved, so local
+// commits survive; git switch refuses rather than overwrite uncommitted
+// changes.
 func handleRepoCheckout(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
 	defer cancel()
@@ -56,6 +57,12 @@ func handleRepoCheckout(w http.ResponseWriter, r *http.Request) {
 	if gitExec(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch) != nil {
 		if out, err := gitOutput(ctx, "branch", "--no-track", branch, ref); err != nil {
 			writeErr(w, http.StatusInternalServerError, "creating branch: "+strings.TrimSpace(out))
+			return
+		}
+		// Set by hand, since git only tracks a ref of a configured remote and
+		// the devpad remote may not be set up yet.
+		if err := trackDevpad(ctx, branch); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		result.Created = true

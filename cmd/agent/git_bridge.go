@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -29,6 +32,11 @@ const (
 	// devpadRemoteURL is the URL of the devpad remote; git runs
 	// git-remote-devpad for any "devpad::" URL.
 	devpadRemoteURL = "devpad::project"
+	// upstreamRemoteURL is the URL of the origin remote, the read-only view
+	// of the project's upstream.
+	upstreamRemoteURL = "devpad::upstream"
+	// remoteUpstream marks a request made through the origin remote.
+	remoteUpstream = "upstream"
 
 	gitBridgeMaxOutstanding = 8
 	gitBridgeMaxPerMinute   = 60
@@ -58,12 +66,16 @@ type gitBridgeRequest struct {
 	Op       string   `json:"op"` // list, fetch or push
 	Branches []string `json:"branches,omitempty"`
 	Force    bool     `json:"force,omitempty"`
+	// Remote is "" for the devpad remote and "upstream" for origin.
+	Remote string `json:"remote,omitempty"`
 }
 
 // gitBridgeResult is devpad's answer. Error is a refusal or failure to show
-// the user; the rest depends on the op.
+// the user, and Warning something to show alongside a result; the rest
+// depends on the op.
 type gitBridgeResult struct {
 	Error         string    `json:"error,omitempty"`
+	Warning       string    `json:"warning,omitempty"`
 	DefaultBranch string    `json:"defaultBranch,omitempty"`
 	Refs          []repoRef `json:"refs,omitempty"`
 	SHA           string    `json:"sha,omitempty"`
@@ -101,11 +113,12 @@ func (b *gitBridge) serving() bool {
 	return b.polling > 0 || len(b.inflight) > 0 || (!b.lastSeen.IsZero() && b.now().Sub(b.lastSeen) < gitBridgeServingWindow)
 }
 
-// opTimeout is how long a helper waits for devpad. Transfers wait longer
-// than devpad's own 20-minute limit, so a slow push devpad completes is not
-// reported to git as a failure.
-func opTimeout(op string) time.Duration {
-	if op == "list" {
+// opTimeout is how long a helper waits for devpad. Transfers, and lists of
+// origin, which fetch from the upstream, wait longer than devpad's own
+// 20-minute limit, so slow work devpad completes is not reported to git as
+// a failure.
+func opTimeout(req gitBridgeRequest) time.Duration {
+	if req.Op == "list" && req.Remote == "" {
 		return 2 * time.Minute
 	}
 	return 25 * time.Minute
@@ -148,7 +161,7 @@ func (b *gitBridge) submit(ctx context.Context, req gitBridgeRequest) (gitBridge
 	b.wake = make(chan struct{})
 	b.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(ctx, opTimeout(req.Op))
+	ctx, cancel := context.WithTimeout(ctx, opTimeout(req))
 	defer cancel()
 	pickup := time.NewTimer(gitBridgePickupTimeout)
 	defer pickup.Stop()
@@ -302,6 +315,17 @@ func (b *gitBridge) handleHelperRequest(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, gitBridgeResult{Error: "devpad refuses force pushes; it only fast-forwards"})
 		return
 	}
+	switch req.Remote {
+	case "":
+	case remoteUpstream:
+		if req.Op == "push" {
+			writeJSON(w, http.StatusBadRequest, gitBridgeResult{Error: errUpstreamReadOnly.Error()})
+			return
+		}
+	default:
+		writeJSON(w, http.StatusBadRequest, gitBridgeResult{Error: "unknown remote"})
+		return
+	}
 	switch req.Op {
 	case "list":
 		req.Branches = nil
@@ -368,11 +392,31 @@ func serveGitBridgeSocket(b *gitBridge, path string) (*http.Server, error) {
 // to the agent binary, which is on PATH.
 var remoteHelperDir = ""
 
-// handleGitBridgeRemote is devpad setting up the devpad remote in a
-// project's workspace: it links git-remote-devpad to this binary and points
-// the remote at it. An existing remote of that name with another URL is left
-// alone.
+// gitBridgeRemoteRequest is devpad's optional description of the project
+// when it sets up the remotes. Without Upstream no origin remote is made.
+// UpstreamURLHash is the hex SHA-256 of the project's upstream URL: an
+// origin with that URL, as a workspace converted in place keeps, is replaced
+// by the read-only one, without the workspace being sent the URL itself.
+type gitBridgeRemoteRequest struct {
+	Upstream        bool   `json:"upstream"`
+	UpstreamURLHash string `json:"upstreamUrlHash"`
+}
+
+// handleGitBridgeRemote is devpad setting up the remotes in a project's
+// workspace: it links git-remote-devpad to this binary, points the devpad
+// remote at it and, when the project has an upstream, the origin remote too.
+// It then sets git's defaults so a plain git pull and git push use the
+// devpad remote. A remote of either name with another URL is left alone,
+// and so is any setting the user already has.
 func handleGitBridgeRemote(w http.ResponseWriter, r *http.Request) {
+	var req gitBridgeRemoteRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxGitRequestBody)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeErr(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
 	defer cancel()
 
@@ -384,11 +428,9 @@ func handleGitBridgeRemote(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "workspace has no repository")
 		return
 	}
-	if out, err := gitOutput(ctx, "config", "--get", "remote."+sandboxBaseRemote+".url"); err == nil {
-		if url := strings.TrimSpace(out); url != devpadRemoteURL {
-			writeErr(w, http.StatusConflict, "a remote named "+sandboxBaseRemote+" already exists")
-			return
-		}
+	if !remoteIsOurs(ctx, sandboxBaseRemote, devpadRemoteURL, "") {
+		writeErr(w, http.StatusConflict, "a remote named "+sandboxBaseRemote+" already exists")
+		return
 	}
 	steps := [][]string{
 		{"config", "remote." + sandboxBaseRemote + ".url", devpadRemoteURL},
@@ -396,13 +438,103 @@ func handleGitBridgeRemote(w http.ResponseWriter, r *http.Request) {
 		// A bare `git push devpad` pushes the current branch.
 		{"config", "--replace-all", "remote." + sandboxBaseRemote + ".push", "HEAD"},
 	}
+	originConflict := false
+	if req.Upstream {
+		if remoteIsOurs(ctx, upstreamRemote, upstreamRemoteURL, req.UpstreamURLHash) {
+			// A converted workspace's origin may have a push URL of its own.
+			gitExec(ctx, "config", "--unset-all", "remote."+upstreamRemote+".pushurl")
+			steps = append(steps,
+				[]string{"config", "remote." + upstreamRemote + ".url", upstreamRemoteURL},
+				[]string{"config", "--replace-all", "remote." + upstreamRemote + ".fetch", "+refs/heads/*:refs/remotes/" + upstreamRemote + "/*"},
+			)
+		} else {
+			originConflict = true
+		}
+	}
 	for _, args := range steps {
 		if out, err := gitOutput(ctx, args...); err != nil {
-			writeErr(w, http.StatusInternalServerError, "configuring the devpad remote: "+strings.TrimSpace(out))
+			writeErr(w, http.StatusInternalServerError, "configuring the devpad remotes: "+strings.TrimSpace(out))
 			return
 		}
 	}
+	if err := setTrackingDefaults(ctx); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if originConflict {
+		writeErr(w, http.StatusConflict, "a remote named "+upstreamRemote+" already exists")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// remoteIsOurs reports whether the named remote is missing, has url, or has
+// the URL whose SHA-256 is urlHash, and so may be pointed at devpad.
+func remoteIsOurs(ctx context.Context, name, url, urlHash string) bool {
+	out, err := gitOutput(ctx, "config", "--get", "remote."+name+".url")
+	if err != nil {
+		return true
+	}
+	got := strings.TrimSpace(out)
+	if got == url {
+		return true
+	}
+	sum := sha256.Sum256([]byte(got))
+	return urlHash != "" && hex.EncodeToString(sum[:]) == urlHash
+}
+
+// setTrackingDefaults makes a plain git push go to the devpad remote, and
+// has each local branch with a devpad/<branch> copy track it. A setting the
+// user already has wins.
+func setTrackingDefaults(ctx context.Context) error {
+	set := func(key, value string) error {
+		if gitExec(ctx, "config", "--get", key) == nil {
+			return nil
+		}
+		if out, err := gitOutput(ctx, "config", key, value); err != nil {
+			return fmt.Errorf("setting %s: %s", key, strings.TrimSpace(out))
+		}
+		return nil
+	}
+	// The helper sets a branch to track devpad on its first push.
+	for _, kv := range [][2]string{
+		{"remote.pushDefault", sandboxBaseRemote},
+		// A branch on both remotes is checked out from devpad.
+		{"checkout.defaultRemote", sandboxBaseRemote},
+	} {
+		if err := set(kv[0], kv[1]); err != nil {
+			return err
+		}
+	}
+	out, err := gitOutput(ctx, "for-each-ref", "--format=%(refname:strip=2)", "refs/heads/")
+	if err != nil {
+		return fmt.Errorf("listing branches: %s", strings.TrimSpace(out))
+	}
+	for _, branch := range strings.Fields(out) {
+		if gitExec(ctx, "rev-parse", "--verify", "--quiet", "refs/remotes/"+sandboxBaseRemote+"/"+branch) != nil {
+			continue
+		}
+		if gitExec(ctx, "config", "--get", "branch."+branch+".remote") == nil {
+			continue
+		}
+		if err := trackDevpad(ctx, branch); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// trackDevpad has a local branch track devpad/<branch>.
+func trackDevpad(ctx context.Context, branch string) error {
+	for _, kv := range [][2]string{
+		{"branch." + branch + ".remote", sandboxBaseRemote},
+		{"branch." + branch + ".merge", "refs/heads/" + branch},
+	} {
+		if out, err := gitOutput(ctx, "config", kv[0], kv[1]); err != nil {
+			return fmt.Errorf("setting %s: %s", kv[0], strings.TrimSpace(out))
+		}
+	}
+	return nil
 }
 
 // installRemoteHelper links git-remote-devpad to the running agent binary.

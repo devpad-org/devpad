@@ -153,6 +153,10 @@ func TestRepoSeedCreatesBranchWithoutRemote(t *testing.T) {
 	if got := runGit(t, sandbox, "remote"); got != "" {
 		t.Fatalf("expected no remotes, got %q", got)
 	}
+	// The base is kept as the project's copy of it.
+	if got, want := runGit(t, sandbox, "rev-parse", "refs/remotes/devpad/main"), runGit(t, canonical, "rev-parse", "main"); got != want {
+		t.Fatalf("devpad/main = %s, want %s", got, want)
+	}
 	if got := runGit(t, sandbox, "config", "user.email"); got != "agent@example.com" {
 		t.Fatalf("expected identity set, got %q", got)
 	}

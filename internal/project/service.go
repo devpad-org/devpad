@@ -51,6 +51,19 @@ type Service interface {
 	// FetchWorkspaceBranches refreshes the project workspace's devpad/<branch>
 	// copies of canonical branches, for git fetch through the devpad remote.
 	FetchWorkspaceBranches(ctx context.Context, userID, projectID int64, branches []string) error
+	// SyncUpstream fetches the upstream and fast-forwards the protected
+	// branches it can; UpstreamStatus reports how they stand without
+	// fetching.
+	SyncUpstream(ctx context.Context, userID, projectID int64) (*UpstreamStatus, error)
+	UpstreamStatus(ctx context.Context, userID, projectID int64) (*UpstreamStatus, error)
+	// SyncUpstreamIfStale syncs when the last sync is stale, for git fetch
+	// through the devpad remote, and returns a warning for git to show.
+	SyncUpstreamIfStale(ctx context.Context, userID, projectID int64, wait time.Duration) string
+	// UpstreamBranches lists the upstream's branches as last fetched, and
+	// FetchWorkspaceUpstreamBranches brings them into the project workspace
+	// as origin/<branch>, for git fetch through the origin remote.
+	UpstreamBranches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error)
+	FetchWorkspaceUpstreamBranches(ctx context.Context, userID, projectID int64, branches []string) error
 	WorkspaceBranchStatus(ctx context.Context, userID, projectID int64, branch string) (*WorkspaceBranchStatus, error)
 	// WorkspaceSetup returns the latest setup run in the project workspace,
 	// or nil; RunWorkspaceSetup runs the setup script there again.
@@ -80,15 +93,17 @@ type Service interface {
 	// Reconcile finishes conversions devpad stopped part way through.
 	Reconcile(ctx context.Context) error
 	// SetPublishHook registers who is told when a branch is published from
-	// the project workspace.
+	// the project workspace or fast-forwarded from the upstream.
 	SetPublishHook(h PublishHook)
 }
 
 // PublishHook is told each time a branch is published from the project
-// workspace, with the commit it now points at, so an open merge request for
-// the branch can follow it.
+// workspace, or a protected branch fast-forwarded from the upstream, with
+// the commit it now points at, so an open merge request for the branch can
+// follow it.
 type PublishHook interface {
 	BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string)
+	BranchFastForwarded(ctx context.Context, userID, projectID int64, branch, sha string)
 }
 
 // KeyRotator replaces a user's devpad SSH key, returning the new public key.
@@ -152,8 +167,11 @@ type service struct {
 	buildMu     sync.Mutex
 	publishHook PublishHook
 	// branchLocks serialize changes to each project's branches, which may
-	// move its canonical repo's HEAD.
+	// move its canonical repo's HEAD, and syncs from the upstream.
 	branchLocks map[int64]*sync.Mutex
+	// upstreamSyncs holds each project's running or last sync from the
+	// upstream.
+	upstreamSyncs map[int64]*upstreamSync
 	// background tracks conversions being finished and setup runs being
 	// followed in the background.
 	background sync.WaitGroup
@@ -181,6 +199,7 @@ func NewService(repo Repository, cm container.Manager, workspaces Workspaces, us
 		converting:     make(map[int64]bool),
 		workspaceLocks: make(map[int64]*sync.Mutex),
 		branchLocks:    make(map[int64]*sync.Mutex),
+		upstreamSyncs:  make(map[int64]*upstreamSync),
 		setupWatches:   make(map[setupWatch]chan struct{}),
 		builds:         make(map[int64]*environmentBuild),
 	}
@@ -303,12 +322,8 @@ func (s *service) initRepo(ctx context.Context, p *Project, empty bool) error {
 	// Only the repo container gets the user's SSH key, and only when it has
 	// to clone a private upstream. It never runs project code.
 	if p.UpstreamURL != "" {
-		user, err := s.users.GetByID(ctx, p.UserID)
-		if err != nil {
-			return fmt.Errorf("looking up user: %w", err)
-		}
-		if err := workspace.WriteSSHKeys(ctx, c, user, s.cipher); err != nil {
-			return fmt.Errorf("injecting SSH keys into repo container: %w", err)
+		if err := s.writeUpstreamKeys(ctx, c, p); err != nil {
+			return err
 		}
 	}
 	if empty {
@@ -1007,14 +1022,15 @@ func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeIn
 }
 
 // Push pushes a protected branch, the default branch unless given, to the
-// project's upstream. It never forces.
+// project's upstream. It never forces, so a branch that moved upstream is
+// refused, and the user is told how to bring the upstream's work in.
 func (s *service) Push(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error) {
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
 		return nil, err
 	}
 	if p.UpstreamURL == "" {
-		return nil, invalid("the project has no upstream")
+		return nil, ErrNoUpstream
 	}
 	if branch == "" {
 		branch = p.DefaultBranch
@@ -1026,16 +1042,21 @@ func (s *service) Push(ctx context.Context, userID, projectID int64, branch stri
 	if err != nil {
 		return nil, err
 	}
-	// The key is written on every push, so a rotated key takes effect in
-	// every project's repo container.
-	user, err := s.users.GetByID(ctx, p.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("looking up user: %w", err)
+	if err := s.writeUpstreamKeys(ctx, c, p); err != nil {
+		return nil, err
 	}
-	if err := workspace.WriteSSHKeys(ctx, c, user, s.cipher); err != nil {
-		return nil, fmt.Errorf("injecting SSH keys into repo container: %w", err)
+	pushed, err := c.RepoPush(ctx, branch)
+	var agentErr *agent.AgentError
+	if errors.As(err, &agentErr) && isNonFastForward(agentErr.Message) {
+		return nil, invalid("the upstream's %s has commits the project lacks; sync from the upstream, then merge origin/%s into a branch and open a merge request into %s", branch, branch, branch)
 	}
-	return c.RepoPush(ctx, branch)
+	return pushed, err
+}
+
+// isNonFastForward reports whether a failed push was refused because the
+// upstream has commits the pushed branch lacks.
+func isNonFastForward(msg string) bool {
+	return strings.Contains(msg, "non-fast-forward") || strings.Contains(msg, "[rejected]") || strings.Contains(msg, "fetch first")
 }
 
 var hashPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)

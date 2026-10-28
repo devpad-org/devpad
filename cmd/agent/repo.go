@@ -193,14 +193,25 @@ func listRepoRefs(ctx context.Context) (*repoRefs, error) {
 	return refs, nil
 }
 
-// handleRepoBundle streams a bundle containing one branch.
 // maxBundleBranches bounds the branches one bundle request names.
 const maxBundleBranches = 256
 
+// handleRepoBundle streams a bundle of the named branches. With ns=upstream
+// they are the upstream's branches as last fetched, under
+// refs/upstream/heads/.
 func handleRepoBundle(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
 	defer cancel()
 
+	prefix := "refs/heads/"
+	switch ns := r.URL.Query().Get("ns"); ns {
+	case "":
+	case "upstream":
+		prefix = upstreamRefPrefix
+	default:
+		writeErr(w, http.StatusBadRequest, "unknown ref namespace "+ns)
+		return
+	}
 	// One bundle can carry several branches, so a fetch of many branches
 	// costs one bundle rather than one each.
 	branches := r.URL.Query()["branch"]
@@ -215,13 +226,13 @@ func handleRepoBundle(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if gitExec(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch) != nil {
+		if gitExec(ctx, "rev-parse", "--verify", "--quiet", prefix+branch) != nil {
 			writeErr(w, http.StatusNotFound, "branch not found: "+branch)
 			return
 		}
 		if !seen[branch] {
 			seen[branch] = true
-			refs = append(refs, "refs/heads/"+branch)
+			refs = append(refs, prefix+branch)
 		}
 	}
 
@@ -312,7 +323,7 @@ func handleRepoCompare(w http.ResponseWriter, r *http.Request) {
 // handleRepoSeed clones a bundle of the base branch into an empty /workspace
 // and checks out the working branch, creating it unless it is the base
 // itself (a sandbox resuming an existing branch). The clone keeps no remote,
-// so the sandbox has nothing to push to.
+// so the sandbox has nothing to push to; the base stays as devpad/<base>.
 func handleRepoSeed(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
 	defer cancel()
@@ -351,6 +362,9 @@ func handleRepoSeed(w http.ResponseWriter, r *http.Request) {
 	const seedRemote = "devpad-seed"
 	steps := [][]string{
 		{"clone", "--branch", base, "--origin", seedRemote, "--", path, "."},
+		// The base is kept as devpad/<base>, the copy of the canonical
+		// branch a sandbox's base syncs and git fetch devpad refresh.
+		{"update-ref", "refs/remotes/" + sandboxBaseRemote + "/" + base, "refs/remotes/" + seedRemote + "/" + base},
 		{"remote", "remove", seedRemote},
 	}
 	if branch != base {

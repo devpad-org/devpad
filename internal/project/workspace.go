@@ -226,19 +226,9 @@ func (s *service) FetchWorkspaceBranches(ctx context.Context, userID, projectID 
 	if err != nil {
 		return err
 	}
-	if len(branches) == 0 || len(branches) > maxFetchBranches {
-		return invalid("fetch between 1 and %d branches", maxFetchBranches)
-	}
-	unique := make([]string, 0, len(branches))
-	seen := make(map[string]bool, len(branches))
-	for _, branch := range branches {
-		if !validBranchName(branch) {
-			return invalid("branch is not a valid branch name")
-		}
-		if !seen[branch] {
-			seen[branch] = true
-			unique = append(unique, branch)
-		}
+	unique, err := uniqueBranches(branches)
+	if err != nil {
+		return err
 	}
 	ws, err := s.runningWorkspace(ctx, p)
 	if err != nil {
@@ -272,6 +262,26 @@ func (s *service) FetchWorkspaceBranches(ctx context.Context, userID, projectID 
 		return err
 	}
 	return nil
+}
+
+// uniqueBranches checks the branch names of one fetch from the workspace
+// and drops repeats.
+func uniqueBranches(branches []string) ([]string, error) {
+	if len(branches) == 0 || len(branches) > maxFetchBranches {
+		return nil, invalid("fetch between 1 and %d branches", maxFetchBranches)
+	}
+	unique := make([]string, 0, len(branches))
+	seen := make(map[string]bool, len(branches))
+	for _, branch := range branches {
+		if !validBranchName(branch) {
+			return nil, invalid("branch is not a valid branch name")
+		}
+		if !seen[branch] {
+			seen[branch] = true
+			unique = append(unique, branch)
+		}
+	}
+	return unique, nil
 }
 
 // PublishWorkspaceBranch copies a local branch of the project workspace into

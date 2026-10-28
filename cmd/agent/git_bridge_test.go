@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,7 +21,7 @@ import (
 // wrapper script that execs this binary with the variable set.
 func TestMain(m *testing.M) {
 	if os.Getenv("DEVPAD_TEST_REMOTE_HELPER") == "1" {
-		os.Exit(runRemoteHelper(os.Stdin, os.Stdout, os.Stderr))
+		os.Exit(runRemoteHelper(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
 	os.Exit(m.Run())
 }
@@ -71,6 +73,8 @@ type fakeHost struct {
 	mu        sync.Mutex
 	pushes    []string
 	fetches   []int
+	// warning is added to each list of the devpad remote.
+	warning string
 }
 
 func (h *fakeHost) run(ctx context.Context, b *gitBridge) {
@@ -89,13 +93,16 @@ func gitIn(dir string, args ...string) (string, error) {
 }
 
 func (h *fakeHost) serve(req gitBridgeRequest) gitBridgeResult {
+	if req.Remote == remoteUpstream {
+		return h.serveUpstream(req)
+	}
 	switch req.Op {
 	case "list":
 		out, err := gitIn(h.canonical, "for-each-ref", "--format=%(refname:strip=2) %(objectname)", "refs/heads/")
 		if err != nil {
 			return gitBridgeResult{Error: out}
 		}
-		res := gitBridgeResult{DefaultBranch: "main"}
+		res := gitBridgeResult{DefaultBranch: "main", Warning: h.warning}
 		for _, line := range strings.Split(out, "\n") {
 			name, sha, _ := strings.Cut(line, " ")
 			res.Refs = append(res.Refs, repoRef{Name: name, SHA: sha})
@@ -139,6 +146,40 @@ func (h *fakeHost) serve(req gitBridgeRequest) gitBridgeResult {
 		return gitBridgeResult{SHA: sha}
 	}
 	return gitBridgeResult{Error: "unknown op"}
+}
+
+// serveUpstream answers the origin remote from the canonical repo's copy of
+// the upstream, the way devpad does after syncing.
+func (h *fakeHost) serveUpstream(req gitBridgeRequest) gitBridgeResult {
+	switch req.Op {
+	case "list":
+		out, err := gitIn(h.canonical, "for-each-ref", "--format=%(refname:strip=3) %(objectname)", upstreamRefPrefix)
+		if err != nil {
+			return gitBridgeResult{Error: out}
+		}
+		res := gitBridgeResult{DefaultBranch: "main"}
+		for _, line := range strings.Split(out, "\n") {
+			if name, sha, ok := strings.Cut(line, " "); ok {
+				res.Refs = append(res.Refs, repoRef{Name: name, SHA: sha})
+			}
+		}
+		return res
+	case "fetch":
+		for _, branch := range req.Branches {
+			bundle := filepath.Join(h.t.TempDir(), "u.bundle")
+			if out, err := gitIn(h.canonical, "bundle", "create", bundle, upstreamRefPrefix+branch); err != nil {
+				return gitBridgeResult{Error: out}
+			}
+			if out, err := gitIn(h.work, "fetch", "--no-tags", "--force", bundle, upstreamRefPrefix+branch+":refs/remotes/origin/"+branch); err != nil {
+				return gitBridgeResult{Error: out}
+			}
+		}
+		return gitBridgeResult{}
+	}
+	h.mu.Lock()
+	h.pushes = append(h.pushes, "upstream:"+strings.Join(req.Branches, ","))
+	h.mu.Unlock()
+	return gitBridgeResult{Error: "unexpected upstream " + req.Op}
 }
 
 type bridgeRig struct {
@@ -250,6 +291,10 @@ func TestGitPushDevpadPublishesThroughTheHost(t *testing.T) {
 	// git records the push in the remote-tracking ref.
 	if got := runGit(t, rig.work, "rev-parse", "refs/remotes/devpad/feature"); got != sha {
 		t.Fatalf("devpad/feature = %s, want %s", got, sha)
+	}
+	// The first push has the branch track devpad.
+	if got := runGit(t, rig.work, "config", "branch.feature.remote"); got != "devpad" {
+		t.Fatalf("feature tracks %q", got)
 	}
 
 	// A plain `git push devpad` pushes the current branch.
@@ -556,5 +601,183 @@ func TestGitFetchDevpadBatchesManyBranches(t *testing.T) {
 	}
 	if len(rig.host.fetches) < 2 || total < n {
 		t.Fatalf("fetches %v, want batches covering %d branches", rig.host.fetches, n)
+	}
+}
+
+func configureRemotes(t *testing.T, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/git-bridge/remote", strings.NewReader(body))
+	handleGitBridgeRemote(rec, req)
+	return rec
+}
+
+func TestGitBridgeRemoteSetsUpOriginAndTracking(t *testing.T) {
+	rig := newBridgeRig(t)
+	runGit(t, rig.work, "config", "checkout.defaultRemote", "mine")
+	if rec := configureRemotes(t, `{"upstream":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("configure: %d %s", rec.Code, rec.Body)
+	}
+	for key, want := range map[string]string{
+		"remote.origin.url":      upstreamRemoteURL,
+		"remote.origin.fetch":    "+refs/heads/*:refs/remotes/origin/*",
+		"remote.pushDefault":     "devpad",
+		"checkout.defaultRemote": "mine",
+		// The seeded branch has a devpad/main copy to track.
+		"branch.main.remote": "devpad",
+		"branch.main.merge":  "refs/heads/main",
+	} {
+		if got := runGit(t, rig.work, "config", key); got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
+	}
+	if rec := configureRemotes(t, `{"upstream":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("second configure: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestGitBridgeRemoteReplacesOnlyTheUpstreamsOrigin(t *testing.T) {
+	const url = "git@github.com:example/project.git"
+	sum := sha256.Sum256([]byte(url))
+	body := `{"upstream":true,"upstreamUrlHash":"` + hex.EncodeToString(sum[:]) + `"}`
+
+	rig := newBridgeRig(t)
+	runGit(t, rig.work, "remote", "add", "origin", url)
+	runGit(t, rig.work, "config", "remote.origin.pushurl", url)
+	if rec := configureRemotes(t, body); rec.Code != http.StatusNoContent {
+		t.Fatalf("configure: %d %s", rec.Code, rec.Body)
+	}
+	if got := runGit(t, rig.work, "config", "remote.origin.url"); got != upstreamRemoteURL {
+		t.Fatalf("origin = %q", got)
+	}
+	if _, err := gitIn(rig.work, "config", "remote.origin.pushurl"); err == nil {
+		t.Fatal("the old push URL was kept")
+	}
+
+	runGit(t, rig.work, "remote", "set-url", "origin", "https://example.com/elsewhere.git")
+	if rec := configureRemotes(t, body); rec.Code != http.StatusConflict {
+		t.Fatalf("another origin: expected 409, got %d %s", rec.Code, rec.Body)
+	}
+	if got := runGit(t, rig.work, "config", "remote.origin.url"); got != "https://example.com/elsewhere.git" {
+		t.Fatalf("another origin was changed to %q", got)
+	}
+	// Without an upstream, no origin is touched or made.
+	if rec := configureRemotes(t, `{}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("configure without upstream: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestGitFetchOriginIsReadOnly(t *testing.T) {
+	rig := newBridgeRig(t)
+	if rec := configureRemotes(t, `{"upstream":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("configure: %d %s", rec.Code, rec.Body)
+	}
+	// The canonical repo's copy of the upstream has a branch of its own.
+	tree := runGit(t, rig.canonical, "rev-parse", "main^{tree}")
+	sha := runGit(t, rig.canonical, "commit-tree", tree, "-p", "main", "-m", "theirs")
+	runGit(t, rig.canonical, "update-ref", upstreamRefPrefix+"main", runGit(t, rig.canonical, "rev-parse", "main"))
+	runGit(t, rig.canonical, "update-ref", upstreamRefPrefix+"theirs", sha)
+
+	if out, err := rig.git(t, "fetch", "origin"); err != nil {
+		t.Fatalf("fetch origin: %v\n%s", err, out)
+	}
+	if got := runGit(t, rig.work, "rev-parse", "refs/remotes/origin/theirs"); got != sha {
+		t.Fatalf("origin/theirs = %s, want %s", got, sha)
+	}
+	// Checking it out tracks origin, and pushing goes to devpad.
+	if out, err := rig.git(t, "switch", "theirs"); err != nil {
+		t.Fatalf("switch: %v\n%s", err, out)
+	}
+	if got := runGit(t, rig.work, "config", "branch.theirs.remote"); got != "origin" {
+		t.Fatalf("theirs tracks %q", got)
+	}
+	commitFile(t, rig.work, "mine.txt", "mine")
+	if out, err := rig.git(t, "push"); err != nil {
+		t.Fatalf("push: %v\n%s", err, out)
+	}
+	if got, want := runGit(t, rig.canonical, "rev-parse", "theirs"), runGit(t, rig.work, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("canonical theirs = %s, want %s", got, want)
+	}
+
+	for _, args := range [][]string{{"push", "origin", "theirs"}, {"push", "origin", "HEAD:refs/heads/x"}} {
+		out, err := rig.git(t, args...)
+		if err == nil || !strings.Contains(out, "read-only") {
+			t.Fatalf("%v: expected a read-only refusal: %v\n%s", args, err, out)
+		}
+	}
+	rig.host.mu.Lock()
+	defer rig.host.mu.Unlock()
+	for _, push := range rig.host.pushes {
+		if strings.HasPrefix(push, "upstream:") {
+			t.Fatalf("host saw %s", push)
+		}
+	}
+}
+
+func TestGitFetchDevpadShowsTheHostsWarning(t *testing.T) {
+	rig := newBridgeRig(t)
+	rig.host.mu.Lock()
+	rig.host.warning = "could not reach the upstream"
+	rig.host.mu.Unlock()
+	out, err := rig.git(t, "fetch", "devpad")
+	if err != nil || !strings.Contains(out, "warning: devpad: could not reach the upstream") {
+		t.Fatalf("fetch: %v\n%s", err, out)
+	}
+}
+
+func TestGitBridgeSocketRefusesUpstreamPushes(t *testing.T) {
+	b := newGitBridge()
+	b.lastSeen = time.Now()
+	for _, body := range []string{
+		`{"op":"push","remote":"upstream","branches":["main"]}`,
+		`{"op":"list","remote":"elsewhere"}`,
+	} {
+		rec := httptest.NewRecorder()
+		b.handleHelperRequest(rec, httptest.NewRequest(http.MethodPost, "/request", strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s got %d %s", body, rec.Code, rec.Body)
+		}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.pending) != 0 {
+		t.Fatal("a refused request was queued for devpad")
+	}
+}
+
+func TestIDEGitActionsUseTheBranchsRemote(t *testing.T) {
+	rig := newBridgeRig(t)
+	if rec := configureRemotes(t, `{"upstream":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("configure: %d %s", rec.Code, rec.Body)
+	}
+	t.Setenv("PATH", rig.path)
+	ctx := context.Background()
+	if got := defaultRemote(ctx, false); got != "devpad" {
+		t.Fatalf("main fetches from %q", got)
+	}
+
+	// The Push button publishes a new branch to devpad, never origin.
+	runGit(t, rig.work, "checkout", "-q", "-b", "feature")
+	sha := commitFile(t, rig.work, "f.txt", "f")
+	if out, err := actionPush(ctx, gitActionRequest{Action: "push"}); err != nil {
+		t.Fatalf("push: %v\n%s", err, out)
+	}
+	if got := runGit(t, rig.canonical, "rev-parse", "feature"); got != sha {
+		t.Fatalf("canonical feature = %s, want %s", got, sha)
+	}
+	// The first push set up tracking, so Pull uses devpad too.
+	if got := defaultRemote(ctx, false); got != "devpad" {
+		t.Fatalf("feature pulls from %q", got)
+	}
+	if out, err := actionPull(ctx, gitActionRequest{Action: "pull"}); err != nil {
+		t.Fatalf("pull: %v\n%s", err, out)
+	}
+
+	// A standalone repo keeps using origin.
+	plain := t.TempDir()
+	runGit(t, plain, "init", "-q")
+	withWorkspaceRoot(t, plain)
+	if got := defaultRemote(ctx, true); got != "origin" {
+		t.Fatalf("a plain repo pushes to %q", got)
 	}
 }

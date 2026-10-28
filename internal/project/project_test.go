@@ -229,6 +229,15 @@ type fakeRepoAgent struct {
 	commands []string
 	// heads records each branch made the repo's default branch.
 	heads []string
+	// upstream is the upstream's branches as last fetched; upstreamStatus
+	// what a fetch or status reports, and upstreamErr fails fetches.
+	upstream        []agent.RepoRef
+	upstreamStatus  agent.UpstreamStatus
+	upstreamErr     string
+	upstreamFetches []string // the protected branches named by each fetch
+	pushErr         string   // fails pushes with 502 when set
+	// fetchGate, when set, holds each upstream fetch until closed.
+	fetchGate chan struct{}
 }
 
 func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -245,6 +254,14 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(map[string]string{"version": version})
 		return
+	}
+	if r.URL.Path == "/api/repo/upstream/fetch" {
+		a.mu.Lock()
+		gate := a.fetchGate
+		a.mu.Unlock()
+		if gate != nil {
+			<-gate
+		}
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -266,8 +283,29 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(agent.RepoRefs{DefaultBranch: "main", Branches: a.branches})
 	case "/api/repo/bundle":
 		branch := strings.Join(r.URL.Query()["branch"], ",")
+		if ns := r.URL.Query().Get("ns"); ns != "" {
+			branch = ns + ":" + branch
+		}
 		a.bundled = append(a.bundled, branch)
 		w.Write([]byte("bundle-of-" + branch))
+	case "/api/repo/upstream/fetch":
+		a.upstreamFetches = append(a.upstreamFetches, strings.Join(r.URL.Query()["protected"], ","))
+		if a.upstreamErr != "" {
+			w.WriteHeader(http.StatusBadGateway)
+			json.NewEncoder(w).Encode(map[string]string{"error": a.upstreamErr})
+			return
+		}
+		json.NewEncoder(w).Encode(a.upstreamStatus)
+	case "/api/repo/upstream/status":
+		status := a.upstreamStatus
+		status.Branches = nil
+		for _, b := range a.upstreamStatus.Branches {
+			b.FastForwarded = false
+			status.Branches = append(status.Branches, b)
+		}
+		json.NewEncoder(w).Encode(status)
+	case "/api/repo/upstream/refs":
+		json.NewEncoder(w).Encode(agent.RepoRefs{DefaultBranch: "main", Branches: a.upstream})
 	case "/api/repo/diff":
 		q := r.URL.Query()
 		json.NewEncoder(w).Encode(agent.RepoDiff{BaseSHA: q.Get("base"), HeadSHA: q.Get("head"), Files: []agent.RepoDiffFile{{Path: "a.txt", Status: "A", Additions: 1}}})
@@ -295,6 +333,11 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(agent.RepoBranch{Branch: r.URL.Query().Get("branch"), SHA: "abc"})
 	case "/api/repo/push":
 		a.pushed = append(a.pushed, r.URL.Query().Get("branch"))
+		if a.pushErr != "" {
+			w.WriteHeader(http.StatusBadGateway)
+			json.NewEncoder(w).Encode(map[string]string{"error": a.pushErr})
+			return
+		}
 		json.NewEncoder(w).Encode(agent.RepoBranch{Branch: r.URL.Query().Get("branch"), SHA: "pushed"})
 	case "/api/repo/compare":
 		q := r.URL.Query()
@@ -505,6 +548,18 @@ func (f *fakeWorkspaces) FetchProjectBranches(_ context.Context, _, id int64, br
 	out := make([]agent.RepoBranch, len(branches))
 	for i, branch := range branches {
 		out[i] = agent.RepoBranch{Branch: "devpad/" + branch}
+	}
+	return out, nil
+}
+
+func (f *fakeWorkspaces) FetchProjectUpstreamBranches(_ context.Context, _, id int64, branches []string, bundle io.Reader) ([]agent.RepoBranch, error) {
+	body, _ := io.ReadAll(bundle)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seeds[id] = "origin/{" + strings.Join(branches, ",") + "} <- " + string(body)
+	out := make([]agent.RepoBranch, len(branches))
+	for i, branch := range branches {
+		out[i] = agent.RepoBranch{Branch: "origin/" + branch}
 	}
 	return out, nil
 }
@@ -1141,8 +1196,8 @@ func TestPushRequiresUpstream(t *testing.T) {
 	e := setupTest(t)
 	ctx := context.Background()
 	local := e.createProject(t, CreateInput{Name: "local"})
-	if _, err := e.svc.Push(ctx, e.userID, local.ID, ""); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("expected ErrInvalidInput without an upstream, got %v", err)
+	if _, err := e.svc.Push(ctx, e.userID, local.ID, ""); !errors.Is(err, ErrNoUpstream) {
+		t.Fatalf("expected ErrNoUpstream without an upstream, got %v", err)
 	}
 	cloned := e.createProject(t, CreateInput{Name: "cloned", UpstreamURL: "https://example.com/repo.git"})
 	if _, err := e.svc.Push(ctx, e.userID, cloned.ID, ""); err != nil {

@@ -877,6 +877,24 @@ func TestBranchPublishedMovesTheOpenMergeRequest(t *testing.T) {
 	}
 }
 
+func TestBranchFastForwardedFromUpstreamMovesTheOpenMergeRequest(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+
+	// The head is read from the canonical repo, not taken from the caller,
+	// so a merge that moved the branch since wins.
+	e.projects.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "task/1", SHA: "upstream2"}}
+	e.svc.BranchFastForwarded(ctx, e.owner, e.pid(), "task/1", "upstream1")
+	d, err := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if d.MergeRequest.HeadSHA != "upstream2" || len(d.Pushes) != 1 || d.Pushes[0].Source != PushUpstream {
+		t.Fatalf("head %q, pushes %+v", d.MergeRequest.HeadSHA, d.Pushes)
+	}
+}
+
 func TestEachMoveOfTheHeadIsRecordedAsAPush(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
