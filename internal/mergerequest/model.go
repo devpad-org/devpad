@@ -97,6 +97,9 @@ type MergeRequest struct {
 	MergedAt  *time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// AgentReviewing says a review agent is at work on the merge request.
+	// Only listing a project's merge requests sets it.
+	AgentReviewing bool
 }
 
 // Review is a user's or agent's review of a merge request at one head.

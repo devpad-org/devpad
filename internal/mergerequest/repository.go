@@ -74,11 +74,21 @@ func (r *repository) GetOpenBySource(ctx context.Context, projectID int64, sourc
 }
 
 func (r *repository) ListByProjectID(ctx context.Context, projectID int64) ([]*MergeRequest, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT `+mrColumns+` FROM merge_requests WHERE project_id = ? ORDER BY id DESC`, projectID)
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+mrColumns+`, EXISTS (SELECT 1 FROM merge_request_reviews rv WHERE rv.merge_request_id = merge_requests.id AND rv.author = 'agent' AND rv.status = 'pending')
+		 FROM merge_requests WHERE project_id = ? ORDER BY id DESC`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("listing merge requests: %w", err)
 	}
-	return collect(rows, scanMergeRequest)
+	return collect(rows, func(row rowScanner) (*MergeRequest, error) {
+		var reviewing bool
+		mr, err := scanMergeRequest(row, &reviewing)
+		if err != nil {
+			return nil, err
+		}
+		mr.AgentReviewing = reviewing
+		return mr, nil
+	})
 }
 
 func (r *repository) Update(ctx context.Context, mr *MergeRequest) error {
@@ -255,11 +265,13 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanMergeRequest(row rowScanner) (*MergeRequest, error) {
+// scanMergeRequest scans mrColumns, then any extra columns into extra.
+func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 	var mr MergeRequest
 	var taskID sql.NullInt64
 	var mergedAt sql.NullTime
-	if err := row.Scan(&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.CreatedAt, &mr.UpdatedAt); err != nil {
+	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
+	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
 	mr.TaskID = taskID.Int64

@@ -779,12 +779,25 @@ func TestAgentReviewThatNeverSubmitsFails(t *testing.T) {
 	if _, err := e.svc.StartAgentReview(ctx, e.owner, e.pid(), mr.ID, AgentReviewInput{}); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("expected one review agent at a time, got %v", err)
 	}
+	reviewing := func() bool {
+		mrs, err := e.svc.List(ctx, e.owner, e.pid())
+		if err != nil || len(mrs) != 1 {
+			t.Fatalf("listing merge requests: %v %v", mrs, err)
+		}
+		return mrs[0].AgentReviewing
+	}
+	if !reviewing() {
+		t.Fatal("the list should say a review agent is at work")
+	}
 
 	e.runs.finish(rv.RunID, domain.AgentRunCompleted, "")
 	waitFor(t, "the review to fail", func() bool {
 		got, _ := e.svc.repo.GetReview(ctx, rv.ID)
 		return got.Status == ReviewFailed
 	})
+	if reviewing() {
+		t.Fatal("the list should stop saying a review agent is at work once it has ended")
+	}
 	got, _ := e.svc.repo.GetReview(ctx, rv.ID)
 	if !strings.Contains(got.Error, "without submitting") {
 		t.Fatalf("unexpected error: %q", got.Error)

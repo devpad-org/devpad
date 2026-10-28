@@ -5,13 +5,22 @@ import { TASK_STAGES, TASK_STATUS } from './taskStatus'
 
 // A task's place on the to do → agent → review → done track, as a row of
 // dots filled up to its stage. The current dot spins while an agent works
-// and pulses while the task waits for a sandbox; a cancelled task skipped
-// the stages before it.
-const props = withDefaults(defineProps<{ status: TaskStatus; label?: boolean }>(), { label: true })
+// on the task or reviews its merge request (reviewing), and pulses while the
+// task waits for a sandbox; a cancelled task skipped the stages before it.
+const props = withDefaults(defineProps<{ status: TaskStatus; label?: boolean; reviewing?: boolean }>(), {
+  label: true,
+  reviewing: false,
+})
 
 const info = computed(() => TASK_STATUS[props.status])
-const motion = computed(() => (props.status === 'in_progress' ? 'working' : props.status === 'queued' ? 'waiting' : ''))
-const description = computed(() => `${info.value.label}, stage ${info.value.step + 1} of ${TASK_STAGES.length}`)
+const reviewStage = computed(() => props.reviewing && info.value.step === TASK_STAGES.indexOf('Review'))
+const motion = computed(() =>
+  props.status === 'in_progress' || reviewStage.value ? 'working' : props.status === 'queued' ? 'waiting' : '',
+)
+const description = computed(
+  () =>
+    `${info.value.label}${reviewStage.value ? ', an agent is reviewing' : ''}, stage ${info.value.step + 1} of ${TASK_STAGES.length}`,
+)
 
 const skipped = computed(() => props.status === 'cancelled')
 

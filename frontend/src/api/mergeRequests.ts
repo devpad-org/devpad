@@ -21,6 +21,8 @@ export interface MergeRequest {
   mergedAt: string | null
   createdAt: string
   updatedAt: string
+  // A review agent is at work on it. Only the list sets it.
+  agentReviewing: boolean
 }
 
 export interface Review {

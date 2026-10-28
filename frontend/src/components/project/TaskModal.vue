@@ -98,6 +98,10 @@ const info = computed(() => TASK_STATUS[props.task?.status ?? 'todo'])
 const canStart = computed(() => props.task !== null && STARTABLE.has(props.task.status))
 const canCancel = computed(() => props.task !== null && props.task.status !== 'merged' && props.task.status !== 'cancelled')
 const canEdit = computed(() => props.task !== null && !ACTIVE.has(props.task.status) && props.task.status !== 'merged')
+// A review agent is at work on the task's merge request while the task is in review.
+const agentReviewing = computed(
+  () => !!props.mergeRequest?.agentReviewing && info.value.step === TASK_STAGES.indexOf('Review'),
+)
 // The task's agents have spent its budget, so it cannot start until it is raised.
 const overBudget = computed(() => !!props.task && props.task.budgetUsd > 0 && props.task.costUsd >= props.task.budgetUsd)
 
@@ -126,8 +130,10 @@ const statusHint = computed(() => {
     case 'failed':
       return t.error || 'The agent run failed.'
     case 'in_review':
+      if (agentReviewing.value) return 'The agent is done. A review agent is reviewing the merge request.'
       return props.mergeRequest ? 'The agent is done. Review the merge request.' : 'The agent is done and waiting for review.'
     case 'changes_requested':
+      if (agentReviewing.value) return 'Changes were requested. A review agent is reviewing the merge request.'
       return 'Changes were requested. Send the feedback back to the agent.'
     case 'merged':
       return props.mergeRequest ? `Merged into ${props.mergeRequest.targetBranch}.` : 'Merged.'
@@ -320,7 +326,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
           <ol class="stepper">
             <li v-for="(step, i) in steps" :key="i" class="step" :class="`step-${step.state}`">
               <span class="step-node">
-                <span v-if="step.state === 'current' && task.status === 'in_progress'" class="spinner spinner-sm" />
+                <span v-if="step.state === 'current' && (task.status === 'in_progress' || agentReviewing)" class="spinner spinner-sm" />
                 <MrIcon v-else-if="step.state === 'current'" :name="info.icon" :size="13" />
                 <MrIcon v-else-if="step.state === 'done'" name="check" :size="12" :stroke-width="2.5" />
                 <span v-else class="step-number">{{ i + 1 }}</span>

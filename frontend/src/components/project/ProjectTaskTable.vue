@@ -250,7 +250,7 @@ function created(task: Task) {
                 </p>
               </td>
               <td class="col-progress">
-                <TaskProgress :status="task.status" />
+                <TaskProgress :status="task.status" :reviewing="store.mergeRequestByTask.get(task.id)?.agentReviewing" />
               </td>
               <td class="col-mr">
                 <button

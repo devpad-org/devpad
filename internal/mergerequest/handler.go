@@ -363,20 +363,21 @@ func handleServiceError(w http.ResponseWriter, err error) {
 
 func mergeRequestResponse(mr *MergeRequest) map[string]any {
 	return map[string]any{
-		"id":           mr.ID,
-		"projectId":    mr.ProjectID,
-		"taskId":       mr.TaskID,
-		"title":        mr.Title,
-		"description":  mr.Description,
-		"sourceBranch": mr.SourceBranch,
-		"targetBranch": mr.TargetBranch,
-		"status":       mr.Status,
-		"headSha":      mr.HeadSHA,
-		"baseSha":      mr.BaseSHA,
-		"mergeSha":     mr.MergeSHA,
-		"mergedAt":     mr.MergedAt,
-		"createdAt":    mr.CreatedAt,
-		"updatedAt":    mr.UpdatedAt,
+		"id":             mr.ID,
+		"projectId":      mr.ProjectID,
+		"taskId":         mr.TaskID,
+		"title":          mr.Title,
+		"description":    mr.Description,
+		"sourceBranch":   mr.SourceBranch,
+		"targetBranch":   mr.TargetBranch,
+		"status":         mr.Status,
+		"headSha":        mr.HeadSHA,
+		"baseSha":        mr.BaseSHA,
+		"mergeSha":       mr.MergeSHA,
+		"mergedAt":       mr.MergedAt,
+		"createdAt":      mr.CreatedAt,
+		"updatedAt":      mr.UpdatedAt,
+		"agentReviewing": mr.AgentReviewing,
 	}
 }
 
