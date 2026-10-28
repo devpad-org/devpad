@@ -53,9 +53,9 @@ type Service interface {
 	// for a protected branch fast-forwarded from the upstream.
 	BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string)
 	BranchFastForwarded(ctx context.Context, userID, projectID int64, branch, sha string)
-	// CheckDeleteBranch refuses deleting a branch an open merge request
+	// GuardDeleteBranch refuses deleting a branch an open merge request
 	// comes from.
-	CheckDeleteBranch(ctx context.Context, userID, projectID int64, branch string) error
+	GuardDeleteBranch(ctx context.Context, userID, projectID int64, branch string, del func() error) error
 	// Tools and ExecuteTool give review agents their review tools, and task
 	// agents the tools to read and answer their merge request's comments,
 	// which Prompt tells them about.
@@ -173,7 +173,10 @@ func invalid(format string, args ...any) error {
 }
 
 // lock serializes changes to one merge request ("mr:<id>") or review
-// ("review:<id>").
+// ("review:<id>"), the merge requests a task opens ("task:<id>"), and
+// merge requests opening against branches being deleted
+// ("sources:<project id>"). A task's branch needs no sources lock: the
+// task's own guard keeps it until the task is closed.
 func (s *service) lock(kind string, id int64) func() {
 	key := fmt.Sprintf("%s:%d", kind, id)
 	s.mu.Lock()
@@ -252,31 +255,42 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 	if in.SourceBranch == "" || in.SourceBranch == target {
 		return nil, invalid("sourceBranch must be a branch other than %s", target)
 	}
-	refs, err := s.projects.Branches(ctx, userID, projectID)
-	if err != nil {
-		return nil, err
-	}
-	var head string
-	for _, b := range refs.Branches {
-		if b.Name == in.SourceBranch {
-			head = b.SHA
-		}
-	}
-	if head == "" {
-		return nil, invalid("branch %q does not exist", in.SourceBranch)
-	}
 	mr := &MergeRequest{
 		ProjectID: projectID, UserID: userID, Title: title, Description: in.Description,
-		SourceBranch: in.SourceBranch, TargetBranch: target, Status: StatusOpen, HeadSHA: head,
+		SourceBranch: in.SourceBranch, TargetBranch: target, Status: StatusOpen,
 	}
-	if err := s.repo.Create(ctx, mr); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			return nil, fmt.Errorf("%w: %s already has an open merge request", ErrInvalidState, in.SourceBranch)
-		}
+	if err := s.openAtHead(ctx, mr); err != nil {
 		return nil, err
 	}
 	s.autoReview(ctx, p, mr)
 	return mr, nil
+}
+
+// openAtHead opens mr at its source branch's head, under the project's
+// sources lock, so the branch cannot be deleted between being read and the
+// merge request opening from it.
+func (s *service) openAtHead(ctx context.Context, mr *MergeRequest) error {
+	unlock := s.lock("sources", mr.ProjectID)
+	defer unlock()
+	refs, err := s.projects.Branches(ctx, mr.UserID, mr.ProjectID)
+	if err != nil {
+		return err
+	}
+	for _, b := range refs.Branches {
+		if b.Name == mr.SourceBranch {
+			mr.HeadSHA = b.SHA
+		}
+	}
+	if mr.HeadSHA == "" {
+		return invalid("branch %q does not exist", mr.SourceBranch)
+	}
+	if err := s.repo.Create(ctx, mr); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return fmt.Errorf("%w: %s already has an open merge request", ErrInvalidState, mr.SourceBranch)
+		}
+		return err
+	}
+	return nil
 }
 
 // autoReview starts the review agent on a new merge request when its
@@ -369,9 +383,12 @@ func (s *service) BranchFastForwarded(ctx context.Context, userID, projectID int
 	}
 }
 
-// CheckDeleteBranch keeps the source branch of an open merge request, which
-// could no longer be merged without it.
-func (s *service) CheckDeleteBranch(ctx context.Context, userID, projectID int64, branch string) error {
+// GuardDeleteBranch keeps the source branch of an open merge request, which
+// could no longer be merged without it. The branch is deleted under the
+// project's sources lock, so no merge request opens from it meanwhile.
+func (s *service) GuardDeleteBranch(ctx context.Context, userID, projectID int64, branch string, del func() error) error {
+	unlock := s.lock("sources", projectID)
+	defer unlock()
 	open, err := s.repo.GetOpenBySource(ctx, projectID, branch)
 	if err != nil {
 		return err
@@ -379,7 +396,7 @@ func (s *service) CheckDeleteBranch(ctx context.Context, userID, projectID int64
 	if open != nil {
 		return project.ErrBranchHasMergeRequest
 	}
-	return nil
+	return del()
 }
 
 // branchPublished points the branch's open merge request at sha, as task

@@ -399,10 +399,11 @@ func TestRepoDeleteBranch(t *testing.T) {
 		name, query string
 		want        int
 	}{
-		{"default branch", "branch=main", http.StatusForbidden},
-		{"missing branch", "branch=nope", http.StatusNotFound},
-		{"bad name", "branch=-x", http.StatusBadRequest},
+		{"default branch", "branch=main&sha=" + head, http.StatusConflict},
+		{"missing branch", "branch=nope&sha=" + head, http.StatusNotFound},
+		{"bad name", "branch=-x&sha=" + head, http.StatusBadRequest},
 		{"short sha", "branch=master&sha=" + head[:7], http.StatusBadRequest},
+		{"no sha", "branch=master", http.StatusBadRequest},
 		{"moved branch", "branch=master&sha=" + strings.Repeat("0", len(head)), http.StatusConflict},
 	} {
 		rec := repoRequest(t, canonical, handleRepoDeleteBranch, http.MethodDelete, "/api/repo/branch?"+tt.query, nil)
@@ -418,12 +419,8 @@ func TestRepoDeleteBranch(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), head) {
 		t.Fatalf("delete master: %d %s", rec.Code, rec.Body)
 	}
-	rec = repoRequest(t, canonical, handleRepoDeleteBranch, http.MethodDelete, "/api/repo/branch?branch=feature", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("delete feature without a sha: %d %s", rec.Code, rec.Body)
-	}
-	if got := runGit(t, canonical, "branch", "--format=%(refname:short)"); got != "main" {
-		t.Fatalf("branches after deleting = %q, want main", got)
+	if got := runGit(t, canonical, "branch", "--format=%(refname:short)"); got != "feature\nmain" {
+		t.Fatalf("branches after deleting = %q, want feature and main", got)
 	}
 }
 

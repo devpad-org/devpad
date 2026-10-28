@@ -452,6 +452,11 @@ func handleGitBridgeRemote(w http.ResponseWriter, r *http.Request) {
 		// A bare `git push devpad` pushes the current branch.
 		{"config", "--replace-all", "remote." + sandboxBaseRemote + ".push", "HEAD"},
 	}
+	// git fetch devpad drops devpad/<branch> once the branch is deleted in
+	// the project's Branches dialog, unless the user chose otherwise.
+	if gitExec(ctx, "config", "--get", "remote."+sandboxBaseRemote+".prune") != nil {
+		steps = append(steps, []string{"config", "remote." + sandboxBaseRemote + ".prune", "true"})
+	}
 	originConflict, originKept := false, false
 	if req.Upstream {
 		ours, kept := remoteIsOurs(ctx, upstreamRemote, upstreamRemoteURL, req.UpstreamURLHash)

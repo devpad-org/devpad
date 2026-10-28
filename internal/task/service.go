@@ -37,6 +37,9 @@ type Service interface {
 	Merged(ctx context.Context, userID, projectID, taskID int64) (*Task, error)
 	// SetReviewHook registers who is told when a task is ready for review.
 	SetReviewHook(h ReviewHook)
+	// GuardDeleteBranch refuses deleting a branch a task that is not
+	// closed starts from or works on.
+	GuardDeleteBranch(ctx context.Context, userID, projectID int64, branch string, del func() error) error
 
 	// RunFinished is the agent runner's completion hook.
 	RunFinished(run domain.AgentRun)
@@ -128,6 +131,9 @@ type service struct {
 	mu     sync.Mutex
 	closed bool
 	locks  map[int64]*sync.Mutex
+	// baseLocks serialize, per project, creating tasks with deleting
+	// branches, so no task is made from a branch being deleted.
+	baseLocks map[int64]*sync.Mutex
 	// launching holds the tasks being launched, so a dispatch while one
 	// waits for its sandbox's setup does not launch it again.
 	launching map[int64]bool
@@ -153,6 +159,7 @@ func NewService(repo Repository, projects Projects, workspaces Workspaces, runs 
 		rootCtx:       ctx,
 		rootCancel:    cancel,
 		locks:         make(map[int64]*sync.Mutex),
+		baseLocks:     make(map[int64]*sync.Mutex),
 		launching:     make(map[int64]bool),
 		runBudgets:    make(map[int64]*domain.Budget),
 	}
@@ -205,6 +212,20 @@ func (s *service) lock(taskID int64) func() {
 	if !ok {
 		l = &sync.Mutex{}
 		s.locks[taskID] = l
+	}
+	s.mu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
+
+// lockBases serializes creating the project's tasks with deleting its
+// branches.
+func (s *service) lockBases(projectID int64) func() {
+	s.mu.Lock()
+	l, ok := s.baseLocks[projectID]
+	if !ok {
+		l = &sync.Mutex{}
+		s.baseLocks[projectID] = l
 	}
 	s.mu.Unlock()
 	l.Lock()
@@ -275,10 +296,6 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 			return nil, invalid("model is required")
 		}
 	}
-	base, err := s.baseBranch(ctx, p, in.BaseBranch)
-	if err != nil {
-		return nil, err
-	}
 	budgetUSD := 0.0
 	if in.BudgetUSD != nil {
 		budgetUSD = *in.BudgetUSD
@@ -289,24 +306,19 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 		}
 		budgetUSD = budgets.TaskUSD
 	}
-	t := &Task{
-		ProjectID:  projectID,
-		UserID:     userID,
-		Title:      title,
-		Body:       in.Body,
-		Status:     StatusTodo,
-		AgentID:    in.AgentID,
-		Model:      in.Model,
-		Effort:     in.Effort,
-		BaseBranch: base,
-		Handoff:    in.Handoff,
-		BudgetUSD:  budgetUSD,
-	}
-	if err := s.repo.Create(ctx, t); err != nil {
-		return nil, err
-	}
-	t.Branch = BranchName(t.ID)
-	if err := s.repo.Update(ctx, t); err != nil {
+	t, err := s.insert(ctx, p, in.BaseBranch, &Task{
+		ProjectID: projectID,
+		UserID:    userID,
+		Title:     title,
+		Body:      in.Body,
+		Status:    StatusTodo,
+		AgentID:   in.AgentID,
+		Model:     in.Model,
+		Effort:    in.Effort,
+		Handoff:   in.Handoff,
+		BudgetUSD: budgetUSD,
+	})
+	if err != nil {
 		return nil, err
 	}
 	if in.Start {
@@ -322,6 +334,50 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 		return started, nil
 	}
 	return t, nil
+}
+
+// insert checks the requested base and stores the new task with it, under
+// the project's base lock, so the base cannot be deleted in between.
+func (s *service) insert(ctx context.Context, p *project.Project, requestedBase string, t *Task) (*Task, error) {
+	unlock := s.lockBases(p.ID)
+	defer unlock()
+	base, err := s.baseBranch(ctx, p, requestedBase)
+	if err != nil {
+		return nil, err
+	}
+	t.BaseBranch = base
+	if err := s.repo.Create(ctx, t); err != nil {
+		return nil, err
+	}
+	t.Branch = BranchName(t.ID)
+	if err := s.repo.Update(ctx, t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// GuardDeleteBranch keeps the branches a task that is not closed needs: the
+// base it starts from, and its own branch, which a restart would make again
+// from the base, then count the base's newer commits as the agent's work.
+// The branch is deleted under the project's base lock, so no task is made
+// from it meanwhile.
+func (s *service) GuardDeleteBranch(ctx context.Context, userID, projectID int64, branch string, del func() error) error {
+	unlock := s.lockBases(projectID)
+	defer unlock()
+	tasks, err := s.repo.ListByProjectID(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	for _, t := range tasks {
+		switch {
+		case t.Status.Closed():
+		case t.BaseBranch == branch:
+			return fmt.Errorf("%w: task #%d starts from it; cancel or delete the task first", project.ErrBranchHasTask, t.ID)
+		case t.Branch == branch:
+			return fmt.Errorf("%w: task #%d works on it; cancel or delete the task first", project.ErrBranchHasTask, t.ID)
+		}
+	}
+	return del()
 }
 
 // baseBranch checks a requested base against the canonical repo. The

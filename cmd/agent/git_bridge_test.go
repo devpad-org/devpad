@@ -266,6 +266,37 @@ func TestGitBridgeRemoteIsConfigured(t *testing.T) {
 	}
 }
 
+// A branch deleted in the Branches dialog leaves the workspace on its next
+// fetch, unless the user turned pruning off for the remote.
+func TestGitFetchDevpadPrunesDeletedBranches(t *testing.T) {
+	rig := newBridgeRig(t)
+	if got := runGit(t, rig.work, "config", "remote.devpad.prune"); got != "true" {
+		t.Fatalf("remote prune = %q", got)
+	}
+	runGit(t, rig.canonical, "branch", "feature", "main")
+	if out, err := rig.git(t, "fetch", "devpad"); err != nil {
+		t.Fatalf("fetch: %v\n%s", err, out)
+	}
+	if _, err := gitIn(rig.work, "rev-parse", "--verify", "refs/remotes/devpad/feature"); err != nil {
+		t.Fatalf("devpad/feature was not fetched: %v", err)
+	}
+	runGit(t, rig.canonical, "branch", "-D", "feature")
+	if out, err := rig.git(t, "fetch", "devpad"); err != nil {
+		t.Fatalf("fetch: %v\n%s", err, out)
+	}
+	if _, err := gitIn(rig.work, "rev-parse", "--verify", "refs/remotes/devpad/feature"); err == nil {
+		t.Fatal("devpad/feature was kept after the branch was deleted")
+	}
+
+	runGit(t, rig.work, "config", "remote.devpad.prune", "false")
+	if rec := configureRemotes(t, `{}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("configure: %d %s", rec.Code, rec.Body)
+	}
+	if got := runGit(t, rig.work, "config", "remote.devpad.prune"); got != "false" {
+		t.Fatalf("the user's prune setting was changed to %q", got)
+	}
+}
+
 func TestGitBridgeRemoteLeavesAnotherDevpadRemoteAlone(t *testing.T) {
 	canonical := initCanonical(t)
 	work := seedSandbox(t, canonical, "main")

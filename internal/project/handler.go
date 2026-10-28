@@ -163,7 +163,7 @@ func (h *Handler) HandleSetBranches(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleDeleteBranch deletes a branch of the project, only while it points
-// at the commit the optional sha query names.
+// at the commit the sha query names.
 func (h *Handler) HandleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	id, ok := pathID(w, r, "id")
@@ -700,7 +700,8 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrNotReady), errors.Is(err, workspace.ErrNotRunning),
 		errors.Is(err, ErrSandboxLimit), errors.Is(err, ErrBranchInUse), errors.Is(err, ErrBranchPublishing),
-		errors.Is(err, ErrDeleting), errors.Is(err, ErrBusy), errors.Is(err, ErrSetupRunning), errors.Is(err, ErrBranchHasMergeRequest):
+		errors.Is(err, ErrDeleting), errors.Is(err, ErrBusy), errors.Is(err, ErrSetupRunning), errors.Is(err, ErrBranchHasMergeRequest),
+		errors.Is(err, ErrBranchHasTask):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		var agentErr *agent.AgentError

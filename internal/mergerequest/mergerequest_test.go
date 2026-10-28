@@ -846,22 +846,66 @@ func TestMergeMergesReviewedHeadAndCleansUp(t *testing.T) {
 	}
 }
 
-func TestCheckDeleteBranchKeepsOpenSources(t *testing.T) {
+func TestGuardDeleteBranchKeepsOpenSources(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	mr := e.openTaskMR(t)
 
-	if err := e.svc.CheckDeleteBranch(ctx, e.owner, e.pid(), "task/1"); !errors.Is(err, project.ErrBranchHasMergeRequest) {
+	deleted := 0
+	del := func() error { deleted++; return nil }
+	if err := e.svc.GuardDeleteBranch(ctx, e.owner, e.pid(), "task/1", del); !errors.Is(err, project.ErrBranchHasMergeRequest) {
 		t.Fatalf("expected ErrBranchHasMergeRequest for an open merge request's branch, got %v", err)
 	}
-	if err := e.svc.CheckDeleteBranch(ctx, e.owner, e.pid(), "feature"); err != nil {
-		t.Fatalf("a branch without a merge request: %v", err)
+	if deleted != 0 {
+		t.Fatal("an open merge request's branch was deleted")
+	}
+	if err := e.svc.GuardDeleteBranch(ctx, e.owner, e.pid(), "feature", del); err != nil || deleted != 1 {
+		t.Fatalf("a branch without a merge request: deleted %d, %v", deleted, err)
 	}
 	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{}); err != nil {
 		t.Fatalf("merge: %v", err)
 	}
-	if err := e.svc.CheckDeleteBranch(ctx, e.owner, e.pid(), "task/1"); err != nil {
-		t.Fatalf("a merged branch: %v", err)
+	if err := e.svc.GuardDeleteBranch(ctx, e.owner, e.pid(), "task/1", del); err != nil || deleted != 2 {
+		t.Fatalf("a merged branch: deleted %d, %v", deleted, err)
+	}
+}
+
+// A merge request cannot open from a branch while it is being deleted: it
+// waits for the deletion and then finds the branch gone.
+func TestCreateWaitsForABranchBeingDeleted(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.projects.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "feature", SHA: "f"}}
+
+	inDelete, release := make(chan struct{}), make(chan struct{})
+	guarded := make(chan error, 1)
+	go func() {
+		guarded <- e.svc.GuardDeleteBranch(ctx, e.owner, e.pid(), "feature", func() error {
+			close(inDelete)
+			<-release
+			e.projects.mu.Lock()
+			e.projects.branches = e.projects.branches[:1]
+			e.projects.mu.Unlock()
+			return nil
+		})
+	}()
+	<-inDelete
+	created := make(chan error, 1)
+	go func() {
+		_, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Feature", SourceBranch: "feature"})
+		created <- err
+	}()
+	select {
+	case err := <-created:
+		t.Fatalf("Create did not wait for the deletion: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-guarded; err != nil {
+		t.Fatalf("guard: %v", err)
+	}
+	if err := <-created; !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for the deleted branch, got %v", err)
 	}
 }
 

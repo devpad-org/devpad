@@ -308,13 +308,10 @@ func (c *Client) RepoSetHead(ctx context.Context, branch string) error {
 }
 
 // RepoDeleteBranch deletes a branch of the canonical repo other than its
-// default branch, only while it points at sha unless sha is empty, and
-// returns the commit it pointed at.
+// default branch, only while it points at sha, and returns the commit it
+// pointed at.
 func (c *Client) RepoDeleteBranch(ctx context.Context, branch, sha string) (*RepoBranch, error) {
-	q := url.Values{"branch": {branch}}
-	if sha != "" {
-		q.Set("sha", sha)
-	}
+	q := url.Values{"branch": {branch}, "sha": {sha}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/api/repo/branch?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err

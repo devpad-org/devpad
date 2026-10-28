@@ -36,10 +36,22 @@ const choices = computed(() => {
 const shas = computed(() => new Map(store.branches.map((b) => [b.name, b.sha])))
 
 // Deleting is immediate, so it is offered only for branches unprotected
-// both now and in the edits not yet saved. devpad also refuses a branch a
-// sandbox owns or an open merge request comes from.
+// both now and in the edits not yet saved, and that nothing uses.
 function deletable(branch: string): boolean {
-  return shas.value.has(branch) && !store.isProtected(branch) && branch !== defaultBranch.value && !protectedSet.value.has(branch)
+  return shas.value.has(branch) && !store.isProtected(branch) && branch !== defaultBranch.value && !protectedSet.value.has(branch) && !usedBy(branch)
+}
+
+// What keeps a branch from being deleted, as devpad refuses it: a sandbox
+// owning it, an open merge request from it, or a task not yet merged or
+// cancelled that works on it or starts from it.
+function usedBy(branch: string): string {
+  if (store.sandboxes.some((s) => s.branch === branch)) return 'a sandbox'
+  const mr = store.openMergeRequestFor(branch)
+  if (mr) return `merge request !${mr.id}`
+  const task = store.tasks.find(
+    (t) => t.status !== 'merged' && t.status !== 'cancelled' && (t.branch === branch || t.baseBranch === branch),
+  )
+  return task ? `task #${task.id}` : ''
 }
 
 watch(
@@ -80,7 +92,8 @@ function toggle(branch: string, on: boolean) {
 }
 
 // The branch is deleted only while it is where the list shows it, so
-// commits published to it since are never lost.
+// commits published to it since are never lost. The list is reloaded
+// either way, so a branch that moved or is already gone shows as it is.
 async function deleteBranch(branch: string) {
   const sha = shas.value.get(branch)
   if (store.projectId === null || !sha) return
@@ -88,17 +101,16 @@ async function deleteBranch(branch: string) {
   error.value = ''
   try {
     await projectApi.deleteBranch(store.projectId, branch, sha)
-    confirming.value = ''
   } catch (e) {
     error.value = e instanceof Error ? e.message : `Failed to delete ${branch}`
-    return
   } finally {
     deleting.value = ''
+    confirming.value = ''
   }
   try {
     await store.refreshBranches()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to load branches'
+    error.value ||= e instanceof Error ? e.message : 'Failed to load branches'
   }
 }
 
@@ -165,6 +177,7 @@ async function save() {
                     <span class="mono">{{ b }}</span>
                   </label>
                   <span v-if="b === defaultBranch" class="branch-note">default</span>
+                  <span v-else-if="usedBy(b)" class="branch-note">used by {{ usedBy(b) }}</span>
                   <button
                     v-else-if="deletable(b)"
                     type="button"
@@ -250,7 +263,7 @@ async function save() {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 28px;
+  min-height: calc(var(--space-6) + var(--space-1));
   padding: var(--space-1) 0;
   min-width: 0;
 }

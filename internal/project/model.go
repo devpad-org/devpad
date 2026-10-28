@@ -52,6 +52,9 @@ var (
 	// ErrBranchHasMergeRequest refuses deleting a branch an open merge
 	// request comes from.
 	ErrBranchHasMergeRequest = errors.New("an open merge request comes from this branch; merge or close it first")
+	// ErrBranchHasTask refuses deleting a branch a task that is not merged
+	// or cancelled starts from or works on.
+	ErrBranchHasTask = errors.New("a task still uses this branch")
 )
 
 // Project is a repo that AI agents work on in parallel sandboxes. Its

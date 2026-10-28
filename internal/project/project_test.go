@@ -1345,13 +1345,20 @@ func TestSetBranchesProtectsBranches(t *testing.T) {
 	}
 }
 
-type refusingBranchGuard struct{ branch string }
+// refusingBranchGuard refuses deleting one branch with err, and records the
+// order guards were asked in.
+type refusingBranchGuard struct {
+	name, branch string
+	err          error
+	asked        *[]string
+}
 
-func (g refusingBranchGuard) CheckDeleteBranch(_ context.Context, _, _ int64, branch string) error {
+func (g refusingBranchGuard) GuardDeleteBranch(_ context.Context, _, _ int64, branch string, del func() error) error {
+	*g.asked = append(*g.asked, g.name)
 	if branch == g.branch {
-		return ErrBranchHasMergeRequest
+		return g.err
 	}
-	return nil
+	return del()
 }
 
 func TestDeleteBranch(t *testing.T) {
@@ -1365,34 +1372,42 @@ func TestDeleteBranch(t *testing.T) {
 	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "task/1"}); err != nil {
 		t.Fatalf("create sandbox: %v", err)
 	}
-	e.svc.SetBranchGuard(refusingBranchGuard{branch: "reviewed"})
+	var asked []string
+	e.svc.AddBranchGuard(refusingBranchGuard{name: "mr", branch: "reviewed", err: ErrBranchHasMergeRequest, asked: &asked})
+	e.svc.AddBranchGuard(refusingBranchGuard{name: "task", branch: "based", err: ErrBranchHasTask, asked: &asked})
 
 	sha := strings.Repeat("a", 40)
 	refusals := []struct {
 		name, branch, sha string
 		want              error
 	}{
-		{"default branch", "main", "", ErrDeleteProtected},
-		{"protected branch", "develop", "", ErrDeleteProtected},
-		{"sandbox branch", "task/1", "", ErrBranchInUse},
-		{"open merge request", "reviewed", "", ErrBranchHasMergeRequest},
-		{"invalid name", "a..b", "", ErrInvalidInput},
+		{"default branch", "main", sha, ErrDeleteProtected},
+		{"protected branch", "develop", sha, ErrDeleteProtected},
+		{"sandbox branch", "task/1", sha, ErrBranchInUse},
+		{"open merge request", "reviewed", sha, ErrBranchHasMergeRequest},
+		{"task base", "based", sha, ErrBranchHasTask},
+		{"invalid name", "a..b", sha, ErrInvalidInput},
 		{"short sha", "master", "abc", ErrInvalidInput},
+		{"no sha", "master", "", ErrInvalidInput},
 	}
 	for _, tt := range refusals {
 		if _, err := e.svc.DeleteBranch(ctx, e.userID, p.ID, tt.branch, tt.sha); !errors.Is(err, tt.want) {
 			t.Fatalf("%s: expected %v, got %v", tt.name, tt.want, err)
 		}
 	}
-	if _, err := e.svc.DeleteBranch(ctx, e.otherID, p.ID, "master", ""); !errors.Is(err, ErrForbidden) {
+	if _, err := e.svc.DeleteBranch(ctx, e.otherID, p.ID, "master", sha); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected ErrForbidden for another user, got %v", err)
 	}
 	if len(e.repoAgent.deleted) != 0 {
 		t.Fatalf("refused deletions reached the repo: %v", e.repoAgent.deleted)
 	}
 
+	asked = nil
 	if _, err := e.svc.DeleteBranch(ctx, e.userID, p.ID, "master", sha); err != nil {
 		t.Fatalf("delete master: %v", err)
+	}
+	if got := strings.Join(asked, ","); got != "mr,task" {
+		t.Fatalf("guards asked = %s, want mr,task", got)
 	}
 	if got := strings.Join(e.repoAgent.deleted, ","); got != "master@"+sha {
 		t.Fatalf("deleted = %s", got)

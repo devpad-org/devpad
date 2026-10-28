@@ -567,17 +567,17 @@ func handleRepoSetHead(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRepoDeleteBranch deletes a branch other than the default one, and
-// returns the commit it pointed at. With sha given, the branch is deleted
-// only while it still points there, so commits published to it after the
-// user chose to delete it are kept.
+// returns the commit it pointed at. The branch is deleted only while it
+// still points at sha, so commits published to it after the user chose to
+// delete it are kept.
 func handleRepoDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
 	defer cancel()
 
 	branch := r.URL.Query().Get("branch")
 	expected := r.URL.Query().Get("sha")
-	if expected != "" && !isFullHash(expected) {
-		writeErr(w, http.StatusBadRequest, "sha must be a full commit hash")
+	if !isFullHash(expected) {
+		writeErr(w, http.StatusBadRequest, "sha must be the full commit hash the branch is deleted at")
 		return
 	}
 	sha, err := resolveBranch(ctx, branch, "branch")
@@ -586,10 +586,10 @@ func handleRepoDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if head, err := gitOutput(ctx, "symbolic-ref", "--short", "HEAD"); err == nil && strings.TrimSpace(head) == branch {
-		writeErr(w, http.StatusForbidden, "cannot delete the default branch")
+		writeErr(w, http.StatusConflict, "cannot delete the default branch")
 		return
 	}
-	if expected != "" && expected != sha {
+	if expected != sha {
 		writeErr(w, http.StatusConflict, fmt.Sprintf("%s has moved since you looked at it; check its new commits before deleting it", branch))
 		return
 	}

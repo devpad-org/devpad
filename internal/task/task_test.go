@@ -1801,3 +1801,42 @@ func TestTaskWithASandboxDoesNotWaitForTheEnvironment(t *testing.T) {
 	}
 	e.waitTask(t, task.ID, func(t *Task) bool { return t.RunID != 0 && t.RunID != running.RunID })
 }
+
+func TestGuardDeleteBranchKeepsWhatOpenTasksNeed(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.sandboxes.set(func(f *fakeSandboxes) { f.branches = []string{"feature", "old"} })
+	based, err := e.svc.Create(ctx, owner, 1, CreateInput{Title: "Build on feature", BaseBranch: "feature"})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	failed := e.createTask(t)
+	failed.Status = StatusFailed
+	cancelled := e.createTask(t)
+	cancelled.Status = StatusCancelled
+	cancelled.BaseBranch = "old"
+	for _, tk := range []*Task{failed, cancelled} {
+		if err := e.repo.Update(ctx, tk); err != nil {
+			t.Fatalf("update task: %v", err)
+		}
+	}
+
+	deleted := 0
+	del := func() error { deleted++; return nil }
+	for _, branch := range []string{based.BaseBranch, failed.Branch} {
+		if err := e.svc.GuardDeleteBranch(ctx, owner, 1, branch, del); !errors.Is(err, project.ErrBranchHasTask) {
+			t.Fatalf("%s: expected ErrBranchHasTask, got %v", branch, err)
+		}
+	}
+	if deleted != 0 {
+		t.Fatalf("a branch an open task needs was deleted")
+	}
+	for _, branch := range []string{"old", cancelled.Branch, "unused"} {
+		if err := e.svc.GuardDeleteBranch(ctx, owner, 1, branch, del); err != nil {
+			t.Fatalf("%s: %v", branch, err)
+		}
+	}
+	if deleted != 3 {
+		t.Fatalf("deleted %d branches, want 3", deleted)
+	}
+}
