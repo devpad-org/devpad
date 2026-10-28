@@ -132,12 +132,16 @@ type Comment struct {
 	ReviewID       int64
 	// ReplyTo is the first comment of the thread this one answers. A reply
 	// sits where that comment does: same path, line and head.
-	ReplyTo   int64
-	Author    Author
-	Path      string
-	Line      int
-	Body      string
-	HeadSHA   string
+	ReplyTo int64
+	Author  Author
+	Path    string
+	Line    int
+	Body    string
+	HeadSHA string
+	// Blocking says the thread this comment starts must be addressed before
+	// the change can merge. A review agent's thread without it is a
+	// suggestion. Replies never block themselves.
+	Blocking  bool
 	CreatedAt time.Time
 	// ResolvedBy and ResolvedAt say who resolved the thread this comment
 	// starts, and when; ResolvedBy is empty while it is open.

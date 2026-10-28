@@ -157,6 +157,11 @@
   background: var(--warning-bg);
 }
 
+.tag-blocking {
+  color: var(--error);
+  background: var(--error-bg);
+}
+
 .tag-draft {
   color: var(--accent-blue);
   background: color-mix(in srgb, var(--accent-blue) 14%, transparent);

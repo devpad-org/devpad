@@ -134,6 +134,7 @@ function showLocation() {
           <button v-if="root.path && inFile" type="button" class="line-chip line-chip-button" :title="`Show line ${root.line}`" @click="showLocation">
             L{{ root.line }}
           </button>
+          <span v-if="root.blocking" class="tag tag-blocking" title="Must be addressed before the change can merge">blocking</span>
           <span v-if="outdated" class="tag tag-outdated" :title="`On ${shortSha(root.headSha)}; the code may have changed since`">outdated</span>
           <span class="muted" :title="fullTime(root.createdAt)">{{ timeAgo(root.createdAt) }}</span>
           <span class="note-actions">

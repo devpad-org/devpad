@@ -735,15 +735,27 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 		t.Fatal("the provider must not claim other tools")
 	}
 
-	result, _ := e.tool(e.owner, rv.WorkspaceID, commentTool, `{"path":"main.go","line":3,"body":"x"}`)
+	result, _ := e.tool(e.owner, rv.WorkspaceID, commentTool, `{"path":"main.go","line":3,"body":"x","blocking":false}`)
 	if !result.IsError || !strings.Contains(result.Content, "Changed files: cart.go, README.md") {
 		t.Fatalf("expected a comment on an unchanged file refused: %+v", result)
 	}
 	if result, _ := e.tool(e.stranger, rv.WorkspaceID, commentTool, `{"path":"cart.go","line":3,"body":"x"}`); !result.IsError {
 		t.Fatalf("another user must not comment: %+v", result)
 	}
-	if result, _ := e.tool(e.owner, rv.WorkspaceID, commentTool, `{"path":"./cart.go","line":3,"body":"Missing nil check."}`); result.IsError {
+	if result, _ := e.tool(e.owner, rv.WorkspaceID, commentTool, `{"path":"cart.go","line":3,"body":"x"}`); !result.IsError || !strings.Contains(result.Content, "blocking: true or false") {
+		t.Fatalf("a new thread must say whether it blocks: %+v", result)
+	}
+	if result, _ := e.tool(e.owner, rv.WorkspaceID, commentTool, `{"path":"cart.go","line":8,"body":"Could be named better.","blocking":false}`); result.IsError {
 		t.Fatalf("comment: %+v", result)
+	}
+	if result, _ := e.tool(e.owner, rv.WorkspaceID, submitTool, `{"verdict":"request_changes","body":"Rename it."}`); !result.IsError || !strings.Contains(result.Content, "no blocking thread is open") {
+		t.Fatalf("changes must not be requested over suggestions alone: %+v", result)
+	}
+	if result, _ := e.tool(e.owner, rv.WorkspaceID, commentTool, `{"path":"./cart.go","line":3,"body":"Missing nil check.","blocking":true}`); result.IsError {
+		t.Fatalf("comment: %+v", result)
+	}
+	if result, _ := e.tool(e.owner, rv.WorkspaceID, submitTool, `{"verdict":"approve","body":"Fine."}`); !result.IsError || !strings.Contains(result.Content, "1 blocking threads are still open") {
+		t.Fatalf("a change with a blocking thread open must not be approved: %+v", result)
 	}
 	if result, _ := e.tool(e.owner, rv.WorkspaceID, submitTool, `{"verdict":"maybe","body":"x"}`); !result.IsError {
 		t.Fatalf("expected an invalid verdict refused: %+v", result)
@@ -759,7 +771,7 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	}
 
 	reqs := e.tasks.changeRequests()
-	if len(reqs) != 1 || !reqs[0].start || !strings.Contains(reqs[0].feedback, "A review agent requested changes.") || !strings.Contains(reqs[0].feedback, "cart.go:3: Missing nil check.") {
+	if len(reqs) != 1 || !reqs[0].start || !strings.Contains(reqs[0].feedback, "A review agent requested changes.") || !strings.Contains(reqs[0].feedback, ", blocking] cart.go:3: Missing nil check.") || !strings.Contains(reqs[0].feedback, ", non-blocking] cart.go:8: Could be named better.") {
 		t.Fatalf("auto-fix should start the task's agent with the review: %+v", reqs)
 	}
 
@@ -1621,6 +1633,7 @@ func TestReReviewIsToldAboutEarlierReviews(t *testing.T) {
 	if prompt := e.runs.started()[0].Turns[0].Text(); strings.Contains(prompt, "Earlier reviews") {
 		t.Fatalf("a first review has no earlier reviews:\n%s", prompt)
 	}
+	e.tool(e.owner, first.WorkspaceID, commentTool, `{"path":"cart.go","line":3,"body":"No test covers this.","blocking":true}`)
 	e.tool(e.owner, first.WorkspaceID, submitTool, `{"verdict":"request_changes","body":"Needs tests."}`)
 	e.runs.finish(first.RunID, domain.AgentRunCompleted, "")
 	waitFor(t, "the first review sandbox to stop", func() bool { stopped, _ := e.workspaces.calls(); return len(stopped) == 1 })
@@ -1630,8 +1643,30 @@ func TestReReviewIsToldAboutEarlierReviews(t *testing.T) {
 		t.Fatalf("a re-review should be pointed at the earlier reviews:\n%s", prompt)
 	}
 	result, _ := e.tool(e.owner, second.WorkspaceID, readCommentsTool, `{}`)
-	if result.IsError || !strings.Contains(result.Content, "Needs tests.") || !strings.Contains(result.Content, `"review_agent"`) {
+	if result.IsError || !strings.Contains(result.Content, "Needs tests.") || !strings.Contains(result.Content, `"review_agent"`) || !strings.Contains(result.Content, `"blocking":true`) {
 		t.Fatalf("the review agent should read the earlier review: %+v", result)
+	}
+	// Nothing moved since the first review, so only blocking problems are new.
+	if prompt := e.runs.started()[1].Turns[0].Text(); !strings.Contains(prompt, "(1 blocking)") || !strings.Contains(prompt, "of this same commit") {
+		t.Fatalf("a re-review of the same commit should check the threads:\n%s", prompt)
+	}
+	e.tool(e.owner, second.WorkspaceID, submitTool, `{"verdict":"request_changes","body":"Still needs tests."}`)
+	e.runs.finish(second.RunID, domain.AgentRunCompleted, "")
+	waitFor(t, "the second review sandbox to stop", func() bool { stopped, _ := e.workspaces.calls(); return len(stopped) == 2 })
+
+	// After a push, the next review looks at what changed since.
+	e.svc.BranchPublished(context.Background(), e.owner, e.pid(), "task/1", "head2")
+	e.startAgentReview(t, mr, AgentReviewInput{})
+	if prompt := e.runs.started()[2].Turns[0].Text(); !strings.Contains(prompt, "`git diff head1 HEAD`") || !strings.Contains(prompt, "only if it is blocking") {
+		t.Fatalf("a re-review should be scoped to what changed since the last one:\n%s", prompt)
+	}
+}
+
+func TestReviewToolSchemasAreValidJSON(t *testing.T) {
+	for _, tool := range append(slices.Clone(reviewTools), taskTools...) {
+		if !json.Valid(tool.Function.Parameters) {
+			t.Errorf("%s: invalid parameters schema: %s", tool.Function.Name, tool.Function.Parameters)
+		}
 	}
 }
 
@@ -1815,7 +1850,7 @@ func TestReviewAgentResolvesAddressedThreads(t *testing.T) {
 	if r, _ := e.tool(e.owner, rv.WorkspaceID, mrCommentTool, fmt.Sprintf(`{"reply_to":%d,"body":"Still no test."}`, test.ID)); r.IsError {
 		t.Fatalf("reply: %+v", r)
 	}
-	if r, _ := e.tool(e.owner, rv.WorkspaceID, mrCommentTool, `{"body":"The README is out of date."}`); r.IsError {
+	if r, _ := e.tool(e.owner, rv.WorkspaceID, mrCommentTool, `{"body":"The README is out of date.","blocking":false}`); r.IsError {
 		t.Fatalf("comment: %+v", r)
 	}
 

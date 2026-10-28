@@ -204,8 +204,8 @@ func (r *repository) UpdateReview(ctx context.Context, rv *Review) error {
 func (r *repository) CreateComment(ctx context.Context, c *Comment) error {
 	now := time.Now()
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO merge_request_comments (merge_request_id, review_id, reply_to, author, path, line, body, head_sha, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.MergeRequestID, nullableID(c.ReviewID), nullableID(c.ReplyTo), c.Author, c.Path, c.Line, c.Body, c.HeadSHA, now,
+		`INSERT INTO merge_request_comments (merge_request_id, review_id, reply_to, author, path, line, body, head_sha, blocking, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.MergeRequestID, nullableID(c.ReviewID), nullableID(c.ReplyTo), c.Author, c.Path, c.Line, c.Body, c.HeadSHA, c.Blocking, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting comment: %w", err)
@@ -217,7 +217,7 @@ func (r *repository) CreateComment(ctx context.Context, c *Comment) error {
 	return nil
 }
 
-const commentColumns = `id, merge_request_id, review_id, reply_to, author, path, line, body, head_sha, created_at, resolved_by, resolved_at`
+const commentColumns = `id, merge_request_id, review_id, reply_to, author, path, line, body, head_sha, blocking, created_at, resolved_by, resolved_at`
 
 func (r *repository) GetComment(ctx context.Context, id int64) (*Comment, error) {
 	return oneOrNil(scanComment(r.db.QueryRowContext(ctx, `SELECT `+commentColumns+` FROM merge_request_comments WHERE id = ?`, id)))
@@ -295,7 +295,7 @@ func scanComment(row rowScanner) (*Comment, error) {
 	var c Comment
 	var reviewID, replyTo sql.NullInt64
 	var resolvedAt sql.NullTime
-	if err := row.Scan(&c.ID, &c.MergeRequestID, &reviewID, &replyTo, &c.Author, &c.Path, &c.Line, &c.Body, &c.HeadSHA, &c.CreatedAt, &c.ResolvedBy, &resolvedAt); err != nil {
+	if err := row.Scan(&c.ID, &c.MergeRequestID, &reviewID, &replyTo, &c.Author, &c.Path, &c.Line, &c.Body, &c.HeadSHA, &c.Blocking, &c.CreatedAt, &c.ResolvedBy, &resolvedAt); err != nil {
 		return nil, err
 	}
 	c.ReviewID, c.ReplyTo = reviewID.Int64, replyTo.Int64

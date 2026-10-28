@@ -58,6 +58,9 @@ export interface ReviewComment {
   line: number
   body: string
   headSha: string
+  // The thread this comment starts must be addressed before the change can
+  // merge; always false on a reply.
+  blocking: boolean
   createdAt: string
   // Who resolved the thread this comment starts, and when; empty while it
   // is open, and always on a reply.

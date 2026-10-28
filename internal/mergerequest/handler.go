@@ -411,6 +411,7 @@ func commentResponse(c *Comment) map[string]any {
 		"line":       c.Line,
 		"body":       c.Body,
 		"headSha":    c.HeadSHA,
+		"blocking":   c.Blocking,
 		"createdAt":  c.CreatedAt,
 		"resolvedBy": c.ResolvedBy,
 		"resolvedAt": c.ResolvedAt,
