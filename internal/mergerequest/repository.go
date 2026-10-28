@@ -15,7 +15,9 @@ type Repository interface {
 	ListByProjectID(ctx context.Context, projectID int64) ([]*MergeRequest, error)
 	Update(ctx context.Context, mr *MergeRequest) error
 	// UpdateHead moves mr to head and records the push in the same
-	// transaction.
+	// transaction. A task's push also moves the threads its agent started
+	// on the old head, replies included, to the new one: the agent writes
+	// them during its round, about the commits the push brings.
 	UpdateHead(ctx context.Context, mr *MergeRequest, head string, source PushSource) error
 	ListPushes(ctx context.Context, mergeRequestID int64) ([]*Push, error)
 
@@ -121,6 +123,15 @@ func (r *repository) UpdateHead(ctx context.Context, mr *MergeRequest, head stri
 		mr.Title, mr.Description, head, now, mr.ID,
 	); err != nil {
 		return fmt.Errorf("updating merge request: %w", err)
+	}
+	if source == PushTask {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE merge_request_comments SET head_sha = ? WHERE merge_request_id = ? AND COALESCE(reply_to, id) IN (
+				SELECT id FROM merge_request_comments WHERE merge_request_id = ? AND author = ? AND head_sha = ? AND reply_to IS NULL)`,
+			head, mr.ID, mr.ID, AuthorTaskAgent, mr.HeadSHA,
+		); err != nil {
+			return fmt.Errorf("moving the task agent's comments: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing push: %w", err)

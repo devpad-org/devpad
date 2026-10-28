@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -1623,6 +1624,63 @@ func TestTaskAgentReadsAndAnswersTheComments(t *testing.T) {
 	}
 	if r, _ := e.tool(e.owner, wsID, mrCommentTool, `{"body":"x"}`); !r.IsError {
 		t.Fatalf("expected refused: %+v", r)
+	}
+}
+
+func TestTaskPushKeepsItsAgentsCommentsCurrent(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	wsID := e.taskSandbox(t)
+	mr := e.openTaskMR(t)
+	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{
+		Verdict: VerdictRequestChanges, Body: "Handle an empty cart.",
+		Comments: []CommentInput{{Path: "cart.go", Line: 12, Body: "This panics on nil."}},
+	}); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	d, _ := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	userThread := d.Comments[0]
+
+	// The agent answers during its round, before its commits land.
+	if r, _ := e.tool(e.owner, wsID, mrCommentTool, fmt.Sprintf(`{"reply_to":%d,"body":"Added a nil check."}`, userThread.ID)); r.IsError {
+		t.Fatalf("reply: %+v", r)
+	}
+	if r, _ := e.tool(e.owner, wsID, mrCommentTool, `{"body":"Also renamed the cart package."}`); r.IsError {
+		t.Fatalf("comment: %+v", r)
+	}
+	d, _ = e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	agentThread := d.Comments[2]
+	if _, err := e.svc.Comment(ctx, e.owner, e.pid(), mr.ID, UserCommentInput{ReplyTo: agentThread.ID, Body: "Why?"}); err != nil {
+		t.Fatalf("user reply: %v", err)
+	}
+
+	tk, _ := e.tasks.Get(ctx, e.owner, e.pid(), e.taskID)
+	tk.HeadSHA = "head2"
+	e.svc.TaskReadyForReview(ctx, tk, "")
+
+	heads := func() map[int64]string {
+		d, err := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		got := map[int64]string{}
+		for _, c := range d.Comments {
+			got[c.ID] = c.HeadSHA
+		}
+		return got
+	}
+	got := heads()
+	// The user's thread is still on the code it was written about; the
+	// agent's thread, with its replies, is about the commits just pushed.
+	want := map[int64]string{userThread.ID: "head1", userThread.ID + 1: "head1", agentThread.ID: "head2", agentThread.ID + 1: "head2"}
+	if !maps.Equal(got, want) {
+		t.Fatalf("heads = %v, want %v", got, want)
+	}
+
+	// Any other push leaves them behind.
+	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head3")
+	if got := heads(); got[agentThread.ID] != "head2" {
+		t.Fatalf("a publish moved the agent's thread: %v", got)
 	}
 }
 
