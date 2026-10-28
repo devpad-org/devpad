@@ -49,6 +49,13 @@ const { mr } = useMergeRequest()
   overflow-y: auto;
 }
 
+/* The column scrolls rather than squeezing its sections: a card that clips
+   its content, like the merge card, would otherwise shrink to nothing once
+   the activity outgrows the column. */
+.main-col > :deep(*) {
+  flex-shrink: 0;
+}
+
 .field-head-end {
   font-size: 0.72rem;
 }
