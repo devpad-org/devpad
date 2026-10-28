@@ -225,7 +225,7 @@ async function submitComment() {
   border-radius: 50%;
   color: var(--text-secondary);
   background: var(--bg-neutral);
-  box-shadow: 0 0 0 4px var(--bg-surface);
+  box-shadow: 0 0 0 4px var(--bg-base);
 }
 
 .event-node::after {
@@ -233,7 +233,7 @@ async function submitComment() {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background: var(--bg-surface);
+  background: var(--bg-base);
   z-index: -1;
 }
 

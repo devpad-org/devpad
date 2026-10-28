@@ -182,12 +182,15 @@ onUnmounted(() => {
   container-type: inline-size;
 }
 
+/* A shade darker than the header and the cards, so the description, merge
+   card and comments stand off it. */
 .modal-body {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  background: var(--bg-base);
 }
 
 .load-state {
