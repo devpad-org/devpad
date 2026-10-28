@@ -566,6 +566,41 @@ func handleRepoSetHead(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, repoBranchResult{Branch: branch, SHA: sha})
 }
 
+// handleRepoDeleteBranch deletes a branch other than the default one, and
+// returns the commit it pointed at. With sha given, the branch is deleted
+// only while it still points there, so commits published to it after the
+// user chose to delete it are kept.
+func handleRepoDeleteBranch(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
+	defer cancel()
+
+	branch := r.URL.Query().Get("branch")
+	expected := r.URL.Query().Get("sha")
+	if expected != "" && !isFullHash(expected) {
+		writeErr(w, http.StatusBadRequest, "sha must be a full commit hash")
+		return
+	}
+	sha, err := resolveBranch(ctx, branch, "branch")
+	if err != nil {
+		writeRevError(w, err)
+		return
+	}
+	if head, err := gitOutput(ctx, "symbolic-ref", "--short", "HEAD"); err == nil && strings.TrimSpace(head) == branch {
+		writeErr(w, http.StatusForbidden, "cannot delete the default branch")
+		return
+	}
+	if expected != "" && expected != sha {
+		writeErr(w, http.StatusConflict, fmt.Sprintf("%s has moved since you looked at it; check its new commits before deleting it", branch))
+		return
+	}
+	// The old value makes the deletion fail if the branch moves meanwhile.
+	if out, err := gitOutput(ctx, "update-ref", "-d", "refs/heads/"+branch, sha); err != nil {
+		writeErr(w, http.StatusConflict, "deleting "+branch+": "+strings.TrimSpace(out))
+		return
+	}
+	writeJSON(w, http.StatusOK, repoBranchResult{Branch: branch, SHA: sha})
+}
+
 // handleRepoFetchBase updates a sandbox's copy of a canonical branch, as
 // devpad/<branch>, from a bundle devpad streams in. The sandbox's own
 // branches are untouched.

@@ -846,6 +846,25 @@ func TestMergeMergesReviewedHeadAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestCheckDeleteBranchKeepsOpenSources(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+
+	if err := e.svc.CheckDeleteBranch(ctx, e.owner, e.pid(), "task/1"); !errors.Is(err, project.ErrBranchHasMergeRequest) {
+		t.Fatalf("expected ErrBranchHasMergeRequest for an open merge request's branch, got %v", err)
+	}
+	if err := e.svc.CheckDeleteBranch(ctx, e.owner, e.pid(), "feature"); err != nil {
+		t.Fatalf("a branch without a merge request: %v", err)
+	}
+	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if err := e.svc.CheckDeleteBranch(ctx, e.owner, e.pid(), "task/1"); err != nil {
+		t.Fatalf("a merged branch: %v", err)
+	}
+}
+
 func TestBranchPublishedMovesTheOpenMergeRequest(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()

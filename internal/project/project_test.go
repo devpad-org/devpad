@@ -231,6 +231,8 @@ type fakeRepoAgent struct {
 	commands []string
 	// heads records each branch made the repo's default branch.
 	heads []string
+	// deleted records each branch deleted, with the sha it had to point at.
+	deleted []string
 	// upstream is the upstream's branches as last fetched; upstreamStatus
 	// what a fetch or status reports, and upstreamErr fails fetches.
 	upstream        []agent.RepoRef
@@ -381,6 +383,11 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&req)
 		a.commands = append(a.commands, req.Command)
 		json.NewEncoder(w).Encode(map[string]any{"output": "", "exit_code": 0})
+	case "/api/repo/branch":
+		q := r.URL.Query()
+		a.deleted = append(a.deleted, q.Get("branch")+"@"+q.Get("sha"))
+		a.branches = slices.DeleteFunc(a.branches, func(ref agent.RepoRef) bool { return ref.Name == q.Get("branch") })
+		json.NewEncoder(w).Encode(agent.RepoBranch{Branch: q.Get("branch"), SHA: "deleted"})
 	case "/api/repo/head":
 		a.heads = append(a.heads, r.URL.Query().Get("branch"))
 		json.NewEncoder(w).Encode(agent.RepoBranch{Branch: r.URL.Query().Get("branch"), SHA: "abc"})
@@ -1335,6 +1342,64 @@ func TestSetBranchesProtectsBranches(t *testing.T) {
 	}
 	if strings.Join(e.repoAgent.pushed, ",") != "main,develop" {
 		t.Fatalf("pushed = %v", e.repoAgent.pushed)
+	}
+}
+
+type refusingBranchGuard struct{ branch string }
+
+func (g refusingBranchGuard) CheckDeleteBranch(_ context.Context, _, _ int64, branch string) error {
+	if branch == g.branch {
+		return ErrBranchHasMergeRequest
+	}
+	return nil
+}
+
+func TestDeleteBranch(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "develop", SHA: "d"}, {Name: "master", SHA: "o"}, {Name: "reviewed", SHA: "r"}}
+	if _, err := e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{ProtectedBranches: []string{"develop"}}); err != nil {
+		t.Fatalf("set branches: %v", err)
+	}
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "task/1"}); err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	e.svc.SetBranchGuard(refusingBranchGuard{branch: "reviewed"})
+
+	sha := strings.Repeat("a", 40)
+	refusals := []struct {
+		name, branch, sha string
+		want              error
+	}{
+		{"default branch", "main", "", ErrDeleteProtected},
+		{"protected branch", "develop", "", ErrDeleteProtected},
+		{"sandbox branch", "task/1", "", ErrBranchInUse},
+		{"open merge request", "reviewed", "", ErrBranchHasMergeRequest},
+		{"invalid name", "a..b", "", ErrInvalidInput},
+		{"short sha", "master", "abc", ErrInvalidInput},
+	}
+	for _, tt := range refusals {
+		if _, err := e.svc.DeleteBranch(ctx, e.userID, p.ID, tt.branch, tt.sha); !errors.Is(err, tt.want) {
+			t.Fatalf("%s: expected %v, got %v", tt.name, tt.want, err)
+		}
+	}
+	if _, err := e.svc.DeleteBranch(ctx, e.otherID, p.ID, "master", ""); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for another user, got %v", err)
+	}
+	if len(e.repoAgent.deleted) != 0 {
+		t.Fatalf("refused deletions reached the repo: %v", e.repoAgent.deleted)
+	}
+
+	if _, err := e.svc.DeleteBranch(ctx, e.userID, p.ID, "master", sha); err != nil {
+		t.Fatalf("delete master: %v", err)
+	}
+	if got := strings.Join(e.repoAgent.deleted, ","); got != "master@"+sha {
+		t.Fatalf("deleted = %s", got)
+	}
+	// The branch is free again once deleted.
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{Branch: "master"}); err != nil {
+		t.Fatalf("create sandbox on the deleted branch: %v", err)
 	}
 }
 

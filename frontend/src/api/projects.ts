@@ -365,6 +365,13 @@ export const projectApi = {
     return apiClient.put(`/api/projects/${id}/branches`, input)
   },
 
+  // Deletes a branch that isn't protected and that nothing is using, only
+  // while it still points at sha.
+  deleteBranch(id: number, branch: string, sha: string): Promise<void> {
+    const path = branch.split('/').map(encodeURIComponent).join('/')
+    return apiClient.delete(`/api/projects/${id}/branches/${path}?sha=${encodeURIComponent(sha)}`)
+  },
+
   branches(id: number): Promise<{ defaultBranch: string; branches: RepoBranch[] }> {
     return apiClient.get(`/api/projects/${id}/branches`)
   },

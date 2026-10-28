@@ -53,6 +53,9 @@ type Service interface {
 	// for a protected branch fast-forwarded from the upstream.
 	BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string)
 	BranchFastForwarded(ctx context.Context, userID, projectID int64, branch, sha string)
+	// CheckDeleteBranch refuses deleting a branch an open merge request
+	// comes from.
+	CheckDeleteBranch(ctx context.Context, userID, projectID int64, branch string) error
 	// Tools and ExecuteTool give review agents their review tools, and task
 	// agents the tools to read and answer their merge request's comments,
 	// which Prompt tells them about.
@@ -364,6 +367,19 @@ func (s *service) BranchFastForwarded(ctx context.Context, userID, projectID int
 	}); err != nil {
 		log.Printf("project %d: updating merge request for %s fast-forwarded from the upstream: %v", projectID, branch, err)
 	}
+}
+
+// CheckDeleteBranch keeps the source branch of an open merge request, which
+// could no longer be merged without it.
+func (s *service) CheckDeleteBranch(ctx context.Context, userID, projectID int64, branch string) error {
+	open, err := s.repo.GetOpenBySource(ctx, projectID, branch)
+	if err != nil {
+		return err
+	}
+	if open != nil {
+		return project.ErrBranchHasMergeRequest
+	}
+	return nil
 }
 
 // branchPublished points the branch's open merge request at sha, as task

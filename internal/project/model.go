@@ -46,6 +46,12 @@ var (
 	ErrNoWorkspace      = errors.New("project has no workspace yet")
 	ErrInvalidInput     = errors.New("invalid input")
 	ErrNoUpstream       = errors.New("the project has no upstream")
+	// ErrDeleteProtected refuses deleting a protected branch; it must be
+	// unprotected first, and the default branch replaced.
+	ErrDeleteProtected = errors.New("protected branches cannot be deleted; unprotect it first")
+	// ErrBranchHasMergeRequest refuses deleting a branch an open merge
+	// request comes from.
+	ErrBranchHasMergeRequest = errors.New("an open merge request comes from this branch; merge or close it first")
 )
 
 // Project is a repo that AI agents work on in parallel sandboxes. Its

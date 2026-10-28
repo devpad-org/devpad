@@ -389,6 +389,44 @@ func TestRepoSetHeadMovesTheDefaultBranch(t *testing.T) {
 	}
 }
 
+func TestRepoDeleteBranch(t *testing.T) {
+	canonical := initCanonical(t)
+	head := runGit(t, canonical, "rev-parse", "main")
+	runGit(t, canonical, "branch", "master", head)
+	runGit(t, canonical, "branch", "feature", head)
+
+	for _, tt := range []struct {
+		name, query string
+		want        int
+	}{
+		{"default branch", "branch=main", http.StatusForbidden},
+		{"missing branch", "branch=nope", http.StatusNotFound},
+		{"bad name", "branch=-x", http.StatusBadRequest},
+		{"short sha", "branch=master&sha=" + head[:7], http.StatusBadRequest},
+		{"moved branch", "branch=master&sha=" + strings.Repeat("0", len(head)), http.StatusConflict},
+	} {
+		rec := repoRequest(t, canonical, handleRepoDeleteBranch, http.MethodDelete, "/api/repo/branch?"+tt.query, nil)
+		if rec.Code != tt.want {
+			t.Fatalf("%s: expected %d, got %d %s", tt.name, tt.want, rec.Code, rec.Body)
+		}
+	}
+	if got := runGit(t, canonical, "branch", "--format=%(refname:short)"); got != "feature\nmain\nmaster" {
+		t.Fatalf("refused requests changed the branches: %q", got)
+	}
+
+	rec := repoRequest(t, canonical, handleRepoDeleteBranch, http.MethodDelete, "/api/repo/branch?branch=master&sha="+head, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), head) {
+		t.Fatalf("delete master: %d %s", rec.Code, rec.Body)
+	}
+	rec = repoRequest(t, canonical, handleRepoDeleteBranch, http.MethodDelete, "/api/repo/branch?branch=feature", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete feature without a sha: %d %s", rec.Code, rec.Body)
+	}
+	if got := runGit(t, canonical, "branch", "--format=%(refname:short)"); got != "main" {
+		t.Fatalf("branches after deleting = %q, want main", got)
+	}
+}
+
 func TestRepoFetchBaseRefreshesSandboxCopy(t *testing.T) {
 	canonical := initCanonical(t)
 	sandbox := seedSandbox(t, canonical, "task/1")

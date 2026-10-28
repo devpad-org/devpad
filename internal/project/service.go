@@ -31,6 +31,9 @@ type Service interface {
 	// SetBranches changes the project's default branch and the other
 	// branches it protects.
 	SetBranches(ctx context.Context, userID, projectID int64, in BranchesInput) (*Project, error)
+	// DeleteBranch deletes a branch that is not protected and that nothing
+	// is using, while it still points at sha unless sha is empty.
+	DeleteBranch(ctx context.Context, userID, projectID int64, branch, sha string) (*agent.RepoBranch, error)
 	Delete(ctx context.Context, userID, projectID int64) error
 	Branches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error)
 	ListSandboxes(ctx context.Context, userID, projectID int64) ([]*workspace.Workspace, error)
@@ -106,6 +109,8 @@ type Service interface {
 	// SetUpstreamHook registers who is told when a project's upstream
 	// changes.
 	SetUpstreamHook(h UpstreamHook)
+	// SetBranchGuard registers who is asked before a branch is deleted.
+	SetBranchGuard(g BranchGuard)
 }
 
 // PublishHook is told each time a branch is published from the project
@@ -121,6 +126,12 @@ type PublishHook interface {
 // project workspace's remotes can follow it.
 type UpstreamHook interface {
 	UpstreamChanged(projectID int64)
+}
+
+// BranchGuard is asked before a branch is deleted, and refuses a branch
+// something still needs, such as an open merge request from it.
+type BranchGuard interface {
+	CheckDeleteBranch(ctx context.Context, userID, projectID int64, branch string) error
 }
 
 // KeyRotator replaces a user's devpad SSH key, returning the new public key.
@@ -184,6 +195,7 @@ type service struct {
 	buildMu      sync.Mutex
 	publishHook  PublishHook
 	upstreamHook UpstreamHook
+	branchGuard  BranchGuard
 	// branchLocks serialize changes to each project's branches, which may
 	// move its canonical repo's HEAD, and syncs from the upstream.
 	branchLocks map[int64]*sync.Mutex
@@ -233,6 +245,12 @@ func (s *service) SetUpstreamHook(h UpstreamHook) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.upstreamHook = h
+}
+
+func (s *service) SetBranchGuard(g BranchGuard) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.branchGuard = g
 }
 
 var branchNamePattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
@@ -505,6 +523,49 @@ func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in B
 	}
 	p.DefaultBranch, p.ProtectedBranches = next.DefaultBranch, next.ProtectedBranches
 	return p, nil
+}
+
+// DeleteBranch deletes a branch of the canonical repo, refusing a protected
+// branch, one a sandbox owns or is being created for, one being published,
+// and one an open merge request comes from. It holds the branch as a
+// publish does, so nothing claims or publishes it meanwhile, and the
+// branch lock, so it cannot become protected. With sha given, a branch that
+// moved since the user looked at it is kept. Only the user deletes
+// branches: git push devpad refuses to, and agents have no way to.
+func (s *service) DeleteBranch(ctx context.Context, userID, projectID int64, branch, sha string) (*agent.RepoBranch, error) {
+	unlock := s.lockBranches(projectID)
+	defer unlock()
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !validBranchName(branch) {
+		return nil, invalid("branch is not a valid branch name")
+	}
+	if sha != "" && !hashPattern.MatchString(sha) {
+		return nil, invalid("sha must be a full commit hash")
+	}
+	if p.IsProtected(branch) {
+		return nil, ErrDeleteProtected
+	}
+	if err := s.reservePublish(ctx, p, branch); err != nil {
+		return nil, err
+	}
+	defer s.releasePublish(p.ID, branch)
+
+	s.mu.Lock()
+	guard := s.branchGuard
+	s.mu.Unlock()
+	if guard != nil {
+		if err := guard.CheckDeleteBranch(ctx, userID, p.ID, branch); err != nil {
+			return nil, err
+		}
+	}
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoDeleteBranch(ctx, branch, sha)
 }
 
 func (s *service) lockBranches(projectID int64) func() {

@@ -5,7 +5,7 @@ import { useActiveProjectStore } from '@/stores/activeProject'
 
 // Picks the project's default branch and the other branches that change
 // only through merge requests, such as main in a project that works on
-// develop and releases into main.
+// develop and releases into main, and deletes branches no longer needed.
 const props = defineProps<{
   show: boolean
 }>()
@@ -21,6 +21,9 @@ const protectedSet = ref(new Set<string>())
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
+// The branch whose deletion awaits confirmation, and the one being deleted.
+const confirming = ref('')
+const deleting = ref('')
 
 // Protected branches first, then the rest by name.
 const choices = computed(() => {
@@ -30,6 +33,15 @@ const choices = computed(() => {
   return [...names].sort((a, b) => Number(initial.has(b)) - Number(initial.has(a)) || a.localeCompare(b))
 })
 
+const shas = computed(() => new Map(store.branches.map((b) => [b.name, b.sha])))
+
+// Deleting is immediate, so it is offered only for branches unprotected
+// both now and in the edits not yet saved. devpad also refuses a branch a
+// sandbox owns or an open merge request comes from.
+function deletable(branch: string): boolean {
+  return shas.value.has(branch) && !store.isProtected(branch) && branch !== defaultBranch.value && !protectedSet.value.has(branch)
+}
+
 watch(
   () => props.show,
   async (visible) => {
@@ -37,6 +49,7 @@ watch(
     defaultBranch.value = store.project.defaultBranch
     protectedSet.value = new Set(store.protectedBranches.filter((b) => b !== store.project?.defaultBranch))
     error.value = ''
+    confirming.value = ''
     loading.value = true
     try {
       await store.refreshBranches()
@@ -64,6 +77,29 @@ function toggle(branch: string, on: boolean) {
   if (on) set.add(branch)
   else set.delete(branch)
   protectedSet.value = set
+}
+
+// The branch is deleted only while it is where the list shows it, so
+// commits published to it since are never lost.
+async function deleteBranch(branch: string) {
+  const sha = shas.value.get(branch)
+  if (store.projectId === null || !sha) return
+  deleting.value = branch
+  error.value = ''
+  try {
+    await projectApi.deleteBranch(store.projectId, branch, sha)
+    confirming.value = ''
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : `Failed to delete ${branch}`
+    return
+  } finally {
+    deleting.value = ''
+  }
+  try {
+    await store.refreshBranches()
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Failed to load branches'
+  }
 }
 
 async function save() {
@@ -110,21 +146,43 @@ async function save() {
           <div class="form-group">
             <span class="form-label">Protected branches</span>
             <div class="branch-list" role="group" aria-label="Protected branches">
-              <label v-for="b in choices" :key="b" class="form-check branch-row">
-                <input
-                  type="checkbox"
-                  :checked="b === defaultBranch || protectedSet.has(b)"
-                  :disabled="b === defaultBranch"
-                  @change="toggle(b, ($event.target as HTMLInputElement).checked)"
-                />
-                <span class="mono">{{ b }}</span>
-                <span v-if="b === defaultBranch" class="branch-note">default</span>
-              </label>
+              <div v-for="b in choices" :key="b" class="branch-row">
+                <template v-if="confirming === b">
+                  <span class="branch-confirm">Delete <span class="mono">{{ b }}</span>?</span>
+                  <button type="button" class="btn btn-danger btn-sm" :disabled="deleting !== ''" @click="deleteBranch(b)">
+                    {{ deleting === b ? 'Deleting...' : 'Delete' }}
+                  </button>
+                  <button type="button" class="btn btn-secondary btn-sm" :disabled="deleting === b" @click="confirming = ''">Cancel</button>
+                </template>
+                <template v-else>
+                  <label class="form-check branch-check">
+                    <input
+                      type="checkbox"
+                      :checked="b === defaultBranch || protectedSet.has(b)"
+                      :disabled="b === defaultBranch"
+                      @change="toggle(b, ($event.target as HTMLInputElement).checked)"
+                    />
+                    <span class="mono">{{ b }}</span>
+                  </label>
+                  <span v-if="b === defaultBranch" class="branch-note">default</span>
+                  <button
+                    v-else-if="deletable(b)"
+                    type="button"
+                    class="branch-delete"
+                    :aria-label="`Delete ${b}`"
+                    :disabled="deleting !== ''"
+                    @click="confirming = b"
+                  >
+                    Delete
+                  </button>
+                </template>
+              </div>
               <p v-if="loading" class="form-hint">Loading branches...</p>
             </div>
             <p class="form-hint">
               Protected branches change only through merge requests: agents can't own them and your workspace can't publish to them. Merge requests can target any of them,
               so features can merge into <span class="mono">develop</span> and releases from <span class="mono">develop</span> into <span class="mono">main</span>.
+              Deleting an unprotected branch happens at once, without Save.
             </p>
           </div>
           <p v-if="error" class="form-error">{{ error }}</p>
@@ -189,8 +247,26 @@ async function save() {
 }
 
 .branch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 28px;
   padding: var(--space-1) 0;
   min-width: 0;
+}
+
+.branch-check {
+  flex: 1;
+  min-width: 0;
+}
+
+.branch-confirm {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: var(--space-1);
+  font-size: 0.8rem;
+  color: var(--text-primary);
 }
 
 .branch-row .mono {
@@ -203,6 +279,24 @@ async function save() {
   margin-left: auto;
   font-size: 0.7rem;
   color: var(--text-muted);
+}
+
+.branch-delete {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast);
+}
+
+.branch-delete:hover:not(:disabled),
+.branch-delete:focus-visible {
+  color: var(--accent-rose);
+}
+
+.branch-delete:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .modal-actions {

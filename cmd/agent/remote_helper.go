@@ -290,7 +290,7 @@ func (h *remoteHelper) pushOne(spec string) (dst, why string) {
 	case !ok:
 		return dst, "devpad only accepts branches"
 	case src == "":
-		return dst, "devpad does not delete branches"
+		return dst, "devpad does not delete branches from git; delete it in the project's Branches dialog"
 	case force:
 		return dst, "devpad refuses force pushes; it only fast-forwards"
 	}

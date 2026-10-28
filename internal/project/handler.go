@@ -162,6 +162,22 @@ func (h *Handler) HandleSetBranches(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"project": projectResponse(p)})
 }
 
+// HandleDeleteBranch deletes a branch of the project, only while it points
+// at the commit the optional sha query names.
+func (h *Handler) HandleDeleteBranch(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.DeleteBranch(r.Context(), user.ID, id, r.PathValue("branch"), r.URL.Query().Get("sha"))
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 // HandleDelete deletes a project, its sandboxes, and its repo.
 func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
@@ -677,14 +693,14 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "access denied")
 	case errors.Is(err, ErrInvalidInput), errors.Is(err, ErrNoUpstream):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrProtectedBranch), errors.Is(err, ErrPublishProtected):
+	case errors.Is(err, ErrProtectedBranch), errors.Is(err, ErrPublishProtected), errors.Is(err, ErrDeleteProtected):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, workspace.ErrNotStandalone), errors.Is(err, workspace.ErrConverting), errors.Is(err, workspace.ErrRebuilding),
 		errors.Is(err, workspace.ErrAgentOutdated), errors.Is(err, workspace.ErrLifecycleBusy):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrNotReady), errors.Is(err, workspace.ErrNotRunning),
 		errors.Is(err, ErrSandboxLimit), errors.Is(err, ErrBranchInUse), errors.Is(err, ErrBranchPublishing),
-		errors.Is(err, ErrDeleting), errors.Is(err, ErrBusy), errors.Is(err, ErrSetupRunning):
+		errors.Is(err, ErrDeleting), errors.Is(err, ErrBusy), errors.Is(err, ErrSetupRunning), errors.Is(err, ErrBranchHasMergeRequest):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		var agentErr *agent.AgentError
