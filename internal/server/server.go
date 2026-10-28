@@ -457,6 +457,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("GET /api/projects/{id}/file", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleFile)))
 	mux.Handle("POST /api/projects/{id}/push", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandlePush)))
 	mux.Handle("GET /api/projects/{id}/upstream", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleUpstreamStatus)))
+	mux.Handle("PUT /api/projects/{id}/upstream", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleSetUpstream)))
 	mux.Handle("POST /api/projects/{id}/upstream/sync", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleSyncUpstream)))
 	mux.Handle("GET /api/projects/{id}/workspace", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleGetWorkspace)))
 	mux.Handle("POST /api/projects/{id}/workspace", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleOpenWorkspace)))

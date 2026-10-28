@@ -242,6 +242,10 @@ type fakeRepoAgent struct {
 	pushStatus      int
 	// fetchGate, when set, holds each upstream fetch until closed.
 	fetchGate chan struct{}
+	// setUpstreams records each upstream URL the repo was pointed at;
+	// setUpstreamErr fails the first such request with 409.
+	setUpstreams   []string
+	setUpstreamErr string
 }
 
 func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -307,6 +311,19 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(agent.UpstreamStatus{FetchedAt: a.upstreamStatus.FetchedAt})
+	case "/api/repo/upstream":
+		var req struct {
+			URL string `json:"url"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		if a.setUpstreamErr != "" {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": a.setUpstreamErr})
+			a.setUpstreamErr = ""
+			return
+		}
+		a.setUpstreams = append(a.setUpstreams, req.URL)
+		json.NewEncoder(w).Encode(map[string]string{"url": req.URL})
 	case "/api/repo/upstream/fast-forward":
 		a.upstreamFFs = append(a.upstreamFFs, strings.Join(r.URL.Query()["protected"], ","))
 		json.NewEncoder(w).Encode(a.upstreamStatus)

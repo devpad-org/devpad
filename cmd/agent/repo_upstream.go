@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -99,6 +100,65 @@ func handleRepoUpstreamFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, upstreamStatus{FetchedAt: &now, Branches: []upstreamBranch{}})
+}
+
+// handleRepoSetUpstream points the canonical repo's origin at another
+// upstream, or removes it when the URL is empty. The old upstream's branches
+// and when it was last fetched are forgotten first, so none of them is
+// fast-forwarded into the project or compared with it as the new upstream's.
+// It refuses while a fetch runs rather than wait for one, so devpad never
+// holds a lock across a fetch.
+func handleRepoSetUpstream(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxGitRequestBody)
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.HasPrefix(req.URL, "-") || strings.ContainsAny(req.URL, "\r\n") {
+		writeErr(w, http.StatusBadRequest, "invalid upstream URL")
+		return
+	}
+
+	select {
+	case upstreamFetching <- struct{}{}:
+		defer func() { <-upstreamFetching }()
+	default:
+		writeErr(w, http.StatusConflict, "a fetch from the upstream is still running; try again when it finishes")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
+	defer cancel()
+
+	current := ""
+	if out, err := gitOutput(ctx, "config", "--get", "remote.origin.url"); err == nil {
+		current = strings.TrimSpace(out)
+	}
+	if current == req.URL {
+		writeJSON(w, http.StatusOK, map[string]string{"url": req.URL})
+		return
+	}
+	if err := deleteRefsUnder(ctx, upstreamRefPrefix); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if gitExec(ctx, "config", "--get", upstreamFetchedAtKey) == nil {
+		if out, err := gitOutput(ctx, "config", "--unset-all", upstreamFetchedAtKey); err != nil {
+			writeErr(w, http.StatusInternalServerError, "forgetting the last fetch: "+strings.TrimSpace(out))
+			return
+		}
+	}
+	args := []string{"config", "remote.origin.url", req.URL}
+	if req.URL == "" {
+		args = []string{"remote", "remove", "origin"}
+	}
+	if out, err := gitOutput(ctx, args...); err != nil {
+		writeErr(w, http.StatusInternalServerError, "setting the upstream: "+strings.TrimSpace(out))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": req.URL})
 }
 
 // handleRepoUpstreamFastForward fast-forwards each named protected branch

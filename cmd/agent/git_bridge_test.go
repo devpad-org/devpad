@@ -658,6 +658,17 @@ func TestGitBridgeRemoteSetsUpOriginAndTracking(t *testing.T) {
 	if rec := configureRemotes(t, `{"upstream":true}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("second configure: %d %s", rec.Code, rec.Body)
 	}
+	// Once the project has no upstream, devpad's origin goes and its own
+	// remote stays.
+	if rec := configureRemotes(t, `{}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("configure without upstream: %d %s", rec.Code, rec.Body)
+	}
+	if _, err := gitIn(rig.work, "remote", "get-url", "origin"); err == nil {
+		t.Fatal("devpad's origin was kept without an upstream")
+	}
+	if got := runGit(t, rig.work, "config", "remote.devpad.url"); got != devpadRemoteURL {
+		t.Fatalf("devpad remote = %q", got)
+	}
 }
 
 func TestGitBridgeRemoteReplacesOnlyTheUpstreamsOrigin(t *testing.T) {
@@ -710,6 +721,9 @@ func TestGitBridgeRemoteReplacesOnlyTheUpstreamsOrigin(t *testing.T) {
 	// Without an upstream, no origin is touched or made.
 	if rec := configureRemotes(t, `{}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("configure without upstream: %d %s", rec.Code, rec.Body)
+	}
+	if got := runGit(t, rig.work, "config", "remote.origin.url"); got != "https://example.com/elsewhere.git" {
+		t.Fatalf("the user's origin was changed to %q", got)
 	}
 }
 

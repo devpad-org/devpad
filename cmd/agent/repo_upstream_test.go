@@ -200,3 +200,90 @@ func TestUpstreamBranchesReachTheWorkspaceAsOrigin(t *testing.T) {
 		t.Fatalf("unknown source: %d", rec.Code)
 	}
 }
+
+func TestRepoSetUpstream(t *testing.T) {
+	rig := newUpstreamRig(t)
+	upstreamFetch(t, rig.canonical, "")
+	setUpstream := func(dir, url string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"url": url})
+		return repoRequest(t, dir, handleRepoSetUpstream, http.MethodPut, "/api/repo/upstream", bytes.NewReader(body))
+	}
+
+	// Another upstream, with a history of its own.
+	next := t.TempDir()
+	runGit(t, next, "init", "--quiet", "--bare", "--initial-branch=main")
+	work := t.TempDir()
+	runGit(t, work, "clone", "--quiet", next, ".")
+	nextMain := commitFile(t, work, "OTHER.md", "other")
+	runGit(t, work, "push", "--quiet", "origin", "HEAD:main", "HEAD:elsewhere")
+
+	main := runGit(t, rig.canonical, "rev-parse", "main")
+	if rec := setUpstream(rig.canonical, next); rec.Code != http.StatusOK {
+		t.Fatalf("set upstream: %d %s", rec.Code, rec.Body)
+	}
+	if got := runGit(t, rig.canonical, "config", "remote.origin.url"); got != next {
+		t.Fatalf("origin = %q", got)
+	}
+	// The old upstream's branches and fetch time are gone, so nothing of it
+	// passes for the new upstream's.
+	if out := runGit(t, rig.canonical, "for-each-ref", "refs/upstream/"); out != "" {
+		t.Fatalf("old upstream refs kept: %s", out)
+	}
+	rec := repoRequest(t, rig.canonical, handleRepoUpstreamStatus, http.MethodGet, "/api/repo/upstream/status?protected=main", nil)
+	var status upstreamStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil || status.FetchedAt != nil || status.Branches[0].UpstreamSHA != "" {
+		t.Fatalf("status after the change = %s", rec.Body)
+	}
+	// Fetching brings the new upstream's branches; an unrelated main is
+	// only compared, never moved.
+	status = upstreamFetch(t, rig.canonical, "?protected=main")
+	if b := status.Branches[0]; b.UpstreamSHA != nextMain || b.FastForwarded || b.SHA != main {
+		t.Fatalf("main against the new upstream = %+v", b)
+	}
+	if runGit(t, rig.canonical, "rev-parse", "refs/upstream/heads/elsewhere") != nextMain {
+		t.Fatal("the new upstream's branches were not fetched")
+	}
+
+	// Setting the same URL again keeps what was fetched.
+	if rec := setUpstream(rig.canonical, next); rec.Code != http.StatusOK {
+		t.Fatalf("same upstream: %d %s", rec.Code, rec.Body)
+	}
+	if runGit(t, rig.canonical, "rev-parse", "refs/upstream/heads/main") != nextMain {
+		t.Fatal("setting the same upstream forgot its branches")
+	}
+
+	// An empty URL removes the upstream.
+	if rec := setUpstream(rig.canonical, ""); rec.Code != http.StatusOK {
+		t.Fatalf("remove upstream: %d %s", rec.Code, rec.Body)
+	}
+	if gitExec(t.Context(), "-C", rig.canonical, "remote", "get-url", "origin") == nil {
+		t.Fatal("origin kept")
+	}
+	if rec := repoRequest(t, rig.canonical, handleRepoUpstreamFetch, http.MethodPost, "/api/repo/upstream/fetch", nil); rec.Code != http.StatusBadRequest {
+		t.Fatalf("fetch without upstream: %d %s", rec.Code, rec.Body)
+	}
+
+	// A project made without an upstream can be given one.
+	local := initCanonical(t)
+	if rec := setUpstream(local, rig.upstream); rec.Code != http.StatusOK {
+		t.Fatalf("add upstream: %d %s", rec.Code, rec.Body)
+	}
+	upstreamFetch(t, local, "")
+	if runGit(t, local, "rev-parse", "refs/upstream/heads/develop") == "" {
+		t.Fatal("the added upstream was not fetched")
+	}
+
+	for _, url := range []string{"--upload-pack=touch /tmp/x", "a\nb"} {
+		if rec := setUpstream(local, url); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%q: %d %s", url, rec.Code, rec.Body)
+		}
+	}
+	// It does not wait for a fetch that is running.
+	upstreamFetching <- struct{}{}
+	rec = setUpstream(local, next)
+	<-upstreamFetching
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("during a fetch: %d %s", rec.Code, rec.Body)
+	}
+}

@@ -844,6 +844,56 @@ func TestRemotesAreSetUpForTheProjectsUpstream(t *testing.T) {
 	}
 }
 
+func TestRemotesFollowAChangedUpstream(t *testing.T) {
+	ps := &fakeProjects{}
+	b := newTestBridge(newFakeWorkspaces(), ps)
+	at := time.Now()
+	b.now = func() time.Time { return at }
+	a := newFakeAgent()
+	st := &pollState{ws: projectWorkspace(1, 10), agent: a}
+	state := func() (int, agent.GitBridgeRemotes) {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.configured, a.remotes
+	}
+
+	b.configure(t.Context(), st)
+	if n, remotes := state(); n != 1 || remotes.Upstream {
+		t.Fatalf("first set up: %d, %+v", n, remotes)
+	}
+	// Set up for the same upstream, the remotes are left alone.
+	at = at.Add(configureEvery)
+	b.configure(t.Context(), st)
+	if n, _ := state(); n != 1 {
+		t.Fatalf("set up %d times for an unchanged upstream", n)
+	}
+
+	// A new upstream reaches the workspace, though not sooner than the
+	// configure interval.
+	ps.mu.Lock()
+	ps.upstreamURL = "git@github.com:example/project.git"
+	ps.mu.Unlock()
+	b.configure(t.Context(), st)
+	if n, _ := state(); n != 1 {
+		t.Fatal("set up again within the interval")
+	}
+	at = at.Add(configureEvery)
+	b.configure(t.Context(), st)
+	if n, remotes := state(); n != 2 || !remotes.Upstream {
+		t.Fatalf("after the upstream was added: %d, %+v", n, remotes)
+	}
+
+	// So does its removal.
+	ps.mu.Lock()
+	ps.upstreamURL = ""
+	ps.mu.Unlock()
+	at = at.Add(configureEvery)
+	b.configure(t.Context(), st)
+	if n, remotes := state(); n != 3 || remotes.Upstream {
+		t.Fatalf("after the upstream was removed: %d, %+v", n, remotes)
+	}
+}
+
 func TestOriginIsTheReadOnlyUpstream(t *testing.T) {
 	ps := &fakeProjects{upstreamURL: "git@github.com:example/project.git"}
 	b := newTestBridge(newFakeWorkspaces(), ps)

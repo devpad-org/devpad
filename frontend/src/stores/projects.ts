@@ -43,13 +43,19 @@ export const useProjectStore = defineStore('projects', () => {
     return response.project
   }
 
+  // Saves the editable fields, then the upstream if the input names a
+  // different one.
   async function updateProject(id: number, input: ProjectInput) {
-    const response = await projectApi.update(id, input)
+    let { project } = await projectApi.update(id, input)
+    const upstreamUrl = input.upstreamUrl?.trim()
+    if (upstreamUrl !== undefined && upstreamUrl !== project.upstreamUrl) {
+      project = (await projectApi.setUpstream(id, upstreamUrl)).project
+    }
     const index = projects.value.findIndex((p) => p.id === id)
     if (index !== -1) {
-      projects.value[index] = response.project
+      projects.value[index] = project
     }
-    return response.project
+    return project
   }
 
   async function deleteProject(id: number) {

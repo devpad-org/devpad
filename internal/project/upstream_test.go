@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -280,5 +281,159 @@ func TestPushThatUpstreamRefusesSaysHowToCatchUp(t *testing.T) {
 	var agentErr *agent.AgentError
 	if _, err := e.svc.Push(ctx, e.userID, p.ID, ""); !errors.As(err, &agentErr) {
 		t.Fatalf("push: %v", err)
+	}
+}
+
+func TestSetUpstream(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	setUpstreams := func() []string {
+		e.repoAgent.mu.Lock()
+		defer e.repoAgent.mu.Unlock()
+		return slices.Clone(e.repoAgent.setUpstreams)
+	}
+
+	// A project made without an upstream can be given one.
+	const url = "git@github.com:example/project.git"
+	got, err := e.svc.SetUpstream(ctx, e.userID, p.ID, "  "+url+" ")
+	if err != nil || got.UpstreamURL != url {
+		t.Fatalf("set upstream: %+v, %v", got, err)
+	}
+	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); stored.UpstreamURL != url {
+		t.Fatalf("stored upstream %q", stored.UpstreamURL)
+	}
+	if calls := setUpstreams(); len(calls) != 1 || calls[0] != url {
+		t.Fatalf("repo pointed at %v", calls)
+	}
+
+	// The same URL changes nothing, and asks nothing of the repo.
+	if _, err := e.svc.SetUpstream(ctx, e.userID, p.ID, url); err != nil {
+		t.Fatalf("same upstream: %v", err)
+	}
+	if calls := setUpstreams(); len(calls) != 1 {
+		t.Fatalf("the same upstream was set again: %v", calls)
+	}
+
+	// A sync with the old upstream is forgotten with it.
+	e.repoAgent.mu.Lock()
+	e.repoAgent.upstreamErr = "Permission denied (publickey)"
+	e.repoAgent.mu.Unlock()
+	if _, err := e.svc.SyncUpstream(ctx, e.userID, p.ID); err == nil {
+		t.Fatal("expected the sync to fail")
+	}
+	if status, _ := e.svc.UpstreamStatus(ctx, e.userID, p.ID); status.Error == "" {
+		t.Fatal("the failed sync was not reported")
+	}
+	const next = "git@github.com:example/next.git"
+	if _, err := e.svc.SetUpstream(ctx, e.userID, p.ID, next); err != nil {
+		t.Fatalf("change upstream: %v", err)
+	}
+	if status, err := e.svc.UpstreamStatus(ctx, e.userID, p.ID); err != nil || status.Error != "" {
+		t.Fatalf("status after the change %+v, %v", status, err)
+	}
+	e.repoAgent.mu.Lock()
+	e.repoAgent.upstreamErr = ""
+	e.repoAgent.mu.Unlock()
+	if _, err := e.svc.SyncUpstream(ctx, e.userID, p.ID); err != nil {
+		t.Fatalf("sync with the new upstream: %v", err)
+	}
+
+	for _, bad := range []string{"--upload-pack=x", "https://user:token@github.com/example/project.git", "git@github.com:a\nb"} {
+		if _, err := e.svc.SetUpstream(ctx, e.userID, p.ID, bad); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("%q: %v", bad, err)
+		}
+	}
+
+	// When the repo refuses, the project keeps its upstream.
+	e.repoAgent.mu.Lock()
+	e.repoAgent.setUpstreamErr = "a fetch from the upstream is still running"
+	e.repoAgent.mu.Unlock()
+	var agentErr *agent.AgentError
+	if _, err := e.svc.SetUpstream(ctx, e.userID, p.ID, url); !errors.As(err, &agentErr) || agentErr.StatusCode != http.StatusConflict {
+		t.Fatalf("refused by the repo: %v", err)
+	}
+	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); stored.UpstreamURL != next {
+		t.Fatalf("upstream after a refusal %q", stored.UpstreamURL)
+	}
+
+	// An empty URL removes the upstream.
+	if got, err := e.svc.SetUpstream(ctx, e.userID, p.ID, ""); err != nil || got.UpstreamURL != "" {
+		t.Fatalf("remove upstream: %+v, %v", got, err)
+	}
+	if calls := setUpstreams(); calls[len(calls)-1] != "" {
+		t.Fatalf("repo pointed at %v", calls)
+	}
+	if _, err := e.svc.SyncUpstream(ctx, e.userID, p.ID); !errors.Is(err, ErrNoUpstream) {
+		t.Fatalf("sync without an upstream: %v", err)
+	}
+}
+
+func TestSetUpstreamWaitsForNoSync(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj", UpstreamURL: "https://example.com/repo.git"})
+	gate := make(chan struct{})
+	e.repoAgent.mu.Lock()
+	e.repoAgent.fetchGate = gate
+	e.repoAgent.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.svc.SyncUpstream(ctx, e.userID, p.ID)
+		done <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for e.upstreamFetchCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the sync never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := e.svc.SetUpstream(ctx, e.userID, p.ID, "https://example.com/other.git"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("set upstream during a sync: %v", err)
+	}
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if _, err := e.svc.SetUpstream(ctx, e.userID, p.ID, "https://example.com/other.git"); err != nil {
+		t.Fatalf("set upstream after the sync: %v", err)
+	}
+}
+
+func TestSyncFailsWhenTheUpstreamChangesDuringTheFetch(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj", UpstreamURL: "https://example.com/repo.git"})
+	gate := make(chan struct{})
+	e.repoAgent.mu.Lock()
+	e.repoAgent.fetchGate = gate
+	e.repoAgent.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.svc.fetchUpstream(ctx, e.userID, p.ID)
+		done <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for e.upstreamFetchCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the fetch never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// The real repo refuses while it fetches; this changes the record
+	// alone, as a change landing between the fetch and the fast-forward
+	// would look.
+	if err := e.svc.repo.SetUpstreamURL(ctx, p.ID, "https://example.com/other.git"); err != nil {
+		t.Fatal(err)
+	}
+	close(gate)
+	if err := <-done; !errors.Is(err, errUpstreamChanged) {
+		t.Fatalf("fetch across a change: %v", err)
+	}
+	if ffs := e.repoAgent.upstreamFFs; len(ffs) != 0 {
+		t.Fatalf("fast-forwarded %v from the old upstream", ffs)
 	}
 }

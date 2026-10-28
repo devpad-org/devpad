@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/workspace"
@@ -674,12 +675,9 @@ func (s *service) convertInput(userID int64, in ConvertInput) (*Project, string,
 	if !validBranchName(branch) {
 		return nil, "", invalid("defaultBranch is not a valid branch name")
 	}
-	upstream := strings.TrimSpace(in.UpstreamURL)
-	if strings.HasPrefix(upstream, "-") {
-		return nil, "", invalid("upstreamUrl must not start with '-'")
-	}
-	if hasURLCredentials(upstream) {
-		return nil, "", invalid("upstreamUrl must not contain credentials; the project pushes with your SSH key")
+	upstream, err := upstreamURL(in.UpstreamURL)
+	if err != nil {
+		return nil, "", err
 	}
 	maxSandboxes, err := normalizeMaxSandboxes(in.MaxSandboxes)
 	if err != nil {
@@ -737,6 +735,22 @@ func (s *service) discardProject(ctx context.Context, p *Project) {
 	if err := s.repo.Delete(ctx, p.ID); err != nil {
 		log.Printf("project %d: removing project after a failed conversion: %v", p.ID, err)
 	}
+}
+
+// upstreamURL trims and checks an upstream URL given for an existing repo,
+// as converting a workspace or changing the upstream does; empty means none.
+func upstreamURL(raw string) (string, error) {
+	upstream := strings.TrimSpace(raw)
+	if strings.HasPrefix(upstream, "-") {
+		return "", invalid("upstreamUrl must not start with '-'")
+	}
+	if strings.ContainsFunc(upstream, unicode.IsControl) {
+		return "", invalid("upstreamUrl must not contain control characters")
+	}
+	if hasURLCredentials(upstream) {
+		return "", invalid("upstreamUrl must not contain credentials; the project pushes with your SSH key")
+	}
+	return upstream, nil
 }
 
 // hasURLCredentials reports whether an upstream URL embeds a password or

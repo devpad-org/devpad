@@ -107,7 +107,8 @@ const (
 	staleSyncWait = 20 * time.Second
 	// stoppedTimeout bounds answering requests after the poller stopped.
 	stoppedTimeout = 10 * time.Second
-	// configureEvery bounds retries of setting up the devpad remote.
+	// configureEvery bounds retries of setting up the remotes, and how soon
+	// a change to the project's upstream reaches them.
 	configureEvery = time.Minute
 	// revalidateEvery bounds how long a poller trusts its record of the
 	// workspace between request batches.
@@ -306,11 +307,13 @@ type pollState struct {
 	session  string
 	requests *bucket
 	branches *bucket
-	// configured is set once the devpad remote is set up; oldAgent once an
-	// agent without the bridge was reported.
-	configured   bool
-	configuredAt time.Time
-	oldAgent     bool
+	// configured is set once the remotes are set up, for the project's
+	// upstream as configuredFor; oldAgent once an agent without the bridge
+	// was reported.
+	configured    bool
+	configuredAt  time.Time
+	configuredFor string
+	oldAgent      bool
 }
 
 // resolve refreshes devpad's record of the workspace and its agent. The
@@ -464,9 +467,10 @@ func (b *Bridge) dispatch(ctx context.Context, st *pollState, slots chan struct{
 // the project has an upstream. A workspace converted in place is sent a hash
 // of the upstream URL, never the URL, so it can replace the origin it kept.
 // Any other workspace never had the URL, and gets no hash to test guesses
-// of it against.
+// of it against. Once set up, the remotes are set up again when the
+// project's upstream changes, so origin comes and goes with it.
 func (b *Bridge) configure(ctx context.Context, st *pollState) {
-	if st.configured || b.now().Sub(st.configuredAt) < configureEvery {
+	if b.now().Sub(st.configuredAt) < configureEvery {
 		return
 	}
 	st.configuredAt = b.now()
@@ -477,6 +481,10 @@ func (b *Bridge) configure(ctx context.Context, st *pollState) {
 		}
 		return
 	}
+	if st.configured && st.configuredFor == p.UpstreamURL {
+		return
+	}
+	st.configured = false
 	remotes := agent.GitBridgeRemotes{Upstream: p.UpstreamURL != ""}
 	if remotes.Upstream {
 		converted, err := b.projects.ConvertedInPlace(ctx, st.ws.UserID, st.ws.ProjectID, st.ws.ID)
@@ -506,6 +514,9 @@ func (b *Bridge) configure(ctx context.Context, st *pollState) {
 		st.configured = true
 	case ctx.Err() == nil:
 		b.logf(st.ws.ID, "setting up the devpad remote: %v", err)
+	}
+	if st.configured {
+		st.configuredFor = p.UpstreamURL
 	}
 }
 

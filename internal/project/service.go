@@ -57,6 +57,9 @@ type Service interface {
 	// fetching.
 	SyncUpstream(ctx context.Context, userID, projectID int64) (*UpstreamStatus, error)
 	UpstreamStatus(ctx context.Context, userID, projectID int64) (*UpstreamStatus, error)
+	// SetUpstream points the project at another upstream, or at none when
+	// the URL is empty.
+	SetUpstream(ctx context.Context, userID, projectID int64, upstreamURL string) (*Project, error)
 	// SyncUpstreamIfStale syncs when the last sync is stale, for git fetch
 	// through the devpad remote, and returns a warning for git to show.
 	SyncUpstreamIfStale(ctx context.Context, userID, projectID int64, wait time.Duration) string

@@ -46,6 +46,9 @@ type Repository interface {
 	// it protects. Update never writes them, so a stale copy of a project
 	// cannot undo a change.
 	SetBranches(ctx context.Context, projectID int64, defaultBranch string, protected []string) error
+	// SetUpstreamURL records a project's upstream; Update never writes it,
+	// for the same reason.
+	SetUpstreamURL(ctx context.Context, projectID int64, upstreamURL string) error
 	// ListWithEnvironment lists the projects that have an environment.
 	ListWithEnvironment(ctx context.Context) ([]*Project, error)
 	// GetBuild returns the latest build of a project's environment, or nil.
@@ -193,6 +196,13 @@ func (r *repository) SetBranches(ctx context.Context, projectID int64, defaultBr
 	}
 	if _, err := r.db.ExecContext(ctx, `UPDATE projects SET default_branch = ?, protected_branches = ?, updated_at = ? WHERE id = ?`, defaultBranch, list, time.Now(), projectID); err != nil {
 		return fmt.Errorf("recording branches: %w", err)
+	}
+	return nil
+}
+
+func (r *repository) SetUpstreamURL(ctx context.Context, projectID int64, upstreamURL string) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE projects SET upstream_url = ?, updated_at = ? WHERE id = ?`, upstreamURL, time.Now(), projectID); err != nil {
+		return fmt.Errorf("recording upstream: %w", err)
 	}
 	return nil
 }

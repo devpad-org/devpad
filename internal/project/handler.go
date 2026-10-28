@@ -352,6 +352,28 @@ func (h *Handler) HandleUpstreamStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
+// HandleSetUpstream points a project at another upstream, or at none.
+func (h *Handler) HandleSetUpstream(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		UpstreamURL string `json:"upstreamUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	p, err := h.service.SetUpstream(r.Context(), user.ID, id, req.UpstreamURL)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"project": projectResponse(p)})
+}
+
 // HandleSyncUpstream fetches the upstream and fast-forwards the protected
 // branches it can.
 func (h *Handler) HandleSyncUpstream(w http.ResponseWriter, r *http.Request) {

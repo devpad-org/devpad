@@ -44,6 +44,10 @@ const (
 	errUpstreamFetch = "could not fetch from the upstream; the project panel says why"
 )
 
+// errUpstreamChanged fails a sync whose fetch was from an upstream the
+// project no longer has.
+var errUpstreamChanged = errors.New("the project's upstream changed during the sync; sync again")
+
 // UpstreamStatus is how the project's protected branches stand against the
 // upstream as last fetched, with the last sync's error, if it failed, and
 // whether one is running.
@@ -312,10 +316,68 @@ func (s *service) fetchUpstream(ctx context.Context, userID, projectID int64) (*
 
 	unlock := s.lockBranches(projectID)
 	defer unlock()
+	fetched := p.UpstreamURL
 	if p, err = s.upstreamProject(ctx, userID, projectID); err != nil {
 		return nil, err
 	}
+	if p.UpstreamURL != fetched {
+		return nil, errUpstreamChanged
+	}
 	return c.RepoUpstreamFastForward(ctx, p.Protected())
+}
+
+// SetUpstream points the project at another upstream, or at none when
+// rawURL is empty. The repo forgets what it fetched from the old one, and
+// devpad its last sync, so nothing of the old upstream is fast-forwarded
+// into the project or shown as the new one's. It refuses while a sync runs
+// rather than wait for one. Workspaces pick up the change from the git
+// bridge.
+func (s *service) SetUpstream(ctx context.Context, userID, projectID int64, rawURL string) (*Project, error) {
+	upstream, err := upstreamURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.getReady(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if p.UpstreamURL == upstream {
+		return p, nil
+	}
+	c, err := s.repoAgent(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+
+	// The branch lock orders this with the fast-forward that ends a sync,
+	// which checks the upstream it fetched is still the project's.
+	unlock := s.lockBranches(projectID)
+	defer unlock()
+	if p, err = s.getReady(ctx, userID, projectID); err != nil {
+		return nil, err
+	}
+	if p.UpstreamURL == upstream {
+		return p, nil
+	}
+	s.mu.Lock()
+	if run := s.upstreamSyncs[p.ID]; run != nil && !run.finished() {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("%w: wait for the sync from the upstream to finish", ErrBusy)
+	}
+	delete(s.upstreamSyncs, p.ID)
+	s.mu.Unlock()
+
+	if err := c.RepoSetUpstream(ctx, upstream); err != nil {
+		return nil, err
+	}
+	if err := s.repo.SetUpstreamURL(ctx, p.ID, upstream); err != nil {
+		// Put the repo back, so it and the project agree.
+		if undoErr := c.RepoSetUpstream(context.WithoutCancel(ctx), p.UpstreamURL); undoErr != nil {
+			log.Printf("project %d: restoring the upstream after a failed update: %v", p.ID, undoErr)
+		}
+		return nil, err
+	}
+	return s.Get(ctx, userID, projectID)
 }
 
 // writeUpstreamKeys writes the user's SSH key into the repo container, the
@@ -338,7 +400,7 @@ func upstreamErrorText(err error) string {
 	switch {
 	case errors.As(err, &agentErr):
 		return agentErr.Message
-	case errors.Is(err, ErrNotReady), errors.Is(err, ErrNoUpstream), errors.Is(err, ErrNotFound):
+	case errors.Is(err, ErrNotReady), errors.Is(err, ErrNoUpstream), errors.Is(err, ErrNotFound), errors.Is(err, errUpstreamChanged):
 		return err.Error()
 	}
 	return "devpad could not fetch from the upstream"

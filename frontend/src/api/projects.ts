@@ -382,6 +382,11 @@ export const projectApi = {
     return apiClient.post(`/api/projects/${id}/push`, branch ? { branch } : {})
   },
 
+  // Points the project at another upstream, or at none when empty.
+  setUpstream(id: number, upstreamUrl: string): Promise<{ project: Project }> {
+    return apiClient.put(`/api/projects/${id}/upstream`, { upstreamUrl })
+  },
+
   // How the protected branches stand against the upstream as last fetched.
   upstreamStatus(id: number): Promise<UpstreamStatus> {
     return apiClient.get(`/api/projects/${id}/upstream`)

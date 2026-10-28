@@ -397,7 +397,8 @@ func serveGitBridgeSocket(b *gitBridge, path string) (*http.Server, error) {
 var remoteHelperDir = ""
 
 // gitBridgeRemoteRequest is devpad's optional description of the project
-// when it sets up the remotes. Without Upstream no origin remote is made.
+// when it sets up the remotes. Without Upstream no origin remote is made,
+// and one devpad made earlier is removed.
 // UpstreamURLHash is the hex SHA-256 of the project's upstream URL: an
 // origin with that URL, as a workspace converted in place keeps, is replaced
 // by the read-only one, without the workspace being sent the URL itself.
@@ -456,6 +457,10 @@ func handleGitBridgeRemote(w http.ResponseWriter, r *http.Request) {
 		} else {
 			originConflict = true
 		}
+	} else if out, err := gitOutput(ctx, "config", "--get", "remote."+upstreamRemote+".url"); err == nil && strings.TrimSpace(out) == upstreamRemoteURL {
+		// The project no longer has an upstream; drop the origin devpad made
+		// for it, never one the user has.
+		steps = append(steps, []string{"remote", "remove", upstreamRemote})
 	}
 	for _, args := range steps {
 		if out, err := gitOutput(ctx, args...); err != nil {

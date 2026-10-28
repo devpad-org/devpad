@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -26,6 +29,25 @@ type UpstreamBranch struct {
 type UpstreamStatus struct {
 	FetchedAt *time.Time       `json:"fetchedAt,omitempty"`
 	Branches  []UpstreamBranch `json:"branches"`
+}
+
+// RepoSetUpstream points the canonical repo at another upstream, or at none
+// when upstreamURL is empty, forgetting the old upstream's branches as last
+// fetched. The repo refuses with 409 while a fetch from the upstream runs.
+func (c *Client) RepoSetUpstream(ctx context.Context, upstreamURL string) error {
+	payload, err := json.Marshal(map[string]string{"url": upstreamURL})
+	if err != nil {
+		return fmt.Errorf("marshaling request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.baseURL+"/api/repo/upstream", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var result struct {
+		URL string `json:"url"`
+	}
+	return c.doRepoJSON(req, "repo set upstream", &result)
 }
 
 // RepoUpstreamFetch fetches the upstream into the canonical repo's own

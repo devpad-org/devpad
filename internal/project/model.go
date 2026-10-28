@@ -110,8 +110,8 @@ type CreateInput struct {
 	AutoReview bool
 }
 
-// UpdateInput holds the editable project fields. The upstream is fixed once
-// the repo exists, and the branches change through SetBranches.
+// UpdateInput holds the editable project fields. The upstream changes
+// through SetUpstream, and the branches through SetBranches.
 type UpdateInput struct {
 	Name         string
 	Description  string

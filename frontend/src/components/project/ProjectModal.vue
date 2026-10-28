@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { Project, ProjectInput } from '@/api/projects'
 
 const props = defineProps<{
@@ -26,6 +26,10 @@ const environment = ref('')
 const maxSandboxes = ref(DEFAULT_MAX_SANDBOXES)
 const autoReview = ref(true)
 const localError = ref('')
+
+// An HTTPS upstream is fetched without the user's SSH key, so a private
+// one fails.
+const httpsUpstream = computed(() => /^https?:\/\//i.test(upstreamUrl.value.trim()))
 
 watch(
   () => props.show,
@@ -64,7 +68,9 @@ function handleSubmit() {
     maxSandboxes: max,
     autoReview: autoReview.value,
   }
-  if (!props.project) {
+  if (props.project) {
+    input.upstreamUrl = upstreamUrl.value.trim()
+  } else {
     input.defaultBranch = defaultBranch.value.trim() || undefined
     input.upstreamUrl = upstreamUrl.value.trim() || undefined
   }
@@ -102,12 +108,17 @@ function handleSubmit() {
             </div>
           </template>
           <div v-else class="form-group">
-            <span class="form-label">Repository</span>
+            <label class="form-label" for="project-upstream">Upstream repository <span class="form-optional">(optional)</span></label>
+            <input id="project-upstream" v-model="upstreamUrl" class="form-input form-mono" type="text" autocomplete="off" placeholder="git@github.com:org/repo.git" />
             <p class="form-hint">
-              <span class="mono">{{ project.upstreamUrl || 'no upstream' }}</span> &middot;
-              default branch <span class="mono">{{ project.defaultBranch }}</span>
+              Fetched and pushed to with your SSH keys; the workspace sees it as <span class="mono">origin</span>. Changing it forgets what was synced from the old one, and leaving it empty makes the project local only.
             </p>
-            <p class="form-hint">Change the default and protected branches from Branches in the project panel.</p>
+            <p v-if="httpsUpstream" class="form-hint">
+              SSH keys only work with SSH URLs, such as <span class="mono">git@github.com:org/repo.git</span>; a private repository needs one.
+            </p>
+            <p class="form-hint">
+              Default branch <span class="mono">{{ project.defaultBranch }}</span>. Change the default and protected branches from Branches in the project panel.
+            </p>
           </div>
           <div class="form-group">
             <label class="form-label" for="project-setup">Setup script</label>

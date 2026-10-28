@@ -119,7 +119,7 @@ function syncTimer() {
 
 watch(() => status.value?.syncing, syncTimer)
 watch(
-  () => [store.projectId, shown.value, store.protectedBranches.join(',')],
+  () => [store.projectId, shown.value, store.project?.upstreamUrl, store.protectedBranches.join(',')],
   () => {
     status.value = null
     notice.value = ''

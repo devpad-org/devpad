@@ -903,12 +903,19 @@ func importInitialBundle(ctx context.Context, bundle, defaultBranch string) erro
 	return nil
 }
 
-func deleteRefsUnder(ctx context.Context, prefix string) {
-	out, err := gitOutput(ctx, "for-each-ref", "--format=delete %(refname)", prefix)
-	if err != nil || strings.TrimSpace(out) == "" {
-		return
+// deleteRefsUnder deletes every ref under prefix.
+func deleteRefsUnder(ctx context.Context, prefix string) error {
+	out, err := gitStdout(ctx, "for-each-ref", "--format=delete %(refname)", prefix)
+	if err != nil {
+		return fmt.Errorf("listing refs under %s: %w", prefix, err)
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil
 	}
 	cmd := gitCommand(ctx, "update-ref", "--stdin")
 	cmd.Stdin = strings.NewReader(out)
-	cmd.Run()
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("deleting refs under %s: %s", prefix, strings.TrimSpace(string(combined)))
+	}
+	return nil
 }
