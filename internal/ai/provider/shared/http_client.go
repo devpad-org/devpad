@@ -21,8 +21,9 @@ const (
 	streamingResponseHeaderTimeout = 10 * time.Minute
 
 	// Providers reject requests with 429 or 5xx when they are momentarily
-	// overloaded. Those failures are transient, so retry before surfacing them
-	// as a chat error that costs the user their turn.
+	// overloaded, and sometimes stall or drop the connection before sending
+	// any response. Those failures are transient, so retry before surfacing
+	// them as a chat error that costs the user their turn.
 	maxStreamAttempts = 4
 	maxRetryBackoff   = 30 * time.Second
 )
@@ -50,7 +51,16 @@ func StartStreamRequest(ctx context.Context, client *http.Client, url, apiKey, e
 	for attempt := 0; attempt < maxStreamAttempts; attempt++ {
 		resp, err := sendStreamRequest(ctx, client, url, apiKey, body)
 		if err != nil {
-			return nil, fmt.Errorf("sending request: %w", err)
+			// A request that failed before any response, such as one timing
+			// out awaiting headers, is retried unless the caller gave up.
+			lastErr = fmt.Errorf("sending request: %w", err)
+			if ctx.Err() != nil || attempt == maxStreamAttempts-1 {
+				return nil, lastErr
+			}
+			if err := waitForRetry(ctx, retryDelay(attempt, "")); err != nil {
+				return nil, fmt.Errorf("%w (last provider error: %v)", err, lastErr)
+			}
+			continue
 		}
 
 		if resp.StatusCode == http.StatusOK {

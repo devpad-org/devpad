@@ -98,6 +98,83 @@ func TestStartStreamRequestDoesNotRetryClientErrors(t *testing.T) {
 	}
 }
 
+func TestStartStreamRequestRetriesWhenProviderStallsBeforeHeaders(t *testing.T) {
+	shortenRetryBackoff(t)
+
+	release := make(chan struct{})
+	var calls int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt64(&calls, 1) == 1 {
+			<-release
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+
+	client := server.Client()
+	transport := client.Transport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 50 * time.Millisecond
+	client.Transport = transport
+
+	ch, err := StartStreamRequest(context.Background(), client, server.URL, "test-key", "testprovider", map[string]string{}, discardDecoder)
+	if err != nil {
+		t.Fatalf("expected the request to succeed after the stalled attempt, got %v", err)
+	}
+	if ch == nil {
+		t.Fatal("expected an event channel on success")
+	}
+	if got := atomic.LoadInt64(&calls); got != 2 {
+		t.Fatalf("expected 2 attempts, got %d", got)
+	}
+}
+
+func TestStartStreamRequestRetriesDroppedConnections(t *testing.T) {
+	shortenRetryBackoff(t)
+
+	var attempts int64
+	ch, err, calls := startTestStream(t, func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt64(&attempts, 1) == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijacking the connection: %v", err)
+				return
+			}
+			conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	})
+	if err != nil {
+		t.Fatalf("expected the request to succeed after the dropped connection, got %v", err)
+	}
+	if ch == nil {
+		t.Fatal("expected an event channel on success")
+	}
+	if got := atomic.LoadInt64(calls); got != 2 {
+		t.Fatalf("expected 2 attempts, got %d", got)
+	}
+}
+
+func TestStartStreamRequestSurfacesTransportErrorAfterExhaustingRetries(t *testing.T) {
+	shortenRetryBackoff(t)
+
+	server := httptest.NewServer(http.NotFoundHandler())
+	url := server.URL
+	server.Close()
+
+	_, err := StartStreamRequest(context.Background(), http.DefaultClient, url, "test-key", "testprovider", map[string]string{}, discardDecoder)
+	if err == nil {
+		t.Fatal("expected an error when the provider is unreachable")
+	}
+	if !strings.Contains(err.Error(), "sending request") {
+		t.Fatalf("expected the transport error, got %v", err)
+	}
+}
+
 func TestStartStreamRequestStopsRetryingWhenContextIsCancelled(t *testing.T) {
 	var calls int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
