@@ -173,6 +173,13 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 				}
 				if len(event.ToolCalls) > 0 {
 					toolCalls = append([]domain.ToolCall(nil), event.ToolCalls...)
+					// A call to a tool without parameters can stream no
+					// arguments at all, as Anthropic's do; it means none.
+					for i := range toolCalls {
+						if strings.TrimSpace(toolCalls[i].Function.Arguments) == "" {
+							toolCalls[i].Function.Arguments = "{}"
+						}
+					}
 				}
 			case <-ctx.Done():
 				return

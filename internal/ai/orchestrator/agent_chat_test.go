@@ -290,6 +290,52 @@ func TestAgentChatOrchestrator_EmitsContextTelemetryBeforeProviderRequest(t *tes
 	}
 }
 
+func TestAgentChatOrchestrator_EmptyToolArgumentsAreAnEmptyObject(t *testing.T) {
+	callCount := 0
+	var got json.RawMessage
+	orch := &agentChatOrchestrator{
+		service: &mockChatService{
+			chatStreamFn: func(_ context.Context, _ domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+				ch := make(chan domain.ProviderEvent, 2)
+				callCount++
+				if callCount == 1 {
+					ch <- domain.ProviderEvent{ToolCalls: []domain.ToolCall{
+						{ID: "tc1", Type: "function", Function: domain.ToolCallFunction{Name: "read_merge_request_comments"}},
+					}}
+				} else {
+					ch <- domain.ProviderEvent{TextDelta: "done"}
+				}
+				ch <- domain.ProviderEvent{Done: true}
+				close(ch)
+				return ch, nil
+			},
+		},
+		toolCatalog: fakeToolCatalog{},
+		toolExecutor: &mockToolExecutor{executeToolFn: func(_ context.Context, req aitools.ExecutionRequest) domain.ToolResultPart {
+			got = req.Arguments
+			return domain.ToolResultPart{Name: req.ToolName, Content: "ok"}
+		}},
+		approvals:         &mockApprovalBroker{awaitFn: func(context.Context, string) (bool, error) { return true, nil }},
+		questions:         &mockQuestionBroker{},
+		maxToolIterations: defaultMaxToolIterations,
+	}
+
+	stream, err := orch.Stream(context.Background(), AgentChatRequest{
+		UserID:      1,
+		WorkspaceID: 1,
+		Model:       "test-model",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	collectEvents(t, stream)
+
+	if string(got) != "{}" {
+		t.Fatalf("expected the tool to get {}, got %q", got)
+	}
+}
+
 func TestAgentChatOrchestrator_MultiToolCallOrdering(t *testing.T) {
 	callCount := 0
 	orch := &agentChatOrchestrator{
