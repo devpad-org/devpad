@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -332,15 +333,17 @@ data: {"type":"message_stop"}
 }
 
 func TestAnthropicAdapter_RetriesOverloadedAPI(t *testing.T) {
-	var calls int
+	var calls int64
+	var retryAuth, retryVersion atomic.Value
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if calls == 1 {
+		if atomic.AddInt64(&calls, 1) == 1 {
 			w.Header().Set("Retry-After", "0")
 			w.WriteHeader(529)
 			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`))
 			return
 		}
+		retryAuth.Store(r.Header.Get("x-api-key"))
+		retryVersion.Store(r.Header.Get("anthropic-version"))
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(`event: message_stop
 data: {"type":"message_stop"}
@@ -360,8 +363,14 @@ data: {"type":"message_stop"}
 		t.Fatalf("expected the overloaded request to be retried, got %v", err)
 	}
 	collectEvents(stream)
-	if calls != 2 {
-		t.Fatalf("expected 2 attempts, got %d", calls)
+	if got := atomic.LoadInt64(&calls); got != 2 {
+		t.Fatalf("expected 2 attempts, got %d", got)
+	}
+	if got := retryAuth.Load(); got != "test-key" {
+		t.Fatalf("expected x-api-key on the retried attempt, got %v", got)
+	}
+	if got := retryVersion.Load(); got != "2023-06-01" {
+		t.Fatalf("expected anthropic-version on the retried attempt, got %v", got)
 	}
 }
 
