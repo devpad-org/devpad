@@ -997,6 +997,45 @@ func TestFailedRunCanBeRetriedInTheSameConversation(t *testing.T) {
 	}
 }
 
+func TestRoundAfterReviewCarriesOnlyTheText(t *testing.T) {
+	e := setup(t)
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	first := e.waitTask(t, task.ID, hasRun)
+	e.convs.save(first.ConversationID,
+		domain.NewTextTurn(domain.RoleUser, "implement"),
+		domain.Turn{Role: domain.RoleAssistant, Parts: []domain.Part{{Kind: domain.PartToolCall, ToolCall: &domain.ToolCall{ID: "1"}}}},
+		domain.NewToolResultTurn("1", "read_file", "raw file contents", false),
+		domain.NewTextTurn(domain.RoleAssistant, "Added the cart."),
+	)
+	e.runs.finish(first.RunID, domain.AgentRunCompleted, "")
+	e.waitTask(t, task.ID, status(StatusInReview))
+
+	e.start(t, task.ID, StartInput{Message: "Handle an empty cart."})
+	second := e.waitTask(t, task.ID, func(t *Task) bool { return t.RunID != first.RunID && t.RunID != 0 })
+	if second.ConversationID == first.ConversationID || second.WorkspaceID != first.WorkspaceID {
+		t.Fatalf("expected a new conversation in the same sandbox: first=%+v second=%+v", first, second)
+	}
+	req := e.runs.startedRequests()[1]
+	if req.ConversationID != second.ConversationID {
+		t.Fatalf("run started in conversation %d, task has %d", req.ConversationID, second.ConversationID)
+	}
+	turns := req.Turns
+	if len(turns) != 3 || turns[0].Text() != "implement" || turns[1].Text() != "Added the cart." {
+		t.Fatalf("expected the earlier round's text only, got %+v", turns)
+	}
+	for _, turn := range turns {
+		for _, part := range turn.Parts {
+			if part.Kind != domain.PartText {
+				t.Fatalf("carried a %s part: %+v", part.Kind, turns)
+			}
+		}
+	}
+	if text := lastText(turns); !strings.Contains(text, "new round") || !strings.Contains(text, "Handle an empty cart.") {
+		t.Fatalf("unexpected new round prompt: %q", text)
+	}
+}
+
 func TestFeedbackRestartsStoppedSandbox(t *testing.T) {
 	e := setup(t)
 	task := e.createTask(t)

@@ -915,15 +915,23 @@ func (s *service) running(ctx context.Context, t *Task, ws *workspace.Workspace)
 	return ws, nil
 }
 
-// buildTurns continues the task's conversation when it has one, so the agent
-// keeps its context across retries and review rounds. Otherwise it starts a
-// new conversation with the implement prompt, which says how the sandbox's
+// buildTurns picks up from the task's conversation when it has one. A round
+// cut short, by a failure or a restart, continues that conversation as it
+// is, so the agent keeps the work in progress. A round after one that
+// reached review starts a new conversation that carries only the earlier
+// rounds' text: replaying their tool calls and results made every round
+// start with all the context of the ones before it. Without a conversation
+// it starts one with the implement prompt, which says how the sandbox's
 // environment and setup went.
 func (s *service) buildTurns(ctx context.Context, t *Task, p *project.Project, env *project.Environment, setup *project.Setup, message, previousError string) ([]domain.Turn, error) {
+	var carried []domain.Turn
 	if t.ConversationID != 0 {
 		turns, err := s.conversations.GetTurns(ctx, t.ConversationID, t.UserID)
 		if err == nil && len(turns) > 0 {
-			return appendUserText(turns, continuePrompt(t, message, previousError)), nil
+			if previousError != "" {
+				return appendUserText(turns, continuePrompt(t, message, previousError)), nil
+			}
+			carried = carryOver(turns, maxCarriedBytes)
 		}
 		if err != nil {
 			log.Printf("task %d: loading conversation %d, starting a new one: %v", t.ID, t.ConversationID, err)
@@ -934,6 +942,9 @@ func (s *service) buildTurns(ctx context.Context, t *Task, p *project.Project, e
 		return nil, err
 	}
 	t.ConversationID = conv.ID
+	if len(carried) > 0 {
+		return appendUserText(carried, newRoundPrompt(t, message)), nil
+	}
 	prompt := implementPrompt(p, t, env, setup)
 	if message != "" {
 		prompt += "\n\n## Additional instructions\n\n" + message
@@ -984,6 +995,13 @@ func implementPrompt(p *project.Project, t *Task, env *project.Environment, setu
 - Leave nothing uncommitted when you finish.
 - When you are done, reply with a short summary of what you changed and anything a reviewer should check.`, "`"+t.Branch+"`", start, "`"+p.DefaultBranch+"`", "`devpad/"+p.DefaultBranch+"`")
 	return b.String()
+}
+
+// newRoundPrompt asks for another round of work in a conversation that
+// carries only the text of the earlier rounds.
+func newRoundPrompt(t *Task, message string) string {
+	branch := "`" + t.Branch + "`"
+	return fmt.Sprintf("This is a new round of work on the task. The tool calls and results from your earlier rounds were left out to keep your context small, so read files again before you change them. Your earlier work is committed to %s: check `git log` and `git status` to see where it stands.\n\n%s", branch, continuePrompt(t, message, ""))
 }
 
 func continuePrompt(t *Task, message, previousError string) string {
