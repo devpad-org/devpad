@@ -36,7 +36,12 @@ async function saveProject(input: ProjectInput) {
   savingProject.value = true
   editError.value = ''
   try {
-    store.setProject(await projects.updateProject(store.projectId, input))
+    const { project, upstreamError } = await projects.updateProject(store.projectId, input)
+    store.setProject(project)
+    if (upstreamError) {
+      editError.value = `Saved, but the upstream was not changed: ${upstreamError}`
+      return
+    }
     showEdit.value = false
   } catch (e) {
     editError.value = e instanceof Error ? e.message : 'Failed to save project'

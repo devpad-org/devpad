@@ -246,6 +246,20 @@ type fakeRepoAgent struct {
 	// setUpstreamErr fails the first such request with 409.
 	setUpstreams   []string
 	setUpstreamErr string
+	// origin is the repo's upstream URL. Fetches, fast-forwards and pushes
+	// that expect another are refused, as the real repo refuses them.
+	origin string
+}
+
+// expectsOrigin refuses a request that expects another upstream than the
+// repo's origin.
+func (a *fakeRepoAgent) expectsOrigin(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get(agent.UpstreamHeader) != a.origin {
+		w.WriteHeader(http.StatusPreconditionFailed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "the repo's upstream is not the project's"})
+		return false
+	}
+	return true
 }
 
 func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +301,7 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		branch, _ := a.initReq["defaultBranch"].(string)
+		a.origin, _ = a.initReq["upstreamUrl"].(string)
 		json.NewEncoder(w).Encode(agent.RepoRefs{DefaultBranch: branch})
 	case "/api/repo/refs":
 		json.NewEncoder(w).Encode(agent.RepoRefs{DefaultBranch: "main", Branches: a.branches})
@@ -305,6 +320,9 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.bundled = append(a.bundled, branch)
 		w.Write([]byte("bundle-of-" + branch))
 	case "/api/repo/upstream/fetch":
+		if !a.expectsOrigin(w, r) {
+			return
+		}
 		if a.upstreamErr != "" {
 			w.WriteHeader(http.StatusBadGateway)
 			json.NewEncoder(w).Encode(map[string]string{"error": a.upstreamErr})
@@ -323,8 +341,12 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.setUpstreams = append(a.setUpstreams, req.URL)
+		a.origin = req.URL
 		json.NewEncoder(w).Encode(map[string]string{"url": req.URL})
 	case "/api/repo/upstream/fast-forward":
+		if !a.expectsOrigin(w, r) {
+			return
+		}
 		a.upstreamFFs = append(a.upstreamFFs, strings.Join(r.URL.Query()["protected"], ","))
 		json.NewEncoder(w).Encode(a.upstreamStatus)
 	case "/api/repo/upstream/status":
@@ -363,6 +385,9 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.heads = append(a.heads, r.URL.Query().Get("branch"))
 		json.NewEncoder(w).Encode(agent.RepoBranch{Branch: r.URL.Query().Get("branch"), SHA: "abc"})
 	case "/api/repo/push":
+		if !a.expectsOrigin(w, r) {
+			return
+		}
 		a.pushed = append(a.pushed, r.URL.Query().Get("branch"))
 		if a.pushErr != "" {
 			w.WriteHeader(cmp.Or(a.pushStatus, http.StatusBadGateway))
@@ -862,6 +887,8 @@ func TestCreateValidation(t *testing.T) {
 		{"flag branch", CreateInput{Name: "x", DefaultBranch: "-main"}},
 		{"bad branch", CreateInput{Name: "x", DefaultBranch: "a..b"}},
 		{"flag upstream", CreateInput{Name: "x", UpstreamURL: "--upload-pack=evil"}},
+		{"upstream with credentials", CreateInput{Name: "x", UpstreamURL: "https://user:token@github.com/x.git"}},
+		{"upstream with a control character", CreateInput{Name: "x", UpstreamURL: "https://github.com/x.git\nevil"}},
 		{"too many sandboxes", CreateInput{Name: "x", MaxSandboxes: MaxSandboxesLimit + 1}},
 		{"negative sandboxes", CreateInput{Name: "x", MaxSandboxes: -1}},
 	}

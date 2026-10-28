@@ -737,8 +737,8 @@ func (s *service) discardProject(ctx context.Context, p *Project) {
 	}
 }
 
-// upstreamURL trims and checks an upstream URL given for an existing repo,
-// as converting a workspace or changing the upstream does; empty means none.
+// upstreamURL trims and checks an upstream URL, as creating a project,
+// converting a workspace or changing the upstream gives; empty means none.
 func upstreamURL(raw string) (string, error) {
 	upstream := strings.TrimSpace(raw)
 	if strings.HasPrefix(upstream, "-") {

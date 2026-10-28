@@ -288,6 +288,8 @@ func TestSetUpstream(t *testing.T) {
 	e := setupTest(t)
 	ctx := context.Background()
 	p := e.createProject(t, CreateInput{Name: "proj"})
+	hook := &fakeUpstreamHook{}
+	e.svc.SetUpstreamHook(hook)
 	setUpstreams := func() []string {
 		e.repoAgent.mu.Lock()
 		defer e.repoAgent.mu.Unlock()
@@ -297,7 +299,7 @@ func TestSetUpstream(t *testing.T) {
 	// A project made without an upstream can be given one.
 	const url = "git@github.com:example/project.git"
 	got, err := e.svc.SetUpstream(ctx, e.userID, p.ID, "  "+url+" ")
-	if err != nil || got.UpstreamURL != url {
+	if err != nil || got.UpstreamURL != url || got.UpstreamVersion != 1 {
 		t.Fatalf("set upstream: %+v, %v", got, err)
 	}
 	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); stored.UpstreamURL != url {
@@ -306,13 +308,20 @@ func TestSetUpstream(t *testing.T) {
 	if calls := setUpstreams(); len(calls) != 1 || calls[0] != url {
 		t.Fatalf("repo pointed at %v", calls)
 	}
-
-	// The same URL changes nothing, and asks nothing of the repo.
-	if _, err := e.svc.SetUpstream(ctx, e.userID, p.ID, url); err != nil {
-		t.Fatalf("same upstream: %v", err)
+	if changed := hook.changes(); len(changed) != 1 || changed[0] != p.ID {
+		t.Fatalf("hook told of %v", changed)
 	}
-	if calls := setUpstreams(); len(calls) != 1 {
-		t.Fatalf("the same upstream was set again: %v", calls)
+
+	// The same URL changes nothing recorded, though the repo is pointed at
+	// it again, in case a failed change left it elsewhere.
+	if got, err := e.svc.SetUpstream(ctx, e.userID, p.ID, url); err != nil || got.UpstreamVersion != 1 {
+		t.Fatalf("same upstream: %+v, %v", got, err)
+	}
+	if calls := setUpstreams(); len(calls) != 2 || calls[1] != url {
+		t.Fatalf("repo pointed at %v", calls)
+	}
+	if changed := hook.changes(); len(changed) != 1 {
+		t.Fatalf("hook told of %v for an unchanged upstream", changed)
 	}
 
 	// A sync with the old upstream is forgotten with it.
@@ -366,6 +375,85 @@ func TestSetUpstream(t *testing.T) {
 	}
 	if _, err := e.svc.SyncUpstream(ctx, e.userID, p.ID); !errors.Is(err, ErrNoUpstream) {
 		t.Fatalf("sync without an upstream: %v", err)
+	}
+}
+
+// fakeUpstreamHook records the projects whose upstream changed.
+type fakeUpstreamHook struct {
+	mu      sync.Mutex
+	changed []int64
+}
+
+func (h *fakeUpstreamHook) UpstreamChanged(projectID int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.changed = append(h.changed, projectID)
+}
+
+func (h *fakeUpstreamHook) changes() []int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.changed)
+}
+
+// failingUpstreamRepo fails recording an upstream, then has the repo refuse
+// the next change of upstream, as one that started a fetch would.
+type failingUpstreamRepo struct {
+	Repository
+	agent *fakeRepoAgent
+}
+
+func (r failingUpstreamRepo) SetUpstreamURL(context.Context, int64, string) error {
+	r.agent.mu.Lock()
+	r.agent.setUpstreamErr = "a fetch from or push to the upstream is still running"
+	r.agent.mu.Unlock()
+	return errors.New("disk full")
+}
+
+func TestSetUpstreamRepairsARepoAFailedChangeLeftElsewhere(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	const url, next = "https://example.com/repo.git", "https://example.com/other.git"
+	p := e.createProject(t, CreateInput{Name: "proj", UpstreamURL: url})
+	repo := e.svc.repo
+	e.svc.repo = failingUpstreamRepo{Repository: repo, agent: e.repoAgent}
+
+	// The record fails and so does putting the repo back.
+	if _, err := e.svc.SetUpstream(ctx, e.userID, p.ID, next); err == nil {
+		t.Fatal("expected the change to fail")
+	}
+	e.svc.repo = repo
+	e.repoAgent.mu.Lock()
+	origin := e.repoAgent.origin
+	e.repoAgent.mu.Unlock()
+	if origin != next {
+		t.Fatalf("repo origin %q; the test expects the failed change to leave it at the new upstream", origin)
+	}
+
+	// The repo, pointing elsewhere than the project, is never synced from
+	// or pushed to.
+	if _, err := e.svc.SyncUpstream(ctx, e.userID, p.ID); err == nil {
+		t.Fatal("synced from an upstream the project does not have")
+	}
+	if ffs := e.repoAgent.upstreamFFs; len(ffs) != 0 {
+		t.Fatalf("fast-forwarded %v", ffs)
+	}
+	if _, err := e.svc.Push(ctx, e.userID, p.ID, ""); err == nil {
+		t.Fatal("pushed to an upstream the project does not have")
+	}
+
+	// Setting the project's own upstream again puts the repo right.
+	if _, err := e.svc.SetUpstream(ctx, e.userID, p.ID, url); err != nil {
+		t.Fatalf("set the upstream again: %v", err)
+	}
+	e.repoAgent.mu.Lock()
+	origin = e.repoAgent.origin
+	e.repoAgent.mu.Unlock()
+	if origin != url {
+		t.Fatalf("repo origin %q after setting the upstream again", origin)
+	}
+	if _, err := e.svc.SyncUpstream(ctx, e.userID, p.ID); err != nil {
+		t.Fatalf("sync after the repair: %v", err)
 	}
 }
 

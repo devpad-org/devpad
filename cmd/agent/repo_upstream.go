@@ -26,8 +26,29 @@ const (
 	upstreamFetchTimeout = 5 * time.Minute
 )
 
-// upstreamFetching holds a token while a fetch from the upstream runs.
-var upstreamFetching = make(chan struct{}, 1)
+// upstreamBusy holds a token while a fetch from or push to the upstream
+// runs, so origin cannot change under either.
+var upstreamBusy = make(chan struct{}, 1)
+
+// upstreamHeader names the upstream devpad expects origin to have.
+const upstreamHeader = "X-Devpad-Upstream"
+
+// checkUpstream refuses the request unless origin is the upstream devpad
+// expects. A repo left pointing elsewhere by a failed change of upstream is
+// then never fetched from, pushed to or fast-forwarded from, until devpad
+// sets its upstream again.
+func checkUpstream(ctx context.Context, w http.ResponseWriter, r *http.Request) bool {
+	out, err := gitOutput(ctx, "config", "--get", "remote.origin.url")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "the project has no upstream")
+		return false
+	}
+	if strings.TrimSpace(out) != r.Header.Get(upstreamHeader) {
+		writeErr(w, http.StatusPreconditionFailed, "the repo's upstream is not the project's; set the project's upstream again")
+		return false
+	}
+	return true
+}
 
 // upstreamBranch compares a protected branch with the upstream's copy.
 // Ahead counts the project's commits the upstream lacks; Behind the reverse.
@@ -75,14 +96,13 @@ func handleRepoUpstreamFetch(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	select {
-	case upstreamFetching <- struct{}{}:
-		defer func() { <-upstreamFetching }()
+	case upstreamBusy <- struct{}{}:
+		defer func() { <-upstreamBusy }()
 	case <-ctx.Done():
-		writeErr(w, http.StatusServiceUnavailable, "another fetch from the upstream is still running")
+		writeErr(w, http.StatusServiceUnavailable, "another fetch from or push to the upstream is still running")
 		return
 	}
-	if gitExec(ctx, "remote", "get-url", "origin") != nil {
-		writeErr(w, http.StatusBadRequest, "the project has no upstream")
+	if !checkUpstream(ctx, w, r) {
 		return
 	}
 	if out, err := gitOutput(ctx, "fetch", "--prune", "--no-tags", "--no-write-fetch-head", "origin",
@@ -106,8 +126,8 @@ func handleRepoUpstreamFetch(w http.ResponseWriter, r *http.Request) {
 // upstream, or removes it when the URL is empty. The old upstream's branches
 // and when it was last fetched are forgotten first, so none of them is
 // fast-forwarded into the project or compared with it as the new upstream's.
-// It refuses while a fetch runs rather than wait for one, so devpad never
-// holds a lock across a fetch.
+// It refuses while a fetch or push runs rather than wait for one, so devpad
+// never holds a lock across one.
 func handleRepoSetUpstream(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxGitRequestBody)
 	var req struct {
@@ -123,10 +143,10 @@ func handleRepoSetUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	select {
-	case upstreamFetching <- struct{}{}:
-		defer func() { <-upstreamFetching }()
+	case upstreamBusy <- struct{}{}:
+		defer func() { <-upstreamBusy }()
 	default:
-		writeErr(w, http.StatusConflict, "a fetch from the upstream is still running; try again when it finishes")
+		writeErr(w, http.StatusConflict, "a fetch from or push to the upstream is still running; try again when it finishes")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
@@ -163,7 +183,9 @@ func handleRepoSetUpstream(w http.ResponseWriter, r *http.Request) {
 
 // handleRepoUpstreamFastForward fast-forwards each named protected branch
 // that is strictly behind its upstream copy as last fetched, and reports how
-// they all stand.
+// they all stand. The copies are only ever fetched from origin, and are
+// forgotten when origin changes, so checking origin is the upstream devpad
+// expects checks where they came from.
 func handleRepoUpstreamFastForward(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
 	defer cancel()
@@ -171,6 +193,9 @@ func handleRepoUpstreamFastForward(w http.ResponseWriter, r *http.Request) {
 	protected, err := protectedBranches(ctx, r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !checkUpstream(ctx, w, r) {
 		return
 	}
 	forwarded := make(map[string]bool)

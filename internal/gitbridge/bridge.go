@@ -107,8 +107,7 @@ const (
 	staleSyncWait = 20 * time.Second
 	// stoppedTimeout bounds answering requests after the poller stopped.
 	stoppedTimeout = 10 * time.Second
-	// configureEvery bounds retries of setting up the remotes, and how soon
-	// a change to the project's upstream reaches them.
+	// configureEvery bounds retries of setting up the remotes.
 	configureEvery = time.Minute
 	// revalidateEvery bounds how long a poller trusts its record of the
 	// workspace between request batches.
@@ -144,7 +143,10 @@ type Bridge struct {
 	logs    map[int64]*rateLog
 	// syncs limits the upstream syncs each workspace starts.
 	syncs map[int64]*bucket
-	wg    sync.WaitGroup
+	// upstreams counts the upstream changes each project made while the
+	// bridge ran, so pollers set the remotes up again.
+	upstreams map[int64]uint64
+	wg        sync.WaitGroup
 }
 
 type poller struct {
@@ -189,7 +191,22 @@ func New(workspaces Workspaces, projects Projects) *Bridge {
 		events:     make(map[eventKey]*projectEvents),
 		logs:       make(map[int64]*rateLog),
 		syncs:      make(map[int64]*bucket),
+		upstreams:  make(map[int64]uint64),
 	}
+}
+
+// UpstreamChanged has the project workspace's poller set its remotes up
+// again, for the project's new upstream.
+func (b *Bridge) UpstreamChanged(projectID int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.upstreams[projectID]++
+}
+
+func (b *Bridge) upstreamChanges(projectID int64) uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.upstreams[projectID]
 }
 
 func randomHex(n int) string {
@@ -235,10 +252,12 @@ func (b *Bridge) reconcile(ctx context.Context) {
 	want := make(map[int64]*workspace.Workspace)
 	exists := make(map[int64]bool, len(all))
 	projects := make(map[eventKey]bool)
+	projectIDs := make(map[int64]bool)
 	for _, ws := range all {
 		exists[ws.ID] = true
 		if ws.ProjectID != 0 {
 			projects[eventKey{ws.UserID, ws.ProjectID}] = true
+			projectIDs[ws.ProjectID] = true
 		}
 		if ws.IsProjectWorkspace() && ws.Status == workspace.StatusRunning && ws.ContainerID != "" && ws.RepoSeeded {
 			want[ws.ID] = ws
@@ -260,6 +279,11 @@ func (b *Bridge) reconcile(ctx context.Context) {
 	for id := range b.syncs {
 		if !exists[id] {
 			delete(b.syncs, id)
+		}
+	}
+	for id := range b.upstreams {
+		if !projectIDs[id] {
+			delete(b.upstreams, id)
 		}
 	}
 	for id, p := range b.pollers {
@@ -308,12 +332,12 @@ type pollState struct {
 	requests *bucket
 	branches *bucket
 	// configured is set once the remotes are set up, for the project's
-	// upstream as configuredFor; oldAgent once an agent without the bridge
-	// was reported.
-	configured    bool
-	configuredAt  time.Time
-	configuredFor string
-	oldAgent      bool
+	// upstream after the bridge's count of its changes was upstreams;
+	// oldAgent once an agent without the bridge was reported.
+	configured   bool
+	configuredAt time.Time
+	upstreams    uint64
+	oldAgent     bool
 }
 
 // resolve refreshes devpad's record of the workspace and its agent. The
@@ -465,15 +489,22 @@ func (b *Bridge) dispatch(ctx context.Context, st *pollState, slots chan struct{
 
 // configure sets up the workspace's remotes: devpad always, and origin when
 // the project has an upstream. A workspace converted in place is sent a hash
-// of the upstream URL, never the URL, so it can replace the origin it kept.
-// Any other workspace never had the URL, and gets no hash to test guesses
+// of the upstream URL, never the URL, so it can replace the origin it kept,
+// but only while the upstream is still the one it was converted with. Any
+// other workspace, or URL, it never had, and gets no hash to test guesses
 // of it against. Once set up, the remotes are set up again when the
-// project's upstream changes, so origin comes and goes with it.
+// project's upstream changes, so origin comes and goes with it, and the
+// workspace is sent the count of the changes so it can forget what it
+// fetched from an old upstream.
 func (b *Bridge) configure(ctx context.Context, st *pollState) {
-	if b.now().Sub(st.configuredAt) < configureEvery {
+	changes := b.upstreamChanges(st.ws.ProjectID)
+	if st.configured && st.upstreams == changes {
 		return
 	}
-	st.configuredAt = b.now()
+	if !st.configured && b.now().Sub(st.configuredAt) < configureEvery {
+		return
+	}
+	st.configured, st.configuredAt = false, b.now()
 	p, err := b.projects.Get(ctx, st.ws.UserID, st.ws.ProjectID)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -481,12 +512,8 @@ func (b *Bridge) configure(ctx context.Context, st *pollState) {
 		}
 		return
 	}
-	if st.configured && st.configuredFor == p.UpstreamURL {
-		return
-	}
-	st.configured = false
-	remotes := agent.GitBridgeRemotes{Upstream: p.UpstreamURL != ""}
-	if remotes.Upstream {
+	remotes := agent.GitBridgeRemotes{Upstream: p.UpstreamURL != "", UpstreamVersion: p.UpstreamVersion}
+	if remotes.Upstream && p.UpstreamVersion == 0 {
 		converted, err := b.projects.ConvertedInPlace(ctx, st.ws.UserID, st.ws.ProjectID, st.ws.ID)
 		if err != nil {
 			if ctx.Err() == nil {
@@ -516,7 +543,7 @@ func (b *Bridge) configure(ctx context.Context, st *pollState) {
 		b.logf(st.ws.ID, "setting up the devpad remote: %v", err)
 	}
 	if st.configured {
-		st.configuredFor = p.UpstreamURL
+		st.upstreams = changes
 	}
 }
 

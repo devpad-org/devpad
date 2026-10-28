@@ -280,13 +280,15 @@ func (c *Client) RepoMerge(ctx context.Context, in RepoMergeRequest) (*RepoMerge
 	return &result, nil
 }
 
-// RepoPush pushes a branch of the canonical repo to its upstream.
-func (c *Client) RepoPush(ctx context.Context, branch string) (*RepoBranch, error) {
+// RepoPush pushes a branch of the canonical repo to upstreamURL, which must
+// be the repo's origin.
+func (c *Client) RepoPush(ctx context.Context, upstreamURL, branch string) (*RepoBranch, error) {
 	u := fmt.Sprintf("%s/api/repo/push?branch=%s", c.baseURL, url.QueryEscape(branch))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set(UpstreamHeader, upstreamURL)
 	var result RepoBranch
 	if err := c.doRepoJSON(req, "repo push", &result); err != nil {
 		return nil, err

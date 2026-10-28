@@ -36,6 +36,20 @@ func repoRequest(t *testing.T, root string, handler http.HandlerFunc, method, ta
 	return rec
 }
 
+// upstreamRequest is repoRequest for an endpoint that uses the upstream,
+// naming origin's URL as the one expected, as devpad does.
+func upstreamRequest(t *testing.T, root string, handler http.HandlerFunc, method, target string, body io.Reader) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, target, body)
+	if out, err := exec.Command("git", "-C", root, "config", "--get", "remote.origin.url").Output(); err == nil {
+		req.Header.Set(upstreamHeader, strings.TrimSpace(string(out)))
+	}
+	withWorkspaceRoot(t, root)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	return rec
+}
+
 // initCanonical creates a canonical bare repo through the init endpoint.
 func initCanonical(t *testing.T) string {
 	t.Helper()

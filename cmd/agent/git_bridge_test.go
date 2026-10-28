@@ -671,6 +671,46 @@ func TestGitBridgeRemoteSetsUpOriginAndTracking(t *testing.T) {
 	}
 }
 
+func TestGitBridgeRemoteForgetsAChangedUpstreamsBranches(t *testing.T) {
+	rig := newBridgeRig(t)
+	if rec := configureRemotes(t, `{"upstream":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("configure: %d %s", rec.Code, rec.Body)
+	}
+	head := runGit(t, rig.work, "rev-parse", "HEAD")
+	runGit(t, rig.work, "update-ref", "refs/remotes/origin/main", head)
+	branches := func() string {
+		return runGit(t, rig.work, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/")
+	}
+
+	// The same upstream keeps what was fetched from it, whether or not the
+	// origin recorded its version.
+	for _, body := range []string{`{"upstream":true}`, `{"upstream":true,"upstreamVersion":0}`} {
+		if rec := configureRemotes(t, body); rec.Code != http.StatusNoContent {
+			t.Fatalf("configure %s: %d %s", body, rec.Code, rec.Body)
+		}
+		if branches() == "" {
+			t.Fatalf("configure %s forgot the upstream's branches", body)
+		}
+	}
+	// Another upstream's version forgets them.
+	if rec := configureRemotes(t, `{"upstream":true,"upstreamVersion":2}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("configure the new upstream: %d %s", rec.Code, rec.Body)
+	}
+	if got := branches(); got != "" {
+		t.Fatalf("the old upstream's branches were kept: %s", got)
+	}
+	if got := runGit(t, rig.work, "config", upstreamVersionKey); got != "2" {
+		t.Fatalf("recorded version %q", got)
+	}
+	runGit(t, rig.work, "update-ref", "refs/remotes/origin/main", head)
+	if rec := configureRemotes(t, `{"upstream":true,"upstreamVersion":2}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("configure again: %d %s", rec.Code, rec.Body)
+	}
+	if branches() == "" {
+		t.Fatal("the new upstream's branches were forgotten")
+	}
+}
+
 func TestGitBridgeRemoteReplacesOnlyTheUpstreamsOrigin(t *testing.T) {
 	const url = "git@github.com:example/project.git"
 	sum := sha256.Sum256([]byte(url))

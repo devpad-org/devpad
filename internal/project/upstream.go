@@ -310,7 +310,7 @@ func (s *service) fetchUpstream(ctx context.Context, userID, projectID int64) (*
 	if err := s.writeUpstreamKeys(ctx, c, p); err != nil {
 		return nil, err
 	}
-	if err := c.RepoUpstreamFetch(ctx); err != nil {
+	if err := c.RepoUpstreamFetch(ctx, p.UpstreamURL); err != nil {
 		return nil, err
 	}
 
@@ -323,7 +323,7 @@ func (s *service) fetchUpstream(ctx context.Context, userID, projectID int64) (*
 	if p.UpstreamURL != fetched {
 		return nil, errUpstreamChanged
 	}
-	return c.RepoUpstreamFastForward(ctx, p.Protected())
+	return c.RepoUpstreamFastForward(ctx, p.UpstreamURL, p.Protected())
 }
 
 // SetUpstream points the project at another upstream, or at none when
@@ -332,6 +332,11 @@ func (s *service) fetchUpstream(ctx context.Context, userID, projectID int64) (*
 // into the project or shown as the new one's. It refuses while a sync runs
 // rather than wait for one. Workspaces pick up the change from the git
 // bridge.
+//
+// The repo is pointed at the URL even when the project already has it, so
+// setting the upstream again puts right a repo a failed change left
+// elsewhere. Until then the repo refuses to fetch from, push to or
+// fast-forward from its origin, which is not the project's.
 func (s *service) SetUpstream(ctx context.Context, userID, projectID int64, rawURL string) (*Project, error) {
 	upstream, err := upstreamURL(rawURL)
 	if err != nil {
@@ -340,9 +345,6 @@ func (s *service) SetUpstream(ctx context.Context, userID, projectID int64, rawU
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
 		return nil, err
-	}
-	if p.UpstreamURL == upstream {
-		return p, nil
 	}
 	c, err := s.repoAgent(ctx, p)
 	if err != nil {
@@ -356,26 +358,37 @@ func (s *service) SetUpstream(ctx context.Context, userID, projectID int64, rawU
 	if p, err = s.getReady(ctx, userID, projectID); err != nil {
 		return nil, err
 	}
-	if p.UpstreamURL == upstream {
-		return p, nil
-	}
+	changed := p.UpstreamURL != upstream
 	s.mu.Lock()
 	if run := s.upstreamSyncs[p.ID]; run != nil && !run.finished() {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("%w: wait for the sync from the upstream to finish", ErrBusy)
 	}
-	delete(s.upstreamSyncs, p.ID)
+	if changed {
+		delete(s.upstreamSyncs, p.ID)
+	}
 	s.mu.Unlock()
 
 	if err := c.RepoSetUpstream(ctx, upstream); err != nil {
 		return nil, err
 	}
+	if !changed {
+		return p, nil
+	}
 	if err := s.repo.SetUpstreamURL(ctx, p.ID, upstream); err != nil {
-		// Put the repo back, so it and the project agree.
+		// Put the repo back, so it and the project agree. If that fails
+		// too, the repo refuses to use its origin until the upstream is set
+		// again.
 		if undoErr := c.RepoSetUpstream(context.WithoutCancel(ctx), p.UpstreamURL); undoErr != nil {
 			log.Printf("project %d: restoring the upstream after a failed update: %v", p.ID, undoErr)
 		}
 		return nil, err
+	}
+	s.mu.Lock()
+	hook := s.upstreamHook
+	s.mu.Unlock()
+	if hook != nil {
+		hook.UpstreamChanged(p.ID)
 	}
 	return s.Get(ctx, userID, projectID)
 }

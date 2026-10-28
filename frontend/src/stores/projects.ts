@@ -44,18 +44,24 @@ export const useProjectStore = defineStore('projects', () => {
   }
 
   // Saves the editable fields, then the upstream if the input names a
-  // different one.
-  async function updateProject(id: number, input: ProjectInput) {
+  // different one. The fields stay saved when the upstream is refused, so
+  // the project as saved is returned with the reason.
+  async function updateProject(id: number, input: ProjectInput): Promise<{ project: Project; upstreamError?: string }> {
     let { project } = await projectApi.update(id, input)
+    let upstreamError: string | undefined
     const upstreamUrl = input.upstreamUrl?.trim()
     if (upstreamUrl !== undefined && upstreamUrl !== project.upstreamUrl) {
-      project = (await projectApi.setUpstream(id, upstreamUrl)).project
+      try {
+        project = (await projectApi.setUpstream(id, upstreamUrl)).project
+      } catch (e) {
+        upstreamError = e instanceof Error ? e.message : 'Failed to change the upstream'
+      }
     }
     const index = projects.value.findIndex((p) => p.id === id)
     if (index !== -1) {
       projects.value[index] = project
     }
-    return project
+    return { project, upstreamError }
   }
 
   async function deleteProject(id: number) {

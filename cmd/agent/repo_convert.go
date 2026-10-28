@@ -915,7 +915,7 @@ func deleteRefsUnder(ctx context.Context, prefix string) error {
 	cmd := gitCommand(ctx, "update-ref", "--stdin")
 	cmd.Stdin = strings.NewReader(out)
 	if combined, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("deleting refs under %s: %s", prefix, strings.TrimSpace(string(combined)))
+		return fmt.Errorf("deleting refs under %s: %w: %s", prefix, err, strings.TrimSpace(string(combined)))
 	}
 	return nil
 }

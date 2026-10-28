@@ -46,8 +46,8 @@ type Repository interface {
 	// it protects. Update never writes them, so a stale copy of a project
 	// cannot undo a change.
 	SetBranches(ctx context.Context, projectID int64, defaultBranch string, protected []string) error
-	// SetUpstreamURL records a project's upstream; Update never writes it,
-	// for the same reason.
+	// SetUpstreamURL records a project's upstream and counts the change;
+	// Update never writes it, for the same reason.
 	SetUpstreamURL(ctx context.Context, projectID int64, upstreamURL string) error
 	// ListWithEnvironment lists the projects that have an environment.
 	ListWithEnvironment(ctx context.Context) ([]*Project, error)
@@ -70,7 +70,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const projectColumns = `id, user_id, name, description, default_branch, protected_branches, upstream_url, setup_script, environment, environment_image, max_sandboxes, auto_review, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at`
+const projectColumns = `id, user_id, name, description, default_branch, protected_branches, upstream_url, upstream_version, setup_script, environment, environment_image, max_sandboxes, auto_review, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at`
 
 // execer is a database or a transaction.
 type execer interface {
@@ -167,7 +167,7 @@ type rowScanner interface {
 func scanProject(row rowScanner) (*Project, error) {
 	p := &Project{}
 	var protected string
-	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Description, &p.DefaultBranch, &protected, &p.UpstreamURL, &p.SetupScript, &p.Environment, &p.EnvironmentImage, &p.MaxSandboxes, &p.AutoReview, &p.Status, &p.Error, &p.RepoContainerID, &p.RepoVolumeName, &p.RepoNetworkName, &p.RepoAgentToken, &p.CreatedAt, &p.UpdatedAt)
+	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Description, &p.DefaultBranch, &protected, &p.UpstreamURL, &p.UpstreamVersion, &p.SetupScript, &p.Environment, &p.EnvironmentImage, &p.MaxSandboxes, &p.AutoReview, &p.Status, &p.Error, &p.RepoContainerID, &p.RepoVolumeName, &p.RepoNetworkName, &p.RepoAgentToken, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +201,7 @@ func (r *repository) SetBranches(ctx context.Context, projectID int64, defaultBr
 }
 
 func (r *repository) SetUpstreamURL(ctx context.Context, projectID int64, upstreamURL string) error {
-	if _, err := r.db.ExecContext(ctx, `UPDATE projects SET upstream_url = ?, updated_at = ? WHERE id = ?`, upstreamURL, time.Now(), projectID); err != nil {
+	if _, err := r.db.ExecContext(ctx, `UPDATE projects SET upstream_url = ?, upstream_version = upstream_version + 1, updated_at = ? WHERE id = ?`, upstreamURL, time.Now(), projectID); err != nil {
 		return fmt.Errorf("recording upstream: %w", err)
 	}
 	return nil

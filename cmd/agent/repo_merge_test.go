@@ -317,7 +317,7 @@ func TestRepoPushUpdatesUpstreamWithoutForcing(t *testing.T) {
 	}
 	merged := advanceMain(t, canonical, "merged.txt", "merged")
 
-	rec = repoRequest(t, canonical, handleRepoPush, http.MethodPost, "/api/repo/push?branch=main", nil)
+	rec = upstreamRequest(t, canonical, handleRepoPush, http.MethodPost, "/api/repo/push?branch=main", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("push: %d %s", rec.Code, rec.Body)
 	}
@@ -331,7 +331,7 @@ func TestRepoPushUpdatesUpstreamWithoutForcing(t *testing.T) {
 	runGit(t, seed, "push", "--quiet", "origin", "HEAD:main")
 	theirs := runGit(t, upstream, "rev-parse", "main")
 	advanceMain(t, canonical, "ours.txt", "ours")
-	rec = repoRequest(t, canonical, handleRepoPush, http.MethodPost, "/api/repo/push?branch=main", nil)
+	rec = upstreamRequest(t, canonical, handleRepoPush, http.MethodPost, "/api/repo/push?branch=main", nil)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("diverged push: expected 409, got %d %s", rec.Code, rec.Body)
 	}
@@ -340,7 +340,7 @@ func TestRepoPushUpdatesUpstreamWithoutForcing(t *testing.T) {
 	}
 
 	local := initCanonical(t)
-	if rec := repoRequest(t, local, handleRepoPush, http.MethodPost, "/api/repo/push?branch=main", nil); rec.Code != http.StatusBadRequest {
+	if rec := upstreamRequest(t, local, handleRepoPush, http.MethodPost, "/api/repo/push?branch=main", nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("push without upstream: expected 400, got %d %s", rec.Code, rec.Body)
 	}
 }

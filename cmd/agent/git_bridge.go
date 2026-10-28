@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -402,10 +403,18 @@ var remoteHelperDir = ""
 // UpstreamURLHash is the hex SHA-256 of the project's upstream URL: an
 // origin with that URL, as a workspace converted in place keeps, is replaced
 // by the read-only one, without the workspace being sent the URL itself.
+// UpstreamVersion counts the changes to the project's upstream; the
+// read-only origin records it, and forgets its branches when it moves, as
+// they are the old upstream's.
 type gitBridgeRemoteRequest struct {
 	Upstream        bool   `json:"upstream"`
 	UpstreamURLHash string `json:"upstreamUrlHash"`
+	UpstreamVersion int64  `json:"upstreamVersion"`
 }
+
+// upstreamVersionKey records, in the read-only origin's config, the
+// version of the project's upstream its branches were fetched from.
+const upstreamVersionKey = "remote." + upstreamRemote + ".devpadUpstreamVersion"
 
 // handleGitBridgeRemote is devpad setting up the remotes in a project's
 // workspace: it links git-remote-devpad to this binary, points the devpad
@@ -448,11 +457,16 @@ func handleGitBridgeRemote(w http.ResponseWriter, r *http.Request) {
 		ours, kept := remoteIsOurs(ctx, upstreamRemote, upstreamRemoteURL, req.UpstreamURLHash)
 		if ours {
 			originKept = kept
+			if err := forgetOldUpstream(ctx, req.UpstreamVersion); err != nil {
+				writeErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 			// A converted workspace's origin may have a push URL of its own.
 			gitExec(ctx, "config", "--unset-all", "remote."+upstreamRemote+".pushurl")
 			steps = append(steps,
 				[]string{"config", "remote." + upstreamRemote + ".url", upstreamRemoteURL},
 				[]string{"config", "--replace-all", "remote." + upstreamRemote + ".fetch", "+refs/heads/*:refs/remotes/" + upstreamRemote + "/*"},
+				[]string{"config", upstreamVersionKey, strconv.FormatInt(req.UpstreamVersion, 10)},
 			)
 		} else {
 			originConflict = true
@@ -483,6 +497,24 @@ func handleGitBridgeRemote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// forgetOldUpstream deletes the read-only origin's branches when they were
+// fetched from another version of the project's upstream. An origin from
+// before versions were recorded had the first.
+func forgetOldUpstream(ctx context.Context, version int64) error {
+	out, err := gitOutput(ctx, "config", "--get", "remote."+upstreamRemote+".url")
+	if err != nil || strings.TrimSpace(out) != upstreamRemoteURL {
+		return nil
+	}
+	had := "0"
+	if out, err := gitOutput(ctx, "config", "--get", upstreamVersionKey); err == nil {
+		had = strings.TrimSpace(out)
+	}
+	if had == strconv.FormatInt(version, 10) {
+		return nil
+	}
+	return deleteRefsUnder(ctx, "refs/remotes/"+upstreamRemote+"/")
 }
 
 // remoteIsOurs reports whether the named remote is missing, has url, or has

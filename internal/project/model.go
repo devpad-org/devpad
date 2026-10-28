@@ -60,7 +60,10 @@ type Project struct {
 	// through merge requests; merge requests can target any of them.
 	ProtectedBranches []string
 	UpstreamURL       string
-	SetupScript       string
+	// UpstreamVersion counts the changes to UpstreamURL since the project
+	// was made.
+	UpstreamVersion int64
+	SetupScript     string
 	// Environment is the body of a Dockerfile devpad builds on its own
 	// workspace image; EnvironmentImage is the last image that built from it,
 	// empty when none has.

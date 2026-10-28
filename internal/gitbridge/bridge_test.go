@@ -185,6 +185,10 @@ type fakeProjects struct {
 	// whether every workspace was converted in place.
 	upstreamRefs []agent.RepoRef
 	converted    bool
+	// upstreamVersion counts the changes to every project's upstream; gets
+	// counts the projects read.
+	upstreamVersion int64
+	gets            int
 }
 
 func (f *fakeProjects) ConvertedInPlace(ctx context.Context, userID, projectID, workspaceID int64) (bool, error) {
@@ -196,7 +200,8 @@ func (f *fakeProjects) ConvertedInPlace(ctx context.Context, userID, projectID, 
 func (f *fakeProjects) Get(ctx context.Context, userID, projectID int64) (*project.Project, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return &project.Project{ID: projectID, UserID: userID, DefaultBranch: "main", UpstreamURL: f.upstreamURL}, nil
+	f.gets++
+	return &project.Project{ID: projectID, UserID: userID, DefaultBranch: "main", UpstreamURL: f.upstreamURL, UpstreamVersion: f.upstreamVersion}, nil
 }
 
 func (f *fakeProjects) SyncUpstream(ctx context.Context, userID, projectID int64) (*project.UpstreamStatus, error) {
@@ -845,7 +850,7 @@ func TestRemotesAreSetUpForTheProjectsUpstream(t *testing.T) {
 }
 
 func TestRemotesFollowAChangedUpstream(t *testing.T) {
-	ps := &fakeProjects{}
+	ps := &fakeProjects{converted: true}
 	b := newTestBridge(newFakeWorkspaces(), ps)
 	at := time.Now()
 	b.now = func() time.Time { return at }
@@ -856,41 +861,50 @@ func TestRemotesFollowAChangedUpstream(t *testing.T) {
 		defer a.mu.Unlock()
 		return a.configured, a.remotes
 	}
+	change := func(url string) {
+		ps.mu.Lock()
+		ps.upstreamURL = url
+		ps.upstreamVersion++
+		ps.mu.Unlock()
+		b.UpstreamChanged(10)
+	}
 
 	b.configure(t.Context(), st)
 	if n, remotes := state(); n != 1 || remotes.Upstream {
 		t.Fatalf("first set up: %d, %+v", n, remotes)
 	}
-	// Set up for the same upstream, the remotes are left alone.
-	at = at.Add(configureEvery)
+	// Set up and unchanged, the remotes are left alone and the project is
+	// not read again.
+	at = at.Add(10 * configureEvery)
 	b.configure(t.Context(), st)
-	if n, _ := state(); n != 1 {
-		t.Fatalf("set up %d times for an unchanged upstream", n)
+	ps.mu.Lock()
+	gets := ps.gets
+	ps.mu.Unlock()
+	if n, _ := state(); n != 1 || gets != 1 {
+		t.Fatalf("set up %d times, read the project %d times, for an unchanged upstream", n, gets)
 	}
 
-	// A new upstream reaches the workspace, though not sooner than the
-	// configure interval.
-	ps.mu.Lock()
-	ps.upstreamURL = "git@github.com:example/project.git"
-	ps.mu.Unlock()
+	// A new upstream reaches the workspace once the bridge is told, with
+	// its version. The workspace was converted in place, but with no
+	// upstream, so it never had this URL and gets no hash of it.
+	change("git@github.com:example/project.git")
 	b.configure(t.Context(), st)
-	if n, _ := state(); n != 1 {
-		t.Fatal("set up again within the interval")
-	}
-	at = at.Add(configureEvery)
-	b.configure(t.Context(), st)
-	if n, remotes := state(); n != 2 || !remotes.Upstream {
+	if n, remotes := state(); n != 2 || !remotes.Upstream || remotes.UpstreamVersion != 1 || remotes.UpstreamURLHash != "" {
 		t.Fatalf("after the upstream was added: %d, %+v", n, remotes)
 	}
 
 	// So does its removal.
-	ps.mu.Lock()
-	ps.upstreamURL = ""
-	ps.mu.Unlock()
-	at = at.Add(configureEvery)
+	change("")
 	b.configure(t.Context(), st)
-	if n, remotes := state(); n != 3 || remotes.Upstream {
+	if n, remotes := state(); n != 3 || remotes.Upstream || remotes.UpstreamVersion != 2 {
 		t.Fatalf("after the upstream was removed: %d, %+v", n, remotes)
+	}
+
+	// Another project's change leaves the remotes alone.
+	b.UpstreamChanged(11)
+	b.configure(t.Context(), st)
+	if n, _ := state(); n != 3 {
+		t.Fatal("set up again for another project's upstream")
 	}
 }
 

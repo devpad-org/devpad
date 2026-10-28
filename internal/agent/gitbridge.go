@@ -92,6 +92,9 @@ func (c *Client) GitBridgeRespond(ctx context.Context, session, id string, resul
 type GitBridgeRemotes struct {
 	Upstream        bool   `json:"upstream"`
 	UpstreamURLHash string `json:"upstreamUrlHash,omitempty"`
+	// UpstreamVersion counts the changes to the project's upstream; when it
+	// moves, the workspace forgets the old upstream's refs/remotes/origin/*.
+	UpstreamVersion int64 `json:"upstreamVersion,omitempty"`
 }
 
 // GitBridgeConfigureRemote installs git-remote-devpad and points the repo's

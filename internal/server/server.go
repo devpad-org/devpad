@@ -140,6 +140,7 @@ func New(cfg Config) (*Server, error) {
 
 	// git push and fetch through the devpad remote in a project's workspace.
 	gitBridge := gitbridge.New(workspaceService, projectService)
+	projectService.SetUpstreamHook(gitBridge)
 	gitBridgeHandler := gitbridge.NewHandler(gitBridge)
 	gitBridgeCtx, gitBridgeCancel := context.WithCancel(context.Background())
 	gitBridgeDone := make(chan struct{})

@@ -103,6 +103,9 @@ type Service interface {
 	// SetPublishHook registers who is told when a branch is published from
 	// the project workspace or fast-forwarded from the upstream.
 	SetPublishHook(h PublishHook)
+	// SetUpstreamHook registers who is told when a project's upstream
+	// changes.
+	SetUpstreamHook(h UpstreamHook)
 }
 
 // PublishHook is told each time a branch is published from the project
@@ -112,6 +115,12 @@ type Service interface {
 type PublishHook interface {
 	BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string)
 	BranchFastForwarded(ctx context.Context, userID, projectID int64, branch, sha string)
+}
+
+// UpstreamHook is told each time a project's upstream URL changes, so the
+// project workspace's remotes can follow it.
+type UpstreamHook interface {
+	UpstreamChanged(projectID int64)
 }
 
 // KeyRotator replaces a user's devpad SSH key, returning the new public key.
@@ -171,9 +180,10 @@ type service struct {
 	// builds holds, per project, the environment build running in this
 	// process. buildMu orders starting builds, so the recorded build is
 	// always the one that runs.
-	builds      map[int64]*environmentBuild
-	buildMu     sync.Mutex
-	publishHook PublishHook
+	builds       map[int64]*environmentBuild
+	buildMu      sync.Mutex
+	publishHook  PublishHook
+	upstreamHook UpstreamHook
 	// branchLocks serialize changes to each project's branches, which may
 	// move its canonical repo's HEAD, and syncs from the upstream.
 	branchLocks map[int64]*sync.Mutex
@@ -219,6 +229,12 @@ func (s *service) SetPublishHook(h PublishHook) {
 	s.publishHook = h
 }
 
+func (s *service) SetUpstreamHook(h UpstreamHook) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upstreamHook = h
+}
+
 var branchNamePattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
 // validBranchName is a conservative pre-check; the agent runs git's own
@@ -261,9 +277,9 @@ func (s *service) Create(ctx context.Context, userID int64, in CreateInput) (*Pr
 	if !validBranchName(branch) {
 		return nil, invalid("defaultBranch is not a valid branch name")
 	}
-	upstream := strings.TrimSpace(in.UpstreamURL)
-	if strings.HasPrefix(upstream, "-") {
-		return nil, invalid("upstreamUrl must not start with '-'")
+	upstream, err := upstreamURL(in.UpstreamURL)
+	if err != nil {
+		return nil, err
 	}
 	maxSandboxes, err := normalizeMaxSandboxes(in.MaxSandboxes)
 	if err != nil {
@@ -1053,7 +1069,7 @@ func (s *service) Push(ctx context.Context, userID, projectID int64, branch stri
 	if err := s.writeUpstreamKeys(ctx, c, p); err != nil {
 		return nil, err
 	}
-	pushed, err := c.RepoPush(ctx, branch)
+	pushed, err := c.RepoPush(ctx, p.UpstreamURL, branch)
 	// The repo answers 409 when the upstream has commits the branch lacks.
 	var agentErr *agent.AgentError
 	if errors.As(err, &agentErr) && agentErr.StatusCode == http.StatusConflict {

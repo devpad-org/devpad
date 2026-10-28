@@ -502,8 +502,16 @@ func handleRepoPush(w http.ResponseWriter, r *http.Request) {
 		writeRevError(w, err)
 		return
 	}
-	if gitExec(ctx, "remote", "get-url", "origin") != nil {
-		writeErr(w, http.StatusBadRequest, "the project has no upstream")
+	// Waiting for a fetch keeps origin, and the record of the upstream's
+	// branches this push updates, from changing under it.
+	select {
+	case upstreamBusy <- struct{}{}:
+		defer func() { <-upstreamBusy }()
+	case <-ctx.Done():
+		writeErr(w, http.StatusServiceUnavailable, "a fetch from the upstream is still running")
+		return
+	}
+	if !checkUpstream(ctx, w, r) {
 		return
 	}
 	ref := "refs/heads/" + branch

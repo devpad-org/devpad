@@ -33,7 +33,8 @@ type UpstreamStatus struct {
 
 // RepoSetUpstream points the canonical repo at another upstream, or at none
 // when upstreamURL is empty, forgetting the old upstream's branches as last
-// fetched. The repo refuses with 409 while a fetch from the upstream runs.
+// fetched. The repo refuses with 409 while a fetch from or push to the
+// upstream runs.
 func (c *Client) RepoSetUpstream(ctx context.Context, upstreamURL string) error {
 	payload, err := json.Marshal(map[string]string{"url": upstreamURL})
 	if err != nil {
@@ -50,26 +51,34 @@ func (c *Client) RepoSetUpstream(ctx context.Context, upstreamURL string) error 
 	return c.doRepoJSON(req, "repo set upstream", &result)
 }
 
-// RepoUpstreamFetch fetches the upstream into the canonical repo's own
-// namespace for it. It moves no project branch.
-func (c *Client) RepoUpstreamFetch(ctx context.Context) error {
+// UpstreamHeader names the upstream URL devpad expects the canonical repo's
+// origin to have. The repo refuses with 412 to fetch from, push to or
+// fast-forward from an origin with another, as one left behind by a failed
+// change of upstream has.
+const UpstreamHeader = "X-Devpad-Upstream"
+
+// RepoUpstreamFetch fetches upstreamURL, which must be the canonical repo's
+// origin, into the repo's own namespace for it. It moves no project branch.
+func (c *Client) RepoUpstreamFetch(ctx context.Context, upstreamURL string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/repo/upstream/fetch", nil)
 	if err != nil {
 		return err
 	}
+	req.Header.Set(UpstreamHeader, upstreamURL)
 	var status UpstreamStatus
 	return c.doRepoJSON(req, "repo upstream fetch", &status)
 }
 
 // RepoUpstreamFastForward fast-forwards each protected branch that is
-// strictly behind its upstream copy as last fetched, and reports how they
-// all stand.
-func (c *Client) RepoUpstreamFastForward(ctx context.Context, protected []string) (*UpstreamStatus, error) {
+// strictly behind its copy from upstreamURL, the canonical repo's origin, as
+// last fetched, and reports how they all stand.
+func (c *Client) RepoUpstreamFastForward(ctx context.Context, upstreamURL string, protected []string) (*UpstreamStatus, error) {
 	u := c.baseURL + "/api/repo/upstream/fast-forward?" + url.Values{"protected": protected}.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set(UpstreamHeader, upstreamURL)
 	var status UpstreamStatus
 	if err := c.doRepoJSON(req, "repo upstream fast-forward", &status); err != nil {
 		return nil, err
