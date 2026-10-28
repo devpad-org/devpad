@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
@@ -33,9 +34,11 @@ const (
 	// starts another.
 	upstreamStaleAfter = time.Minute
 	// upstreamSyncTimeout bounds one sync, which outlives the request that
-	// started it.
-	upstreamSyncTimeout = 10 * time.Minute
-	// maxUpstreamRefs bounds the upstream branches offered to the workspace.
+	// started it. The repo agent gives up on the fetch itself sooner, within
+	// the agent client's own timeout, so a slow fetch fails with its reason.
+	upstreamSyncTimeout = 6 * time.Minute
+	// maxUpstreamRefs bounds the upstream branches read for the workspace;
+	// the git bridge offers it fewer.
 	maxUpstreamRefs = 5000
 
 	errUpstreamFetch = "could not fetch from the upstream; the project panel says why"
@@ -151,7 +154,9 @@ func (s *service) UpstreamStatus(ctx context.Context, userID, projectID int64) (
 }
 
 // UpstreamBranches lists the upstream's branches as last fetched, leaving
-// out names devpad would not act on, with the project's default branch.
+// out names devpad would not act on, with the project's default branch. The
+// protected branches come first, then the rest, the most recently committed
+// to first, so a caller that keeps only the first few keeps those.
 func (s *service) UpstreamBranches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error) {
 	p, err := s.upstreamProject(ctx, userID, projectID)
 	if err != nil {
@@ -166,14 +171,24 @@ func (s *service) UpstreamBranches(ctx context.Context, userID, projectID int64)
 		return nil, err
 	}
 	out := &agent.RepoRefs{DefaultBranch: p.DefaultBranch, Branches: make([]agent.RepoRef, 0, len(refs.Branches))}
+	protected := make(map[string]bool)
+	for _, branch := range p.Protected() {
+		protected[branch] = true
+	}
+	var rest []agent.RepoRef
 	for _, ref := range refs.Branches {
-		if len(out.Branches) == maxUpstreamRefs {
-			log.Printf("project %d: offering the workspace the first %d of the upstream's branches", p.ID, maxUpstreamRefs)
-			break
-		}
-		if validBranchName(ref.Name) {
+		switch {
+		case !validBranchName(ref.Name):
+		case protected[ref.Name]:
 			out.Branches = append(out.Branches, ref)
+		default:
+			rest = append(rest, ref)
 		}
+	}
+	out.Branches = append(out.Branches, rest...)
+	if len(out.Branches) > maxUpstreamRefs {
+		log.Printf("project %d: reading the first %d of the upstream's branches", p.ID, maxUpstreamRefs)
+		out.Branches = out.Branches[:maxUpstreamRefs]
 	}
 	return out, nil
 }
@@ -181,7 +196,7 @@ func (s *service) UpstreamBranches(ctx context.Context, userID, projectID int64)
 // FetchWorkspaceUpstreamBranches brings the upstream's copies of branches,
 // as last fetched, into the project workspace as origin/<branch>, for git
 // fetch through the origin remote. The names come from the workspace, so
-// each is checked and must be one of the upstream's.
+// each is checked, and the repo refuses one the upstream lacks.
 func (s *service) FetchWorkspaceUpstreamBranches(ctx context.Context, userID, projectID int64, branches []string) error {
 	p, err := s.upstreamProject(ctx, userID, projectID)
 	if err != nil {
@@ -199,20 +214,11 @@ func (s *service) FetchWorkspaceUpstreamBranches(ctx context.Context, userID, pr
 	if err != nil {
 		return err
 	}
-	refs, err := c.RepoUpstreamRefs(ctx)
-	if err != nil {
-		return err
-	}
-	exists := make(map[string]bool, len(refs.Branches))
-	for _, ref := range refs.Branches {
-		exists[ref.Name] = true
-	}
-	for _, branch := range unique {
-		if !exists[branch] {
-			return invalid("the upstream has no branch %q", branch)
-		}
-	}
 	bundle, err := c.RepoBundleUpstream(ctx, unique)
+	var agentErr *agent.AgentError
+	if errors.As(err, &agentErr) && agentErr.StatusCode == http.StatusNotFound {
+		return invalid("the upstream has no such branch (%s)", agentErr.Message)
+	}
 	if err != nil {
 		return err
 	}
@@ -283,13 +289,12 @@ func (s *service) syncUpstream(ctx context.Context, userID, projectID int64) (*a
 	return status, nil
 }
 
-// fetchUpstream does a sync's work in the repo container, holding the
-// project's branch lock so the protected set cannot change meanwhile. A
-// merge that moves a branch first wins: the repo only fast-forwards a
-// branch still where it was.
+// fetchUpstream does a sync's work in the repo container. The fetch, which
+// can take minutes, moves no project branch and runs without the project's
+// branch lock; the fast-forward after it holds the lock, so the protected
+// set cannot change meanwhile. A merge that moves a branch first wins: the
+// repo only fast-forwards a branch still where it was.
 func (s *service) fetchUpstream(ctx context.Context, userID, projectID int64) (*agent.UpstreamStatus, error) {
-	unlock := s.lockBranches(projectID)
-	defer unlock()
 	p, err := s.upstreamProject(ctx, userID, projectID)
 	if err != nil {
 		return nil, err
@@ -301,7 +306,16 @@ func (s *service) fetchUpstream(ctx context.Context, userID, projectID int64) (*
 	if err := s.writeUpstreamKeys(ctx, c, p); err != nil {
 		return nil, err
 	}
-	return c.RepoUpstreamFetch(ctx, p.Protected())
+	if err := c.RepoUpstreamFetch(ctx); err != nil {
+		return nil, err
+	}
+
+	unlock := s.lockBranches(projectID)
+	defer unlock()
+	if p, err = s.upstreamProject(ctx, userID, projectID); err != nil {
+		return nil, err
+	}
+	return c.RepoUpstreamFastForward(ctx, p.Protected())
 }
 
 // writeUpstreamKeys writes the user's SSH key into the repo container, the

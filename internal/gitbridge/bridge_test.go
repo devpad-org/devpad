@@ -179,7 +179,18 @@ type fakeProjects struct {
 	warning         string
 	syncErr         error
 	synced          int
+	staleSynced     int
 	upstreamFetched [][]string
+	// upstreamRefs, when set, is the upstream's branches; converted is
+	// whether every workspace was converted in place.
+	upstreamRefs []agent.RepoRef
+	converted    bool
+}
+
+func (f *fakeProjects) ConvertedInPlace(ctx context.Context, userID, projectID, workspaceID int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.converted, nil
 }
 
 func (f *fakeProjects) Get(ctx context.Context, userID, projectID int64) (*project.Project, error) {
@@ -201,10 +212,16 @@ func (f *fakeProjects) SyncUpstream(ctx context.Context, userID, projectID int64
 func (f *fakeProjects) SyncUpstreamIfStale(ctx context.Context, userID, projectID int64, wait time.Duration) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.staleSynced++
 	return f.warning
 }
 
 func (f *fakeProjects) UpstreamBranches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.upstreamRefs != nil {
+		return &agent.RepoRefs{DefaultBranch: "main", Branches: f.upstreamRefs}, nil
+	}
 	return &agent.RepoRefs{DefaultBranch: "main", Branches: []agent.RepoRef{{Name: "main", SHA: "ccc"}, {Name: "theirs", SHA: "ddd"}}}, nil
 }
 
@@ -785,9 +802,17 @@ func TestBridgeLogsAreCleanAndLimited(t *testing.T) {
 }
 
 func TestRemotesAreSetUpForTheProjectsUpstream(t *testing.T) {
-	for _, upstream := range []string{"", "git@github.com:example/project.git"} {
+	for _, tc := range []struct {
+		upstream  string
+		converted bool
+	}{
+		{"", false},
+		{"git@github.com:example/project.git", false},
+		{"git@github.com:example/project.git", true},
+	} {
+		upstream := tc.upstream
 		fw := newFakeWorkspaces(projectWorkspace(1, 10))
-		b := newTestBridge(fw, &fakeProjects{upstreamURL: upstream})
+		b := newTestBridge(fw, &fakeProjects{upstreamURL: upstream, converted: tc.converted})
 		ctx, cancel := context.WithCancel(context.Background())
 		b.reconcile(ctx)
 		deadline := time.Now().Add(2 * time.Second)
@@ -800,9 +825,13 @@ func TestRemotesAreSetUpForTheProjectsUpstream(t *testing.T) {
 				if remotes.Upstream != (upstream != "") {
 					t.Errorf("upstream %q: remotes %+v", upstream, remotes)
 				}
-				// The workspace gets a hash of the URL, never the URL.
-				if upstream != "" && (len(remotes.UpstreamURLHash) != 64 || strings.Contains(remotes.UpstreamURLHash, "github")) {
+				// Only a workspace converted in place, which had the URL,
+				// gets a hash of it, and never the URL itself.
+				if tc.converted && (len(remotes.UpstreamURLHash) != 64 || strings.Contains(remotes.UpstreamURLHash, "github")) {
 					t.Errorf("upstream hash %q", remotes.UpstreamURLHash)
+				}
+				if !tc.converted && remotes.UpstreamURLHash != "" {
+					t.Errorf("a workspace that never had the URL got its hash %q", remotes.UpstreamURLHash)
 				}
 				break
 			}
@@ -869,5 +898,67 @@ func TestListingDevpadWarnsOfAFailedSync(t *testing.T) {
 	res := b.handle(context.Background(), projectWorkspace(1, 10), agent.GitBridgeRequest{Op: "list"})
 	if res.Error != "" || res.Warning != ps.warning || len(res.Refs) != 1 {
 		t.Fatalf("list result %+v", res)
+	}
+	// The list before a push neither syncs nor waits for a sync.
+	res = b.handle(context.Background(), projectWorkspace(1, 10), agent.GitBridgeRequest{Op: "list", ForPush: true})
+	if res.Error != "" || res.Warning != "" || len(res.Refs) != 1 || ps.staleSynced != 1 {
+		t.Fatalf("list for push %+v, stale syncs %d", res, ps.staleSynced)
+	}
+}
+
+func TestOriginSyncsAreLimited(t *testing.T) {
+	ps := &fakeProjects{upstreamURL: "git@github.com:example/project.git", syncErr: errors.New("permission denied")}
+	b := newTestBridge(newFakeWorkspaces(), ps)
+	at := time.Unix(1000, 0)
+	b.now = func() time.Time { return at }
+	ws := projectWorkspace(1, 10)
+	list := func() agent.GitBridgeResult {
+		return b.handle(context.Background(), ws, agent.GitBridgeRequest{Op: "list", Remote: agent.GitBridgeUpstream})
+	}
+
+	// A failing upstream is retried for a burst of lists, then lists share
+	// the last sync, and fail with it, rather than fetch again.
+	for range syncBurst {
+		if res := list(); res.Error != errSync {
+			t.Fatalf("list %+v", res)
+		}
+	}
+	ps.warning = errSync
+	for range 10 {
+		if res := list(); res.Error != errSync {
+			t.Fatalf("limited list %+v", res)
+		}
+	}
+	if ps.synced != syncBurst || ps.staleSynced != 10 {
+		t.Fatalf("forced syncs %d, stale syncs %d", ps.synced, ps.staleSynced)
+	}
+	// The limit refills, at syncsPerMinute.
+	at = at.Add(time.Minute)
+	for range syncsPerMinute {
+		list()
+	}
+	if ps.synced != syncBurst+syncsPerMinute {
+		t.Fatalf("forced syncs %d after a minute", ps.synced)
+	}
+	// A limited list whose shared sync succeeded lists as usual.
+	ps.warning = ""
+	if res := list(); res.Error != "" || len(res.Refs) != 2 {
+		t.Fatalf("limited list after a good sync %+v", res)
+	}
+}
+
+func TestOriginListsABoundedNumberOfBranches(t *testing.T) {
+	ps := &fakeProjects{upstreamURL: "git@github.com:example/project.git"}
+	for i := range maxUpstreamBranches + 10 {
+		ps.upstreamRefs = append(ps.upstreamRefs, agent.RepoRef{Name: fmt.Sprintf("b%d", i), SHA: "eee"})
+	}
+	b := newTestBridge(newFakeWorkspaces(), ps)
+	res := b.handle(context.Background(), projectWorkspace(1, 10), agent.GitBridgeRequest{Op: "list", Remote: agent.GitBridgeUpstream})
+	if res.Error != "" || len(res.Refs) != maxUpstreamBranches || res.Refs[0].Name != "b0" || !strings.Contains(res.Warning, "of the upstream's") {
+		t.Fatalf("list gave %d branches, warning %q", len(res.Refs), res.Warning)
+	}
+	// Fetching every listed branch fits in the workspace's branch limit.
+	if maxUpstreamBranches+maxBranches > branchBurst {
+		t.Fatalf("listing %d branches leaves too little of the burst of %d", maxUpstreamBranches, branchBurst)
 	}
 }

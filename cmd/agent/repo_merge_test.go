@@ -332,8 +332,8 @@ func TestRepoPushUpdatesUpstreamWithoutForcing(t *testing.T) {
 	theirs := runGit(t, upstream, "rev-parse", "main")
 	advanceMain(t, canonical, "ours.txt", "ours")
 	rec = repoRequest(t, canonical, handleRepoPush, http.MethodPost, "/api/repo/push?branch=main", nil)
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("diverged push: expected 502, got %d %s", rec.Code, rec.Body)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("diverged push: expected 409, got %d %s", rec.Code, rec.Body)
 	}
 	if got := runGit(t, upstream, "rev-parse", "main"); got != theirs {
 		t.Fatal("push overwrote upstream work")
@@ -342,6 +342,21 @@ func TestRepoPushUpdatesUpstreamWithoutForcing(t *testing.T) {
 	local := initCanonical(t)
 	if rec := repoRequest(t, local, handleRepoPush, http.MethodPost, "/api/repo/push?branch=main", nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("push without upstream: expected 400, got %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestPushRejectedReadsPorcelainStatus(t *testing.T) {
+	ref := "refs/heads/main"
+	for out, want := range map[string]bool{
+		"To up\n!\trefs/heads/main:refs/heads/main\t[rejected] (fetch first)\nDone":                true,
+		"Fehler\nTo up\n!\trefs/heads/main:refs/heads/main\t[rejected] (non-fast-forward)\nDone":   true,
+		"To up\n!\trefs/heads/main:refs/heads/main\t[remote rejected] (pre-receive hook declined)": false,
+		"To up\n!\trefs/heads/dev:refs/heads/dev\t[rejected] (fetch first)":                        false,
+		"fatal: Could not read from remote repository. [rejected] non-fast-forward":                false,
+	} {
+		if got := pushRejected(out, ref); got != want {
+			t.Errorf("pushRejected(%q) = %v, want %v", out, got, want)
+		}
 	}
 }
 

@@ -68,6 +68,9 @@ type gitBridgeRequest struct {
 	Force    bool     `json:"force,omitempty"`
 	// Remote is "" for the devpad remote and "upstream" for origin.
 	Remote string `json:"remote,omitempty"`
+	// ForPush marks the list git makes before a push, which devpad answers
+	// without syncing from the upstream.
+	ForPush bool `json:"forPush,omitempty"`
 }
 
 // gitBridgeResult is devpad's answer. Error is a refusal or failure to show
@@ -330,6 +333,7 @@ func (b *gitBridge) handleHelperRequest(w http.ResponseWriter, r *http.Request) 
 	case "list":
 		req.Branches = nil
 	case "fetch", "push":
+		req.ForPush = false
 		if len(req.Branches) == 0 || len(req.Branches) > gitBridgeMaxBranches || (req.Op == "push" && len(req.Branches) != 1) {
 			writeJSON(w, http.StatusBadRequest, gitBridgeResult{Error: "invalid branch list"})
 			return
@@ -428,7 +432,7 @@ func handleGitBridgeRemote(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "workspace has no repository")
 		return
 	}
-	if !remoteIsOurs(ctx, sandboxBaseRemote, devpadRemoteURL, "") {
+	if ours, _ := remoteIsOurs(ctx, sandboxBaseRemote, devpadRemoteURL, ""); !ours {
 		writeErr(w, http.StatusConflict, "a remote named "+sandboxBaseRemote+" already exists")
 		return
 	}
@@ -438,9 +442,11 @@ func handleGitBridgeRemote(w http.ResponseWriter, r *http.Request) {
 		// A bare `git push devpad` pushes the current branch.
 		{"config", "--replace-all", "remote." + sandboxBaseRemote + ".push", "HEAD"},
 	}
-	originConflict := false
+	originConflict, originKept := false, false
 	if req.Upstream {
-		if remoteIsOurs(ctx, upstreamRemote, upstreamRemoteURL, req.UpstreamURLHash) {
+		ours, kept := remoteIsOurs(ctx, upstreamRemote, upstreamRemoteURL, req.UpstreamURLHash)
+		if ours {
+			originKept = kept
 			// A converted workspace's origin may have a push URL of its own.
 			gitExec(ctx, "config", "--unset-all", "remote."+upstreamRemote+".pushurl")
 			steps = append(steps,
@@ -457,7 +463,13 @@ func handleGitBridgeRemote(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := setTrackingDefaults(ctx); err != nil {
+	// Branches of a converted workspace tracked the upstream through the
+	// origin it kept; from now on they track devpad, as seeded ones do.
+	retarget := ""
+	if originKept {
+		retarget = upstreamRemote
+	}
+	if err := setTrackingDefaults(ctx, retarget); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -469,24 +481,29 @@ func handleGitBridgeRemote(w http.ResponseWriter, r *http.Request) {
 }
 
 // remoteIsOurs reports whether the named remote is missing, has url, or has
-// the URL whose SHA-256 is urlHash, and so may be pointed at devpad.
-func remoteIsOurs(ctx context.Context, name, url, urlHash string) bool {
+// the URL whose SHA-256 is urlHash, and so may be pointed at devpad. kept is
+// set in that last case: the remote is one a converted workspace kept.
+func remoteIsOurs(ctx context.Context, name, url, urlHash string) (ours, kept bool) {
 	out, err := gitOutput(ctx, "config", "--get", "remote."+name+".url")
 	if err != nil {
-		return true
+		return true, false
 	}
 	got := strings.TrimSpace(out)
 	if got == url {
-		return true
+		return true, false
 	}
 	sum := sha256.Sum256([]byte(got))
-	return urlHash != "" && hex.EncodeToString(sum[:]) == urlHash
+	if urlHash != "" && hex.EncodeToString(sum[:]) == urlHash {
+		return true, true
+	}
+	return false, false
 }
 
 // setTrackingDefaults makes a plain git push go to the devpad remote, and
 // has each local branch with a devpad/<branch> copy track it. A setting the
-// user already has wins.
-func setTrackingDefaults(ctx context.Context) error {
+// user already has wins, except that a branch tracking its namesake on the
+// retarget remote, when one is named, is moved to devpad.
+func setTrackingDefaults(ctx context.Context, retarget string) error {
 	set := func(key, value string) error {
 		if gitExec(ctx, "config", "--get", key) == nil {
 			return nil
@@ -514,8 +531,11 @@ func setTrackingDefaults(ctx context.Context) error {
 		if gitExec(ctx, "rev-parse", "--verify", "--quiet", "refs/remotes/"+sandboxBaseRemote+"/"+branch) != nil {
 			continue
 		}
-		if gitExec(ctx, "config", "--get", "branch."+branch+".remote") == nil {
-			continue
+		if remote, err := gitOutput(ctx, "config", "--get", "branch."+branch+".remote"); err == nil {
+			merge, _ := gitOutput(ctx, "config", "--get", "branch."+branch+".merge")
+			if retarget == "" || strings.TrimSpace(remote) != retarget || strings.TrimSpace(merge) != "refs/heads/"+branch {
+				continue
+			}
 		}
 		if err := trackDevpad(ctx, branch); err != nil {
 			return err

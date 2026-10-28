@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os/exec"
 	"path"
@@ -489,7 +490,8 @@ func commitIdentityEnv(name, email string) []string {
 }
 
 // handleRepoPush pushes one branch of the canonical repo to its upstream.
-// It never forces, so a branch that diverged upstream is reported instead.
+// It never forces, so a branch that diverged upstream is reported instead,
+// with 409 when the upstream has commits the branch lacks.
 func handleRepoPush(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
 	defer cancel()
@@ -506,13 +508,34 @@ func handleRepoPush(w http.ResponseWriter, r *http.Request) {
 	}
 	ref := "refs/heads/" + branch
 	if out, err := gitOutput(ctx, "push", "--porcelain", "origin", ref+":"+ref); err != nil {
-		writeErr(w, http.StatusBadGateway, "pushing to upstream: "+strings.TrimSpace(out))
+		status := http.StatusBadGateway
+		if pushRejected(out, ref) {
+			status = http.StatusConflict
+		}
+		writeErr(w, status, "pushing to upstream: "+strings.TrimSpace(out))
 		return
 	}
 	// The upstream now has the branch at sha; record it so the branch shows
-	// as in step without another fetch.
-	gitExec(ctx, "update-ref", upstreamRefPrefix+branch, sha)
+	// as in step without another fetch. The push stands either way.
+	if out, err := gitOutput(ctx, "update-ref", upstreamRefPrefix+branch, sha); err != nil {
+		log.Printf("recording the upstream's %s after pushing: %s", branch, strings.TrimSpace(out))
+	}
 	writeJSON(w, http.StatusOK, repoBranchResult{Branch: branch, SHA: sha})
+}
+
+// pushRejected reports whether git push --porcelain output says git refused
+// to update ref because the upstream has commits it lacks, as opposed to the
+// upstream refusing it or the push failing. Porcelain status lines are
+// "<flag>\t<from>:<to>\t<summary>", and git's own refusals are flagged "!"
+// with a "[rejected]" summary, in every locale.
+func pushRejected(out, ref string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) >= 3 && fields[0] == "!" && strings.HasSuffix(fields[1], ":"+ref) && strings.HasPrefix(fields[2], "[rejected]") {
+			return true
+		}
+	}
+	return false
 }
 
 // handleRepoSetHead makes an existing branch the canonical repo's default

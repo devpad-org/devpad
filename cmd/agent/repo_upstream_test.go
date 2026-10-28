@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // upstreamRig is a canonical repo cloned from an upstream, and a clone of
@@ -40,11 +43,17 @@ func (r *upstreamRig) pushUpstream(t *testing.T, branch, name string) string {
 	return sha
 }
 
+// upstreamFetch fetches from the upstream, then fast-forwards the protected
+// branches query names, as devpad does.
 func upstreamFetch(t *testing.T, canonical, query string) upstreamStatus {
 	t.Helper()
-	rec := repoRequest(t, canonical, handleRepoUpstreamFetch, http.MethodPost, "/api/repo/upstream/fetch"+query, nil)
+	rec := repoRequest(t, canonical, handleRepoUpstreamFetch, http.MethodPost, "/api/repo/upstream/fetch", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upstream fetch: %d %s", rec.Code, rec.Body)
+	}
+	rec = repoRequest(t, canonical, handleRepoUpstreamFastForward, http.MethodPost, "/api/repo/upstream/fast-forward"+query, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upstream fast-forward: %d %s", rec.Code, rec.Body)
 	}
 	var status upstreamStatus
 	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
@@ -126,8 +135,29 @@ func TestRepoUpstreamFetchRejections(t *testing.T) {
 		t.Fatalf("fetch without upstream: %d %s", rec.Code, rec.Body)
 	}
 	rig := newUpstreamRig(t)
-	if rec := repoRequest(t, rig.canonical, handleRepoUpstreamFetch, http.MethodPost, "/api/repo/upstream/fetch?protected=--all", nil); rec.Code != http.StatusBadRequest {
+	if rec := repoRequest(t, rig.canonical, handleRepoUpstreamFastForward, http.MethodPost, "/api/repo/upstream/fast-forward?protected=--all", nil); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad protected name: %d %s", rec.Code, rec.Body)
+	}
+	// The fetch alone moves no project branch.
+	main := runGit(t, rig.canonical, "rev-parse", "main")
+	moved := rig.pushUpstream(t, "main", "moved.txt")
+	upstreamFetch(t, rig.canonical, "")
+	if got := runGit(t, rig.canonical, "rev-parse", "main"); got != main {
+		t.Fatal("a fetch moved a branch")
+	}
+	if got := runGit(t, rig.canonical, "rev-parse", "refs/upstream/heads/main"); got != moved {
+		t.Fatalf("upstream main = %s, want %s", got, moved)
+	}
+	// Fetches run one at a time: one that cannot start before devpad gives
+	// up on it fails.
+	upstreamFetching <- struct{}{}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	rec := httptest.NewRecorder()
+	handleRepoUpstreamFetch(rec, httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/repo/upstream/fetch", nil))
+	<-upstreamFetching
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("overlapping fetch: %d %s", rec.Code, rec.Body)
 	}
 }
 

@@ -5,9 +5,10 @@
 //
 // The helper serves two remotes. devpad is the project: fetching it brings
 // the canonical branches, and syncs from the upstream first when the last
-// sync is stale. origin is the project's upstream, read-only: listing it
-// syncs, fetching it brings the upstream's branches as last synced, and
-// pushing to it is refused.
+// sync is stale; listing it before a push does not. origin is the project's
+// upstream, read-only: listing it syncs, up to a limit past which it shares
+// the last sync; fetching it brings the upstream's branches as last synced;
+// and pushing to it is refused.
 //
 // A push is only ever a request: devpad pulls the branch by bundle and
 // publishes it exactly as the Publish button does, so protected branches,
@@ -57,6 +58,7 @@ type Projects interface {
 	SyncUpstreamIfStale(ctx context.Context, userID, projectID int64, wait time.Duration) string
 	UpstreamBranches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error)
 	FetchWorkspaceUpstreamBranches(ctx context.Context, userID, projectID int64, branches []string) error
+	ConvertedInPlace(ctx context.Context, userID, projectID, workspaceID int64) (bool, error)
 }
 
 const (
@@ -76,6 +78,18 @@ const (
 	requestsPerMinute = 60
 	branchBurst       = 512
 	branchesPerMinute = 512
+
+	// maxUpstreamBranches bounds the branches origin lists, so that the
+	// first fetch of all of them fits in the branch burst with room for a
+	// fetch from devpad alongside, as git fetch --all makes.
+	maxUpstreamBranches = branchBurst / 2
+
+	// Listing origin syncs from the upstream with the user's key. A
+	// workspace may start a burst of syncs, then one every 30 seconds; past
+	// that, listing origin syncs only when the last sync is stale, as
+	// listing devpad does, so a failing upstream is not retried in a loop.
+	syncBurst      = 4
+	syncsPerMinute = 2
 
 	// Bridge log lines per workspace: a burst, then one every six seconds.
 	logBurst      = 10
@@ -127,7 +141,9 @@ type Bridge struct {
 	pollers map[int64]*poller
 	events  map[eventKey]*projectEvents
 	logs    map[int64]*rateLog
-	wg      sync.WaitGroup
+	// syncs limits the upstream syncs each workspace starts.
+	syncs map[int64]*bucket
+	wg    sync.WaitGroup
 }
 
 type poller struct {
@@ -171,6 +187,7 @@ func New(workspaces Workspaces, projects Projects) *Bridge {
 		pollers:    make(map[int64]*poller),
 		events:     make(map[eventKey]*projectEvents),
 		logs:       make(map[int64]*rateLog),
+		syncs:      make(map[int64]*bucket),
 	}
 }
 
@@ -237,6 +254,11 @@ func (b *Bridge) reconcile(ctx context.Context) {
 	for id := range b.logs {
 		if !exists[id] {
 			delete(b.logs, id)
+		}
+	}
+	for id := range b.syncs {
+		if !exists[id] {
+			delete(b.syncs, id)
 		}
 	}
 	for id, p := range b.pollers {
@@ -439,9 +461,10 @@ func (b *Bridge) dispatch(ctx context.Context, st *pollState, slots chan struct{
 }
 
 // configure sets up the workspace's remotes: devpad always, and origin when
-// the project has an upstream. The workspace is sent a hash of the upstream
-// URL, never the URL, so it can replace an origin a converted workspace
-// kept.
+// the project has an upstream. A workspace converted in place is sent a hash
+// of the upstream URL, never the URL, so it can replace the origin it kept.
+// Any other workspace never had the URL, and gets no hash to test guesses
+// of it against.
 func (b *Bridge) configure(ctx context.Context, st *pollState) {
 	if st.configured || b.now().Sub(st.configuredAt) < configureEvery {
 		return
@@ -456,8 +479,17 @@ func (b *Bridge) configure(ctx context.Context, st *pollState) {
 	}
 	remotes := agent.GitBridgeRemotes{Upstream: p.UpstreamURL != ""}
 	if remotes.Upstream {
-		sum := sha256.Sum256([]byte(p.UpstreamURL))
-		remotes.UpstreamURLHash = hex.EncodeToString(sum[:])
+		converted, err := b.projects.ConvertedInPlace(ctx, st.ws.UserID, st.ws.ProjectID, st.ws.ID)
+		if err != nil {
+			if ctx.Err() == nil {
+				b.logf(st.ws.ID, "reading how the workspace joined its project: %v", err)
+			}
+			return
+		}
+		if converted {
+			sum := sha256.Sum256([]byte(p.UpstreamURL))
+			remotes.UpstreamURLHash = hex.EncodeToString(sum[:])
+		}
 	}
 	err = st.agent.GitBridgeConfigureRemote(ctx, remotes)
 	var agentErr *agent.AgentError
@@ -537,8 +569,12 @@ func (b *Bridge) handle(ctx context.Context, ws *workspace.Workspace, req agent.
 		ctx, cancel := context.WithTimeout(ctx, listTimeout)
 		defer cancel()
 		// A fetch from devpad brings the upstream's latest along when the
-		// last sync is stale; a sync that fails or runs long only warns.
-		warning := b.projects.SyncUpstreamIfStale(ctx, ws.UserID, ws.ProjectID, staleSyncWait)
+		// last sync is stale; a sync that fails or runs long only warns. A
+		// push only needs devpad's branches, so it does not wait on one.
+		warning := ""
+		if !req.ForPush {
+			warning = b.projects.SyncUpstreamIfStale(ctx, ws.UserID, ws.ProjectID, staleSyncWait)
+		}
 		refs, err := b.projects.Branches(ctx, ws.UserID, ws.ProjectID)
 		if err != nil {
 			return agent.GitBridgeResult{Error: b.message(ws, err)}
@@ -597,17 +633,28 @@ func (b *Bridge) handleUpstream(ctx context.Context, ws *workspace.Workspace, re
 	case "list":
 		ctx, cancel := context.WithTimeout(ctx, transferTimeout)
 		defer cancel()
-		if _, err := b.projects.SyncUpstream(ctx, ws.UserID, ws.ProjectID); err != nil {
-			if errors.Is(err, project.ErrNoUpstream) || errors.Is(err, project.ErrNotReady) || errors.Is(err, project.ErrDeleting) {
-				return agent.GitBridgeResult{Error: err.Error()}
+		if b.takeSync(ws.ID) {
+			if _, err := b.projects.SyncUpstream(ctx, ws.UserID, ws.ProjectID); err != nil {
+				if errors.Is(err, project.ErrNoUpstream) || errors.Is(err, project.ErrNotReady) || errors.Is(err, project.ErrDeleting) {
+					return agent.GitBridgeResult{Error: err.Error()}
+				}
+				return agent.GitBridgeResult{Error: errSync}
 			}
-			return agent.GitBridgeResult{Error: errSync}
+		} else if warning := b.projects.SyncUpstreamIfStale(ctx, ws.UserID, ws.ProjectID, transferTimeout); warning != "" {
+			// Past its sync limit the workspace shares the last sync, and
+			// that one failed.
+			return agent.GitBridgeResult{Error: warning}
 		}
 		refs, err := b.projects.UpstreamBranches(ctx, ws.UserID, ws.ProjectID)
 		if err != nil {
 			return agent.GitBridgeResult{Error: b.message(ws, err)}
 		}
-		return agent.GitBridgeResult{DefaultBranch: refs.DefaultBranch, Refs: refs.Branches}
+		res := agent.GitBridgeResult{DefaultBranch: refs.DefaultBranch, Refs: refs.Branches}
+		if len(res.Refs) > maxUpstreamBranches {
+			res.Warning = fmt.Sprintf("origin shows %d of the upstream's %d branches: the protected ones, then the most recently committed to", maxUpstreamBranches, len(res.Refs))
+			res.Refs = res.Refs[:maxUpstreamBranches]
+		}
+		return res
 
 	case "fetch":
 		if len(req.Branches) == 0 || len(req.Branches) > maxBranches {
@@ -629,6 +676,18 @@ func (b *Bridge) handleUpstream(ctx context.Context, ws *workspace.Workspace, re
 		return agent.GitBridgeResult{Error: errReadOnly}
 	}
 	return agent.GitBridgeResult{Error: "unsupported request"}
+}
+
+// takeSync reports whether the workspace may start an upstream sync now.
+func (b *Bridge) takeSync(wsID int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	k := b.syncs[wsID]
+	if k == nil {
+		k = newBucket(syncBurst, syncsPerMinute, b.now())
+		b.syncs[wsID] = k
+	}
+	return k.take(b.now(), 1)
 }
 
 // message turns an error into text for git to show. Errors devpad expects

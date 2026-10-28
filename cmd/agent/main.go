@@ -90,6 +90,7 @@ func main() {
 	authedMux.HandleFunc("POST /api/repo/fetch-base", handleRepoFetchBase)
 	authedMux.HandleFunc("POST /api/repo/fetch-bases", handleRepoFetchBases)
 	authedMux.HandleFunc("POST /api/repo/upstream/fetch", handleRepoUpstreamFetch)
+	authedMux.HandleFunc("POST /api/repo/upstream/fast-forward", handleRepoUpstreamFastForward)
 	authedMux.HandleFunc("GET /api/repo/upstream/status", handleRepoUpstreamStatus)
 	authedMux.HandleFunc("GET /api/repo/upstream/refs", handleRepoUpstreamRefs)
 	authedMux.HandleFunc("POST /api/repo/checkout", handleRepoCheckout)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -90,6 +91,10 @@ type Service interface {
 	// did, until dismissed; nil when there is nothing to show.
 	ConversionNotice(ctx context.Context, userID, projectID int64) (*Conversion, error)
 	DismissConversionNotice(ctx context.Context, userID, projectID int64) error
+	// ConvertedInPlace reports whether the workspace became the project's
+	// workspace by being converted in place, and so held the upstream URL
+	// before devpad did.
+	ConvertedInPlace(ctx context.Context, userID, projectID, workspaceID int64) (bool, error)
 	// Reconcile finishes conversions devpad stopped part way through.
 	Reconcile(ctx context.Context) error
 	// SetPublishHook registers who is told when a branch is published from
@@ -1046,17 +1051,12 @@ func (s *service) Push(ctx context.Context, userID, projectID int64, branch stri
 		return nil, err
 	}
 	pushed, err := c.RepoPush(ctx, branch)
+	// The repo answers 409 when the upstream has commits the branch lacks.
 	var agentErr *agent.AgentError
-	if errors.As(err, &agentErr) && isNonFastForward(agentErr.Message) {
+	if errors.As(err, &agentErr) && agentErr.StatusCode == http.StatusConflict {
 		return nil, invalid("the upstream's %s has commits the project lacks; sync from the upstream, then merge origin/%s into a branch and open a merge request into %s", branch, branch, branch)
 	}
 	return pushed, err
-}
-
-// isNonFastForward reports whether a failed push was refused because the
-// upstream has commits the pushed branch lacks.
-func isNonFastForward(msg string) bool {
-	return strings.Contains(msg, "non-fast-forward") || strings.Contains(msg, "[rejected]") || strings.Contains(msg, "fetch first")
 }
 
 var hashPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)

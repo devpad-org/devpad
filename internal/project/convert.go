@@ -627,6 +627,20 @@ func (s *service) DismissConversionNotice(ctx context.Context, userID, projectID
 	return s.repo.UpdateConversion(ctx, conv)
 }
 
+// ConvertedInPlace reports whether the workspace became the project's
+// workspace by being converted in place.
+func (s *service) ConvertedInPlace(ctx context.Context, userID, projectID, workspaceID int64) (bool, error) {
+	p, err := s.Get(ctx, userID, projectID)
+	if err != nil {
+		return false, err
+	}
+	conv, err := s.repo.GetConversion(ctx, p.ID)
+	if err != nil {
+		return false, err
+	}
+	return conv != nil && conv.InPlace && conv.WorkspaceID == workspaceID, nil
+}
+
 // createConverting inserts a project being converted, with its conversion
 // record, and marks it so under the same lock Delete checks, leaving no
 // moment where it can be deleted.

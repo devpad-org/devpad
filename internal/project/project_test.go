@@ -2,6 +2,7 @@ package project
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -234,8 +236,10 @@ type fakeRepoAgent struct {
 	upstream        []agent.RepoRef
 	upstreamStatus  agent.UpstreamStatus
 	upstreamErr     string
-	upstreamFetches []string // the protected branches named by each fetch
-	pushErr         string   // fails pushes with 502 when set
+	upstreamFetches int      // fetches started
+	upstreamFFs     []string // the protected branches named by each fast-forward
+	pushErr         string   // fails pushes with pushStatus, or 502, when set
+	pushStatus      int
 	// fetchGate, when set, holds each upstream fetch until closed.
 	fetchGate chan struct{}
 }
@@ -258,6 +262,7 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api/repo/upstream/fetch" {
 		a.mu.Lock()
 		gate := a.fetchGate
+		a.upstreamFetches++
 		a.mu.Unlock()
 		if gate != nil {
 			<-gate
@@ -284,17 +289,26 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/repo/bundle":
 		branch := strings.Join(r.URL.Query()["branch"], ",")
 		if ns := r.URL.Query().Get("ns"); ns != "" {
+			for _, b := range r.URL.Query()["branch"] {
+				if !slices.ContainsFunc(a.upstream, func(ref agent.RepoRef) bool { return ref.Name == b }) {
+					w.WriteHeader(http.StatusNotFound)
+					json.NewEncoder(w).Encode(map[string]string{"error": "branch not found: " + b})
+					return
+				}
+			}
 			branch = ns + ":" + branch
 		}
 		a.bundled = append(a.bundled, branch)
 		w.Write([]byte("bundle-of-" + branch))
 	case "/api/repo/upstream/fetch":
-		a.upstreamFetches = append(a.upstreamFetches, strings.Join(r.URL.Query()["protected"], ","))
 		if a.upstreamErr != "" {
 			w.WriteHeader(http.StatusBadGateway)
 			json.NewEncoder(w).Encode(map[string]string{"error": a.upstreamErr})
 			return
 		}
+		json.NewEncoder(w).Encode(agent.UpstreamStatus{FetchedAt: a.upstreamStatus.FetchedAt})
+	case "/api/repo/upstream/fast-forward":
+		a.upstreamFFs = append(a.upstreamFFs, strings.Join(r.URL.Query()["protected"], ","))
 		json.NewEncoder(w).Encode(a.upstreamStatus)
 	case "/api/repo/upstream/status":
 		status := a.upstreamStatus
@@ -334,7 +348,7 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/repo/push":
 		a.pushed = append(a.pushed, r.URL.Query().Get("branch"))
 		if a.pushErr != "" {
-			w.WriteHeader(http.StatusBadGateway)
+			w.WriteHeader(cmp.Or(a.pushStatus, http.StatusBadGateway))
 			json.NewEncoder(w).Encode(map[string]string{"error": a.pushErr})
 			return
 		}

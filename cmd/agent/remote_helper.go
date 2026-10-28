@@ -48,6 +48,9 @@ func runRemoteHelper(args []string, in io.Reader, out io.Writer, errOut io.Write
 		fmt.Fprintf(errOut, "fatal: %v\n", err)
 		return 1
 	}
+	// The repo is the one at the workspace root, so the agent's git helpers,
+	// which run there, act on it.
+	workspaceRoot = helperWorkspaceRoot()
 	if err := h.run(bufio.NewReader(in)); err != nil {
 		fmt.Fprintf(errOut, "fatal: %v\n", err)
 		return 1
@@ -114,7 +117,7 @@ func (h *remoteHelper) run(in *bufio.Reader) error {
 		case line == "list for-push" && h.remote == remoteUpstream:
 			return errUpstreamReadOnly
 		case line == "list" || line == "list for-push":
-			if err := h.list(); err != nil {
+			if err := h.list(line == "list for-push"); err != nil {
 				return err
 			}
 		case strings.HasPrefix(line, "fetch "):
@@ -179,8 +182,10 @@ func (h *remoteHelper) request(req gitBridgeRequest) (gitBridgeResult, error) {
 	return res, nil
 }
 
-func (h *remoteHelper) list() error {
-	res, err := h.request(gitBridgeRequest{Op: "list"})
+// list lists the remote's branches. Before a push, devpad lists without
+// syncing from the upstream first.
+func (h *remoteHelper) list(forPush bool) error {
+	res, err := h.request(gitBridgeRequest{Op: "list", ForPush: forPush})
 	if err != nil {
 		return err
 	}
@@ -302,21 +307,24 @@ func (h *remoteHelper) pushOne(spec string) (dst, why string) {
 		return dst, err.Error()
 	}
 	if res.Error == "" {
-		trackAfterPush(branch)
+		h.trackAfterPush(branch)
 	}
 	return dst, res.Error
 }
 
 // trackAfterPush has a branch that tracks nothing track devpad/<branch>
 // after its first push, as push.autoSetupRemote would; that setting does
-// not apply to a remote with a push refspec of its own. It is best effort:
-// the push itself succeeded.
-func trackAfterPush(branch string) {
-	if exec.Command("git", "config", "--get", "branch."+branch+".remote").Run() == nil {
+// not apply to a remote with a push refspec of its own. The push itself
+// succeeded, so a failure here is only a warning.
+func (h *remoteHelper) trackAfterPush(branch string) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	if gitExec(ctx, "config", "--get", "branch."+branch+".remote") == nil {
 		return
 	}
-	exec.Command("git", "config", "branch."+branch+".remote", sandboxBaseRemote).Run()
-	exec.Command("git", "config", "branch."+branch+".merge", "refs/heads/"+branch).Run()
+	if err := trackDevpad(ctx, branch); err != nil {
+		fmt.Fprintf(h.errOut, "warning: devpad: %s was pushed, but could not be set to track %s/%s: %s\n", branch, sandboxBaseRemote, branch, oneLine(err.Error()))
+	}
 }
 
 func oneLine(s string) string {

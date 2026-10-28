@@ -25,6 +25,8 @@ type GitBridgeRequest struct {
 	// Remote is "" for the devpad remote and GitBridgeUpstream for the
 	// origin remote, the read-only view of the project's upstream.
 	Remote string `json:"remote,omitempty"`
+	// ForPush marks the list git makes before pushing.
+	ForPush bool `json:"forPush,omitempty"`
 }
 
 // GitBridgeUpstream is the Remote of a request made through origin.

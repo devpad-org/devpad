@@ -19,7 +19,14 @@ const (
 	// upstreamFetchedAtKey records when the upstream was last fetched, in
 	// the canonical repo's config, so it outlives devpad restarts.
 	upstreamFetchedAtKey = "devpad.upstreamFetchedAt"
+	// upstreamFetchTimeout bounds one fetch from the upstream. It is under
+	// devpad's agent client timeout, so devpad hears why a slow fetch failed
+	// rather than giving up on it while git still runs.
+	upstreamFetchTimeout = 5 * time.Minute
 )
+
+// upstreamFetching holds a token while a fetch from the upstream runs.
+var upstreamFetching = make(chan struct{}, 1)
 
 // upstreamBranch compares a protected branch with the upstream's copy.
 // Ahead counts the project's commits the upstream lacks; Behind the reverse.
@@ -58,15 +65,19 @@ func protectedBranches(ctx context.Context, r *http.Request) ([]string, error) {
 }
 
 // handleRepoUpstreamFetch fetches the upstream into refs/upstream/heads/,
-// pruning branches the upstream deleted, then fast-forwards each named
-// protected branch that is strictly behind its upstream copy.
+// pruning branches the upstream deleted. It moves no project branch: devpad
+// fast-forwards the protected ones afterwards, under its branch lock, which
+// it does not hold for the fetch itself. Fetches run one at a time, so one
+// devpad gave up on cannot race the next in the same repo.
 func handleRepoUpstreamFetch(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), upstreamFetchTimeout)
 	defer cancel()
 
-	protected, err := protectedBranches(ctx, r)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+	select {
+	case upstreamFetching <- struct{}{}:
+		defer func() { <-upstreamFetching }()
+	case <-ctx.Done():
+		writeErr(w, http.StatusServiceUnavailable, "another fetch from the upstream is still running")
 		return
 	}
 	if gitExec(ctx, "remote", "get-url", "origin") != nil {
@@ -82,11 +93,26 @@ func handleRepoUpstreamFetch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "fetching from upstream: "+msg)
 		return
 	}
-	if out, err := gitOutput(ctx, "config", upstreamFetchedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+	now := time.Now().UTC().Truncate(time.Second)
+	if out, err := gitOutput(ctx, "config", upstreamFetchedAtKey, now.Format(time.RFC3339)); err != nil {
 		writeErr(w, http.StatusInternalServerError, "recording the fetch: "+strings.TrimSpace(out))
 		return
 	}
+	writeJSON(w, http.StatusOK, upstreamStatus{FetchedAt: &now, Branches: []upstreamBranch{}})
+}
 
+// handleRepoUpstreamFastForward fast-forwards each named protected branch
+// that is strictly behind its upstream copy as last fetched, and reports how
+// they all stand.
+func handleRepoUpstreamFastForward(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
+	defer cancel()
+
+	protected, err := protectedBranches(ctx, r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	forwarded := make(map[string]bool)
 	for _, branch := range protected {
 		sha, upstream := branchSHA(ctx, "refs/heads/"+branch), branchSHA(ctx, upstreamRefPrefix+branch)
@@ -130,12 +156,13 @@ func handleRepoUpstreamStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
-// handleRepoUpstreamRefs lists the upstream's branches as last fetched.
+// handleRepoUpstreamRefs lists the upstream's branches as last fetched,
+// the most recently committed to first.
 func handleRepoUpstreamRefs(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
 	defer cancel()
 
-	out, err := gitOutput(ctx, "for-each-ref", "--format=%(refname:strip=3) %(objectname)", upstreamRefPrefix)
+	out, err := gitOutput(ctx, "for-each-ref", "--sort=-committerdate", "--format=%(refname:strip=3) %(objectname)", upstreamRefPrefix)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "listing upstream branches: "+strings.TrimSpace(out))
 		return

@@ -29,16 +29,27 @@ type UpstreamStatus struct {
 }
 
 // RepoUpstreamFetch fetches the upstream into the canonical repo's own
-// namespace for it, then fast-forwards each protected branch that is
-// strictly behind its upstream copy.
-func (c *Client) RepoUpstreamFetch(ctx context.Context, protected []string) (*UpstreamStatus, error) {
-	u := c.baseURL + "/api/repo/upstream/fetch?" + url.Values{"protected": protected}.Encode()
+// namespace for it. It moves no project branch.
+func (c *Client) RepoUpstreamFetch(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/repo/upstream/fetch", nil)
+	if err != nil {
+		return err
+	}
+	var status UpstreamStatus
+	return c.doRepoJSON(req, "repo upstream fetch", &status)
+}
+
+// RepoUpstreamFastForward fast-forwards each protected branch that is
+// strictly behind its upstream copy as last fetched, and reports how they
+// all stand.
+func (c *Client) RepoUpstreamFastForward(ctx context.Context, protected []string) (*UpstreamStatus, error) {
+	u := c.baseURL + "/api/repo/upstream/fast-forward?" + url.Values{"protected": protected}.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
 	if err != nil {
 		return nil, err
 	}
 	var status UpstreamStatus
-	if err := c.doRepoJSON(req, "repo upstream fetch", &status); err != nil {
+	if err := c.doRepoJSON(req, "repo upstream fast-forward", &status); err != nil {
 		return nil, err
 	}
 	return &status, nil
@@ -59,8 +70,8 @@ func (c *Client) RepoUpstreamStatus(ctx context.Context, protected []string) (*U
 	return &status, nil
 }
 
-// RepoUpstreamRefs lists the upstream's branches as last fetched, with the
-// canonical repo's default branch.
+// RepoUpstreamRefs lists the upstream's branches as last fetched, the most
+// recently committed to first, with the canonical repo's default branch.
 func (c *Client) RepoUpstreamRefs(ctx context.Context) (*RepoRefs, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/repo/upstream/refs", nil)
 	if err != nil {

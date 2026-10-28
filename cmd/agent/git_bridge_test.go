@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -73,6 +74,9 @@ type fakeHost struct {
 	mu        sync.Mutex
 	pushes    []string
 	fetches   []int
+	// lists records, for each list of the devpad remote, whether it was
+	// the list before a push.
+	lists []bool
 	// warning is added to each list of the devpad remote.
 	warning string
 }
@@ -98,6 +102,9 @@ func (h *fakeHost) serve(req gitBridgeRequest) gitBridgeResult {
 	}
 	switch req.Op {
 	case "list":
+		h.mu.Lock()
+		h.lists = append(h.lists, req.ForPush)
+		h.mu.Unlock()
 		out, err := gitIn(h.canonical, "for-each-ref", "--format=%(refname:strip=2) %(objectname)", "refs/heads/")
 		if err != nil {
 			return gitBridgeResult{Error: out}
@@ -295,6 +302,23 @@ func TestGitPushDevpadPublishesThroughTheHost(t *testing.T) {
 	// The first push has the branch track devpad.
 	if got := runGit(t, rig.work, "config", "branch.feature.remote"); got != "devpad" {
 		t.Fatalf("feature tracks %q", got)
+	}
+	// The list before a push says so, so devpad does not sync for it.
+	rig.host.mu.Lock()
+	lists := slices.Clone(rig.host.lists)
+	rig.host.lists = nil
+	rig.host.mu.Unlock()
+	if !slices.Equal(lists, []bool{true}) {
+		t.Fatalf("lists before the push: %v", lists)
+	}
+	if out, err := rig.git(t, "fetch", "devpad"); err != nil {
+		t.Fatalf("fetch: %v\n%s", err, out)
+	}
+	rig.host.mu.Lock()
+	lists = slices.Clone(rig.host.lists)
+	rig.host.mu.Unlock()
+	if !slices.Equal(lists, []bool{false}) {
+		t.Fatalf("lists for a fetch: %v", lists)
 	}
 
 	// A plain `git push devpad` pushes the current branch.
@@ -644,6 +668,12 @@ func TestGitBridgeRemoteReplacesOnlyTheUpstreamsOrigin(t *testing.T) {
 	rig := newBridgeRig(t)
 	runGit(t, rig.work, "remote", "add", "origin", url)
 	runGit(t, rig.work, "config", "remote.origin.pushurl", url)
+	// The converted workspace's branches tracked the upstream.
+	runGit(t, rig.work, "config", "branch.main.remote", "origin")
+	runGit(t, rig.work, "branch", "--quiet", "other")
+	runGit(t, rig.work, "update-ref", "refs/remotes/devpad/other", "main")
+	runGit(t, rig.work, "config", "branch.other.remote", "origin")
+	runGit(t, rig.work, "config", "branch.other.merge", "refs/heads/elsewhere")
 	if rec := configureRemotes(t, body); rec.Code != http.StatusNoContent {
 		t.Fatalf("configure: %d %s", rec.Code, rec.Body)
 	}
@@ -652,6 +682,22 @@ func TestGitBridgeRemoteReplacesOnlyTheUpstreamsOrigin(t *testing.T) {
 	}
 	if _, err := gitIn(rig.work, "config", "remote.origin.pushurl"); err == nil {
 		t.Fatal("the old push URL was kept")
+	}
+	// A branch that tracked its namesake on the old origin now tracks
+	// devpad; one that tracked another branch is left alone.
+	if got := runGit(t, rig.work, "config", "branch.main.remote"); got != "devpad" {
+		t.Fatalf("main tracks %q after the conversion", got)
+	}
+	if got := runGit(t, rig.work, "config", "branch.other.remote"); got != "origin" {
+		t.Fatalf("other tracks %q", got)
+	}
+	// Once origin is devpad's, tracking it is the user's choice, and kept.
+	runGit(t, rig.work, "config", "branch.main.remote", "origin")
+	if rec := configureRemotes(t, body); rec.Code != http.StatusNoContent {
+		t.Fatalf("configure again: %d %s", rec.Code, rec.Body)
+	}
+	if got := runGit(t, rig.work, "config", "branch.main.remote"); got != "origin" {
+		t.Fatalf("main tracks %q after the user chose origin", got)
 	}
 
 	runGit(t, rig.work, "remote", "set-url", "origin", "https://example.com/elsewhere.git")

@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -14,7 +15,7 @@ import (
 func (e *testEnv) upstreamFetchCount() int {
 	e.repoAgent.mu.Lock()
 	defer e.repoAgent.mu.Unlock()
-	return len(e.repoAgent.upstreamFetches)
+	return e.repoAgent.upstreamFetches
 }
 
 func TestSyncUpstreamFastForwardsAndMovesMergeRequests(t *testing.T) {
@@ -41,8 +42,8 @@ func TestSyncUpstreamFastForwardsAndMovesMergeRequests(t *testing.T) {
 		t.Fatalf("status = %+v", status)
 	}
 	// The protected branches come from the project, never the caller.
-	if got := e.repoAgent.upstreamFetches; len(got) != 1 || got[0] != "main,develop" {
-		t.Fatalf("fetches named %v", got)
+	if got := e.repoAgent.upstreamFFs; e.upstreamFetchCount() != 1 || len(got) != 1 || got[0] != "main,develop" {
+		t.Fatalf("%d fetches, fast-forwards named %v", e.upstreamFetchCount(), got)
 	}
 	// Only the branch that moved has its merge request follow it.
 	if strings.Join(hook.calls, " ") != "upstream:main@m2" {
@@ -121,6 +122,55 @@ func TestUpstreamSyncsAreShared(t *testing.T) {
 	}
 }
 
+func TestUpstreamFetchDoesNotHoldTheBranchLock(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj", UpstreamURL: "https://example.com/repo.git"})
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "develop", SHA: "d"}}
+	gate := make(chan struct{})
+	e.repoAgent.mu.Lock()
+	e.repoAgent.fetchGate = gate
+	e.repoAgent.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.svc.SyncUpstream(ctx, e.userID, p.ID)
+		done <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for e.upstreamFetchCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the fetch never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Changing the protected branches does not wait for the fetch...
+	set := make(chan error, 1)
+	go func() {
+		_, err := e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{ProtectedBranches: []string{"develop"}})
+		set <- err
+	}()
+	select {
+	case err := <-set:
+		if err != nil {
+			t.Fatalf("set branches during a fetch: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		close(gate)
+		t.Fatal("setting the branches waited for the fetch")
+	}
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	// ...and the fast-forward after it uses the new set.
+	e.repoAgent.mu.Lock()
+	defer e.repoAgent.mu.Unlock()
+	if got := e.repoAgent.upstreamFFs; len(got) != 1 || got[0] != "main,develop" {
+		t.Fatalf("fast-forwards named %v", got)
+	}
+}
+
 func TestFailedUpstreamSync(t *testing.T) {
 	e := setupTest(t)
 	ctx := context.Background()
@@ -185,13 +235,14 @@ func TestFetchWorkspaceUpstreamBranches(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	e.repoAgent.mu.Lock()
-	e.repoAgent.upstream = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "theirs", SHA: "t"}, {Name: "über", SHA: "x"}}
+	e.repoAgent.upstream = []agent.RepoRef{{Name: "theirs", SHA: "t"}, {Name: "main", SHA: "m"}, {Name: "über", SHA: "x"}}
 	e.repoAgent.bundled = nil
 	e.repoAgent.mu.Unlock()
 
-	// Names devpad would not act on are not offered.
+	// Names devpad would not act on are not offered, and the protected
+	// branches come first.
 	refs, err := e.svc.UpstreamBranches(ctx, e.userID, p.ID)
-	if err != nil || len(refs.Branches) != 2 || refs.DefaultBranch != "main" {
+	if err != nil || len(refs.Branches) != 2 || refs.DefaultBranch != "main" || refs.Branches[0].Name != "main" {
 		t.Fatalf("upstream branches %+v, %v", refs, err)
 	}
 
@@ -218,12 +269,14 @@ func TestPushThatUpstreamRefusesSaysHowToCatchUp(t *testing.T) {
 	e := setupTest(t)
 	ctx := context.Background()
 	p := e.createProject(t, CreateInput{Name: "proj", UpstreamURL: "https://example.com/repo.git"})
-	e.repoAgent.pushErr = "pushing to upstream: ! [rejected] main -> main (fetch first)"
+	// The repo answers 409 when the upstream has commits the branch lacks.
+	e.repoAgent.pushErr, e.repoAgent.pushStatus = "pushing to upstream: ! [rejected] main -> main (fetch first)", http.StatusConflict
 	_, err := e.svc.Push(ctx, e.userID, p.ID, "")
 	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "sync from the upstream") {
 		t.Fatalf("push: %v", err)
 	}
-	e.repoAgent.pushErr = "pushing to upstream: Permission denied (publickey)"
+	// Anything else, whatever its wording, is the repo's error.
+	e.repoAgent.pushErr, e.repoAgent.pushStatus = "pushing to upstream: [rejected] non-fast-forward", 0
 	var agentErr *agent.AgentError
 	if _, err := e.svc.Push(ctx, e.userID, p.ID, ""); !errors.As(err, &agentErr) {
 		t.Fatalf("push: %v", err)
