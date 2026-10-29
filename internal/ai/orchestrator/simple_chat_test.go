@@ -36,6 +36,49 @@ func TestSimpleChatOrchestrator_PricesUsage(t *testing.T) {
 	}
 }
 
+func TestSimpleChatOrchestrator_PricesAFallbackAttemptAtItsModelsPrices(t *testing.T) {
+	orch := NewSimpleChatOrchestrator(&mockChatService{
+		findModelFn: func(modelID string) (domain.Model, error) {
+			return domain.Model{
+				ID:              modelID,
+				Pricing:         &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 2}},
+				FallbackPricing: map[string]domain.Pricing{"fallback": {TokenPrices: domain.TokenPrices{Input: 5}}},
+			}, nil
+		},
+		chatStreamFn: func(_ context.Context, _ domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+			ch := make(chan domain.ProviderEvent, 4)
+			ch <- domain.ProviderEvent{Usage: &domain.Usage{Model: "model-1", InputTokens: 1000}}
+			ch <- domain.ProviderEvent{Usage: &domain.Usage{Model: "fallback", InputTokens: 1000}}
+			ch <- domain.ProviderEvent{Usage: &domain.Usage{Model: "unknown", InputTokens: 1000}}
+			ch <- domain.ProviderEvent{Done: true}
+			close(ch)
+			return ch, nil
+		},
+	})
+	var recorded []domain.Usage
+	stream, err := orch.Stream(context.Background(), domain.ChatRequest{Model: "model-1"}, func(usage domain.Usage) {
+		recorded = append(recorded, usage)
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	collectEvents(t, stream)
+
+	if len(recorded) != 3 {
+		t.Fatalf("expected each attempt recorded, got %+v", recorded)
+	}
+	if c := recorded[0].CostUSD; c == nil || *c != 0.002 {
+		t.Fatalf("expected the requested model's prices, got %+v", recorded[0])
+	}
+	if c := recorded[1].CostUSD; recorded[1].Model != "fallback" || c == nil || *c != 0.005 {
+		t.Fatalf("expected the fallback model's prices, got %+v", recorded[1])
+	}
+	// A model whose prices are not known is not priced as another.
+	if recorded[2].CostUSD != nil {
+		t.Fatalf("expected an unknown model unpriced, got %+v", recorded[2])
+	}
+}
+
 func TestSimpleChatOrchestrator_RecordsARequestCutShort(t *testing.T) {
 	provider := make(chan domain.ProviderEvent, 4)
 	orch := NewSimpleChatOrchestrator(&mockChatService{

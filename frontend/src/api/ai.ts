@@ -141,7 +141,6 @@ export interface UsageReport {
   projects: UsageProject[]
   models: { id: string; name: string }[]
   rows: UsageReportRow[]
-  totals: UsageTotals
 }
 
 export interface UsageQuery {

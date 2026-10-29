@@ -61,6 +61,7 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	pendingTextBytes := make(map[int]int)
 	var layout []map[string]any
 	var usage *domain.Usage
+	var iterations []anthropicIteration
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -71,7 +72,7 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		if strings.HasPrefix(line, "event: ") {
 			eventType := strings.TrimPrefix(line, "event: ")
 			if eventType == "message_stop" {
-				emitAnthropicUsage(ch, usage)
+				emitAnthropicUsage(ch, usage, iterations)
 				emitAnthropicReasoningState(ch, layout)
 				emitAnthropicToolCalls(ch, toolCalls, toolCallArgs)
 				ch <- domain.ProviderEvent{Done: true}
@@ -95,6 +96,9 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		case "message_start":
 			if event.Message != nil && event.Message.Usage != nil {
 				usage = mergeAnthropicUsage(usage, event.Message.Usage)
+				if len(event.Message.Usage.Iterations) > 0 {
+					iterations = event.Message.Usage.Iterations
+				}
 			}
 
 		case "content_block_start":
@@ -208,23 +212,26 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		case "message_delta":
 			if event.Usage != nil {
 				usage = mergeAnthropicUsage(usage, event.Usage)
+				if len(event.Usage.Iterations) > 0 {
+					iterations = event.Usage.Iterations
+				}
 			}
 			if event.Delta != nil && event.Delta.StopReason == "refusal" {
-				emitAnthropicUsage(ch, usage)
+				emitAnthropicUsage(ch, usage, iterations)
 				ch <- domain.ProviderEvent{Err: refusalError(event.Delta.StopDetails)}
 				return
 			}
 
 		case "error":
 			if event.Error != nil {
-				emitAnthropicUsage(ch, usage)
+				emitAnthropicUsage(ch, usage, iterations)
 				ch <- domain.ProviderEvent{Err: errors.New(event.Error.Message)}
 				return
 			}
 		}
 	}
 
-	emitAnthropicUsage(ch, usage)
+	emitAnthropicUsage(ch, usage, iterations)
 	if err := scanner.Err(); err != nil {
 		log.Printf("error reading anthropic stream: %v", err)
 		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
@@ -277,7 +284,21 @@ func mergeAnthropicUsage(usage *domain.Usage, report *anthropicUsage) *domain.Us
 
 // emitAnthropicUsage sends what the request was billed for, before any error
 // or the end of the stream, so a request that fails part-way still counts.
-func emitAnthropicUsage(ch chan<- domain.ProviderEvent, usage *domain.Usage) {
+// A request that ran more than once, such as on a fallback model after a
+// refusal, is sent as each attempt, with the model that ran it.
+func emitAnthropicUsage(ch chan<- domain.ProviderEvent, usage *domain.Usage, iterations []anthropicIteration) {
+	if len(iterations) > 0 {
+		for _, it := range iterations {
+			ch <- domain.ProviderEvent{Usage: &domain.Usage{
+				InputTokens:      it.InputTokens,
+				OutputTokens:     it.OutputTokens,
+				CacheReadTokens:  it.CacheReadInputTokens,
+				CacheWriteTokens: it.CacheCreationInputTokens,
+				Model:            it.Model,
+			}}
+		}
+		return
+	}
 	if usage == nil {
 		return
 	}
@@ -343,6 +364,19 @@ type anthropicUsage struct {
 	OutputTokens             int64 `json:"output_tokens"`
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	// Iterations is each attempt at a request that ran more than once, such
+	// as on a fallback model after a refusal, each billed at the prices of
+	// the model that ran it. The counts beside it are the last attempt's.
+	Iterations []anthropicIteration `json:"iterations,omitempty"`
+}
+
+// anthropicIteration is one attempt at a request.
+type anthropicIteration struct {
+	Model                    string `json:"model"`
+	InputTokens              int64  `json:"input_tokens"`
+	OutputTokens             int64  `json:"output_tokens"`
+	CacheCreationInputTokens int64  `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64  `json:"cache_read_input_tokens"`
 }
 
 type anthropicContent struct {

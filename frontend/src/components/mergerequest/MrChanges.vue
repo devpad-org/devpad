@@ -206,6 +206,7 @@ onMounted(() => {
 </template>
 
 <style scoped src="@/components/project/shared.css"></style>
+<style scoped src="@/assets/styles/segmented.css"></style>
 <style scoped src="./mergerequest.css"></style>
 <style scoped>
 .changes-tab {

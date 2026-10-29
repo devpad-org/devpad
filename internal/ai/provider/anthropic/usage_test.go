@@ -122,3 +122,62 @@ func TestAnthropicAdapter_ModelsArePriced(t *testing.T) {
 		}
 	}
 }
+
+func TestAnthropicAdapter_StreamReportsEachFallbackAttempt(t *testing.T) {
+	// The requested model declines before any output and a fallback model
+	// answers; message_start already names the fallback model.
+	events := streamAnthropicResponse(t, `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-opus-4-8","usage":{"input_tokens":412,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"fallback","from":{"model":"claude-opus-5-5"},"to":{"model":"claude-opus-4-8"},"trigger":{"type":"refusal","category":"cyber"}}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hi"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":264,"iterations":[{"type":"message","model":"claude-opus-5-5","input_tokens":535,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},{"type":"fallback_message","model":"claude-opus-4-8","input_tokens":412,"output_tokens":264,"cache_read_input_tokens":100,"cache_creation_input_tokens":0}]}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`)
+	usages := usageEvents(events)
+	want := []domain.Usage{
+		{Model: "claude-opus-5-5", InputTokens: 535},
+		{Model: "claude-opus-4-8", InputTokens: 412, OutputTokens: 264, CacheReadTokens: 100},
+	}
+	if len(usages) != len(want) {
+		t.Fatalf("usages = %+v, want %+v", usages, want)
+	}
+	for i := range want {
+		if usages[i] != want[i] {
+			t.Fatalf("usage %d = %+v, want %+v", i, usages[i], want[i])
+		}
+	}
+}
+
+func TestAnthropicAdapter_FallbackModelsArePriced(t *testing.T) {
+	model, ok := domain.ModelByID(NewAdapter().Models(), "claude-opus-5-5")
+	if !ok {
+		t.Fatal("expected claude-opus-5-5 in the catalog")
+	}
+	for _, id := range []string{"claude-opus-5", "claude-opus-4-8", "claude-sonnet-5-5"} {
+		if _, ok := model.FallbackPricing[id]; !ok {
+			t.Errorf("expected the prices of %s, a model a request may fall back to", id)
+		}
+	}
+	haiku, _ := domain.ModelByID(NewAdapter().Models(), "claude-haiku-4-5")
+	if haiku.FallbackPricing != nil {
+		t.Errorf("expected no fallback prices on a model without fallbacks")
+	}
+}

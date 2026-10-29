@@ -20,13 +20,14 @@ func NewSimpleChatOrchestrator(service ChatService) *SimpleChatOrchestrator {
 // each request's usage when the model's prices are known. recordUsage, which
 // may be nil, is told what each request was billed for.
 func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequest, recordUsage func(domain.Usage)) (<-chan domain.ClientEvent, error) {
+	model, err := o.service.FindModel(req.Model)
+	if err != nil {
+		return nil, err
+	}
 	stream, err := o.service.ChatStream(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	// ChatStream has already found the model; one it cannot find goes
-	// unpriced.
-	model, _ := o.service.FindModel(req.Model)
 	meter := usageMeter{model: model, record: recordUsage}
 
 	out := make(chan domain.ClientEvent)

@@ -98,7 +98,7 @@ func (a *Adapter) Models() []domain.Model {
 	// https://platform.claude.com/docs/en/about-claude/pricing (October 2026).
 	// Cache writes are priced at the 5-minute rate. None of these models
 	// charge more for long prompts.
-	return []domain.Model{
+	models := []domain.Model{
 		{
 			ID:         "claude-opus-5-5",
 			Name:       "Claude Opus 5.5",
@@ -140,6 +140,24 @@ func (a *Adapter) Models() []domain.Model {
 			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1, Output: 5, CacheRead: 0.10, CacheWrite: 1.25}},
 		},
 	}
+
+	// A model with server-side fallbacks can have a request run on another
+	// model, billed at that model's prices. Anthropic does not publish where
+	// each model falls back to, so these models get the prices of every
+	// model devpad knows, the fallback targets it does not offer among them.
+	fallbackPricing := map[string]domain.Pricing{
+		"claude-opus-5":   {TokenPrices: domain.TokenPrices{Input: 5, Output: 25, CacheRead: 0.50, CacheWrite: 6.25}},
+		"claude-opus-4-8": {TokenPrices: domain.TokenPrices{Input: 5, Output: 25, CacheRead: 0.50, CacheWrite: 6.25}},
+	}
+	for _, model := range models {
+		fallbackPricing[model.ID] = *model.Pricing
+	}
+	for i := range models {
+		if usesServerSideFallback(models[i].ID) {
+			models[i].FallbackPricing = fallbackPricing
+		}
+	}
+	return models
 }
 
 func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req aiprovider.StreamRequest) (<-chan domain.ProviderEvent, error) {

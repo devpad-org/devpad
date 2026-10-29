@@ -8,9 +8,12 @@ type ProviderEvent struct {
 	ReasoningDelta string
 	ReasoningState json.RawMessage
 	ToolCalls      []ToolCall
-	Usage          *Usage // sent once, before the stream ends, when the provider reports it
-	Done           bool
-	Err            error
+	// Usage is sent before the stream ends, when the provider reports it:
+	// once, or once for each model that ran the request, such as one that
+	// refused and the fallback model that answered.
+	Usage *Usage
+	Done  bool
+	Err   error
 }
 
 // ClientEvent is the normalized event emitted by the orchestrator.

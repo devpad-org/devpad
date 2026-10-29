@@ -91,9 +91,13 @@ const projectOptions = computed(() =>
   [...knownProjects.value.values()].sort((a, b) => projectName(a).localeCompare(projectName(b))),
 )
 
+// projectLabel names a project; projectName also says when it was deleted.
+function projectLabel(p: UsageProject): string {
+  return p.id === 0 ? 'No project' : p.name
+}
+
 function projectName(p: UsageProject): string {
-  if (p.id === 0) return 'No project'
-  return p.deleted ? `${p.name} (deleted)` : p.name
+  return p.deleted ? `${projectLabel(p)} (deleted)` : projectLabel(p)
 }
 
 const rows = computed(() => {
@@ -187,11 +191,12 @@ const byProject = computed(() => {
   const r = report.value
   if (!r) return []
   const models = new Map(r.models.map((m) => [m.id, m.name]))
+  const known = new Map(r.projects.map((p) => [p.id, p]))
   const projects = new Map<number, { project: UsageProject; totals: UsageTotals; models: Map<string, UsageTotals> }>()
   for (const row of rows.value) {
     let entry = projects.get(row.projectId)
     if (!entry) {
-      const project = r.projects.find((p) => p.id === row.projectId) ?? { id: row.projectId, name: '', deleted: false }
+      const project = known.get(row.projectId) ?? { id: row.projectId, name: '', deleted: false }
       entry = { project, totals: emptyTotals(), models: new Map() }
       projects.set(row.projectId, entry)
     }
@@ -317,7 +322,7 @@ const byProject = computed(() => {
             <tbody v-for="entry in byProject" :key="entry.project.id">
               <tr class="project-row">
                 <th scope="row">
-                  {{ entry.project.id === 0 ? 'No project' : entry.project.name }}
+                  {{ projectLabel(entry.project) }}
                   <span v-if="entry.project.deleted" class="muted">(deleted)</span>
                 </th>
                 <td class="num">{{ formatCount(entry.totals.requests) }}</td>
@@ -354,6 +359,7 @@ const byProject = computed(() => {
 </template>
 
 <style scoped src="@/components/project/shared.css"></style>
+<style scoped src="@/assets/styles/segmented.css"></style>
 <style scoped>
 .usage-page {
   max-width: 1000px;
@@ -376,33 +382,9 @@ const byProject = computed(() => {
   font-size: 0.8rem;
 }
 
-.segmented {
-  display: inline-flex;
-  padding: 2px;
-  gap: 2px;
-  background: var(--bg-base);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-md);
-}
-
+/* As tall as the selects beside it. */
 .segment {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px var(--space-3);
-  border-radius: var(--radius-sm);
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  transition: all var(--transition-fast);
-}
-
-.segment:hover {
-  color: var(--text-primary);
-}
-
-.segment.active {
-  background: var(--bg-raised);
-  color: var(--text-primary);
-  box-shadow: 0 0 0 0.5px var(--border-strong);
+  padding-block: var(--space-1);
 }
 
 .usage-content {
@@ -460,7 +442,7 @@ const byProject = computed(() => {
 .legend li {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1);
 }
 
 .legend-swatch {
@@ -483,7 +465,7 @@ const byProject = computed(() => {
 
 .usage-table th,
 .usage-table td {
-  padding: 6px var(--space-2);
+  padding: var(--space-1) var(--space-2);
   text-align: left;
   white-space: nowrap;
 }
@@ -519,7 +501,7 @@ const byProject = computed(() => {
 }
 
 .model-row th .legend-swatch {
-  margin-right: 6px;
+  margin-right: var(--space-1);
   vertical-align: -1px;
 }
 

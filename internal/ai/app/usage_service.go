@@ -103,7 +103,6 @@ func (s *usageService) Report(ctx context.Context, q domain.UsageQuery) (*domain
 			rows[key] = row
 		}
 		row.Add(slot.Totals)
-		report.Totals.Add(slot.Totals)
 		projects[slot.ProjectID] = domain.UsageProject{ID: slot.ProjectID, Name: slot.ProjectName, Deleted: slot.ProjectDeleted}
 		projectCost[slot.ProjectID] += slot.Totals.CostUSD
 		modelCost[slot.Model] += slot.Totals.CostUSD
@@ -193,6 +192,9 @@ func usageRecorderFor(recorder UsageRecorder, rec domain.UsageRecord) func(domai
 	return func(usage domain.Usage) {
 		rec := rec
 		rec.Usage, rec.At = usage, time.Now()
+		if usage.Model != "" {
+			rec.Model = usage.Model
+		}
 		// The chat may be over, so the request is recorded on a context of
 		// its own. Losing it undercounts the ledger but must not stop the
 		// chat.

@@ -11,6 +11,10 @@ type Usage struct {
 	CacheWriteTokens int64 `json:"cacheWriteTokens,omitempty"`
 	// CostUSD is nil when the model has no known prices.
 	CostUSD *float64 `json:"costUsd,omitempty"`
+	// Model is the model that ran the request when the provider ran it on
+	// another than the one asked for, such as a fallback model after a
+	// refusal. Empty means the one asked for.
+	Model string `json:"model,omitempty"`
 }
 
 // PromptTokens is the size of the prompt the request sent.

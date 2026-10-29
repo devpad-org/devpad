@@ -212,33 +212,7 @@
 }
 
 .segmented {
-  display: inline-flex;
-  padding: 2px;
-  gap: 2px;
-  background: var(--bg-base);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-md);
   align-self: flex-start;
-}
-
-.segment {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px var(--space-3);
-  border-radius: var(--radius-sm);
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  transition: all var(--transition-fast);
-}
-
-.segment:hover {
-  color: var(--text-primary);
-}
-
-.segment.active {
-  background: var(--bg-raised);
-  color: var(--text-primary);
-  box-shadow: 0 0 0 0.5px var(--border-strong);
 }
 
 .segmented-icons .segment {

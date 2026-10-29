@@ -92,9 +92,6 @@ func TestUsageReportCountsPeriodsInTheViewersZone(t *testing.T) {
 	if want := []domain.UsageModel{{ID: "opus", Name: "Opus 5.5"}, {ID: "local", Name: "local"}}; !reflect.DeepEqual(report.Models, want) {
 		t.Fatalf("models = %+v, want %+v", report.Models, want)
 	}
-	if report.Totals != (domain.UsageTotals{Requests: 5, UnpricedRequests: 3, InputTokens: 90, CostUSD: 3}) {
-		t.Fatalf("totals = %+v", report.Totals)
-	}
 
 	report, err = svc.Report(context.Background(), domain.UsageQuery{Period: domain.UsageDay, From: day(newYork, 28), To: day(newYork, 29), Location: newYork})
 	if err != nil {
@@ -157,7 +154,7 @@ func TestUsageRecorderForRecordsEachRequest(t *testing.T) {
 	record := usageRecorderFor(repo, domain.UsageRecord{UserID: 1, WorkspaceID: 2, RunID: 3, Model: "opus"})
 	cost := 0.5
 	record(domain.Usage{InputTokens: 10, CostUSD: &cost})
-	record(domain.Usage{OutputTokens: 5})
+	record(domain.Usage{OutputTokens: 5, Model: "fallback"})
 
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
@@ -168,7 +165,8 @@ func TestUsageRecorderForRecordsEachRequest(t *testing.T) {
 	if first.UserID != 1 || first.WorkspaceID != 2 || first.RunID != 3 || first.Model != "opus" || first.Usage.InputTokens != 10 || first.At.IsZero() {
 		t.Fatalf("first record = %+v", first)
 	}
-	if second.Usage.OutputTokens != 5 || second.Usage.CostUSD != nil {
+	// An attempt another model ran counts under that model.
+	if second.Usage.OutputTokens != 5 || second.Usage.CostUSD != nil || second.Model != "fallback" {
 		t.Fatalf("second record = %+v", second)
 	}
 }

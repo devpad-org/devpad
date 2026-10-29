@@ -86,7 +86,6 @@ type UsageReport struct {
 	Projects []UsageProject   `json:"projects"`
 	Models   []UsageModel     `json:"models"`
 	Rows     []UsageReportRow `json:"rows"`
-	Totals   UsageTotals      `json:"totals"`
 }
 
 // UsageProject is a project the report has usage for. ID zero stands for

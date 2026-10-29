@@ -255,6 +255,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 </template>
 
 <style scoped src="./shared.css"></style>
+<style scoped src="@/assets/styles/segmented.css"></style>
 <style scoped src="./taskModal.css"></style>
 <style scoped>
 .modal-header {
@@ -277,29 +278,10 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   color: var(--text-dim);
 }
 
-.segmented {
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--radius-md);
-  background: var(--bg-base);
-  border: 0.5px solid var(--border-default);
-}
-
+/* Smaller, to sit in the field's header. */
 .segment {
   padding: 1px var(--space-2);
-  border-radius: var(--radius-sm);
   font-size: 0.72rem;
-  color: var(--text-muted);
-  transition: all var(--transition-fast);
-}
-
-.segment:hover {
-  color: var(--text-primary);
-}
-
-.segment.active {
-  color: var(--text-primary);
-  background: var(--bg-raised);
 }
 
 /* Write and Preview share one frame, so switching doesn't shift the layout. */

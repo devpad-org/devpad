@@ -466,11 +466,19 @@ func (o *agentChatOrchestrator) awaitApproval(ctx context.Context, userID int64,
 	}
 }
 
-// pricedUsage adds the cost of one request's usage when the model's prices
-// are known.
+// pricedUsage adds the cost of one request's usage when the prices of the
+// model that ran it are known: the model asked for, or the one the provider
+// ran the request on instead.
 func pricedUsage(model domain.Model, usage domain.Usage) *domain.Usage {
-	if model.Pricing != nil {
-		cost := model.Pricing.Cost(usage)
+	pricing := model.Pricing
+	if usage.Model != "" && usage.Model != model.ID {
+		pricing = nil
+		if fallback, ok := model.FallbackPricing[usage.Model]; ok {
+			pricing = &fallback
+		}
+	}
+	if pricing != nil {
+		cost := pricing.Cost(usage)
 		usage.CostUSD = &cost
 	}
 	return &usage
