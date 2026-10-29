@@ -110,10 +110,7 @@ func knownModelInputBudget(model string) (int, bool) {
 	switch model {
 	case "claude-opus-5-5",
 		"claude-sonnet-5-5",
-		"claude-haiku-5-5",
-		"claude-opus-4-7",
-		"claude-opus-4-7-20260416",
-		"claude-sonnet-4-6":
+		"claude-haiku-5-5":
 		return anthropicLongInputBudgetTokens, true
 	case "gpt-5.4",
 		"gpt-5.5":

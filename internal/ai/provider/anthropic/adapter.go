@@ -16,11 +16,10 @@ const (
 	providerName = "Anthropic"
 	baseURL      = "https://api.anthropic.com/v1"
 	apiVersion   = "2023-06-01"
-	maxTokens    = 16000
 
-	// Claude 5.5 models think by default, and thinking counts toward max_tokens,
-	// so they get more room than the default to avoid truncated replies.
-	claude55MaxTokens = 64000
+	// Claude 5.5 models think by default, and thinking counts toward
+	// max_tokens, so they get room enough to avoid truncated replies.
+	maxTokens = 64000
 
 	// serverSideFallbackBeta enables `fallbacks: "default"`, which re-runs a
 	// request declined by a safety classifier on Anthropic's recommended model.
@@ -73,20 +72,6 @@ func (a *Adapter) Models() []domain.Model {
 		SupportedEfforts: []string{"low", "medium", "high", "xhigh", "max"},
 		DefaultEffort:    "medium",
 	}
-	opus47Thinking := domain.ThinkingCapability{
-		Supported:        true,
-		EnabledByDefault: false,
-		CanDisable:       true,
-		SupportedEfforts: []string{"low", "medium", "high", "xhigh", "max"},
-		DefaultEffort:    "xhigh",
-	}
-	sonnet46Thinking := domain.ThinkingCapability{
-		Supported:        true,
-		EnabledByDefault: false,
-		CanDisable:       true,
-		SupportedEfforts: []string{"low", "medium", "high", "max"},
-		DefaultEffort:    "medium",
-	}
 	// Haiku 5.5 thinks by default and accepts `disabled` at effort high or
 	// below. The API defaults to medium effort.
 	haiku55Thinking := domain.ThinkingCapability{
@@ -119,22 +104,6 @@ func (a *Adapter) Models() []domain.Model {
 			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 2, Output: 10, CacheRead: 0.10, CacheWrite: 2.50}},
 		},
 		{
-			ID:         "claude-opus-4-7",
-			Name:       "Claude Opus 4.7",
-			ProviderID: providerID,
-			Vision:     true,
-			Thinking:   opus47Thinking,
-			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 5, Output: 25, CacheRead: 0.50, CacheWrite: 6.25}},
-		},
-		{
-			ID:         "claude-sonnet-4-6",
-			Name:       "Claude Sonnet 4.6",
-			ProviderID: providerID,
-			Vision:     true,
-			Thinking:   sonnet46Thinking,
-			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 3, Output: 15, CacheRead: 0.30, CacheWrite: 3.75}},
-		},
-		{
 			ID:         "claude-haiku-5-5",
 			Name:       "Claude Haiku 5.5",
 			ProviderID: providerID,
@@ -153,8 +122,10 @@ func (a *Adapter) Models() []domain.Model {
 	// each model falls back to, so these models get the prices of every
 	// model devpad knows, the fallback targets it does not offer among them.
 	fallbackPricing := map[string]domain.Pricing{
-		"claude-opus-5":   {TokenPrices: domain.TokenPrices{Input: 5, Output: 25, CacheRead: 0.50, CacheWrite: 6.25}},
-		"claude-opus-4-8": {TokenPrices: domain.TokenPrices{Input: 5, Output: 25, CacheRead: 0.50, CacheWrite: 6.25}},
+		"claude-opus-5":     {TokenPrices: domain.TokenPrices{Input: 5, Output: 25, CacheRead: 0.50, CacheWrite: 6.25}},
+		"claude-opus-4-8":   {TokenPrices: domain.TokenPrices{Input: 5, Output: 25, CacheRead: 0.50, CacheWrite: 6.25}},
+		"claude-opus-4-7":   {TokenPrices: domain.TokenPrices{Input: 5, Output: 25, CacheRead: 0.50, CacheWrite: 6.25}},
+		"claude-sonnet-4-6": {TokenPrices: domain.TokenPrices{Input: 3, Output: 15, CacheRead: 0.30, CacheWrite: 3.75}},
 	}
 	for _, model := range models {
 		fallbackPricing[model.ID] = *model.Pricing
@@ -209,7 +180,7 @@ func buildAnthropicRequest(req aiprovider.StreamRequest, model domain.Model) map
 	body := map[string]any{
 		"model":      req.Model,
 		"messages":   messages,
-		"max_tokens": maxTokensFor(req.Model),
+		"max_tokens": maxTokens,
 		"stream":     true,
 		// Automatic caching puts a breakpoint on the last block and moves it
 		// forward as the conversation grows, so each request in an agent loop
@@ -433,18 +404,15 @@ func buildThinkingConfig(req aiprovider.StreamRequest, model domain.Model) map[s
 		Thinking: req.Thinking,
 	}
 	if domain.ThinkingEnabledForRequest(model, request) {
-		if isClaude55(model.ID) {
-			// These models return empty thinking blocks by default, which would
-			// hide both their reasoning and the progress notes they now write
-			// between tool calls. If an earlier turn no longer matches what the
-			// model produced, drop the stale thinking rather than fail.
-			return map[string]any{
-				"type":          "adaptive",
-				"display":       "summarized",
-				"block_binding": map[string]any{"prefix_mismatch_behavior": "drop_block"},
-			}
+		// Claude 5.5 models return empty thinking blocks by default, which
+		// would hide both their reasoning and the progress notes they write
+		// between tool calls. If an earlier turn no longer matches what the
+		// model produced, drop the stale thinking rather than fail.
+		return map[string]any{
+			"type":          "adaptive",
+			"display":       "summarized",
+			"block_binding": map[string]any{"prefix_mismatch_behavior": "drop_block"},
 		}
-		return map[string]any{"type": "adaptive"}
 	}
 
 	if req.Thinking != nil && req.Thinking.Enabled != nil && !*req.Thinking.Enabled && model.Thinking.CanDisable {
@@ -466,26 +434,10 @@ func ephemeralCache() map[string]any {
 	return map[string]any{"type": "ephemeral"}
 }
 
-func isClaude55(modelID string) bool {
-	switch modelID {
-	case "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5":
-		return true
-	default:
-		return false
-	}
-}
-
 // usesServerSideFallback reports whether a model takes `fallbacks: "default"`.
 // Haiku 5.5 has no server-side fallback: a declined request stays declined.
 func usesServerSideFallback(modelID string) bool {
 	return modelID == "claude-opus-5-5" || modelID == "claude-sonnet-5-5"
-}
-
-func maxTokensFor(modelID string) int {
-	if isClaude55(modelID) {
-		return claude55MaxTokens
-	}
-	return maxTokens
 }
 
 func requestBetas(body map[string]any) []string {

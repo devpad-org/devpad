@@ -171,7 +171,7 @@ func TestAnthropicAdapter_FallbackModelsArePriced(t *testing.T) {
 	if !ok {
 		t.Fatal("expected claude-opus-5-5 in the catalog")
 	}
-	for _, id := range []string{"claude-opus-5", "claude-opus-4-8", "claude-sonnet-5-5"} {
+	for _, id := range []string{"claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6", "claude-sonnet-5-5"} {
 		if _, ok := model.FallbackPricing[id]; !ok {
 			t.Errorf("expected the prices of %s, a model a request may fall back to", id)
 		}

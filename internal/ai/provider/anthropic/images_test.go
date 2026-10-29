@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildAnthropicRequest_SendsImages(t *testing.T) {
-	req := aiprovider.StreamRequest{Model: "claude-sonnet-4-6", Turns: testkit.ImageTurns()}
+	req := aiprovider.StreamRequest{Model: "claude-sonnet-5-5", Turns: testkit.ImageTurns()}
 	body := testkit.JSON(t, buildAnthropicRequest(req, mustAnthropicModel(t, req.Model)))
 	messages := body.(map[string]any)["messages"].([]any)
 

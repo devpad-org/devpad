@@ -11,7 +11,7 @@ import (
 
 func TestBuildAnthropicRequest_SystemPromptMapping(t *testing.T) {
 	req := aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleSystem, "You are a helpful assistant."),
 			domain.NewTextTurn(domain.RoleUser, "Hello"),
@@ -35,7 +35,7 @@ func TestBuildAnthropicRequest_SystemPromptMapping(t *testing.T) {
 
 func TestBuildAnthropicRequest_MultipleSystemPrompts(t *testing.T) {
 	req := aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleSystem, "First system prompt."),
 			domain.NewTextTurn(domain.RoleSystem, "Second system prompt."),
@@ -110,7 +110,7 @@ func systemText(t *testing.T, body map[string]any) string {
 
 func TestBuildAnthropicRequest_ToolDefinitions(t *testing.T) {
 	req := aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
 		Tools: []domain.ToolDefinition{
 			{
@@ -156,7 +156,7 @@ func TestBuildAnthropicRequest_ToolDefinitions(t *testing.T) {
 
 func TestBuildAnthropicRequest_ToolCallInAssistantMessage(t *testing.T) {
 	req := aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleUser, "What's the weather?"),
 			{
@@ -212,7 +212,7 @@ func TestBuildAnthropicRequest_ToolCallInAssistantMessage(t *testing.T) {
 
 func TestBuildAnthropicRequest_ToolResultMessage(t *testing.T) {
 	req := aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleUser, "What's the weather?"),
 			{
@@ -259,77 +259,6 @@ func TestBuildAnthropicRequest_ToolResultMessage(t *testing.T) {
 	}
 	if toolResult["content"] != "Temperature is 72F" {
 		t.Fatalf("expected result content, got %v", toolResult["content"])
-	}
-}
-
-func TestBuildAnthropicRequest_AdaptiveThinkingEnabled(t *testing.T) {
-	enabled := true
-	req := aiprovider.StreamRequest{
-		Model:    "claude-sonnet-4-6",
-		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
-		Thinking: &domain.ThinkingConfig{Enabled: &enabled},
-	}
-
-	body := buildAnthropicRequest(req, mustAnthropicModel(t, req.Model))
-
-	thinking := body["thinking"].(map[string]any)
-	if thinking["type"] != "adaptive" {
-		t.Fatalf("expected thinking type adaptive, got %v", thinking["type"])
-	}
-	if _, ok := thinking["budget_tokens"]; ok {
-		t.Fatalf("expected adaptive thinking without budget_tokens, got %v", thinking["budget_tokens"])
-	}
-	if _, ok := body["effort"]; ok {
-		t.Fatalf("expected Anthropic request not to include top-level effort, got %v", body["effort"])
-	}
-	outputConfig := body["output_config"].(map[string]any)
-	if outputConfig["effort"] != "medium" {
-		t.Fatalf("expected output_config effort medium, got %v", outputConfig["effort"])
-	}
-	if body["max_tokens"] != maxTokens {
-		t.Fatalf("expected max_tokens %d, got %v", maxTokens, body["max_tokens"])
-	}
-}
-
-func TestBuildAnthropicRequest_OpusThinkingEffort(t *testing.T) {
-	enabled := true
-	req := aiprovider.StreamRequest{
-		Model:    "claude-opus-4-7",
-		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
-		Thinking: &domain.ThinkingConfig{Enabled: &enabled, Effort: "max"},
-	}
-
-	body := buildAnthropicRequest(req, mustAnthropicModel(t, req.Model))
-
-	thinking := body["thinking"].(map[string]any)
-	if thinking["type"] != "adaptive" {
-		t.Fatalf("expected thinking type adaptive, got %v", thinking["type"])
-	}
-	if _, ok := thinking["budget_tokens"]; ok {
-		t.Fatalf("expected Opus 4.7 adaptive thinking without budget_tokens, got %v", thinking["budget_tokens"])
-	}
-	if _, ok := body["effort"]; ok {
-		t.Fatalf("expected Anthropic request not to include top-level effort, got %v", body["effort"])
-	}
-	outputConfig := body["output_config"].(map[string]any)
-	if outputConfig["effort"] != "max" {
-		t.Fatalf("expected output_config effort max, got %v", outputConfig["effort"])
-	}
-}
-
-func TestBuildAnthropicRequest_ThinkingDisabled(t *testing.T) {
-	disabled := false
-	req := aiprovider.StreamRequest{
-		Model:    "claude-sonnet-4-6",
-		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
-		Thinking: &domain.ThinkingConfig{Enabled: &disabled},
-	}
-
-	body := buildAnthropicRequest(req, mustAnthropicModel(t, req.Model))
-
-	thinking := body["thinking"].(map[string]any)
-	if thinking["type"] != "disabled" {
-		t.Fatalf("expected thinking type disabled, got %v", thinking["type"])
 	}
 }
 
@@ -428,32 +357,16 @@ func TestBuildAnthropicRequest_Claude55Thinking(t *testing.T) {
 			} else if !tt.noFallbacks && fallbacks != "default" {
 				t.Fatalf("expected fallbacks default, got %v", fallbacks)
 			}
-			if body["max_tokens"] != claude55MaxTokens {
-				t.Fatalf("expected max_tokens %d, got %v", claude55MaxTokens, body["max_tokens"])
+			if body["max_tokens"] != maxTokens {
+				t.Fatalf("expected max_tokens %d, got %v", maxTokens, body["max_tokens"])
 			}
 		})
 	}
 }
 
-func TestBuildAnthropicRequest_OlderModelsOmitFallbacks(t *testing.T) {
-	req := aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
-		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
-	}
-
-	body := buildAnthropicRequest(req, mustAnthropicModel(t, req.Model))
-
-	if _, ok := body["fallbacks"]; ok {
-		t.Fatalf("expected no fallbacks for Opus 4.7, got %v", body["fallbacks"])
-	}
-	if _, ok := body["thinking"]; ok {
-		t.Fatalf("expected Opus 4.7 to omit thinking by default, got %v", body["thinking"])
-	}
-}
-
 func TestBuildAnthropicRequest_MixedContentMessage(t *testing.T) {
 	req := aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{
 			{
 				Role: domain.RoleAssistant,

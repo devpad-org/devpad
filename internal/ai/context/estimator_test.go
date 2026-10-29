@@ -33,7 +33,7 @@ func TestEstimator_AccountsForRepresentativeAgentTranscript(t *testing.T) {
 	enabled := true
 	req := Request{
 		ProviderID: "anthropic",
-		ModelID:    "claude-sonnet-4-6",
+		ModelID:    "claude-sonnet-5-5",
 		Thinking:   &domain.ThinkingConfig{Enabled: &enabled, Effort: "medium"},
 		Tools: []domain.ToolDefinition{{
 			Type: "function",
@@ -108,7 +108,7 @@ func TestEstimator_AccountsForRepresentativeAgentTranscript(t *testing.T) {
 
 func TestEstimateChatRequest_UsesResolvedModelProvider(t *testing.T) {
 	estimate := EstimateChatRequest(domain.Model{
-		ID:         "claude-sonnet-4-6",
+		ID:         "claude-sonnet-5-5",
 		ProviderID: "anthropic",
 	}, domain.ChatRequest{
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
@@ -117,8 +117,8 @@ func TestEstimateChatRequest_UsesResolvedModelProvider(t *testing.T) {
 	if estimate.ProviderID != "anthropic" {
 		t.Fatalf("ProviderID = %q, want anthropic", estimate.ProviderID)
 	}
-	if estimate.ModelID != "claude-sonnet-4-6" {
-		t.Fatalf("ModelID = %q, want claude-sonnet-4-6", estimate.ModelID)
+	if estimate.ModelID != "claude-sonnet-5-5" {
+		t.Fatalf("ModelID = %q, want claude-sonnet-5-5", estimate.ModelID)
 	}
 	assertPositive(t, "total tokens", estimate.TotalTokens)
 }
@@ -132,8 +132,6 @@ func TestBudgetFor_ReturnsProviderModelDefaults(t *testing.T) {
 	}{
 		{name: "anthropic opus 5.5 context", providerID: "anthropic", modelID: "claude-opus-5-5", wantBudget: 1000000},
 		{name: "anthropic sonnet 5.5 context", providerID: "anthropic", modelID: "claude-sonnet-5-5", wantBudget: 1000000},
-		{name: "anthropic opus long context", providerID: "anthropic", modelID: "claude-opus-4-7", wantBudget: 1000000},
-		{name: "anthropic sonnet long context", providerID: "anthropic", modelID: "claude-sonnet-4-6", wantBudget: 1000000},
 		{name: "anthropic haiku 5.5 context", providerID: "anthropic", modelID: "claude-haiku-5-5", wantBudget: 1000000},
 		{name: "anthropic older haiku context", providerID: "anthropic", modelID: "claude-haiku-4-5", wantBudget: 200000},
 		{name: "openai gpt 5.4 context", providerID: "openai", modelID: "gpt-5.4", wantBudget: 1050000},

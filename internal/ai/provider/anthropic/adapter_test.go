@@ -27,8 +27,8 @@ func TestAnthropicAdapter_Metadata(t *testing.T) {
 	}
 
 	models := adapter.Models()
-	if len(models) != 5 {
-		t.Fatalf("expected 5 models, got %d", len(models))
+	if len(models) != 3 {
+		t.Fatalf("expected 3 models, got %d", len(models))
 	}
 
 	allEfforts := []string{"low", "medium", "high", "xhigh", "max"}
@@ -55,20 +55,6 @@ func TestAnthropicAdapter_Metadata(t *testing.T) {
 			canDisable:       true,
 			efforts:          allEfforts,
 			defaultEffort:    "medium",
-		},
-		{
-			id:            "claude-opus-4-7",
-			name:          "Claude Opus 4.7",
-			canDisable:    true,
-			efforts:       allEfforts,
-			defaultEffort: "xhigh",
-		},
-		{
-			id:            "claude-sonnet-4-6",
-			name:          "Claude Sonnet 4.6",
-			canDisable:    true,
-			efforts:       []string{"low", "medium", "high", "max"},
-			defaultEffort: "medium",
 		},
 		{
 			id:               "claude-haiku-5-5",
@@ -115,7 +101,6 @@ func TestAnthropicAdapter_StreamSendsBetasForClaude55(t *testing.T) {
 		{model: "claude-opus-5-5", wantBeta: "server-side-fallback-2026-07-01,thinking-binding-controls-2026-08-01"},
 		{model: "claude-sonnet-5-5", wantBeta: "server-side-fallback-2026-07-01,thinking-binding-controls-2026-08-01"},
 		{model: "claude-haiku-5-5", wantBeta: "thinking-binding-controls-2026-08-01"},
-		{model: "claude-opus-4-7", wantBeta: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
@@ -284,7 +269,7 @@ func TestAnthropicAdapter_StreamTextContent(t *testing.T) {
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		response := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-7"}}
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-5-5"}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
@@ -310,7 +295,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err != nil {
@@ -364,7 +349,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err != nil {
@@ -386,7 +371,7 @@ func TestAnthropicAdapter_StreamThinkingContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		response := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6"}}
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5-5"}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}
@@ -418,7 +403,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-sonnet-4-6",
+		Model: "claude-sonnet-5-5",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err != nil {
@@ -442,7 +427,7 @@ func TestAnthropicAdapter_StreamToolUse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		response := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-7"}}
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-5-5"}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_123","name":"get_weather"}}
@@ -468,7 +453,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "what's the weather")},
 		Tools: []domain.ToolDefinition{
 			{
@@ -509,7 +494,7 @@ func TestAnthropicAdapter_StreamMultipleToolUsesAsSingleEvent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		response := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-7"}}
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-5-5"}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file"}}
@@ -541,7 +526,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "read two files")},
 	})
 	if err != nil {
@@ -574,7 +559,7 @@ func TestAnthropicAdapter_ErrorHandling(t *testing.T) {
 	adapter.client = server.Client()
 
 	_, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "bad-key"}, aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 
