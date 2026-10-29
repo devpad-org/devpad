@@ -249,7 +249,11 @@ pre {
     padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
 
+  /* Without the auto margin the overlay's flex row would stretch the sheet to
+     exactly its height, and a dialog's own `overflow: hidden` would clip what
+     runs past the screen instead of letting the overlay scroll to it. */
   body .modal-overlay > .modal:not([role='alertdialog']) {
+    align-self: flex-start;
     width: 100%;
     max-width: none;
     min-height: 100%;
