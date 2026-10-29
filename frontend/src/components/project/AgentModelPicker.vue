@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, watch } from 'vue'
+import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
 import { useAiModelStore } from '@/stores/aiModels'
 import { CODING_AGENT_ID, defaultAIModel, defaultThinkingEffort, thinkingEffortLabel } from '@/utils/aiModels'
 
@@ -13,6 +14,13 @@ const store = useAiModelStore()
 const current = computed(() => store.models.find((m) => m.id === model.value) ?? null)
 const efforts = computed(() => current.value?.thinking.supportedEfforts ?? [])
 const agentDefaults = computed(() => store.agentDefaults[props.agentId])
+
+const modelOptions = computed<SelectMenuOption[]>(() =>
+  store.models.map((m) => ({ value: m.id, label: m.name, description: m.providerName })),
+)
+const effortOptions = computed<SelectMenuOption[]>(() =>
+  efforts.value.map((e) => ({ value: e, label: thinkingEffortLabel(e) })),
+)
 
 function applyDefaults() {
   if (!current.value) {
@@ -40,12 +48,15 @@ onMounted(async () => {
       No AI models configured. Add a provider key in Settings.
     </span>
     <template v-else>
-      <select v-model="model" class="picker-select" aria-label="Model">
-        <option v-for="m in store.models" :key="m.id" :value="m.id">{{ m.name }}</option>
-      </select>
-      <select v-if="efforts.length > 0" v-model="effort" class="picker-select" aria-label="Reasoning effort">
-        <option v-for="e in efforts" :key="e" :value="e">{{ thinkingEffortLabel(e) }}</option>
-      </select>
+      <SelectMenu v-model="model" class="picker-select" :options="modelOptions" title="Model" />
+      <SelectMenu
+        v-if="efforts.length > 0"
+        v-model="effort"
+        class="picker-select"
+        :options="effortOptions"
+        title="Reasoning effort"
+        prefix="Effort"
+      />
     </template>
   </div>
 </template>
@@ -59,19 +70,7 @@ onMounted(async () => {
 }
 
 .picker-select {
-  padding: var(--space-1) var(--space-2);
-  background: var(--bg-base);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: 0.8rem;
   max-width: 220px;
-}
-
-.picker-select:focus {
-  outline: none;
-  border-color: var(--accent-blue);
 }
 
 .picker-empty {

@@ -11,6 +11,7 @@ import {
   type RepoDiscovery,
 } from '@/api/projects'
 import { credentialKind, REVOKE_REMINDER } from '@/components/project/credentials'
+import SelectMenu from '@/components/SelectMenu.vue'
 
 // Turns a standalone workspace into a project. A repo at /workspace stays
 // where it is and the workspace becomes the project's workspace; a repo in a
@@ -437,9 +438,15 @@ function formatBytes(bytes: number): string {
           </div>
           <div class="form-group">
             <label class="form-label" for="convert-branch">Default branch</label>
-            <select v-if="selectedRepo && allBranchesNamed" id="convert-branch" v-model="defaultBranch" class="form-input form-mono">
-              <option v-for="branch in selectedRepo.branches" :key="branch" :value="branch">{{ branch }}</option>
-            </select>
+            <SelectMenu
+              v-if="selectedRepo && allBranchesNamed"
+              id="convert-branch"
+              v-model="defaultBranch"
+              :options="selectedRepo.branches.map((branch) => ({ value: branch, label: branch }))"
+              title="Default branch"
+              variant="field"
+              mono
+            />
             <template v-else>
               <input
                 id="convert-branch"

@@ -17,7 +17,7 @@ import type { BranchChange } from '@/components/ide/ideShell'
 import HandoffModal from '@/components/project/HandoffModal.vue'
 import type { Task } from '@/api/tasks'
 import { useActiveProjectStore } from '@/stores/activeProject'
-import ComposerSelect, { type ComposerSelectOption } from '@/components/ide/ComposerSelect.vue'
+import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
 import {
   hasToolResult,
   planStepsFromToolArgs,
@@ -243,15 +243,15 @@ const canSelectThinkingEffort = computed(() => {
   return Boolean(model?.thinking.supported && (model.thinking.supportedEfforts?.length ?? 0) > 0)
 })
 
-const agentOptions = computed<ComposerSelectOption[]>(() =>
+const agentOptions = computed<SelectMenuOption[]>(() =>
   aiAgentStore.agents.map((agent) => ({ value: agent.id, label: agent.name, description: agent.purpose || undefined })),
 )
 
-const modelOptions = computed<ComposerSelectOption[]>(() =>
+const modelOptions = computed<SelectMenuOption[]>(() =>
   models.value.map((model) => ({ value: model.id, label: model.name, description: model.providerName })),
 )
 
-const thinkingEffortOptions = computed<ComposerSelectOption[]>(() =>
+const thinkingEffortOptions = computed<SelectMenuOption[]>(() =>
   (currentModel.value?.thinking.supportedEfforts ?? []).map((effort) => ({ value: effort, label: thinkingEffortLabel(effort) })),
 )
 
@@ -1981,18 +1981,20 @@ function scrollToBottom(options: { force?: boolean } = {}) {
             @change="onImagesPicked"
           />
           <template v-if="models.length > 0">
-            <ComposerSelect
+            <SelectMenu
               class="toolbar-select toolbar-select--agent"
               :model-value="props.selectedAgentId"
               :options="agentOptions"
               title="Agent"
+              placement="above"
               @update:model-value="selectAgent"
             />
-            <ComposerSelect
+            <SelectMenu
               v-model="selectedModel"
               class="toolbar-select toolbar-select--model"
               :options="modelOptions"
               title="Model"
+              placement="above"
             />
             <button
               v-if="canToggleThinking"
@@ -2006,13 +2008,14 @@ function scrollToBottom(options: { force?: boolean } = {}) {
               <span class="thinking-toggle-label">Thinking</span>
               <span class="thinking-toggle-state">{{ thinkingEnabled ? 'On' : 'Off' }}</span>
             </button>
-            <ComposerSelect
+            <SelectMenu
               v-if="canSelectThinkingEffort && thinkingEnabled"
               v-model="thinkingEffort"
               class="toolbar-select toolbar-select--effort"
               :options="thinkingEffortOptions"
               title="Reasoning effort"
               prefix="Effort"
+              placement="above"
             />
           </template>
           <span v-else class="agent-badge">No Models</span>

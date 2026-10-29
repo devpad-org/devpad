@@ -1,27 +1,41 @@
-<script setup lang="ts">
+<script setup lang="ts" generic="T extends string | number">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useIsMobile } from '@/composables/useMediaQuery'
 
-export interface ComposerSelectOption {
-  value: string
+export interface SelectMenuOption<V extends string | number = string> {
+  value: V
   label: string
   description?: string
 }
 
-const props = defineProps<{
-  modelValue: string
-  options: ComposerSelectOption[]
+const props = withDefaults(defineProps<{
+  modelValue: T
+  options: SelectMenuOption<T>[]
   title: string
   prefix?: string
-}>()
+  placeholder?: string
+  // 'chip' is a compact toolbar control; 'field' fills its row like a form input.
+  variant?: 'chip' | 'field'
+  // The side the popover opens on when there's room; it flips when there isn't.
+  placement?: 'above' | 'below'
+  mono?: boolean
+  disabled?: boolean
+  id?: string
+}>(), {
+  prefix: undefined,
+  placeholder: 'None',
+  variant: 'chip',
+  placement: 'below',
+  id: undefined,
+})
 
 const emit = defineEmits<{
-  'update:modelValue': [value: string]
+  'update:modelValue': [value: T]
 }>()
 
-// A compact picker for the chat composer. Native selects get forced to 16px on
+// A select that stays usable on phones. Native selects get forced to 16px on
 // touch devices (to stop iOS focus zoom) and open a generic OS picker, so this
-// renders a small chip that opens a popover on desktop and a bottom sheet on phones.
+// renders a trigger that opens a popover on desktop and a bottom sheet on phones.
 const isMobile = useIsMobile()
 const open = ref(false)
 const triggerEl = ref<HTMLButtonElement | null>(null)
@@ -32,20 +46,28 @@ const selected = computed(() => props.options.find((option) => option.value === 
 
 const POPOVER_GAP = 6
 const VIEWPORT_MARGIN = 8
+const MIN_POPOVER_HEIGHT = 160
 
 function positionPopover() {
   const rect = triggerEl.value?.getBoundingClientRect()
   if (!rect) return
+  const roomAbove = rect.top - POPOVER_GAP - VIEWPORT_MARGIN
+  const roomBelow = window.innerHeight - rect.bottom - POPOVER_GAP - VIEWPORT_MARGIN
+  const [preferred, other] = props.placement === 'above' ? [roomAbove, roomBelow] : [roomBelow, roomAbove]
+  const flip = preferred < MIN_POPOVER_HEIGHT && other > preferred
+  const above = (props.placement === 'above') !== flip
   popoverStyle.value = {
     left: `${Math.max(VIEWPORT_MARGIN, rect.left)}px`,
-    bottom: `${window.innerHeight - rect.top + POPOVER_GAP}px`,
+    ...(above
+      ? { bottom: `${window.innerHeight - rect.top + POPOVER_GAP}px` }
+      : { top: `${rect.bottom + POPOVER_GAP}px` }),
     minWidth: `${Math.max(rect.width, 180)}px`,
-    maxHeight: `${Math.max(160, rect.top - POPOVER_GAP - VIEWPORT_MARGIN)}px`,
+    maxHeight: `${Math.max(MIN_POPOVER_HEIGHT, above ? roomAbove : roomBelow)}px`,
   }
 }
 
 // The popover opens at the trigger's left edge; shift it back on-screen when the
-// composer sits near the right edge (e.g. the AI side panel).
+// trigger sits near the right edge (e.g. the AI side panel).
 function clampPopover() {
   const menu = menuEl.value
   if (!menu) return
@@ -68,7 +90,7 @@ function focusOption(index: number) {
 }
 
 async function openMenu() {
-  if (open.value || props.options.length === 0) return
+  if (open.value || props.disabled || props.options.length === 0) return
   if (!isMobile.value) positionPopover()
   open.value = true
   await nextTick()
@@ -88,7 +110,7 @@ function toggle() {
   else void openMenu()
 }
 
-function select(value: string) {
+function select(value: T) {
   if (value !== props.modelValue) emit('update:modelValue', value)
   close()
 }
@@ -123,13 +145,15 @@ function onMenuKeydown(event: KeyboardEvent) {
     case 'Escape':
     case 'Tab':
       event.preventDefault()
+      // A select in a modal shouldn't let Escape close the modal too.
+      event.stopPropagation()
       close()
       break
   }
 }
 
 // On phones the window resizes as the keyboard hides, which is expected right
-// after tapping the chip; only desktop popovers need to follow the trigger.
+// after tapping the trigger; only desktop popovers need to follow the trigger.
 function onWindowResize() {
   if (!isMobile.value) {
     positionPopover()
@@ -148,64 +172,66 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <span class="composer-select-root">
+  <span class="select-menu-root" :class="[`is-${variant}`, { mono }]">
     <button
+      :id="id"
       ref="triggerEl"
       type="button"
-      class="composer-select"
+      class="select-menu"
       :class="{ open }"
       :title="title"
-      :aria-label="`${title}: ${selected?.label ?? 'None'}`"
+      :disabled="disabled"
+      :aria-label="`${title}: ${selected?.label ?? placeholder}`"
       aria-haspopup="listbox"
       :aria-expanded="open"
       @click="toggle"
       @keydown="onTriggerKeydown"
     >
-      <span v-if="prefix" class="composer-select-prefix">{{ prefix }}</span>
-      <span class="composer-select-label">{{ selected?.label ?? 'None' }}</span>
-      <svg class="composer-select-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <span v-if="prefix" class="select-menu-prefix">{{ prefix }}</span>
+      <span class="select-menu-label" :class="{ empty: !selected }">{{ selected?.label ?? placeholder }}</span>
+      <svg class="select-menu-chevron" :width="variant === 'field' ? 12 : 10" :height="variant === 'field' ? 12 : 10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="m6 9 6 6 6-6" />
       </svg>
     </button>
 
     <Teleport to="body">
-      <Transition :name="isMobile ? 'composer-sheet' : 'composer-popover'">
+      <Transition :name="isMobile ? 'select-sheet' : 'select-popover'">
         <div
           v-if="open"
-          class="composer-select-layer"
-          :class="{ 'is-sheet': isMobile }"
+          class="select-menu-layer"
+          :class="{ 'is-sheet': isMobile, mono }"
           @click.self="close()"
         >
           <div
             ref="menuEl"
-            class="composer-select-menu"
+            class="select-menu-menu"
             :style="isMobile ? undefined : popoverStyle"
             @keydown="onMenuKeydown"
           >
-            <div v-if="isMobile" class="composer-sheet-header">
-              <span class="composer-sheet-grabber" aria-hidden="true" />
-              <span class="composer-sheet-title">{{ title }}</span>
+            <div v-if="isMobile" class="select-sheet-header">
+              <span class="select-sheet-grabber" aria-hidden="true" />
+              <span class="select-sheet-title">{{ title }}</span>
             </div>
-            <div class="composer-select-list" role="listbox" :aria-label="title">
+            <div class="select-menu-list" role="listbox" :aria-label="title">
               <button
                 v-for="option in options"
                 :key="option.value"
                 type="button"
                 role="option"
-                class="composer-select-option"
+                class="select-menu-option"
                 :class="{ selected: option.value === modelValue }"
                 :aria-selected="option.value === modelValue"
                 @click="select(option.value)"
               >
-                <span class="composer-select-option-text">
-                  <span class="composer-select-option-label">{{ option.label }}</span>
-                  <span v-if="option.description" class="composer-select-option-description">
+                <span class="select-menu-option-text">
+                  <span class="select-menu-option-label">{{ option.label }}</span>
+                  <span v-if="option.description" class="select-menu-option-description">
                     {{ option.description }}
                   </span>
                 </span>
                 <svg
                   v-if="option.value === modelValue"
-                  class="composer-select-check"
+                  class="select-menu-check"
                   width="14"
                   height="14"
                   viewBox="0 0 24 24"
@@ -228,12 +254,13 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.composer-select-root {
+/* :where() keeps the root's sizing below any class a parent puts on it. */
+:where(.select-menu-root) {
   display: inline-flex;
   min-width: 0;
 }
 
-.composer-select {
+.select-menu {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -250,42 +277,92 @@ onUnmounted(() => {
   transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
 }
 
-.composer-select:hover,
-.composer-select.open {
+.select-menu:hover:not(:disabled),
+.select-menu.open {
   border-color: var(--border-strong);
   color: var(--text-primary);
 }
 
-.composer-select-prefix {
+.select-menu:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.select-menu-prefix {
   flex-shrink: 0;
   color: var(--text-tertiary);
 }
 
-.composer-select-label {
+.select-menu-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.composer-select-chevron {
+.select-menu-label.empty {
+  color: var(--text-muted);
+}
+
+.select-menu-chevron {
   flex-shrink: 0;
   color: var(--text-tertiary);
   transition: transform var(--transition-fast);
 }
 
-.composer-select.open .composer-select-chevron {
+.select-menu.open .select-menu-chevron {
   transform: rotate(180deg);
 }
 
+/* Field: sized and colored like .form-input, filling its row. */
+:where(.select-menu-root.is-field) {
+  display: flex;
+  width: 100%;
+}
+
+.is-field .select-menu {
+  flex: 1;
+  gap: var(--space-2);
+  min-height: 35px;
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+.is-field .select-menu-label {
+  flex: 1;
+}
+
+.is-field .select-menu:focus-visible,
+.is-field .select-menu.open {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: none;
+}
+
+.is-field .select-menu:disabled {
+  color: var(--text-muted);
+}
+
+.mono .select-menu-label,
+.mono .select-menu-option-label {
+  font-family: var(--font-mono);
+}
+
+.is-field.mono .select-menu {
+  font-size: 0.8rem;
+}
+
 /* Desktop popover */
-.composer-select-layer {
+.select-menu-layer {
   position: fixed;
   inset: 0;
   z-index: 1100;
 }
 
-.composer-select-menu {
+.select-menu-menu {
   position: fixed;
   display: flex;
   flex-direction: column;
@@ -297,7 +374,7 @@ onUnmounted(() => {
   box-shadow: var(--shadow-popover);
 }
 
-.composer-select-list {
+.select-menu-list {
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -306,7 +383,7 @@ onUnmounted(() => {
   overscroll-behavior: contain;
 }
 
-.composer-select-option {
+.select-menu-option {
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -319,49 +396,49 @@ onUnmounted(() => {
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.composer-select-option:hover,
-.composer-select-option:focus-visible {
+.select-menu-option:hover,
+.select-menu-option:focus-visible {
   background: var(--bg-hover);
   color: var(--text-primary);
   box-shadow: none;
 }
 
-.composer-select-option.selected {
+.select-menu-option.selected {
   color: var(--text-primary);
 }
 
-.composer-select-option-text {
+.select-menu-option-text {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-width: 0;
 }
 
-.composer-select-option-label,
-.composer-select-option-description {
+.select-menu-option-label,
+.select-menu-option-description {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.composer-select-option-description {
+.select-menu-option-description {
   font-size: 0.68rem;
   color: var(--text-tertiary);
 }
 
-.composer-select-check {
+.select-menu-check {
   flex-shrink: 0;
   color: var(--accent);
 }
 
 /* Phone bottom sheet */
-.composer-select-layer.is-sheet {
+.select-menu-layer.is-sheet {
   display: flex;
   align-items: flex-end;
   background: var(--bg-overlay);
 }
 
-.is-sheet .composer-select-menu {
+.is-sheet .select-menu-menu {
   position: relative;
   width: 100%;
   max-width: none;
@@ -373,7 +450,7 @@ onUnmounted(() => {
   box-shadow: var(--shadow-strong);
 }
 
-.composer-sheet-header {
+.select-sheet-header {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -382,14 +459,14 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.composer-sheet-grabber {
+.select-sheet-grabber {
   width: 36px;
   height: 4px;
   border-radius: 2px;
   background: var(--border-strong);
 }
 
-.composer-sheet-title {
+.select-sheet-title {
   align-self: flex-start;
   font-size: 0.72rem;
   font-weight: 600;
@@ -398,91 +475,99 @@ onUnmounted(() => {
   color: var(--text-tertiary);
 }
 
-.is-sheet .composer-select-list {
+.is-sheet .select-menu-list {
   gap: 2px;
   padding: 0 var(--space-2) var(--space-3);
 }
 
-.is-sheet .composer-select-option {
+.is-sheet .select-menu-option {
   min-height: 48px;
   padding: 10px var(--space-3);
   border-radius: var(--radius-lg);
   font-size: 1.05rem;
 }
 
-.is-sheet .composer-select-option:hover {
+.is-sheet .select-menu-option:hover {
   background: none;
 }
 
-.is-sheet .composer-select-option.selected {
+.is-sheet .select-menu-option.selected {
   background: var(--bg-selected);
 }
 
-.is-sheet .composer-select-option-description {
+.is-sheet .select-menu-option-description {
   font-size: 0.85rem;
 }
 
-.is-sheet .composer-select-check {
+.is-sheet .select-menu-check {
   width: 18px;
   height: 18px;
 }
 
 /* Transitions — the layer's own transition sets the duration Vue waits for. */
-.composer-popover-enter-active,
-.composer-popover-leave-active {
+.select-popover-enter-active,
+.select-popover-leave-active {
   transition: opacity 120ms ease;
 }
 
-.composer-popover-enter-active .composer-select-menu,
-.composer-popover-leave-active .composer-select-menu {
+.select-popover-enter-active .select-menu-menu,
+.select-popover-leave-active .select-menu-menu {
   transition: transform 120ms ease;
 }
 
-.composer-popover-enter-from,
-.composer-popover-leave-to {
+.select-popover-enter-from,
+.select-popover-leave-to {
   opacity: 0;
 }
 
-.composer-popover-enter-from .composer-select-menu,
-.composer-popover-leave-to .composer-select-menu {
+.select-popover-enter-from .select-menu-menu,
+.select-popover-leave-to .select-menu-menu {
   transform: translateY(4px);
 }
 
-.composer-sheet-enter-active,
-.composer-sheet-leave-active {
+.select-sheet-enter-active,
+.select-sheet-leave-active {
   transition: opacity 220ms ease;
 }
 
-.composer-sheet-enter-active .composer-select-menu,
-.composer-sheet-leave-active .composer-select-menu {
+.select-sheet-enter-active .select-menu-menu,
+.select-sheet-leave-active .select-menu-menu {
   transition: transform 220ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 
-.composer-sheet-enter-from,
-.composer-sheet-leave-to {
+.select-sheet-enter-from,
+.select-sheet-leave-to {
   opacity: 0;
 }
 
-.composer-sheet-enter-from .composer-select-menu,
-.composer-sheet-leave-to .composer-select-menu {
+.select-sheet-enter-from .select-menu-menu,
+.select-sheet-leave-to .select-menu-menu {
   transform: translateY(100%);
 }
 
-/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: bigger chips for touch. */
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: bigger triggers for touch. */
 @media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
-  .composer-select {
+  .select-menu {
     min-height: 30px;
     padding: 4px 8px 4px 10px;
     font-size: 0.86rem;
     border-radius: var(--radius-lg);
   }
+
+  .is-field .select-menu,
+  .is-field.mono .select-menu {
+    min-height: 44px;
+    padding: var(--space-2) var(--space-3);
+    font-size: 1rem;
+    border-radius: var(--radius-md);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .composer-sheet-enter-active,
-  .composer-sheet-leave-active,
-  .composer-sheet-enter-active .composer-select-menu,
-  .composer-sheet-leave-active .composer-select-menu {
+  .select-sheet-enter-active,
+  .select-sheet-leave-active,
+  .select-sheet-enter-active .select-menu-menu,
+  .select-sheet-leave-active .select-menu-menu {
     transition-duration: 0ms;
   }
 }

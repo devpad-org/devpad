@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { aiApi, type UsagePeriod, type UsageProject, type UsageReport, type UsageTotals } from '@/api/ai'
 import { useAuthStore } from '@/stores/auth'
+import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
 import UsageChart, { type ChartColumn, type ChartSeries } from '@/components/usage/UsageChart.vue'
 import { formatCost, formatCount, formatTokens } from '@/components/usage/format'
 
@@ -95,6 +96,15 @@ const projectOptions = computed(() =>
 function projectLabel(p: UsageProject): string {
   return p.id === 0 ? 'No project' : p.name
 }
+
+const spanOptions = computed<SelectMenuOption<number>[]>(() =>
+  spans[period.value].counts.map((n) => ({ value: n, label: `Last ${n} ${spans[period.value].unit}` })),
+)
+
+const projectFilterOptions = computed<SelectMenuOption<number | 'all'>[]>(() => [
+  { value: 'all', label: 'All projects' },
+  ...projectOptions.value.map((p) => ({ value: p.id, label: projectName(p) })),
+])
 
 function projectName(p: UsageProject): string {
   return p.deleted ? `${projectLabel(p)} (deleted)` : projectLabel(p)
@@ -240,13 +250,8 @@ const byProject = computed(() => {
           {{ periodNames[p] }}
         </button>
       </div>
-      <select v-model.number="span" class="form-input filter-select" aria-label="Range">
-        <option v-for="n in spans[period].counts" :key="n" :value="n">Last {{ n }} {{ spans[period].unit }}</option>
-      </select>
-      <select v-model="projectFilter" class="form-input filter-select" aria-label="Project">
-        <option value="all">All projects</option>
-        <option v-for="p in projectOptions" :key="p.id" :value="p.id">{{ projectName(p) }}</option>
-      </select>
+      <SelectMenu v-model="span" class="filter-select" :options="spanOptions" title="Range" variant="field" />
+      <SelectMenu v-model="projectFilter" class="filter-select" :options="projectFilterOptions" title="Project" variant="field" />
       <div v-if="auth.isAdmin" class="segmented" role="radiogroup" aria-label="Whose usage">
         <button type="button" role="radio" class="segment" :class="{ active: !everyone }" :aria-checked="!everyone" @click="everyone = false">
           Mine
@@ -377,9 +382,15 @@ const byProject = computed(() => {
   width: auto;
   min-width: 140px;
   max-width: 100%;
-  padding-top: 5px;
-  padding-bottom: 5px;
-  font-size: 0.8rem;
+}
+
+/* Level with the segmented controls beside them; phones keep touch-sized fields. */
+@media (min-width: 769px) {
+  .filter-select :deep(.select-menu) {
+    min-height: 30px;
+    padding-block: 4px;
+    font-size: 0.8rem;
+  }
 }
 
 /* As tall as the selects beside it. */

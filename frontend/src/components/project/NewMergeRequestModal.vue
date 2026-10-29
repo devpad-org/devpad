@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { mergeRequestApi } from '@/api/mergeRequests'
+import SelectMenu from '@/components/SelectMenu.vue'
 import { useActiveProjectStore } from '@/stores/activeProject'
 
 // Opens a merge request between two branches the project already has, such
@@ -112,16 +113,28 @@ async function submit() {
           <div class="branch-pair">
             <div class="form-group">
               <label class="form-label" for="new-mr-source">Merge</label>
-              <select id="new-mr-source" v-model="source" class="form-input form-mono" :disabled="loading">
-                <option v-for="b in sources" :key="b" :value="b">{{ b }}</option>
-              </select>
+              <SelectMenu
+                id="new-mr-source"
+                v-model="source"
+                :options="sources.map((b) => ({ value: b, label: b }))"
+                title="Merge"
+                variant="field"
+                mono
+                :disabled="loading"
+              />
             </div>
             <span class="branch-arrow" aria-hidden="true">&rarr;</span>
             <div class="form-group">
               <label class="form-label" for="new-mr-target">Into</label>
-              <select id="new-mr-target" v-model="target" class="form-input form-mono" :disabled="loading || targets.length === 0">
-                <option v-for="b in targets" :key="b" :value="b">{{ b }}</option>
-              </select>
+              <SelectMenu
+                id="new-mr-target"
+                v-model="target"
+                :options="targets.map((b) => ({ value: b, label: b }))"
+                title="Into"
+                variant="field"
+                mono
+                :disabled="loading || targets.length === 0"
+              />
             </div>
           </div>
           <p v-if="duplicate" class="notice notice-warning">

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { projectApi } from '@/api/projects'
+import SelectMenu from '@/components/SelectMenu.vue'
 import { useActiveProjectStore } from '@/stores/activeProject'
 
 // Picks the project's default branch and the other branches that change
@@ -144,15 +145,16 @@ async function save() {
         <form class="modal-body" @submit.prevent="save">
           <div class="form-group">
             <label class="form-label" for="branches-default">Default branch</label>
-            <select
+            <SelectMenu
               id="branches-default"
-              :value="defaultBranch"
-              class="form-input form-mono"
+              :model-value="defaultBranch"
+              :options="choices.map((b) => ({ value: b, label: b }))"
+              title="Default branch"
+              variant="field"
+              mono
               :disabled="loading"
-              @change="pickDefault(($event.target as HTMLSelectElement).value)"
-            >
-              <option v-for="b in choices" :key="b" :value="b">{{ b }}</option>
-            </select>
+              @update:model-value="pickDefault"
+            />
             <p class="form-hint">Tasks and your project workspace start from it, and merge requests target it unless you pick another protected branch.</p>
           </div>
           <div class="form-group">

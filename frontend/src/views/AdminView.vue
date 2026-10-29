@@ -7,6 +7,7 @@ import type { AdminWorkspace } from '@/api/admin'
 import { aiApi, type AIModel, type AIProvider, type BudgetDefaults, type BuiltInAgentDefaults, type TokenPrices } from '@/api/ai'
 import { useAiModelStore } from '@/stores/aiModels'
 import { thinkingEffortLabel } from '@/utils/aiModels'
+import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
 
 const admin = useAdminStore()
 const auth = useAuthStore()
@@ -191,9 +192,29 @@ function agentEffortOptions(agentId: string): string[] {
   return agentDefaultModel(agentId)?.thinking.supportedEfforts ?? []
 }
 
-function onAgentModelChange(agentId: string) {
+function agentModelMenu(agentId: string): SelectMenuOption[] {
+  return [
+    { value: '', label: 'Devpad default' },
+    ...agentModelOptions(agentId).map((m) => ({
+      value: m.id,
+      label: m.name,
+      description: m.configured ? m.providerName : `${m.providerName} · not configured`,
+    })),
+  ]
+}
+
+function agentEffortMenu(agentId: string): SelectMenuOption[] {
+  return [
+    { value: '', label: 'Model default' },
+    ...agentEffortOptions(agentId).map((e) => ({ value: e, label: thinkingEffortLabel(e) })),
+  ]
+}
+
+function setAgentModel(agentId: string, model: string) {
   const form = agentDefaultForms.value[agentId]
-  if (form && !agentEffortOptions(agentId).includes(form.effort)) {
+  if (!form) return
+  form.model = model
+  if (!agentEffortOptions(agentId).includes(form.effort)) {
     form.effort = ''
   }
 }
@@ -820,23 +841,24 @@ function isSelf(user: AdminUser): boolean {
             <div class="agent-default-fields">
               <div class="form-field">
                 <label :for="'agent-model-' + agent.agentId">Model</label>
-                <select
+                <SelectMenu
                   :id="'agent-model-' + agent.agentId"
-                  v-model="agentDefaultForms[agent.agentId].model"
-                  @change="onAgentModelChange(agent.agentId)"
-                >
-                  <option value="">Devpad default</option>
-                  <option v-for="m in agentModelOptions(agent.agentId)" :key="m.id" :value="m.id">
-                    {{ m.name }} · {{ m.providerName }}{{ m.configured ? '' : ' (not configured)' }}
-                  </option>
-                </select>
+                  :model-value="agentDefaultForms[agent.agentId].model"
+                  :options="agentModelMenu(agent.agentId)"
+                  title="Model"
+                  variant="field"
+                  @update:model-value="setAgentModel(agent.agentId, $event)"
+                />
               </div>
               <div v-if="agentEffortOptions(agent.agentId).length > 0" class="form-field">
                 <label :for="'agent-effort-' + agent.agentId">Reasoning effort</label>
-                <select :id="'agent-effort-' + agent.agentId" v-model="agentDefaultForms[agent.agentId].effort">
-                  <option value="">Model default</option>
-                  <option v-for="e in agentEffortOptions(agent.agentId)" :key="e" :value="e">{{ thinkingEffortLabel(e) }}</option>
-                </select>
+                <SelectMenu
+                  :id="'agent-effort-' + agent.agentId"
+                  v-model="agentDefaultForms[agent.agentId].effort"
+                  :options="agentEffortMenu(agent.agentId)"
+                  title="Reasoning effort"
+                  variant="field"
+                />
               </div>
             </div>
             <div class="ai-provider-actions">
@@ -1286,24 +1308,6 @@ function isSelf(user: AdminUser): boolean {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   column-gap: var(--space-3);
-}
-
-.form-field select {
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-primary);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: 0.9rem;
-  transition: border-color var(--transition-fast);
-}
-
-.form-field select:focus {
-  outline: none;
-  border-color: var(--accent-border);
-  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 .agent-default-hint {

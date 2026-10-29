@@ -3,6 +3,7 @@ import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from '
 import { gitApi } from '@/api/git'
 import { projectApi, type WorkspaceBranchStatus } from '@/api/projects'
 import { mergeRequestApi } from '@/api/mergeRequests'
+import SelectMenu from '@/components/SelectMenu.vue'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { branchActionError } from './branchErrors'
 import { confirmDiscardKey, type BranchChange } from '@/components/ide/ideShell'
@@ -347,9 +348,14 @@ onUnmounted(stopTimer)
     <form v-if="showMrForm && !openMr" class="mr-form" @submit.prevent="createMr" @keydown.esc="showMrForm = false">
       <label class="mr-label" for="git-mr-title">
         Merge <code>{{ branch }}</code> into
-        <select v-if="mrTargets.length > 1" v-model="mrTarget" class="mr-target" aria-label="Target branch">
-          <option v-for="b in mrTargets" :key="b" :value="b">{{ b }}</option>
-        </select>
+        <SelectMenu
+          v-if="mrTargets.length > 1"
+          v-model="mrTarget"
+          class="mr-target"
+          :options="mrTargets.map((b) => ({ value: b, label: b }))"
+          title="Target branch"
+          mono
+        />
         <code v-else>{{ mrTarget }}</code>
       </label>
       <input id="git-mr-title" ref="mrInput" v-model="mrTitle" class="mr-input" type="text" placeholder="Title" />
@@ -587,18 +593,7 @@ onUnmounted(stopTimer)
 
 .mr-target {
   max-width: 100%;
-  padding: 1px var(--space-1);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  background: var(--bg-base);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-}
-
-.mr-target:focus {
-  outline: none;
-  border-color: var(--accent-blue);
+  vertical-align: middle;
 }
 
 .mr-input {

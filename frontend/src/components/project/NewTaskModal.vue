@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { taskApi, type Task } from '@/api/tasks'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
+import SelectMenu from '@/components/SelectMenu.vue'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import AgentModelPicker from './AgentModelPicker.vue'
 import MrIcon from './MrIcon.vue'
@@ -203,10 +204,13 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
           <aside class="side-col">
             <section class="side-section">
               <h3 class="side-title">Start from</h3>
-              <label class="sr-only" for="new-task-base">Branch to start from</label>
-              <select id="new-task-base" v-model="base" class="form-input form-mono">
-                <option v-for="name in bases" :key="name" :value="name">{{ name }}</option>
-              </select>
+              <SelectMenu
+                v-model="base"
+                :options="bases.map((name) => ({ value: name, label: name }))"
+                title="Start from"
+                variant="field"
+                mono
+              />
               <p class="form-hint">The agent works on a branch of its own, made from this one.</p>
             </section>
 
