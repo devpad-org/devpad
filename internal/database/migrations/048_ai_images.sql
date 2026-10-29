@@ -7,8 +7,10 @@ CREATE TABLE ai_attachments (
     -- Set once a saved conversation refers to the image. Uploads that never
     -- reach one are swept after a day.
     conversation_id INTEGER REFERENCES ai_conversations(id) ON DELETE CASCADE,
-    -- Set for an image a tool returned during a run, which keeps it for as
-    -- long as the run's events refer to it.
+    -- Set for an image a tool returned during a run, so it is not swept
+    -- while the run's events refer to it. Deleting either the run or the
+    -- conversation deletes the image: a run's events can outlive its
+    -- conversation, and show the image as unavailable then.
     run_id          INTEGER REFERENCES ai_agent_runs(id) ON DELETE CASCADE,
     media_type      TEXT    NOT NULL CHECK(media_type IN ('image/png','image/jpeg')),
     width           INTEGER NOT NULL,

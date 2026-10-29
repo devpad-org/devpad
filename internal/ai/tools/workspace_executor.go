@@ -169,7 +169,10 @@ func (e *WorkspaceExecutor) readFile(ctx context.Context, req ExecutionRequest, 
 	if err != nil {
 		return toolFailure("read_file", "Error: %v", err)
 	}
-	if e.images != nil && attachment.IsImage(data) {
+	if width, height, ok := attachment.Probe(data); ok && e.images != nil {
+		if !req.Vision {
+			return toolSuccess("read_file", fmt.Sprintf("%s is a %d×%d image. This model can't view images, so it isn't shown.", path, width, height))
+		}
 		return e.readImage(ctx, req, path, data)
 	}
 

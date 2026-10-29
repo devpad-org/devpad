@@ -14,9 +14,11 @@ type ExecutionRequest struct {
 	CurrentRunID   int64
 	ConversationID int64
 	Model          string
-	Thinking       *domain.ThinkingConfig
-	ToolName       string
-	Arguments      json.RawMessage
+	// Vision reports whether the model can view the images tools return.
+	Vision    bool
+	Thinking  *domain.ThinkingConfig
+	ToolName  string
+	Arguments json.RawMessage
 	// Approved is set only after the user approved this exact call. Tools
 	// that need approval refuse to run without it, so a caller that skips the
 	// approval step cannot start them.

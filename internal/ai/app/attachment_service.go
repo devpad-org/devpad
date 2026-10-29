@@ -24,8 +24,12 @@ type AttachmentRepository interface {
 
 // ImageLoader fills in the image data that turns refer to.
 type ImageLoader interface {
-	// Hydrate returns the turns with the data of every image they refer to
-	// loaded, or domain.ErrAttachmentNotFound when one is not the user's.
+	// Hydrate returns the turns with the data of every image of the user's
+	// they refer to loaded. An image that is gone, or is not the user's, is
+	// left without data, which the model is told is no longer available:
+	// one lost image must not stop the whole conversation going on. Only an
+	// image part with no reference at all is refused, with
+	// domain.ErrAttachmentNotFound.
 	Hydrate(ctx context.Context, userID int64, turns []domain.Turn) ([]domain.Turn, error)
 }
 
@@ -52,7 +56,7 @@ func NewAttachmentService(repo AttachmentRepository) AttachmentService {
 }
 
 func (s *attachmentService) Upload(ctx context.Context, userID int64, data []byte) (*domain.Attachment, error) {
-	image, err := attachment.Normalize(data)
+	image, err := attachment.Normalize(ctx, data)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +78,7 @@ func (s *attachmentService) Upload(ctx context.Context, userID int64, data []byt
 }
 
 func (s *attachmentService) StoreToolImage(ctx context.Context, userID, conversationID, runID int64, data []byte) (domain.ImagePart, error) {
-	image, err := attachment.Normalize(data)
+	image, err := attachment.Normalize(ctx, data)
 	if err != nil {
 		return domain.ImagePart{}, err
 	}
@@ -127,16 +131,15 @@ func (s *attachmentService) Hydrate(ctx context.Context, userID int64, turns []d
 		return nil, fmt.Errorf("loading attachments: %w", err)
 	}
 	// The stored attachment, not the client's copy of its reference, says
-	// what the image is.
-	resolve := func(image domain.ImagePart) (domain.ImagePart, error) {
+	// what the image is. Without one, nothing the client said is kept.
+	resolve := func(image domain.ImagePart) domain.ImagePart {
 		if len(image.Data) > 0 {
-			return image, nil
+			return image
 		}
-		a, ok := loaded[image.AttachmentID]
-		if !ok {
-			return domain.ImagePart{}, fmt.Errorf("%w: %d", domain.ErrAttachmentNotFound, image.AttachmentID)
+		if a, ok := loaded[image.AttachmentID]; ok {
+			return a.ImagePart()
 		}
-		return a.ImagePart(), nil
+		return domain.ImagePart{AttachmentID: image.AttachmentID}
 	}
 
 	hydrated := make([]domain.Turn, len(turns))
@@ -145,18 +148,13 @@ func (s *attachmentService) Hydrate(ctx context.Context, userID int64, turns []d
 		for j, part := range turn.Parts {
 			switch {
 			case part.Kind == domain.PartImage:
-				image, err := resolve(*part.Image)
-				if err != nil {
-					return nil, err
-				}
+				image := resolve(*part.Image)
 				part.Image = &image
 			case part.Kind == domain.PartToolResult && part.ToolResult != nil && len(part.ToolResult.Images) > 0:
 				result := *part.ToolResult
 				result.Images = make([]domain.ImagePart, len(part.ToolResult.Images))
 				for k, image := range part.ToolResult.Images {
-					if result.Images[k], err = resolve(image); err != nil {
-						return nil, err
-					}
+					result.Images[k] = resolve(image)
 				}
 				part.ToolResult = &result
 			}

@@ -183,13 +183,15 @@ const pendingImageItems = computed<ImageAttachmentItem[]>(() =>
     error: pending.error,
   })),
 )
-// Pending images the selected model can't take block sending, rather than
-// being dropped without the user knowing.
+// Pending images the selected model can't take, and uploads that failed,
+// block sending, rather than being dropped without the user knowing.
 const pendingImagesBlocked = computed(() => pendingImages.value.length > 0 && !canAttachImages.value)
+const pendingImagesFailed = computed(() => pendingImages.value.some((pending) => pending.error))
 const canSend = computed(() =>
   (inputValue.value.trim() !== '' || pendingImages.value.some((pending) => pending.image)) &&
   !imagesUploading.value &&
-  !pendingImagesBlocked.value,
+  !pendingImagesBlocked.value &&
+  !pendingImagesFailed.value,
 )
 // The model and effort an admin set for the selected agent, if it is built in.
 const currentAgentDefaults = computed(() => aiModelStore.agentDefaults[props.selectedAgentId])
@@ -1930,6 +1932,9 @@ function scrollToBottom(options: { force?: boolean } = {}) {
           />
           <span v-if="pendingImagesBlocked" class="composer-image-notice">
             {{ currentModel?.name ?? 'This model' }} can't view images. Pick another model or remove them.
+          </span>
+          <span v-else-if="pendingImagesFailed" class="composer-image-notice">
+            An image failed to upload. Remove it to send the message.
           </span>
           <span v-else-if="imageNotice" class="composer-image-notice">{{ imageNotice }}</span>
         </div>

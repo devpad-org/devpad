@@ -12,6 +12,8 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.42
 	github.com/pquerna/otp v1.5.0
 	golang.org/x/crypto v0.50.0
+	golang.org/x/image v0.39.0
+	golang.org/x/time v0.15.0
 )
 
 require (
@@ -49,13 +51,11 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.1 // indirect
 	go.uber.org/zap/exp v0.3.0 // indirect
-	golang.org/x/image v0.39.0 // indirect
 	golang.org/x/mod v0.34.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.43.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )

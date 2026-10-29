@@ -2,6 +2,7 @@ package attachment
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
@@ -10,6 +11,7 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"strings"
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -52,10 +54,11 @@ func TestNormalize(t *testing.T) {
 		{"gif becomes png", encodedImage(t, "gif", 40, 30), "image/png", 40, 30},
 		{"wide image is scaled to the max edge", encodedImage(t, "png", 3136, 1000), "image/png", MaxEdge, 500},
 		{"tall image is scaled to the max edge", encodedImage(t, "jpeg", 1000, 3136), "image/jpeg", 500, MaxEdge},
+		{"large image is halved before it is scaled", encodedImage(t, "png", 6500, 130), "image/png", MaxEdge, 31},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := Normalize(tt.data)
+			got, err := Normalize(context.Background(), tt.data)
 			if err != nil {
 				t.Fatalf("normalize: %v", err)
 			}
@@ -73,16 +76,35 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
+// pngHeader returns a valid PNG whose header claims the given size, bit
+// depth and color type, with none of the pixels it claims.
+func pngHeader(t *testing.T, width, height uint32, depth, colorType byte) []byte {
+	t.Helper()
+	data := append([]byte(nil), encodedImage(t, "png", 1, 1)...)
+	binary.BigEndian.PutUint32(data[16:20], width)
+	binary.BigEndian.PutUint32(data[20:24], height)
+	data[24], data[25] = depth, colorType
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	if config, err := png.DecodeConfig(bytes.NewReader(data)); err != nil || config.Width != int(width) {
+		t.Fatalf("expected a valid PNG header claiming %d pixels wide: %+v, %v", width, config, err)
+	}
+	return data
+}
+
 func TestNormalizeRefusesWhatItCannotSafelyDecode(t *testing.T) {
-	// A PNG header claiming 100000×100000 pixels: refused from its header
-	// alone, before any of it is decoded.
-	huge := encodedImage(t, "png", 1, 1)
-	huge = append([]byte(nil), huge...)
-	copy(huge[16:20], []byte{0x00, 0x01, 0x86, 0xA0})
-	copy(huge[20:24], []byte{0x00, 0x01, 0x86, 0xA0})
-	binary.BigEndian.PutUint32(huge[29:33], crc32.ChecksumIEEE(huge[12:29]))
-	if config, err := png.DecodeConfig(bytes.NewReader(huge)); err != nil || config.Width != 100000 {
-		t.Fatalf("expected a valid PNG header claiming 100000 pixels wide: %+v, %v", config, err)
+	// Each is refused from its header alone, before any of it is decoded.
+	const rgb, rgba = 2, 6
+	huge := pngHeader(t, 100000, 100000, 8, rgb)
+	// 25 million pixels is allowed at 8 bits, but at 16 bits a channel
+	// decodes to 200 MB.
+	deep := pngHeader(t, 5000, 5000, 16, rgba)
+	for name, data := range map[string][]byte{"huge": huge, "deep": deep} {
+		if _, err := Normalize(context.Background(), data); err == nil || !strings.Contains(err.Error(), "too many pixels") {
+			t.Fatalf("%s: err = %v, want it refused for too many pixels", name, err)
+		}
+	}
+	if _, err := Normalize(context.Background(), pngHeader(t, 5000, 5000, 8, rgba)); err == nil || strings.Contains(err.Error(), "too many pixels") {
+		t.Fatalf("8-bit 5000×5000: err = %v, want it past the header check", err)
 	}
 
 	tests := []struct {
@@ -92,11 +114,12 @@ func TestNormalizeRefusesWhatItCannotSafelyDecode(t *testing.T) {
 		{"text", []byte("not an image")},
 		{"svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>`)},
 		{"too many pixels", huge},
+		{"too many bytes once decoded", deep},
 		{"too large", make([]byte, MaxUploadBytes+1)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := Normalize(tt.data); !errors.Is(err, domain.ErrInvalidImage) {
+			if _, err := Normalize(context.Background(), tt.data); !errors.Is(err, domain.ErrInvalidImage) {
 				t.Fatalf("err = %v, want ErrInvalidImage", err)
 			}
 		})
@@ -109,7 +132,7 @@ func TestNormalizeDropsJPEGMetadata(t *testing.T) {
 	exif := append([]byte{0xFF, 0xE1, 0x00, 0x10}, []byte("Exif\x00\x00GPS-SECRET")...)
 	withExif := append(append(append([]byte(nil), data[:2]...), exif...), data[2:]...)
 
-	got, err := Normalize(withExif)
+	got, err := Normalize(context.Background(), withExif)
 	if err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
@@ -118,11 +141,28 @@ func TestNormalizeDropsJPEGMetadata(t *testing.T) {
 	}
 }
 
-func TestIsImage(t *testing.T) {
-	if !IsImage(encodedImage(t, "png", 2, 2)) {
-		t.Fatal("expected a PNG to be an image")
+func TestProbe(t *testing.T) {
+	if width, height, ok := Probe(encodedImage(t, "png", 3, 2)); !ok || width != 3 || height != 2 {
+		t.Fatalf("Probe(png) = %d, %d, %v, want 3, 2, true", width, height, ok)
 	}
-	if IsImage([]byte("package main\n")) {
+	if _, _, ok := Probe([]byte("package main\n")); ok {
 		t.Fatal("expected source code not to be an image")
+	}
+}
+
+func TestNormalizeWaitsForAFreeSlot(t *testing.T) {
+	for range maxConcurrent {
+		slots <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for range maxConcurrent {
+			<-slots
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Normalize(ctx, encodedImage(t, "png", 2, 2)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled while every slot is taken", err)
 	}
 }

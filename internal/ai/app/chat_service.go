@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/devpad-org/devpad/internal/ai/approval"
+	"github.com/devpad-org/devpad/internal/ai/attachment"
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	"github.com/devpad-org/devpad/internal/ai/orchestrator"
 	aiprovider "github.com/devpad-org/devpad/internal/ai/provider"
@@ -139,7 +140,7 @@ func (s *providerChatBackend) ChatStream(ctx context.Context, req domain.ChatReq
 
 	return target.Adapter.Stream(ctx, target.Creds, aiprovider.StreamRequest{
 		Model:       req.Model,
-		Turns:       prepareImages(model, req.Turns),
+		Turns:       attachment.ForModel(model, req.Turns),
 		Thinking:    req.Thinking,
 		WorkspaceID: req.WorkspaceID,
 		Tools:       req.Tools,

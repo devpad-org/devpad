@@ -214,7 +214,7 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 		}
 
 		for _, toolCall := range toolCalls {
-			if !o.handleToolCall(ctx, req, toolCall, &turns, out) {
+			if !o.handleToolCall(ctx, req, model, toolCall, &turns, out) {
 				return
 			}
 		}
@@ -223,7 +223,7 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 	emitEvent(ctx, out, domain.ClientEvent{Done: true})
 }
 
-func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentChatRequest, toolCall domain.ToolCall, turns *[]domain.Turn, out chan<- domain.ClientEvent) bool {
+func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentChatRequest, model domain.Model, toolCall domain.ToolCall, turns *[]domain.Turn, out chan<- domain.ClientEvent) bool {
 	if toolCall.Function.Name == "update_plan" {
 		var planArgs struct {
 			Steps []domain.PlanStep `json:"steps"`
@@ -245,6 +245,7 @@ func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentCha
 		CurrentRunID:   req.CurrentRunID,
 		ConversationID: req.ConversationID,
 		Model:          req.Model,
+		Vision:         model.Vision,
 		Thinking:       req.Thinking,
 		ToolName:       toolCall.Function.Name,
 		Arguments:      json.RawMessage(toolCall.Function.Arguments),

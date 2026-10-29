@@ -196,7 +196,7 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 	if err != nil {
 		return nil, fmt.Errorf("resolving agent: %w", err)
 	}
-	// Images the user cannot read fail the run before anything is saved.
+	// A malformed image reference fails the run before anything is saved.
 	if s.images != nil {
 		if req.Turns, err = s.images.Hydrate(ctx, req.UserID, req.Turns); err != nil {
 			return nil, err

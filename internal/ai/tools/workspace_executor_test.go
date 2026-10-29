@@ -847,6 +847,7 @@ func TestWorkspaceExecutor_ReadFileReturnsImages(t *testing.T) {
 	req := toolReq(1, 2, "read_file", []byte(`{"path":"shot.png"}`))
 	req.ConversationID = 3
 	req.CurrentRunID = 4
+	req.Vision = true
 	result := executor.ExecuteTool(context.Background(), req)
 
 	if result.IsError || len(result.Images) != 1 || result.Images[0].AttachmentID != 42 {
@@ -857,6 +858,26 @@ func TestWorkspaceExecutor_ReadFileReturnsImages(t *testing.T) {
 	}
 	if !bytes.Equal(store.data, buf.Bytes()) || store.userID != 1 || store.conversationID != 3 || store.runID != 4 {
 		t.Fatalf("unexpected stored image: %+v", store)
+	}
+}
+
+func TestWorkspaceExecutor_ReadFileKeepsNoImageForModelsWithoutVision(t *testing.T) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 3, 2))); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
+		return buf.Bytes(), nil
+	}})
+	store := &recordingImageStore{}
+	executor.SetImageStore(store)
+
+	result := executor.ExecuteTool(context.Background(), toolReq(1, 2, "read_file", []byte(`{"path":"shot.png"}`)))
+	if result.IsError || len(result.Images) != 0 || store.data != nil {
+		t.Fatalf("unexpected result: %+v (stored %d bytes)", result, len(store.data))
+	}
+	if !strings.Contains(result.Content, "shot.png is a 3×2 image") || !strings.Contains(result.Content, "can't view images") {
+		t.Fatalf("unexpected content: %q", result.Content)
 	}
 }
 

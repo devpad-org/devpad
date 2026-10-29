@@ -34,6 +34,22 @@ func TestHandoffTranscriptKeepsOnlyTheConversationText(t *testing.T) {
 	}
 }
 
+func TestHandoffTranscriptNotesTheImagesItLeavesOut(t *testing.T) {
+	image := domain.NewImagePart(domain.ImagePart{AttachmentID: 1})
+	turns := []domain.Turn{
+		{Role: domain.RoleUser, Parts: []domain.Part{image, {Kind: domain.PartText, Text: "Fix this layout."}}},
+		domain.NewTextTurn(domain.RoleAssistant, "Which page?"),
+		{Role: domain.RoleUser, Parts: []domain.Part{image, image}},
+	}
+	got := HandoffTranscript(turns, maxHandoffBytes)
+	want := "**User:** [1 image attached, which you can't see]\n```text\nFix this layout.\n```\n\n" +
+		"**Assistant:**\n```text\nWhich page?\n```\n\n" +
+		"**User:** [2 images attached, which you can't see]"
+	if got != want {
+		t.Fatalf("transcript:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestHandoffTranscriptKeepsTheGoalAndLatestMessagesWhenLong(t *testing.T) {
 	turns := []domain.Turn{domain.NewTextTurn(domain.RoleUser, "GOAL: build the cart")}
 	for i := 0; i < 50; i++ {
