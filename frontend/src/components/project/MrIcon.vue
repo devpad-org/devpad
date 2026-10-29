@@ -35,6 +35,9 @@ export type MrIconName =
   | 'stop'
   | 'send'
   | 'retry'
+  | 'plus'
+  | 'minus'
+  | 'box'
 
 withDefaults(defineProps<{ name: MrIconName; size?: number; strokeWidth?: number }>(), {
   size: 14,
@@ -157,6 +160,15 @@ withDefaults(defineProps<{ name: MrIconName; size?: number; strokeWidth?: number
     </template>
     <template v-else-if="name === 'retry'">
       <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
+    </template>
+    <template v-else-if="name === 'plus'">
+      <path d="M5 12h14" /><path d="M12 5v14" />
+    </template>
+    <template v-else-if="name === 'minus'">
+      <path d="M5 12h14" />
+    </template>
+    <template v-else-if="name === 'box'">
+      <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" /><path d="m3.3 7 8.7 5 8.7-5" /><path d="M12 22V12" />
     </template>
   </svg>
 </template>
