@@ -20,6 +20,13 @@
   --gruvbox-purple: #d3869b;
   --gruvbox-aqua: #8ec07c;
   --gruvbox-orange: #fe8019;
+  --gruvbox-neutral-red: #cc241d;
+  --gruvbox-neutral-green: #98971a;
+  --gruvbox-neutral-yellow: #d79921;
+  --gruvbox-neutral-blue: #458588;
+  --gruvbox-neutral-purple: #b16286;
+  --gruvbox-neutral-aqua: #689d6a;
+  --gruvbox-neutral-orange: #d65d0e;
 
   /* Surfaces */
   --bg-void: var(--gruvbox-bg0-hard);
