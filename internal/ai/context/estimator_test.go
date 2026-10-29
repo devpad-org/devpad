@@ -134,7 +134,8 @@ func TestBudgetFor_ReturnsProviderModelDefaults(t *testing.T) {
 		{name: "anthropic sonnet 5.5 context", providerID: "anthropic", modelID: "claude-sonnet-5-5", wantBudget: 1000000},
 		{name: "anthropic opus long context", providerID: "anthropic", modelID: "claude-opus-4-7", wantBudget: 1000000},
 		{name: "anthropic sonnet long context", providerID: "anthropic", modelID: "claude-sonnet-4-6", wantBudget: 1000000},
-		{name: "anthropic haiku context", providerID: "anthropic", modelID: "claude-haiku-4-5", wantBudget: 200000},
+		{name: "anthropic haiku 5.5 context", providerID: "anthropic", modelID: "claude-haiku-5-5", wantBudget: 1000000},
+		{name: "anthropic older haiku context", providerID: "anthropic", modelID: "claude-haiku-4-5", wantBudget: 200000},
 		{name: "openai gpt 5.4 context", providerID: "openai", modelID: "gpt-5.4", wantBudget: 1050000},
 		{name: "openai gpt 5.5 context", providerID: "openai", modelID: "gpt-5.5", wantBudget: 1050000},
 		{name: "mistral small context", providerID: "mistral", modelID: "mistral-small-latest", wantBudget: 256000},
@@ -208,7 +209,7 @@ func TestEstimator_ToolResultContentDrivesBroadRunGrowth(t *testing.T) {
 func TestEstimator_ThinkingStateBlocksAreCounted(t *testing.T) {
 	withoutThinking := EstimateRequest(Request{
 		ProviderID: "anthropic",
-		ModelID:    "claude-haiku-4-5",
+		ModelID:    "claude-haiku-5-5",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleUser, "Continue."),
 			domain.NewTextTurn(domain.RoleAssistant, "Done."),
@@ -216,7 +217,7 @@ func TestEstimator_ThinkingStateBlocksAreCounted(t *testing.T) {
 	})
 	withThinking := EstimateRequest(Request{
 		ProviderID: "anthropic",
-		ModelID:    "claude-haiku-4-5",
+		ModelID:    "claude-haiku-5-5",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleUser, "Continue."),
 			{

@@ -317,28 +317,6 @@ func TestBuildAnthropicRequest_OpusThinkingEffort(t *testing.T) {
 	}
 }
 
-func TestBuildAnthropicRequest_ManualThinkingEnabled(t *testing.T) {
-	enabled := true
-	req := aiprovider.StreamRequest{
-		Model:    "claude-haiku-4-5",
-		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
-		Thinking: &domain.ThinkingConfig{Enabled: &enabled},
-	}
-
-	body := buildAnthropicRequest(req, mustAnthropicModel(t, req.Model))
-
-	thinking := body["thinking"].(map[string]any)
-	if thinking["type"] != "enabled" {
-		t.Fatalf("expected thinking type enabled, got %v", thinking["type"])
-	}
-	if thinking["budget_tokens"] != manualThinkingBudgetTokens {
-		t.Fatalf("expected budget_tokens %d, got %v", manualThinkingBudgetTokens, thinking["budget_tokens"])
-	}
-	if _, ok := body["effort"]; ok {
-		t.Fatalf("expected manual thinking model not to include effort, got %v", body["effort"])
-	}
-}
-
 func TestBuildAnthropicRequest_ThinkingDisabled(t *testing.T) {
 	disabled := false
 	req := aiprovider.StreamRequest{
@@ -370,6 +348,7 @@ func TestBuildAnthropicRequest_Claude55Thinking(t *testing.T) {
 		thinking     *domain.ThinkingConfig
 		wantThinking map[string]any
 		wantEffort   string
+		noFallbacks  bool
 	}{
 		{
 			name:         "opus default",
@@ -411,6 +390,20 @@ func TestBuildAnthropicRequest_Claude55Thinking(t *testing.T) {
 			thinking:   &domain.ThinkingConfig{Enabled: &disabled},
 			wantEffort: "",
 		},
+		{
+			name:         "haiku default",
+			model:        "claude-haiku-5-5",
+			wantThinking: claude55AdaptiveThinking,
+			wantEffort:   "medium",
+			noFallbacks:  true,
+		},
+		{
+			name:         "haiku disabled",
+			model:        "claude-haiku-5-5",
+			thinking:     &domain.ThinkingConfig{Enabled: &disabled},
+			wantThinking: map[string]any{"type": "disabled"},
+			noFallbacks:  true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -430,8 +423,10 @@ func TestBuildAnthropicRequest_Claude55Thinking(t *testing.T) {
 			if got, _ := outputConfig["effort"].(string); got != tt.wantEffort {
 				t.Fatalf("expected effort %q, got %v", tt.wantEffort, body["output_config"])
 			}
-			if body["fallbacks"] != "default" {
-				t.Fatalf("expected fallbacks default, got %v", body["fallbacks"])
+			if fallbacks, ok := body["fallbacks"]; tt.noFallbacks && ok {
+				t.Fatalf("expected no fallbacks, got %v", fallbacks)
+			} else if !tt.noFallbacks && fallbacks != "default" {
+				t.Fatalf("expected fallbacks default, got %v", fallbacks)
 			}
 			if body["max_tokens"] != claude55MaxTokens {
 				t.Fatalf("expected max_tokens %d, got %v", claude55MaxTokens, body["max_tokens"])

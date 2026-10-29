@@ -176,7 +176,7 @@ func TestAnthropicAdapter_FallbackModelsArePriced(t *testing.T) {
 			t.Errorf("expected the prices of %s, a model a request may fall back to", id)
 		}
 	}
-	haiku, _ := domain.ModelByID(NewAdapter().Models(), "claude-haiku-4-5")
+	haiku, _ := domain.ModelByID(NewAdapter().Models(), "claude-haiku-5-5")
 	if haiku.FallbackPricing != nil {
 		t.Errorf("expected no fallback prices on a model without fallbacks")
 	}

@@ -261,7 +261,7 @@ func TestAgentChatOrchestrator_EmitsContextTelemetryBeforeProviderRequest(t *tes
 	stream, err := orch.Stream(context.Background(), AgentChatRequest{
 		UserID:      1,
 		WorkspaceID: 1,
-		Model:       "claude-haiku-4-5",
+		Model:       "claude-haiku-5-5",
 		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, strings.Repeat("x", 120))},
 	})
 	if err != nil {
@@ -276,7 +276,7 @@ func TestAgentChatOrchestrator_EmitsContextTelemetryBeforeProviderRequest(t *tes
 	if !telemetry.Approximate {
 		t.Fatal("expected telemetry to be marked approximate")
 	}
-	if telemetry.ProviderID != "anthropic" || telemetry.Model != "claude-haiku-4-5" {
+	if telemetry.ProviderID != "anthropic" || telemetry.Model != "claude-haiku-5-5" {
 		t.Fatalf("unexpected provider/model telemetry: %+v", telemetry)
 	}
 	if telemetry.NextRequestTokens <= 0 || telemetry.TotalTranscriptTokens != telemetry.NextRequestTokens {
@@ -285,7 +285,7 @@ func TestAgentChatOrchestrator_EmitsContextTelemetryBeforeProviderRequest(t *tes
 	if telemetry.ProviderFacingTokens != telemetry.NextRequestTokens {
 		t.Fatalf("expected uncompacted provider-facing tokens to match next request estimate: %+v", telemetry)
 	}
-	if telemetry.InputBudgetTokens != 200000 || telemetry.PercentageUsed <= 0 {
+	if telemetry.InputBudgetTokens != 1000000 || telemetry.PercentageUsed <= 0 {
 		t.Fatalf("unexpected budget telemetry: %+v", telemetry)
 	}
 }

@@ -12,14 +12,13 @@ import (
 )
 
 const (
-	providerID                 = "anthropic"
-	providerName               = "Anthropic"
-	baseURL                    = "https://api.anthropic.com/v1"
-	apiVersion                 = "2023-06-01"
-	maxTokens                  = 16000
-	manualThinkingBudgetTokens = 10000
+	providerID   = "anthropic"
+	providerName = "Anthropic"
+	baseURL      = "https://api.anthropic.com/v1"
+	apiVersion   = "2023-06-01"
+	maxTokens    = 16000
 
-	// Claude 5.5 models always think, and thinking counts toward max_tokens,
+	// Claude 5.5 models think by default, and thinking counts toward max_tokens,
 	// so they get more room than the default to avoid truncated replies.
 	claude55MaxTokens = 64000
 
@@ -88,16 +87,20 @@ func (a *Adapter) Models() []domain.Model {
 		SupportedEfforts: []string{"low", "medium", "high", "max"},
 		DefaultEffort:    "medium",
 	}
-	haiku45Thinking := domain.ThinkingCapability{
+	// Haiku 5.5 thinks by default and accepts `disabled` at effort high or
+	// below. The API defaults to medium effort.
+	haiku55Thinking := domain.ThinkingCapability{
 		Supported:        true,
-		EnabledByDefault: false,
+		EnabledByDefault: true,
 		CanDisable:       true,
+		SupportedEfforts: []string{"low", "medium", "high", "xhigh", "max"},
+		DefaultEffort:    "medium",
 	}
 
 	// Prices are USD per million tokens from
 	// https://platform.claude.com/docs/en/about-claude/pricing (October 2026).
-	// Cache writes are priced at the 5-minute rate. None of these models
-	// charge more for long prompts.
+	// Cache writes are priced at the 5-minute rate. Only Haiku 5.5 charges
+	// more for long prompts.
 	models := []domain.Model{
 		{
 			ID:         "claude-opus-5-5",
@@ -132,12 +135,16 @@ func (a *Adapter) Models() []domain.Model {
 			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 3, Output: 15, CacheRead: 0.30, CacheWrite: 3.75}},
 		},
 		{
-			ID:         "claude-haiku-4-5",
-			Name:       "Claude Haiku 4.5",
+			ID:         "claude-haiku-5-5",
+			Name:       "Claude Haiku 5.5",
 			ProviderID: providerID,
 			Vision:     true,
-			Thinking:   haiku45Thinking,
-			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1, Output: 5, CacheRead: 0.10, CacheWrite: 1.25}},
+			Thinking:   haiku55Thinking,
+			Pricing: &domain.Pricing{
+				TokenPrices:          domain.TokenPrices{Input: 0.10, Output: 0.50, CacheRead: 0.01, CacheWrite: 0.125},
+				LongContextThreshold: 100_000,
+				LongContext:          &domain.TokenPrices{Input: 0.50, Output: 2.50, CacheRead: 0.05, CacheWrite: 0.625},
+			},
 		},
 	}
 
@@ -437,13 +444,7 @@ func buildThinkingConfig(req aiprovider.StreamRequest, model domain.Model) map[s
 				"block_binding": map[string]any{"prefix_mismatch_behavior": "drop_block"},
 			}
 		}
-		if usesAdaptiveThinking(model.ID) {
-			return map[string]any{"type": "adaptive"}
-		}
-		return map[string]any{
-			"type":          "enabled",
-			"budget_tokens": manualThinkingBudgetTokens,
-		}
+		return map[string]any{"type": "adaptive"}
 	}
 
 	if req.Thinking != nil && req.Thinking.Enabled != nil && !*req.Thinking.Enabled && model.Thinking.CanDisable {
@@ -465,21 +466,19 @@ func ephemeralCache() map[string]any {
 	return map[string]any{"type": "ephemeral"}
 }
 
-func usesAdaptiveThinking(modelID string) bool {
+func isClaude55(modelID string) bool {
 	switch modelID {
-	case "claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-4-7", "claude-sonnet-4-6":
+	case "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5":
 		return true
 	default:
 		return false
 	}
 }
 
-func isClaude55(modelID string) bool {
-	return modelID == "claude-opus-5-5" || modelID == "claude-sonnet-5-5"
-}
-
+// usesServerSideFallback reports whether a model takes `fallbacks: "default"`.
+// Haiku 5.5 has no server-side fallback: a declined request stays declined.
 func usesServerSideFallback(modelID string) bool {
-	return isClaude55(modelID)
+	return modelID == "claude-opus-5-5" || modelID == "claude-sonnet-5-5"
 }
 
 func maxTokensFor(modelID string) int {

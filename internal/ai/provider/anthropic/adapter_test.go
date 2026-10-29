@@ -70,7 +70,14 @@ func TestAnthropicAdapter_Metadata(t *testing.T) {
 			efforts:       []string{"low", "medium", "high", "max"},
 			defaultEffort: "medium",
 		},
-		{id: "claude-haiku-4-5", name: "Claude Haiku 4.5", canDisable: true},
+		{
+			id:               "claude-haiku-5-5",
+			name:             "Claude Haiku 5.5",
+			enabledByDefault: true,
+			canDisable:       true,
+			efforts:          allEfforts,
+			defaultEffort:    "medium",
+		},
 	}
 	for i, expected := range expectedModels {
 		if models[i].ID != expected.id {
@@ -107,6 +114,7 @@ func TestAnthropicAdapter_StreamSendsBetasForClaude55(t *testing.T) {
 	}{
 		{model: "claude-opus-5-5", wantBeta: "server-side-fallback-2026-07-01,thinking-binding-controls-2026-08-01"},
 		{model: "claude-sonnet-5-5", wantBeta: "server-side-fallback-2026-07-01,thinking-binding-controls-2026-08-01"},
+		{model: "claude-haiku-5-5", wantBeta: "thinking-binding-controls-2026-08-01"},
 		{model: "claude-opus-4-7", wantBeta: ""},
 	}
 	for _, tt := range tests {
