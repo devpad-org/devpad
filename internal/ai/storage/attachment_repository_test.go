@@ -176,3 +176,62 @@ func TestAttachmentRepository_DeletesOnlyOldUnreferencedAttachments(t *testing.T
 		t.Fatalf("expected the conversation's attachment to survive: %v", err)
 	}
 }
+
+func TestAttachmentRepository_GetAttachmentInfoLeavesOutTheData(t *testing.T) {
+	db := openAttachmentTestDB(t)
+	ctx := context.Background()
+	repo := NewAttachmentRepository(db.Conn())
+	userID := insertAgentRunTestUser(t, db)
+	a := createTestAttachment(t, repo, userID)
+	if a.Size != len("png-bytes") {
+		t.Fatalf("created size = %d, want %d", a.Size, len("png-bytes"))
+	}
+
+	info, err := repo.GetAttachmentInfo(ctx, userID, []int64{a.ID})
+	if err != nil {
+		t.Fatalf("get attachment info: %v", err)
+	}
+	got := info[a.ID]
+	if got.Size != len("png-bytes") || got.MediaType != "image/png" || got.Data != nil {
+		t.Fatalf("unexpected info: %+v", got)
+	}
+}
+
+func TestAttachmentRepository_FindToolImageMatchesTheRunAndConversation(t *testing.T) {
+	db := openAttachmentTestDB(t)
+	ctx := context.Background()
+	repo := NewAttachmentRepository(db.Conn())
+	conversations := NewConversationRepository(db.Conn())
+	userID := insertAgentRunTestUser(t, db)
+	workspaceID := insertAgentRunTestWorkspace(t, db, userID)
+	conv := &domain.Conversation{UserID: userID, WorkspaceID: workspaceID}
+	if err := conversations.CreateConversation(ctx, conv); err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	stored := &domain.Attachment{UserID: userID, ConversationID: conv.ID, MediaType: "image/png", Width: 1, Height: 1, Data: []byte("x"), SourceSHA256: "abc"}
+	if err := repo.CreateAttachment(ctx, stored); err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+
+	found, err := repo.FindToolImage(ctx, userID, conv.ID, 0, "abc")
+	if err != nil {
+		t.Fatalf("find tool image: %v", err)
+	}
+	if found.ID != stored.ID || string(found.Data) != "x" || found.Size != 1 {
+		t.Fatalf("unexpected tool image: %+v", found)
+	}
+	for _, tt := range []struct {
+		name                 string
+		userID, conversation int64
+		hash                 string
+	}{
+		{"another file", userID, conv.ID, "def"},
+		{"outside a conversation", userID, 0, "abc"},
+		{"another user", insertOtherTestUser(t, db), conv.ID, "abc"},
+	} {
+		if _, err := repo.FindToolImage(ctx, tt.userID, tt.conversation, 0, tt.hash); !errors.Is(err, domain.ErrAttachmentNotFound) {
+			t.Fatalf("%s: err = %v, want ErrAttachmentNotFound", tt.name, err)
+		}
+	}
+}

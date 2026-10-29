@@ -15,18 +15,29 @@ type Attachment struct {
 	MediaType string
 	Width     int
 	Height    int
-	Data      []byte
-	CreatedAt time.Time
+	// Size is the size of Data in bytes, known also when Data is not loaded.
+	Size int
+	Data []byte
+	// SourceSHA256 is the hash of the file a tool's image was made from, so
+	// the same file read again in a run is not stored again. Empty for
+	// uploads.
+	SourceSHA256 string
+	CreatedAt    time.Time
 }
 
 // ImagePart returns the reference turns carry for the attachment, with its
-// data loaded.
+// size and whatever of its data is loaded.
 func (a Attachment) ImagePart() ImagePart {
+	size := a.Size
+	if size == 0 {
+		size = len(a.Data)
+	}
 	return ImagePart{
 		AttachmentID: a.ID,
 		MediaType:    a.MediaType,
 		Width:        a.Width,
 		Height:       a.Height,
+		Size:         size,
 		Data:         a.Data,
 	}
 }

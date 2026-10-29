@@ -15,8 +15,7 @@ import {
   type ToolGroupDisplay,
 } from '@/components/ide/aiToolDisplay'
 import { ideShellKey } from '@/components/ide/ideShell'
-import AiImageAttachments from '@/components/ide/AiImageAttachments.vue'
-import { attachmentUrl, type ChatImage } from '@/api/ai'
+import AiImageAttachments, { storedImageItems } from '@/components/ide/AiImageAttachments.vue'
 import { useActiveProjectStore } from '@/stores/activeProject'
 
 defineProps<{
@@ -27,13 +26,6 @@ defineProps<{
 // open in place, each in its modal.
 const shell = inject(ideShellKey, null)
 const projectStore = useActiveProjectStore()
-
-function imageItems(images: ChatImage[]) {
-  return images.map((image) => {
-    const url = attachmentUrl(image.attachmentId)
-    return { key: String(image.attachmentId), src: url, href: url }
-  })
-}
 
 function openRef(ref: ProjectRef) {
   if (ref.kind === 'task') projectStore.selectedTaskId = ref.id
@@ -105,7 +97,7 @@ function openRef(ref: ProjectRef) {
         <span class="tool-row-meta">{{ toolResultMeta(tool) }}</span>
         <span class="tool-row-status">{{ toolStatusLabel(tool) }}</span>
         <pre v-if="isToolError(tool)" class="tool-row-error">{{ tool.result }}</pre>
-        <AiImageAttachments v-if="tool.images?.length" class="tool-row-images" :items="imageItems(tool.images)" />
+        <AiImageAttachments v-if="tool.images?.length" class="tool-row-images" :items="storedImageItems(tool.images)" />
         <div v-if="shell && projectRefs(tool).length > 0" class="tool-row-refs">
           <button
             v-for="ref in projectRefs(tool)"

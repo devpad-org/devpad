@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -19,16 +22,20 @@ type AttachmentRepository interface {
 	CreateAttachment(ctx context.Context, a *domain.Attachment) error
 	GetAttachment(ctx context.Context, userID, id int64) (*domain.Attachment, error)
 	GetAttachments(ctx context.Context, userID int64, ids []int64) (map[int64]domain.Attachment, error)
+	// GetAttachmentInfo is GetAttachments without the images' data.
+	GetAttachmentInfo(ctx context.Context, userID int64, ids []int64) (map[int64]domain.Attachment, error)
+	FindToolImage(ctx context.Context, userID, conversationID, runID int64, sourceSHA256 string) (*domain.Attachment, error)
 	DeleteUnreferencedAttachments(ctx context.Context, userID int64, before time.Time) error
 }
 
 // ImageLoader fills in the image data that turns refer to.
 type ImageLoader interface {
-	// Hydrate returns the turns with the data of every image of the user's
-	// they refer to loaded. An image that is gone, or is not the user's, is
-	// left without data, which the model is told is no longer available:
-	// one lost image must not stop the whole conversation going on. Only an
-	// image part with no reference at all is refused, with
+	// Hydrate returns the turns with the size of every image of the user's
+	// they refer to, and the data of those a model request will carry,
+	// loaded. An image that is gone, or is not the user's, is left with
+	// neither, which the model is told is no longer available: one lost
+	// image must not stop the whole conversation going on. Only an image
+	// part with no reference at all is refused, with
 	// domain.ErrAttachmentNotFound.
 	Hydrate(ctx context.Context, userID int64, turns []domain.Turn) ([]domain.Turn, error)
 }
@@ -78,6 +85,19 @@ func (s *attachmentService) Upload(ctx context.Context, userID int64, data []byt
 }
 
 func (s *attachmentService) StoreToolImage(ctx context.Context, userID, conversationID, runID int64, data []byte) (domain.ImagePart, error) {
+	// A run that reads the same file again refers to the copy it stored.
+	sum := sha256.Sum256(data)
+	sourceSHA256 := hex.EncodeToString(sum[:])
+	if conversationID > 0 || runID > 0 {
+		existing, err := s.repo.FindToolImage(ctx, userID, conversationID, runID, sourceSHA256)
+		if err == nil {
+			return existing.ImagePart(), nil
+		}
+		if !errors.Is(err, domain.ErrAttachmentNotFound) {
+			return domain.ImagePart{}, fmt.Errorf("looking up tool image: %w", err)
+		}
+	}
+
 	image, err := attachment.Normalize(ctx, data)
 	if err != nil {
 		return domain.ImagePart{}, err
@@ -90,6 +110,7 @@ func (s *attachmentService) StoreToolImage(ctx context.Context, userID, conversa
 		Width:          image.Width,
 		Height:         image.Height,
 		Data:           image.Data,
+		SourceSHA256:   sourceSHA256,
 	}
 	if err := s.repo.CreateAttachment(ctx, a); err != nil {
 		return domain.ImagePart{}, fmt.Errorf("storing tool image: %w", err)
@@ -102,64 +123,84 @@ func (s *attachmentService) GetAttachment(ctx context.Context, userID, id int64)
 }
 
 func (s *attachmentService) Hydrate(ctx context.Context, userID int64, turns []domain.Turn) ([]domain.Turn, error) {
-	var missing []int64
+	var unsized []int64
 	for _, turn := range turns {
 		for _, part := range turn.Parts {
-			switch {
-			case part.Kind == domain.PartImage:
-				if part.Image == nil || part.Image.AttachmentID <= 0 {
-					return nil, fmt.Errorf("%w: image part has no attachment", domain.ErrAttachmentNotFound)
-				}
-				if len(part.Image.Data) == 0 {
-					missing = append(missing, part.Image.AttachmentID)
-				}
-			case part.Kind == domain.PartToolResult && part.ToolResult != nil:
-				for _, image := range part.ToolResult.Images {
-					if len(image.Data) == 0 {
-						missing = append(missing, image.AttachmentID)
-					}
-				}
+			if part.Kind == domain.PartImage && (part.Image == nil || part.Image.AttachmentID <= 0) {
+				return nil, fmt.Errorf("%w: image part has no attachment", domain.ErrAttachmentNotFound)
 			}
 		}
 	}
-	if len(missing) == 0 {
-		return turns, nil
+	domain.EachImage(turns, func(image domain.ImagePart) {
+		if image.Size == 0 && len(image.Data) == 0 {
+			unsized = append(unsized, image.AttachmentID)
+		}
+	})
+
+	// The stored attachments say which images are there, what they are and
+	// how much of a request each takes. Without one, nothing the client
+	// said about the image is kept.
+	if len(unsized) > 0 {
+		info, err := s.repo.GetAttachmentInfo(ctx, userID, unsized)
+		if err != nil {
+			return nil, fmt.Errorf("loading attachments: %w", err)
+		}
+		turns = mapImages(turns, func(image domain.ImagePart) domain.ImagePart {
+			if image.Size > 0 || len(image.Data) > 0 {
+				return image
+			}
+			if a, ok := info[image.AttachmentID]; ok {
+				return a.ImagePart()
+			}
+			return domain.ImagePart{AttachmentID: image.AttachmentID}
+		})
 	}
 
-	loaded, err := s.repo.GetAttachments(ctx, userID, missing)
+	// Load the data of only the images a request will carry. The rest stay
+	// in the database: a long conversation can refer to far more than any
+	// request sends.
+	var unloaded []int64
+	for _, image := range attachment.Sent(turns) {
+		if len(image.Data) == 0 {
+			unloaded = append(unloaded, image.AttachmentID)
+		}
+	}
+	if len(unloaded) == 0 {
+		return turns, nil
+	}
+	loaded, err := s.repo.GetAttachments(ctx, userID, unloaded)
 	if err != nil {
 		return nil, fmt.Errorf("loading attachments: %w", err)
 	}
-	// The stored attachment, not the client's copy of its reference, says
-	// what the image is. Without one, nothing the client said is kept.
-	resolve := func(image domain.ImagePart) domain.ImagePart {
-		if len(image.Data) > 0 {
-			return image
+	return mapImages(turns, func(image domain.ImagePart) domain.ImagePart {
+		if a, ok := loaded[image.AttachmentID]; ok && len(image.Data) == 0 {
+			image.Data = a.Data
 		}
-		if a, ok := loaded[image.AttachmentID]; ok {
-			return a.ImagePart()
-		}
-		return domain.ImagePart{AttachmentID: image.AttachmentID}
-	}
+		return image
+	}), nil
+}
 
-	hydrated := make([]domain.Turn, len(turns))
+// mapImages returns a copy of the turns with fn applied to each image they
+// carry. The input turns are left unchanged.
+func mapImages(turns []domain.Turn, fn func(domain.ImagePart) domain.ImagePart) []domain.Turn {
+	mapped := make([]domain.Turn, len(turns))
 	for i, turn := range turns {
-		hydrated[i] = domain.Turn{Role: turn.Role, Parts: make([]domain.Part, len(turn.Parts))}
+		mapped[i] = domain.Turn{Role: turn.Role, Parts: make([]domain.Part, len(turn.Parts))}
 		for j, part := range turn.Parts {
 			switch {
-			case part.Kind == domain.PartImage:
-				image := resolve(*part.Image)
+			case part.Kind == domain.PartImage && part.Image != nil:
+				image := fn(*part.Image)
 				part.Image = &image
 			case part.Kind == domain.PartToolResult && part.ToolResult != nil && len(part.ToolResult.Images) > 0:
 				result := *part.ToolResult
 				result.Images = make([]domain.ImagePart, len(part.ToolResult.Images))
 				for k, image := range part.ToolResult.Images {
-					result.Images[k] = resolve(image)
+					result.Images[k] = fn(image)
 				}
 				part.ToolResult = &result
 			}
-			hydrated[i].Parts[j] = part
+			mapped[i].Parts[j] = part
 		}
 	}
-	return hydrated, nil
+	return mapped
 }

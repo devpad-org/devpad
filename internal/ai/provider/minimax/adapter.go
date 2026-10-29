@@ -148,6 +148,9 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 	messages := make([]message, 0, len(req.Turns))
 	// Images tools returned go in a user message after the run of tool
 	// messages, which must directly follow the assistant's tool calls.
+	// MiniMax documents image_url.url as "Public image URL or Base64-encoded
+	// Data" without showing which form base64 takes; devpad sends a data
+	// URL, as the other OpenAI-style providers take.
 	var toolImages []domain.ToolResultPart
 	flushToolImages := func() {
 		if content, ok := shared.ToolImagesContent(toolImages, shared.ImageURLObject); ok {

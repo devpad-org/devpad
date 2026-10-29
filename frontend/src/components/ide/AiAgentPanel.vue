@@ -11,7 +11,7 @@ import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
 import AiMessageCopyButton from '@/components/ide/AiMessageCopyButton.vue'
 import AiQuestionCard from '@/components/ide/AiQuestionCard.vue'
-import AiImageAttachments, { type ImageAttachmentItem } from '@/components/ide/AiImageAttachments.vue'
+import AiImageAttachments, { storedImageItems, type ImageAttachmentItem } from '@/components/ide/AiImageAttachments.vue'
 import ApprovalDetails from '@/components/ide/ApprovalDetails.vue'
 import type { BranchChange } from '@/components/ide/ideShell'
 import HandoffModal from '@/components/project/HandoffModal.vue'
@@ -1107,13 +1107,6 @@ function onImagesPicked(event: Event) {
   addImageFiles(Array.from(input.files ?? []))
 }
 
-function imageItems(images: ChatImage[]): ImageAttachmentItem[] {
-  return images.map((image) => {
-    const url = attachmentUrl(image.attachmentId)
-    return { key: String(image.attachmentId), src: url, href: url }
-  })
-}
-
 async function ensureActiveConversation(): Promise<number | null> {
   if (activeConversationId.value !== null) {
     return activeConversationId.value
@@ -1838,7 +1831,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
           :class="{ 'has-copy-action': messageMarkdown(msg) }"
         >
           <AiMessageCopyButton v-if="messageMarkdown(msg)" :markdown="messageMarkdown(msg)" />
-          <AiImageAttachments v-if="msg.images?.length" class="msg-images" :items="imageItems(msg.images)" />
+          <AiImageAttachments v-if="msg.images?.length" class="msg-images" :items="storedImageItems(msg.images)" />
           <span v-if="msg.content" class="msg-plain-text">{{ msg.content }}</span>
         </div>
       </div>

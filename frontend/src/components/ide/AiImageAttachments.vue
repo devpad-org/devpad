@@ -1,5 +1,5 @@
-<script setup lang="ts">
-import { ref } from 'vue'
+<script lang="ts">
+import { attachmentUrl, type ChatImage } from '@/api/ai'
 
 export interface ImageAttachmentItem {
   key: string
@@ -10,6 +10,18 @@ export interface ImageAttachmentItem {
   status?: 'uploading' | 'error'
   error?: string
 }
+
+// The items that show stored images, such as those a message carries.
+export function storedImageItems(images: ChatImage[]): ImageAttachmentItem[] {
+  return images.map((image) => {
+    const url = attachmentUrl(image.attachmentId)
+    return { key: String(image.attachmentId), src: url, href: url }
+  })
+}
+</script>
+
+<script setup lang="ts">
+import { ref } from 'vue'
 
 defineProps<{
   items: ImageAttachmentItem[]

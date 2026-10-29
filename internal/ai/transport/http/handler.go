@@ -497,6 +497,10 @@ func (h *Handler) HandleSaveMessages(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "conversation not found")
 			return
 		}
+		if errors.Is(err, domain.ErrAttachmentNotFound) {
+			writeError(w, http.StatusBadRequest, "an image in the messages has no attachment")
+			return
+		}
 		log.Printf("failed to save messages for conversation %d: %v", conversationID, err)
 		writeError(w, http.StatusInternalServerError, "failed to save messages")
 		return

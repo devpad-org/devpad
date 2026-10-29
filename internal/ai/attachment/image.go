@@ -53,7 +53,8 @@ type Image struct {
 var slots = make(chan struct{}, maxConcurrent)
 
 // Normalize decodes a PNG, JPEG, GIF (its first frame) or WebP image, scales
-// it down to fit MaxEdge, and re-encodes it. Anything else, or an image too
+// it down to fit MaxEdge, turns a JPEG upright for its EXIF orientation, and
+// re-encodes it. Anything else, or an image too
 // large to decode safely, is refused with domain.ErrInvalidImage. It waits
 // while maxConcurrent other images are being normalized.
 func Normalize(ctx context.Context, data []byte) (Image, error) {
@@ -84,7 +85,12 @@ func Normalize(ctx context.Context, data []byte) (Image, error) {
 		return Image{}, fmt.Errorf("%w: decoding %s: %v", domain.ErrInvalidImage, format, err)
 	}
 
+	// Scaling fits the longest side, which turning doesn't change, so the
+	// smaller scaled image is the one turned.
 	scaled := scaleToFit(decoded, MaxEdge)
+	if format == "jpeg" {
+		scaled = orient(scaled, jpegOrientation(data))
+	}
 	bounds := scaled.Bounds()
 	out := Image{Width: bounds.Dx(), Height: bounds.Dy()}
 

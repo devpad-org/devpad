@@ -59,15 +59,19 @@ type ToolResultPart struct {
 }
 
 // ImagePart refers to a stored image attachment. Turns carry only the
-// reference: Data is filled from the attachment store just before a run
-// sends the turn to a provider, and is never serialized, so transcripts
-// saved as JSON stay small.
+// reference: Size and Data are filled from the attachment store when a run
+// starts, Data only for the images its requests will carry, and neither is
+// serialized, so transcripts saved as JSON stay small.
 type ImagePart struct {
 	AttachmentID int64
 	MediaType    string
 	Width        int
 	Height       int
-	Data         []byte `json:"-"`
+	// Size is the stored image's size in bytes, which decides how much of a
+	// request it takes. Like Data it is loaded from the store, never taken
+	// from a client: 0 means the image has not been found.
+	Size int    `json:"-"`
+	Data []byte `json:"-"`
 }
 
 // NewImagePart creates an image part for the given attachment reference.
@@ -133,6 +137,23 @@ func (t Turn) Images() []ImagePart {
 		}
 	}
 	return images
+}
+
+// EachImage calls fn with each image the turns carry, attached or returned
+// by a tool, in order.
+func EachImage(turns []Turn, fn func(ImagePart)) {
+	for _, turn := range turns {
+		for _, part := range turn.Parts {
+			switch {
+			case part.Kind == PartImage && part.Image != nil:
+				fn(*part.Image)
+			case part.Kind == PartToolResult && part.ToolResult != nil:
+				for _, image := range part.ToolResult.Images {
+					fn(image)
+				}
+			}
+		}
+	}
 }
 
 // ThinkingText returns the aggregated thinking content for the turn.

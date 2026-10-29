@@ -235,7 +235,7 @@ func insertPart(ctx context.Context, stmt *sql.Stmt, turnID int64, position int,
 		}
 	case domain.PartImage:
 		if part.Image == nil || part.Image.AttachmentID <= 0 {
-			return fmt.Errorf("image part has no attachment")
+			return fmt.Errorf("%w: image part has no attachment", domain.ErrAttachmentNotFound)
 		}
 		encoded, err := json.Marshal(toStoredImageRef(*part.Image))
 		if err != nil {
