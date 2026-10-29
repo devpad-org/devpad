@@ -77,6 +77,7 @@ type agentRunService struct {
 	chat          ChatService
 	conversations ConversationService
 	agents        AgentService
+	images        ImageLoader
 	broker        agentEventBroker
 
 	rootCtx    context.Context
@@ -139,6 +140,13 @@ func (s *agentRunService) WithAgentService(agents AgentService) *agentRunService
 	return s
 }
 
+// WithImageLoader configures the loader that checks and loads the images a
+// run's input turns refer to.
+func (s *agentRunService) WithImageLoader(images ImageLoader) *agentRunService {
+	s.images = images
+	return s
+}
+
 // OnRunFinished registers fn to be called with the run's final state each time
 // a run reaches a terminal status. fn runs on the run's goroutine and must
 // return quickly.
@@ -187,6 +195,12 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 	agent, err := s.resolveAgent(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("resolving agent: %w", err)
+	}
+	// A malformed image reference fails the run before anything is saved.
+	if s.images != nil {
+		if req.Turns, err = s.images.Hydrate(ctx, req.UserID, req.Turns); err != nil {
+			return nil, err
+		}
 	}
 	if req.ParentRunID == 0 && req.ConversationID > 0 && s.conversations != nil {
 		if err := s.conversations.SaveTurns(ctx, req.ConversationID, req.UserID, cloneTurns(req.Turns)); err != nil {
@@ -755,7 +769,12 @@ func clonePart(part domain.Part) domain.Part {
 	}
 	if part.ToolResult != nil {
 		toolResult := *part.ToolResult
+		toolResult.Images = domain.CloneImages(toolResult.Images)
 		cloned.ToolResult = &toolResult
+	}
+	if part.Image != nil {
+		image := *part.Image
+		cloned.Image = &image
 	}
 	return cloned
 }

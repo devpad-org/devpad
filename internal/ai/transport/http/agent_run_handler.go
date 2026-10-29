@@ -267,7 +267,7 @@ func (h *Handler) writeAgentRunError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "AI provider is not enabled")
 	case errors.Is(err, domain.ErrNoAPIKey):
 		writeError(w, http.StatusBadRequest, "no API key configured for this provider")
-	case errors.Is(err, domain.ErrThinkingNotSupported), errors.Is(err, domain.ErrThinkingCannotBeDisabled):
+	case errors.Is(err, domain.ErrThinkingNotSupported), errors.Is(err, domain.ErrThinkingCannotBeDisabled), isAttachmentError(err):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		log.Printf("agent run error: %v", err)

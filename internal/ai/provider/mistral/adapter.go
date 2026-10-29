@@ -54,15 +54,15 @@ func (a *Adapter) Models() []domain.Model {
 	// tokens cost about a tenth of the input price.
 	return []domain.Model{
 		{
-			ID: "mistral-small-latest", Name: "Mistral Small 4", ProviderID: providerID, Thinking: adjustableThinking,
+			ID: "mistral-small-latest", Name: "Mistral Small 4", ProviderID: providerID, Thinking: adjustableThinking, Vision: true,
 			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 0.15, Output: 0.60, CacheRead: 0.015}},
 		},
 		{
-			ID: "mistral-medium-3-5", Name: "Mistral Medium 3.5", ProviderID: providerID, Thinking: adjustableThinking,
+			ID: "mistral-medium-3-5", Name: "Mistral Medium 3.5", ProviderID: providerID, Thinking: adjustableThinking, Vision: true,
 			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1.50, Output: 7.50, CacheRead: 0.15}},
 		},
 		{
-			ID: "mistral-large-4-0", Name: "Mistral Large 4", ProviderID: providerID, Thinking: adjustableThinking,
+			ID: "mistral-large-4-0", Name: "Mistral Large 4", ProviderID: providerID, Thinking: adjustableThinking, Vision: true,
 			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1.36, Output: 4.18, CacheRead: 0.14}},
 		},
 	}
@@ -77,10 +77,20 @@ func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req 
 
 func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) map[string]any {
 	messages := make([]map[string]any, 0, len(req.Turns))
+	// Images tools returned go in a user message after the run of tool
+	// messages, which must directly follow the assistant's tool calls.
+	var toolImages []domain.ToolResultPart
+	flushToolImages := func() {
+		if content, ok := shared.ToolImagesContent(toolImages, shared.ImageURLString); ok {
+			messages = append(messages, map[string]any{"role": "user", "content": content})
+		}
+		toolImages = nil
+	}
 	for _, turn := range req.Turns {
 		if turn.Role == domain.RoleUser {
 			toolResults := turn.ToolResults()
 			if len(toolResults) > 0 {
+				toolImages = append(toolImages, toolResults...)
 				for _, result := range toolResults {
 					messages = append(messages, map[string]any{
 						"role":         "tool",
@@ -94,15 +104,17 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) map[stri
 				continue
 			}
 		}
+		flushToolImages()
 		message := map[string]any{
 			"role":    string(turn.Role),
-			"content": turn.Text(),
+			"content": shared.ChatContent(turn.Text(), turn.Images(), shared.ImageURLString),
 		}
 		if toolCalls := turn.ToolCalls(); len(toolCalls) > 0 {
 			message["tool_calls"] = toolCalls
 		}
 		messages = append(messages, message)
 	}
+	flushToolImages()
 
 	body := map[string]any{
 		"model":    req.Model,

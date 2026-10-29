@@ -15,6 +15,7 @@ import {
   type ToolGroupDisplay,
 } from '@/components/ide/aiToolDisplay'
 import { ideShellKey } from '@/components/ide/ideShell'
+import AiImageAttachments, { storedImageItems } from '@/components/ide/AiImageAttachments.vue'
 import { useActiveProjectStore } from '@/stores/activeProject'
 
 defineProps<{
@@ -96,6 +97,7 @@ function openRef(ref: ProjectRef) {
         <span class="tool-row-meta">{{ toolResultMeta(tool) }}</span>
         <span class="tool-row-status">{{ toolStatusLabel(tool) }}</span>
         <pre v-if="isToolError(tool)" class="tool-row-error">{{ tool.result }}</pre>
+        <AiImageAttachments v-if="tool.images?.length" class="tool-row-images" :items="storedImageItems(tool.images)" />
         <div v-if="shell && projectRefs(tool).length > 0" class="tool-row-refs">
           <button
             v-for="ref in projectRefs(tool)"
@@ -304,6 +306,10 @@ function openRef(ref: ProjectRef) {
   font-size: 0.7rem;
   line-height: 1.45;
   white-space: pre-wrap;
+}
+
+.tool-row-images {
+  grid-column: 1 / -1;
 }
 
 .tool-row-refs {

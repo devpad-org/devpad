@@ -63,7 +63,7 @@ type chatUsage struct {
 
 type message struct {
 	Role             string            `json:"role"`
-	Content          string            `json:"content"`
+	Content          any               `json:"content"` // a string, or content parts with images
 	ToolCalls        []domain.ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string            `json:"tool_call_id,omitempty"`
 	ReasoningDetails []reasoningDetail `json:"reasoning_details,omitempty"`
@@ -108,6 +108,7 @@ func (a *Adapter) Models() []domain.Model {
 			ID:         minimaxM31FlashModelID,
 			Name:       "MiniMax M3.1 Flash",
 			ProviderID: providerID,
+			Vision:     true,
 			Thinking: domain.ThinkingCapability{
 				Supported:        true,
 				EnabledByDefault: true,
@@ -121,6 +122,7 @@ func (a *Adapter) Models() []domain.Model {
 			ID:         minimaxM3ModelID,
 			Name:       "MiniMax M3",
 			ProviderID: providerID,
+			Vision:     true,
 			Thinking: domain.ThinkingCapability{
 				Supported:        true,
 				EnabledByDefault: true,
@@ -144,11 +146,24 @@ func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req 
 func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequest {
 	thinkingEnabled := domain.ThinkingEnabledForRequest(model, domain.ChatRequest{Model: req.Model, Turns: req.Turns, Thinking: req.Thinking})
 	messages := make([]message, 0, len(req.Turns))
+	// Images tools returned go in a user message after the run of tool
+	// messages, which must directly follow the assistant's tool calls.
+	// MiniMax documents image_url.url as "Public image URL or Base64-encoded
+	// Data" without showing which form base64 takes; devpad sends a data
+	// URL, as the other OpenAI-style providers take.
+	var toolImages []domain.ToolResultPart
+	flushToolImages := func() {
+		if content, ok := shared.ToolImagesContent(toolImages, shared.ImageURLObject); ok {
+			messages = append(messages, message{Role: "user", Content: content})
+		}
+		toolImages = nil
+	}
 
 	for _, turn := range req.Turns {
 		if turn.Role == domain.RoleUser {
 			toolResults := turn.ToolResults()
 			if len(toolResults) > 0 {
+				toolImages = append(toolImages, toolResults...)
 				for _, result := range toolResults {
 					messages = append(messages, message{
 						Role:       "tool",
@@ -163,9 +178,10 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 			}
 		}
 
+		flushToolImages()
 		minimaxMsg := message{
 			Role:      string(turn.Role),
-			Content:   turn.Text(),
+			Content:   shared.ChatContent(turn.Text(), turn.Images(), shared.ImageURLObject),
 			ToolCalls: turn.ToolCalls(),
 		}
 
@@ -179,6 +195,7 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 
 		messages = append(messages, minimaxMsg)
 	}
+	flushToolImages()
 
 	body := chatRequest{
 		Model:         req.Model,

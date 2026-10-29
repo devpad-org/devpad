@@ -14,9 +14,11 @@ type ExecutionRequest struct {
 	CurrentRunID   int64
 	ConversationID int64
 	Model          string
-	Thinking       *domain.ThinkingConfig
-	ToolName       string
-	Arguments      json.RawMessage
+	// Vision reports whether the model can view the images tools return.
+	Vision    bool
+	Thinking  *domain.ThinkingConfig
+	ToolName  string
+	Arguments json.RawMessage
 	// Approved is set only after the user approved this exact call. Tools
 	// that need approval refuse to run without it, so a caller that skips the
 	// approval step cannot start them.
@@ -47,6 +49,12 @@ type AgentLister interface {
 // a model is kept when the default model supports it.
 type AgentDefaults interface {
 	DefaultsFor(ctx context.Context, agentID, effort string) (*domain.AgentDefaults, error)
+}
+
+// ImageStore keeps the images tools return, so the run's transcript can
+// refer to them.
+type ImageStore interface {
+	StoreToolImage(ctx context.Context, userID, conversationID, runID int64, data []byte) (domain.ImagePart, error)
 }
 
 // ChildAgentRunRequest is the minimal request a tool executor needs to spawn a child run.

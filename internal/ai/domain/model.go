@@ -6,6 +6,8 @@ type Model struct {
 	Name       string             `json:"name"`
 	ProviderID string             `json:"providerId"`
 	Thinking   ThinkingCapability `json:"thinking"`
+	// Vision reports whether the model accepts images as input.
+	Vision bool `json:"vision"`
 	// Pricing is nil when the model's prices are not known.
 	Pricing *Pricing `json:"pricing,omitempty"`
 }

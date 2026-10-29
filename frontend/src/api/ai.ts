@@ -17,6 +17,8 @@ export interface AIModel {
   providerName: string
   configured: boolean
   thinking: ThinkingCapability
+  // Whether the model accepts images.
+  vision: boolean
   // Absent when devpad doesn't know the model's prices.
   pricing?: ModelPricing
 }
@@ -132,6 +134,16 @@ export interface ChatMessage {
   thinking_state?: unknown
   tool_calls?: ToolCall[]
   tool_call_id?: string
+  // Images the user attached, or a tool returned.
+  images?: ChatImage[]
+}
+
+// A stored image a message refers to. The server keeps the image itself.
+export interface ChatImage {
+  attachmentId: number
+  mediaType: string
+  width: number
+  height: number
 }
 
 export interface ToolCall {
@@ -149,6 +161,7 @@ export interface ToolResult {
   name: string
   content: string
   isError?: boolean
+  images?: ChatImage[]
 }
 
 // A tool call waiting for the user's approval. Without a title, command is a
@@ -279,7 +292,8 @@ interface PartDTO {
   text?: string
   thinking?: { text?: string; state?: unknown }
   toolCall?: { id: string; itemId?: string; name: string; arguments: string }
-  toolResult?: { toolCallId: string; name: string; content: string; isError?: boolean }
+  toolResult?: { toolCallId: string; name: string; content: string; isError?: boolean; images?: ChatImage[] }
+  image?: ChatImage
 }
 
 interface TurnDTO {
@@ -318,6 +332,7 @@ function messagesToTurns(messages: ChatMessage[]): TurnDTO[] {
             toolCallId: msg.tool_call_id ?? '',
             name: '',
             content: msg.content,
+            images: msg.images?.length ? msg.images : undefined,
           },
         }],
       })
@@ -344,10 +359,10 @@ function messagesToTurns(messages: ChatMessage[]): TurnDTO[] {
       // assistant messages; providers reject a turn with no parts.
       if (parts.length > 0) turns.push({ role: 'assistant', parts })
     } else {
-      turns.push({
-        role: msg.role,
-        parts: msg.content ? [{ kind: 'text', text: msg.content }] : [],
-      })
+      // Images go first: models read a picture best before the question about it.
+      const parts: PartDTO[] = (msg.images ?? []).map(image => ({ kind: 'image', image }))
+      if (msg.content) parts.push({ kind: 'text', text: msg.content })
+      turns.push({ role: msg.role, parts })
     }
   }
   return turns
@@ -380,19 +395,26 @@ function turnsToMessages(turns: TurnDTO[]): ChatMessage[] {
       messages.push(msg)
     } else if (turn.role === 'user') {
       let userContent = ''
+      const images: ChatImage[] = []
       for (const part of turn.parts) {
         if (part.kind === 'text') {
           userContent += part.text ?? ''
+        } else if (part.kind === 'image' && part.image) {
+          images.push(part.image)
         } else if (part.kind === 'tool_result' && part.toolResult) {
-          messages.push({
+          const msg: ChatMessage = {
             role: 'tool',
             content: part.toolResult.content,
             tool_call_id: part.toolResult.toolCallId,
-          })
+          }
+          if (part.toolResult.images?.length) msg.images = part.toolResult.images
+          messages.push(msg)
         }
       }
-      if (userContent) {
-        messages.push({ role: 'user', content: userContent })
+      if (userContent || images.length > 0) {
+        const msg: ChatMessage = { role: 'user', content: userContent }
+        if (images.length > 0) msg.images = images
+        messages.push(msg)
       }
     } else {
       const text = turn.parts.filter(p => p.kind === 'text').map(p => p.text ?? '').join('')
@@ -602,6 +624,18 @@ export const aiApi = {
   saveMessages(conversationId: number, messages: ChatMessage[]): Promise<void> {
     return apiClient.put<void>(`/api/ai/conversations/${conversationId}/messages`, { turns: messagesToTurns(messages) })
   },
+
+  // Stores an image to attach to a message. The server checks and shrinks it.
+  async uploadAttachment(file: File): Promise<ChatImage> {
+    const form = new FormData()
+    form.append('file', file)
+    const { attachment } = await apiClient.postForm<{ attachment: ChatImage }>('/api/ai/attachments', form)
+    return { attachmentId: attachment.attachmentId, mediaType: attachment.mediaType, width: attachment.width, height: attachment.height }
+  },
+}
+
+export function attachmentUrl(attachmentId: number): string {
+  return `/api/ai/attachments/${attachmentId}`
 }
 
 async function readSSEStream(

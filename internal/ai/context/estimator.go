@@ -243,13 +243,32 @@ func estimatePart(p profile, role domain.Role, part domain.Part, turn *TurnEstim
 			metadataTokens++
 		}
 		contentTokens := tokenCount(p, part.ToolResult.Content)
+		for _, image := range part.ToolResult.Images {
+			contentTokens += imageTokens(image)
+		}
 		overhead := p.partOverhead + p.toolResultOverhead + metadataTokens
 		turn.ToolResultTokens += contentTokens
 		turn.OverheadTokens += overhead
 		return PartEstimate{Kind: part.Kind, Name: part.ToolResult.Name, Tokens: contentTokens + overhead}
+
+	case domain.PartImage:
+		if part.Image == nil {
+			return PartEstimate{}
+		}
+		tokens := imageTokens(*part.Image)
+		turn.ConversationTokens += tokens
+		turn.OverheadTokens += p.partOverhead
+		return PartEstimate{Kind: part.Kind, Tokens: tokens + p.partOverhead}
 	default:
 		return PartEstimate{}
 	}
+}
+
+// imageTokens estimates an image from its size, as Anthropic documents:
+// about one token per 750 pixels. Other providers count differently, but
+// on the same order.
+func imageTokens(image domain.ImagePart) int {
+	return image.Width * image.Height / 750
 }
 
 func profileFor(providerID, modelID string) profile {

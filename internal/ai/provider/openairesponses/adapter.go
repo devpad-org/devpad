@@ -134,8 +134,8 @@ func (a *Adapter) Models() []domain.Model {
 	}
 
 	return []domain.Model{
-		{ID: "gpt-5.4", Name: "GPT-5.4", ProviderID: providerID, Thinking: gpt54Thinking, Pricing: gpt54Pricing},
-		{ID: "gpt-5.5", Name: "GPT-5.5", ProviderID: providerID, Thinking: gpt55Thinking, Pricing: gpt55Pricing},
+		{ID: "gpt-5.4", Name: "GPT-5.4", ProviderID: providerID, Thinking: gpt54Thinking, Vision: true, Pricing: gpt54Pricing},
+		{ID: "gpt-5.5", Name: "GPT-5.5", ProviderID: providerID, Thinking: gpt55Thinking, Vision: true, Pricing: gpt55Pricing},
 	}
 }
 
@@ -233,7 +233,7 @@ func buildInput(turns []domain.Turn) []any {
 					input = append(input, map[string]any{
 						"type":    "function_call_output",
 						"call_id": result.ToolCallID,
-						"output":  result.Content,
+						"output":  toolOutput(result),
 					})
 				}
 				if text := turn.Text(); text != "" {
@@ -242,6 +242,18 @@ func buildInput(turns []domain.Turn) []any {
 						"content": text,
 					})
 				}
+			} else if images := turn.Images(); len(images) > 0 {
+				content := make([]map[string]any, 0, len(images)+1)
+				for _, image := range images {
+					content = append(content, inputImage(image))
+				}
+				if text := turn.Text(); text != "" {
+					content = append(content, map[string]any{"type": "input_text", "text": text})
+				}
+				input = append(input, map[string]any{
+					"role":    "user",
+					"content": content,
+				})
 			} else if text := turn.Text(); text != "" {
 				input = append(input, map[string]any{
 					"role":    "user",
@@ -252,6 +264,30 @@ func buildInput(turns []domain.Turn) []any {
 	}
 
 	return input
+}
+
+// toolOutput returns a function call's output: its text, or with images,
+// the text and images as content parts.
+func toolOutput(result domain.ToolResultPart) any {
+	if len(result.Images) == 0 {
+		return result.Content
+	}
+	output := make([]map[string]any, 0, len(result.Images)+1)
+	if result.Content != "" {
+		output = append(output, map[string]any{"type": "input_text", "text": result.Content})
+	}
+	for _, image := range result.Images {
+		output = append(output, inputImage(image))
+	}
+	return output
+}
+
+func inputImage(image domain.ImagePart) map[string]any {
+	return map[string]any{
+		"type":      "input_image",
+		"image_url": shared.DataURL(image),
+		"detail":    "auto",
+	}
 }
 
 func appendReasoningItems(input *[]any, raw json.RawMessage) {

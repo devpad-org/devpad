@@ -98,6 +98,10 @@ func (s *conversationService) SaveTurns(ctx context.Context, conversationID, use
 				newTitle = strings.TrimSpace(title)
 				break
 			}
+			if turn.Role == domain.RoleUser && len(turn.Images()) > 0 {
+				newTitle = "Image"
+				break
+			}
 		}
 	}
 

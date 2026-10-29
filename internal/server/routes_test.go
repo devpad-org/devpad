@@ -31,6 +31,8 @@ func (noopAI) HandleCreateConversation(http.ResponseWriter, *http.Request) {}
 func (noopAI) HandleDeleteConversation(http.ResponseWriter, *http.Request) {}
 func (noopAI) HandleGetMessages(http.ResponseWriter, *http.Request)        {}
 func (noopAI) HandleSaveMessages(http.ResponseWriter, *http.Request)       {}
+func (noopAI) HandleUploadAttachment(http.ResponseWriter, *http.Request)   {}
+func (noopAI) HandleGetAttachment(http.ResponseWriter, *http.Request)      {}
 func (noopAI) HandleListProviders(http.ResponseWriter, *http.Request)      {}
 func (noopAI) HandleUpdateProvider(http.ResponseWriter, *http.Request)     {}
 func (noopAI) HandleListAgentDefaults(http.ResponseWriter, *http.Request)  {}

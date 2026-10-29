@@ -14,7 +14,8 @@ const maxHandoffBytes = 32 * 1024
 
 // HandoffTranscript renders a conversation's user and assistant text as
 // Markdown for a task agent, leaving out tool calls, tool results and
-// thinking. Each message sits in its own fenced block, so text inside one,
+// thinking, and noting the images a message carried, which are not passed
+// on. Each message sits in its own fenced block, so text inside one,
 // which can echo files or tool output, cannot pass itself off as another
 // speaker. When it is longer than budget bytes it keeps the opening
 // message, which usually states the goal, and as many of the latest
@@ -40,10 +41,11 @@ func HandoffTranscript(turns []domain.Turn, budget int) string {
 				}
 			}
 		}
-		if len(texts) == 0 {
+		images := len(turn.Images())
+		if len(texts) == 0 && images == 0 {
 			continue
 		}
-		entries = append(entries, handoffEntry{label: label, text: strings.Join(texts, "\n\n")})
+		entries = append(entries, handoffEntry{label: label, text: strings.Join(texts, "\n\n"), images: images})
 	}
 	if len(entries) == 0 || budget <= 0 {
 		return ""
@@ -100,15 +102,24 @@ func HandoffTranscript(turns []domain.Turn, budget int) string {
 }
 
 type handoffEntry struct {
-	label string
-	text  string
+	label  string
+	text   string
+	images int
 }
 
 // render labels the message and quotes it in a fence longer than any run
-// of backticks inside it, so the text cannot close the fence early.
+// of backticks inside it, so the text cannot close the fence early. The
+// note of its images goes on the label, outside the user's words.
 func (e handoffEntry) render() string {
+	header := fmt.Sprintf("**%s:**", e.label)
+	if e.images > 0 {
+		header += fmt.Sprintf(" [%d %s attached, which you can't see]", e.images, plural(e.images, "image", "images"))
+	}
+	if e.text == "" {
+		return header
+	}
 	fence := strings.Repeat("`", max(3, longestRun(e.text, '`')+1))
-	return fmt.Sprintf("**%s:**\n%stext\n%s\n%s", e.label, fence, e.text, fence)
+	return fmt.Sprintf("%s\n%stext\n%s\n%s", header, fence, e.text, fence)
 }
 
 // renderWithin renders the message in at most n bytes, clipping its text,
@@ -123,7 +134,7 @@ func (e handoffEntry) renderWithin(n int) string {
 	if room <= len(clipMarker) {
 		return ""
 	}
-	return handoffEntry{label: e.label, text: clip(e.text, room)}.render()
+	return handoffEntry{label: e.label, text: clip(e.text, room), images: e.images}.render()
 }
 
 func longestRun(s string, r byte) int {

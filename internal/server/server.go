@@ -354,6 +354,8 @@ type aiRouteHandler interface {
 	HandleDeleteConversation(http.ResponseWriter, *http.Request)
 	HandleGetMessages(http.ResponseWriter, *http.Request)
 	HandleSaveMessages(http.ResponseWriter, *http.Request)
+	HandleUploadAttachment(http.ResponseWriter, *http.Request)
+	HandleGetAttachment(http.ResponseWriter, *http.Request)
 	HandleListProviders(http.ResponseWriter, *http.Request)
 	HandleUpdateProvider(http.ResponseWriter, *http.Request)
 	HandleListAgentDefaults(http.ResponseWriter, *http.Request)
@@ -524,6 +526,8 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("DELETE /api/ai/conversations/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleDeleteConversation)))
 	mux.Handle("GET /api/ai/conversations/{id}/messages", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetMessages)))
 	mux.Handle("PUT /api/ai/conversations/{id}/messages", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleSaveMessages)))
+	mux.Handle("POST /api/ai/attachments", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleUploadAttachment)))
+	mux.Handle("GET /api/ai/attachments/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetAttachment)))
 
 	// AI admin routes
 	mux.Handle("GET /api/ai/providers", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleListProviders)))
@@ -622,7 +626,8 @@ func hostRouter(appMux http.Handler, previewHandler http.Handler, previewDomain 
 }
 
 // requestBodyLimit applies body size limits: 10MB for conversation message saves,
-// 10MB plus multipart overhead for workspace file uploads, and 1MB for all other endpoints.
+// 10MB plus multipart overhead for workspace file uploads and AI image
+// attachments, and 1MB for all other endpoints.
 func requestBodyLimit(next http.Handler) http.Handler {
 	const defaultLimit = int64(1 << 20)
 	const largeBodyLimit = int64(10 << 20)
@@ -633,7 +638,7 @@ func requestBodyLimit(next http.Handler) http.Handler {
 			if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/ai/conversations/") {
 				limit = largeBodyLimit
 			}
-			if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/workspaces/") && strings.HasSuffix(r.URL.Path, "/file/upload") {
+			if isMultipartUpload(r) {
 				limit = largeBodyLimit + multipartOverheadLimit
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, limit)
