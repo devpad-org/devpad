@@ -48,6 +48,15 @@ func (a *Adapter) Models() []domain.Model {
 		SupportedEfforts: []string{defaultReasoningEffort},
 		DefaultEffort:    defaultReasoningEffort,
 	}
+	// Large 4 always reasons: it rejects "none", so low is its lightest level.
+	// Mistral recommends high.
+	large4Thinking := domain.ThinkingCapability{
+		Supported:        true,
+		EnabledByDefault: true,
+		CanDisable:       false,
+		SupportedEfforts: []string{"low", "medium", "high"},
+		DefaultEffort:    defaultReasoningEffort,
+	}
 
 	// Prices are USD per million tokens from
 	// https://docs.mistral.ai/inference/pricing (October 2026); cached prompt
@@ -62,8 +71,8 @@ func (a *Adapter) Models() []domain.Model {
 			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1.50, Output: 7.50, CacheRead: 0.15}},
 		},
 		{
-			ID: "mistral-large-4-0", Name: "Mistral Large 4", ProviderID: providerID, Thinking: adjustableThinking, Vision: true,
-			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1.36, Output: 4.18, CacheRead: 0.14}},
+			ID: "mistral-large-4-0", Name: "Mistral Large 4", ProviderID: providerID, Thinking: large4Thinking, Vision: true,
+			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 0.70, Output: 2.10, CacheRead: 0.07}},
 		},
 	}
 }

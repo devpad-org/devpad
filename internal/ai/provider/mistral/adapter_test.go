@@ -1,6 +1,7 @@
 package mistral
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 
@@ -38,7 +39,6 @@ func TestAdjustableThinkingMetadata(t *testing.T) {
 	}{
 		{modelID: "mistral-small-latest", name: "Mistral Small 4"},
 		{modelID: "mistral-medium-3-5", name: "Mistral Medium 3.5"},
-		{modelID: "mistral-large-4-0", name: "Mistral Large 4"},
 	}
 
 	for _, tt := range tests {
@@ -78,7 +78,7 @@ func TestAdjustableThinkingMetadata(t *testing.T) {
 }
 
 func TestBuildChatRequest_AdjustableReasoningEffort(t *testing.T) {
-	modelIDs := []string{"mistral-small-latest", "mistral-medium-3-5", "mistral-large-4-0"}
+	modelIDs := []string{"mistral-small-latest", "mistral-medium-3-5"}
 
 	for _, modelID := range modelIDs {
 		model, ok := domain.ModelByID(NewAdapter().Models(), modelID)
@@ -147,6 +147,79 @@ func assertAdjustableReasoningEffort(t *testing.T, model domain.Model) {
 				t.Fatalf("expected reasoning_effort %q, got %v", tt.wantEffort, got)
 			}
 		})
+	}
+}
+
+func TestLarge4ThinkingMetadata(t *testing.T) {
+	model, ok := domain.ModelByID(NewAdapter().Models(), "mistral-large-4-0")
+	if !ok {
+		t.Fatal("expected mistral-large-4-0 model")
+	}
+
+	if model.Name != "Mistral Large 4" {
+		t.Fatalf("expected model name %q, got %q", "Mistral Large 4", model.Name)
+	}
+	if !model.Thinking.Supported || !model.Thinking.EnabledByDefault {
+		t.Fatal("expected Large 4 to reason by default")
+	}
+	if model.Thinking.CanDisable {
+		t.Fatal("expected Large 4 reasoning not to be disableable")
+	}
+	if model.Thinking.DefaultEffort != "high" {
+		t.Fatalf("expected default effort high, got %q", model.Thinking.DefaultEffort)
+	}
+
+	expectedEfforts := []string{"low", "medium", "high"}
+	if len(model.Thinking.SupportedEfforts) != len(expectedEfforts) {
+		t.Fatalf("expected efforts %v, got %v", expectedEfforts, model.Thinking.SupportedEfforts)
+	}
+	for i, expected := range expectedEfforts {
+		if model.Thinking.SupportedEfforts[i] != expected {
+			t.Fatalf("expected efforts %v, got %v", expectedEfforts, model.Thinking.SupportedEfforts)
+		}
+	}
+}
+
+func TestBuildChatRequest_Large4ReasoningEffort(t *testing.T) {
+	model, ok := domain.ModelByID(NewAdapter().Models(), "mistral-large-4-0")
+	if !ok {
+		t.Fatal("expected mistral-large-4-0 model")
+	}
+
+	tests := []struct {
+		name       string
+		thinking   *domain.ThinkingConfig
+		wantEffort string
+	}{
+		{name: "not requested uses high", thinking: nil, wantEffort: "high"},
+		{name: "enabled with default effort", thinking: &domain.ThinkingConfig{Enabled: boolPtr(true)}, wantEffort: "high"},
+		{name: "low", thinking: &domain.ThinkingConfig{Effort: "low"}, wantEffort: "low"},
+		{name: "medium", thinking: &domain.ThinkingConfig{Enabled: boolPtr(true), Effort: "medium"}, wantEffort: "medium"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := buildChatRequest(aiprovider.StreamRequest{
+				Model:    model.ID,
+				Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+				Thinking: tt.thinking,
+			}, model)
+
+			if got := body["reasoning_effort"]; got != tt.wantEffort {
+				t.Fatalf("expected reasoning_effort %q, got %v", tt.wantEffort, got)
+			}
+		})
+	}
+}
+
+func TestValidateThinkingRequest_Large4CannotDisable(t *testing.T) {
+	model, _ := domain.ModelByID(NewAdapter().Models(), "mistral-large-4-0")
+	err := domain.ValidateThinkingRequest(model, domain.ChatRequest{
+		Model:    model.ID,
+		Thinking: &domain.ThinkingConfig{Enabled: boolPtr(false)},
+	})
+	if !errors.Is(err, domain.ErrThinkingCannotBeDisabled) {
+		t.Fatalf("expected ErrThinkingCannotBeDisabled, got %v", err)
 	}
 }
 
