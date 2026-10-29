@@ -33,8 +33,9 @@ func (s chatSummarizer) SummarizeFile(ctx context.Context, req aitools.FileSumma
 	}
 
 	stream, err := s.chat.StreamSimple(ctx, app.SimpleChatRequest{
-		UserID: req.UserID,
-		Model:  fileSummaryModel,
+		UserID:      req.UserID,
+		WorkspaceID: req.WorkspaceID,
+		Model:       fileSummaryModel,
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleSystem, fileSummarySystemPrompt),
 			domain.NewTextTurn(domain.RoleUser, buildFileSummaryPrompt(req)),

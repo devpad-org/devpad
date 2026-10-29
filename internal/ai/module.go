@@ -28,6 +28,7 @@ type Module struct {
 	AgentService        app.AgentService
 	AgentDefaults       app.AgentDefaultsService
 	BudgetDefaults      app.BudgetDefaultsService
+	Usage               app.UsageService
 	ChatService         app.ChatService
 	AgentRunService     app.AgentRunService
 	ConversationService app.ConversationService
@@ -60,12 +61,13 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	agentDefaultsService := app.NewAgentDefaultsService(storage.NewAgentDefaultsRepository(db), catalogService)
 	budgetDefaultsService := app.NewBudgetDefaultsService(storage.NewBudgetDefaultsRepository(db))
 	conversationService := app.NewConversationService(conversations)
+	usageService := app.NewUsageService(storage.NewUsageRepository(db), catalogService)
 	toolExecutor := aitools.NewWorkspaceExecutor(workspaceOps)
 	toolExecutor.SetImageStore(attachmentService)
 	approvalBroker := approval.NewMemoryBroker()
 	questionBroker := question.NewMemoryBroker()
 	toolCatalog := aitools.NewCatalog()
-	chatService := app.NewChatService(catalogService, toolCatalog, toolExecutor, approvalBroker, questionBroker, app.NewAGENTSInstructionSource(workspaceOps), attachmentService)
+	chatService := app.NewChatService(catalogService, toolCatalog, toolExecutor, approvalBroker, questionBroker, app.NewAGENTSInstructionSource(workspaceOps), attachmentService, usageService)
 	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService))
 	agentRuns := storage.NewAgentRunRepository(db)
 	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService).WithImageLoader(attachmentService)
@@ -78,11 +80,12 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 		AgentService:        agentService,
 		AgentDefaults:       agentDefaultsService,
 		BudgetDefaults:      budgetDefaultsService,
+		Usage:               usageService,
 		ChatService:         chatService,
 		AgentRunService:     agentRunService,
 		ConversationService: conversationService,
 		ToolExecutor:        toolExecutor,
-		Handler:             httptransport.NewHandler(catalogService, agentService, agentDefaultsService, budgetDefaultsService, chatService, agentRunService, conversationService, attachmentService, approvalBroker, questionBroker),
+		Handler:             httptransport.NewHandler(catalogService, agentService, agentDefaultsService, budgetDefaultsService, usageService, chatService, agentRunService, conversationService, attachmentService, approvalBroker, questionBroker),
 		runListeners:        agentRunService,
 		toolCatalog:         toolCatalog,
 		toolExecutor:        toolExecutor,

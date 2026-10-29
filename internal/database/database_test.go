@@ -185,9 +185,11 @@ func TestMigrateAddsImagePartsKeepingExistingParts(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	// The pre-023 schema has every table 048 touches.
+	// The pre-023 schema has every table 048 touches, but not those later
+	// migrations need.
 	createPreWaitingUserAgentRunSchema(t, db)
 	markMigrationsAppliedBefore(t, db, "048_ai_images")
+	markMigrationsAppliedFrom(t, db, "050_ai_usage")
 	for _, stmt := range []string{
 		`INSERT INTO users (id, username, email, password) VALUES (1, 'test', 'test@example.com', 'hashed')`,
 		`INSERT INTO workspaces (id, user_id, name) VALUES (1, 1, 'workspace')`,
@@ -231,7 +233,19 @@ func TestMigrateAddsImagePartsKeepingExistingParts(t *testing.T) {
 
 func markMigrationsAppliedBefore(t *testing.T, db *DB, stopVersion string) {
 	t.Helper()
-	if _, err := db.Conn().Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP)`); err != nil {
+	markMigrationsApplied(t, db, func(version string) bool { return version < stopVersion })
+}
+
+// markMigrationsAppliedFrom marks startVersion and every later migration
+// applied.
+func markMigrationsAppliedFrom(t *testing.T, db *DB, startVersion string) {
+	t.Helper()
+	markMigrationsApplied(t, db, func(version string) bool { return version >= startVersion })
+}
+
+func markMigrationsApplied(t *testing.T, db *DB, applied func(version string) bool) {
+	t.Helper()
+	if _, err := db.Conn().Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP)`); err != nil {
 		t.Fatalf("create schema_migrations: %v", err)
 	}
 	entries, err := migrationFS.ReadDir("migrations")
@@ -243,7 +257,7 @@ func markMigrationsAppliedBefore(t *testing.T, db *DB, stopVersion string) {
 			continue
 		}
 		version := strings.TrimSuffix(entry.Name(), ".sql")
-		if version >= stopVersion {
+		if !applied(version) {
 			continue
 		}
 		if _, err := db.Conn().Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {

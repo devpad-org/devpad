@@ -36,6 +36,7 @@ async function handleLogout() {
     <div class="header-left">
       <RouterLink to="/" class="header-brand">Devpad</RouterLink>
       <nav class="header-nav">
+        <RouterLink to="/usage" class="nav-link">Usage</RouterLink>
         <RouterLink to="/settings" class="nav-link">Settings</RouterLink>
         <RouterLink v-if="auth.isAdmin" to="/admin" class="nav-link">Admin</RouterLink>
       </nav>

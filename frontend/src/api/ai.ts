@@ -105,6 +105,55 @@ export interface BudgetDefaults {
   assistantUsd: number
 }
 
+export type UsagePeriod = 'day' | 'week' | 'month'
+
+// Adds up provider requests. costUsd covers only the priced ones;
+// unpricedRequests counts those whose model had no known prices.
+export interface UsageTotals {
+  requests: number
+  unpricedRequests: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  costUsd: number
+}
+
+// Project id 0 stands for requests made outside any project.
+export interface UsageProject {
+  id: number
+  name: string
+  deleted: boolean
+}
+
+export interface UsageReportRow extends UsageTotals {
+  period: string
+  projectId: number
+  model: string
+}
+
+// What provider requests cost in each period, by project and model.
+// periods lists the first day (YYYY-MM-DD) of every period in the range;
+// projects and models come most costly first.
+export interface UsageReport {
+  period: UsagePeriod
+  periods: string[]
+  projects: UsageProject[]
+  models: { id: string; name: string }[]
+  rows: UsageReportRow[]
+  totals: UsageTotals
+}
+
+export interface UsageQuery {
+  period: UsagePeriod
+  // YYYY-MM-DD, both included, counted in tz.
+  from: string
+  to: string
+  tz: string
+  // Every user's usage; admins only.
+  everyone?: boolean
+}
+
 export interface AIAgent {
   id: string
   userId?: number
@@ -491,6 +540,12 @@ export const aiApi = {
 
   setBudgets(budgets: BudgetDefaults): Promise<{ budgets: BudgetDefaults }> {
     return apiClient.put<{ budgets: BudgetDefaults }>('/api/ai/budgets', budgets)
+  },
+
+  getUsage(query: UsageQuery): Promise<UsageReport> {
+    const params = new URLSearchParams({ period: query.period, from: query.from, to: query.to, tz: query.tz })
+    if (query.everyone) params.set('scope', 'all')
+    return apiClient.get<UsageReport>(`/api/ai/usage?${params}`)
   },
 
   async chatStream(

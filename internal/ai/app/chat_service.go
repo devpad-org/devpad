@@ -14,10 +14,13 @@ import (
 
 // SimpleChatRequest contains the inputs for non-agent chat.
 type SimpleChatRequest struct {
-	UserID   int64
-	Model    string
-	Turns    []domain.Turn
-	Thinking *domain.ThinkingConfig
+	UserID int64
+	// WorkspaceID is the workspace the chat is for, if any, so its usage is
+	// counted under the workspace's project.
+	WorkspaceID int64
+	Model       string
+	Turns       []domain.Turn
+	Thinking    *domain.ThinkingConfig
 }
 
 // AgentChatRequest contains the inputs for tool-enabled agent chat.
@@ -50,6 +53,7 @@ type chatService struct {
 	agent                 orchestrator.AgentChatOrchestrator
 	workspaceInstructions WorkspaceInstructionSource
 	images                ImageLoader
+	usage                 UsageRecorder
 }
 
 type providerChatBackend struct {
@@ -58,7 +62,8 @@ type providerChatBackend struct {
 
 // NewChatService creates the app-level chat service for simple and agent
 // chat. images loads the images turns refer to; nil sends turns as they are.
-func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog, executor orchestrator.ToolExecutor, approvals approval.Broker, questions question.Broker, workspaceInstructions WorkspaceInstructionSource, images ImageLoader) ChatService {
+// usage records every provider request the chats make; nil records none.
+func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog, executor orchestrator.ToolExecutor, approvals approval.Broker, questions question.Broker, workspaceInstructions WorkspaceInstructionSource, images ImageLoader, usage UsageRecorder) ChatService {
 	backend := &providerChatBackend{catalog: catalog}
 
 	return &chatService{
@@ -66,6 +71,7 @@ func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog
 		agent:                 orchestrator.NewAgentChatOrchestrator(backend, toolCatalog, executor, approvals, questions),
 		workspaceInstructions: workspaceInstructions,
 		images:                images,
+		usage:                 usage,
 	}
 }
 
@@ -74,11 +80,19 @@ func (s *chatService) StreamSimple(ctx context.Context, req SimpleChatRequest) (
 	if err != nil {
 		return nil, err
 	}
-	return s.simple.Stream(ctx, domain.ChatRequest{
+	stream, err := s.simple.Stream(ctx, domain.ChatRequest{
 		Model:    req.Model,
 		Turns:    turns,
 		Thinking: req.Thinking,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return recordUsage(ctx, s.usage, domain.UsageRecord{
+		UserID:      req.UserID,
+		WorkspaceID: req.WorkspaceID,
+		Model:       req.Model,
+	}, stream), nil
 }
 
 func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-chan domain.ClientEvent, error) {
@@ -90,7 +104,7 @@ func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-
 	if err != nil {
 		return nil, err
 	}
-	return s.agent.Stream(ctx, orchestrator.AgentChatRequest{
+	stream, err := s.agent.Stream(ctx, orchestrator.AgentChatRequest{
 		UserID:                req.UserID,
 		WorkspaceID:           req.WorkspaceID,
 		CurrentRunID:          req.CurrentRunID,
@@ -102,6 +116,15 @@ func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-
 		WorkspaceInstructions: workspaceInstructions,
 		Budget:                req.Budget,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return recordUsage(ctx, s.usage, domain.UsageRecord{
+		UserID:      req.UserID,
+		WorkspaceID: req.WorkspaceID,
+		RunID:       req.CurrentRunID,
+		Model:       req.Model,
+	}, stream), nil
 }
 
 // hydrate loads the images the turns refer to, once per run: the turns are

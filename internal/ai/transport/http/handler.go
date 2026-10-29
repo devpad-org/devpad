@@ -23,6 +23,7 @@ type Handler struct {
 	agents      app.AgentService
 	defaults    app.AgentDefaultsService
 	budgets     app.BudgetDefaultsService
+	usage       app.UsageService
 	chat        app.ChatService
 	runs        app.AgentRunService
 	convService app.ConversationService
@@ -32,12 +33,13 @@ type Handler struct {
 }
 
 // NewHandler creates a new AI handler.
-func NewHandler(catalog app.CatalogService, agents app.AgentService, defaults app.AgentDefaultsService, budgets app.BudgetDefaultsService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, attachments app.AttachmentService, approvals approval.Broker, questions question.Broker) *Handler {
+func NewHandler(catalog app.CatalogService, agents app.AgentService, defaults app.AgentDefaultsService, budgets app.BudgetDefaultsService, usage app.UsageService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, attachments app.AttachmentService, approvals approval.Broker, questions question.Broker) *Handler {
 	return &Handler{
 		catalog:     catalog,
 		agents:      agents,
 		defaults:    defaults,
 		budgets:     budgets,
+		usage:       usage,
 		chat:        chat,
 		runs:        runs,
 		convService: convService,

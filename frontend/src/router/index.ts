@@ -6,6 +6,7 @@ import SetupView from '@/views/SetupView.vue'
 import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import InboxView from '@/views/InboxView.vue'
+import UsageView from '@/views/UsageView.vue'
 const IdeView = () => import('@/views/IdeView.vue')
 
 export const router = createRouter({
@@ -50,6 +51,12 @@ export const router = createRouter({
       path: '/inbox',
       name: 'inbox',
       component: InboxView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/usage',
+      name: 'usage',
+      component: UsageView,
       meta: { requiresAuth: true },
     },
     {

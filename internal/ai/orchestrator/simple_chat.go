@@ -16,12 +16,16 @@ func NewSimpleChatOrchestrator(service ChatService) *SimpleChatOrchestrator {
 	return &SimpleChatOrchestrator{service: service}
 }
 
-// Stream delegates directly to the provider-backed chat service.
+// Stream delegates directly to the provider-backed chat service, pricing
+// each request's usage when the model's prices are known.
 func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequest) (<-chan domain.ClientEvent, error) {
 	stream, err := o.service.ChatStream(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	// ChatStream has already found the model; one it cannot find goes
+	// unpriced.
+	model, _ := o.service.FindModel(req.Model)
 
 	out := make(chan domain.ClientEvent)
 	go func() {
@@ -33,12 +37,16 @@ func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequ
 					return
 				}
 
+				var usage *domain.Usage
+				if event.Usage != nil {
+					usage = pricedUsage(model, *event.Usage)
+				}
 				clientEvent := domain.ClientEvent{
 					TextDelta:      event.TextDelta,
 					ReasoningDelta: event.ReasoningDelta,
 					ReasoningState: domain.CloneRawMessage(event.ReasoningState),
 					ToolCalls:      append([]domain.ToolCall(nil), event.ToolCalls...),
-					Usage:          event.Usage,
+					Usage:          usage,
 					Done:           event.Done,
 				}
 				if event.Err != nil {

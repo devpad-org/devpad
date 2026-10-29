@@ -39,6 +39,7 @@ func (noopAI) HandleListAgentDefaults(http.ResponseWriter, *http.Request)  {}
 func (noopAI) HandleSetAgentDefaults(http.ResponseWriter, *http.Request)   {}
 func (noopAI) HandleGetBudgetDefaults(http.ResponseWriter, *http.Request)  {}
 func (noopAI) HandleSetBudgetDefaults(http.ResponseWriter, *http.Request)  {}
+func (noopAI) HandleUsageReport(http.ResponseWriter, *http.Request)        {}
 
 // Workspaces only come into existence as a project's workspace or an agent
 // sandbox, so the API has no way to create or rename a standalone one.
