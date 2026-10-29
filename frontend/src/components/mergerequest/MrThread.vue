@@ -8,8 +8,9 @@ import { useMergeRequest, type Thread } from './useMergeRequest'
 
 // One comment thread: its first comment, the replies, and the form that
 // replies to it, resolves it or opens it again. A resolved thread folds to
-// one line until it is opened. In the activity it says which file and line
-// it is on; beside the diff, inFile, only the line.
+// one line until it is opened, and opened it keeps a line in the same place
+// that folds it again. In the activity it says which file and line it is on;
+// beside the diff, inFile, only the line.
 const props = defineProps<{ thread: Thread; inFile?: boolean }>()
 
 const { mr, isOpen, replyDrafts, reply, setResolved, jumpToComment, selectFile } = useMergeRequest()
@@ -99,7 +100,7 @@ function showLocation() {
 
 <template>
   <article class="thread" :class="{ 'thread-resolved': resolved }">
-    <button v-if="folded" type="button" class="thread-folded" :title="`Show the thread resolved by ${resolverName(root.resolvedBy)}`" @click="folded = false">
+    <button v-if="folded" type="button" class="thread-folded" aria-expanded="false" :title="`Show the thread resolved by ${resolverName(root.resolvedBy)}`" @click="folded = false">
       <MrIcon name="check-circle" :size="14" class="resolved-icon" />
       <strong>{{ authorName(root.author) }}</strong>
       <span v-if="root.path && !inFile" class="mono folded-file">{{ baseName(root.path) }}</span>
@@ -112,6 +113,13 @@ function showLocation() {
     </button>
 
     <template v-else>
+      <button v-if="resolved" type="button" class="thread-folded thread-unfolded" aria-expanded="true" title="Fold the thread" @click="folded = true">
+        <MrIcon name="check-circle" :size="14" class="resolved-icon" />
+        <span class="unfolded-label">Resolved by {{ resolverName(root.resolvedBy) }}</span>
+        <span v-if="root.resolvedAt" class="folded-meta" :title="fullTime(root.resolvedAt)">{{ timeAgo(root.resolvedAt) }}</span>
+        <MrIcon name="chevron-down" :size="13" class="fold-icon" />
+      </button>
+
       <button
         v-if="root.path && !inFile"
         type="button"
@@ -150,9 +158,6 @@ function showLocation() {
               <MrIcon name="check-circle" :size="13" />
               {{ resolved ? 'Reopen' : 'Resolve' }}
             </button>
-            <button v-if="resolved" type="button" class="icon-button" aria-label="Fold the thread" title="Fold" @click="folded = true">
-              <MrIcon name="chevron-down" :size="13" class="fold-icon" />
-            </button>
           </span>
         </div>
         <MarkdownMessage :content="root.body" />
@@ -168,12 +173,6 @@ function showLocation() {
         </div>
         <MarkdownMessage :content="r.body" />
       </div>
-
-      <p v-if="resolved" class="resolved-line">
-        <MrIcon name="check-circle" :size="13" />
-        Resolved by {{ resolverName(root.resolvedBy) }}
-        <span v-if="root.resolvedAt" class="muted" :title="fullTime(root.resolvedAt)">&middot; {{ timeAgo(root.resolvedAt) }}</span>
-      </p>
 
       <div v-if="isOpen" class="thread-footer">
         <form v-if="replying" class="reply-form" @submit.prevent="submitReply">
@@ -311,19 +310,6 @@ function showLocation() {
   cursor: not-allowed;
 }
 
-.fold-icon {
-  transform: rotate(180deg);
-}
-
-.resolved-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px var(--space-3);
-  border-top: 0.5px solid var(--border-hairline);
-  color: var(--success);
-  font-size: 0.75rem;
-}
 
 .thread-footer {
   padding: var(--space-2) var(--space-3);
@@ -435,6 +421,25 @@ function showLocation() {
 
 .thread-folded > svg:last-child {
   flex-shrink: 0;
+}
+
+/* Opened, the line stays where it was, now saying who resolved it. */
+.thread-unfolded {
+  border-bottom: 0.5px solid var(--border-hairline);
+}
+
+.unfolded-label {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--success);
+}
+
+.fold-icon {
+  margin-left: auto;
+  transform: rotate(180deg);
 }
 
 .muted {
