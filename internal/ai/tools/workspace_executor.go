@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/ai/attachment"
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
@@ -40,6 +41,7 @@ type WorkspaceExecutor struct {
 	agentLister AgentLister
 	defaults    AgentDefaults
 	summarizer  FileSummarizer
+	images      ImageStore
 
 	providersMu sync.RWMutex
 	providers   []ToolProvider
@@ -71,6 +73,12 @@ func (e *WorkspaceExecutor) AddProvider(p ToolProvider) {
 	e.providersMu.Lock()
 	defer e.providersMu.Unlock()
 	e.providers = append(e.providers, p)
+}
+
+// SetImageStore wires the store read_file keeps the images it opens in.
+// Without one, image files are read as text.
+func (e *WorkspaceExecutor) SetImageStore(images ImageStore) {
+	e.images = images
 }
 
 // SetFileSummarizer wires the AI summarizer used by summarize_file.
@@ -106,7 +114,7 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 
 	switch req.ToolName {
 	case "read_file":
-		return e.readFile(ctx, req.UserID, req.WorkspaceID, params)
+		return e.readFile(ctx, req, params)
 	case "summarize_file":
 		return e.summarizeFile(ctx, req.UserID, req.WorkspaceID, params)
 	case "write_file":
@@ -152,17 +160,31 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 	}
 }
 
-func (e *WorkspaceExecutor) readFile(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
+func (e *WorkspaceExecutor) readFile(ctx context.Context, req ExecutionRequest, params map[string]any) domain.ToolResultPart {
 	path, _ := params["path"].(string)
 	if path == "" {
 		return toolFailure("read_file", "Error: path is required")
 	}
-	data, err := e.ws.ReadFile(ctx, userID, workspaceID, path)
+	data, err := e.ws.ReadFile(ctx, req.UserID, req.WorkspaceID, path)
 	if err != nil {
 		return toolFailure("read_file", "Error: %v", err)
 	}
+	if e.images != nil && attachment.IsImage(data) {
+		return e.readImage(ctx, req, path, data)
+	}
 
 	return toolSuccess("read_file", truncateToolText(string(data), maxToolTextBytes, truncationNoticeFormat))
+}
+
+// readImage returns an image file as an image the model can look at.
+func (e *WorkspaceExecutor) readImage(ctx context.Context, req ExecutionRequest, path string, data []byte) domain.ToolResultPart {
+	image, err := e.images.StoreToolImage(ctx, req.UserID, req.ConversationID, req.CurrentRunID, data)
+	if err != nil {
+		return toolFailure("read_file", "Error: %s is an image that can't be shown: %v", path, err)
+	}
+	result := toolSuccess("read_file", fmt.Sprintf("Image %s (%d×%d) is attached.", path, image.Width, image.Height))
+	result.Images = []domain.ImagePart{image}
+	return result
 }
 
 func (e *WorkspaceExecutor) writeFile(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {

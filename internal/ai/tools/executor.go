@@ -49,6 +49,12 @@ type AgentDefaults interface {
 	DefaultsFor(ctx context.Context, agentID, effort string) (*domain.AgentDefaults, error)
 }
 
+// ImageStore keeps the images tools return, so the run's transcript can
+// refer to them.
+type ImageStore interface {
+	StoreToolImage(ctx context.Context, userID, conversationID, runID int64, data []byte) (domain.ImagePart, error)
+}
+
 // ChildAgentRunRequest is the minimal request a tool executor needs to spawn a child run.
 type ChildAgentRunRequest struct {
 	ParentRunID    int64

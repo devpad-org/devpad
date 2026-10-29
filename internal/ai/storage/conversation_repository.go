@@ -144,8 +144,9 @@ func (r *ConversationRepository) SaveTurns(ctx context.Context, conversationID i
 	partStmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO ai_parts (turn_id, position, kind, text, thinking_state,
 		 tool_call_id, tool_call_item_id, tool_call_name, tool_call_args,
-		 tool_result_call_id, tool_result_name, tool_result_content, tool_result_is_error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 tool_result_call_id, tool_result_name, tool_result_content, tool_result_is_error,
+		 image_ref, tool_result_images)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return fmt.Errorf("preparing part insert: %w", err)
@@ -169,6 +170,10 @@ func (r *ConversationRepository) SaveTurns(ctx context.Context, conversationID i
 		}
 	}
 
+	if err := linkAttachments(ctx, tx, conversationID, turns); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing transaction: %w", err)
 	}
@@ -187,6 +192,8 @@ func insertPart(ctx context.Context, stmt *sql.Stmt, turnID int64, position int,
 		toolResultName    string
 		toolResultContent string
 		toolResultIsError int
+		imageRef          string
+		toolResultImages  string
 	)
 
 	switch part.Kind {
@@ -214,7 +221,27 @@ func insertPart(ctx context.Context, stmt *sql.Stmt, turnID int64, position int,
 			if part.ToolResult.IsError {
 				toolResultIsError = 1
 			}
+			if len(part.ToolResult.Images) > 0 {
+				refs := make([]storedImageRef, 0, len(part.ToolResult.Images))
+				for _, image := range part.ToolResult.Images {
+					refs = append(refs, toStoredImageRef(image))
+				}
+				encoded, err := json.Marshal(refs)
+				if err != nil {
+					return fmt.Errorf("encoding tool result images: %w", err)
+				}
+				toolResultImages = string(encoded)
+			}
 		}
+	case domain.PartImage:
+		if part.Image == nil || part.Image.AttachmentID <= 0 {
+			return fmt.Errorf("image part has no attachment")
+		}
+		encoded, err := json.Marshal(toStoredImageRef(*part.Image))
+		if err != nil {
+			return fmt.Errorf("encoding image reference: %w", err)
+		}
+		imageRef = string(encoded)
 	}
 
 	_, err := stmt.ExecContext(ctx,
@@ -222,8 +249,35 @@ func insertPart(ctx context.Context, stmt *sql.Stmt, turnID int64, position int,
 		text, thinkingState,
 		toolCallID, toolCallItemID, toolCallName, toolCallArgs,
 		toolResultCallID, toolResultName, toolResultContent, toolResultIsError,
+		imageRef, toolResultImages,
 	)
 	return err
+}
+
+// storedImageRef is how an image reference is kept in ai_parts.
+type storedImageRef struct {
+	AttachmentID int64  `json:"attachmentId"`
+	MediaType    string `json:"mediaType"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+}
+
+func toStoredImageRef(image domain.ImagePart) storedImageRef {
+	return storedImageRef{
+		AttachmentID: image.AttachmentID,
+		MediaType:    image.MediaType,
+		Width:        image.Width,
+		Height:       image.Height,
+	}
+}
+
+func (r storedImageRef) imagePart() domain.ImagePart {
+	return domain.ImagePart{
+		AttachmentID: r.AttachmentID,
+		MediaType:    r.MediaType,
+		Width:        r.Width,
+		Height:       r.Height,
+	}
 }
 
 func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error) {
@@ -231,7 +285,8 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 		`SELECT t.id, t.position, t.role,
 		        p.position, p.kind, p.text, p.thinking_state,
 		        p.tool_call_id, p.tool_call_item_id, p.tool_call_name, p.tool_call_args,
-		        p.tool_result_call_id, p.tool_result_name, p.tool_result_content, p.tool_result_is_error
+		        p.tool_result_call_id, p.tool_result_name, p.tool_result_content, p.tool_result_is_error,
+		        p.image_ref, p.tool_result_images
 		 FROM ai_turns t
 		 LEFT JOIN ai_parts p ON p.turn_id = t.id
 		 JOIN ai_conversations c ON c.id = t.conversation_id
@@ -256,19 +311,21 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 
 	for rows.Next() {
 		var (
-			turnID, turnPos                                            int64
-			role                                                       string
-			partPos                                                    sql.NullInt64
-			kind, text, thinkingState                                  sql.NullString
-			toolCallID, toolCallItemID, toolCallName, toolCallArgs     sql.NullString
-			toolResultCallID, toolResultName, toolResultContent        sql.NullString
-			toolResultIsError                                          sql.NullInt64
+			turnID, turnPos                                        int64
+			role                                                   string
+			partPos                                                sql.NullInt64
+			kind, text, thinkingState                              sql.NullString
+			toolCallID, toolCallItemID, toolCallName, toolCallArgs sql.NullString
+			toolResultCallID, toolResultName, toolResultContent    sql.NullString
+			toolResultIsError                                      sql.NullInt64
+			imageRef, toolResultImages                             sql.NullString
 		)
 		if err := rows.Scan(
 			&turnID, &turnPos, &role,
 			&partPos, &kind, &text, &thinkingState,
 			&toolCallID, &toolCallItemID, &toolCallName, &toolCallArgs,
 			&toolResultCallID, &toolResultName, &toolResultContent, &toolResultIsError,
+			&imageRef, &toolResultImages,
 		); err != nil {
 			return nil, fmt.Errorf("scanning row: %w", err)
 		}
@@ -284,7 +341,8 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 
 		part, err := scanPart(kind.String, text.String, thinkingState.String,
 			toolCallID.String, toolCallItemID.String, toolCallName.String, toolCallArgs.String,
-			toolResultCallID.String, toolResultName.String, toolResultContent.String, toolResultIsError.Int64 != 0)
+			toolResultCallID.String, toolResultName.String, toolResultContent.String, toolResultIsError.Int64 != 0,
+			imageRef.String, toolResultImages.String)
 		if err != nil {
 			return nil, fmt.Errorf("building part: %w", err)
 		}
@@ -307,7 +365,7 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 func scanPart(kind, text, thinkingState,
 	toolCallID, toolCallItemID, toolCallName, toolCallArgs,
 	toolResultCallID, toolResultName, toolResultContent string,
-	toolResultIsError bool) (domain.Part, error) {
+	toolResultIsError bool, imageRef, toolResultImages string) (domain.Part, error) {
 
 	switch domain.PartKind(kind) {
 	case domain.PartText:
@@ -335,15 +393,29 @@ func scanPart(kind, text, thinkingState,
 		}, nil
 
 	case domain.PartToolResult:
-		return domain.Part{
-			Kind: domain.PartToolResult,
-			ToolResult: &domain.ToolResultPart{
-				ToolCallID: toolResultCallID,
-				Name:       toolResultName,
-				Content:    toolResultContent,
-				IsError:    toolResultIsError,
-			},
-		}, nil
+		result := &domain.ToolResultPart{
+			ToolCallID: toolResultCallID,
+			Name:       toolResultName,
+			Content:    toolResultContent,
+			IsError:    toolResultIsError,
+		}
+		if toolResultImages != "" {
+			var refs []storedImageRef
+			if err := json.Unmarshal([]byte(toolResultImages), &refs); err != nil {
+				return domain.Part{}, fmt.Errorf("decoding tool result images: %w", err)
+			}
+			for _, ref := range refs {
+				result.Images = append(result.Images, ref.imagePart())
+			}
+		}
+		return domain.Part{Kind: domain.PartToolResult, ToolResult: result}, nil
+
+	case domain.PartImage:
+		var ref storedImageRef
+		if err := json.Unmarshal([]byte(imageRef), &ref); err != nil {
+			return domain.Part{}, fmt.Errorf("decoding image reference: %w", err)
+		}
+		return domain.NewImagePart(ref.imagePart()), nil
 
 	default:
 		return domain.Part{}, fmt.Errorf("unknown part kind %q", kind)

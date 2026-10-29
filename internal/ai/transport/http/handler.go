@@ -26,12 +26,13 @@ type Handler struct {
 	chat        app.ChatService
 	runs        app.AgentRunService
 	convService app.ConversationService
+	attachments app.AttachmentService
 	approvals   approval.Broker
 	questions   question.Broker
 }
 
 // NewHandler creates a new AI handler.
-func NewHandler(catalog app.CatalogService, agents app.AgentService, defaults app.AgentDefaultsService, budgets app.BudgetDefaultsService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, approvals approval.Broker, questions question.Broker) *Handler {
+func NewHandler(catalog app.CatalogService, agents app.AgentService, defaults app.AgentDefaultsService, budgets app.BudgetDefaultsService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, attachments app.AttachmentService, approvals approval.Broker, questions question.Broker) *Handler {
 	return &Handler{
 		catalog:     catalog,
 		agents:      agents,
@@ -40,6 +41,7 @@ func NewHandler(catalog app.CatalogService, agents app.AgentService, defaults ap
 		chat:        chat,
 		runs:        runs,
 		convService: convService,
+		attachments: attachments,
 		approvals:   approvals,
 		questions:   questions,
 	}
@@ -147,7 +149,7 @@ func (h *Handler) HandleChat(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "AI provider is not enabled")
 		case errors.Is(err, domain.ErrNoAPIKey):
 			writeError(w, http.StatusBadRequest, "no API key configured for this provider")
-		case isThinkingRequestError(err):
+		case isThinkingRequestError(err), isAttachmentError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
 			log.Printf("failed to start chat: %v", err)
@@ -232,7 +234,7 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, domain.ErrModelNotFound):
 			writeError(w, http.StatusBadRequest, "model not found")
-		case isThinkingRequestError(err):
+		case isThinkingRequestError(err), isAttachmentError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
 			writeError(w, http.StatusInternalServerError, "failed to start agent chat")

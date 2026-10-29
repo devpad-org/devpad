@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 
@@ -102,6 +103,7 @@ func (a *Adapter) Models() []domain.Model {
 			ID:         "claude-opus-5-5",
 			Name:       "Claude Opus 5.5",
 			ProviderID: providerID,
+			Vision:     true,
 			Thinking:   opus55Thinking,
 			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 4, Output: 20, CacheRead: 0.20, CacheWrite: 5}},
 		},
@@ -109,6 +111,7 @@ func (a *Adapter) Models() []domain.Model {
 			ID:         "claude-sonnet-5-5",
 			Name:       "Claude Sonnet 5.5",
 			ProviderID: providerID,
+			Vision:     true,
 			Thinking:   sonnet55Thinking,
 			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 2, Output: 10, CacheRead: 0.10, CacheWrite: 2.50}},
 		},
@@ -116,6 +119,7 @@ func (a *Adapter) Models() []domain.Model {
 			ID:         "claude-opus-4-7",
 			Name:       "Claude Opus 4.7",
 			ProviderID: providerID,
+			Vision:     true,
 			Thinking:   opus47Thinking,
 			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 5, Output: 25, CacheRead: 0.50, CacheWrite: 6.25}},
 		},
@@ -123,6 +127,7 @@ func (a *Adapter) Models() []domain.Model {
 			ID:         "claude-sonnet-4-6",
 			Name:       "Claude Sonnet 4.6",
 			ProviderID: providerID,
+			Vision:     true,
 			Thinking:   sonnet46Thinking,
 			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 3, Output: 15, CacheRead: 0.30, CacheWrite: 3.75}},
 		},
@@ -130,6 +135,7 @@ func (a *Adapter) Models() []domain.Model {
 			ID:         "claude-haiku-4-5",
 			Name:       "Claude Haiku 4.5",
 			ProviderID: providerID,
+			Vision:     true,
 			Thinking:   haiku45Thinking,
 			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1, Output: 5, CacheRead: 0.10, CacheWrite: 1.25}},
 		},
@@ -354,15 +360,41 @@ func contentFromParts(turn domain.Turn) []map[string]any {
 			if part.ToolResult == nil || part.ToolResult.ToolCallID == "" {
 				continue
 			}
-			content = append(content, map[string]any{
+			block := map[string]any{
 				"type":        "tool_result",
 				"tool_use_id": part.ToolResult.ToolCallID,
 				"content":     part.ToolResult.Content,
-			})
+			}
+			if len(part.ToolResult.Images) > 0 {
+				blocks := make([]map[string]any, 0, len(part.ToolResult.Images)+1)
+				if part.ToolResult.Content != "" {
+					blocks = append(blocks, map[string]any{"type": "text", "text": part.ToolResult.Content})
+				}
+				for _, image := range part.ToolResult.Images {
+					blocks = append(blocks, imageBlock(image))
+				}
+				block["content"] = blocks
+			}
+			content = append(content, block)
+		case domain.PartImage:
+			if part.Image != nil {
+				content = append(content, imageBlock(*part.Image))
+			}
 		}
 	}
 
 	return content
+}
+
+func imageBlock(image domain.ImagePart) map[string]any {
+	return map[string]any{
+		"type": "image",
+		"source": map[string]any{
+			"type":       "base64",
+			"media_type": image.MediaType,
+			"data":       base64.StdEncoding.EncodeToString(image.Data),
+		},
+	}
 }
 
 func buildThinkingConfig(req aiprovider.StreamRequest, model domain.Model) map[string]any {

@@ -50,6 +50,15 @@ type PartDTO struct {
 	Thinking   *ThinkingPartDTO `json:"thinking,omitempty"`
 	ToolCall   *ToolCallDTO     `json:"toolCall,omitempty"`
 	ToolResult *ToolResultDTO   `json:"toolResult,omitempty"`
+	Image      *ImageRefDTO     `json:"image,omitempty"`
+}
+
+// ImageRefDTO refers to a stored image attachment.
+type ImageRefDTO struct {
+	AttachmentID int64  `json:"attachmentId"`
+	MediaType    string `json:"mediaType"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
 }
 
 // ThinkingPartDTO carries the reasoning text and opaque provider state.
@@ -68,10 +77,11 @@ type ToolCallDTO struct {
 
 // ToolResultDTO is the transport representation of a tool execution result.
 type ToolResultDTO struct {
-	ToolCallID string `json:"toolCallId"`
-	Name       string `json:"name"`
-	Content    string `json:"content"`
-	IsError    bool   `json:"isError,omitempty"`
+	ToolCallID string        `json:"toolCallId"`
+	Name       string        `json:"name"`
+	Content    string        `json:"content"`
+	IsError    bool          `json:"isError,omitempty"`
+	Images     []ImageRefDTO `json:"images,omitempty"`
 }
 
 // StreamEventDTO is the stable SSE payload sent to the frontend.
@@ -125,10 +135,11 @@ type StreamToolCallDTO struct {
 
 // StreamToolResultDTO is sent over SSE after tool execution.
 type StreamToolResultDTO struct {
-	ToolCallID string `json:"toolCallId"`
-	Name       string `json:"name"`
-	Content    string `json:"content"`
-	IsError    bool   `json:"isError,omitempty"`
+	ToolCallID string        `json:"toolCallId"`
+	Name       string        `json:"name"`
+	Content    string        `json:"content"`
+	IsError    bool          `json:"isError,omitempty"`
+	Images     []ImageRefDTO `json:"images,omitempty"`
 }
 
 // ApprovalRequestDTO asks the client to approve a command.
@@ -315,11 +326,59 @@ func toDomainPart(dto PartDTO) domain.Part {
 				Name:       dto.ToolResult.Name,
 				Content:    dto.ToolResult.Content,
 				IsError:    dto.ToolResult.IsError,
+				Images:     toDomainImages(dto.ToolResult.Images),
 			},
 		}
+	case domain.PartImage:
+		if dto.Image == nil {
+			return domain.Part{Kind: domain.PartImage}
+		}
+		return domain.NewImagePart(toDomainImage(*dto.Image))
 	default:
 		return domain.Part{Kind: domain.PartKind(dto.Kind), Text: dto.Text}
 	}
+}
+
+// toDomainImage takes only the reference: the image's type and size come
+// from the stored attachment once a run loads it.
+func toDomainImage(dto ImageRefDTO) domain.ImagePart {
+	return domain.ImagePart{
+		AttachmentID: dto.AttachmentID,
+		MediaType:    dto.MediaType,
+		Width:        dto.Width,
+		Height:       dto.Height,
+	}
+}
+
+func toDomainImages(dtos []ImageRefDTO) []domain.ImagePart {
+	if len(dtos) == 0 {
+		return nil
+	}
+	images := make([]domain.ImagePart, 0, len(dtos))
+	for _, dto := range dtos {
+		images = append(images, toDomainImage(dto))
+	}
+	return images
+}
+
+func fromDomainImage(image domain.ImagePart) ImageRefDTO {
+	return ImageRefDTO{
+		AttachmentID: image.AttachmentID,
+		MediaType:    image.MediaType,
+		Width:        image.Width,
+		Height:       image.Height,
+	}
+}
+
+func fromDomainImages(images []domain.ImagePart) []ImageRefDTO {
+	if len(images) == 0 {
+		return nil
+	}
+	dtos := make([]ImageRefDTO, 0, len(images))
+	for _, image := range images {
+		dtos = append(dtos, fromDomainImage(image))
+	}
+	return dtos
 }
 
 // FromDomainTurns converts normalized turns back into the stable transport shape.
@@ -369,7 +428,15 @@ func fromDomainPart(part domain.Part) PartDTO {
 				Name:       part.ToolResult.Name,
 				Content:    part.ToolResult.Content,
 				IsError:    part.ToolResult.IsError,
+				Images:     fromDomainImages(part.ToolResult.Images),
 			}
+		}
+		return dto
+	case domain.PartImage:
+		dto := PartDTO{Kind: "image"}
+		if part.Image != nil {
+			image := fromDomainImage(*part.Image)
+			dto.Image = &image
 		}
 		return dto
 	default:
@@ -405,6 +472,7 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 			Name:       event.ToolResult.Name,
 			Content:    event.ToolResult.Content,
 			IsError:    event.ToolResult.IsError,
+			Images:     fromDomainImages(event.ToolResult.Images),
 		}
 	}
 	if event.Approval != nil {
@@ -566,6 +634,9 @@ func AgentRunPromptPreview(turns []domain.Turn) string {
 			continue
 		}
 		preview := strings.Join(strings.Fields(turn.Text()), " ")
+		if preview == "" && len(turn.Images()) > 0 {
+			preview = "Image"
+		}
 		if preview == "" {
 			continue
 		}

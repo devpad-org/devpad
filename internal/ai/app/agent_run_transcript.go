@@ -62,7 +62,7 @@ func buildAgentRunConversationTurns(inputTurns []domain.Turn, events []domain.Ag
 			turns = append(turns, round.assistantTurn())
 		}
 		for _, result := range round.toolResults {
-			turns = append(turns, domain.NewToolResultTurn(result.ToolCallID, result.Name, result.Content, result.IsError))
+			turns = append(turns, domain.NewToolResultTurnFromPart(result))
 		}
 	}
 

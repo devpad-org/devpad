@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { aiApi, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalDetail, type ApprovalRequest, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
+import { aiApi, attachmentUrl, type ChatImage, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalDetail, type ApprovalRequest, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
@@ -11,6 +11,7 @@ import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
 import AiMessageCopyButton from '@/components/ide/AiMessageCopyButton.vue'
 import AiQuestionCard from '@/components/ide/AiQuestionCard.vue'
+import AiImageAttachments, { type ImageAttachmentItem } from '@/components/ide/AiImageAttachments.vue'
 import ApprovalDetails from '@/components/ide/ApprovalDetails.vue'
 import type { BranchChange } from '@/components/ide/ideShell'
 import HandoffModal from '@/components/project/HandoffModal.vue'
@@ -89,7 +90,21 @@ interface DisplayMessage {
   role: 'user' | 'assistant'
   content: string
   segments: MessageSegment[]
+  // Images the user attached to the message.
+  images?: ChatImage[]
 }
+
+// An image in the composer: uploading until image is set, or failed with error.
+interface PendingImage {
+  key: string
+  previewUrl: string
+  image?: ChatImage
+  error?: string
+}
+
+// The most images one message may carry, and the largest file the server takes.
+const maxImagesPerMessage = 10
+const maxImageBytes = 10 * 1024 * 1024
 
 interface SlashCommand {
   name: string
@@ -124,6 +139,11 @@ const messages = ref<DisplayMessage[]>([])
 const rawMessages = ref<ChatMessage[]>([])
 
 const inputValue = ref('')
+const pendingImages = ref<PendingImage[]>([])
+const imageNotice = ref('')
+const imageInput = ref<HTMLInputElement | null>(null)
+const draggingImages = ref(false)
+let pendingImageSeq = 0
 const chatBody = ref<HTMLElement | null>(null)
 const models = computed(() => aiModelStore.models)
 const selectedModel = ref('')
@@ -152,6 +172,25 @@ const focusedRunContextSize = ref<ContextSize | null>(null)
 const autoScrollEnabled = ref(true)
 
 const currentModel = computed(() => models.value.find((model) => model.id === selectedModel.value) ?? null)
+const canAttachImages = computed(() => currentModel.value?.vision === true)
+const imagesUploading = computed(() => pendingImages.value.some((pending) => !pending.image && !pending.error))
+const pendingImageItems = computed<ImageAttachmentItem[]>(() =>
+  pendingImages.value.map((pending) => ({
+    key: pending.key,
+    src: pending.previewUrl,
+    href: pending.image ? attachmentUrl(pending.image.attachmentId) : undefined,
+    status: pending.error ? 'error' : pending.image ? undefined : 'uploading',
+    error: pending.error,
+  })),
+)
+// Pending images the selected model can't take block sending, rather than
+// being dropped without the user knowing.
+const pendingImagesBlocked = computed(() => pendingImages.value.length > 0 && !canAttachImages.value)
+const canSend = computed(() =>
+  (inputValue.value.trim() !== '' || pendingImages.value.some((pending) => pending.image)) &&
+  !imagesUploading.value &&
+  !pendingImagesBlocked.value,
+)
 // The model and effort an admin set for the selected agent, if it is built in.
 const currentAgentDefaults = computed(() => aiModelStore.agentDefaults[props.selectedAgentId])
 
@@ -331,6 +370,7 @@ onUnmounted(() => {
   cancelFocusedRunEventStream()
   if (scrollRaf !== null) cancelAnimationFrame(scrollRaf)
   if (fetchRunsDebounceTimer !== null) clearTimeout(fetchRunsDebounceTimer)
+  clearPendingImages()
 })
 
 // Switching to a built-in agent moves to its default model: the one an admin
@@ -646,10 +686,12 @@ function reconstructAssistantDisplay(rawMsgs: ChatMessage[], start: number, end:
 
     if (msg.tool_calls && msg.tool_calls.length > 0) {
       const toolResults = new Map<string, string>()
+      const toolImages = new Map<string, ChatImage[]>()
       for (let j = i + 1; j < end && rawMsgs[j].role === 'tool'; j++) {
         const toolCallID = rawMsgs[j].tool_call_id
         if (toolCallID) {
           toolResults.set(toolCallID, rawMsgs[j].content)
+          if (rawMsgs[j].images?.length) toolImages.set(toolCallID, rawMsgs[j].images!)
         }
       }
 
@@ -672,6 +714,7 @@ function reconstructAssistantDisplay(rawMsgs: ChatMessage[], start: number, end:
           name: tc.function.name,
           args: tc.function.arguments,
           result: toolResults.get(tc.id),
+          images: toolImages.get(tc.id),
         })
       }
     }
@@ -688,7 +731,7 @@ function reconstructDisplayMessages(rawMsgs: ChatMessage[]): DisplayMessage[] {
   for (let i = 0; i < rawMsgs.length;) {
     const msg = rawMsgs[i]
     if (msg.role === 'user') {
-      display.push({ role: 'user', content: msg.content, segments: [] })
+      display.push({ role: 'user', content: msg.content, segments: [], images: msg.images })
       i++
       continue
     }
@@ -715,6 +758,7 @@ function cloneDisplayMessages(source: DisplayMessage[]): DisplayMessage[] {
     role: msg.role,
     content: msg.content,
     segments: msg.segments.map(cloneMessageSegment),
+    images: msg.images,
   }))
 }
 
@@ -723,7 +767,7 @@ function cloneMessageSegment(seg: MessageSegment): MessageSegment {
     case 'text':
       return { type: 'text', content: seg.content }
     case 'tool':
-      return { type: 'tool', toolCallId: seg.toolCallId, name: seg.name, args: seg.args, result: seg.result }
+      return { type: 'tool', toolCallId: seg.toolCallId, name: seg.name, args: seg.args, result: seg.result, images: seg.images }
     case 'approval':
       return { type: 'approval', id: seg.id, title: seg.title, command: seg.command, details: seg.details, status: seg.status, error: seg.error }
     case 'question':
@@ -858,6 +902,7 @@ function applyFocusedRunEvent(event: StreamEvent) {
     )
     if (toolSeg) {
       toolSeg.result = toolResult.content
+      toolSeg.images = toolResult.images
     }
     refreshRunsAfterSubAgentTool(toolResult)
   }
@@ -980,6 +1025,93 @@ async function saveCurrentConversation() {
   }
 }
 
+function addImageFiles(files: File[]) {
+  const imageFiles = files.filter((file) => file.type.startsWith('image/'))
+  if (imageFiles.length === 0) return
+  imageNotice.value = ''
+  if (!canAttachImages.value) {
+    imageNotice.value = `${currentModel.value?.name ?? 'This model'} can't view images.`
+    return
+  }
+  const room = maxImagesPerMessage - pendingImages.value.length
+  if (imageFiles.length > room) {
+    imageNotice.value = `A message can carry at most ${maxImagesPerMessage} images.`
+  }
+  for (const file of imageFiles.slice(0, Math.max(room, 0))) {
+    const pending: PendingImage = { key: `pending-${++pendingImageSeq}`, previewUrl: URL.createObjectURL(file) }
+    pendingImages.value.push(pending)
+    if (file.size > maxImageBytes) {
+      pending.error = 'Images can be at most 10 MB'
+      continue
+    }
+    aiApi.uploadAttachment(file).then(
+      (image) => updatePendingImage(pending.key, { image }),
+      (err: Error) => updatePendingImage(pending.key, { error: err.message || 'Upload failed' }),
+    )
+  }
+}
+
+function updatePendingImage(key: string, update: Partial<PendingImage>) {
+  // The image may have been removed while it uploaded.
+  const pending = pendingImages.value.find((candidate) => candidate.key === key)
+  if (pending) Object.assign(pending, update)
+}
+
+function removePendingImage(key: string) {
+  const index = pendingImages.value.findIndex((pending) => pending.key === key)
+  if (index === -1) return
+  URL.revokeObjectURL(pendingImages.value[index].previewUrl)
+  pendingImages.value.splice(index, 1)
+  imageNotice.value = ''
+}
+
+function clearPendingImages() {
+  for (const pending of pendingImages.value) URL.revokeObjectURL(pending.previewUrl)
+  pendingImages.value = []
+  imageNotice.value = ''
+}
+
+function onComposerPaste(event: ClipboardEvent) {
+  const files = Array.from(event.clipboardData?.files ?? [])
+  if (!files.some((file) => file.type.startsWith('image/'))) return
+  // Copying an image from a page can bring its text along; keep pasting
+  // that as usual.
+  if (!event.clipboardData?.getData('text/plain')) event.preventDefault()
+  addImageFiles(files)
+}
+
+function onComposerDragOver(event: DragEvent) {
+  if (!event.dataTransfer?.types.includes('Files') || streaming.value) return
+  event.preventDefault()
+  event.dataTransfer.dropEffect = 'copy'
+  draggingImages.value = true
+}
+
+function onComposerDrop(event: DragEvent) {
+  draggingImages.value = false
+  if (!event.dataTransfer?.files.length || streaming.value) return
+  event.preventDefault()
+  addImageFiles(Array.from(event.dataTransfer.files))
+}
+
+function openImagePicker() {
+  if (!imageInput.value) return
+  imageInput.value.value = ''
+  imageInput.value.click()
+}
+
+function onImagesPicked(event: Event) {
+  const input = event.target as HTMLInputElement
+  addImageFiles(Array.from(input.files ?? []))
+}
+
+function imageItems(images: ChatImage[]): ImageAttachmentItem[] {
+  return images.map((image) => {
+    const url = attachmentUrl(image.attachmentId)
+    return { key: String(image.attachmentId), src: url, href: url }
+  })
+}
+
 async function ensureActiveConversation(): Promise<number | null> {
   if (activeConversationId.value !== null) {
     return activeConversationId.value
@@ -998,7 +1130,8 @@ async function ensureActiveConversation(): Promise<number | null> {
 
 async function sendMessage() {
   const text = inputValue.value.trim()
-  if (!text || streaming.value) return
+  if (!canSend.value || streaming.value) return
+  const images = pendingImages.value.flatMap((pending) => (pending.image ? [pending.image] : []))
   const slashCommand = resolveSlashCommand(text)
   const displayText = slashCommand?.name ?? text
   const requestText = slashCommand?.prompt ?? text
@@ -1027,9 +1160,11 @@ async function sendMessage() {
   }
 
   // Push user message to display and raw arrays.
-  messages.value.push({ role: 'user', content: displayText, segments: [] })
-  rawMessages.value.push({ role: 'user', content: displayText })
+  const userImages = images.length > 0 ? images : undefined
+  messages.value.push({ role: 'user', content: displayText, segments: [], images: userImages })
+  rawMessages.value.push({ role: 'user', content: displayText, images: userImages })
   inputValue.value = ''
+  clearPendingImages()
   resetInputHeight()
 
   // Add empty assistant message for streaming.
@@ -1047,7 +1182,7 @@ async function sendMessage() {
   // Build the API payload from rawMessages (excludes the empty assistant placeholder).
   const chatMessages: ChatMessage[] = rawMessages.value.slice()
   if (slashCommand && chatMessages.length > 0) {
-    chatMessages[chatMessages.length - 1] = { role: 'user', content: requestText }
+    chatMessages[chatMessages.length - 1] = { role: 'user', content: requestText, images: userImages }
   }
 
   // Each LLM iteration is tracked as a "round" so we can reconstruct the correct
@@ -1164,11 +1299,13 @@ async function sendMessage() {
           )
           if (toolSeg) {
             toolSeg.result = toolResult.content
+            toolSeg.images = toolResult.images
           }
           rounds[rounds.length - 1].toolResults.push({
             role: 'tool',
             content: toolResult.content,
             tool_call_id: toolResult.toolCallId,
+            images: toolResult.images,
           })
           refreshRunsAfterSubAgentTool(toolResult)
         }
@@ -1307,6 +1444,7 @@ function newChat() {
   rawMessages.value = []
   handedOff.value = []
   inputValue.value = ''
+  clearPendingImages()
   planExpanded.value = false
   activeAgentRunId.value = null
   continuationParentRunId.value = null
@@ -1698,7 +1836,8 @@ function scrollToBottom(options: { force?: boolean } = {}) {
           :class="{ 'has-copy-action': messageMarkdown(msg) }"
         >
           <AiMessageCopyButton v-if="messageMarkdown(msg)" :markdown="messageMarkdown(msg)" />
-          <span class="msg-plain-text">{{ msg.content }}</span>
+          <AiImageAttachments v-if="msg.images?.length" class="msg-images" :items="imageItems(msg.images)" />
+          <span v-if="msg.content" class="msg-plain-text">{{ msg.content }}</span>
         </div>
       </div>
     </div>
@@ -1763,7 +1902,13 @@ function scrollToBottom(options: { force?: boolean } = {}) {
         <span>Handed off to task #{{ task.id }}: {{ task.title }}</span>
         <button type="button" class="handoff-link" @click="openTask(task.id)">Open task</button>
       </div>
-      <div class="input-shell" :class="{ focused: inputFocused }">
+      <div
+        class="input-shell"
+        :class="{ focused: inputFocused, dragging: draggingImages }"
+        @dragover="onComposerDragOver"
+        @dragleave="draggingImages = false"
+        @drop="onComposerDrop"
+      >
         <div v-if="slashCommandOptions.length > 0" class="slash-command-menu">
           <button
             v-for="command in slashCommandOptions"
@@ -1776,6 +1921,18 @@ function scrollToBottom(options: { force?: boolean } = {}) {
             <span class="slash-command-description">{{ command.description }}</span>
           </button>
         </div>
+        <div v-if="pendingImages.length > 0 || imageNotice" class="composer-images">
+          <AiImageAttachments
+            v-if="pendingImages.length > 0"
+            :items="pendingImageItems"
+            removable
+            @remove="removePendingImage"
+          />
+          <span v-if="pendingImagesBlocked" class="composer-image-notice">
+            {{ currentModel?.name ?? 'This model' }} can't view images. Pick another model or remove them.
+          </span>
+          <span v-else-if="imageNotice" class="composer-image-notice">{{ imageNotice }}</span>
+        </div>
         <div class="input-container" @click="inputEl?.focus()">
           <textarea
             v-model="inputValue"
@@ -1784,6 +1941,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
             rows="1"
             :disabled="streaming"
             @keydown.enter.exact.prevent="sendMessage"
+            @paste="onComposerPaste"
             @focus="inputFocused = true"
             @blur="inputFocused = false"
             @input="autoResize"
@@ -1794,7 +1952,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
               <rect x="6" y="6" width="12" height="12" rx="2" />
             </svg>
           </button>
-          <button v-else class="agent-send" :class="{ active: inputValue.trim() }" @click="sendMessage" title="Send">
+          <button v-else class="agent-send" :class="{ active: canSend }" @click="sendMessage" title="Send">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
               <path d="m22 2-7 20-4-9-9-4Z" />
               <path d="M22 2 11 13" />
@@ -1802,6 +1960,28 @@ function scrollToBottom(options: { force?: boolean } = {}) {
           </button>
         </div>
         <div class="input-toolbar">
+          <button
+            type="button"
+            class="attach-image-btn"
+            :disabled="!canAttachImages || streaming"
+            :title="canAttachImages ? 'Attach images (or paste or drop them)' : `${currentModel?.name ?? 'This model'} can't view images`"
+            aria-label="Attach images"
+            @click="openImagePicker"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="9" cy="9" r="2" />
+              <path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21" />
+            </svg>
+          </button>
+          <input
+            ref="imageInput"
+            class="image-input"
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            @change="onImagesPicked"
+          />
           <template v-if="models.length > 0">
             <ComposerSelect
               class="toolbar-select toolbar-select--agent"
@@ -2242,6 +2422,10 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   white-space: pre-wrap;
 }
 
+.msg-images + .msg-plain-text {
+  margin-top: var(--space-2);
+}
+
 .msg-assistant .msg-content {
   background: var(--bg-elevated);
   border-color: var(--border-hairline);
@@ -2303,6 +2487,49 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 .input-shell.focused {
   border-color: var(--accent-border);
   box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.input-shell.dragging {
+  border-color: var(--accent);
+  border-style: dashed;
+}
+
+.composer-images {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 12px 0;
+}
+
+.composer-image-notice {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.attach-image-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  color: var(--text-tertiary);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.attach-image-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.attach-image-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.image-input {
+  display: none;
 }
 
 .slash-command-menu {

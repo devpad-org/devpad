@@ -148,9 +148,84 @@ func createPreWaitingUserAgentRunSchema(t *testing.T, db *DB) {
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(run_id, sequence)
 		);
+		CREATE TABLE ai_turns (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+			position        INTEGER NOT NULL,
+			role            TEXT    NOT NULL CHECK(role IN ('system','user','assistant')),
+			UNIQUE(conversation_id, position)
+		);
+		CREATE TABLE ai_parts (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			turn_id         INTEGER NOT NULL REFERENCES ai_turns(id) ON DELETE CASCADE,
+			position        INTEGER NOT NULL,
+			kind            TEXT    NOT NULL CHECK(kind IN ('text','thinking','tool_call','tool_result')),
+			text                   TEXT    NOT NULL DEFAULT '',
+			thinking_state         TEXT    NOT NULL DEFAULT '',
+			tool_call_id           TEXT    NOT NULL DEFAULT '',
+			tool_call_name         TEXT    NOT NULL DEFAULT '',
+			tool_call_args         TEXT    NOT NULL DEFAULT '',
+			tool_result_call_id    TEXT    NOT NULL DEFAULT '',
+			tool_result_name       TEXT    NOT NULL DEFAULT '',
+			tool_result_content    TEXT    NOT NULL DEFAULT '',
+			tool_result_is_error   INTEGER NOT NULL DEFAULT 0,
+			tool_call_item_id      TEXT    NOT NULL DEFAULT '',
+			UNIQUE(turn_id, position)
+		);
 	`)
 	if err != nil {
 		t.Fatalf("create pre-waiting_user schema: %v", err)
+	}
+}
+
+func TestMigrateAddsImagePartsKeepingExistingParts(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "devpad.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// The pre-023 schema has every table 048 touches.
+	createPreWaitingUserAgentRunSchema(t, db)
+	markMigrationsAppliedBefore(t, db, "048_ai_images")
+	for _, stmt := range []string{
+		`INSERT INTO users (id, username, email, password) VALUES (1, 'test', 'test@example.com', 'hashed')`,
+		`INSERT INTO workspaces (id, user_id, name) VALUES (1, 1, 'workspace')`,
+		`INSERT INTO ai_conversations (id, user_id, workspace_id, title, model) VALUES (1, 1, 1, 'Chat', 'gpt-5.4')`,
+		`INSERT INTO ai_turns (id, conversation_id, position, role) VALUES (1, 1, 0, 'user')`,
+		`INSERT INTO ai_parts (id, turn_id, position, kind, text, tool_call_item_id) VALUES (1, 1, 0, 'text', 'hello', 'item')`,
+	} {
+		if _, err := db.Conn().Exec(stmt); err != nil {
+			t.Fatalf("seed %q: %v", stmt, err)
+		}
+	}
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	var text, itemID string
+	if err := db.Conn().QueryRow(`SELECT text, tool_call_item_id FROM ai_parts WHERE id = 1`).Scan(&text, &itemID); err != nil {
+		t.Fatalf("query preserved part: %v", err)
+	}
+	if text != "hello" || itemID != "item" {
+		t.Fatalf("preserved part = (%q, %q), want (hello, item)", text, itemID)
+	}
+	if _, err := db.Conn().Exec(`INSERT INTO ai_parts (turn_id, position, kind, image_ref) VALUES (1, 1, 'image', '{"attachmentId":1}')`); err != nil {
+		t.Fatalf("insert image part: %v", err)
+	}
+	if _, err := db.Conn().Exec(`INSERT INTO ai_attachments (user_id, conversation_id, media_type, width, height, byte_size, data) VALUES (1, 1, 'image/png', 1, 1, 1, x'00')`); err != nil {
+		t.Fatalf("insert attachment: %v", err)
+	}
+	if _, err := db.Conn().Exec(`DELETE FROM ai_conversations WHERE id = 1`); err != nil {
+		t.Fatalf("delete conversation: %v", err)
+	}
+	var attachments int
+	if err := db.Conn().QueryRow(`SELECT COUNT(*) FROM ai_attachments`).Scan(&attachments); err != nil {
+		t.Fatalf("count attachments: %v", err)
+	}
+	if attachments != 0 {
+		t.Fatalf("attachments after deleting their conversation = %d, want 0", attachments)
 	}
 }
 

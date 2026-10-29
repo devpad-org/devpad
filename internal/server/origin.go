@@ -149,8 +149,8 @@ func isLoopback(host string) bool {
 }
 
 // acceptableBody reports whether a state-changing API request's body is one
-// the API reads: JSON everywhere, multipart only for the file upload. A
-// request without a body needs no content type.
+// the API reads: JSON everywhere, multipart only for the file and image
+// uploads. A request without a body needs no content type.
 func acceptableBody(r *http.Request) bool {
 	if r.ContentLength == 0 {
 		return true
@@ -159,14 +159,23 @@ func acceptableBody(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	if isFileUpload(r) {
+	if isMultipartUpload(r) {
 		return mediaType == "multipart/form-data"
 	}
 	return mediaType == "application/json"
 }
 
-func isFileUpload(r *http.Request) bool {
-	return r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/workspaces/") && strings.HasSuffix(r.URL.Path, "/file/upload")
+// isMultipartUpload reports whether the request is one of the uploads that
+// take a multipart body: a workspace file, or an image attached to an AI
+// chat message.
+func isMultipartUpload(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	if r.URL.Path == "/api/ai/attachments" {
+		return true
+	}
+	return strings.HasPrefix(r.URL.Path, "/api/workspaces/") && strings.HasSuffix(r.URL.Path, "/file/upload")
 }
 
 func writeGuardError(w http.ResponseWriter, status int, msg string) {

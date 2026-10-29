@@ -1,10 +1,13 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"strings"
 	"testing"
 
@@ -817,5 +820,55 @@ func toolReq(userID, workspaceID int64, toolName string, args []byte) ExecutionR
 		WorkspaceID: workspaceID,
 		ToolName:    toolName,
 		Arguments:   args,
+	}
+}
+
+type recordingImageStore struct {
+	data                          []byte
+	userID, conversationID, runID int64
+}
+
+func (s *recordingImageStore) StoreToolImage(_ context.Context, userID, conversationID, runID int64, data []byte) (domain.ImagePart, error) {
+	s.data, s.userID, s.conversationID, s.runID = data, userID, conversationID, runID
+	return domain.ImagePart{AttachmentID: 42, MediaType: "image/png", Width: 2, Height: 1, Data: []byte("normalized")}, nil
+}
+
+func TestWorkspaceExecutor_ReadFileReturnsImages(t *testing.T) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 1))); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
+		return buf.Bytes(), nil
+	}})
+	store := &recordingImageStore{}
+	executor.SetImageStore(store)
+
+	req := toolReq(1, 2, "read_file", []byte(`{"path":"shot.png"}`))
+	req.ConversationID = 3
+	req.CurrentRunID = 4
+	result := executor.ExecuteTool(context.Background(), req)
+
+	if result.IsError || len(result.Images) != 1 || result.Images[0].AttachmentID != 42 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if !strings.Contains(result.Content, "shot.png (2×1)") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+	if !bytes.Equal(store.data, buf.Bytes()) || store.userID != 1 || store.conversationID != 3 || store.runID != 4 {
+		t.Fatalf("unexpected stored image: %+v", store)
+	}
+}
+
+func TestWorkspaceExecutor_ReadFileReadsTextWithAnImageStore(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
+		return []byte("package main\n"), nil
+	}})
+	store := &recordingImageStore{}
+	executor.SetImageStore(store)
+
+	result := executor.ExecuteTool(context.Background(), toolReq(1, 2, "read_file", []byte(`{"path":"main.go"}`)))
+	if result.Content != "package main\n" || len(result.Images) != 0 || store.data != nil {
+		t.Fatalf("unexpected result: %+v", result)
 	}
 }

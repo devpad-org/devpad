@@ -74,7 +74,7 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "read_file",
-				Description: "Read the contents of a file in the project. Results are truncated for large files; use read_file_lines for targeted sections.",
+				Description: "Read the contents of a file in the project. Results are truncated for large files; use read_file_lines for targeted sections. Reading a PNG, JPEG, GIF or WebP image returns the image itself, so you can look at screenshots and other pictures.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative path from the project root, e.g. src/main.ts"}},"required":["path"]}`),
 			},
 		},

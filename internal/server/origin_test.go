@@ -105,6 +105,9 @@ func TestSameOriginGuard(t *testing.T) {
 		{"file upload", guardRequest{path: "/api/workspaces/1/file/upload", secFetch: "same-origin", contentType: "multipart/form-data; boundary=x", body: "--x--"}, http.StatusOK},
 		{"file upload as json", guardRequest{path: "/api/workspaces/1/file/upload", secFetch: "same-origin", contentType: json, body: "{}"}, http.StatusUnsupportedMediaType},
 		{"file upload from preview", guardRequest{path: "/api/workspaces/1/file/upload", secFetch: "same-site", origin: previewOrigin, contentType: "multipart/form-data; boundary=x", body: "--x--"}, http.StatusForbidden},
+		{"image attachment upload", guardRequest{path: "/api/ai/attachments", secFetch: "same-origin", contentType: "multipart/form-data; boundary=x", body: "--x--"}, http.StatusOK},
+		{"image attachment upload from preview", guardRequest{path: "/api/ai/attachments", secFetch: "same-site", origin: previewOrigin, contentType: "multipart/form-data; boundary=x", body: "--x--"}, http.StatusForbidden},
+		{"multipart under an attachment", guardRequest{path: "/api/ai/attachments/1", secFetch: "same-origin", contentType: "multipart/form-data; boundary=x", body: "--x--"}, http.StatusUnsupportedMediaType},
 		{"content type only checked under /api", guardRequest{path: "/login", secFetch: "same-origin", contentType: "text/plain", body: "x"}, http.StatusOK},
 	}
 	for _, tt := range tests {

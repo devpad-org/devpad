@@ -44,7 +44,7 @@ type streamOptions struct {
 
 type message struct {
 	Role             string            `json:"role"`
-	Content          string            `json:"content"`
+	Content          any               `json:"content"` // a string, or content parts with images
 	ToolCalls        []domain.ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string            `json:"tool_call_id,omitempty"`
 	ReasoningContent *string           `json:"reasoning_content,omitempty"`
@@ -75,6 +75,7 @@ func (a *Adapter) Models() []domain.Model {
 			ID:         k3ModelID,
 			Name:       "Kimi K3",
 			ProviderID: providerID,
+			Vision:     true,
 			Thinking: domain.ThinkingCapability{
 				Supported:        true,
 				EnabledByDefault: true,
@@ -99,10 +100,20 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 	// history back; K3 in particular degrades badly without it.
 	preserveReasoning := model.Thinking.Supported && (thinkingEnabled || !model.Thinking.CanDisable)
 	messages := make([]message, 0, len(req.Turns))
+	// Images tools returned go in a user message after the run of tool
+	// messages, which must directly follow the assistant's tool calls.
+	var toolImages []domain.ToolResultPart
+	flushToolImages := func() {
+		if content, ok := shared.ToolImagesContent(toolImages, shared.ImageURLObject); ok {
+			messages = append(messages, message{Role: "user", Content: content})
+		}
+		toolImages = nil
+	}
 	for _, turn := range req.Turns {
 		if turn.Role == domain.RoleUser {
 			toolResults := turn.ToolResults()
 			if len(toolResults) > 0 {
+				toolImages = append(toolImages, toolResults...)
 				for _, result := range toolResults {
 					messages = append(messages, message{
 						Role:       "tool",
@@ -117,9 +128,10 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 			}
 		}
 
+		flushToolImages()
 		moonshotMsg := message{
 			Role:      string(turn.Role),
-			Content:   turn.Text(),
+			Content:   shared.ChatContent(turn.Text(), turn.Images(), shared.ImageURLObject),
 			ToolCalls: turn.ToolCalls(),
 		}
 
@@ -137,6 +149,7 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 
 		messages = append(messages, moonshotMsg)
 	}
+	flushToolImages()
 
 	body := chatRequest{
 		Model:         req.Model,

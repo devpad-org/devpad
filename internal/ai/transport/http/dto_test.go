@@ -2,6 +2,8 @@ package httptransport
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -381,5 +383,52 @@ func TestFromAgentRunSummaryIncludesUsage(t *testing.T) {
 	}
 	if decoded.Usage["inputTokens"] != float64(10) || decoded.Usage["outputTokens"] != float64(2) || decoded.Usage["costUsd"] != 0.42 {
 		t.Fatalf("unexpected usage JSON: %s", raw)
+	}
+}
+
+func TestImagePartsRoundTripAsReferences(t *testing.T) {
+	ref := ImageRefDTO{AttachmentID: 5, MediaType: "image/png", Width: 30, Height: 20}
+	dtos := []TurnDTO{
+		{Role: "user", Parts: []PartDTO{{Kind: "image", Image: &ref}, {Kind: "text", Text: "look"}}},
+		{Role: "user", Parts: []PartDTO{{Kind: "tool_result", ToolResult: &ToolResultDTO{ToolCallID: "c", Name: "read_file", Content: "Image", Images: []ImageRefDTO{ref}}}}},
+	}
+
+	turns := ToDomainTurns(dtos)
+	if image := turns[0].Parts[0].Image; image == nil || image.AttachmentID != 5 || image.Width != 30 {
+		t.Fatalf("unexpected image part: %+v", turns[0].Parts[0])
+	}
+	if images := turns[1].ToolResult().Images; len(images) != 1 || images[0].AttachmentID != 5 {
+		t.Fatalf("unexpected tool result images: %+v", images)
+	}
+	if back := FromDomainTurns(turns); !reflect.DeepEqual(back, dtos) {
+		t.Fatalf("round trip = %#v, want %#v", back, dtos)
+	}
+}
+
+func TestImageDataIsNeverSerialized(t *testing.T) {
+	image := domain.ImagePart{AttachmentID: 5, MediaType: "image/png", Width: 1, Height: 1, Data: []byte("SECRET-PIXELS")}
+	// Run events and input turns are stored as JSON of the domain types.
+	for name, value := range map[string]any{
+		"event": domain.ClientEvent{ToolResult: &domain.ToolResultPart{ToolCallID: "c", Images: []domain.ImagePart{image}}},
+		"turns": []domain.Turn{{Role: domain.RoleUser, Parts: []domain.Part{domain.NewImagePart(image)}}},
+		"sse":   FromClientEvent(domain.ClientEvent{ToolResult: &domain.ToolResultPart{ToolCallID: "c", Images: []domain.ImagePart{image}}}),
+	} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("%s: encode: %v", name, err)
+		}
+		if strings.Contains(string(encoded), "SECRET-PIXELS") || strings.Contains(string(encoded), "U0VDUkVU") {
+			t.Fatalf("%s: image data serialized: %s", name, encoded)
+		}
+		if !strings.Contains(string(encoded), "5") {
+			t.Fatalf("%s: expected the attachment reference: %s", name, encoded)
+		}
+	}
+}
+
+func TestAgentRunPromptPreviewNamesAnImageOnlyPrompt(t *testing.T) {
+	turns := []domain.Turn{{Role: domain.RoleUser, Parts: []domain.Part{domain.NewImagePart(domain.ImagePart{AttachmentID: 1})}}}
+	if got := AgentRunPromptPreview(turns); got != "Image" {
+		t.Fatalf("preview = %q, want Image", got)
 	}
 }

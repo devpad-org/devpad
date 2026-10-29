@@ -1,4 +1,4 @@
-import type { PlanStep } from '@/api/ai'
+import type { ChatImage, PlanStep } from '@/api/ai'
 
 export interface ToolDisplaySegment {
   type: 'tool'
@@ -6,6 +6,8 @@ export interface ToolDisplaySegment {
   name: string
   args: string
   result?: string
+  // Images the tool returned, such as a screenshot read_file opened.
+  images?: ChatImage[]
 }
 
 export interface ToolGroupDisplay {

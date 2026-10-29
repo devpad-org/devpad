@@ -17,4 +17,6 @@ var (
 	ErrAgentRunNotActive              = errors.New("agent run is not active")
 	ErrAgentNotFound                  = errors.New("AI agent not found")
 	ErrAgentNotEditable               = errors.New("AI agent cannot be edited")
+	ErrAttachmentNotFound             = errors.New("image attachment not found")
+	ErrInvalidImage                   = errors.New("invalid image")
 )
