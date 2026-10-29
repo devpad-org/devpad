@@ -138,10 +138,11 @@ func (h *Handler) HandleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stream, err := h.chat.StreamSimple(r.Context(), app.SimpleChatRequest{
-		UserID:   user.ID,
-		Model:    req.Model,
-		Turns:    ToDomainTurns(req.Turns),
-		Thinking: ToDomainThinking(req.Thinking),
+		UserID:      user.ID,
+		WorkspaceID: req.WorkspaceID,
+		Model:       req.Model,
+		Turns:       ToDomainTurns(req.Turns),
+		Thinking:    ToDomainThinking(req.Thinking),
 	})
 	if err != nil {
 		switch {

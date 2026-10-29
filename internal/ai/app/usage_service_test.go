@@ -149,30 +149,15 @@ func TestUsageReportRefusesBadQueries(t *testing.T) {
 	}
 }
 
-func TestRecordUsageKeepsRecordingAfterTheReaderLeaves(t *testing.T) {
+func TestUsageRecorderForRecordsEachRequest(t *testing.T) {
+	if usageRecorderFor(nil, domain.UsageRecord{}) != nil {
+		t.Fatal("expected no recorder without a ledger")
+	}
 	repo := &fakeUsageRepo{}
-	ctx, cancel := context.WithCancel(context.Background())
-	in := make(chan domain.ClientEvent)
-	out := recordUsage(ctx, repo, domain.UsageRecord{UserID: 1, WorkspaceID: 2, RunID: 3, Model: "opus"}, in)
-
+	record := usageRecorderFor(repo, domain.UsageRecord{UserID: 1, WorkspaceID: 2, RunID: 3, Model: "opus"})
 	cost := 0.5
-	go func() {
-		defer close(in)
-		in <- domain.ClientEvent{TextDelta: "hi"}
-		in <- domain.ClientEvent{Usage: &domain.Usage{InputTokens: 10, CostUSD: &cost}}
-		// The reader has gone by now; the provider still billed this one.
-		in <- domain.ClientEvent{Usage: &domain.Usage{OutputTokens: 5}}
-		in <- domain.ClientEvent{Done: true}
-	}()
-	if event := <-out; event.TextDelta != "hi" {
-		t.Fatalf("first event = %+v", event)
-	}
-	if event := <-out; event.Usage == nil {
-		t.Fatalf("second event = %+v", event)
-	}
-	cancel()
-	for range out {
-	}
+	record(domain.Usage{InputTokens: 10, CostUSD: &cost})
+	record(domain.Usage{OutputTokens: 5})
 
 	repo.mu.Lock()
 	defer repo.mu.Unlock()

@@ -61,6 +61,11 @@ func (o *agentChatOrchestrator) Stream(ctx context.Context, req AgentChatRequest
 
 func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, model domain.Model, out chan<- domain.ClientEvent) {
 	defer close(out)
+	meter := usageMeter{model: model, budget: req.Budget, record: req.RecordUsage}
+	// open is the provider stream being read, which a run that stops part-way
+	// leaves to be drained of its usage.
+	var open <-chan domain.ProviderEvent
+	defer func() { meter.drain(open) }()
 
 	systemPrompt := o.toolCatalog.SystemPrompt()
 	if strings.TrimSpace(req.WorkspaceInstructions) != "" {
@@ -122,6 +127,8 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 			return
 		}
 
+		open = stream
+
 		var toolCalls []domain.ToolCall
 		var reasoningAccum strings.Builder
 		var thinkingState json.RawMessage
@@ -132,6 +139,7 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 			select {
 			case event, ok := <-stream:
 				if !ok {
+					open = nil
 					streamDone = true
 					continue
 				}
@@ -143,11 +151,7 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 					return
 				}
 				if event.Usage != nil {
-					usage := pricedUsage(model, *event.Usage)
-					if usage.CostUSD != nil {
-						req.Budget.Spend(*usage.CostUSD)
-					}
-					if !emitEvent(ctx, out, domain.ClientEvent{Usage: usage}) {
+					if !emitEvent(ctx, out, domain.ClientEvent{Usage: meter.meter(*event.Usage)}) {
 						return
 					}
 				}
@@ -470,6 +474,42 @@ func pricedUsage(model domain.Model, usage domain.Usage) *domain.Usage {
 		usage.CostUSD = &cost
 	}
 	return &usage
+}
+
+// usageMeter prices each provider request's usage, spends it from the budget
+// and records it. Every request is metered, whether or not anyone still reads
+// the chat, since the provider billed it either way.
+type usageMeter struct {
+	model  domain.Model
+	budget *domain.Budget
+	record func(domain.Usage)
+}
+
+func (m usageMeter) meter(usage domain.Usage) *domain.Usage {
+	priced := pricedUsage(m.model, usage)
+	if priced.CostUSD != nil {
+		m.budget.Spend(*priced.CostUSD)
+	}
+	if m.record != nil {
+		m.record(*priced)
+	}
+	return priced
+}
+
+// drain meters what is left of a provider stream the chat stopped reading,
+// such as the usage a provider reports as a cancelled request ends. A nil
+// stream has nothing left.
+func (m usageMeter) drain(stream <-chan domain.ProviderEvent) {
+	if stream == nil {
+		return
+	}
+	go func() {
+		for event := range stream {
+			if event.Usage != nil {
+				m.meter(*event.Usage)
+			}
+		}
+	}()
 }
 
 // emitStop ends a run that hit a limit. It fails, so whoever started it does

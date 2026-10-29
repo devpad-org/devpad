@@ -184,35 +184,20 @@ func nextPeriod(period domain.UsagePeriod, start time.Time) time.Time {
 	}
 }
 
-// recordUsage passes a chat stream's events on, adding each provider
-// request's usage to the ledger as rec. A request is recorded even after
-// whoever reads the stream has gone, since it was still billed.
-func recordUsage(ctx context.Context, recorder UsageRecorder, rec domain.UsageRecord, in <-chan domain.ClientEvent) <-chan domain.ClientEvent {
+// usageRecorderFor returns what adds each provider request's usage to the
+// ledger as rec, or nil when there is no ledger.
+func usageRecorderFor(recorder UsageRecorder, rec domain.UsageRecord) func(domain.Usage) {
 	if recorder == nil {
-		return in
+		return nil
 	}
-	out := make(chan domain.ClientEvent)
-	go func() {
-		defer close(out)
-		reading := true
-		for event := range in {
-			if event.Usage != nil {
-				rec.Usage, rec.At = *event.Usage, time.Now()
-				// Losing a request undercounts the ledger but must not stop
-				// the chat.
-				if err := recorder.RecordUsage(context.Background(), rec); err != nil {
-					log.Printf("failed to record usage of %s: %v", rec.Model, err)
-				}
-			}
-			if !reading {
-				continue
-			}
-			select {
-			case out <- event:
-			case <-ctx.Done():
-				reading = false
-			}
+	return func(usage domain.Usage) {
+		rec := rec
+		rec.Usage, rec.At = usage, time.Now()
+		// The chat may be over, so the request is recorded on a context of
+		// its own. Losing it undercounts the ledger but must not stop the
+		// chat.
+		if err := recorder.RecordUsage(context.Background(), rec); err != nil {
+			log.Printf("failed to record usage of %s: %v", rec.Model, err)
 		}
-	}()
-	return out
+	}
 }

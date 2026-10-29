@@ -80,19 +80,15 @@ func (s *chatService) StreamSimple(ctx context.Context, req SimpleChatRequest) (
 	if err != nil {
 		return nil, err
 	}
-	stream, err := s.simple.Stream(ctx, domain.ChatRequest{
+	return s.simple.Stream(ctx, domain.ChatRequest{
 		Model:    req.Model,
 		Turns:    turns,
 		Thinking: req.Thinking,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return recordUsage(ctx, s.usage, domain.UsageRecord{
+	}, usageRecorderFor(s.usage, domain.UsageRecord{
 		UserID:      req.UserID,
 		WorkspaceID: req.WorkspaceID,
 		Model:       req.Model,
-	}, stream), nil
+	}))
 }
 
 func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-chan domain.ClientEvent, error) {
@@ -104,7 +100,7 @@ func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-
 	if err != nil {
 		return nil, err
 	}
-	stream, err := s.agent.Stream(ctx, orchestrator.AgentChatRequest{
+	return s.agent.Stream(ctx, orchestrator.AgentChatRequest{
 		UserID:                req.UserID,
 		WorkspaceID:           req.WorkspaceID,
 		CurrentRunID:          req.CurrentRunID,
@@ -115,16 +111,13 @@ func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-
 		AgentPrompt:           req.AgentPrompt,
 		WorkspaceInstructions: workspaceInstructions,
 		Budget:                req.Budget,
+		RecordUsage: usageRecorderFor(s.usage, domain.UsageRecord{
+			UserID:      req.UserID,
+			WorkspaceID: req.WorkspaceID,
+			RunID:       req.CurrentRunID,
+			Model:       req.Model,
+		}),
 	})
-	if err != nil {
-		return nil, err
-	}
-	return recordUsage(ctx, s.usage, domain.UsageRecord{
-		UserID:      req.UserID,
-		WorkspaceID: req.WorkspaceID,
-		RunID:       req.CurrentRunID,
-		Model:       req.Model,
-	}, stream), nil
 }
 
 // hydrate loads the images the turns refer to, once per run: the turns are

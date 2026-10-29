@@ -221,6 +221,9 @@ func TestHandleChat_UsesAppChatService(t *testing.T) {
 		if req.Model != "gpt-5.4" {
 			t.Fatalf("expected model gpt-5.4, got %q", req.Model)
 		}
+		if req.WorkspaceID != 5 {
+			t.Fatalf("expected workspace id 5, got %d", req.WorkspaceID)
+		}
 		if len(req.Turns) != 1 || req.Turns[0].Text() != "hello" {
 			t.Fatalf("unexpected turns: %+v", req.Turns)
 		}
@@ -232,7 +235,7 @@ func TestHandleChat_UsesAppChatService(t *testing.T) {
 	}}
 
 	h := &Handler{catalog: stubCatalogService{}, chat: chat}
-	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","turns":[{"role":"user","parts":[{"kind":"text","text":"hello"}]}]}`))
+	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":5,"turns":[{"role":"user","parts":[{"kind":"text","text":"hello"}]}]}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/chat", body)
 	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 7}))
 	w := httptest.NewRecorder()

@@ -58,6 +58,9 @@ type AgentChatRequest struct {
 	// Budget, shared with the run's sub-agents, stops the run once spent.
 	// Nil means no limit.
 	Budget *domain.Budget
+	// RecordUsage, which may be nil, is told what each provider request was
+	// billed for, priced when the model's prices are known.
+	RecordUsage func(domain.Usage)
 }
 
 // AgentChatOrchestrator owns the agent runtime state machine outside HTTP transport.

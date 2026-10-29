@@ -17,8 +17,9 @@ func NewSimpleChatOrchestrator(service ChatService) *SimpleChatOrchestrator {
 }
 
 // Stream delegates directly to the provider-backed chat service, pricing
-// each request's usage when the model's prices are known.
-func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequest) (<-chan domain.ClientEvent, error) {
+// each request's usage when the model's prices are known. recordUsage, which
+// may be nil, is told what each request was billed for.
+func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequest, recordUsage func(domain.Usage)) (<-chan domain.ClientEvent, error) {
 	stream, err := o.service.ChatStream(ctx, req)
 	if err != nil {
 		return nil, err
@@ -26,6 +27,7 @@ func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequ
 	// ChatStream has already found the model; one it cannot find goes
 	// unpriced.
 	model, _ := o.service.FindModel(req.Model)
+	meter := usageMeter{model: model, record: recordUsage}
 
 	out := make(chan domain.ClientEvent)
 	go func() {
@@ -39,7 +41,7 @@ func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequ
 
 				var usage *domain.Usage
 				if event.Usage != nil {
-					usage = pricedUsage(model, *event.Usage)
+					usage = meter.meter(*event.Usage)
 				}
 				clientEvent := domain.ClientEvent{
 					TextDelta:      event.TextDelta,
@@ -54,9 +56,11 @@ func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequ
 				}
 
 				if !emitEvent(ctx, out, clientEvent) {
+					meter.drain(stream)
 					return
 				}
 			case <-ctx.Done():
+				meter.drain(stream)
 				return
 			}
 		}

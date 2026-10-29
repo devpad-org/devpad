@@ -1082,3 +1082,69 @@ func TestAgentChatOrchestrator_EmitsPricedUsageForEachRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestAgentChatOrchestrator_MetersARequestCutShort(t *testing.T) {
+	// Buffered as a provider's is, so the test can send before the run
+	// reads: it first sends its context size.
+	provider := make(chan domain.ProviderEvent, 4)
+	orch := &agentChatOrchestrator{
+		service: &mockChatService{
+			findModelFn: func(id string) (domain.Model, error) {
+				return domain.Model{ID: id, Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1}}}, nil
+			},
+			chatStreamFn: func(_ context.Context, _ domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+				return provider, nil
+			},
+		},
+		toolCatalog:       fakeToolCatalog{},
+		toolExecutor:      &mockToolExecutor{},
+		approvals:         &mockApprovalBroker{},
+		questions:         &mockQuestionBroker{},
+		maxToolIterations: defaultMaxToolIterations,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	spent := make(chan float64, 1)
+	recorded := make(chan domain.Usage, 1)
+	stream, err := orch.Stream(ctx, AgentChatRequest{
+		UserID:      1,
+		WorkspaceID: 1,
+		Model:       "test-model",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")},
+		Budget:      domain.NewBudget(0, 0, func(total float64) { spent <- total }),
+		RecordUsage: func(usage domain.Usage) { recorded <- usage },
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	provider <- domain.ProviderEvent{TextDelta: "hel"}
+	if event := nextEvent(t, stream); event.TextDelta != "hel" {
+		t.Fatalf("expected the text, got %+v", event)
+	}
+
+	// The user stops the reply; the provider reports what the request was
+	// billed for as it ends, after nobody reads the chat any more.
+	cancel()
+	collectEvents(t, stream)
+	provider <- domain.ProviderEvent{Usage: &domain.Usage{InputTokens: 400_000}}
+	provider <- domain.ProviderEvent{Done: true}
+	close(provider)
+
+	select {
+	case usage := <-recorded:
+		if usage.InputTokens != 400_000 || usage.CostUSD == nil || *usage.CostUSD != 0.4 {
+			t.Fatalf("expected the request recorded and priced, got %+v", usage)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the request cut short was never recorded")
+	}
+	select {
+	case total := <-spent:
+		if total != 0.4 {
+			t.Fatalf("expected $0.40 spent, got %v", total)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the request cut short was never spent from the budget")
+	}
+}

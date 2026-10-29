@@ -38,7 +38,8 @@ func TestUsageRepositoryKeepsUsageAfterTheProjectIsGone(t *testing.T) {
 		{UserID: 1, WorkspaceID: 1, RunID: 7, Model: "opus", Usage: domain.Usage{InputTokens: 50, CacheReadTokens: 400, CostUSD: cost(0.25)}, At: at.Add(5 * time.Minute)},
 		{UserID: 1, WorkspaceID: 2, Model: "local", Usage: domain.Usage{InputTokens: 30}, At: at},
 		{UserID: 1, Model: "opus", Usage: domain.Usage{OutputTokens: 1, CostUSD: cost(0.01)}, At: at.Add(time.Hour)},
-		{UserID: 2, Model: "opus", Usage: domain.Usage{OutputTokens: 1, CostUSD: cost(1)}, At: at},
+		// User 2 names user 1's workspace, which says nothing of its project.
+		{UserID: 2, WorkspaceID: 2, Model: "opus", Usage: domain.Usage{OutputTokens: 1, CostUSD: cost(1)}, At: at},
 	} {
 		if err := repo.RecordUsage(ctx, rec); err != nil {
 			t.Fatalf("record %+v: %v", rec, err)
@@ -84,6 +85,18 @@ func TestUsageRepositoryKeepsUsageAfterTheProjectIsGone(t *testing.T) {
 	}
 	if len(everyone) != len(want)+1 {
 		t.Fatalf("expected user 2's request too, got %+v", everyone)
+	}
+
+	others, err := repo.ListUsageSlots(ctx, 2, at.Add(-time.Hour), at.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("list user 2: %v", err)
+	}
+	if len(others) != 1 || others[0].ProjectID != 0 || others[0].ProjectName != "" {
+		t.Fatalf("expected user 2's request under no project, got %+v", others)
+	}
+	var foreign int
+	if err := db.Conn().QueryRow(`SELECT COUNT(*) FROM ai_usage WHERE user_id = 2 AND (workspace_id IS NOT NULL OR workspace_kind != '')`).Scan(&foreign); err != nil || foreign != 0 {
+		t.Fatalf("expected user 2's row to keep nothing of the workspace, got %d %v", foreign, err)
 	}
 
 	// The range's end is not included.

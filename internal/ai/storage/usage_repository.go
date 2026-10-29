@@ -24,7 +24,9 @@ func NewUsageRepository(db *sql.DB) *UsageRepository {
 
 // RecordUsage adds one request to the ledger, with the project and kind of
 // the workspace it was made in as they are now, so the row keeps them once
-// the workspace is gone.
+// the workspace is gone. A workspace that is not the user's is left out: the
+// ID can come from a request, and the row would show the user another
+// user's project and count the user's spend under it.
 func (r *UsageRepository) RecordUsage(ctx context.Context, rec domain.UsageRecord) error {
 	var cost any
 	if rec.Usage.CostUSD != nil {
@@ -33,12 +35,11 @@ func (r *UsageRepository) RecordUsage(ctx context.Context, rec domain.UsageRecor
 	if _, err := r.db.ExecContext(ctx,
 		`INSERT INTO ai_usage (user_id, project_id, project_name, workspace_id, workspace_kind, run_id, model,
 		                       input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, created_at)
-		 SELECT ?, w.project_id, COALESCE(p.name, ''), ?, COALESCE(w.kind, ''), ?, ?, ?, ?, ?, ?, ?, ?
+		 SELECT ?, w.project_id, COALESCE(p.name, ''), w.id, COALESCE(w.kind, ''), ?, ?, ?, ?, ?, ?, ?, ?
 		 FROM (SELECT 1)
-		 LEFT JOIN workspaces w ON w.id = ?
+		 LEFT JOIN workspaces w ON w.id = ? AND w.user_id = ?
 		 LEFT JOIN projects p ON p.id = w.project_id`,
 		rec.UserID,
-		nullableInt64(rec.WorkspaceID),
 		nullableInt64(rec.RunID),
 		rec.Model,
 		rec.Usage.InputTokens,
@@ -48,6 +49,7 @@ func (r *UsageRepository) RecordUsage(ctx context.Context, rec domain.UsageRecor
 		cost,
 		rec.At.Unix(),
 		rec.WorkspaceID,
+		rec.UserID,
 	); err != nil {
 		return fmt.Errorf("inserting usage: %w", err)
 	}
