@@ -1,13 +1,39 @@
 import { ref, shallowRef, reactive, computed, onBeforeUnmount, watch, toValue, type Ref, type MaybeRefOrGetter } from 'vue'
 import type * as MonacoType from 'monaco-editor'
 import { gruvboxMonacoTheme } from '@/theme/gruvbox'
+import EditorWorker from 'monaco-editor/editor/editor.worker?worker'
+import CssWorker from 'monaco-editor/language/css/css.worker?worker'
+import HtmlWorker from 'monaco-editor/language/html/html.worker?worker'
+import JsonWorker from 'monaco-editor/language/json/json.worker?worker'
+import TsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
 
 let monaco: typeof MonacoType | null = null
 let monacoPromise: Promise<typeof MonacoType> | null = null
 
+function getMonacoWorker(_workerId: string, label: string): Worker {
+  switch (label) {
+    case 'css':
+    case 'scss':
+    case 'less':
+      return new CssWorker()
+    case 'html':
+    case 'handlebars':
+    case 'razor':
+      return new HtmlWorker()
+    case 'json':
+      return new JsonWorker()
+    case 'typescript':
+    case 'javascript':
+      return new TsWorker()
+    default:
+      return new EditorWorker()
+  }
+}
+
 export async function loadMonaco(): Promise<typeof MonacoType> {
   if (monaco) return monaco
   if (!monacoPromise) {
+    self.MonacoEnvironment = { getWorker: getMonacoWorker }
     monacoPromise = import('monaco-editor').then((m) => {
       monaco = m
       return m
