@@ -167,6 +167,19 @@ export interface AIAgent {
   updatedAt: string
 }
 
+// A skill the workspace's project keeps, under .devpad/skills/ or
+// .claude/skills/.
+export interface AISkill {
+  name: string
+  description: string
+  // What may follow the name, such as [issue-number].
+  argumentHint?: string
+  // False for a skill only the user starts, which the model is not told of.
+  modelInvocable: boolean
+  // False for a skill left out of the slash commands.
+  userInvocable: boolean
+}
+
 export interface SaveAgentPayload {
   workspaceId: number
   name: string
@@ -507,6 +520,10 @@ export const aiApi = {
 
   listAgents(workspaceId: number): Promise<{ agents: AIAgent[] }> {
     return apiClient.get<{ agents: AIAgent[] }>(`/api/ai/agents?workspaceId=${workspaceId}`)
+  },
+
+  listSkills(workspaceId: number): Promise<{ skills: AISkill[] }> {
+    return apiClient.get<{ skills: AISkill[] }>(`/api/workspaces/${workspaceId}/skills`)
   },
 
   createAgent(payload: SaveAgentPayload): Promise<{ agent: AIAgent }> {

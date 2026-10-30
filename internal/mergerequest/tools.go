@@ -150,6 +150,14 @@ func (s *service) taskMergeRequest(ctx context.Context, userID, workspaceID int6
 	return mr, nil
 }
 
+func (s *service) ReviewTarget(ctx context.Context, userID, workspaceID int64) (int64, string, error) {
+	_, mr, err := s.pendingReview(ctx, userID, workspaceID)
+	if err != nil {
+		return 0, "", err
+	}
+	return mr.ProjectID, mr.TargetBranch, nil
+}
+
 // pendingReview finds the review a workspace's agent is writing.
 func (s *service) pendingReview(ctx context.Context, userID, workspaceID int64) (*Review, *MergeRequest, error) {
 	rv, err := s.repo.GetPendingReviewByWorkspace(ctx, workspaceID)

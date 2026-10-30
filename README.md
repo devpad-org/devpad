@@ -148,6 +148,10 @@ Workspaces made before projects existed still start with your SSH key, a `known_
 - **Repo at the workspace root, or no repo yet:** the workspace is converted in place and becomes the project's workspace. Devpad removes its SSH key, strips the other credentials it finds (with your consent), restarts the container and rotates your key, since an AI may have read the old one. Add the new public key to your Git host and remove the old one.
 - **Repo in a subdirectory:** its branches seed a new project with a fresh workspace. The original workspace is left as it was, credentials and key included, and your key is not rotated. Delete it once you've moved what you need.
 
+### Skills
+
+Agents use the skills a project keeps in its repo, in the [Agent Skills](https://agentskills.io) format: a directory per skill under `.devpad/skills/` or `.claude/skills/` (a skill in `.devpad/skills/` wins over one of the same name), each with a `SKILL.md` whose frontmatter gives its `description`. Every run sees the skills' names and descriptions and loads one when a task calls for it; type `/<name>` in the assistant to start one yourself. Skills only add instructions: `allowed-tools` is ignored, and so is anything else that would let an agent do more than it already can. A review agent takes its skills from the branch the change would merge into, never from the change it is reviewing.
+
 ## License
 
 See [LICENSE](LICENSE).

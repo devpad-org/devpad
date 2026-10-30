@@ -24,6 +24,7 @@ import (
 	"github.com/devpad-org/devpad/internal/project"
 	"github.com/devpad-org/devpad/internal/projecttools"
 	"github.com/devpad-org/devpad/internal/settings"
+	"github.com/devpad-org/devpad/internal/skills"
 	"github.com/devpad-org/devpad/internal/task"
 	"github.com/devpad-org/devpad/internal/workspace"
 	"github.com/devpad-org/devpad/internal/wsservice"
@@ -155,6 +156,12 @@ func New(cfg Config) (*Server, error) {
 	// task agents.
 	aiModule.AddToolProvider(projecttools.NewProvider(workspaceService, projectService, taskService, mrService, aiModule.AgentDefaults))
 
+	// Skills the project keeps, which review agents read from the branch the
+	// change would merge into.
+	skillsProvider := skills.NewProvider(workspaceService, projectService, mrService)
+	aiModule.AddToolProvider(skillsProvider)
+	skillsHandler := skills.NewHandler(skillsProvider)
+
 	if err := projectService.Reconcile(context.Background()); err != nil {
 		log.Printf("finishing interrupted workspace conversions: %v", err)
 	}
@@ -174,7 +181,7 @@ func New(cfg Config) (*Server, error) {
 	authRateLimiter := auth.NewRateLimiter(rate.Limit(5), 10)
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectHandler, taskHandler, mrHandler, gitBridgeHandler, aiModule.Handler, previewHandler)
+	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectHandler, taskHandler, mrHandler, gitBridgeHandler, skillsHandler, aiModule.Handler, previewHandler)
 
 	handler := buildHandler(mux, http.HandlerFunc(previewHandler.HandleProxy), cfg)
 
@@ -366,7 +373,7 @@ type aiRouteHandler interface {
 }
 
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, projectHandler *project.Handler, taskHandler *task.Handler, mrHandler *mergerequest.Handler, gitBridgeHandler *gitbridge.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, projectHandler *project.Handler, taskHandler *task.Handler, mrHandler *mergerequest.Handler, gitBridgeHandler *gitbridge.Handler, skillsHandler *skills.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
@@ -410,6 +417,7 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/workspaces/{id}/stop", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleStop)))
 	mux.Handle("POST /api/workspaces/{id}/restart", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleRestart)))
 	mux.Handle("GET /api/workspaces/{id}/info", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleInfo)))
+	mux.Handle("GET /api/workspaces/{id}/skills", authMiddleware.RequireAuth(http.HandlerFunc(skillsHandler.HandleList)))
 	mux.Handle("GET /api/workspaces/{id}/processes", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleListProcesses)))
 	mux.Handle("POST /api/workspaces/{id}/processes/{pid}/kill", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleKillProcess)))
 	mux.Handle("GET /api/workspaces/{id}/terminal", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleTerminal)))
