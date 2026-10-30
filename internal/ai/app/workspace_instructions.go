@@ -10,7 +10,9 @@ import (
 )
 
 const (
-	agentsInstructionPath     = "AGENTS.md"
+	// AGENTSInstructionPath is the file, at the repo root, whose
+	// instructions every run in a workspace gets.
+	AGENTSInstructionPath     = "AGENTS.md"
 	maxAgentsInstructionBytes = 16 * 1024
 )
 
@@ -39,30 +41,32 @@ func (s agentsInstructionSource) Instructions(ctx context.Context, userID, works
 	if !exists {
 		return "", nil
 	}
-	data, err := s.files.ReadFile(ctx, userID, workspaceID, agentsInstructionPath)
+	data, err := s.files.ReadFile(ctx, userID, workspaceID, AGENTSInstructionPath)
 	if err != nil {
-		return "", fmt.Errorf("reading %s: %w", agentsInstructionPath, err)
+		return "", fmt.Errorf("reading %s: %w", AGENTSInstructionPath, err)
 	}
-	return formatAGENTSInstructions(data), nil
+	return FormatAGENTSInstructions(data), nil
 }
 
 func (s agentsInstructionSource) hasRootAGENTS(ctx context.Context, userID, workspaceID int64) (bool, error) {
 	list, err := s.files.ListFiles(ctx, userID, workspaceID, "", agent.ListFilesOptions{MaxEntries: 2000})
 	if err != nil {
-		return false, fmt.Errorf("checking for %s: %w", agentsInstructionPath, err)
+		return false, fmt.Errorf("checking for %s: %w", AGENTSInstructionPath, err)
 	}
 	if list == nil {
-		return false, fmt.Errorf("checking for %s: empty file list response", agentsInstructionPath)
+		return false, fmt.Errorf("checking for %s: empty file list response", AGENTSInstructionPath)
 	}
 	for _, entry := range list.Entries {
-		if entry.Name == agentsInstructionPath && entry.Type == "file" {
+		if entry.Name == AGENTSInstructionPath && entry.Type == "file" {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-func formatAGENTSInstructions(data []byte) string {
+// FormatAGENTSInstructions trims an AGENTS.md, cutting it to the most a
+// run's prompt takes.
+func FormatAGENTSInstructions(data []byte) string {
 	if len(data) <= maxAgentsInstructionBytes {
 		return strings.TrimSpace(string(data))
 	}

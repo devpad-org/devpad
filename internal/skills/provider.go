@@ -116,6 +116,10 @@ func (p *Provider) List(ctx context.Context, userID, workspaceID int64) ([]Skill
 	return c.skills, nil
 }
 
+// errNoReview reports a review sandbox whose review is not pending, which
+// has no target branch to read from.
+var errNoReview = errors.New("no pending review in this review sandbox")
+
 // source picks where a workspace's skills come from. A review sandbox is a
 // checkout of the change under review, which must not get to tell its
 // reviewer how to review it: its skills are those of the branch the change
@@ -128,7 +132,7 @@ func (p *Provider) source(ctx context.Context, userID, workspaceID int64) (sourc
 	if ws.Kind == workspace.KindReview {
 		projectID, branch, err := p.reviews.ReviewTarget(ctx, userID, workspaceID)
 		if err != nil {
-			return nil, "", fmt.Errorf("finding the review's target branch: %w", err)
+			return nil, "", fmt.Errorf("%w: %v", errNoReview, err)
 		}
 		return branchSource{projects: p.projects, userID: userID, projectID: projectID, branch: branch}, branch, nil
 	}
@@ -174,7 +178,7 @@ func (p *Provider) catalog(ctx context.Context, userID, workspaceID int64) (*cat
 func (p *Provider) runCatalog(ctx context.Context, userID, workspaceID int64) *catalog {
 	c, err := p.catalog(ctx, userID, workspaceID)
 	if err != nil {
-		if !errors.Is(err, workspace.ErrNotFound) && !errors.Is(err, workspace.ErrForbidden) {
+		if !errors.Is(err, workspace.ErrNotFound) && !errors.Is(err, workspace.ErrForbidden) && !errors.Is(err, errNoReview) {
 			log.Printf("skills for workspace %d: %v", workspaceID, err)
 		}
 		return nil

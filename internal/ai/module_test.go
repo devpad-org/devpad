@@ -102,3 +102,28 @@ func TestChildAgentRunStarterWaitReturnsTerminalSummary(t *testing.T) {
 		t.Fatalf("unexpected child result: %+v", result)
 	}
 }
+
+type fixedInstructions string
+
+func (f fixedInstructions) Instructions(context.Context, int64, int64) (string, error) {
+	return string(f), nil
+}
+
+type prefixedInstructions struct{ next app.WorkspaceInstructionSource }
+
+func (p prefixedInstructions) Instructions(ctx context.Context, userID, workspaceID int64) (string, error) {
+	got, err := p.next.Instructions(ctx, userID, workspaceID)
+	return "wrapped " + got, err
+}
+
+func TestWrapWorkspaceInstructionsReplacesTheSourceRunsRead(t *testing.T) {
+	source := &instructionSource{source: fixedInstructions("AGENTS.md")}
+	m := &Module{instructions: source}
+	m.WrapWorkspaceInstructions(func(next app.WorkspaceInstructionSource) app.WorkspaceInstructionSource {
+		return prefixedInstructions{next: next}
+	})
+	got, err := source.Instructions(context.Background(), 1, 2)
+	if err != nil || got != "wrapped AGENTS.md" {
+		t.Fatalf("expected the wrapped source to read through the old one, got %q %v", got, err)
+	}
+}

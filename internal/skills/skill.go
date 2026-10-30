@@ -8,8 +8,9 @@
 // on the host and reads from where the catalog came from: the run's
 // workspace, except in a review sandbox, whose skills come from the merge
 // request's target branch in the canonical repo, never from the change under
-// review. A skill only adds instructions: allowed-tools, and every other
-// field that would change what an agent may do, is ignored.
+// review. The same goes for a review sandbox's AGENTS.md. A skill only adds
+// instructions: allowed-tools, and every other field that would change what
+// an agent may do, is ignored.
 package skills
 
 import (

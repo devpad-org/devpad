@@ -157,9 +157,10 @@ func New(cfg Config) (*Server, error) {
 	aiModule.AddToolProvider(projecttools.NewProvider(workspaceService, projectService, taskService, mrService, aiModule.AgentDefaults))
 
 	// Skills the project keeps, which review agents read from the branch the
-	// change would merge into.
+	// change would merge into, as they do AGENTS.md.
 	skillsProvider := skills.NewProvider(workspaceService, projectService, mrService)
 	aiModule.AddToolProvider(skillsProvider)
+	aiModule.WrapWorkspaceInstructions(skillsProvider.Instructions)
 	skillsHandler := skills.NewHandler(skillsProvider)
 
 	if err := projectService.Reconcile(context.Background()); err != nil {

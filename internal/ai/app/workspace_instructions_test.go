@@ -81,7 +81,7 @@ func TestAGENTSInstructionSourceSurfacesReadErrors(t *testing.T) {
 }
 
 func TestFormatAGENTSInstructionsTruncatesLargeFiles(t *testing.T) {
-	content := formatAGENTSInstructions([]byte(strings.Repeat("x", maxAgentsInstructionBytes+1)))
+	content := FormatAGENTSInstructions([]byte(strings.Repeat("x", maxAgentsInstructionBytes+1)))
 	if !strings.Contains(content, "[AGENTS.md truncated to 16384 bytes.]") {
 		t.Fatalf("expected truncation notice, got %q", content[len(content)-80:])
 	}

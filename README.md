@@ -150,7 +150,7 @@ Workspaces made before projects existed still start with your SSH key, a `known_
 
 ### Skills
 
-Agents use the skills a project keeps in its repo, in the [Agent Skills](https://agentskills.io) format: a directory per skill under `.devpad/skills/` or `.claude/skills/` (a skill in `.devpad/skills/` wins over one of the same name), each with a `SKILL.md` whose frontmatter gives its `description`. Every run sees the skills' names and descriptions and loads one when a task calls for it; type `/<name>` in the assistant to start one yourself. Skills only add instructions: `allowed-tools` is ignored, and so is anything else that would let an agent do more than it already can. A review agent takes its skills from the branch the change would merge into, never from the change it is reviewing.
+Agents use the skills a project keeps in its repo, in the [Agent Skills](https://agentskills.io) format: a directory per skill under `.devpad/skills/` or `.claude/skills/` (a skill in `.devpad/skills/` wins over one of the same name), each with a `SKILL.md` whose frontmatter gives its `description`. Every run sees the skills' names and descriptions and loads one when a task calls for it; type `/<name>` in the assistant to start one yourself. Skills only add instructions: `allowed-tools` is ignored, and so is anything else that would let an agent do more than it already can. A review agent takes its skills, and its `AGENTS.md`, from the branch the change would merge into, never from the change it is reviewing.
 
 ## License
 
