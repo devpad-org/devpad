@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -69,7 +70,7 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	approvalBroker := approval.NewMemoryBroker()
 	questionBroker := question.NewMemoryBroker()
 	toolCatalog := aitools.NewCatalog()
-	instructions := &instructionSource{source: app.NewAGENTSInstructionSource(workspaceOps)}
+	instructions := &instructionSource{own: app.NewAGENTSInstructionSource(workspaceOps)}
 	chatService := app.NewChatService(catalogService, toolCatalog, toolExecutor, approvalBroker, questionBroker, instructions, attachmentService, usageService)
 	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService))
 	agentRuns := storage.NewAgentRunRepository(db)
@@ -103,18 +104,24 @@ func (m *Module) AddToolProvider(p aitools.ToolProvider) {
 	m.toolExecutor.AddProvider(p)
 }
 
-// WrapWorkspaceInstructions replaces where runs read their AGENTS.md from
-// with wrap's source, which is given the one it replaces: the workspace's
-// own AGENTS.md, to fall back on.
-func (m *Module) WrapWorkspaceInstructions(wrap func(app.WorkspaceInstructionSource) app.WorkspaceInstructionSource) {
+// SetWorkspaceInstructions sets where runs read their AGENTS.md from:
+// wrap's source, which is given the workspace's own AGENTS.md to fall back
+// on. Runs fail until it is called, rather than read the AGENTS.md of a
+// review sandbox, which is the change under review.
+func (m *Module) SetWorkspaceInstructions(wrap func(own app.WorkspaceInstructionSource) app.WorkspaceInstructionSource) {
 	m.instructions.mu.Lock()
 	defer m.instructions.mu.Unlock()
-	m.instructions.source = wrap(m.instructions.source)
+	m.instructions.source = wrap(m.instructions.own)
 }
 
-// instructionSource is the chat service's AGENTS.md source, which packages
-// composed after the module can replace.
+// errInstructionsNotSet fails a run started before SetWorkspaceInstructions.
+var errInstructionsNotSet = errors.New("workspace instructions are not set up yet")
+
+// instructionSource is the chat service's AGENTS.md source, set by a
+// package composed after the module.
 type instructionSource struct {
+	// own reads a workspace's own AGENTS.md.
+	own    app.WorkspaceInstructionSource
 	mu     sync.RWMutex
 	source app.WorkspaceInstructionSource
 }
@@ -123,6 +130,9 @@ func (s *instructionSource) Instructions(ctx context.Context, userID, workspaceI
 	s.mu.RLock()
 	source := s.source
 	s.mu.RUnlock()
+	if source == nil {
+		return "", errInstructionsNotSet
+	}
 	return source.Instructions(ctx, userID, workspaceID)
 }
 

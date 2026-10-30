@@ -160,7 +160,7 @@ func New(cfg Config) (*Server, error) {
 	// change would merge into, as they do AGENTS.md.
 	skillsProvider := skills.NewProvider(workspaceService, projectService, mrService)
 	aiModule.AddToolProvider(skillsProvider)
-	aiModule.WrapWorkspaceInstructions(skillsProvider.Instructions)
+	aiModule.SetWorkspaceInstructions(skillsProvider.Instructions)
 	skillsHandler := skills.NewHandler(skillsProvider)
 
 	if err := projectService.Reconcile(context.Background()); err != nil {

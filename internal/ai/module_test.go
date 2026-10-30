@@ -116,14 +116,21 @@ func (p prefixedInstructions) Instructions(ctx context.Context, userID, workspac
 	return "wrapped " + got, err
 }
 
-func TestWrapWorkspaceInstructionsReplacesTheSourceRunsRead(t *testing.T) {
-	source := &instructionSource{source: fixedInstructions("AGENTS.md")}
+func TestSetWorkspaceInstructionsSetsTheSourceRunsRead(t *testing.T) {
+	source := &instructionSource{own: fixedInstructions("AGENTS.md")}
 	m := &Module{instructions: source}
-	m.WrapWorkspaceInstructions(func(next app.WorkspaceInstructionSource) app.WorkspaceInstructionSource {
-		return prefixedInstructions{next: next}
+
+	// Until the source is set, runs fail rather than read a workspace's own
+	// AGENTS.md, which in a review sandbox is the change under review.
+	if got, err := source.Instructions(context.Background(), 1, 2); !errors.Is(err, errInstructionsNotSet) || got != "" {
+		t.Fatalf("expected runs to fail before the source is set, got %q %v", got, err)
+	}
+
+	m.SetWorkspaceInstructions(func(own app.WorkspaceInstructionSource) app.WorkspaceInstructionSource {
+		return prefixedInstructions{next: own}
 	})
 	got, err := source.Instructions(context.Background(), 1, 2)
 	if err != nil || got != "wrapped AGENTS.md" {
-		t.Fatalf("expected the wrapped source to read through the old one, got %q %v", got, err)
+		t.Fatalf("expected the set source to read through the workspace's own, got %q %v", got, err)
 	}
 }
