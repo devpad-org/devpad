@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/moby/moby/client"
 )
 
 // SelfContainerIDEnv pins the ID of the container devpad itself runs in,
@@ -50,16 +52,16 @@ func (m *manager) EnsureSelfAttached(ctx context.Context, networkName string) er
 	}
 
 	// A previous devpad run may have already joined this network.
-	info, err := m.cli.ContainerInspect(ctx, selfID)
+	res, err := m.cli.ContainerInspect(ctx, selfID, client.ContainerInspectOptions{})
 	if err != nil {
 		return fmt.Errorf("inspecting devpad container: %w", err)
 	}
-	if _, ok := info.NetworkSettings.Networks[networkName]; ok {
+	if _, ok := res.Container.NetworkSettings.Networks[networkName]; ok {
 		m.attached[networkName] = true
 		return nil
 	}
 
-	if err := m.cli.NetworkConnect(ctx, networkName, selfID, nil); err != nil {
+	if _, err := m.cli.NetworkConnect(ctx, networkName, client.NetworkConnectOptions{Container: selfID}); err != nil {
 		if !isAlreadyConnected(err) {
 			return fmt.Errorf("connecting devpad to network %s: %w", networkName, err)
 		}
@@ -85,7 +87,7 @@ func (m *manager) DetachSelf(ctx context.Context, networkName string) error {
 	defer m.attachMu.Unlock()
 	delete(m.attached, networkName)
 
-	if err := m.cli.NetworkDisconnect(ctx, networkName, selfID, true); err != nil {
+	if _, err := m.cli.NetworkDisconnect(ctx, networkName, client.NetworkDisconnectOptions{Container: selfID, Force: true}); err != nil {
 		if isNotConnected(err) {
 			return nil
 		}
@@ -115,10 +117,11 @@ func (m *manager) detectSelfContainerID() string {
 	defer cancel()
 
 	for _, candidate := range selfIDCandidates() {
-		info, err := m.cli.ContainerInspect(ctx, candidate)
+		res, err := m.cli.ContainerInspect(ctx, candidate, client.ContainerInspectOptions{})
 		if err != nil {
 			continue
 		}
+		info := res.Container
 		// A devpad-managed container is a workspace or sidecar, never devpad
 		// itself. Mistaking one for self would make devpad disconnect a
 		// workspace from its own network, so reject it outright.

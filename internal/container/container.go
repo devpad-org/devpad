@@ -10,13 +10,10 @@ import (
 	"log"
 	"sync"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 )
 
 // WorkspaceImage is the Docker image used for workspace containers.
@@ -114,7 +111,7 @@ type manager struct {
 
 // NewManager creates a new container Manager using the default Docker client.
 func NewManager() (Manager, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("creating docker client: %w", err)
 	}
@@ -154,8 +151,8 @@ func (m *manager) Create(ctx context.Context, name, image, volumeName, networkNa
 		}
 	}
 
-	resp, err := m.cli.ContainerCreate(ctx,
-		&container.Config{
+	resp, err := m.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
 			Image: image,
 			Tty:   true,
 			Env:   env,
@@ -163,9 +160,10 @@ func (m *manager) Create(ctx context.Context, name, image, volumeName, networkNa
 				"devpad.managed": "true",
 			},
 		},
-		hostConfig,
-		networkingConfig, nil, containerName,
-	)
+		HostConfig:       hostConfig,
+		NetworkingConfig: networkingConfig,
+		Name:             containerName,
+	})
 	if err != nil {
 		return "", fmt.Errorf("creating container: %w", err)
 	}
@@ -174,28 +172,28 @@ func (m *manager) Create(ctx context.Context, name, image, volumeName, networkNa
 }
 
 func (m *manager) Rename(ctx context.Context, containerID, name string) error {
-	if err := m.cli.ContainerRename(ctx, containerID, name); err != nil {
+	if _, err := m.cli.ContainerRename(ctx, containerID, client.ContainerRenameOptions{NewName: name}); err != nil {
 		return fmt.Errorf("renaming container: %w", err)
 	}
 	return nil
 }
 
 func (m *manager) Start(ctx context.Context, containerID string) error {
-	if err := m.cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+	if _, err := m.cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{}); err != nil {
 		return fmt.Errorf("starting container: %w", err)
 	}
 	return nil
 }
 
 func (m *manager) Stop(ctx context.Context, containerID string) error {
-	if err := m.cli.ContainerStop(ctx, containerID, container.StopOptions{}); err != nil {
+	if _, err := m.cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{}); err != nil {
 		return fmt.Errorf("stopping container: %w", err)
 	}
 	return nil
 }
 
 func (m *manager) Restart(ctx context.Context, containerID string) error {
-	if err := m.cli.ContainerRestart(ctx, containerID, container.StopOptions{}); err != nil {
+	if _, err := m.cli.ContainerRestart(ctx, containerID, client.ContainerRestartOptions{}); err != nil {
 		return fmt.Errorf("restarting container: %w", err)
 	}
 	return nil
@@ -218,22 +216,25 @@ func (m *manager) CopyFileToContainer(ctx context.Context, containerID, destPath
 		return fmt.Errorf("closing tar writer: %w", err)
 	}
 
-	if err := m.cli.CopyToContainer(ctx, containerID, "/", &buf, container.CopyToContainerOptions{}); err != nil {
+	if _, err := m.cli.CopyToContainer(ctx, containerID, client.CopyToContainerOptions{
+		DestinationPath: "/",
+		Content:         &buf,
+	}); err != nil {
 		return fmt.Errorf("copying file to container: %w", err)
 	}
 	return nil
 }
 
 func (m *manager) Remove(ctx context.Context, containerID string) error {
-	if err := m.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
+	if _, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true}); err != nil {
 		return fmt.Errorf("removing container: %w", err)
 	}
 	return nil
 }
 
 func (m *manager) UpdateResources(ctx context.Context, containerID string, memoryLimit, nanoCPUs int64) error {
-	_, err := m.cli.ContainerUpdate(ctx, containerID, container.UpdateConfig{
-		Resources: container.Resources{
+	_, err := m.cli.ContainerUpdate(ctx, containerID, client.ContainerUpdateOptions{
+		Resources: &container.Resources{
 			Memory:   memoryLimit,
 			NanoCPUs: nanoCPUs,
 		},
@@ -245,12 +246,12 @@ func (m *manager) UpdateResources(ctx context.Context, containerID string, memor
 }
 
 func (m *manager) Exec(ctx context.Context, containerID string, cmd []string) (string, error) {
-	resp, err := m.cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
+	resp, err := m.cli.ExecCreate(ctx, containerID, client.ExecCreateOptions{
 		Cmd:          cmd,
 		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
-		Tty:          true,
+		TTY:          true,
 	})
 	if err != nil {
 		return "", fmt.Errorf("creating exec: %w", err)
@@ -259,8 +260,8 @@ func (m *manager) Exec(ctx context.Context, containerID string, cmd []string) (s
 }
 
 func (m *manager) ExecAttach(ctx context.Context, execID string) (HijackedResponse, error) {
-	resp, err := m.cli.ContainerExecAttach(ctx, execID, container.ExecAttachOptions{
-		Tty: true,
+	resp, err := m.cli.ExecAttach(ctx, execID, client.ExecAttachOptions{
+		TTY: true,
 	})
 	if err != nil {
 		return HijackedResponse{}, fmt.Errorf("attaching exec: %w", err)
@@ -273,7 +274,7 @@ func (m *manager) ExecAttach(ctx context.Context, execID string) (HijackedRespon
 }
 
 func (m *manager) ExecResize(ctx context.Context, execID string, height, width uint) error {
-	if err := m.cli.ContainerExecResize(ctx, execID, container.ResizeOptions{
+	if _, err := m.cli.ExecResize(ctx, execID, client.ExecResizeOptions{
 		Height: height,
 		Width:  width,
 	}); err != nil {
@@ -283,36 +284,36 @@ func (m *manager) ExecResize(ctx context.Context, execID string, height, width u
 }
 
 func (m *manager) GetIP(ctx context.Context, containerID, networkName string) (string, error) {
-	info, err := m.cli.ContainerInspect(ctx, containerID)
+	res, err := m.cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
 		return "", fmt.Errorf("inspecting container: %w", err)
 	}
+	info := res.Container
 
-	// If a custom network is specified, look up the IP on that network.
-	if networkName != "" && info.NetworkSettings.Networks != nil {
-		if ep, ok := info.NetworkSettings.Networks[networkName]; ok && ep.IPAddress != "" {
-			return ep.IPAddress, nil
+	// If a custom network is specified, look up the IP on that network, falling
+	// back to the default bridge IP for backward compatibility.
+	for _, name := range []string{networkName, "bridge"} {
+		if name == "" {
+			continue
+		}
+		if ep, ok := info.NetworkSettings.Networks[name]; ok && ep != nil && ep.IPAddress.IsValid() {
+			return ep.IPAddress.String(), nil
 		}
 	}
-
-	// Fall back to the default bridge IP for backward compatibility.
-	ip := info.NetworkSettings.IPAddress
-	if ip == "" {
-		return "", fmt.Errorf("container has no IP address")
-	}
-	return ip, nil
+	return "", fmt.Errorf("container has no IP address")
 }
 
 func (m *manager) GetEnv(ctx context.Context, containerID string) ([]string, error) {
-	info, err := m.cli.ContainerInspect(ctx, containerID)
+	res, err := m.cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("inspecting container: %w", err)
 	}
-	return info.Config.Env, nil
+	return res.Container.Config.Env, nil
 }
 
 func (m *manager) Stats(ctx context.Context, containerID string) (*ContainerStats, error) {
-	resp, err := m.cli.ContainerStats(ctx, containerID, false)
+	// The previous sample fills precpu_stats, which the CPU percentage needs.
+	resp, err := m.cli.ContainerStats(ctx, containerID, client.ContainerStatsOptions{IncludePreviousSample: true})
 	if err != nil {
 		return nil, fmt.Errorf("fetching container stats: %w", err)
 	}
@@ -404,7 +405,7 @@ func (m *manager) Stats(ctx context.Context, containerID string) (*ContainerStat
 }
 
 func (m *manager) CreateNetwork(ctx context.Context, name string) error {
-	_, err := m.cli.NetworkCreate(ctx, name, network.CreateOptions{
+	_, err := m.cli.NetworkCreate(ctx, name, client.NetworkCreateOptions{
 		Driver: "bridge",
 		Labels: map[string]string{
 			"devpad.managed": "true",
@@ -417,21 +418,21 @@ func (m *manager) CreateNetwork(ctx context.Context, name string) error {
 }
 
 func (m *manager) RemoveNetwork(ctx context.Context, name string) error {
-	if err := m.cli.NetworkRemove(ctx, name); err != nil {
+	if _, err := m.cli.NetworkRemove(ctx, name, client.NetworkRemoveOptions{}); err != nil {
 		return fmt.Errorf("removing network: %w", err)
 	}
 	return nil
 }
 
 func (m *manager) ConnectToNetwork(ctx context.Context, networkName, containerID string) error {
-	if err := m.cli.NetworkConnect(ctx, networkName, containerID, nil); err != nil {
+	if _, err := m.cli.NetworkConnect(ctx, networkName, client.NetworkConnectOptions{Container: containerID}); err != nil {
 		return fmt.Errorf("connecting container to network: %w", err)
 	}
 	return nil
 }
 
 func (m *manager) CreateVolume(ctx context.Context, name string) error {
-	_, err := m.cli.VolumeCreate(ctx, volume.CreateOptions{
+	_, err := m.cli.VolumeCreate(ctx, client.VolumeCreateOptions{
 		Name: name,
 		Labels: map[string]string{
 			"devpad.managed": "true",
@@ -444,7 +445,7 @@ func (m *manager) CreateVolume(ctx context.Context, name string) error {
 }
 
 func (m *manager) RemoveVolume(ctx context.Context, name string) error {
-	if err := m.cli.VolumeRemove(ctx, name, true); err != nil {
+	if _, err := m.cli.VolumeRemove(ctx, name, client.VolumeRemoveOptions{Force: true}); err != nil {
 		return fmt.Errorf("removing volume: %w", err)
 	}
 	return nil
@@ -452,7 +453,7 @@ func (m *manager) RemoveVolume(ctx context.Context, name string) error {
 
 func (m *manager) BuildImage(ctx context.Context, dockerfileContent []byte, agentBinary []byte, version string) error {
 	// Check if image already exists with the correct version label.
-	inspect, _, err := m.cli.ImageInspectWithRaw(ctx, WorkspaceImage)
+	inspect, err := m.cli.ImageInspect(ctx, WorkspaceImage)
 	if err == nil {
 		if v, ok := inspect.Config.Labels["devpad.version"]; ok && v == version && version != "dev" {
 			log.Printf("workspace image %s already up to date (version %s)", WorkspaceImage, version)
@@ -495,7 +496,7 @@ func (m *manager) BuildImage(ctx context.Context, dockerfileContent []byte, agen
 		return fmt.Errorf("closing tar writer: %w", err)
 	}
 
-	resp, err := m.cli.ImageBuild(ctx, &buf, types.ImageBuildOptions{
+	resp, err := m.cli.ImageBuild(ctx, &buf, client.ImageBuildOptions{
 		Tags:       []string{WorkspaceImage},
 		Dockerfile: "Dockerfile",
 		Remove:     true,
@@ -530,13 +531,13 @@ func (m *manager) BuildImage(ctx context.Context, dockerfileContent []byte, agen
 }
 
 func (m *manager) pullImageIfNeeded(ctx context.Context, imageName string) error {
-	_, _, err := m.cli.ImageInspectWithRaw(ctx, imageName)
+	_, err := m.cli.ImageInspect(ctx, imageName)
 	if err == nil {
 		return nil // image already exists
 	}
 
 	log.Printf("pulling image %s...", imageName)
-	reader, err := m.cli.ImagePull(ctx, imageName, image.PullOptions{})
+	reader, err := m.cli.ImagePull(ctx, imageName, client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("pulling %s: %w", imageName, err)
 	}
@@ -574,8 +575,8 @@ func (m *manager) CreateSidecar(ctx context.Context, name, imageName, volumeName
 		}
 	}
 
-	resp, err := m.cli.ContainerCreate(ctx,
-		&container.Config{
+	resp, err := m.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
 			Image: imageName,
 			Env:   env,
 			Labels: map[string]string{
@@ -583,12 +584,13 @@ func (m *manager) CreateSidecar(ctx context.Context, name, imageName, volumeName
 				"devpad.sidecar": "true",
 			},
 		},
-		&container.HostConfig{
+		HostConfig: &container.HostConfig{
 			RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
 			Mounts:        mounts,
 		},
-		networkingConfig, nil, name,
-	)
+		NetworkingConfig: networkingConfig,
+		Name:             name,
+	})
 	if err != nil {
 		return "", fmt.Errorf("creating sidecar container: %w", err)
 	}

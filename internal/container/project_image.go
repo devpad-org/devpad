@@ -9,9 +9,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/docker/docker/api/types/build"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
+	"github.com/moby/moby/api/types/build"
+	"github.com/moby/moby/client"
 )
 
 // buildOutputLimit is how much of the end of a build's output is kept.
@@ -37,7 +36,7 @@ func (m *manager) BuildProjectImage(ctx context.Context, tag string, dockerfile 
 
 	// The classic builder applies NetworkMode and the resource limits to
 	// each RUN step's container; BuildKit ignores them.
-	resp, err := m.cli.ImageBuild(ctx, &buf, build.ImageBuildOptions{
+	resp, err := m.cli.ImageBuild(ctx, &buf, client.ImageBuildOptions{
 		Tags:        []string{tag},
 		Dockerfile:  "Dockerfile",
 		Remove:      true,
@@ -89,7 +88,7 @@ func (m *manager) BuildProjectImage(ctx context.Context, tag string, dockerfile 
 }
 
 func (m *manager) ImageID(ctx context.Context, ref string) (string, error) {
-	inspect, _, err := m.cli.ImageInspectWithRaw(ctx, ref)
+	inspect, err := m.cli.ImageInspect(ctx, ref)
 	if err != nil {
 		return "", fmt.Errorf("inspecting image %s: %w", ref, err)
 	}
@@ -97,19 +96,19 @@ func (m *manager) ImageID(ctx context.Context, ref string) (string, error) {
 }
 
 func (m *manager) ListImages(ctx context.Context, label string) ([]ImageInfo, error) {
-	summaries, err := m.cli.ImageList(ctx, image.ListOptions{Filters: filters.NewArgs(filters.Arg("label", label))})
+	res, err := m.cli.ImageList(ctx, client.ImageListOptions{Filters: make(client.Filters).Add("label", label)})
 	if err != nil {
 		return nil, fmt.Errorf("listing images: %w", err)
 	}
-	images := make([]ImageInfo, 0, len(summaries))
-	for _, s := range summaries {
+	images := make([]ImageInfo, 0, len(res.Items))
+	for _, s := range res.Items {
 		images = append(images, ImageInfo{ID: s.ID, Tags: s.RepoTags})
 	}
 	return images, nil
 }
 
 func (m *manager) RemoveImage(ctx context.Context, ref string) error {
-	if _, err := m.cli.ImageRemove(ctx, ref, image.RemoveOptions{PruneChildren: true}); err != nil {
+	if _, err := m.cli.ImageRemove(ctx, ref, client.ImageRemoveOptions{PruneChildren: true}); err != nil {
 		return fmt.Errorf("removing image %s: %w", ref, err)
 	}
 	return nil
