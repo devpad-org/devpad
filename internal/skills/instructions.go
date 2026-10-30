@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/devpad-org/devpad/internal/ai/app"
 )
@@ -11,7 +12,9 @@ import (
 // Instructions returns where runs read their AGENTS.md from: next, except
 // in a review sandbox, which takes the AGENTS.md of the branch its skills
 // come from, for the same reason. A review sandbox whose review is no
-// longer pending gets none, never its own.
+// longer pending gets none, never its own, and so does one whose target
+// branch cannot be read: like skills, instructions are an addition to a
+// run, and the repo container being down should not fail the review.
 func (p *Provider) Instructions(next app.WorkspaceInstructionSource) app.WorkspaceInstructionSource {
 	return reviewInstructions{provider: p, next: next}
 }
@@ -37,7 +40,8 @@ func (r reviewInstructions) Instructions(ctx context.Context, userID, workspaceI
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("reading %s on %s: %w", app.AGENTSInstructionPath, branch, err)
+		log.Printf("AGENTS.md for workspace %d: reading %s on %s: %v", workspaceID, app.AGENTSInstructionPath, branch, err)
+		return "", nil
 	}
 	instructions := app.FormatAGENTSInstructions(data)
 	if instructions == "" {

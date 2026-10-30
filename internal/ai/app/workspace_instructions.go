@@ -70,9 +70,15 @@ func FormatAGENTSInstructions(data []byte) string {
 	if len(data) <= maxAgentsInstructionBytes {
 		return strings.TrimSpace(string(data))
 	}
-	truncated := string(data[:maxAgentsInstructionBytes])
-	for !utf8.ValidString(truncated) && len(truncated) > 0 {
-		truncated = truncated[:len(truncated)-1]
+	// Cut before the character the limit splits, looking back no further
+	// than one character.
+	end := maxAgentsInstructionBytes
+	for i := end; i > end-utf8.UTFMax; i-- {
+		if utf8.RuneStart(data[i]) {
+			end = i
+			break
+		}
 	}
+	truncated := string(data[:end])
 	return strings.TrimSpace(truncated) + fmt.Sprintf("\n\n[AGENTS.md truncated to %d bytes.]", maxAgentsInstructionBytes)
 }

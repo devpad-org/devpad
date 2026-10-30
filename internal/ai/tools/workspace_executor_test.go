@@ -893,3 +893,10 @@ func TestWorkspaceExecutor_ReadFileReadsTextWithAnImageStore(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
+
+func TestTruncateToolTextCutsOnACharacter(t *testing.T) {
+	content := "\xff" + strings.Repeat("x", 7) + "€"
+	if got := truncateToolText(content, 10, "[cut to %d]"); got != "\xff"+strings.Repeat("x", 7)+"[cut to 10]" {
+		t.Fatalf("expected the cut just before the split character, got %q", got)
+	}
+}

@@ -86,3 +86,12 @@ func TestFormatAGENTSInstructionsTruncatesLargeFiles(t *testing.T) {
 		t.Fatalf("expected truncation notice, got %q", content[len(content)-80:])
 	}
 }
+
+func TestFormatAGENTSInstructionsCutsOnACharacter(t *testing.T) {
+	data := []byte("\xff" + strings.Repeat("x", maxAgentsInstructionBytes-3) + "€")
+	content := FormatAGENTSInstructions(data)
+	body, _, _ := strings.Cut(content, "\n\n[AGENTS.md truncated")
+	if len(body) != maxAgentsInstructionBytes-2 {
+		t.Fatalf("expected the cut just before the split character, got %d bytes", len(body))
+	}
+}

@@ -377,11 +377,16 @@ func truncateToolText(content string, maxBytes int, noticeFormat string) string 
 		return content
 	}
 
-	truncated := content[:maxBytes]
-	for !utf8.ValidString(truncated) && len(truncated) > 0 {
-		truncated = truncated[:len(truncated)-1]
+	// Cut before the character the limit splits, looking back no further
+	// than one character.
+	end := maxBytes
+	for i := end; i > end-utf8.UTFMax && i > 0; i-- {
+		if utf8.RuneStart(content[i]) {
+			end = i
+			break
+		}
 	}
-	return truncated + fmt.Sprintf(noticeFormat, maxBytes)
+	return content[:end] + fmt.Sprintf(noticeFormat, maxBytes)
 }
 
 func cloneThinking(thinking *domain.ThinkingConfig) *domain.ThinkingConfig {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
+	"github.com/devpad-org/devpad/internal/mergerequest"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
 
@@ -37,9 +38,10 @@ var escapeXML = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 // cannot hold up the start of a run.
 var discoverTimeout = 5 * time.Second
 
-// cacheTTL is how long a catalog is reused. A run asks for its tools and
-// its prompt one after the other, and should not read the skills twice; a
-// skill the user just added shows up in the next run.
+// cacheTTL is how long a catalog, or the failure to read one, is reused. A
+// run asks for its prompt and its tools one after the other, and should not
+// read the skills twice, nor wait twice on a workspace that is slow to
+// answer; a skill the user just added shows up in the next run.
 var cacheTTL = 5 * time.Second
 
 var loadSkillDefinition = domain.ToolDefinition{
@@ -57,7 +59,8 @@ type WorkspaceFiles interface {
 	Get(ctx context.Context, userID, workspaceID int64) (*workspace.Workspace, error)
 }
 
-// Reviews finds the target branch of the review a review sandbox is for.
+// Reviews finds the target branch of the review a review sandbox is for,
+// failing with mergerequest.ErrNotFound when it has no pending review.
 type Reviews interface {
 	ReviewTarget(ctx context.Context, userID, workspaceID int64) (projectID int64, branch string, err error)
 }
@@ -81,6 +84,7 @@ type cacheKey struct{ userID, workspaceID int64 }
 
 type cached struct {
 	catalog *catalog
+	err     error
 	at      time.Time
 }
 
@@ -131,8 +135,11 @@ func (p *Provider) source(ctx context.Context, userID, workspaceID int64) (sourc
 	}
 	if ws.Kind == workspace.KindReview {
 		projectID, branch, err := p.reviews.ReviewTarget(ctx, userID, workspaceID)
+		if errors.Is(err, mergerequest.ErrNotFound) {
+			return nil, "", errNoReview
+		}
 		if err != nil {
-			return nil, "", fmt.Errorf("%w: %v", errNoReview, err)
+			return nil, "", fmt.Errorf("finding the review: %w", err)
 		}
 		return branchSource{projects: p.projects, userID: userID, projectID: projectID, branch: branch}, branch, nil
 	}
@@ -141,14 +148,32 @@ func (p *Provider) source(ctx context.Context, userID, workspaceID int64) (sourc
 
 func (p *Provider) catalog(ctx context.Context, userID, workspaceID int64) (*catalog, error) {
 	key := cacheKey{userID, workspaceID}
-	now := time.Now()
 	p.mu.Lock()
-	if hit, ok := p.cache[key]; ok && now.Sub(hit.at) < cacheTTL {
+	if hit, ok := p.cache[key]; ok && time.Since(hit.at) < cacheTTL {
 		p.mu.Unlock()
-		return hit.catalog, nil
+		return hit.catalog, hit.err
 	}
 	p.mu.Unlock()
 
+	c, err := p.readCatalog(ctx, userID, workspaceID)
+	// A caller that went away says nothing about the workspace.
+	if ctx.Err() != nil {
+		return c, err
+	}
+
+	now := time.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for k, v := range p.cache {
+		if now.Sub(v.at) >= cacheTTL {
+			delete(p.cache, k)
+		}
+	}
+	p.cache[key] = cached{catalog: c, err: err, at: now}
+	return c, err
+}
+
+func (p *Provider) readCatalog(ctx context.Context, userID, workspaceID int64) (*catalog, error) {
 	ctx, cancel := context.WithTimeout(ctx, discoverTimeout)
 	defer cancel()
 	src, branch, err := p.source(ctx, userID, workspaceID)
@@ -159,17 +184,7 @@ func (p *Provider) catalog(ctx context.Context, userID, workspaceID int64) (*cat
 	if err != nil {
 		return nil, fmt.Errorf("reading skills: %w", err)
 	}
-	c := &catalog{src: src, skills: found, branch: branch}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for k, v := range p.cache {
-		if now.Sub(v.at) >= cacheTTL {
-			delete(p.cache, k)
-		}
-	}
-	p.cache[key] = cached{catalog: c, at: now}
-	return c, nil
+	return &catalog{src: src, skills: found, branch: branch}, nil
 }
 
 // runCatalog is the catalog for a run, or nil when the workspace offers no
@@ -272,10 +287,10 @@ func (p *Provider) loadSkill(ctx context.Context, req aitools.ExecutionRequest) 
 	if err != nil {
 		return toolError("reading the skill %s: %v", s.Name, err)
 	}
-	body, cut := truncate(skillBody(data))
+	body, truncated := truncate(skillBody(data))
 	var b strings.Builder
 	fmt.Fprintf(&b, "<skill_content name=%q>\n%s\n", s.Name, body)
-	if cut {
+	if truncated {
 		fmt.Fprintf(&b, "\n[The skill's instructions were cut to %d bytes.]\n", maxContentBytes)
 	}
 	b.WriteString("</skill_content>\n\n")
@@ -329,8 +344,8 @@ func (p *Provider) readSkillFile(ctx context.Context, c *catalog, s Skill, file 
 	if !utf8.Valid(data) {
 		return toolError("%s is not a text file", file)
 	}
-	content, cut := truncate(string(data))
-	if cut {
+	content, truncated := truncate(string(data))
+	if truncated {
 		content += fmt.Sprintf("\n\n[%s was cut to %d bytes.]", file, maxContentBytes)
 	}
 	return domain.ToolResultPart{Name: loadSkillTool, Content: content}
@@ -341,11 +356,7 @@ func truncate(s string) (string, bool) {
 	if len(s) <= maxContentBytes {
 		return s, false
 	}
-	s = s[:maxContentBytes]
-	for !utf8.ValidString(s) {
-		s = s[:len(s)-1]
-	}
-	return s, true
+	return cut(s, maxContentBytes), true
 }
 
 // toolError reports a failed call. The "Error:" prefix is what the IDE uses

@@ -14,6 +14,7 @@ import (
 	"github.com/devpad-org/devpad/internal/agent"
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/mergerequest"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
 
@@ -87,9 +88,14 @@ func (f *fakeWorkspaces) ReadFile(_ context.Context, _, workspaceID int64, p str
 
 type fakeProjects struct {
 	branches map[string]tree
+	// err fails every read, as a repo container that is down does.
+	err error
 }
 
 func (f *fakeProjects) TreeAt(_ context.Context, _, _ int64, rev, dir string) (*agent.RepoTree, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
 	names, dirs, ok := f.branches[rev].children(dir)
 	if !ok {
 		return nil, agentNotFound
@@ -106,6 +112,9 @@ func (f *fakeProjects) TreeAt(_ context.Context, _, _ int64, rev, dir string) (*
 }
 
 func (f *fakeProjects) FileAt(_ context.Context, _, _ int64, rev, p string) ([]byte, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
 	content, ok := f.branches[rev][p]
 	if !ok {
 		return nil, agentNotFound
@@ -118,7 +127,7 @@ type fakeReviews map[int64]string
 func (f fakeReviews) ReviewTarget(_ context.Context, _, workspaceID int64) (int64, string, error) {
 	branch, ok := f[workspaceID]
 	if !ok {
-		return 0, "", errors.New("no pending review")
+		return 0, "", mergerequest.ErrNotFound
 	}
 	return 3, branch, nil
 }
@@ -455,6 +464,89 @@ func TestReviewSandboxReadsAGENTSFromTargetBranch(t *testing.T) {
 
 	if _, err := source.Instructions(ctx, owner, 99); !errors.Is(err, workspace.ErrNotFound) {
 		t.Fatalf("expected an unknown workspace to fail, got %v", err)
+	}
+}
+
+func TestReviewSandboxRunsWithoutAGENTSItCannotRead(t *testing.T) {
+	p, _ := setup(t)
+	p.projects.(*fakeProjects).err = errors.New("repo container restarting")
+	got, err := p.Instructions(&fakeInstructions{}).Instructions(context.Background(), owner, reviewWS)
+	if err != nil || got != "" {
+		t.Fatalf("expected the run to go on without instructions, got %q %v", got, err)
+	}
+}
+
+type failingReviews struct{ err error }
+
+func (f failingReviews) ReviewTarget(context.Context, int64, int64) (int64, string, error) {
+	return 0, "", f.err
+}
+
+func TestReviewLookupFailureIsNotNoReview(t *testing.T) {
+	p, _ := setup(t)
+	dbErr := errors.New("database is locked")
+	p.reviews = failingReviews{dbErr}
+	_, err := p.List(context.Background(), owner, reviewWS)
+	if !errors.Is(err, dbErr) || errors.Is(err, errNoReview) {
+		t.Fatalf("expected the lookup's own error, got %v", err)
+	}
+}
+
+// slowWorkspaces is a workspace whose agent never answers in time.
+type slowWorkspaces struct {
+	*fakeWorkspaces
+	lists int
+}
+
+func (s *slowWorkspaces) ListFiles(context.Context, int64, int64, string, agent.ListFilesOptions) (*agent.FileList, error) {
+	s.lists++
+	return nil, context.DeadlineExceeded
+}
+
+func TestRunWaitsOnceForSkillsItCannotRead(t *testing.T) {
+	_, ws := setup(t)
+	slow := &slowWorkspaces{fakeWorkspaces: ws}
+	p := NewProvider(slow, &fakeProjects{}, fakeReviews{})
+	ctx := context.Background()
+	if prompt := p.Prompt(ctx, owner, projectWS); prompt != "" {
+		t.Fatalf("expected no skills, got %q", prompt)
+	}
+	if tools := p.Tools(ctx, owner, projectWS); tools != nil {
+		t.Fatalf("expected no tools, got %+v", tools)
+	}
+	if slow.lists != 1 {
+		t.Fatalf("expected the failure reused for the run's second call, listed %d times", slow.lists)
+	}
+}
+
+func TestCut(t *testing.T) {
+	tests := []struct {
+		name string
+		s    string
+		n    int
+		want string
+	}{
+		{"short", "abc", 5, "abc"},
+		{"ascii", "abcdef", 4, "abcd"},
+		{"before a split character", "ab€cd", 4, "ab"},
+		{"after a whole character", "ab€cd", 5, "ab€"},
+		{"invalid byte early", "a\xffbcdef", 5, "a\xffbcd"},
+		{"no character start", "a\x80\x80\x80\x80\x80\x80", 6, "a\x80\x80\x80\x80\x80"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cut(tt.s, tt.n); got != tt.want {
+				t.Fatalf("cut(%q, %d) = %q, want %q", tt.s, tt.n, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncateKeepsTextAfterAnInvalidByte(t *testing.T) {
+	s := "a\xff" + strings.Repeat("b", maxContentBytes)
+	got, truncated := truncate(s)
+	if !truncated || len(got) != maxContentBytes {
+		t.Fatalf("expected %d bytes, got %d", maxContentBytes, len(got))
 	}
 }
 

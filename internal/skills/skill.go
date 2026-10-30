@@ -200,9 +200,20 @@ func clip(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	s = s[:n-len("…")]
-	for !utf8.ValidString(s) {
-		s = s[:len(s)-1]
+	return cut(s, n-len("…")) + "…"
+}
+
+// cut cuts s to at most n bytes, before the character the cut would split.
+// It looks back no further than one character, so bytes that are not UTF-8
+// cost nothing and are cut like any other.
+func cut(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return s + "…"
+	for end := n; end > n-utf8.UTFMax && end > 0; end-- {
+		if utf8.RuneStart(s[end]) {
+			return s[:end]
+		}
+	}
+	return s[:n]
 }
