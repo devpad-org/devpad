@@ -3,10 +3,8 @@ package ai
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/devpad-org/devpad/internal/ai/app"
 	"github.com/devpad-org/devpad/internal/ai/approval"
@@ -42,11 +40,13 @@ type Module struct {
 	}
 	toolCatalog  *aitools.Catalog
 	toolExecutor *aitools.WorkspaceExecutor
-	instructions *instructionSource
 }
 
 // NewModule assembles the AI subpackages behind the root composition facade.
-func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
+// Runs read their AGENTS.md from what instructions returns, given the
+// workspace's own AGENTS.md to fall back on; a review sandbox's own is the
+// change under review, so instructions decides where its runs read from.
+func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps, instructions func(own app.WorkspaceInstructionSource) app.WorkspaceInstructionSource) *Module {
 	providerConfigs := storage.NewProviderConfigRepository(db)
 	conversations := storage.NewConversationRepository(db)
 	attachmentService := app.NewAttachmentService(storage.NewAttachmentRepository(db))
@@ -70,8 +70,7 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	approvalBroker := approval.NewMemoryBroker()
 	questionBroker := question.NewMemoryBroker()
 	toolCatalog := aitools.NewCatalog()
-	instructions := &instructionSource{own: app.NewAGENTSInstructionSource(workspaceOps)}
-	chatService := app.NewChatService(catalogService, toolCatalog, toolExecutor, approvalBroker, questionBroker, instructions, attachmentService, usageService)
+	chatService := app.NewChatService(catalogService, toolCatalog, toolExecutor, approvalBroker, questionBroker, instructions(app.NewAGENTSInstructionSource(workspaceOps)), attachmentService, usageService)
 	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService))
 	agentRuns := storage.NewAgentRunRepository(db)
 	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService).WithImageLoader(attachmentService)
@@ -93,7 +92,6 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 		runListeners:        agentRunService,
 		toolCatalog:         toolCatalog,
 		toolExecutor:        toolExecutor,
-		instructions:        instructions,
 	}
 }
 
@@ -102,38 +100,6 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 func (m *Module) AddToolProvider(p aitools.ToolProvider) {
 	m.toolCatalog.AddProvider(p)
 	m.toolExecutor.AddProvider(p)
-}
-
-// SetWorkspaceInstructions sets where runs read their AGENTS.md from:
-// wrap's source, which is given the workspace's own AGENTS.md to fall back
-// on. Runs fail until it is called, rather than read the AGENTS.md of a
-// review sandbox, which is the change under review.
-func (m *Module) SetWorkspaceInstructions(wrap func(own app.WorkspaceInstructionSource) app.WorkspaceInstructionSource) {
-	m.instructions.mu.Lock()
-	defer m.instructions.mu.Unlock()
-	m.instructions.source = wrap(m.instructions.own)
-}
-
-// errInstructionsNotSet fails a run started before SetWorkspaceInstructions.
-var errInstructionsNotSet = errors.New("workspace instructions are not set up yet")
-
-// instructionSource is the chat service's AGENTS.md source, set by a
-// package composed after the module.
-type instructionSource struct {
-	// own reads a workspace's own AGENTS.md.
-	own    app.WorkspaceInstructionSource
-	mu     sync.RWMutex
-	source app.WorkspaceInstructionSource
-}
-
-func (s *instructionSource) Instructions(ctx context.Context, userID, workspaceID int64) (string, error) {
-	s.mu.RLock()
-	source := s.source
-	s.mu.RUnlock()
-	if source == nil {
-		return "", errInstructionsNotSet
-	}
-	return source.Instructions(ctx, userID, workspaceID)
 }
 
 // OnAgentRunFinished registers fn to be called with a run's final state each

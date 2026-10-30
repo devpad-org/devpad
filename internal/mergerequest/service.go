@@ -61,9 +61,6 @@ type Service interface {
 	// which Prompt tells them about.
 	aitools.ToolProvider
 	aitools.PromptProvider
-	// ReviewTarget returns the project and target branch of the merge
-	// request whose pending review a workspace is the sandbox of.
-	ReviewTarget(ctx context.Context, userID, workspaceID int64) (projectID int64, branch string, err error)
 	// RunFinished is the agent runner's completion hook.
 	RunFinished(run domain.AgentRun)
 	// Reconcile settles agent reviews interrupted by a server restart.

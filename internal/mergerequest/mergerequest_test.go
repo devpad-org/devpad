@@ -735,11 +735,15 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	if _, handled := e.tool(e.owner, rv.WorkspaceID, "read_file", `{}`); handled {
 		t.Fatal("the provider must not claim other tools")
 	}
-	if projectID, branch, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID); err != nil || projectID != e.pid() || branch != "main" {
+	targets := NewReviewTargets(e.svc.repo)
+	if projectID, branch, err := targets.ReviewTarget(ctx, e.owner, rv.WorkspaceID); err != nil || projectID != e.pid() || branch != "main" {
 		t.Fatalf("expected the review's target branch, got %d %q %v", projectID, branch, err)
 	}
-	if _, _, err := e.svc.ReviewTarget(ctx, e.stranger, rv.WorkspaceID); err == nil {
-		t.Fatal("another user must not learn the review's target")
+	if _, _, err := targets.ReviewTarget(ctx, e.owner, rv.WorkspaceID+1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a workspace with no pending review has no target, got %v", err)
+	}
+	if _, _, err := targets.ReviewTarget(ctx, e.stranger, rv.WorkspaceID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another user must not learn the review's target, got %v", err)
 	}
 
 	result, _ := e.tool(e.owner, rv.WorkspaceID, commentTool, `{"path":"main.go","line":3,"body":"x","blocking":false}`)
@@ -776,8 +780,8 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID); got != nil {
 		t.Fatal("the review tools should go away once the review is submitted")
 	}
-	if _, _, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID); err == nil {
-		t.Fatal("a submitted review has no target to read skills from")
+	if _, _, err := targets.ReviewTarget(ctx, e.owner, rv.WorkspaceID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a submitted review has no target to read skills from, got %v", err)
 	}
 
 	reqs := e.tasks.changeRequests()
