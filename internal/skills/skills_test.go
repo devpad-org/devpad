@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/agent"
@@ -47,6 +48,7 @@ type fakeWorkspaces struct {
 	userID int64
 	kinds  map[int64]workspace.Kind
 	files  map[int64]tree
+	mu     sync.Mutex
 	reads  []string
 }
 
@@ -78,7 +80,9 @@ func (f *fakeWorkspaces) ListFiles(_ context.Context, _, workspaceID int64, dir 
 }
 
 func (f *fakeWorkspaces) ReadFile(_ context.Context, _, workspaceID int64, p string) ([]byte, error) {
+	f.mu.Lock()
 	f.reads = append(f.reads, p)
+	f.mu.Unlock()
 	content, ok := f.files[workspaceID][p]
 	if !ok {
 		return nil, agentNotFound
@@ -519,29 +523,6 @@ func TestRunWaitsOnceForSkillsItCannotRead(t *testing.T) {
 	}
 }
 
-func TestCut(t *testing.T) {
-	tests := []struct {
-		name string
-		s    string
-		n    int
-		want string
-	}{
-		{"short", "abc", 5, "abc"},
-		{"ascii", "abcdef", 4, "abcd"},
-		{"before a split character", "ab€cd", 4, "ab"},
-		{"after a whole character", "ab€cd", 5, "ab€"},
-		{"invalid byte early", "a\xffbcdef", 5, "a\xffbcd"},
-		{"no character start", "a\x80\x80\x80\x80\x80\x80", 6, "a\x80\x80\x80\x80\x80"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := cut(tt.s, tt.n); got != tt.want {
-				t.Fatalf("cut(%q, %d) = %q, want %q", tt.s, tt.n, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestTruncateKeepsTextAfterAnInvalidByte(t *testing.T) {
 	s := "a\xff" + strings.Repeat("b", maxContentBytes)
 	got, truncated := truncate(s)
@@ -606,8 +587,10 @@ func TestHandleList(t *testing.T) {
 	if strings.Contains(rec.Body.String(), ".devpad") {
 		t.Fatalf("the directory is not part of the response: %s", rec.Body)
 	}
-	if rec := get(owner, "3"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"skills":[]`) {
-		t.Fatalf("expected an empty list: %d %s", rec.Code, rec.Body)
+	for _, id := range []string{"3", "4"} {
+		if rec := get(owner, id); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"skills":[]`) {
+			t.Fatalf("%s: expected an empty list: %d %s", id, rec.Code, rec.Body)
+		}
 	}
 	for id, want := range map[string]int{"99": http.StatusNotFound, "x": http.StatusBadRequest} {
 		if rec := get(owner, id); rec.Code != want {

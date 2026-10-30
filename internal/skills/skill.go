@@ -16,9 +16,10 @@ package skills
 import (
 	"regexp"
 	"strings"
-	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
 // Roots are the directories skills are found in, relative to the repo root.
@@ -200,20 +201,5 @@ func clip(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return cut(s, n-len("…")) + "…"
-}
-
-// cut cuts s to at most n bytes, before the character the cut would split.
-// It looks back no further than one character, so bytes that are not UTF-8
-// cost nothing and are cut like any other.
-func cut(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for end := n; end > n-utf8.UTFMax && end > 0; end-- {
-		if utf8.RuneStart(s[end]) {
-			return s[:end]
-		}
-	}
-	return s[:n]
+	return domain.CutText(s, n-len("…")) + "…"
 }

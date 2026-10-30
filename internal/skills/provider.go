@@ -112,8 +112,12 @@ func NewProvider(workspaces WorkspaceFiles, projects Projects, reviews Reviews) 
 }
 
 // List returns the skills a workspace offers, for the IDE's slash commands.
+// A review sandbox whose review is no longer pending offers none.
 func (p *Provider) List(ctx context.Context, userID, workspaceID int64) ([]Skill, error) {
 	c, err := p.catalog(ctx, userID, workspaceID)
+	if errors.Is(err, errNoReview) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +360,7 @@ func truncate(s string) (string, bool) {
 	if len(s) <= maxContentBytes {
 		return s, false
 	}
-	return cut(s, maxContentBytes), true
+	return domain.CutText(s, maxContentBytes), true
 }
 
 // toolError reports a failed call. The "Error:" prefix is what the IDE uses

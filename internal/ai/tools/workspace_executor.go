@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/ai/attachment"
@@ -377,16 +376,7 @@ func truncateToolText(content string, maxBytes int, noticeFormat string) string 
 		return content
 	}
 
-	// Cut before the character the limit splits, looking back no further
-	// than one character.
-	end := maxBytes
-	for i := end; i > end-utf8.UTFMax && i > 0; i-- {
-		if utf8.RuneStart(content[i]) {
-			end = i
-			break
-		}
-	}
-	return content[:end] + fmt.Sprintf(noticeFormat, maxBytes)
+	return domain.CutText(content, maxBytes) + fmt.Sprintf(noticeFormat, maxBytes)
 }
 
 func cloneThinking(thinking *domain.ThinkingConfig) *domain.ThinkingConfig {

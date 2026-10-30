@@ -3,10 +3,12 @@ package skills
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/project"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
 
@@ -39,8 +41,12 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, workspace.ErrNotRunning):
 		writeError(w, http.StatusConflict, "workspace is not running")
 		return
+	case errors.Is(err, project.ErrNotReady):
+		writeError(w, http.StatusConflict, "the project's repo is not ready")
+		return
 	case err != nil:
-		writeError(w, http.StatusBadGateway, err.Error())
+		log.Printf("skills for workspace %d: %v", workspaceID, err)
+		writeError(w, http.StatusBadGateway, "could not read the workspace's skills")
 		return
 	}
 	if found == nil {

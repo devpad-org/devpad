@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"path"
 	"sort"
+	"sync"
 
 	"github.com/devpad-org/devpad/internal/agent"
 )
@@ -20,6 +21,10 @@ const (
 	// maxDiscoveryBytes bounds the SKILL.md bytes read to build a catalog;
 	// skills past it are left out.
 	maxDiscoveryBytes = 2 << 20
+	// readBatch is how many SKILL.md files are read at once. Each read of a
+	// branch goes through the repo container, so reading them one by one
+	// could take most of the time a run waits for its skills.
+	readBatch = 8
 )
 
 // errNotFound reports a file or directory a source does not have.
@@ -60,31 +65,53 @@ func discover(ctx context.Context, src source) ([]Skill, error) {
 			return nil, err
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
+		var names []string
 		for _, e := range entries {
-			if e.file || !namePattern.MatchString(e.name) || seen[e.name] {
-				continue
+			if !e.file && namePattern.MatchString(e.name) && !seen[e.name] {
+				names = append(names, e.name)
 			}
-			if len(found) == maxSkills || budget <= 0 {
-				break
-			}
-			dir := root + "/" + e.name
-			// One with no SKILL.md, or one that cannot be read, is no skill.
-			data, err := src.read(ctx, dir+"/"+skillFile)
+		}
+		for start := 0; start < len(names) && len(found) < maxSkills && budget > 0; start += readBatch {
+			batch := names[start:min(start+readBatch, len(names))]
+			files, err := readSkillFiles(ctx, src, root, batch)
 			if err != nil {
-				if ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
-				continue
+				return nil, err
 			}
-			budget -= len(data)
-			if s, ok := parseSkill(e.name, dir, data); ok {
-				seen[e.name] = true
-				found = append(found, s)
+			for i, name := range batch {
+				if len(found) == maxSkills || budget <= 0 {
+					break
+				}
+				// One with no SKILL.md, or one that cannot be read, is no skill.
+				if files[i] == nil {
+					continue
+				}
+				budget -= len(files[i])
+				if s, ok := parseSkill(name, root+"/"+name, files[i]); ok {
+					seen[name] = true
+					found = append(found, s)
+				}
 			}
 		}
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].Name < found[j].Name })
 	return found, nil
+}
+
+// readSkillFiles reads the SKILL.md of each named directory under root at
+// once, leaving nil for each that cannot be read.
+func readSkillFiles(ctx context.Context, src source, root string, names []string) ([][]byte, error) {
+	files := make([][]byte, len(names))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Go(func() {
+			data, err := src.read(ctx, root+"/"+name+"/"+skillFile)
+			if err == nil {
+				files[i] = data
+			}
+		})
+	}
+	wg.Wait()
+	return files, ctx.Err()
 }
 
 // Workspaces reads files in a workspace.
