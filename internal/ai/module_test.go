@@ -5,11 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/ai/app"
 	"github.com/devpad-org/devpad/internal/ai/domain"
-	aitools "github.com/devpad-org/devpad/internal/ai/tools"
-	appdb "github.com/devpad-org/devpad/internal/database"
 )
 
 type fakeAgentRunService struct {
@@ -103,56 +100,5 @@ func TestChildAgentRunStarterWaitReturnsTerminalSummary(t *testing.T) {
 	}
 	if result.RunID != 202 || result.Status != string(domain.AgentRunCompleted) || result.Summary != "Backend summary" {
 		t.Fatalf("unexpected child result: %+v", result)
-	}
-}
-
-// workspaceFiles fails listing a workspace's files, which reading its own
-// AGENTS.md starts with.
-type workspaceFiles struct {
-	aitools.WorkspaceOps
-	err error
-}
-
-func (w workspaceFiles) ListFiles(context.Context, int64, int64, string, agent.ListFilesOptions) (*agent.FileList, error) {
-	return nil, w.err
-}
-
-type failingInstructions struct{ err error }
-
-func (f failingInstructions) Instructions(context.Context, int64, int64) (string, error) {
-	return "", f.err
-}
-
-func TestNewModuleRunsReadAGENTSThroughTheWrap(t *testing.T) {
-	ctx := context.Background()
-	db, err := appdb.Open(":memory:")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := db.Migrate(); err != nil {
-		t.Fatalf("migrate db: %v", err)
-	}
-
-	ownErr := errors.New("listing the workspace's files")
-	wrapErr := errors.New("reading through the wrap")
-	var own app.WorkspaceInstructionSource
-	m := NewModule(db.Conn(), workspaceFiles{err: ownErr}, func(o app.WorkspaceInstructionSource) app.WorkspaceInstructionSource {
-		own = o
-		return failingInstructions{err: wrapErr}
-	})
-	t.Cleanup(func() { m.Shutdown(ctx) })
-
-	// The wrap is given the workspace's own AGENTS.md to fall back on.
-	if own == nil {
-		t.Fatal("expected the wrap to be given the workspace's own AGENTS.md")
-	}
-	if _, err := own.Instructions(ctx, 1, 2); !errors.Is(err, ownErr) {
-		t.Fatalf("expected the fallback to read the workspace's files, got %v", err)
-	}
-	// Runs read what the wrap returns, never the workspace's own directly:
-	// in a review sandbox that is the change under review.
-	if _, err := m.ChatService.StreamAgent(ctx, app.AgentChatRequest{UserID: 1, WorkspaceID: 2}); !errors.Is(err, wrapErr) {
-		t.Fatalf("expected runs to read AGENTS.md through the wrap, got %v", err)
 	}
 }

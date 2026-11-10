@@ -1,16 +1,15 @@
-// Package skills gives agents the skills a project keeps: directories of
-// instructions in the Agent Skills format (https://agentskills.io), each
-// with a SKILL.md, under .devpad/skills/ or .claude/skills/ at the root of
-// the repo.
+// Package skills gives agents the instructions a project keeps in its repo:
+// its AGENTS.md, and its skills, directories of instructions in the Agent
+// Skills format (https://agentskills.io), each with a SKILL.md, under
+// .devpad/skills/ or .claude/skills/ at the root of the repo.
 //
-// A run sees each skill's name and description in its system prompt and
-// loads the skills a task calls for with the load_skill tool. The tool runs
-// on the host and reads from where the catalog came from: the run's
-// workspace, except in a review sandbox, whose skills come from the merge
-// request's target branch in the canonical repo, never from the change under
-// review. The same goes for a review sandbox's AGENTS.md. A skill only adds
-// instructions: allowed-tools, and every other field that would change what
-// an agent may do, is ignored.
+// A run gets the AGENTS.md and each skill's name and description in its system
+// prompt, and loads the skills a task calls for with the load_skill tool. The
+// tool runs on the host and reads from where the catalog came from: the run's
+// workspace, except in a review sandbox, whose AGENTS.md and skills come from
+// the merge request's target branch in the canonical repo, never from the
+// change under review. A skill only adds instructions: allowed-tools, and
+// every other field that would change what an agent may do, is ignored.
 package skills
 
 import (

@@ -99,7 +99,7 @@ var reviewTools = []domain.ToolDefinition{
 }
 
 func (s *service) Tools(ctx context.Context, userID, workspaceID int64) []domain.ToolDefinition {
-	if _, _, err := pendingReview(ctx, s.repo, userID, workspaceID); err == nil {
+	if _, _, err := s.pendingReview(ctx, userID, workspaceID); err == nil {
 		return reviewTools
 	}
 	if _, err := s.taskMergeRequest(ctx, userID, workspaceID); err == nil {
@@ -150,38 +150,29 @@ func (s *service) taskMergeRequest(ctx context.Context, userID, workspaceID int6
 	return mr, nil
 }
 
-// ReviewTargets finds the merge request a review sandbox's pending review
-// is for. It needs only the repository, so it can be built before the AI
-// module the merge request service depends on.
-type ReviewTargets struct {
-	repo Repository
-}
-
-// NewReviewTargets creates ReviewTargets reading repo.
-func NewReviewTargets(repo Repository) *ReviewTargets {
-	return &ReviewTargets{repo: repo}
-}
-
 // ReviewTarget returns the project and target branch of the merge request
-// whose pending review a workspace is the sandbox of, or ErrNotFound.
-func (t *ReviewTargets) ReviewTarget(ctx context.Context, userID, workspaceID int64) (int64, string, error) {
-	_, mr, err := pendingReview(ctx, t.repo, userID, workspaceID)
-	if err != nil {
-		return 0, "", err
+// whose pending review a workspace is the sandbox of.
+func (s *service) ReviewTarget(ctx context.Context, userID, workspaceID int64) (int64, string, bool, error) {
+	_, mr, err := s.pendingReview(ctx, userID, workspaceID)
+	if errors.Is(err, ErrNotFound) {
+		return 0, "", false, nil
 	}
-	return mr.ProjectID, mr.TargetBranch, nil
+	if err != nil {
+		return 0, "", false, err
+	}
+	return mr.ProjectID, mr.TargetBranch, true, nil
 }
 
 // pendingReview finds the review a workspace's agent is writing.
-func pendingReview(ctx context.Context, repo Repository, userID, workspaceID int64) (*Review, *MergeRequest, error) {
-	rv, err := repo.GetPendingReviewByWorkspace(ctx, workspaceID)
+func (s *service) pendingReview(ctx context.Context, userID, workspaceID int64) (*Review, *MergeRequest, error) {
+	rv, err := s.repo.GetPendingReviewByWorkspace(ctx, workspaceID)
 	if err != nil {
 		return nil, nil, err
 	}
 	if rv == nil {
 		return nil, nil, ErrNotFound
 	}
-	mr, err := repo.GetByID(ctx, rv.MergeRequestID)
+	mr, err := s.repo.GetByID(ctx, rv.MergeRequestID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -200,7 +191,7 @@ func (s *service) ExecuteTool(ctx context.Context, req aitools.ExecutionRequest)
 	case mrCommentTool:
 		// Review and task agents share the tool; a review sandbox's comments
 		// are its review's.
-		if _, _, err := pendingReview(ctx, s.repo, req.UserID, req.WorkspaceID); err == nil {
+		if _, _, err := s.pendingReview(ctx, req.UserID, req.WorkspaceID); err == nil {
 			return s.executeReviewTool(ctx, req), true
 		}
 		return s.commentAsTaskAgent(ctx, req), true
@@ -209,13 +200,13 @@ func (s *service) ExecuteTool(ctx context.Context, req aitools.ExecutionRequest)
 }
 
 func (s *service) executeReviewTool(ctx context.Context, req aitools.ExecutionRequest) domain.ToolResultPart {
-	found, _, err := pendingReview(ctx, s.repo, req.UserID, req.WorkspaceID)
+	found, _, err := s.pendingReview(ctx, req.UserID, req.WorkspaceID)
 	if err != nil {
 		return toolError(req.ToolName, "there is no pending review in this workspace")
 	}
 	unlock := s.lock("review", found.ID)
 	defer unlock()
-	rv, mr, err := pendingReview(ctx, s.repo, req.UserID, req.WorkspaceID)
+	rv, mr, err := s.pendingReview(ctx, req.UserID, req.WorkspaceID)
 	if err != nil || rv.ID != found.ID {
 		return toolError(req.ToolName, "the review has already been submitted")
 	}
@@ -236,7 +227,7 @@ func (s *service) executeReviewTool(ctx context.Context, req aitools.ExecutionRe
 // toolMergeRequest is the merge request a review or task agent's tools act
 // on, from the run's workspace.
 func (s *service) toolMergeRequest(ctx context.Context, req aitools.ExecutionRequest) (*MergeRequest, error) {
-	if _, mr, err := pendingReview(ctx, s.repo, req.UserID, req.WorkspaceID); err == nil {
+	if _, mr, err := s.pendingReview(ctx, req.UserID, req.WorkspaceID); err == nil {
 		return mr, nil
 	}
 	return s.taskMergeRequest(ctx, req.UserID, req.WorkspaceID)

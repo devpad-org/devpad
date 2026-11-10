@@ -123,16 +123,8 @@ func New(cfg Config) (*Server, error) {
 	projectService := project.NewService(projectRepo, containerManager, workspaceService, userRepo, cipher, settingsService)
 	projectHandler := project.NewHandler(projectService)
 
-	// Skills the project keeps, which review agents read from the branch the
-	// change would merge into, as they do AGENTS.md. The review's target comes
-	// from the merge request repository alone, so runs read AGENTS.md through
-	// the provider from the moment the AI module exists.
-	mrRepo := mergerequest.NewRepository(db.Conn())
-	skillsProvider := skills.NewProvider(workspaceService, projectService, mergerequest.NewReviewTargets(mrRepo))
-	skillsHandler := skills.NewHandler(skillsProvider)
-
 	// AI layer
-	aiModule := ai.NewModule(db.Conn(), workspaceService, skillsProvider.Instructions)
+	aiModule := ai.NewModule(db.Conn(), workspaceService)
 
 	// Task layer (agents implementing tasks in project sandboxes)
 	taskService := task.NewService(task.NewRepository(db.Conn()), projectService, workspaceService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults, aiModule.BudgetDefaults)
@@ -140,12 +132,20 @@ func New(cfg Config) (*Server, error) {
 	taskHandler := task.NewHandler(taskService)
 
 	// Merge request layer (reviews by users and review agents, and merging)
-	mrService := mergerequest.NewService(mrRepo, projectService, workspaceService, taskService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults, aiModule.BudgetDefaults)
+	mrService := mergerequest.NewService(mergerequest.NewRepository(db.Conn()), projectService, workspaceService, taskService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults, aiModule.BudgetDefaults)
 	taskService.SetReviewHook(mrService)
 	projectService.SetPublishHook(mrService)
 	projectService.AddBranchGuard(mrService)
 	projectService.AddBranchGuard(taskService)
 	aiModule.OnAgentRunFinished(mrService.RunFinished)
+
+	// AGENTS.md and the project's skills, and load_skill. Review agents read
+	// them from the branch the change would merge into. This provider is added
+	// first because AGENTS.md leads what providers add to the system prompt.
+	skillsProvider := skills.NewProvider(workspaceService, projectService, mrService)
+	skillsHandler := skills.NewHandler(skillsProvider)
+	aiModule.AddToolProvider(skillsProvider)
+
 	aiModule.AddToolProvider(mrService)
 	mrHandler := mergerequest.NewHandler(mrService)
 
@@ -163,9 +163,6 @@ func New(cfg Config) (*Server, error) {
 	// The assistant in a project's workspace sees the board and hands work to
 	// task agents.
 	aiModule.AddToolProvider(projecttools.NewProvider(workspaceService, projectService, taskService, mrService, aiModule.AgentDefaults))
-
-	// load_skill, and the project's skills in the system prompt.
-	aiModule.AddToolProvider(skillsProvider)
 
 	if err := projectService.Reconcile(context.Background()); err != nil {
 		log.Printf("finishing interrupted workspace conversions: %v", err)

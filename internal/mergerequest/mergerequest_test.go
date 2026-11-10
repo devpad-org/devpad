@@ -735,15 +735,14 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	if _, handled := e.tool(e.owner, rv.WorkspaceID, "read_file", `{}`); handled {
 		t.Fatal("the provider must not claim other tools")
 	}
-	targets := NewReviewTargets(e.svc.repo)
-	if projectID, branch, err := targets.ReviewTarget(ctx, e.owner, rv.WorkspaceID); err != nil || projectID != e.pid() || branch != "main" {
-		t.Fatalf("expected the review's target branch, got %d %q %v", projectID, branch, err)
+	if projectID, branch, ok, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID); err != nil || !ok || projectID != e.pid() || branch != "main" {
+		t.Fatalf("expected the review's target branch, got %d %q %v %v", projectID, branch, ok, err)
 	}
-	if _, _, err := targets.ReviewTarget(ctx, e.owner, rv.WorkspaceID+1); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("a workspace with no pending review has no target, got %v", err)
+	if _, _, ok, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID+1); err != nil || ok {
+		t.Fatalf("a workspace with no pending review has no target, got %v %v", ok, err)
 	}
-	if _, _, err := targets.ReviewTarget(ctx, e.stranger, rv.WorkspaceID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("another user must not learn the review's target, got %v", err)
+	if _, _, ok, err := e.svc.ReviewTarget(ctx, e.stranger, rv.WorkspaceID); err != nil || ok {
+		t.Fatalf("another user must not learn the review's target, got %v %v", ok, err)
 	}
 
 	result, _ := e.tool(e.owner, rv.WorkspaceID, commentTool, `{"path":"main.go","line":3,"body":"x","blocking":false}`)
@@ -780,8 +779,8 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID); got != nil {
 		t.Fatal("the review tools should go away once the review is submitted")
 	}
-	if _, _, err := targets.ReviewTarget(ctx, e.owner, rv.WorkspaceID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("a submitted review has no target to read skills from, got %v", err)
+	if _, _, ok, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID); err != nil || ok {
+		t.Fatalf("a submitted review has no target to read skills from, got %v %v", ok, err)
 	}
 
 	reqs := e.tasks.changeRequests()

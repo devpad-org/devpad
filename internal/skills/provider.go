@@ -14,7 +14,6 @@ import (
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
-	"github.com/devpad-org/devpad/internal/mergerequest"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
 
@@ -34,8 +33,8 @@ const (
 // escapeXML keeps a description from closing the tags it is listed in.
 var escapeXML = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
-// discoverTimeout bounds finding a workspace's skills, so a slow workspace
-// cannot hold up the start of a run.
+// discoverTimeout bounds reading a workspace's AGENTS.md and finding its
+// skills, so a slow workspace cannot hold up the start of a run.
 var discoverTimeout = 5 * time.Second
 
 // cacheTTL is how long a catalog, or the failure to read one, is reused. A
@@ -59,13 +58,13 @@ type WorkspaceFiles interface {
 	Get(ctx context.Context, userID, workspaceID int64) (*workspace.Workspace, error)
 }
 
-// Reviews finds the target branch of the review a review sandbox is for,
-// failing with mergerequest.ErrNotFound when it has no pending review.
+// Reviews finds the target branch of the review a review sandbox is for; ok
+// is false when it has no pending review.
 type Reviews interface {
-	ReviewTarget(ctx context.Context, userID, workspaceID int64) (projectID int64, branch string, err error)
+	ReviewTarget(ctx context.Context, userID, workspaceID int64) (projectID int64, branch string, ok bool, err error)
 }
 
-// Provider offers a workspace's skills to the runs in it.
+// Provider offers a workspace's AGENTS.md and skills to the runs in it.
 type Provider struct {
 	workspaces WorkspaceFiles
 	projects   Projects
@@ -88,12 +87,15 @@ type cached struct {
 	at      time.Time
 }
 
-// catalog is the skills a workspace offers and where they come from.
+// catalog is the AGENTS.md and skills a workspace offers and where they come
+// from.
 type catalog struct {
 	src    source
 	skills []Skill
-	// branch is the target branch a review sandbox's skills come from,
-	// empty for skills from the workspace itself.
+	// agents is the source's AGENTS.md, ready for the prompt, or empty.
+	agents string
+	// branch is the target branch a review sandbox reads from, empty for a
+	// workspace reading its own files.
 	branch string
 }
 
@@ -128,9 +130,9 @@ func (p *Provider) List(ctx context.Context, userID, workspaceID int64) ([]Skill
 // has no target branch to read from.
 var errNoReview = errors.New("no pending review in this review sandbox")
 
-// source picks where a workspace's skills come from. A review sandbox is a
-// checkout of the change under review, which must not get to tell its
-// reviewer how to review it: its skills are those of the branch the change
+// source picks where a workspace's AGENTS.md and skills come from. A review
+// sandbox is a checkout of the change under review, which must not get to
+// tell its reviewer how to review it: they are those of the branch the change
 // would merge into, and it has none once its review is no longer pending.
 func (p *Provider) source(ctx context.Context, userID, workspaceID int64) (source, string, error) {
 	ws, err := p.workspaces.Get(ctx, userID, workspaceID)
@@ -138,18 +140,22 @@ func (p *Provider) source(ctx context.Context, userID, workspaceID int64) (sourc
 		return nil, "", err
 	}
 	if ws.Kind == workspace.KindReview {
-		projectID, branch, err := p.reviews.ReviewTarget(ctx, userID, workspaceID)
-		if errors.Is(err, mergerequest.ErrNotFound) {
-			return nil, "", errNoReview
-		}
+		projectID, branch, ok, err := p.reviews.ReviewTarget(ctx, userID, workspaceID)
 		if err != nil {
 			return nil, "", fmt.Errorf("finding the review: %w", err)
+		}
+		if !ok {
+			return nil, "", errNoReview
 		}
 		return branchSource{projects: p.projects, userID: userID, projectID: projectID, branch: branch}, branch, nil
 	}
 	return workspaceSource{files: p.workspaces, userID: userID, workspaceID: workspaceID}, "", nil
 }
 
+// catalog returns the workspace's catalog, reusing one read in the last
+// cacheTTL. When its skills could not be read it returns the error along with
+// a catalog that still holds its AGENTS.md; the catalog is nil only when no
+// source could be found.
 func (p *Provider) catalog(ctx context.Context, userID, workspaceID int64) (*catalog, error) {
 	key := cacheKey{userID, workspaceID}
 	p.mu.Lock()
@@ -184,44 +190,48 @@ func (p *Provider) readCatalog(ctx context.Context, userID, workspaceID int64) (
 	if err != nil {
 		return nil, err
 	}
-	found, err := discover(ctx, src)
-	if err != nil {
-		return nil, fmt.Errorf("reading skills: %w", err)
+	c := &catalog{src: src, branch: branch, agents: readAGENTS(ctx, src, workspaceID)}
+	if c.skills, err = discover(ctx, src); err != nil {
+		return c, fmt.Errorf("reading skills: %w", err)
 	}
-	return &catalog{src: src, skills: found, branch: branch}, nil
+	return c, nil
 }
 
-// runCatalog is the catalog for a run, or nil when the workspace offers no
-// skills. Skills are an addition to a run, so failing to read them leaves
-// them out rather than failing the run.
+// runCatalog is the catalog for a run, or nil when no source could be found.
+// AGENTS.md and skills are an addition to a run, so failing to read them
+// leaves them out rather than failing the run.
 func (p *Provider) runCatalog(ctx context.Context, userID, workspaceID int64) *catalog {
 	c, err := p.catalog(ctx, userID, workspaceID)
-	if err != nil {
-		if !errors.Is(err, workspace.ErrNotFound) && !errors.Is(err, workspace.ErrForbidden) && !errors.Is(err, errNoReview) {
-			log.Printf("skills for workspace %d: %v", workspaceID, err)
-		}
-		return nil
-	}
-	if len(c.skills) == 0 {
-		return nil
+	if err != nil && !errors.Is(err, workspace.ErrNotFound) && !errors.Is(err, workspace.ErrForbidden) && !errors.Is(err, errNoReview) {
+		log.Printf("skills for workspace %d: %v", workspaceID, err)
 	}
 	return c
 }
 
 func (p *Provider) Tools(ctx context.Context, userID, workspaceID int64) []domain.ToolDefinition {
-	if p.runCatalog(ctx, userID, workspaceID) == nil {
+	if c := p.runCatalog(ctx, userID, workspaceID); c == nil || len(c.skills) == 0 {
 		return nil
 	}
 	return []domain.ToolDefinition{loadSkillDefinition}
 }
 
-// Prompt lists the skills the model may load. Skills only the user starts
-// are left out, and so is the whole section when there are none.
+// Prompt gives a run the workspace's AGENTS.md and lists the skills the model
+// may load.
 func (p *Provider) Prompt(ctx context.Context, userID, workspaceID int64) string {
 	c := p.runCatalog(ctx, userID, workspaceID)
 	if c == nil {
 		return ""
 	}
+	agents, skills := c.agentsPrompt(), c.skillsPrompt()
+	if agents == "" || skills == "" {
+		return agents + skills
+	}
+	return agents + "\n\n" + skills
+}
+
+// skillsPrompt lists the skills the model may load. Skills only the user
+// starts are left out, and so is the whole section when there are none.
+func (c *catalog) skillsPrompt() string {
 	var listed []Skill
 	for _, s := range c.skills {
 		if s.ModelInvocable {

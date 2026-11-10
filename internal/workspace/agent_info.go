@@ -25,6 +25,17 @@ func (s *service) containerIP(ctx context.Context, ws *Workspace) (string, error
 	return ip, nil
 }
 
+func (s *service) CheckRunning(ctx context.Context, userID, workspaceID int64) error {
+	ws, err := s.Get(ctx, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	if ws.ContainerID == "" || ws.Status != StatusRunning {
+		return ErrNotRunning
+	}
+	return nil
+}
+
 func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*agent.Client, error) {
 	ws, err := s.Get(ctx, userID, workspaceID)
 	if err != nil {
