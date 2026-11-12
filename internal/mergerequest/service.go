@@ -56,11 +56,10 @@ type Service interface {
 	// GuardDeleteBranch refuses deleting a branch an open merge request
 	// comes from.
 	GuardDeleteBranch(ctx context.Context, userID, projectID int64, branch string, del func() error) error
-	// Tools and ExecuteTool give review agents their review tools, and task
-	// agents the tools to read and answer their merge request's comments,
-	// which Prompt tells them about.
+	// Contribute and ExecuteTool give review agents their review tools, and
+	// task agents the tools to read and answer their merge request's
+	// comments, which their prompt tells them about.
 	aitools.ToolProvider
-	aitools.PromptProvider
 	// ReviewTarget returns the project and target branch of the merge request
 	// whose pending review a workspace is the sandbox of; ok is false when it
 	// has none.

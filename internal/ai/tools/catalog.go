@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 
@@ -13,7 +14,12 @@ import (
 type Catalog struct {
 	mu        sync.RWMutex
 	providers []ToolProvider
+	scopes    ScopeResolver
 }
+
+// errNoScopes reports providers added without a way to tell them what a
+// run is. Runs fail rather than reach a provider that cannot tell.
+var errNoScopes = errors.New("tool providers are set up without a run scope resolver")
 
 // NewCatalog creates a new tool catalog.
 func NewCatalog() *Catalog {
@@ -27,39 +33,55 @@ func (c *Catalog) AddProvider(p ToolProvider) {
 	c.providers = append(c.providers, p)
 }
 
+// SetScopeResolver sets what tells providers what a run's workspace is.
+func (c *Catalog) SetScopeResolver(r ScopeResolver) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.scopes = r
+}
+
 // Definitions returns the tool definitions available to the AI agent.
 func (c *Catalog) Definitions() []domain.ToolDefinition {
 	return AgentTools()
 }
 
-// DefinitionsFor returns the built-in tools plus any a provider offers in
-// the workspace.
-func (c *Catalog) DefinitionsFor(ctx context.Context, userID, workspaceID int64) []domain.ToolDefinition {
-	defs := AgentTools()
+// Scope resolves the scope of a run in the workspace. Without providers
+// there is nothing to resolve it for.
+func (c *Catalog) Scope(ctx context.Context, userID, workspaceID int64) (Scope, error) {
 	c.mu.RLock()
-	providers := c.providers
+	providers, scopes := c.providers, c.scopes
 	c.mu.RUnlock()
-	for _, p := range providers {
-		defs = append(defs, p.Tools(ctx, userID, workspaceID)...)
-	}
-	return defs
+	return resolveScope(ctx, scopes, len(providers) > 0, userID, workspaceID)
 }
 
-// PromptFor returns the context providers add to the system prompt of runs
-// in the workspace.
-func (c *Catalog) PromptFor(ctx context.Context, userID, workspaceID int64) string {
+// resolveScope resolves a scope for providers, failing when there are
+// providers but no resolver.
+func resolveScope(ctx context.Context, scopes ScopeResolver, hasProviders bool, userID, workspaceID int64) (Scope, error) {
+	if !hasProviders {
+		return Scope{UserID: userID, WorkspaceID: workspaceID}, nil
+	}
+	if scopes == nil {
+		return Scope{}, errNoScopes
+	}
+	return scopes.Resolve(ctx, userID, workspaceID)
+}
+
+// For returns the built-in tools plus those the providers offer a run in
+// scope, and the context they add to its system prompt.
+func (c *Catalog) For(ctx context.Context, scope Scope) ([]domain.ToolDefinition, string) {
 	c.mu.RLock()
 	providers := c.providers
 	c.mu.RUnlock()
+	defs := AgentTools()
 	var sections []string
 	for _, p := range providers {
-		if pp, ok := p.(PromptProvider); ok {
-			if section := strings.TrimSpace(pp.Prompt(ctx, userID, workspaceID)); section != "" {
-				sections = append(sections, section)
-			}
+		contribution := p.Contribute(ctx, scope)
+		defs = append(defs, contribution.Tools...)
+		if section := strings.TrimSpace(contribution.Prompt); section != "" {
+			sections = append(sections, section)
 		}
 	}
-	return strings.Join(sections, "\n\n")
+	return defs, strings.Join(sections, "\n\n")
 }
 
 // SystemPrompt returns the system prompt for the AI agent.

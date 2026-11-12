@@ -477,6 +477,22 @@ func (e *env) startAgentReview(t *testing.T, mr *MergeRequest, in AgentReviewInp
 	return got
 }
 
+// callScope is a call's scope as the executor resolves it. A call it cannot
+// resolve, such as another user's, never reaches the service; the zero
+// scope stands in for it here, and the service must refuse that too.
+func (e *env) callScope(userID, workspaceID int64) aitools.Scope {
+	s, err := runscope.New(e.workspaces, e.svc).Resolve(context.Background(), userID, workspaceID)
+	if err != nil {
+		return aitools.Scope{}
+	}
+	return s
+}
+
+// contribution is what the service adds to a run in the workspace.
+func (e *env) contribution(userID, workspaceID int64) aitools.Contribution {
+	return e.svc.Contribute(context.Background(), e.callScope(userID, workspaceID))
+}
+
 // scope resolves a run's scope in the workspace as the AI module does.
 func (e *env) scope(t *testing.T, userID, workspaceID int64) aitools.Scope {
 	t.Helper()
@@ -488,7 +504,7 @@ func (e *env) scope(t *testing.T, userID, workspaceID int64) aitools.Scope {
 }
 
 func (e *env) tool(userID, workspaceID int64, name, args string) (domain.ToolResultPart, bool) {
-	return e.svc.ExecuteTool(context.Background(), aitools.ExecutionRequest{UserID: userID, WorkspaceID: workspaceID, ToolName: name, Arguments: json.RawMessage(args)})
+	return e.svc.ExecuteTool(context.Background(), aitools.ExecutionRequest{UserID: userID, WorkspaceID: workspaceID, ToolName: name, Arguments: json.RawMessage(args), Scope: e.callScope(userID, workspaceID)})
 }
 
 func TestTaskReadyForReviewOpensThenUpdatesOneMergeRequest(t *testing.T) {
@@ -734,13 +750,13 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 		t.Fatal("expected the review budget to be $5")
 	}
 
-	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID); len(got) != len(reviewTools) {
+	if got := e.contribution(e.owner, rv.WorkspaceID).Tools; len(got) != len(reviewTools) {
 		t.Fatalf("expected the review tools in the review sandbox, got %d", len(got))
 	}
-	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID+1); got != nil {
+	if got := e.contribution(e.owner, rv.WorkspaceID+1).Tools; got != nil {
 		t.Fatal("other workspaces must not get the review tools")
 	}
-	if got := e.svc.Tools(ctx, e.stranger, rv.WorkspaceID); got != nil {
+	if got := e.contribution(e.stranger, rv.WorkspaceID).Tools; got != nil {
 		t.Fatal("another user's runs must not get the review tools")
 	}
 	if _, handled := e.tool(e.owner, rv.WorkspaceID, "read_file", `{}`); handled {
@@ -793,7 +809,7 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	if result, _ := e.tool(e.owner, rv.WorkspaceID, submitTool, `{"verdict":"approve","body":"Fine."}`); !result.IsError {
 		t.Fatalf("a second submission must be refused: %+v", result)
 	}
-	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID); got != nil {
+	if got := e.contribution(e.owner, rv.WorkspaceID).Tools; got != nil {
 		t.Fatal("the review tools should go away once the review is submitted")
 	}
 	if _, _, ok, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID); err != nil || ok {
@@ -1562,7 +1578,7 @@ func TestTaskAgentReadsAndAnswersTheComments(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	wsID := e.taskSandbox(t)
-	if got := e.svc.Tools(ctx, e.owner, wsID); got != nil {
+	if got := e.contribution(e.owner, wsID).Tools; got != nil {
 		t.Fatal("a task without a merge request gets no merge request tools")
 	}
 	if s := e.scope(t, e.owner, wsID); s.TaskMR != nil || s.Kind != workspace.KindTask || s.Branch != "task/1" {
@@ -1573,13 +1589,13 @@ func TestTaskAgentReadsAndAnswersTheComments(t *testing.T) {
 	if s := e.scope(t, e.owner, wsID); s.TaskMR == nil || s.TaskMR.MergeRequestID != mr.ID || s.TaskMR.TaskID != e.taskID || s.Review != nil {
 		t.Fatalf("expected the task's merge request in the scope, got %+v", s)
 	}
-	if got := e.svc.Tools(ctx, e.owner, wsID); len(got) != 2 {
+	if got := e.contribution(e.owner, wsID).Tools; len(got) != 2 {
 		t.Fatalf("expected the task agent's tools, got %d", len(got))
 	}
-	if got := e.svc.Tools(ctx, e.stranger, wsID); got != nil {
+	if got := e.contribution(e.stranger, wsID).Tools; got != nil {
 		t.Fatal("another user's runs must not get the tools")
 	}
-	if prompt := e.svc.Prompt(ctx, e.owner, wsID); !strings.Contains(prompt, "!1") || !strings.Contains(prompt, mrCommentTool) {
+	if prompt := e.contribution(e.owner, wsID).Prompt; !strings.Contains(prompt, "!1") || !strings.Contains(prompt, mrCommentTool) {
 		t.Fatalf("unexpected prompt: %q", prompt)
 	}
 	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{
@@ -1657,7 +1673,7 @@ func TestTaskAgentReadsAndAnswersTheComments(t *testing.T) {
 	e.tasks.mu.Lock()
 	e.tasks.tasks[e.taskID].WorkspaceID = 0
 	e.tasks.mu.Unlock()
-	if got := e.svc.Tools(ctx, e.owner, wsID); got != nil {
+	if got := e.contribution(e.owner, wsID).Tools; got != nil {
 		t.Fatal("a sandbox the task no longer has must not get the tools")
 	}
 	if s := e.scope(t, e.owner, wsID); s.TaskMR != nil {

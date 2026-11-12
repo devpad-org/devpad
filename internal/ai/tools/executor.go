@@ -23,6 +23,10 @@ type ExecutionRequest struct {
 	// that need approval refuse to run without it, so a caller that skips the
 	// approval step cannot start them.
 	Approved bool
+	// Scope is what the run's workspace is, resolved for this call rather
+	// than kept from the start of the run. The executor sets it before a
+	// provider sees the call; built-in tools leave it zero.
+	Scope Scope
 }
 
 // FileSummaryRequest contains the workspace file content prepared for summarization.
@@ -100,12 +104,24 @@ type Executor interface {
 }
 
 // ToolProvider contributes tools that only some workspaces offer, such as the
-// review tools in a merge request's review sandbox.
+// review tools in a merge request's review sandbox, and the context that
+// goes with them.
 type ToolProvider interface {
-	// Tools returns the extra tools offered to runs in the workspace, if any.
-	Tools(ctx context.Context, userID, workspaceID int64) []domain.ToolDefinition
-	// ExecuteTool runs a tool call, reporting false if the tool is not its own.
+	// Contribute returns what the provider adds to a run in scope, if
+	// anything. It is called once, when the run starts.
+	Contribute(ctx context.Context, scope Scope) Contribution
+	// ExecuteTool runs a tool call, reporting false if the tool is not its
+	// own. req.Scope is resolved for the call, so a provider checks it, not
+	// what it offered when the run started.
 	ExecuteTool(ctx context.Context, req ExecutionRequest) (domain.ToolResultPart, bool)
+}
+
+// Contribution is what a provider adds to a run.
+type Contribution struct {
+	// Tools are offered to the run on top of the built-in ones.
+	Tools []domain.ToolDefinition
+	// Prompt is added to the run's system prompt.
+	Prompt string
 }
 
 // Approval describes a tool call the user must approve before it runs.
@@ -125,11 +141,4 @@ type ApprovalGate interface {
 	// ApprovalFor reports whether a call needs approval, and describes it.
 	// An error means it could not tell; the call must then not run.
 	ApprovalFor(ctx context.Context, req ExecutionRequest) (Approval, bool, error)
-}
-
-// PromptProvider is a ToolProvider that adds context to the system prompt
-// of runs in the workspaces it serves.
-type PromptProvider interface {
-	// Prompt returns the context for runs in the workspace, if any.
-	Prompt(ctx context.Context, userID, workspaceID int64) string
 }

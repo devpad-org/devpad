@@ -74,10 +74,7 @@ type Provider struct {
 	cache map[cacheKey]cached
 }
 
-var (
-	_ aitools.ToolProvider   = (*Provider)(nil)
-	_ aitools.PromptProvider = (*Provider)(nil)
-)
+var _ aitools.ToolProvider = (*Provider)(nil)
 
 type cacheKey struct{ userID, workspaceID int64 }
 
@@ -208,25 +205,24 @@ func (p *Provider) runCatalog(ctx context.Context, userID, workspaceID int64) *c
 	return c
 }
 
-func (p *Provider) Tools(ctx context.Context, userID, workspaceID int64) []domain.ToolDefinition {
-	if c := p.runCatalog(ctx, userID, workspaceID); c == nil || len(c.skills) == 0 {
-		return nil
-	}
-	return []domain.ToolDefinition{loadSkillDefinition}
-}
-
-// Prompt gives a run the workspace's AGENTS.md and lists the skills the model
-// may load.
-func (p *Provider) Prompt(ctx context.Context, userID, workspaceID int64) string {
-	c := p.runCatalog(ctx, userID, workspaceID)
+// Contribute gives a run the workspace's AGENTS.md, lists the skills the
+// model may load, and offers load_skill when there are any.
+func (p *Provider) Contribute(ctx context.Context, scope aitools.Scope) aitools.Contribution {
+	c := p.runCatalog(ctx, scope.UserID, scope.WorkspaceID)
 	if c == nil {
-		return ""
+		return aitools.Contribution{}
+	}
+	var out aitools.Contribution
+	if len(c.skills) > 0 {
+		out.Tools = []domain.ToolDefinition{loadSkillDefinition}
 	}
 	agents, skills := c.agentsPrompt(), c.skillsPrompt()
 	if agents == "" || skills == "" {
-		return agents + skills
+		out.Prompt = agents + skills
+	} else {
+		out.Prompt = agents + "\n\n" + skills
 	}
-	return agents + "\n\n" + skills
+	return out
 }
 
 // skillsPrompt lists the skills the model may load. Skills only the user

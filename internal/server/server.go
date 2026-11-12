@@ -23,6 +23,7 @@ import (
 	"github.com/devpad-org/devpad/internal/preview"
 	"github.com/devpad-org/devpad/internal/project"
 	"github.com/devpad-org/devpad/internal/projecttools"
+	"github.com/devpad-org/devpad/internal/runscope"
 	"github.com/devpad-org/devpad/internal/settings"
 	"github.com/devpad-org/devpad/internal/skills"
 	"github.com/devpad-org/devpad/internal/task"
@@ -138,6 +139,10 @@ func New(cfg Config) (*Server, error) {
 	projectService.AddBranchGuard(mrService)
 	projectService.AddBranchGuard(taskService)
 	aiModule.OnAgentRunFinished(mrService.RunFinished)
+
+	// What each run's workspace is, which every tool provider is told. It is
+	// set before any provider is added and before reconciling restarts runs.
+	aiModule.SetScopeResolver(runscope.New(workspaceService, mrService))
 
 	// AGENTS.md and the project's skills, and load_skill. Review agents read
 	// them from the branch the change would merge into. This provider is added

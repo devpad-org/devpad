@@ -15,6 +15,7 @@ import (
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 	"github.com/devpad-org/devpad/internal/mergerequest"
 	"github.com/devpad-org/devpad/internal/project"
+	"github.com/devpad-org/devpad/internal/runscope"
 	"github.com/devpad-org/devpad/internal/task"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
@@ -22,7 +23,8 @@ import (
 const owner, stranger = int64(1), int64(2)
 
 // Workspaces: 10 is project 1's workspace, 11 a task sandbox in project 1,
-// 12 a standalone workspace, 20 project 2's workspace. Reading 13 fails.
+// 12 a standalone workspace, 20 project 2's workspace, and 13 the workspace
+// of project 3, which cannot be read.
 type fakeWorkspaces struct {
 	byID map[int64]*workspace.Workspace
 	// slowStatus makes GitStatus wait until its context ends.
@@ -32,9 +34,6 @@ type fakeWorkspaces struct {
 var errLocked = errors.New("database is locked")
 
 func (f fakeWorkspaces) Get(_ context.Context, userID, id int64) (*workspace.Workspace, error) {
-	if id == 13 {
-		return nil, errLocked
-	}
 	ws, ok := f.byID[id]
 	if !ok || ws.UserID != userID {
 		return nil, workspace.ErrNotFound
@@ -54,6 +53,9 @@ func (f fakeWorkspaces) GitStatus(ctx context.Context, _, _ int64) (*agent.GitSt
 type fakeProjects struct{}
 
 func (fakeProjects) Get(_ context.Context, userID, id int64) (*project.Project, error) {
+	if id == 3 {
+		return nil, errLocked
+	}
 	if userID != owner || (id != 1 && id != 2) {
 		return nil, project.ErrNotFound
 	}
@@ -203,6 +205,7 @@ func setup() *env {
 		10: {ID: 10, UserID: owner, ProjectID: 1, Kind: workspace.KindInteractive},
 		11: {ID: 11, UserID: owner, ProjectID: 1, Kind: workspace.KindTask, Branch: "task/1"},
 		12: {ID: 12, UserID: owner, Kind: workspace.KindInteractive},
+		13: {ID: 13, UserID: owner, ProjectID: 3, Kind: workspace.KindInteractive},
 		20: {ID: 20, UserID: owner, ProjectID: 2, Kind: workspace.KindInteractive},
 	}}
 	tasks := &fakeTasks{nextID: 100, tasks: map[int64]*task.Task{
@@ -234,7 +237,42 @@ func (e *env) execute(userID, workspaceID int64, tool, args string, approved boo
 	return e.provider.ExecuteTool(context.Background(), aitools.ExecutionRequest{
 		UserID: userID, WorkspaceID: workspaceID, ToolName: tool, Arguments: json.RawMessage(args),
 		Model: "assistant-model", Thinking: &domain.ThinkingConfig{Effort: "high"}, Approved: approved,
+		Scope: e.scope(userID, workspaceID),
 	})
+}
+
+// noSandboxes has no reviews or merge requests, which these tools never
+// look at.
+type noSandboxes struct{}
+
+func (noSandboxes) PendingReview(context.Context, int64, *workspace.Workspace) (*aitools.ReviewScope, error) {
+	return nil, nil
+}
+
+func (noSandboxes) TaskMergeRequest(context.Context, int64, *workspace.Workspace) (*aitools.TaskMRScope, error) {
+	return nil, nil
+}
+
+// scope resolves a call's scope as the executor does. A call it cannot
+// resolve never reaches the provider; the zero scope stands in for it here,
+// and the provider must refuse that too.
+func (e *env) scope(userID, workspaceID int64) aitools.Scope {
+	s, err := runscope.New(e.workspaces, noSandboxes{}).Resolve(context.Background(), userID, workspaceID)
+	if err != nil {
+		return aitools.Scope{}
+	}
+	return s
+}
+
+// contribution is what the provider adds to a run in the workspace.
+func (e *env) contribution(userID, workspaceID int64) aitools.Contribution {
+	return e.provider.Contribute(context.Background(), e.scope(userID, workspaceID))
+}
+
+// approvalFor checks a call's approval with its scope, as the executor does.
+func (e *env) approvalFor(ctx context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool, error) {
+	req.Scope = e.scope(req.UserID, req.WorkspaceID)
+	return e.provider.ApprovalFor(ctx, req)
 }
 
 // describes reports whether an approval shows want, in its summary or one
@@ -253,8 +291,7 @@ func describes(a aitools.Approval, want string) bool {
 
 func TestToolsAreOfferedOnlyInAProjectWorkspace(t *testing.T) {
 	e := setup()
-	ctx := context.Background()
-	if got := e.provider.Tools(ctx, owner, 10); len(got) != len(definitions) {
+	if got := e.contribution(owner, 10).Tools; len(got) != len(definitions) {
 		t.Fatalf("expected the project tools in the project workspace, got %d", len(got))
 	}
 	for name, c := range map[string]struct{ user, ws int64 }{
@@ -263,7 +300,7 @@ func TestToolsAreOfferedOnlyInAProjectWorkspace(t *testing.T) {
 		"another user's workspace": {stranger, 10},
 		"a workspace that is gone": {owner, 99},
 	} {
-		if got := e.provider.Tools(ctx, c.user, c.ws); got != nil {
+		if got := e.contribution(c.user, c.ws).Tools; got != nil {
 			t.Errorf("%s: expected no tools, got %d", name, len(got))
 		}
 		res, handled := e.call(t, c.user, c.ws, listTasksTool, `{}`)
@@ -317,7 +354,7 @@ func TestOnlyCallsThatStartAnAgentNeedApproval(t *testing.T) {
 	ctx := context.Background()
 	approval := func(tool, args string) (aitools.Approval, bool) {
 		t.Helper()
-		got, needed, err := e.provider.ApprovalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: tool, Arguments: json.RawMessage(args), Model: "assistant-model"})
+		got, needed, err := e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: tool, Arguments: json.RawMessage(args), Model: "assistant-model"})
 		if err != nil {
 			t.Fatalf("%s: %v", tool, err)
 		}
@@ -355,7 +392,7 @@ func TestOnlyCallsThatStartAnAgentNeedApproval(t *testing.T) {
 	// An agent in a sandbox gets no approval card for tools it was never
 	// offered; the call itself is refused.
 	for _, ws := range []int64{11, 12} {
-		if _, needed, err := e.provider.ApprovalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: ws, ToolName: startTaskTool, Arguments: json.RawMessage(`{"task_id":1}`)}); needed || err != nil {
+		if _, needed, err := e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: ws, ToolName: startTaskTool, Arguments: json.RawMessage(`{"task_id":1}`)}); needed || err != nil {
 			t.Errorf("workspace %d: expected no approval outside the project workspace, got %v %v", ws, needed, err)
 		}
 	}
@@ -366,7 +403,7 @@ func TestApprovalCardsShowEverythingThatWillRun(t *testing.T) {
 	ctx := context.Background()
 	long := strings.Repeat("Step by step. ", 600) + "The very end."
 	args, _ := json.Marshal(map[string]any{"title": "Checkout", "body": long, "start": true, "base_branch": "feature/cart", "effort": "low"})
-	got, needed, err := e.provider.ApprovalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: createTaskTool, Arguments: args, Model: "assistant-model"})
+	got, needed, err := e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: createTaskTool, Arguments: args, Model: "assistant-model"})
 	if err != nil || !needed {
 		t.Fatalf("expected an approval, got %v %v", needed, err)
 	}
@@ -397,7 +434,7 @@ func TestApprovalCardsShowEverythingThatWillRun(t *testing.T) {
 
 	// Starting a task shows the task's own description, which the agent
 	// follows, and the model that will run.
-	got, _, _ = e.provider.ApprovalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: startTaskTool, Arguments: json.RawMessage(`{"task_id":1,"message":"Also add tests"}`), Model: "assistant-model"})
+	got, _, _ = e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: startTaskTool, Arguments: json.RawMessage(`{"task_id":1,"message":"Also add tests"}`), Model: "assistant-model"})
 	for _, w := range []string{"Let shoppers keep items in a cart.", "Also add tests", "task-model"} {
 		if !describes(got, w) {
 			t.Errorf("start_task approval should show %q: %+v", w, got)
@@ -405,15 +442,15 @@ func TestApprovalCardsShowEverythingThatWillRun(t *testing.T) {
 	}
 }
 
-func TestApprovalFailsClosedWhenTheWorkspaceCannotBeRead(t *testing.T) {
+func TestApprovalFailsClosedWhenTheProjectCannotBeRead(t *testing.T) {
 	e := setup()
 	ctx := context.Background()
-	_, needed, err := e.provider.ApprovalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 13, ToolName: startTaskTool, Arguments: json.RawMessage(`{"task_id":1}`)})
+	_, needed, err := e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 13, ToolName: startTaskTool, Arguments: json.RawMessage(`{"task_id":1}`)})
 	if err == nil || needed {
 		t.Fatalf("expected an error rather than no approval, got needed=%v err=%v", needed, err)
 	}
 	// Non-gated tools still need no approval.
-	if _, needed, err := e.provider.ApprovalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 13, ToolName: listTasksTool, Arguments: json.RawMessage(`{}`)}); err != nil || needed {
+	if _, needed, err := e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 13, ToolName: listTasksTool, Arguments: json.RawMessage(`{}`)}); err != nil || needed {
 		t.Fatalf("expected list_tasks to need no check, got %v %v", needed, err)
 	}
 }
@@ -474,7 +511,7 @@ func TestStartingUsesTheAgentsDefaultsOverTheAssistantsModel(t *testing.T) {
 	ctx := context.Background()
 
 	args := `{"title":"a","body":"b","start":true}`
-	approval, _, err := e.provider.ApprovalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: createTaskTool, Arguments: json.RawMessage(args), Model: "assistant-model", Thinking: &domain.ThinkingConfig{Effort: "high"}})
+	approval, _, err := e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: createTaskTool, Arguments: json.RawMessage(args), Model: "assistant-model", Thinking: &domain.ThinkingConfig{Effort: "high"}})
 	if err != nil {
 		t.Fatalf("approval: %v", err)
 	}
@@ -495,7 +532,7 @@ func TestStartingUsesTheAgentsDefaultsOverTheAssistantsModel(t *testing.T) {
 	if s := e.tasks.started[0]; s.Model != "task-model" {
 		t.Errorf("expected the task's own model kept: %+v", s)
 	}
-	approval, _, err = e.provider.ApprovalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: startTaskTool, Arguments: json.RawMessage(`{"task_id":1}`), Model: "assistant-model"})
+	approval, _, err = e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: startTaskTool, Arguments: json.RawMessage(`{"task_id":1}`), Model: "assistant-model"})
 	if err != nil {
 		t.Fatalf("start approval: %v", err)
 	}
@@ -608,13 +645,13 @@ func TestAssistantCommentsOnTheProjectsMergeRequests(t *testing.T) {
 
 func TestPromptNamesTheProjectAndBranch(t *testing.T) {
 	e := setup()
-	prompt := e.provider.Prompt(context.Background(), owner, 10)
+	prompt := e.contribution(owner, 10).Prompt
 	for _, want := range []string{`"shop"`, "`main`", "`feature/cart`", "git push devpad", "Push only when the user asks", "commit only when they ask", "not one of the project's background agents", commentTool} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
-	if got := e.provider.Prompt(context.Background(), owner, 11); got != "" {
+	if got := e.contribution(owner, 11).Prompt; got != "" {
 		t.Errorf("expected no project context in a sandbox, got %q", got)
 	}
 }
@@ -626,7 +663,7 @@ func TestPromptDoesNotWaitOnASlowWorkspace(t *testing.T) {
 	promptStatusTimeout = 20 * time.Millisecond
 
 	start := time.Now()
-	prompt := e.provider.Prompt(context.Background(), owner, 10)
+	prompt := e.contribution(owner, 10).Prompt
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("the prompt waited %v on the workspace", elapsed)
 	}
