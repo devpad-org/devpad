@@ -359,8 +359,8 @@ func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary 
 	if err != nil || !moved {
 		return err
 	}
-	// Starting the review takes the merge request's lock, which updating it
-	// held.
+	// Starting the next round takes the merge request's lock, which
+	// updating it held.
 	s.nextReviewRound(ctx, mr)
 	return nil
 }
@@ -388,8 +388,11 @@ const maxReviewRounds = 3
 // agent's requested changes with, when that review sent them to it and was
 // not the last round. The new review runs the same agent and model. Anything
 // since, such as the user's own review, ends the loop, as does a verdict
-// other than request changes.
+// other than request changes. The merge request stays locked from reading
+// the last review to starting the next, so no review can start between.
 func (s *service) nextReviewRound(ctx context.Context, mr *MergeRequest) {
+	unlock := s.lock("mr", mr.ID)
+	defer unlock()
 	reviews, err := s.repo.ListReviews(ctx, mr.ID)
 	if err != nil {
 		log.Printf("merge request %d: reading reviews for the next round: %v", mr.ID, err)
@@ -403,7 +406,7 @@ func (s *service) nextReviewRound(ctx context.Context, mr *MergeRequest) {
 		return
 	}
 	in := AgentReviewInput{AgentID: last.AgentID, Model: last.Model, Effort: last.Effort, AutoFix: true}
-	_, err = s.startAgentReview(ctx, mr.UserID, mr.ProjectID, mr.ID, in, last.Round+1)
+	_, err = s.startAgentReviewLocked(ctx, mr.UserID, mr.ProjectID, mr.ID, in, last.Round+1)
 	if err == nil || s.rootCtx.Err() != nil {
 		return
 	}
@@ -794,13 +797,14 @@ func feedback(rv *Review, comments []*Comment) string {
 // review sandbox. It returns the pending review at once; the agent submits
 // it with the review tools.
 func (s *service) StartAgentReview(ctx context.Context, userID, projectID, mrID int64, in AgentReviewInput) (*Review, error) {
-	return s.startAgentReview(ctx, userID, projectID, mrID, in, 1)
-}
-
-// startAgentReview starts the given round of the code and review loop.
-func (s *service) startAgentReview(ctx context.Context, userID, projectID, mrID int64, in AgentReviewInput, round int) (*Review, error) {
 	unlock := s.lock("mr", mrID)
 	defer unlock()
+	return s.startAgentReviewLocked(ctx, userID, projectID, mrID, in, 1)
+}
+
+// startAgentReviewLocked starts the given round of the code and review
+// loop. The caller holds the merge request's lock.
+func (s *service) startAgentReviewLocked(ctx context.Context, userID, projectID, mrID int64, in AgentReviewInput, round int) (*Review, error) {
 	mr, err := s.getOpen(ctx, userID, projectID, mrID)
 	if err != nil {
 		return nil, err
