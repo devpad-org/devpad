@@ -124,7 +124,8 @@ func knownModelInputBudget(model string) (int, bool) {
 	case "mistral-large-4",
 		"mistral-large-4-0":
 		return mistralLarge4InputBudgetTokens, true
-	case "kimi-k3":
+	case "kimi-k3",
+		"kimi-k3.1-pro":
 		return moonshotK3InputBudgetTokens, true
 	case "minimax-m3",
 		"minimax-m3.1-flash":

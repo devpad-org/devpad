@@ -15,11 +15,23 @@ const (
 	providerName = "Moonshot AI"
 	baseURL      = "https://api.moonshot.ai/v1"
 
-	// kimi-k3 always reasons, at the effort set by a top-level
+	k3ModelID     = "kimi-k3"
+	k31ProModelID = "kimi-k3.1-pro"
+
+	// K3-series models always reason, at the effort set by a top-level
 	// reasoning_effort field.
-	k3ModelID              = "kimi-k3"
 	defaultReasoningEffort = "max"
 )
+
+// k3Thinking is the reasoning every K3-series model has: always on, with
+// low, high or max effort.
+var k3Thinking = domain.ThinkingCapability{
+	Supported:        true,
+	EnabledByDefault: true,
+	CanDisable:       false,
+	SupportedEfforts: []string{"low", "high", "max"},
+	DefaultEffort:    defaultReasoningEffort,
+}
 
 // Adapter streams chat completions from Moonshot's Kimi API.
 type Adapter struct {
@@ -67,23 +79,25 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 
 func (a *Adapter) Models() []domain.Model {
 	// Prices are USD per million tokens from
-	// https://platform.kimi.ai/docs/pricing/chat (October 2026). Caching is
-	// automatic with a 5-minute TTL, and K3 bills cache writes at the 5-minute
-	// rate.
+	// https://platform.kimi.ai/docs/pricing/chat (November 2026). Caching is
+	// automatic with a 5-minute TTL, and K3-series models bill cache writes at
+	// the 5-minute rate.
 	return []domain.Model{
+		{
+			ID:         k31ProModelID,
+			Name:       "Kimi K3.1 Pro",
+			ProviderID: providerID,
+			Vision:     true,
+			Thinking:   k3Thinking,
+			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 2, Output: 10, CacheRead: 0.20, CacheWrite: 2}},
+		},
 		{
 			ID:         k3ModelID,
 			Name:       "Kimi K3",
 			ProviderID: providerID,
 			Vision:     true,
-			Thinking: domain.ThinkingCapability{
-				Supported:        true,
-				EnabledByDefault: true,
-				CanDisable:       false,
-				SupportedEfforts: []string{"low", "high", "max"},
-				DefaultEffort:    defaultReasoningEffort,
-			},
-			Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 3, Output: 15, CacheRead: 0.30, CacheWrite: 3}},
+			Thinking:   k3Thinking,
+			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 3, Output: 15, CacheRead: 0.30, CacheWrite: 3}},
 		},
 	}
 }
@@ -97,7 +111,7 @@ func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req 
 func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequest {
 	thinkingEnabled := domain.ThinkingEnabledForRequest(model, domain.ChatRequest{Model: req.Model, Turns: req.Turns, Thinking: req.Thinking})
 	// Models that cannot turn thinking off always expect their reasoning
-	// history back; K3 in particular degrades badly without it.
+	// history back; K3-series models degrade badly without it.
 	preserveReasoning := model.Thinking.Supported && (thinkingEnabled || !model.Thinking.CanDisable)
 	messages := make([]message, 0, len(req.Turns))
 	// Images tools returned go in a user message after the run of tool

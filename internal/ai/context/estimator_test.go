@@ -142,6 +142,7 @@ func TestBudgetFor_ReturnsProviderModelDefaults(t *testing.T) {
 		{name: "mistral large 3 context", providerID: "mistral", modelID: "mistral-large-2512", wantBudget: 256000},
 		{name: "mistral large 4 context", providerID: "mistral", modelID: "mistral-large-4-0", wantBudget: 1000000},
 		{name: "moonshot kimi k3 context", providerID: "moonshot", modelID: "kimi-k3", wantBudget: 1000000},
+		{name: "moonshot kimi k3.1 pro context", providerID: "moonshot", modelID: "kimi-k3.1-pro", wantBudget: 1000000},
 		{name: "minimax m3.1 flash context", providerID: "minimax", modelID: "MiniMax-M3.1-Flash", wantBudget: 1000000},
 		{name: "minimax m3 context", providerID: "minimax", modelID: "MiniMax-M3", wantBudget: 1000000},
 		{name: "unknown conservative fallback", providerID: "unknown", modelID: "custom", wantBudget: 25000},
