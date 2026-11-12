@@ -54,6 +54,24 @@ type fakeProjects struct {
 	environment *project.Environment
 	// sandboxErr, when set, is what CreateSandbox fails with.
 	sandboxErr error
+	// restarted records each sandbox StartSandbox started again.
+	restarted []int64
+}
+
+func (f *fakeProjects) StartSandbox(_ context.Context, userID, _, workspaceID int64) (*workspace.Workspace, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	res, err := f.db.Exec(`UPDATE workspaces SET status = 'running' WHERE id = ? AND user_id = ?`, workspaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, project.ErrNotFound
+	}
+	f.restarted = append(f.restarted, workspaceID)
+	ws := &workspace.Workspace{ID: workspaceID, UserID: userID, ProjectID: f.project.ID, Kind: workspace.KindReview, Status: workspace.StatusRunning}
+	err = f.db.QueryRow(`SELECT branch FROM workspaces WHERE id = ?`, workspaceID).Scan(&ws.Branch)
+	return ws, err
 }
 
 func (f *fakeProjects) AwaitSetup(ctx context.Context, _, _, workspaceID int64) (*project.Setup, error) {
@@ -231,6 +249,48 @@ type fakeTasks struct {
 	requests []changeRequest
 	starts   []task.StartInput
 	merged   []int64
+	// budgets are the tasks' shared budgets, which record what they spend
+	// on the task as the task service does; budgetErr, when set, is what
+	// Budget fails with.
+	budgets   map[int64]*domain.Budget
+	budgetErr error
+}
+
+func (f *fakeTasks) SetBudget(_ context.Context, _, _, taskID int64, budgetUSD float64) (*task.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t := f.tasks[taskID]
+	t.BudgetUSD = budgetUSD
+	if b := f.budgets[taskID]; b != nil {
+		b.SetLimit(budgetUSD)
+	}
+	clone := *t
+	return &clone, nil
+}
+
+func (f *fakeTasks) Budget(_ context.Context, _, _, taskID int64) (*domain.Budget, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.budgetErr != nil {
+		return nil, f.budgetErr
+	}
+	t, ok := f.tasks[taskID]
+	if !ok {
+		return nil, task.ErrNotFound
+	}
+	if f.budgets == nil {
+		f.budgets = make(map[int64]*domain.Budget)
+	}
+	if b := f.budgets[taskID]; b != nil {
+		return b, nil
+	}
+	b := domain.NewBudget(t.BudgetUSD, t.CostUSD, func(spentUSD float64) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		t.CostUSD = spentUSD
+	}).Owned(fmt.Sprintf("task #%d", taskID))
+	f.budgets[taskID] = b
+	return b, nil
 }
 
 func (f *fakeTasks) Start(_ context.Context, _, _, taskID int64, in task.StartInput) (*task.Task, error) {
@@ -344,6 +404,19 @@ func (f *fakeRuns) started() []app.StartAgentRunRequest {
 }
 
 type fakeConversations struct{ db *sql.DB }
+
+// GetTurns reads back what the last run in the conversation was given, as
+// the agent runner saves it, followed by the agent's reply.
+func (f fakeConversations) GetTurns(_ context.Context, conversationID, _ int64) ([]domain.Turn, error) {
+	var model string
+	if err := f.db.QueryRow(`SELECT model FROM ai_conversations WHERE id = ?`, conversationID).Scan(&model); err != nil {
+		return nil, err
+	}
+	return []domain.Turn{
+		domain.NewTextTurn(domain.RoleUser, "review prompt"),
+		domain.NewTextTurn(domain.RoleAssistant, "Reading the change."),
+	}, nil
+}
 
 func (f fakeConversations) CreateConversation(_ context.Context, userID, workspaceID int64, model string) (*domain.Conversation, error) {
 	res, err := f.db.Exec(`INSERT INTO ai_conversations (user_id, workspace_id, model) VALUES (?, ?, ?)`, userID, workspaceID, model)
@@ -709,7 +782,7 @@ func TestAgentReviewThatCannotStartLeavesNoConversation(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	mr := e.openTaskMR(t)
-	e.budgets.err = errors.New("database is locked")
+	e.tasks.budgetErr = errors.New("database is locked")
 
 	rv := e.startAgentReview(t, mr, AgentReviewInput{})
 	if rv.Status != ReviewFailed || !strings.Contains(rv.Error, "database is locked") {
@@ -1151,13 +1224,19 @@ func TestCloseRemovesReviewSandboxesButLeavesTheTask(t *testing.T) {
 }
 
 // Reconcile fails reviews whose agent the restart interrupted, and starts
-// again the ones that were still waiting for a sandbox.
+// again the ones whose run had not started: still waiting for a sandbox, or
+// with one but not yet their run, which starts in that sandbox.
 func TestReconcileSettlesInterruptedReviews(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	mr := e.openTaskMR(t)
 	rv := e.startAgentReview(t, mr, AgentReviewInput{})
-	stranded := &Review{MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewPending, Model: "m", WorkspaceID: rv.WorkspaceID}
+	res, err := e.db.Exec(`INSERT INTO workspaces (user_id, name, status, project_id, kind, branch) VALUES (?, 'review', 'stopped', ?, 'review', 'review/9')`, e.owner, e.pid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox, _ := res.LastInsertId()
+	stranded := &Review{MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewPending, HeadSHA: mr.HeadSHA, AgentID: domain.ReviewAgentID, Model: "m", WorkspaceID: sandbox, TargetSHA: mainTip}
 	e.svc.repo.CreateReview(ctx, stranded)
 	waiting := &Review{MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewPending, HeadSHA: mr.HeadSHA, AgentID: domain.ReviewAgentID, Model: "m"}
 	e.svc.repo.CreateReview(ctx, waiting)
@@ -1166,12 +1245,18 @@ func TestReconcileSettlesInterruptedReviews(t *testing.T) {
 	if err := e.svc.Reconcile(ctx); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	waitFor(t, "the interrupted reviews to fail and the waiting one to start", func() bool {
+	waitFor(t, "the interrupted review to fail and the others to start", func() bool {
 		a, _ := e.svc.repo.GetReview(ctx, rv.ID)
 		b, _ := e.svc.repo.GetReview(ctx, stranded.ID)
 		c, _ := e.svc.repo.GetReview(ctx, waiting.ID)
-		return a.Status == ReviewFailed && b.Status == ReviewFailed && c.RunID != 0
+		return a.Status == ReviewFailed && b.RunID != 0 && c.RunID != 0
 	})
+	if got, _ := e.svc.repo.GetReview(ctx, stranded.ID); got.Status != ReviewPending || got.WorkspaceID != sandbox || got.TargetSHA != mainTip {
+		t.Fatalf("expected the stranded review running in its own sandbox at its target, got %+v", got)
+	}
+	if !slices.Contains(e.projects.restarted, sandbox) {
+		t.Fatalf("expected the stranded review's sandbox started again, got %v", e.projects.restarted)
+	}
 	got, _ := e.svc.repo.GetReview(ctx, rv.ID)
 	if !strings.Contains(got.Error, "server restarted") {
 		t.Fatalf("unexpected error: %q", got.Error)
@@ -2170,4 +2255,230 @@ func TestSendBackWithOnlyAnOpenThreadFromAnEarlierRound(t *testing.T) {
 	if _, err := e.svc.SendBack(ctx, e.owner, e.pid(), mr.ID, SendBackInput{}); err != nil {
 		t.Fatalf("an open thread is feedback to send back: %v", err)
 	}
+}
+
+// A review of a task's merge request spends from the task's budget as well
+// as its own, and records what it spends on both.
+func TestTaskReviewSpendsFromTheTaskBudget(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.tasks.tasks[e.taskID].BudgetUSD = 10
+	mr := e.openTaskMR(t)
+
+	rv := e.startAgentReview(t, mr, AgentReviewInput{})
+	if rv.BudgetUSD != 5 {
+		t.Fatalf("expected the review to start with the admin's $5 review budget, got %v", rv.BudgetUSD)
+	}
+	budget := e.runs.started()[0].Budget
+	budget.Spend(3)
+	if got, _ := e.tasks.Get(ctx, e.owner, e.pid(), e.taskID); got.CostUSD != 3 {
+		t.Fatalf("expected the review's spend on the task, got $%v", got.CostUSD)
+	}
+	if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.CostUSD != 3 {
+		t.Fatalf("expected the review's spend recorded on it, got $%v", got.CostUSD)
+	}
+	budget.Spend(2)
+	if !budget.Exhausted() || !strings.Contains(budget.ExhaustedMessage(), "this review has spent $5.00 of its $5.00 budget") {
+		t.Fatalf("expected the review's own budget to stop it: %v %q", budget.Exhausted(), budget.ExhaustedMessage())
+	}
+
+	// The task's budget stops its reviews too, even with their own to spare.
+	e.tasks.SetBudget(ctx, e.owner, e.pid(), e.taskID, 4)
+	e.svc.reviewBudgets[rv.ID].SetLimit(100)
+	if !budget.Exhausted() || !strings.Contains(budget.ExhaustedMessage(), fmt.Sprintf("task #%d has spent $5.00 of its $4.00 budget", e.taskID)) {
+		t.Fatalf("expected the task's budget to stop the review: %q", budget.ExhaustedMessage())
+	}
+}
+
+// Once a task's budget is spent, no review of its merge request starts;
+// raising the budget and continuing the one that could not start starts it.
+func TestReviewOfATaskOverBudgetWaitsForItsBudget(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.projects.project.AutoReview = true
+	tk := e.tasks.tasks[e.taskID]
+	tk.BudgetUSD, tk.CostUSD = 2, 2.5
+	mr := e.openTaskMR(t)
+
+	d, _ := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+	if len(d.Reviews) != 1 || d.Reviews[0].Status != ReviewFailed || !strings.Contains(d.Reviews[0].Error, fmt.Sprintf("Budget reached: task #%d has spent $2.50 of its $2.00 budget", e.taskID)) {
+		t.Fatalf("expected the automatic review to fail on the task's budget, got %+v", d.Reviews)
+	}
+	if len(e.runs.started()) != 0 || len(e.projects.sandboxes) != 0 {
+		t.Fatal("a review over budget must not get a sandbox or a run")
+	}
+	if _, err := e.svc.StartAgentReview(ctx, e.owner, e.pid(), mr.ID, AgentReviewInput{}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("starting a review by hand: expected ErrInvalidState, got %v", err)
+	}
+	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, d.Reviews[0].ID, ContinueInput{}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("continuing without raising the budget: expected ErrInvalidState, got %v", err)
+	}
+
+	raised := 6.0
+	rv, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, d.Reviews[0].ID, ContinueInput{TaskBudgetUSD: &raised})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if got, _ := e.tasks.Get(ctx, e.owner, e.pid(), e.taskID); got.BudgetUSD != 6 {
+		t.Fatalf("expected the task's budget raised, got %v", got.BudgetUSD)
+	}
+	if rv.ID == d.Reviews[0].ID || rv.Status != ReviewPending || !rv.AutoFix || rv.Round != d.Reviews[0].Round {
+		t.Fatalf("expected a new review of the same round, got %+v", rv)
+	}
+	waitFor(t, "the review run", func() bool { return len(e.runs.started()) == 1 })
+}
+
+// A review stopped by its budget continues, once the budget is raised, in
+// its own sandbox and transcript, told why it stopped.
+func TestContinueReviewAfterItsBudgetRanOut(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	rv := e.startAgentReview(t, mr, AgentReviewInput{AutoFix: true})
+	first := e.runs.started()[0]
+	first.Budget.Spend(5)
+	e.runs.finish(rv.RunID, domain.AgentRunFailed, first.Budget.ExhaustedMessage())
+	waitFor(t, "the review to fail", func() bool {
+		got, _ := e.svc.repo.GetReview(ctx, rv.ID)
+		return got.Status == ReviewFailed
+	})
+	failed, _ := e.svc.repo.GetReview(ctx, rv.ID)
+	if failed.Error != "Budget reached: this review has spent $5.00 of its $5.00 budget" || failed.CostUSD != 5 || !failed.OverBudget() {
+		t.Fatalf("expected the review to fail on its budget, got %+v", failed)
+	}
+	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, rv.ID, ContinueInput{}); !errors.Is(err, ErrInvalidState) || !strings.Contains(err.Error(), "raise its budget") {
+		t.Fatalf("continuing without raising the budget: expected ErrInvalidState, got %v", err)
+	}
+	negative := -1.0
+	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, rv.ID, ContinueInput{BudgetUSD: &negative}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("a negative budget: expected ErrInvalidInput, got %v", err)
+	}
+	if _, err := e.svc.ContinueReview(ctx, e.stranger, e.pid(), mr.ID, rv.ID, ContinueInput{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another user's review: expected ErrNotFound, got %v", err)
+	}
+
+	raised := 8.0
+	continued, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, rv.ID, ContinueInput{BudgetUSD: &raised})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if continued.ID != rv.ID || continued.Status != ReviewPending || continued.BudgetUSD != 8 {
+		t.Fatalf("expected the same review pending with its raised budget, got %+v", continued)
+	}
+	waitFor(t, "the continued run", func() bool { return len(e.runs.started()) == 2 })
+	second := e.runs.started()[1]
+	if second.ConversationID != first.ConversationID || second.WorkspaceID != rv.WorkspaceID {
+		t.Fatalf("expected the run in the review's own sandbox and transcript, got %+v", second)
+	}
+	if len(e.projects.sandboxes) != 1 || !slices.Contains(e.projects.restarted, rv.WorkspaceID) {
+		t.Fatalf("expected the review's sandbox started again, not a new one: %v %v", e.projects.sandboxes, e.projects.restarted)
+	}
+	last := second.Turns[len(second.Turns)-1].Text()
+	for _, want := range []string{"Your review stopped before you submitted it: Budget reached: this review", readCommentsTool, submitTool} {
+		if !strings.Contains(last, want) {
+			t.Errorf("continue prompt missing %q:\n%s", want, last)
+		}
+	}
+	if second.Budget != first.Budget || second.Budget.Exhausted() {
+		t.Fatal("expected the continued run to spend from the review's raised budget")
+	}
+	second.Budget.Spend(3)
+	if !second.Budget.Exhausted() {
+		t.Fatal("expected the raised budget to be $8")
+	}
+	got, _ := e.svc.repo.GetReview(ctx, rv.ID)
+	if got.Status != ReviewPending || got.Error != "" || got.RunID == rv.RunID || got.RunID == 0 {
+		t.Fatalf("expected the review running again with its error cleared, got %+v", got)
+	}
+	// The run before ending late is not taken for the continued run's end.
+	e.svc.RunFinished(domain.AgentRun{ID: rv.RunID, Status: domain.AgentRunFailed, Error: "late"})
+	time.Sleep(20 * time.Millisecond)
+	if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.Status != ReviewPending {
+		t.Fatalf("the earlier run's end must not settle the continued review, got %+v", got)
+	}
+}
+
+// Only the latest agent review, of the change as it stands, can continue.
+func TestContinueReviewRefusesAnOutdatedReview(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	rv := e.startAgentReview(t, mr, AgentReviewInput{})
+	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, rv.ID, ContinueInput{}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("a pending review: expected ErrInvalidState, got %v", err)
+	}
+	e.runs.finish(rv.RunID, domain.AgentRunFailed, "boom")
+	waitFor(t, "the review to fail", func() bool {
+		got, _ := e.svc.repo.GetReview(ctx, rv.ID)
+		return got.Status == ReviewFailed
+	})
+
+	tk, _ := e.tasks.Get(ctx, e.owner, e.pid(), e.taskID)
+	tk.HeadSHA = "head2"
+	e.svc.TaskReadyForReview(ctx, tk, "")
+	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, rv.ID, ContinueInput{}); !errors.Is(err, ErrInvalidState) || !strings.Contains(err.Error(), "moved on") {
+		t.Fatalf("a review of an older head: expected ErrInvalidState, got %v", err)
+	}
+
+	mr, _ = e.svc.repo.GetByID(ctx, mr.ID)
+	next := e.startAgentReview(t, mr, AgentReviewInput{})
+	e.runs.finish(next.RunID, domain.AgentRunFailed, "boom")
+	waitFor(t, "the next review to fail", func() bool {
+		got, _ := e.svc.repo.GetReview(ctx, next.ID)
+		return got.Status == ReviewFailed
+	})
+	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, rv.ID, ContinueInput{}); !errors.Is(err, ErrInvalidState) || !strings.Contains(err.Error(), "latest") {
+		t.Fatalf("an earlier review: expected ErrInvalidState, got %v", err)
+	}
+	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, next.ID, ContinueInput{}); err != nil {
+		t.Fatalf("the latest review after another failure: %v", err)
+	}
+}
+
+func TestHandlerContinuesAReview(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.tasks.tasks[e.taskID].BudgetUSD = 3
+	mr := e.openTaskMR(t)
+	rv := e.startAgentReview(t, mr, AgentReviewInput{})
+	budget := e.runs.started()[0].Budget
+	budget.Spend(3)
+	e.runs.finish(rv.RunID, domain.AgentRunFailed, budget.ExhaustedMessage())
+	waitFor(t, "the review to fail", func() bool {
+		got, _ := e.svc.repo.GetReview(ctx, rv.ID)
+		return got.Status == ReviewFailed
+	})
+
+	h := NewHandler(e.svc)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/projects/{id}/merge-requests/{mrId}", h.HandleGet)
+	mux.HandleFunc("POST /api/projects/{id}/merge-requests/{mrId}/agent-reviews/{reviewId}/continue", h.HandleContinueReview)
+	do := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: e.owner}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+	one := "/api/projects/" + itoa(e.pid()) + "/merge-requests/" + itoa(mr.ID)
+
+	// The detail carries both budgets, so the page can tell which ran out.
+	rec := do(http.MethodGet, one, "")
+	for _, want := range []string{`"budgetUsd":5`, `"costUsd":3`, `"budgetUsd":3`, fmt.Sprintf("Budget reached: task #%d has spent $3.00 of its $3.00 budget", e.taskID)} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("detail missing %q: %s", want, rec.Body)
+		}
+	}
+	continueURL := one + "/agent-reviews/" + itoa(rv.ID) + "/continue"
+	if rec := do(http.MethodPost, continueURL, ""); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Budget reached") {
+		t.Fatalf("continue over budget: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(http.MethodPost, one+"/agent-reviews/x/continue", ""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad review id: %d %s", rec.Code, rec.Body)
+	}
+	rec = do(http.MethodPost, continueURL, `{"taskBudgetUsd":10}`)
+	if rec.Code != http.StatusAccepted || !strings.Contains(rec.Body.String(), `"status":"pending"`) {
+		t.Fatalf("continue: %d %s", rec.Code, rec.Body)
+	}
+	waitFor(t, "the continued run", func() bool { return len(e.runs.started()) == 2 })
 }

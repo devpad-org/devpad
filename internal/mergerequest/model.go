@@ -118,18 +118,32 @@ type Review struct {
 	// it was recorded.
 	TargetSHA   string
 	WorkspaceID int64
-	RunID       int64
-	AgentID     string
-	Model       string
-	Effort      string
+	// ConversationID is the review agent's transcript, which a continued
+	// review picks up; RunID is its latest run.
+	ConversationID int64
+	RunID          int64
+	AgentID        string
+	Model          string
+	Effort         string
 	// AutoFix sends a request-changes verdict straight to the task's agent,
 	// and reviews the commits it answers with, up to maxReviewRounds.
 	AutoFix bool
 	// Round is which review of the code and review loop this is, from 1.
-	Round     int
+	Round int
+	// BudgetUSD is what the review's agent, with the sub-agents it starts,
+	// may spend; zero means no limit. CostUSD is what it has spent on
+	// requests to models with known prices. A review of a task's merge
+	// request spends from the task's budget too.
+	BudgetUSD float64
+	CostUSD   float64
 	Error     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// OverBudget reports whether the review's agent has spent its own budget.
+func (rv *Review) OverBudget() bool {
+	return rv.BudgetUSD > 0 && rv.CostUSD >= rv.BudgetUSD
 }
 
 // Comment is a remark on a line of a changed file, or on the whole change
@@ -255,6 +269,17 @@ type AgentReviewInput struct {
 	Model   string
 	Effort  string
 	AutoFix bool
+}
+
+// ContinueInput continues an agent review that stopped before submitting,
+// such as one that ran out of budget. Each budget, when set, is raised first;
+// zero means no limit.
+type ContinueInput struct {
+	// BudgetUSD replaces the review's own budget.
+	BudgetUSD *float64
+	// TaskBudgetUSD replaces the budget of the merge request's task, which
+	// the review spends from too.
+	TaskBudgetUSD *float64
 }
 
 // SendBackInput sends a merge request back to its task's agent.

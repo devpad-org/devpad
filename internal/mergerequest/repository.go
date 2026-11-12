@@ -27,7 +27,13 @@ type Repository interface {
 	GetPendingReviewByWorkspace(ctx context.Context, workspaceID int64) (*Review, error)
 	ListReviews(ctx context.Context, mergeRequestID int64) ([]*Review, error)
 	ListPendingReviews(ctx context.Context) ([]*Review, error)
+	// UpdateReview saves the review's fields except CostUSD, which only
+	// RecordReviewCost changes.
 	UpdateReview(ctx context.Context, r *Review) error
+	// RecordReviewCost saves the total a review's agent has spent. It never
+	// lowers the stored total, so a total recorded late cannot undo a later
+	// one.
+	RecordReviewCost(ctx context.Context, id int64, spentUSD float64) error
 
 	CreateComment(ctx context.Context, c *Comment) error
 	GetComment(ctx context.Context, id int64) (*Comment, error)
@@ -153,15 +159,15 @@ func (r *repository) ListPushes(ctx context.Context, mergeRequestID int64) ([]*P
 	})
 }
 
-const reviewColumns = `id, merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, run_id, agent_id, model, effort, auto_fix, round, error, created_at, updated_at`
+const reviewColumns = `id, merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, conversation_id, run_id, agent_id, model, effort, auto_fix, round, budget_usd, cost_usd, error, created_at, updated_at`
 
 func (r *repository) CreateReview(ctx context.Context, rv *Review) error {
 	now := time.Now()
 	// Every review is of some round, the first unless it follows another.
 	rv.Round = max(rv.Round, 1)
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO merge_request_reviews (merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, run_id, agent_id, model, effort, auto_fix, round, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		rv.MergeRequestID, rv.Author, rv.Status, rv.Verdict, rv.Body, rv.HeadSHA, rv.TargetSHA, nullableID(rv.WorkspaceID), nullableID(rv.RunID), rv.AgentID, rv.Model, rv.Effort, rv.AutoFix, rv.Round, rv.Error, now, now,
+		`INSERT INTO merge_request_reviews (merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, conversation_id, run_id, agent_id, model, effort, auto_fix, round, budget_usd, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rv.MergeRequestID, rv.Author, rv.Status, rv.Verdict, rv.Body, rv.HeadSHA, rv.TargetSHA, nullableID(rv.WorkspaceID), nullableID(rv.ConversationID), nullableID(rv.RunID), rv.AgentID, rv.Model, rv.Effort, rv.AutoFix, rv.Round, rv.BudgetUSD, rv.Error, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting review: %w", err)
@@ -205,12 +211,19 @@ func (r *repository) ListPendingReviews(ctx context.Context) ([]*Review, error) 
 func (r *repository) UpdateReview(ctx context.Context, rv *Review) error {
 	now := time.Now()
 	if _, err := r.db.ExecContext(ctx,
-		`UPDATE merge_request_reviews SET status = ?, verdict = ?, body = ?, target_sha = ?, workspace_id = ?, run_id = ?, error = ?, updated_at = ? WHERE id = ?`,
-		rv.Status, rv.Verdict, rv.Body, rv.TargetSHA, nullableID(rv.WorkspaceID), nullableID(rv.RunID), rv.Error, now, rv.ID,
+		`UPDATE merge_request_reviews SET status = ?, verdict = ?, body = ?, target_sha = ?, workspace_id = ?, conversation_id = ?, run_id = ?, budget_usd = ?, error = ?, updated_at = ? WHERE id = ?`,
+		rv.Status, rv.Verdict, rv.Body, rv.TargetSHA, nullableID(rv.WorkspaceID), nullableID(rv.ConversationID), nullableID(rv.RunID), rv.BudgetUSD, rv.Error, now, rv.ID,
 	); err != nil {
 		return fmt.Errorf("updating review: %w", err)
 	}
 	rv.UpdatedAt = now
+	return nil
+}
+
+func (r *repository) RecordReviewCost(ctx context.Context, id int64, spentUSD float64) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE merge_request_reviews SET cost_usd = MAX(cost_usd, ?) WHERE id = ?`, spentUSD, id); err != nil {
+		return fmt.Errorf("recording review cost: %w", err)
+	}
 	return nil
 }
 
@@ -296,11 +309,11 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 
 func scanReview(row rowScanner) (*Review, error) {
 	var rv Review
-	var workspaceID, runID sql.NullInt64
-	if err := row.Scan(&rv.ID, &rv.MergeRequestID, &rv.Author, &rv.Status, &rv.Verdict, &rv.Body, &rv.HeadSHA, &rv.TargetSHA, &workspaceID, &runID, &rv.AgentID, &rv.Model, &rv.Effort, &rv.AutoFix, &rv.Round, &rv.Error, &rv.CreatedAt, &rv.UpdatedAt); err != nil {
+	var workspaceID, conversationID, runID sql.NullInt64
+	if err := row.Scan(&rv.ID, &rv.MergeRequestID, &rv.Author, &rv.Status, &rv.Verdict, &rv.Body, &rv.HeadSHA, &rv.TargetSHA, &workspaceID, &conversationID, &runID, &rv.AgentID, &rv.Model, &rv.Effort, &rv.AutoFix, &rv.Round, &rv.BudgetUSD, &rv.CostUSD, &rv.Error, &rv.CreatedAt, &rv.UpdatedAt); err != nil {
 		return nil, err
 	}
-	rv.WorkspaceID, rv.RunID = workspaceID.Int64, runID.Int64
+	rv.WorkspaceID, rv.ConversationID, rv.RunID = workspaceID.Int64, conversationID.Int64, runID.Int64
 	return &rv, nil
 }
 

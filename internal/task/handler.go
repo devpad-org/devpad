@@ -136,6 +136,21 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleSetBudget replaces a task's budget alone, as raising it to let its
+// agents continue does.
+func (h *Handler) HandleSetBudget(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BudgetUSD *float64 `json:"budgetUsd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.BudgetUSD == nil {
+		writeError(w, http.StatusBadRequest, "budgetUsd is required")
+		return
+	}
+	h.withTask(w, r, func(userID, projectID, taskID int64) (*Task, error) {
+		return h.service.SetBudget(r.Context(), userID, projectID, taskID, *req.BudgetUSD)
+	})
+}
+
 // HandleStart starts or continues an agent on a task.
 func (h *Handler) HandleStart(w http.ResponseWriter, r *http.Request) {
 	var req struct {

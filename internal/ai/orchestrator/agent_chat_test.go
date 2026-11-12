@@ -789,7 +789,7 @@ func TestAgentChatOrchestrator_StopsWhenTheBudgetIsSpent(t *testing.T) {
 	}
 	last := events[len(events)-1]
 	stop := events[len(events)-2]
-	if !last.Done || !strings.Contains(stop.ErrorMessage, "budget of $1.00 is spent ($1.30)") {
+	if !last.Done || !strings.Contains(stop.ErrorMessage, "Budget reached: the agent has spent $1.30 of its $1.00 budget") {
 		t.Fatalf("expected the run to fail on its budget, got %+v then %+v", stop, last)
 	}
 	// The last request's tool call ran, so the transcript can be continued.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -783,7 +784,7 @@ func TestTaskBudgetCoversEveryRoundOfItsAgent(t *testing.T) {
 	}
 	e.runs.finish(first.RunID, domain.AgentRunFailed, budget.ExhaustedMessage())
 	failed := e.waitTask(t, task.ID, status(StatusFailed))
-	if !strings.Contains(failed.Error, "budget of $2.00 is spent") {
+	if !strings.Contains(failed.Error, fmt.Sprintf("Budget reached: task #%d has spent $2.25 of its $2.00 budget", task.ID)) {
 		t.Fatalf("unexpected error: %q", failed.Error)
 	}
 
@@ -923,6 +924,48 @@ func TestTaskBudgetChangedMidRunTakesEffect(t *testing.T) {
 	budget.Spend(4)
 	if !next.Exhausted() {
 		t.Fatal("expected leftover spend to count against the next round")
+	}
+}
+
+// The reviews of a task's merge request spend from the same budget as its
+// agent, and SetBudget raises it for them all at once.
+func TestTaskBudgetIsSharedWithItsReviews(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.budgets.defaults = domain.BudgetDefaults{TaskUSD: 5}
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	e.waitTask(t, task.ID, hasRun)
+	runBudget := e.runs.startedRequests()[0].Budget
+
+	shared, err := e.svc.Budget(ctx, owner, 1, task.ID)
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
+	if shared != runBudget {
+		t.Fatal("expected the task's reviews to get the budget its agent spends from")
+	}
+	review := domain.NewBudget(0, 0, nil).Within(shared)
+	review.Spend(5)
+	if got, _ := e.repo.GetByID(ctx, task.ID); got.CostUSD != 5 || !got.OverBudget() {
+		t.Fatalf("expected a review's spend recorded on the task, got $%v", got.CostUSD)
+	}
+	if !runBudget.Exhausted() {
+		t.Fatal("expected what a review spends to count against the task's agent")
+	}
+
+	if _, err := e.svc.SetBudget(ctx, owner, 1, task.ID, -1); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("a negative budget: expected ErrInvalidInput, got %v", err)
+	}
+	raised, err := e.svc.SetBudget(ctx, owner, 1, task.ID, 8)
+	if err != nil || raised.BudgetUSD != 8 || raised.Title != task.Title {
+		t.Fatalf("set budget: %+v %v", raised, err)
+	}
+	if runBudget.Exhausted() || review.Exhausted() {
+		t.Fatal("expected the raised budget to reach the running agent and its reviews")
+	}
+	if _, err := e.svc.Budget(ctx, owner+1, 1, task.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another user's task: expected ErrNotFound, got %v", err)
 	}
 }
 
@@ -1484,11 +1527,11 @@ func TestShutdownLeavesInterruptedLaunchesForReconcile(t *testing.T) {
 
 func TestAppendUserTextJoinsTrailingUserTurn(t *testing.T) {
 	toolResult := domain.Turn{Role: domain.RoleUser, Parts: []domain.Part{{Kind: domain.PartToolResult, ToolResult: &domain.ToolResultPart{ToolCallID: "1"}}}}
-	turns := appendUserText([]domain.Turn{domain.NewTextTurn(domain.RoleAssistant, "a"), toolResult}, "continue")
+	turns := domain.AppendUserText([]domain.Turn{domain.NewTextTurn(domain.RoleAssistant, "a"), toolResult}, "continue")
 	if len(turns) != 2 || len(turns[1].Parts) != 2 || turns[1].Parts[1].Text != "continue" {
 		t.Fatalf("expected the text joined to the tool result turn: %+v", turns)
 	}
-	turns = appendUserText([]domain.Turn{domain.NewTextTurn(domain.RoleAssistant, "a")}, "continue")
+	turns = domain.AppendUserText([]domain.Turn{domain.NewTextTurn(domain.RoleAssistant, "a")}, "continue")
 	if len(turns) != 2 || turns[1].Role != domain.RoleUser {
 		t.Fatalf("expected a new user turn: %+v", turns)
 	}
@@ -1503,6 +1546,7 @@ func TestHandler(t *testing.T) {
 	mux.HandleFunc("POST /api/projects/{id}/tasks/{taskId}/start", h.HandleStart)
 	mux.HandleFunc("GET /api/projects/{id}/tasks/{taskId}", h.HandleGet)
 	mux.HandleFunc("POST /api/projects/{id}/tasks/handoff", h.HandleHandoff)
+	mux.HandleFunc("PUT /api/projects/{id}/tasks/{taskId}/budget", h.HandleSetBudget)
 
 	do := func(userID int64, method, path, body string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -1543,6 +1587,10 @@ func TestHandler(t *testing.T) {
 		{"bad id", owner, http.MethodGet, "/api/projects/1/tasks/x", "", http.StatusBadRequest},
 		{"unpublished base", owner, http.MethodPost, "/api/projects/1/tasks", `{"title":"x","baseBranch":"nope"}`, http.StatusBadRequest},
 		{"handoff without a project workspace", owner, http.MethodPost, "/api/projects/1/tasks/handoff", `{"conversationId":1,"title":"x"}`, http.StatusConflict},
+		{"set budget", owner, http.MethodPut, "/api/projects/1/tasks/1/budget", `{"budgetUsd":12.5}`, http.StatusOK},
+		{"set budget without one", owner, http.MethodPut, "/api/projects/1/tasks/1/budget", `{}`, http.StatusBadRequest},
+		{"negative budget", owner, http.MethodPut, "/api/projects/1/tasks/1/budget", `{"budgetUsd":-1}`, http.StatusBadRequest},
+		{"other user's budget", stranger, http.MethodPut, "/api/projects/1/tasks/1/budget", `{"budgetUsd":1}`, http.StatusNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

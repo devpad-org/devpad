@@ -70,6 +70,11 @@ export const taskApi = {
     return apiClient.put(`/api/projects/${projectId}/tasks/${id}`, input)
   },
 
+  // Replaces the task's budget alone; zero means no limit.
+  setBudget(projectId: number, id: number, budgetUsd: number): Promise<{ task: Task }> {
+    return apiClient.put(`/api/projects/${projectId}/tasks/${id}/budget`, { budgetUsd })
+  },
+
   delete(projectId: number, id: number): Promise<void> {
     return apiClient.delete(`/api/projects/${projectId}/tasks/${id}`)
   },

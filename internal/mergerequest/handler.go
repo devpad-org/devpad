@@ -231,6 +231,32 @@ func (h *Handler) HandleAgentReview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"review": reviewResponse(rv)})
 }
 
+// HandleContinueReview starts an agent review that stopped before
+// submitting again, raising its budget or its task's first when asked to.
+func (h *Handler) HandleContinueReview(w http.ResponseWriter, r *http.Request) {
+	user, projectID, mrID, ok := params(w, r)
+	if !ok {
+		return
+	}
+	reviewID, ok := pathID(w, r, "reviewId")
+	if !ok {
+		return
+	}
+	var req struct {
+		BudgetUSD     *float64 `json:"budgetUsd"`
+		TaskBudgetUSD *float64 `json:"taskBudgetUsd"`
+	}
+	if r.ContentLength != 0 && !decode(w, r, &req) {
+		return
+	}
+	rv, err := h.service.ContinueReview(r.Context(), user.ID, projectID, mrID, reviewID, ContinueInput(req))
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"review": reviewResponse(rv)})
+}
+
 // HandleMerge merges a merge request into its target branch.
 func (h *Handler) HandleMerge(w http.ResponseWriter, r *http.Request) {
 	user, projectID, mrID, ok := params(w, r)
@@ -396,6 +422,8 @@ func reviewResponse(rv *Review) map[string]any {
 		"effort":      rv.Effort,
 		"autoFix":     rv.AutoFix,
 		"round":       rv.Round,
+		"budgetUsd":   rv.BudgetUSD,
+		"costUsd":     rv.CostUSD,
 		"error":       rv.Error,
 		"createdAt":   rv.CreatedAt,
 		"updatedAt":   rv.UpdatedAt,
@@ -436,6 +464,8 @@ func taskSummaryResponse(t *task.Task) map[string]any {
 		"status":      t.Status,
 		"workspaceId": t.WorkspaceID,
 		"error":       t.Error,
+		"budgetUsd":   t.BudgetUSD,
+		"costUsd":     t.CostUSD,
 	}
 }
 

@@ -28,6 +28,11 @@ type Service interface {
 	Commits(ctx context.Context, userID, projectID, mrID int64) (*agent.RepoLog, error)
 	Review(ctx context.Context, userID, projectID, mrID int64, in ReviewInput) (*Review, error)
 	StartAgentReview(ctx context.Context, userID, projectID, mrID int64, in AgentReviewInput) (*Review, error)
+	// ContinueReview starts an agent review that stopped before submitting
+	// again, raising its budget or its task's first when asked to. A review
+	// that ran picks up its own transcript in its own sandbox; one that never
+	// started is started afresh as a new review.
+	ContinueReview(ctx context.Context, userID, projectID, mrID, reviewID int64, in ContinueInput) (*Review, error)
 	Merge(ctx context.Context, userID, projectID, mrID int64, in MergeInput) (*MergeResult, error)
 	Close(ctx context.Context, userID, projectID, mrID int64) (*MergeRequest, error)
 	// ResolveConflicts asks the task's agent to merge the target branch into
@@ -79,6 +84,7 @@ type Projects interface {
 	Diff(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoDiff, error)
 	Log(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoLog, error)
 	CreateSandbox(ctx context.Context, userID, projectID int64, in project.SandboxInput) (*workspace.Workspace, error)
+	StartSandbox(ctx context.Context, userID, projectID, workspaceID int64) (*workspace.Workspace, error)
 	AwaitSetup(ctx context.Context, userID, projectID, workspaceID int64) (*project.Setup, error)
 	AwaitEnvironment(ctx context.Context, userID, projectID int64) (*project.Environment, error)
 	Merge(ctx context.Context, userID, projectID int64, in project.MergeInput) (*agent.RepoMergeResult, error)
@@ -99,6 +105,8 @@ type Tasks interface {
 	Start(ctx context.Context, userID, projectID, taskID int64, in task.StartInput) (*task.Task, error)
 	RequestChanges(ctx context.Context, userID, projectID, taskID int64, feedback string, start bool) (*task.Task, error)
 	Merged(ctx context.Context, userID, projectID, taskID int64) (*task.Task, error)
+	SetBudget(ctx context.Context, userID, projectID, taskID int64, budgetUSD float64) (*task.Task, error)
+	Budget(ctx context.Context, userID, projectID, taskID int64) (*domain.Budget, error)
 }
 
 // Runs is the agent runner surface review agents need.
@@ -111,6 +119,7 @@ type Runs interface {
 // Conversations keeps each review agent's transcript.
 type Conversations interface {
 	CreateConversation(ctx context.Context, userID, workspaceID int64, model string) (*domain.Conversation, error)
+	GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error)
 }
 
 // AgentDefaults looks up the model and effort an admin set for a built-in
@@ -150,6 +159,10 @@ type service struct {
 	mu     sync.Mutex
 	closed bool
 	locks  map[string]*sync.Mutex
+	// reviewBudgets holds the budget of each agent review that has run since
+	// devpad started, so its runs, the sub-agents a run leaves running, and
+	// a continued run share one limit.
+	reviewBudgets map[int64]*domain.Budget
 }
 
 // NewService creates a merge request Service. Background work stops on
@@ -168,6 +181,7 @@ func NewService(repo Repository, projects Projects, workspaces Workspaces, tasks
 		rootCtx:       ctx,
 		rootCancel:    cancel,
 		locks:         make(map[string]*sync.Mutex),
+		reviewBudgets: make(map[int64]*domain.Budget),
 	}
 }
 
@@ -306,7 +320,8 @@ func (s *service) autoReview(ctx context.Context, p *project.Project, mr *MergeR
 	if !p.AutoReview {
 		return
 	}
-	_, err := s.StartAgentReview(ctx, mr.UserID, mr.ProjectID, mr.ID, AgentReviewInput{AutoFix: mr.TaskID != 0})
+	autoFix := mr.TaskID != 0
+	_, err := s.StartAgentReview(ctx, mr.UserID, mr.ProjectID, mr.ID, AgentReviewInput{AutoFix: autoFix})
 	if err == nil || s.rootCtx.Err() != nil {
 		// A review left pending by a shutdown starts again with the server.
 		return
@@ -318,7 +333,7 @@ func (s *service) autoReview(ctx context.Context, p *project.Project, mr *MergeR
 	}
 	rv := &Review{
 		MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewFailed, HeadSHA: mr.HeadSHA,
-		AgentID: domain.ReviewAgentID, Error: msg,
+		AgentID: domain.ReviewAgentID, AutoFix: autoFix, Error: msg,
 	}
 	if err := s.repo.CreateReview(ctx, rv); err != nil {
 		log.Printf("merge request %d: recording automatic review failure: %v", mr.ID, err)
@@ -802,6 +817,113 @@ func (s *service) StartAgentReview(ctx context.Context, userID, projectID, mrID 
 	return s.startAgentReviewLocked(ctx, userID, projectID, mrID, in, 1)
 }
 
+func (s *service) ContinueReview(ctx context.Context, userID, projectID, mrID, reviewID int64, in ContinueInput) (*Review, error) {
+	if in.BudgetUSD != nil {
+		if err := domain.ValidateBudget(*in.BudgetUSD); err != nil {
+			return nil, invalid("%v", err)
+		}
+	}
+	// The task's budget is raised before the merge request is locked: a task
+	// finishing a round holds its own lock while it takes the merge
+	// request's.
+	if in.TaskBudgetUSD != nil {
+		mr, err := s.getOpen(ctx, userID, projectID, mrID)
+		if err != nil {
+			return nil, err
+		}
+		if mr.TaskID == 0 {
+			return nil, invalid("this merge request has no task")
+		}
+		if _, err := s.tasks.SetBudget(ctx, userID, projectID, mr.TaskID, *in.TaskBudgetUSD); err != nil {
+			return nil, err
+		}
+	}
+
+	unlock := s.lock("mr", mrID)
+	defer unlock()
+	mr, err := s.getOpen(ctx, userID, projectID, mrID)
+	if err != nil {
+		return nil, err
+	}
+	reviews, err := s.repo.ListReviews(ctx, mr.ID)
+	if err != nil {
+		return nil, err
+	}
+	var last *Review
+	for _, r := range reviews {
+		if r.Status == ReviewPending {
+			return nil, fmt.Errorf("%w: a review agent is already reviewing it", ErrInvalidState)
+		}
+		if r.Author == AuthorAgent {
+			last = r
+		}
+	}
+	if last == nil || last.ID != reviewID {
+		return nil, fmt.Errorf("%w: only the latest agent review can be continued; start a new one", ErrInvalidState)
+	}
+	if last.Status != ReviewFailed {
+		return nil, fmt.Errorf("%w: the review is %s", ErrInvalidState, last.Status)
+	}
+	if last.HeadSHA != mr.HeadSHA {
+		return nil, fmt.Errorf("%w: the change has moved on since this review; start a new one", ErrInvalidState)
+	}
+	// A review that never ran has nothing to pick up, so it starts again as
+	// a new review of the same round.
+	if last.RunID == 0 && last.ConversationID == 0 {
+		in := AgentReviewInput{AgentID: last.AgentID, Model: last.Model, Effort: last.Effort, AutoFix: last.AutoFix}
+		return s.startAgentReviewLocked(ctx, userID, projectID, mrID, in, last.Round)
+	}
+
+	unlockReview := s.lock("review", last.ID)
+	defer unlockReview()
+	rv, err := s.repo.GetReview(ctx, last.ID)
+	if err != nil {
+		return nil, err
+	}
+	if rv == nil || rv.Status != ReviewFailed {
+		return nil, fmt.Errorf("%w: the review is no longer failed", ErrInvalidState)
+	}
+	if in.BudgetUSD != nil {
+		rv.BudgetUSD = *in.BudgetUSD
+	}
+	if rv.OverBudget() {
+		return nil, reviewBudgetError(rv)
+	}
+	if mr.TaskID != 0 {
+		t, err := s.tasks.Get(ctx, userID, projectID, mr.TaskID)
+		if err != nil && !errors.Is(err, task.ErrNotFound) {
+			return nil, err
+		}
+		if t != nil && t.OverBudget() {
+			return nil, taskBudgetError(t)
+		}
+	}
+	// Reviews from before their transcript was recorded find it through
+	// their last run.
+	if rv.ConversationID == 0 {
+		if run, err := s.runs.GetRun(ctx, userID, rv.RunID); err == nil {
+			rv.ConversationID = run.ConversationID
+		}
+	}
+	// The review keeps its error until its run starts, so the agent can be
+	// told why it stopped; the run before is left behind, so its end is
+	// never taken for the new run's.
+	rv.Status, rv.RunID = ReviewPending, 0
+	if err := s.repo.UpdateReview(ctx, rv); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if b := s.reviewBudgets[rv.ID]; b != nil {
+		b.SetLimit(rv.BudgetUSD)
+	}
+	s.mu.Unlock()
+	id := rv.ID
+	if !s.spawn(func(ctx context.Context) { s.launchReview(ctx, id) }) {
+		return nil, errors.New("the server is shutting down")
+	}
+	return rv, nil
+}
+
 // startAgentReviewLocked starts the given round of the code and review
 // loop. The caller holds the merge request's lock.
 func (s *service) startAgentReviewLocked(ctx context.Context, userID, projectID, mrID int64, in AgentReviewInput, round int) (*Review, error) {
@@ -835,18 +957,32 @@ func (s *service) startAgentReviewLocked(ctx context.Context, userID, projectID,
 			in.Model, in.Effort = d.Model, d.Effort
 		}
 	}
-	if mr.TaskID != 0 && in.Model == "" {
-		if t, err := s.tasks.Get(ctx, userID, projectID, mr.TaskID); err == nil {
-			in.Model, in.Effort = t.Model, orDefault(in.Effort, t.Effort)
+	var t *task.Task
+	if mr.TaskID != 0 {
+		if t, err = s.tasks.Get(ctx, userID, projectID, mr.TaskID); err != nil && !errors.Is(err, task.ErrNotFound) {
+			return nil, err
 		}
+	}
+	// A review of a task's change spends from the task's budget, so it
+	// cannot start once that is spent.
+	if t != nil && t.OverBudget() {
+		return nil, taskBudgetError(t)
+	}
+	if t != nil && in.Model == "" {
+		in.Model, in.Effort = t.Model, orDefault(in.Effort, t.Effort)
 	}
 	if in.Model == "" {
 		return nil, errNoModel
+	}
+	budgets, err := s.budgets.BudgetDefaults(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	rv := &Review{
 		MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewPending, HeadSHA: mr.HeadSHA,
 		AgentID: in.AgentID, Model: in.Model, Effort: in.Effort, AutoFix: in.AutoFix, Round: round,
+		BudgetUSD: budgets.ReviewUSD,
 	}
 	if err := s.repo.CreateReview(ctx, rv); err != nil {
 		return nil, err
@@ -856,6 +992,18 @@ func (s *service) startAgentReviewLocked(ctx context.Context, userID, projectID,
 		return nil, errors.New("the server is shutting down")
 	}
 	return rv, nil
+}
+
+// taskBudgetError refuses to run a review agent on the merge request of a
+// task that has spent its budget.
+func taskBudgetError(t *task.Task) error {
+	return fmt.Errorf("%w: Budget reached: task #%d has spent $%.2f of its $%.2f budget, which its reviews spend from too; raise the task's budget to review it", ErrInvalidState, t.ID, t.CostUSD, t.BudgetUSD)
+}
+
+// reviewBudgetError refuses to continue a review that has spent its own
+// budget.
+func reviewBudgetError(rv *Review) error {
+	return fmt.Errorf("%w: Budget reached: this review has spent $%.2f of its $%.2f budget; raise its budget to continue it", ErrInvalidState, rv.CostUSD, rv.BudgetUSD)
 }
 
 // errNoModel refuses a review agent without a model: none was picked, the
@@ -979,7 +1127,20 @@ func (s *service) prepareReview(ctx context.Context, reviewID int64) (ws *worksp
 	return ws, diff, false
 }
 
+// startReviewSandbox gives a pending review a running sandbox: the one it
+// already has, started again, when it is continued or a restart cut its
+// launch short, or else a new one at its head. It returns the change only
+// for a new sandbox; a sandbox started again keeps the target commit its
+// review was first given.
 func (s *service) startReviewSandbox(ctx context.Context, mr *MergeRequest, rv *Review) (*workspace.Workspace, *agent.RepoDiff, error) {
+	if rv.WorkspaceID != 0 {
+		ws, err := s.projects.StartSandbox(ctx, mr.UserID, mr.ProjectID, rv.WorkspaceID)
+		if !errors.Is(err, project.ErrNotFound) {
+			return ws, nil, err
+		}
+		// The sandbox is gone, and its transcript with it.
+		rv.WorkspaceID, rv.ConversationID, rv.RunID = 0, 0, 0
+	}
 	diff, err := s.projects.Diff(ctx, mr.UserID, mr.ProjectID, mr.TargetBranch, rv.HeadSHA)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading the change: %w", err)
@@ -1017,11 +1178,7 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 	if mr.TaskID != 0 {
 		t, _ = s.tasks.Get(ctx, mr.UserID, mr.ProjectID, mr.TaskID)
 	}
-	history, err := s.reviewHistory(ctx, mr, rv)
-	if err != nil {
-		return err
-	}
-	budgets, err := s.budgets.BudgetDefaults(ctx)
+	budget, err := s.reviewBudget(ctx, mr, rv)
 	if err != nil {
 		return err
 	}
@@ -1029,24 +1186,44 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 	if rv.Effort != "" {
 		thinking = &domain.ThinkingConfig{Effort: rv.Effort}
 	}
-	conv, err := s.conversations.CreateConversation(ctx, mr.UserID, ws.ID, rv.Model)
+	turns, err := s.continuedTurns(ctx, mr, rv)
 	if err != nil {
 		return err
+	}
+	if turns == nil {
+		history, err := s.reviewHistory(ctx, mr, rv)
+		if err != nil {
+			return err
+		}
+		if diff == nil {
+			// A sandbox started again keeps the target commit its review was
+			// first given, which the change is read against.
+			base := orDefault(rv.TargetSHA, mr.TargetBranch)
+			if diff, err = s.projects.Diff(ctx, mr.UserID, mr.ProjectID, base, rv.HeadSHA); err != nil {
+				return fmt.Errorf("reading the change: %w", err)
+			}
+		}
+		conv, err := s.conversations.CreateConversation(ctx, mr.UserID, ws.ID, rv.Model)
+		if err != nil {
+			return err
+		}
+		rv.ConversationID = conv.ID
+		turns = []domain.Turn{domain.NewTextTurn(domain.RoleUser, reviewPrompt(p, mr, t, rv, ws.Branch, diff, env, setup, history))}
 	}
 	run, err := s.runs.StartRun(ctx, app.StartAgentRunRequest{
 		UserID:         mr.UserID,
 		WorkspaceID:    ws.ID,
-		ConversationID: conv.ID,
+		ConversationID: rv.ConversationID,
 		AgentID:        rv.AgentID,
 		Model:          rv.Model,
-		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, reviewPrompt(p, mr, t, rv, ws.Branch, diff, env, setup, history))},
+		Turns:          turns,
 		Thinking:       thinking,
-		Budget:         domain.NewBudget(budgets.ReviewUSD, 0, nil),
+		Budget:         budget,
 	})
 	if err != nil {
 		return fmt.Errorf("starting review agent: %w", err)
 	}
-	rv.RunID = run.ID
+	rv.RunID, rv.Error = run.ID, ""
 	if err := s.repo.UpdateReview(ctx, rv); err != nil {
 		return err
 	}
@@ -1054,6 +1231,61 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 		s.settleReview(ctx, mr, rv, run)
 	}
 	return nil
+}
+
+// continuedTurns is the transcript of a review continued after it stopped,
+// told why it stopped and to finish, or nil for a review starting afresh,
+// including one whose transcript cannot be read.
+func (s *service) continuedTurns(ctx context.Context, mr *MergeRequest, rv *Review) ([]domain.Turn, error) {
+	if rv.ConversationID == 0 {
+		return nil, nil
+	}
+	turns, err := s.conversations.GetTurns(ctx, rv.ConversationID, mr.UserID)
+	if err != nil || len(turns) == 0 {
+		if err != nil {
+			log.Printf("review %d: loading conversation %d, starting afresh: %v", rv.ID, rv.ConversationID, err)
+		}
+		rv.ConversationID = 0
+		return nil, nil
+	}
+	reason := rv.Error
+	if reason == "" {
+		reason = "the server restarted"
+	}
+	prompt := fmt.Sprintf("Your review stopped before you submitted it: %s\n\nContinue the review where you left off. The comments, replies and resolutions you already made are saved on the merge request (%s lists them), so do not make them again. Finish by calling %s once.", reason, readCommentsTool, submitTool)
+	return domain.AppendUserText(turns, prompt), nil
+}
+
+// reviewBudget is an agent review's budget: its own limit, within its
+// task's budget when it reviews a task's merge request. What it spends is
+// saved on the review after each request.
+func (s *service) reviewBudget(ctx context.Context, mr *MergeRequest, rv *Review) (*domain.Budget, error) {
+	var parent *domain.Budget
+	if mr.TaskID != 0 {
+		b, err := s.tasks.Budget(ctx, mr.UserID, mr.ProjectID, mr.TaskID)
+		switch {
+		case err == nil:
+			parent = b
+		case !errors.Is(err, task.ErrNotFound):
+			return nil, err
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b := s.reviewBudgets[rv.ID]; b != nil {
+		b.SetLimit(rv.BudgetUSD)
+		return b, nil
+	}
+	reviewID := rv.ID
+	b := domain.NewBudget(rv.BudgetUSD, rv.CostUSD, func(spentUSD float64) {
+		// A failed save must not stop the agent; the budget itself still
+		// counts every request.
+		if err := s.repo.RecordReviewCost(context.Background(), reviewID, spentUSD); err != nil {
+			log.Printf("review %d: recording the agent's cost: %v", reviewID, err)
+		}
+	}).Owned("this review").Within(parent)
+	s.reviewBudgets[rv.ID] = b
+	return b, nil
 }
 
 // reviewHistory is what a re-review is told of the merge request's earlier
@@ -1359,11 +1591,14 @@ func (s *service) removeReviewSandboxes(ctx context.Context, mr *MergeRequest, r
 			if err := s.workspaces.Delete(ctx, mr.UserID, rv.WorkspaceID); err != nil && !errors.Is(err, workspace.ErrNotFound) {
 				log.Printf("review %d: removing sandbox %d: %v", rv.ID, rv.WorkspaceID, err)
 			}
-			rv.WorkspaceID, rv.RunID = 0, 0
+			rv.WorkspaceID, rv.ConversationID, rv.RunID = 0, 0, 0
 		}
 		if err := s.repo.UpdateReview(ctx, rv); err != nil {
 			log.Printf("review %d: %v", rv.ID, err)
 		}
+		s.mu.Lock()
+		delete(s.reviewBudgets, rv.ID)
+		s.mu.Unlock()
 		unlock()
 	}
 }
@@ -1532,7 +1767,8 @@ func sendBackMessage(mr *MergeRequest, reviews []*Review, comments []*Comment, n
 
 // Reconcile settles agent reviews that were pending when the server last
 // stopped: the agent runner fails interrupted runs at startup, so they
-// cannot submit any more. Reviews still waiting for a sandbox start again.
+// cannot submit any more. Reviews whose run had not started, such as those
+// waiting for a sandbox or continued after they stopped, start again.
 func (s *service) Reconcile(ctx context.Context) error {
 	reviews, err := s.repo.ListPendingReviews(ctx)
 	if err != nil {
@@ -1543,7 +1779,7 @@ func (s *service) Reconcile(ctx context.Context) error {
 		if err != nil || mr == nil {
 			continue
 		}
-		if rv.WorkspaceID == 0 && mr.Status == StatusOpen {
+		if rv.RunID == 0 && mr.Status == StatusOpen {
 			id := rv.ID
 			s.spawn(func(ctx context.Context) { s.launchReview(ctx, id) })
 			continue

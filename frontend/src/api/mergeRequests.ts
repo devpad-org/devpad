@@ -40,6 +40,10 @@ export interface Review {
   autoFix: boolean
   // round is which review of the code and review loop this is, from 1.
   round: number
+  // What an agent review may spend, zero for no limit, and has spent. A
+  // review of a task's merge request spends from the task's budget too.
+  budgetUsd: number
+  costUsd: number
   error: string
   createdAt: string
   updatedAt: string
@@ -112,6 +116,10 @@ export interface MergeRequestTask {
   status: TaskStatus
   workspaceId: number
   error: string
+  // What the task's agent and the reviews of its merge request may spend in
+  // all, zero for no limit, and have spent.
+  budgetUsd: number
+  costUsd: number
 }
 
 export interface MergeRequestDetail extends MergeRequest {
@@ -187,6 +195,18 @@ export const mergeRequestApi = {
 
   startAgentReview(projectId: number, id: number, input: AgentSettings & { autoFix: boolean }): Promise<{ review: Review }> {
     return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/agent-reviews`, input)
+  },
+
+  // Starts an agent review that stopped before submitting again, raising
+  // its own budget or its task's first when given. A review that ran picks
+  // up where it stopped; one that never started starts as a new review.
+  continueReview(
+    projectId: number,
+    id: number,
+    reviewId: number,
+    input: { budgetUsd?: number; taskBudgetUsd?: number },
+  ): Promise<{ review: Review }> {
+    return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/agent-reviews/${reviewId}/continue`, input)
   },
 
   merge(projectId: number, id: number, input: { strategy: MergeStrategy; message?: string; push: boolean }): Promise<MergeResult> {
