@@ -153,13 +153,13 @@ func (r *repository) ListPushes(ctx context.Context, mergeRequestID int64) ([]*P
 	})
 }
 
-const reviewColumns = `id, merge_request_id, author, status, verdict, body, head_sha, workspace_id, run_id, agent_id, model, effort, auto_fix, error, created_at, updated_at`
+const reviewColumns = `id, merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, run_id, agent_id, model, effort, auto_fix, error, created_at, updated_at`
 
 func (r *repository) CreateReview(ctx context.Context, rv *Review) error {
 	now := time.Now()
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO merge_request_reviews (merge_request_id, author, status, verdict, body, head_sha, workspace_id, run_id, agent_id, model, effort, auto_fix, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		rv.MergeRequestID, rv.Author, rv.Status, rv.Verdict, rv.Body, rv.HeadSHA, nullableID(rv.WorkspaceID), nullableID(rv.RunID), rv.AgentID, rv.Model, rv.Effort, rv.AutoFix, rv.Error, now, now,
+		`INSERT INTO merge_request_reviews (merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, run_id, agent_id, model, effort, auto_fix, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rv.MergeRequestID, rv.Author, rv.Status, rv.Verdict, rv.Body, rv.HeadSHA, rv.TargetSHA, nullableID(rv.WorkspaceID), nullableID(rv.RunID), rv.AgentID, rv.Model, rv.Effort, rv.AutoFix, rv.Error, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting review: %w", err)
@@ -203,8 +203,8 @@ func (r *repository) ListPendingReviews(ctx context.Context) ([]*Review, error) 
 func (r *repository) UpdateReview(ctx context.Context, rv *Review) error {
 	now := time.Now()
 	if _, err := r.db.ExecContext(ctx,
-		`UPDATE merge_request_reviews SET status = ?, verdict = ?, body = ?, workspace_id = ?, run_id = ?, error = ?, updated_at = ? WHERE id = ?`,
-		rv.Status, rv.Verdict, rv.Body, nullableID(rv.WorkspaceID), nullableID(rv.RunID), rv.Error, now, rv.ID,
+		`UPDATE merge_request_reviews SET status = ?, verdict = ?, body = ?, target_sha = ?, workspace_id = ?, run_id = ?, error = ?, updated_at = ? WHERE id = ?`,
+		rv.Status, rv.Verdict, rv.Body, rv.TargetSHA, nullableID(rv.WorkspaceID), nullableID(rv.RunID), rv.Error, now, rv.ID,
 	); err != nil {
 		return fmt.Errorf("updating review: %w", err)
 	}
@@ -295,7 +295,7 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 func scanReview(row rowScanner) (*Review, error) {
 	var rv Review
 	var workspaceID, runID sql.NullInt64
-	if err := row.Scan(&rv.ID, &rv.MergeRequestID, &rv.Author, &rv.Status, &rv.Verdict, &rv.Body, &rv.HeadSHA, &workspaceID, &runID, &rv.AgentID, &rv.Model, &rv.Effort, &rv.AutoFix, &rv.Error, &rv.CreatedAt, &rv.UpdatedAt); err != nil {
+	if err := row.Scan(&rv.ID, &rv.MergeRequestID, &rv.Author, &rv.Status, &rv.Verdict, &rv.Body, &rv.HeadSHA, &rv.TargetSHA, &workspaceID, &runID, &rv.AgentID, &rv.Model, &rv.Effort, &rv.AutoFix, &rv.Error, &rv.CreatedAt, &rv.UpdatedAt); err != nil {
 		return nil, err
 	}
 	rv.WorkspaceID, rv.RunID = workspaceID.Int64, runID.Int64

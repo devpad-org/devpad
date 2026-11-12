@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -180,66 +179,6 @@ func TestRepoFileReturnsContentAtRevision(t *testing.T) {
 		if code, body := get(tt.query); code != tt.want {
 			t.Errorf("%s: expected %d, got %d %s", tt.query, tt.want, code, body)
 		}
-	}
-}
-
-func TestRepoTreeListsDirectoryAtRevision(t *testing.T) {
-	canonical := initCanonical(t)
-	sandbox := seedSandbox(t, canonical, "task/1")
-	if err := os.MkdirAll(filepath.Join(sandbox, "skills", "deploy"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	first := commitFile(t, sandbox, "skills/deploy/SKILL.md", "v1")
-	commitFile(t, sandbox, "skills/notes.txt", "notes")
-	publish(t, canonical, sandbox, "task/1")
-
-	get := func(query string) (int, repoTree) {
-		rec := repoRequest(t, canonical, handleRepoTree, http.MethodGet, "/api/repo/tree?"+query, nil)
-		var tree repoTree
-		json.Unmarshal(rec.Body.Bytes(), &tree)
-		return rec.Code, tree
-	}
-	code, tree := get("rev=task/1&path=skills")
-	want := []repoTreeEntry{{Name: "deploy", Type: "tree"}, {Name: "notes.txt", Type: "blob"}}
-	if code != http.StatusOK || !slices.Equal(tree.Entries, want) || tree.Truncated {
-		t.Fatalf("at branch: %d %+v", code, tree)
-	}
-	if code, tree := get("rev=" + first + "&path=skills"); code != http.StatusOK || len(tree.Entries) != 1 {
-		t.Fatalf("at commit: %d %+v", code, tree)
-	}
-	if code, tree := get("rev=task/1"); code != http.StatusOK || !slices.Contains(tree.Entries, repoTreeEntry{Name: "skills", Type: "tree"}) {
-		t.Fatalf("at root: %d %+v", code, tree)
-	}
-
-	tests := []struct {
-		query string
-		want  int
-	}{
-		{"rev=task/1&path=missing", http.StatusNotFound},
-		{"rev=task/1&path=skills/notes.txt", http.StatusNotFound},
-		{"rev=nope&path=skills", http.StatusNotFound},
-		{"rev=--all&path=skills", http.StatusBadRequest},
-		{"rev=task/1&path=../etc", http.StatusBadRequest},
-		{"rev=task/1&path=/etc", http.StatusBadRequest},
-	}
-	for _, tt := range tests {
-		if code, _ := get(tt.query); code != tt.want {
-			t.Errorf("%s: expected %d, got %d", tt.query, tt.want, code)
-		}
-	}
-}
-
-func TestParseRepoTreeCapsEntries(t *testing.T) {
-	var out strings.Builder
-	for i := 0; i <= maxRepoTreeEntries; i++ {
-		fmt.Fprintf(&out, "100644 blob %040d\tf%d\x00", i, i)
-	}
-	tree := parseRepoTree(out.String())
-	if len(tree.Entries) != maxRepoTreeEntries || !tree.Truncated {
-		t.Fatalf("expected %d entries, truncated; got %d %v", maxRepoTreeEntries, len(tree.Entries), tree.Truncated)
-	}
-	if e := tree.Entries[1]; e.Name != "f1" || e.Type != "blob" {
-		t.Fatalf("unexpected entry %+v", e)
 	}
 }
 

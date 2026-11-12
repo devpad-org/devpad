@@ -32,9 +32,13 @@ type Scope struct {
 type ReviewScope struct {
 	ReviewID       int64
 	MergeRequestID int64
-	// TargetBranch is the branch the change would merge into, which the
-	// review's instructions come from.
+	// TargetBranch is the branch the change would merge into.
 	TargetBranch string
+	// TargetSHA is the commit of TargetBranch the review compares the
+	// change against, which its instructions come from. It is empty for a
+	// review from before devpad recorded it, whose instructions come from
+	// the branch as it is.
+	TargetSHA string
 }
 
 // TaskMRScope is the open merge request of the task a sandbox works on.

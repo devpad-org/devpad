@@ -49,6 +49,9 @@ var loadSkillDefinition = domain.ToolDefinition{
 type Provider struct {
 	workspaces Workspaces
 	projects   Projects
+	// cache keeps what review sandboxes read from their target's commit,
+	// so each review, its sub-agents and its loads read it once.
+	cache *commitCache
 }
 
 var _ aitools.ToolProvider = (*Provider)(nil)
@@ -67,7 +70,7 @@ type catalog struct {
 
 // NewProvider creates the skills provider.
 func NewProvider(workspaces Workspaces, projects Projects) *Provider {
-	return &Provider{workspaces: workspaces, projects: projects}
+	return &Provider{workspaces: workspaces, projects: projects, cache: newCommitCache(commitCacheBytes)}
 }
 
 // List returns the skills a workspace offers, for the IDE's slash commands.
@@ -95,7 +98,8 @@ var (
 // source picks where a workspace's AGENTS.md and skills come from. A review
 // sandbox is a checkout of the change under review, which must not get to
 // tell its reviewer how to review it: they are those of the branch the change
-// would merge into, and it has none once its review is no longer pending.
+// would merge into, at the commit the review compares the change against,
+// and it has none once its review is no longer pending.
 func (p *Provider) source(scope aitools.Scope) (source, string, error) {
 	if scope.WorkspaceID == 0 {
 		return nil, "", errNoWorkspace
@@ -104,8 +108,11 @@ func (p *Provider) source(scope aitools.Scope) (source, string, error) {
 		if scope.Review == nil {
 			return nil, "", errNoReview
 		}
-		branch := scope.Review.TargetBranch
-		return branchSource{projects: p.projects, userID: scope.UserID, projectID: scope.ProjectID, branch: branch}, branch, nil
+		review := scope.Review
+		return &branchSource{
+			projects: p.projects, cache: p.cache, userID: scope.UserID, projectID: scope.ProjectID,
+			branch: review.TargetBranch, commit: review.TargetSHA,
+		}, review.TargetBranch, nil
 	}
 	return workspaceSource{files: p.workspaces, userID: scope.UserID, workspaceID: scope.WorkspaceID}, "", nil
 }
@@ -121,8 +128,15 @@ func (p *Provider) catalog(ctx context.Context, scope aitools.Scope) (*catalog, 
 	if err != nil {
 		return nil, err
 	}
-	c := &catalog{src: src, branch: branch, agents: readAGENTS(ctx, src, scope.WorkspaceID)}
-	if c.skills, err = discover(ctx, src); err != nil {
+	// AGENTS.md comes with the listings of the skills' roots, in one
+	// request from a commit.
+	c := &catalog{src: src, branch: branch}
+	first, err := src.fetch(ctx, Roots, []string{agentsFile}, 0)
+	if err != nil {
+		return c, fmt.Errorf("reading skills: %w", err)
+	}
+	c.agents = agentsFrom(first.files[0], scope.WorkspaceID)
+	if c.skills, err = discoverIn(ctx, src, first.dirs); err != nil {
 		return c, fmt.Errorf("reading skills: %w", err)
 	}
 	return c, nil
@@ -207,7 +221,7 @@ func (p *Provider) loadSkill(ctx context.Context, req aitools.ExecutionRequest) 
 		return toolError("%v", err)
 	}
 	name := strings.TrimPrefix(strings.TrimSpace(args.Name), "/")
-	s, data, err := findSkill(ctx, src, name)
+	s, data, entries, err := findSkill(ctx, src, name)
 	if errors.Is(err, errNotFound) {
 		return p.noSuchSkill(ctx, src, name)
 	}
@@ -228,35 +242,41 @@ func (p *Provider) loadSkill(ctx context.Context, req aitools.ExecutionRequest) 
 	if branch != "" {
 		fmt.Fprintf(&b, " Read its files with %s and file, not from /workspace.", loadSkillTool)
 	}
-	if files := skillFiles(ctx, src, s); len(files) > 0 {
+	if files := skillFiles(entries); len(files) > 0 {
 		fmt.Fprintf(&b, "\nFiles in it: %s", strings.Join(files, ", "))
 	}
 	return domain.ToolResultPart{Name: loadSkillTool, Content: b.String()}
 }
 
 // findSkill reads the skill a name stands for: the first root's whose
-// SKILL.md makes it a skill, as discovery shadows them. It reads one
-// SKILL.md per root rather than finding every skill again. Like discovery,
-// it takes a SKILL.md that cannot be read for no skill, so it loads the
-// skill the prompt listed rather than fail on one that shadows nothing.
-func findSkill(ctx context.Context, src source, name string) (Skill, []byte, error) {
+// SKILL.md makes it a skill, as discovery shadows them, with the entries of
+// its directory. It reads each root's SKILL.md and directory for the name in
+// one fetch rather than find every skill again. Like discovery, it takes a
+// SKILL.md that cannot be read for no skill, so it loads the skill the
+// prompt listed rather than fail on one that shadows nothing.
+func findSkill(ctx context.Context, src source, name string) (Skill, []byte, []entry, error) {
 	if !namePattern.MatchString(name) {
-		return Skill{}, nil, errNotFound
+		return Skill{}, nil, nil, errNotFound
 	}
-	for _, root := range Roots {
-		dir := root + "/" + name
-		data, err := src.read(ctx, dir+"/"+skillFile)
-		if ctx.Err() != nil {
-			return Skill{}, nil, ctx.Err()
-		}
-		if err != nil {
+	dirs := make([]string, len(Roots))
+	files := make([]string, len(Roots))
+	for i, root := range Roots {
+		dirs[i] = root + "/" + name
+		files[i] = dirs[i] + "/" + skillFile
+	}
+	f, err := src.fetch(ctx, dirs, files, 0)
+	if err != nil {
+		return Skill{}, nil, nil, err
+	}
+	for i := range Roots {
+		if f.files[i].err != nil {
 			continue
 		}
-		if s, ok := parseSkill(name, dir, data); ok {
-			return s, data, nil
+		if s, ok := parseSkill(name, dirs[i], f.files[i].data); ok {
+			return s, f.files[i].data, f.dirs[i].entries, nil
 		}
 	}
-	return Skill{}, nil, errNotFound
+	return Skill{}, nil, nil, errNotFound
 }
 
 // noSuchSkill refuses a name that is no skill, naming those there are.
@@ -279,11 +299,7 @@ func (p *Provider) noSuchSkill(ctx context.Context, src source, name string) dom
 
 // skillFiles names the entries of a skill's directory besides SKILL.md,
 // without reading them; the model reads the ones the skill calls for.
-func skillFiles(ctx context.Context, src source, s Skill) []string {
-	entries, err := src.list(ctx, s.Dir)
-	if err != nil {
-		return nil
-	}
+func skillFiles(entries []entry) []string {
 	var files []string
 	for _, e := range entries {
 		if e.name == skillFile {
@@ -307,7 +323,7 @@ func readSkillFile(ctx context.Context, src source, s Skill, file string) domain
 	if file == "" || strings.HasPrefix(file, "/") || path.Clean(file) != file || file == ".." || strings.HasPrefix(file, "../") {
 		return toolError("file must be a path inside the skill's directory, such as references/api.md")
 	}
-	data, err := src.read(ctx, s.Dir+"/"+file)
+	data, err := readFile(ctx, src, s.Dir+"/"+file)
 	if errors.Is(err, errNotFound) {
 		return toolError("the skill %s has no file %s", s.Name, file)
 	}

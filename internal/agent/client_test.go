@@ -185,3 +185,47 @@ func TestReadCommandOutputRefusesOversizedResponses(t *testing.T) {
 		t.Fatal("expected an oversized response refused")
 	}
 }
+
+func TestRepoReadRefusesAnAnswerToAnotherRequest(t *testing.T) {
+	var answer string
+	var asked atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		var in RepoReadRequest
+		if r.Method != http.MethodPost || r.URL.Path != "/api/repo/read" || json.NewDecoder(r.Body).Decode(&in) != nil || in.Rev != "main" {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		io.WriteString(w, answer)
+	}))
+	defer srv.Close()
+	c := &Client{baseURL: srv.URL, http: srv.Client()}
+	in := RepoReadRequest{Rev: "main", Dirs: []string{"skills"}, Files: []string{"AGENTS.md"}}
+
+	answer = `{"commit":"abc","dirs":[{"path":"skills","found":true,"entries":[{"name":"deploy","type":"tree"}]}],"files":[{"path":"AGENTS.md","found":true,"content":"aGk="}]}`
+	got, err := c.RepoRead(context.Background(), in)
+	if err != nil || got.Commit != "abc" || got.Dirs[0].Entries[0].Name != "deploy" || string(got.Files[0].Content) != "hi" {
+		t.Fatalf("unexpected answer %+v, %v", got, err)
+	}
+
+	// More paths than the agent reads at once are refused before asking,
+	// not left to a 400 that could be read as nothing there.
+	before := asked.Load()
+	tooMany := RepoReadRequest{Rev: "main", Files: make([]string, MaxRepoReadFiles+1)}
+	if _, err := c.RepoRead(context.Background(), tooMany); err == nil || asked.Load() != before {
+		t.Fatalf("expected too many paths refused without asking, got %v", err)
+	}
+
+	// Answers are matched to what was asked by position, so one that does
+	// not line up is refused.
+	for _, bad := range []string{
+		`{"commit":"abc","dirs":[],"files":[{"path":"AGENTS.md","found":true}]}`,
+		`{"commit":"abc","dirs":[{"path":"other"}],"files":[{"path":"AGENTS.md"}]}`,
+		`{"commit":"abc","dirs":[{"path":"skills"}],"files":[{"path":"secret"}]}`,
+	} {
+		answer = bad
+		if _, err := c.RepoRead(context.Background(), in); err == nil {
+			t.Errorf("expected %s refused", bad)
+		}
+	}
+}

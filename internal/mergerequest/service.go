@@ -933,8 +933,10 @@ func (s *service) startReviewSandbox(ctx context.Context, mr *MergeRequest, rv *
 		return nil, nil, fmt.Errorf("starting review sandbox: %w", err)
 	}
 	// Record the sandbox before the run starts: the review tools find the
-	// review through it, and closing the merge request removes it.
-	rv.WorkspaceID = ws.ID
+	// review through it, and closing the merge request removes it. The
+	// target's commit is the one the diff was read against, which the
+	// review's instructions and skills come from.
+	rv.WorkspaceID, rv.TargetSHA = ws.ID, diff.BaseSHA
 	if err := s.repo.UpdateReview(ctx, rv); err != nil {
 		return nil, nil, err
 	}

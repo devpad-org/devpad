@@ -46,7 +46,7 @@ type Service interface {
 	Diff(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoDiff, error)
 	Log(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoLog, error)
 	FileAt(ctx context.Context, userID, projectID int64, rev, path string) ([]byte, error)
-	TreeAt(ctx context.Context, userID, projectID int64, rev, path string) (*agent.RepoTree, error)
+	ReadAt(ctx context.Context, userID, projectID int64, in agent.RepoReadRequest) (*agent.RepoRead, error)
 	Merge(ctx context.Context, userID, projectID int64, in MergeInput) (*agent.RepoMergeResult, error)
 	Push(ctx context.Context, userID, projectID int64, branch string) (*agent.RepoBranch, error)
 	Workspace(ctx context.Context, userID, projectID int64) (*workspace.Workspace, error)
@@ -1080,21 +1080,21 @@ func (s *service) FileAt(ctx context.Context, userID, projectID int64, rev, path
 	return c.RepoFile(ctx, rev, path)
 }
 
-// TreeAt lists a directory at a branch or commit of the canonical repo, the
-// repo root when path is empty.
-func (s *service) TreeAt(ctx context.Context, userID, projectID int64, rev, path string) (*agent.RepoTree, error) {
+// ReadAt lists directories and reads files at a branch or commit of the
+// canonical repo in one request, at the one commit it resolves the rev to.
+func (s *service) ReadAt(ctx context.Context, userID, projectID int64, in agent.RepoReadRequest) (*agent.RepoRead, error) {
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
 		return nil, err
 	}
-	if !validRev(rev) {
-		return nil, invalid("rev is required")
+	if !validRev(in.Rev) || len(in.Dirs)+len(in.Files) == 0 {
+		return nil, invalid("rev and paths are required")
 	}
 	c, err := s.repoAgent(ctx, p)
 	if err != nil {
 		return nil, err
 	}
-	return c.RepoTree(ctx, rev, path)
+	return c.RepoRead(ctx, in)
 }
 
 // Merge merges a branch into a protected branch, committing as the user.

@@ -248,28 +248,86 @@ type RepoTreeEntry struct {
 	Type string `json:"type"`
 }
 
-// RepoTree lists a directory, up to the agent's cap on entries.
-type RepoTree struct {
+// MaxRepoReadDirs and MaxRepoReadFiles are the most paths the agent reads in
+// one RepoRead; callers with more split them across requests. They match
+// the agent's own limits.
+const (
+	MaxRepoReadDirs  = 16
+	MaxRepoReadFiles = 512
+)
+
+// RepoReadRequest lists directories and reads files at one rev.
+type RepoReadRequest struct {
+	Rev   string   `json:"rev"`
+	Dirs  []string `json:"dirs,omitempty"`
+	Files []string `json:"files,omitempty"`
+	// MaxBytes is the most file content to read; files are read in order
+	// and those past it skipped. Zero is the agent's own limit.
+	MaxBytes int `json:"maxBytes,omitempty"`
+}
+
+// RepoRead is what a RepoReadRequest found, in the order asked for.
+type RepoRead struct {
+	// Commit is what the rev resolved to, which everything was read at.
+	Commit string         `json:"commit"`
+	Dirs   []RepoReadDir  `json:"dirs"`
+	Files  []RepoReadFile `json:"files"`
+}
+
+// RepoReadDir is a directory's entries, up to the agent's cap.
+type RepoReadDir struct {
+	Path      string          `json:"path"`
+	Found     bool            `json:"found"`
 	Entries   []RepoTreeEntry `json:"entries"`
 	Truncated bool            `json:"truncated"`
 }
 
-// RepoTree lists a directory at a branch or full commit hash, the repo root
-// when path is empty. A missing directory fails with a 404 *AgentError.
-func (c *Client) RepoTree(ctx context.Context, rev, path string) (*RepoTree, error) {
-	q := url.Values{"rev": {rev}}
-	if path != "" {
-		q.Set("path", path)
+// RepoReadFile is a file's contents. A file that is found but too large to
+// read, or past the request's budget, has none.
+type RepoReadFile struct {
+	Path     string `json:"path"`
+	Found    bool   `json:"found"`
+	Content  []byte `json:"content,omitempty"`
+	TooLarge bool   `json:"tooLarge,omitempty"`
+	Skipped  bool   `json:"skipped,omitempty"`
+}
+
+// RepoRead lists directories and reads files at a branch or full commit
+// hash in one request.
+func (c *Client) RepoRead(ctx context.Context, in RepoReadRequest) (*RepoRead, error) {
+	// Refused here rather than by the agent, whose 400 callers may take for
+	// paths with nothing there.
+	if len(in.Dirs) > MaxRepoReadDirs || len(in.Files) > MaxRepoReadFiles {
+		return nil, fmt.Errorf("repo read: at most %d dirs and %d files can be read at once, asked for %d and %d", MaxRepoReadDirs, MaxRepoReadFiles, len(in.Dirs), len(in.Files))
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/repo/tree?"+q.Encode(), nil)
+	payload, err := json.Marshal(in)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/repo/read", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
-	var tree RepoTree
-	if err := c.doRepoJSON(req, "repo tree", &tree); err != nil {
+	req.Header.Set("Content-Type", "application/json")
+	var result RepoRead
+	if err := c.doRepoJSON(req, "repo read", &result); err != nil {
 		return nil, err
 	}
-	return &tree, nil
+	// Callers match answers to what they asked by position.
+	if len(result.Dirs) != len(in.Dirs) || len(result.Files) != len(in.Files) {
+		return nil, fmt.Errorf("repo read: asked for %d dirs and %d files, got %d and %d", len(in.Dirs), len(in.Files), len(result.Dirs), len(result.Files))
+	}
+	for i, d := range result.Dirs {
+		if d.Path != in.Dirs[i] {
+			return nil, fmt.Errorf("repo read: asked for %s, got %s", in.Dirs[i], d.Path)
+		}
+	}
+	for i, f := range result.Files {
+		if f.Path != in.Files[i] {
+			return nil, fmt.Errorf("repo read: asked for %s, got %s", in.Files[i], f.Path)
+		}
+	}
+	return &result, nil
 }
 
 // RepoMergeRequest merges Source into Target. ExpectedSourceSHA, when set,
