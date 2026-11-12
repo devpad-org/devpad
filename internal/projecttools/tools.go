@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"sort"
 	"strings"
@@ -28,7 +29,6 @@ import (
 	"github.com/devpad-org/devpad/internal/mergerequest"
 	"github.com/devpad-org/devpad/internal/project"
 	"github.com/devpad-org/devpad/internal/task"
-	"github.com/devpad-org/devpad/internal/workspace"
 )
 
 const (
@@ -126,7 +126,6 @@ var definitions = []domain.ToolDefinition{
 
 // Workspaces is the workspace surface the tools need.
 type Workspaces interface {
-	Get(ctx context.Context, userID, workspaceID int64) (*workspace.Workspace, error)
 	GitStatus(ctx context.Context, userID, workspaceID int64) (*agent.GitStatus, error)
 }
 
@@ -168,9 +167,8 @@ type Provider struct {
 }
 
 var (
-	_ aitools.ToolProvider   = (*Provider)(nil)
-	_ aitools.ApprovalGate   = (*Provider)(nil)
-	_ aitools.PromptProvider = (*Provider)(nil)
+	_ aitools.ToolProvider = (*Provider)(nil)
+	_ aitools.ApprovalGate = (*Provider)(nil)
 )
 
 // NewProvider creates the project tools provider.
@@ -183,26 +181,11 @@ var errNotProjectWorkspace = errors.New("not a project workspace")
 // project returns the project whose workspace the run is in. Sandboxes and
 // standalone workspaces have none: agents in sandboxes work on one task, and
 // standalone workspaces have no project.
-func (p *Provider) project(ctx context.Context, userID, workspaceID int64) (*project.Project, *workspace.Workspace, error) {
-	ws, err := p.workspaces.Get(ctx, userID, workspaceID)
-	if err != nil {
-		return nil, nil, err
+func (p *Provider) project(ctx context.Context, scope aitools.Scope) (*project.Project, error) {
+	if !scope.ProjectWorkspace() {
+		return nil, errNotProjectWorkspace
 	}
-	if ws.ProjectID == 0 || ws.Kind != workspace.KindInteractive {
-		return nil, nil, errNotProjectWorkspace
-	}
-	proj, err := p.projects.Get(ctx, userID, ws.ProjectID)
-	if err != nil {
-		return nil, nil, err
-	}
-	return proj, ws, nil
-}
-
-func (p *Provider) Tools(ctx context.Context, userID, workspaceID int64) []domain.ToolDefinition {
-	if _, _, err := p.project(ctx, userID, workspaceID); err != nil {
-		return nil
-	}
-	return definitions
+	return p.projects.Get(ctx, scope.UserID, scope.ProjectID)
 }
 
 func owns(name string) bool {
@@ -212,16 +195,27 @@ func owns(name string) bool {
 // outsideProject reports whether a lookup failed because the run is not in
 // a project's own workspace, as opposed to failing to find out.
 func outsideProject(err error) bool {
-	return errors.Is(err, errNotProjectWorkspace) || errors.Is(err, workspace.ErrNotFound) || errors.Is(err, project.ErrNotFound)
+	return errors.Is(err, errNotProjectWorkspace) || errors.Is(err, project.ErrNotFound)
 }
 
-// Prompt tells the assistant which project and branch it is on and what the
-// project tools are for.
-func (p *Provider) Prompt(ctx context.Context, userID, workspaceID int64) string {
-	proj, ws, err := p.project(ctx, userID, workspaceID)
+// Contribute gives the assistant in a project's workspace the project tools,
+// and tells it which project and branch it is on and what the tools are for.
+// A project that cannot be read leaves them out of the run, which is logged:
+// unlike a sandbox, the assistant was meant to have them.
+func (p *Provider) Contribute(ctx context.Context, scope aitools.Scope) aitools.Contribution {
+	proj, err := p.project(ctx, scope)
 	if err != nil {
-		return ""
+		if !outsideProject(err) {
+			log.Printf("project tools for workspace %d: %v", scope.WorkspaceID, err)
+		}
+		return aitools.Contribution{}
 	}
+	return aitools.Contribution{Tools: definitions, Prompt: p.prompt(ctx, scope, proj)}
+}
+
+// prompt tells the assistant which project and branch it is on and what the
+// project tools are for.
+func (p *Provider) prompt(ctx context.Context, scope aitools.Scope, proj *project.Project) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Project context:\nYou are working in the user's own workspace for the project %q. /workspace is a git checkout of the project; its default branch is `%s`.", proj.Name, proj.DefaultBranch)
 	if len(proj.ProtectedBranches) > 0 {
@@ -230,7 +224,7 @@ func (p *Provider) Prompt(ctx context.Context, userID, workspaceID int64) string
 	// The branch is a nicety: a slow workspace must not hold up the run.
 	statusCtx, cancel := context.WithTimeout(ctx, promptStatusTimeout)
 	defer cancel()
-	if status, err := p.workspaces.GitStatus(statusCtx, userID, ws.ID); err == nil && status != nil && status.IsRepo {
+	if status, err := p.workspaces.GitStatus(statusCtx, scope.UserID, scope.WorkspaceID); err == nil && status != nil && status.IsRepo {
 		if branch := cleanBranch(status.Branch); branch != "" {
 			fmt.Fprintf(&b, " The checkout is on the branch `%s`.", branch)
 		}
@@ -299,7 +293,7 @@ func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest
 	// Outside a project workspace the call is refused without asking, so an
 	// agent in a sandbox cannot put an approval card in front of the user.
 	// Any other failure leaves the call unchecked, and it must not run.
-	proj, _, err := p.project(ctx, req.UserID, req.WorkspaceID)
+	proj, err := p.project(ctx, req.Scope)
 	if err != nil {
 		if outsideProject(err) {
 			return aitools.Approval{}, false, nil
@@ -426,7 +420,7 @@ func (p *Provider) ExecuteTool(ctx context.Context, req aitools.ExecutionRequest
 		return domain.ToolResultPart{}, false
 	}
 	// The tools are re-checked on every call, not just when offered.
-	proj, _, err := p.project(ctx, req.UserID, req.WorkspaceID)
+	proj, err := p.project(ctx, req.Scope)
 	if err != nil {
 		if outsideProject(err) {
 			return toolError(req.ToolName, "project tools only work in a project's own workspace"), true

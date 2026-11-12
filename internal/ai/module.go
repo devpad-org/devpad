@@ -105,6 +105,14 @@ func (m *Module) AddToolProvider(p aitools.ToolProvider) {
 	m.toolExecutor.AddProvider(p)
 }
 
+// SetScopeResolver sets what tells providers what a run's workspace is.
+// Until it is set, runs fail once a provider is added, rather than reach a
+// provider that cannot tell a review sandbox from any other workspace.
+func (m *Module) SetScopeResolver(r aitools.ScopeResolver) {
+	m.toolCatalog.SetScopeResolver(r)
+	m.toolExecutor.SetScopeResolver(r)
+}
+
 // OnAgentRunFinished registers fn to be called with a run's final state each
 // time an agent run completes, fails, or is cancelled. fn must return quickly.
 func (m *Module) OnAgentRunFinished(fn func(domain.AgentRun)) {

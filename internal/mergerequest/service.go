@@ -56,15 +56,14 @@ type Service interface {
 	// GuardDeleteBranch refuses deleting a branch an open merge request
 	// comes from.
 	GuardDeleteBranch(ctx context.Context, userID, projectID int64, branch string, del func() error) error
-	// Tools and ExecuteTool give review agents their review tools, and task
-	// agents the tools to read and answer their merge request's comments,
-	// which Prompt tells them about.
+	// Contribute and ExecuteTool give review agents their review tools, and
+	// task agents the tools to read and answer their merge request's
+	// comments, which their prompt tells them about.
 	aitools.ToolProvider
-	aitools.PromptProvider
-	// ReviewTarget returns the project and target branch of the merge request
-	// whose pending review a workspace is the sandbox of; ok is false when it
-	// has none.
-	ReviewTarget(ctx context.Context, userID, workspaceID int64) (projectID int64, branch string, ok bool, err error)
+	// PendingReview and TaskMergeRequest tell the run scope resolver what a
+	// review or task sandbox is there for.
+	PendingReview(ctx context.Context, userID int64, ws *workspace.Workspace) (*aitools.ReviewScope, error)
+	TaskMergeRequest(ctx context.Context, userID int64, ws *workspace.Workspace) (*aitools.TaskMRScope, error)
 	// RunFinished is the agent runner's completion hook.
 	RunFinished(run domain.AgentRun)
 	// Reconcile settles agent reviews interrupted by a server restart.

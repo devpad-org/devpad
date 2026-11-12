@@ -44,6 +44,7 @@ type WorkspaceExecutor struct {
 
 	providersMu sync.RWMutex
 	providers   []ToolProvider
+	scopes      ScopeResolver
 }
 
 // NewWorkspaceExecutor creates an Executor backed by workspace operations.
@@ -74,6 +75,40 @@ func (e *WorkspaceExecutor) AddProvider(p ToolProvider) {
 	e.providers = append(e.providers, p)
 }
 
+// SetScopeResolver sets what tells providers what a call's workspace is.
+func (e *WorkspaceExecutor) SetScopeResolver(r ScopeResolver) {
+	e.providersMu.Lock()
+	defer e.providersMu.Unlock()
+	e.scopes = r
+}
+
+// builtinTools names the tools the executor runs itself, which no provider
+// sees.
+var builtinTools = sync.OnceValue(func() map[string]bool {
+	names := map[string]bool{}
+	for _, d := range AgentTools() {
+		names[d.Function.Name] = true
+	}
+	return names
+})
+
+// providerCall returns the providers, and the call with its scope resolved
+// for them. Built-in tools reach no provider and resolve nothing.
+func (e *WorkspaceExecutor) providerCall(ctx context.Context, req ExecutionRequest) ([]ToolProvider, ExecutionRequest, error) {
+	e.providersMu.RLock()
+	providers, scopes := e.providers, e.scopes
+	e.providersMu.RUnlock()
+	if len(providers) == 0 || builtinTools()[req.ToolName] {
+		return nil, req, nil
+	}
+	scope, err := resolveScope(ctx, scopes, true, req.UserID, req.WorkspaceID)
+	if err != nil {
+		return nil, req, err
+	}
+	req.Scope = scope
+	return providers, req, nil
+}
+
 // SetImageStore wires the store read_file keeps the images it opens in.
 // Without one, image files are read as text.
 func (e *WorkspaceExecutor) SetImageStore(images ImageStore) {
@@ -88,9 +123,10 @@ func (e *WorkspaceExecutor) SetFileSummarizer(summarizer FileSummarizer) {
 // ApprovalFor reports whether a provider requires the user's approval
 // before the call runs.
 func (e *WorkspaceExecutor) ApprovalFor(ctx context.Context, req ExecutionRequest) (Approval, bool, error) {
-	e.providersMu.RLock()
-	providers := e.providers
-	e.providersMu.RUnlock()
+	providers, req, err := e.providerCall(ctx, req)
+	if err != nil {
+		return Approval{}, false, fmt.Errorf("resolving the run's scope: %w", err)
+	}
 	for _, p := range providers {
 		if gate, ok := p.(ApprovalGate); ok {
 			approval, needed, err := gate.ApprovalFor(ctx, req)
@@ -147,9 +183,10 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 	case "wait_for_sub_agents":
 		return e.waitForSubAgents(ctx, req, params)
 	default:
-		e.providersMu.RLock()
-		providers := e.providers
-		e.providersMu.RUnlock()
+		providers, req, err := e.providerCall(ctx, req)
+		if err != nil {
+			return toolFailure(req.ToolName, "Error: could not tell what this workspace is, so the call did not run: %v", err)
+		}
 		for _, p := range providers {
 			if result, ok := p.ExecuteTool(ctx, req); ok {
 				return result

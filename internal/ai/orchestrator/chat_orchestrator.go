@@ -15,16 +15,13 @@ type ChatService interface {
 	FindModel(modelID string) (domain.Model, error)
 }
 
-// WorkspaceToolCatalog is a ToolCatalog whose tools can depend on the
-// workspace a run is in.
+// WorkspaceToolCatalog is a ToolCatalog whose tools, and the context it adds
+// to the system prompt, depend on the workspace a run is in.
 type WorkspaceToolCatalog interface {
-	DefinitionsFor(ctx context.Context, userID, workspaceID int64) []domain.ToolDefinition
-}
-
-// WorkspacePromptCatalog is a ToolCatalog that adds context about the
-// workspace a run is in to its system prompt.
-type WorkspacePromptCatalog interface {
-	PromptFor(ctx context.Context, userID, workspaceID int64) string
+	// Scope resolves what the run's workspace is.
+	Scope(ctx context.Context, userID, workspaceID int64) (aitools.Scope, error)
+	// For returns the run's tools and the context for its system prompt.
+	For(ctx context.Context, scope aitools.Scope) ([]domain.ToolDefinition, string)
 }
 
 // ToolCatalog exposes the built-in agent prompt and tool definitions.

@@ -53,13 +53,23 @@ func (o *agentChatOrchestrator) Stream(ctx context.Context, req AgentChatRequest
 		return nil, err
 	}
 
+	// A run that cannot tell what its workspace is fails before it starts:
+	// a review agent without its review tools would only spend its budget.
+	var scope aitools.Scope
+	scoped, isScoped := o.toolCatalog.(WorkspaceToolCatalog)
+	if isScoped {
+		if scope, err = scoped.Scope(ctx, req.UserID, req.WorkspaceID); err != nil {
+			return nil, fmt.Errorf("resolving the run's scope: %w", err)
+		}
+	}
+
 	out := make(chan domain.ClientEvent)
-	go o.run(ctx, req, model, out)
+	go o.run(ctx, req, model, scope, out)
 
 	return out, nil
 }
 
-func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, model domain.Model, out chan<- domain.ClientEvent) {
+func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, model domain.Model, scope aitools.Scope, out chan<- domain.ClientEvent) {
 	defer close(out)
 	meter := usageMeter{model: model, budget: req.Budget, record: req.RecordUsage}
 	// open is the provider stream being read, which a run that stops part-way
@@ -68,8 +78,11 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 	defer func() { meter.drain(open) }()
 
 	systemPrompt := o.toolCatalog.SystemPrompt()
-	if scoped, ok := o.toolCatalog.(WorkspacePromptCatalog); ok {
-		if section := strings.TrimSpace(scoped.PromptFor(ctx, req.UserID, req.WorkspaceID)); section != "" {
+	toolDefinitions := o.toolCatalog.Definitions()
+	if scoped, ok := o.toolCatalog.(WorkspaceToolCatalog); ok {
+		var section string
+		toolDefinitions, section = scoped.For(ctx, scope)
+		if section = strings.TrimSpace(section); section != "" {
 			systemPrompt = systemPrompt + "\n\n" + section
 		}
 	}
@@ -85,11 +98,6 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 		}},
 	})
 	turns = append(turns, req.Turns...)
-	toolDefinitions := o.toolCatalog.Definitions()
-	if scoped, ok := o.toolCatalog.(WorkspaceToolCatalog); ok {
-		toolDefinitions = scoped.DefinitionsFor(ctx, req.UserID, req.WorkspaceID)
-	}
-
 	for i := 0; ; i++ {
 		if ctx.Err() != nil {
 			return

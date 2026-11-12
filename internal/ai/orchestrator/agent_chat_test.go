@@ -109,14 +109,22 @@ func (fakeToolCatalog) SystemPrompt() string { return "system" }
 
 func (fakeToolCatalog) Definitions() []domain.ToolDefinition { return nil }
 
-// scopedToolCatalog offers an extra tool in one workspace.
+// scopedToolCatalog offers an extra tool and prompt in one workspace, and
+// cannot resolve workspace 13.
 type scopedToolCatalog struct{ fakeToolCatalog }
 
-func (scopedToolCatalog) DefinitionsFor(_ context.Context, _, workspaceID int64) []domain.ToolDefinition {
-	if workspaceID != 7 {
-		return nil
+func (scopedToolCatalog) Scope(_ context.Context, userID, workspaceID int64) (aitools.Scope, error) {
+	if workspaceID == 13 {
+		return aitools.Scope{}, errors.New("database is locked")
 	}
-	return []domain.ToolDefinition{{Type: "function", Function: domain.ToolFunction{Name: "submit_review"}}}
+	return aitools.Scope{UserID: userID, WorkspaceID: workspaceID}, nil
+}
+
+func (scopedToolCatalog) For(_ context.Context, scope aitools.Scope) ([]domain.ToolDefinition, string) {
+	if scope.WorkspaceID != 7 {
+		return nil, ""
+	}
+	return []domain.ToolDefinition{{Type: "function", Function: domain.ToolFunction{Name: "submit_review"}}}, "Review context"
 }
 
 func TestAgentChatOrchestrator_UsesWorkspaceScopedTools(t *testing.T) {
@@ -152,6 +160,33 @@ func TestAgentChatOrchestrator_UsesWorkspaceScopedTools(t *testing.T) {
 		if len(captured.Tools) != tt.want {
 			t.Fatalf("workspace %d: expected %d tools, got %+v", tt.workspaceID, tt.want, captured.Tools)
 		}
+		if system := captured.Turns[0].Text(); strings.Contains(system, "Review context") != (tt.want == 1) {
+			t.Fatalf("workspace %d: unexpected system prompt %q", tt.workspaceID, system)
+		}
+	}
+}
+
+func TestAgentChatOrchestrator_FailsARunWhoseScopeCannotBeResolved(t *testing.T) {
+	requested := false
+	orch := &agentChatOrchestrator{
+		service: &mockChatService{
+			chatStreamFn: func(context.Context, domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+				requested = true
+				return nil, errors.New("unexpected request")
+			},
+		},
+		toolCatalog:       scopedToolCatalog{},
+		toolExecutor:      &mockToolExecutor{},
+		approvals:         &mockApprovalBroker{},
+		questions:         &mockQuestionBroker{},
+		maxToolIterations: defaultMaxToolIterations,
+	}
+	_, err := orch.Stream(context.Background(), AgentChatRequest{
+		UserID: 1, WorkspaceID: 13, Model: "test-model",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")},
+	})
+	if err == nil || !strings.Contains(err.Error(), "database is locked") || requested {
+		t.Fatalf("expected the run refused before any request, got %v (requested=%v)", err, requested)
 	}
 }
 
@@ -933,8 +968,12 @@ func TestAgentChatOrchestrator_ApprovalCheckErrorFailsClosed(t *testing.T) {
 
 type promptToolCatalog struct{ fakeToolCatalog }
 
-func (promptToolCatalog) PromptFor(_ context.Context, _, workspaceID int64) string {
-	return fmt.Sprintf("Project context for workspace %d", workspaceID)
+func (promptToolCatalog) Scope(_ context.Context, userID, workspaceID int64) (aitools.Scope, error) {
+	return aitools.Scope{UserID: userID, WorkspaceID: workspaceID}, nil
+}
+
+func (promptToolCatalog) For(_ context.Context, scope aitools.Scope) ([]domain.ToolDefinition, string) {
+	return nil, fmt.Sprintf("Project context for workspace %d", scope.WorkspaceID)
 }
 
 func TestAgentChatOrchestrator_AddsWorkspaceContextToTheSystemPrompt(t *testing.T) {
