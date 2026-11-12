@@ -22,6 +22,7 @@ import (
 	"github.com/devpad-org/devpad/internal/auth"
 	appdb "github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/project"
+	"github.com/devpad-org/devpad/internal/runscope"
 	"github.com/devpad-org/devpad/internal/task"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
@@ -476,6 +477,16 @@ func (e *env) startAgentReview(t *testing.T, mr *MergeRequest, in AgentReviewInp
 	return got
 }
 
+// scope resolves a run's scope in the workspace as the AI module does.
+func (e *env) scope(t *testing.T, userID, workspaceID int64) aitools.Scope {
+	t.Helper()
+	s, err := runscope.New(e.workspaces, e.svc).Resolve(context.Background(), userID, workspaceID)
+	if err != nil {
+		t.Fatalf("resolving workspace %d: %v", workspaceID, err)
+	}
+	return s
+}
+
 func (e *env) tool(userID, workspaceID int64, name, args string) (domain.ToolResultPart, bool) {
 	return e.svc.ExecuteTool(context.Background(), aitools.ExecutionRequest{UserID: userID, WorkspaceID: workspaceID, ToolName: name, Arguments: json.RawMessage(args)})
 }
@@ -744,6 +755,12 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	if _, _, ok, err := e.svc.ReviewTarget(ctx, e.stranger, rv.WorkspaceID); err != nil || ok {
 		t.Fatalf("another user must not learn the review's target, got %v %v", ok, err)
 	}
+	if s := e.scope(t, e.owner, rv.WorkspaceID); s.Review == nil || s.Review.ReviewID != rv.ID || s.Review.MergeRequestID != rv.MergeRequestID || s.Review.TargetBranch != "main" || s.TaskMR != nil {
+		t.Fatalf("expected the pending review in the sandbox's scope, got %+v", s)
+	}
+	if _, err := runscope.New(e.workspaces, e.svc).Resolve(ctx, e.stranger, rv.WorkspaceID); err == nil {
+		t.Fatal("another user's run must not get a scope in the review sandbox")
+	}
 
 	result, _ := e.tool(e.owner, rv.WorkspaceID, commentTool, `{"path":"main.go","line":3,"body":"x","blocking":false}`)
 	if !result.IsError || !strings.Contains(result.Content, "Changed files: cart.go, README.md") {
@@ -781,6 +798,9 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	}
 	if _, _, ok, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID); err != nil || ok {
 		t.Fatalf("a submitted review has no target to read skills from, got %v %v", ok, err)
+	}
+	if s := e.scope(t, e.owner, rv.WorkspaceID); s.Review != nil {
+		t.Fatalf("a submitted review is not in the scope: %+v", s.Review)
 	}
 
 	reqs := e.tasks.changeRequests()
@@ -1545,8 +1565,14 @@ func TestTaskAgentReadsAndAnswersTheComments(t *testing.T) {
 	if got := e.svc.Tools(ctx, e.owner, wsID); got != nil {
 		t.Fatal("a task without a merge request gets no merge request tools")
 	}
+	if s := e.scope(t, e.owner, wsID); s.TaskMR != nil || s.Kind != workspace.KindTask || s.Branch != "task/1" {
+		t.Fatalf("a task without a merge request has none in its scope: %+v", s)
+	}
 
 	mr := e.openTaskMR(t)
+	if s := e.scope(t, e.owner, wsID); s.TaskMR == nil || s.TaskMR.MergeRequestID != mr.ID || s.TaskMR.TaskID != e.taskID || s.Review != nil {
+		t.Fatalf("expected the task's merge request in the scope, got %+v", s)
+	}
 	if got := e.svc.Tools(ctx, e.owner, wsID); len(got) != 2 {
 		t.Fatalf("expected the task agent's tools, got %d", len(got))
 	}
@@ -1633,6 +1659,9 @@ func TestTaskAgentReadsAndAnswersTheComments(t *testing.T) {
 	e.tasks.mu.Unlock()
 	if got := e.svc.Tools(ctx, e.owner, wsID); got != nil {
 		t.Fatal("a sandbox the task no longer has must not get the tools")
+	}
+	if s := e.scope(t, e.owner, wsID); s.TaskMR != nil {
+		t.Fatalf("a sandbox the task no longer has has no merge request in its scope: %+v", s.TaskMR)
 	}
 	if r, _ := e.tool(e.owner, wsID, mrCommentTool, `{"body":"x"}`); !r.IsError {
 		t.Fatalf("expected refused: %+v", r)

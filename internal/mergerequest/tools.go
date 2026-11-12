@@ -12,6 +12,7 @@ import (
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
+	"github.com/devpad-org/devpad/internal/task"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
 
@@ -130,6 +131,12 @@ func (s *service) taskMergeRequest(ctx context.Context, userID, workspaceID int6
 	if err != nil {
 		return nil, err
 	}
+	return s.taskMergeRequestIn(ctx, userID, ws)
+}
+
+// taskMergeRequestIn finds the open merge request of the task whose sandbox
+// ws is.
+func (s *service) taskMergeRequestIn(ctx context.Context, userID int64, ws *workspace.Workspace) (*MergeRequest, error) {
 	if ws.Kind != workspace.KindTask || ws.ProjectID == 0 || ws.Branch == "" {
 		return nil, ErrNotFound
 	}
@@ -161,6 +168,35 @@ func (s *service) ReviewTarget(ctx context.Context, userID, workspaceID int64) (
 		return 0, "", false, err
 	}
 	return mr.ProjectID, mr.TargetBranch, true, nil
+}
+
+// PendingReview returns the review a review sandbox's agent is writing, or
+// nil when it has none, for the run's scope.
+func (s *service) PendingReview(ctx context.Context, userID int64, ws *workspace.Workspace) (*aitools.ReviewScope, error) {
+	rv, mr, err := s.pendingReview(ctx, userID, ws.ID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if mr.ProjectID != ws.ProjectID {
+		return nil, nil
+	}
+	return &aitools.ReviewScope{ReviewID: rv.ID, MergeRequestID: mr.ID, TargetBranch: mr.TargetBranch}, nil
+}
+
+// TaskMergeRequest returns the open merge request of the task whose
+// sandbox ws is, or nil when there is none, for the run's scope.
+func (s *service) TaskMergeRequest(ctx context.Context, userID int64, ws *workspace.Workspace) (*aitools.TaskMRScope, error) {
+	mr, err := s.taskMergeRequestIn(ctx, userID, ws)
+	if errors.Is(err, ErrNotFound) || errors.Is(err, task.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &aitools.TaskMRScope{TaskID: mr.TaskID, MergeRequestID: mr.ID}, nil
 }
 
 // pendingReview finds the review a workspace's agent is writing.

@@ -65,6 +65,10 @@ type Service interface {
 	// whose pending review a workspace is the sandbox of; ok is false when it
 	// has none.
 	ReviewTarget(ctx context.Context, userID, workspaceID int64) (projectID int64, branch string, ok bool, err error)
+	// PendingReview and TaskMergeRequest tell the run scope resolver what a
+	// review or task sandbox is there for.
+	PendingReview(ctx context.Context, userID int64, ws *workspace.Workspace) (*aitools.ReviewScope, error)
+	TaskMergeRequest(ctx context.Context, userID int64, ws *workspace.Workspace) (*aitools.TaskMRScope, error)
 	// RunFinished is the agent runner's completion hook.
 	RunFinished(run domain.AgentRun)
 	// Reconcile settles agent reviews interrupted by a server restart.
