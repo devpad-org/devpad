@@ -46,15 +46,14 @@ type ApprovalChecker interface {
 
 // AgentChatRequest contains the inputs needed to run the agent loop.
 type AgentChatRequest struct {
-	UserID                int64
-	WorkspaceID           int64
-	CurrentRunID          int64
-	ConversationID        int64
-	Model                 string
-	Turns                 []domain.Turn
-	Thinking              *domain.ThinkingConfig
-	AgentPrompt           string
-	WorkspaceInstructions string
+	UserID         int64
+	WorkspaceID    int64
+	CurrentRunID   int64
+	ConversationID int64
+	Model          string
+	Turns          []domain.Turn
+	Thinking       *domain.ThinkingConfig
+	AgentPrompt    string
 	// Budget, shared with the run's sub-agents, stops the run once spent.
 	// Nil means no limit.
 	Budget *domain.Budget

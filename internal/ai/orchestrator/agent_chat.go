@@ -68,9 +68,6 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 	defer func() { meter.drain(open) }()
 
 	systemPrompt := o.toolCatalog.SystemPrompt()
-	if strings.TrimSpace(req.WorkspaceInstructions) != "" {
-		systemPrompt = systemPrompt + "\n\nWorkspace instructions from AGENTS.md:\n" + strings.TrimSpace(req.WorkspaceInstructions)
-	}
 	if scoped, ok := o.toolCatalog.(WorkspacePromptCatalog); ok {
 		if section := strings.TrimSpace(scoped.PromptFor(ctx, req.UserID, req.WorkspaceID)); section != "" {
 			systemPrompt = systemPrompt + "\n\n" + section

@@ -22,6 +22,12 @@ type AccessService interface {
 	Get(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
 }
 
+// RunChecker checks a workspace can take an agent run.
+type RunChecker interface {
+	// CheckRunning fails unless the workspace is the user's and running.
+	CheckRunning(ctx context.Context, userID, workspaceID int64) error
+}
+
 // AdminService defines workspace operations used by admin workflows.
 type AdminService interface {
 	ListAll(ctx context.Context) ([]*Workspace, error)
@@ -157,6 +163,7 @@ type SidecarBinder interface {
 type Service interface {
 	LifecycleService
 	AccessService
+	RunChecker
 	AdminService
 	FileService
 	CommandService

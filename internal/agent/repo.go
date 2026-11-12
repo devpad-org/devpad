@@ -241,6 +241,37 @@ func (c *Client) RepoFile(ctx context.Context, rev, path string) ([]byte, error)
 	return io.ReadAll(resp.Body)
 }
 
+// RepoTreeEntry is one entry of a directory in the canonical repo. Type is
+// blob, tree or commit (a submodule), as git names them.
+type RepoTreeEntry struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// RepoTree lists a directory, up to the agent's cap on entries.
+type RepoTree struct {
+	Entries   []RepoTreeEntry `json:"entries"`
+	Truncated bool            `json:"truncated"`
+}
+
+// RepoTree lists a directory at a branch or full commit hash, the repo root
+// when path is empty. A missing directory fails with a 404 *AgentError.
+func (c *Client) RepoTree(ctx context.Context, rev, path string) (*RepoTree, error) {
+	q := url.Values{"rev": {rev}}
+	if path != "" {
+		q.Set("path", path)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/repo/tree?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	var tree RepoTree
+	if err := c.doRepoJSON(req, "repo tree", &tree); err != nil {
+		return nil, err
+	}
+	return &tree, nil
+}
+
 // RepoMergeRequest merges Source into Target. ExpectedSourceSHA, when set,
 // refuses the merge if Source has moved.
 type RepoMergeRequest struct {

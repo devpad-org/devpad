@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { aiApi, attachmentUrl, type ChatImage, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalDetail, type ApprovalRequest, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
+import { aiApi, attachmentUrl, type AISkill, type ChatImage, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalDetail, type ApprovalRequest, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
 import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
@@ -109,8 +109,17 @@ const maxImageBytes = 10 * 1024 * 1024
 interface SlashCommand {
   name: string
   description: string
-  prompt: string
+  // What may follow the name; only skills take anything.
+  argumentHint?: string
+  // The request sent for the command and what the user typed after it.
+  prompt: (args: string) => string
+  // Whether text may follow the name.
+  takesArguments?: boolean
 }
+
+// How long the workspace's skills are reused before the slash menu reads
+// them again, so a skill just added shows up without a reload.
+const skillsRefreshMs = 10_000
 
 const conversationStore = useConversationStore()
 const agentRunStore = useAgentRunStore()
@@ -120,7 +129,7 @@ const slashCommands: SlashCommand[] = [
   {
     name: '/init',
     description: 'Create or update AGENTS.md with project instructions',
-    prompt: `Initialize this repository for future AI coding agents by creating or updating AGENTS.md at the workspace root.
+    prompt: () => `Initialize this repository for future AI coding agents by creating or updating AGENTS.md at the workspace root.
 
 Inspect the repository structure, README, package or build configuration, and any existing AGENTS.md first. Then write a concise AGENTS.md that captures:
 - Project overview and architecture
@@ -131,6 +140,26 @@ Inspect the repository structure, README, package or build configuration, and an
 If AGENTS.md already exists, preserve useful guidance and update stale or missing sections instead of replacing it blindly. Keep the file specific to this repository, avoid inventing commands, and briefly summarize what changed after writing it.`,
   },
 ]
+const skills = ref<AISkill[]>([])
+let skillsFetchedAt = 0
+// The workspace's skills, after the built-in commands, which a skill of the
+// same name does not replace. The model loads the skill itself, so its
+// instructions stay in the conversation for the turns after.
+const allSlashCommands = computed<SlashCommand[]>(() => [
+  ...slashCommands,
+  ...skills.value
+    .filter((skill) => skill.userInvocable && !slashCommands.some((command) => command.name === `/${skill.name}`))
+    .map((skill) => ({
+      name: `/${skill.name}`,
+      description: skill.description,
+      argumentHint: skill.argumentHint,
+      takesArguments: true,
+      prompt: (args: string) => {
+        const request = `Use the skill \`${skill.name}\`: load it with load_skill, then follow its instructions.`
+        return args ? `${request}\n\nArguments: ${args}` : request
+      },
+    })),
+])
 const activeConversationId = ref<number | null>(null)
 
 const messages = ref<DisplayMessage[]>([])
@@ -313,16 +342,38 @@ const slashCommandOptions = computed(() => {
   if (!value.startsWith('/') || /\s/.test(value)) {
     return []
   }
-  return slashCommands.filter((command) => command.name.startsWith(value))
+  return allSlashCommands.value.filter((command) => command.name.startsWith(value))
 })
 
-function resolveSlashCommand(text: string): SlashCommand | undefined {
+const slashMenuOpen = computed(() => inputValue.value.trimStart().startsWith('/'))
+
+watch(slashMenuOpen, (open) => {
+  if (open && Date.now() - skillsFetchedAt > skillsRefreshMs) void fetchSkills()
+})
+
+async function fetchSkills() {
+  if (props.workspaceId <= 0) return
+  skillsFetchedAt = Date.now()
+  try {
+    const { skills: found } = await aiApi.listSkills(props.workspaceId)
+    skills.value = found
+  } catch {
+    // Without its skills the menu still has the built-in commands.
+  }
+}
+
+// resolveSlashCommand matches a message to a command, and returns the text
+// after its name.
+function resolveSlashCommand(text: string): { command: SlashCommand; args: string } | undefined {
   const value = text.trim()
-  return slashCommands.find((command) => command.name === value)
+  const [name = ''] = value.split(/\s/, 1)
+  const command = allSlashCommands.value.find((candidate) => candidate.name === name)
+  if (!command || (name !== value && !command.takesArguments)) return undefined
+  return { command, args: value.slice(name.length).trim() }
 }
 
 function applySlashCommand(command: SlashCommand) {
-  inputValue.value = command.name
+  inputValue.value = command.argumentHint ? `${command.name} ` : command.name
   void nextTick(() => {
     autoResize()
     inputEl.value?.focus()
@@ -366,6 +417,7 @@ onMounted(async () => {
   // Fetch conversation metadata for internal thread tracking (non-blocking).
   conversationStore.fetchConversations(props.workspaceId)
   aiAgentStore.fetchAgents(props.workspaceId)
+  void fetchSkills()
 })
 
 onUnmounted(() => {
@@ -1128,8 +1180,7 @@ async function sendMessage() {
   if (!canSend.value || streaming.value) return
   const images = pendingImages.value.flatMap((pending) => (pending.image ? [pending.image] : []))
   const slashCommand = resolveSlashCommand(text)
-  const displayText = slashCommand?.name ?? text
-  const requestText = slashCommand?.prompt ?? text
+  const requestText = slashCommand ? slashCommand.command.prompt(slashCommand.args) : text
 
   if (!selectedModel.value) {
     messages.value.push({
@@ -1156,8 +1207,8 @@ async function sendMessage() {
 
   // Push user message to display and raw arrays.
   const userImages = images.length > 0 ? images : undefined
-  messages.value.push({ role: 'user', content: displayText, segments: [], images: userImages })
-  rawMessages.value.push({ role: 'user', content: displayText, images: userImages })
+  messages.value.push({ role: 'user', content: text, segments: [], images: userImages })
+  rawMessages.value.push({ role: 'user', content: text, images: userImages })
   inputValue.value = ''
   clearPendingImages()
   resetInputHeight()
@@ -1912,7 +1963,9 @@ function scrollToBottom(options: { force?: boolean } = {}) {
             class="slash-command-option"
             @mousedown.prevent="applySlashCommand(command)"
           >
-            <span class="slash-command-name">{{ command.name }}</span>
+            <span class="slash-command-name">
+              {{ command.name }}<span v-if="command.argumentHint" class="slash-command-hint"> {{ command.argumentHint }}</span>
+            </span>
             <span class="slash-command-description">{{ command.description }}</span>
           </button>
         </div>
@@ -2563,6 +2616,10 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   font-family: var(--font-mono);
   font-size: 0.78rem;
   color: var(--accent);
+}
+
+.slash-command-hint {
+  color: var(--text-muted);
 }
 
 .slash-command-description {

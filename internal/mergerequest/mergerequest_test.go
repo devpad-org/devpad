@@ -735,6 +735,15 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	if _, handled := e.tool(e.owner, rv.WorkspaceID, "read_file", `{}`); handled {
 		t.Fatal("the provider must not claim other tools")
 	}
+	if projectID, branch, ok, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID); err != nil || !ok || projectID != e.pid() || branch != "main" {
+		t.Fatalf("expected the review's target branch, got %d %q %v %v", projectID, branch, ok, err)
+	}
+	if _, _, ok, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID+1); err != nil || ok {
+		t.Fatalf("a workspace with no pending review has no target, got %v %v", ok, err)
+	}
+	if _, _, ok, err := e.svc.ReviewTarget(ctx, e.stranger, rv.WorkspaceID); err != nil || ok {
+		t.Fatalf("another user must not learn the review's target, got %v %v", ok, err)
+	}
 
 	result, _ := e.tool(e.owner, rv.WorkspaceID, commentTool, `{"path":"main.go","line":3,"body":"x","blocking":false}`)
 	if !result.IsError || !strings.Contains(result.Content, "Changed files: cart.go, README.md") {
@@ -769,6 +778,9 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	}
 	if got := e.svc.Tools(ctx, e.owner, rv.WorkspaceID); got != nil {
 		t.Fatal("the review tools should go away once the review is submitted")
+	}
+	if _, _, ok, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID); err != nil || ok {
+		t.Fatalf("a submitted review has no target to read skills from, got %v %v", ok, err)
 	}
 
 	reqs := e.tasks.changeRequests()

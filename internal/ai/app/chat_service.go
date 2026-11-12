@@ -37,9 +37,11 @@ type AgentChatRequest struct {
 	Budget *domain.Budget
 }
 
-// WorkspaceInstructionSource reads project-local agent instructions.
-type WorkspaceInstructionSource interface {
-	Instructions(ctx context.Context, userID, workspaceID int64) (string, error)
+// WorkspaceChecker refuses a run in a workspace the user does not own or
+// that is not running. Tools check again call by call, but only after the
+// run has started paying for model requests.
+type WorkspaceChecker interface {
+	CheckRunning(ctx context.Context, userID, workspaceID int64) error
 }
 
 // ChatService owns the app-level chat entry points.
@@ -49,11 +51,11 @@ type ChatService interface {
 }
 
 type chatService struct {
-	simple                *orchestrator.SimpleChatOrchestrator
-	agent                 orchestrator.AgentChatOrchestrator
-	workspaceInstructions WorkspaceInstructionSource
-	images                ImageLoader
-	usage                 UsageRecorder
+	simple     *orchestrator.SimpleChatOrchestrator
+	agent      orchestrator.AgentChatOrchestrator
+	workspaces WorkspaceChecker
+	images     ImageLoader
+	usage      UsageRecorder
 }
 
 type providerChatBackend struct {
@@ -63,15 +65,15 @@ type providerChatBackend struct {
 // NewChatService creates the app-level chat service for simple and agent
 // chat. images loads the images turns refer to; nil sends turns as they are.
 // usage records every provider request the chats make; nil records none.
-func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog, executor orchestrator.ToolExecutor, approvals approval.Broker, questions question.Broker, workspaceInstructions WorkspaceInstructionSource, images ImageLoader, usage UsageRecorder) ChatService {
+func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog, executor orchestrator.ToolExecutor, approvals approval.Broker, questions question.Broker, workspaces WorkspaceChecker, images ImageLoader, usage UsageRecorder) ChatService {
 	backend := &providerChatBackend{catalog: catalog}
 
 	return &chatService{
-		simple:                orchestrator.NewSimpleChatOrchestrator(backend),
-		agent:                 orchestrator.NewAgentChatOrchestrator(backend, toolCatalog, executor, approvals, questions),
-		workspaceInstructions: workspaceInstructions,
-		images:                images,
-		usage:                 usage,
+		simple:     orchestrator.NewSimpleChatOrchestrator(backend),
+		agent:      orchestrator.NewAgentChatOrchestrator(backend, toolCatalog, executor, approvals, questions),
+		workspaces: workspaces,
+		images:     images,
+		usage:      usage,
 	}
 }
 
@@ -92,25 +94,23 @@ func (s *chatService) StreamSimple(ctx context.Context, req SimpleChatRequest) (
 }
 
 func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-chan domain.ClientEvent, error) {
+	if err := s.workspaces.CheckRunning(ctx, req.UserID, req.WorkspaceID); err != nil {
+		return nil, fmt.Errorf("checking the run's workspace: %w", err)
+	}
 	turns, err := s.hydrate(ctx, req.UserID, req.Turns)
 	if err != nil {
 		return nil, err
 	}
-	workspaceInstructions, err := s.resolveWorkspaceInstructions(ctx, req.UserID, req.WorkspaceID)
-	if err != nil {
-		return nil, err
-	}
 	return s.agent.Stream(ctx, orchestrator.AgentChatRequest{
-		UserID:                req.UserID,
-		WorkspaceID:           req.WorkspaceID,
-		CurrentRunID:          req.CurrentRunID,
-		ConversationID:        req.ConversationID,
-		Model:                 req.Model,
-		Turns:                 turns,
-		Thinking:              req.Thinking,
-		AgentPrompt:           req.AgentPrompt,
-		WorkspaceInstructions: workspaceInstructions,
-		Budget:                req.Budget,
+		UserID:         req.UserID,
+		WorkspaceID:    req.WorkspaceID,
+		CurrentRunID:   req.CurrentRunID,
+		ConversationID: req.ConversationID,
+		Model:          req.Model,
+		Turns:          turns,
+		Thinking:       req.Thinking,
+		AgentPrompt:    req.AgentPrompt,
+		Budget:         req.Budget,
 		RecordUsage: usageRecorderFor(s.usage, domain.UsageRecord{
 			UserID:      req.UserID,
 			WorkspaceID: req.WorkspaceID,
@@ -127,17 +127,6 @@ func (s *chatService) hydrate(ctx context.Context, userID int64, turns []domain.
 		return turns, nil
 	}
 	return s.images.Hydrate(ctx, userID, turns)
-}
-
-func (s *chatService) resolveWorkspaceInstructions(ctx context.Context, userID, workspaceID int64) (string, error) {
-	if s.workspaceInstructions == nil {
-		return "", nil
-	}
-	instructions, err := s.workspaceInstructions.Instructions(ctx, userID, workspaceID)
-	if err != nil {
-		return "", fmt.Errorf("loading workspace instructions: %w", err)
-	}
-	return instructions, nil
 }
 
 func (s *providerChatBackend) ChatStream(ctx context.Context, req domain.ChatRequest) (<-chan domain.ProviderEvent, error) {

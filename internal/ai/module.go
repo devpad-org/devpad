@@ -42,8 +42,14 @@ type Module struct {
 	toolExecutor *aitools.WorkspaceExecutor
 }
 
+// Workspaces is the workspace surface the AI module needs.
+type Workspaces interface {
+	aitools.WorkspaceOps
+	app.WorkspaceChecker
+}
+
 // NewModule assembles the AI subpackages behind the root composition facade.
-func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
+func NewModule(db *sql.DB, workspaces Workspaces) *Module {
 	providerConfigs := storage.NewProviderConfigRepository(db)
 	conversations := storage.NewConversationRepository(db)
 	attachmentService := app.NewAttachmentService(storage.NewAttachmentRepository(db))
@@ -62,12 +68,12 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 	budgetDefaultsService := app.NewBudgetDefaultsService(storage.NewBudgetDefaultsRepository(db))
 	conversationService := app.NewConversationService(conversations)
 	usageService := app.NewUsageService(storage.NewUsageRepository(db), catalogService)
-	toolExecutor := aitools.NewWorkspaceExecutor(workspaceOps)
+	toolExecutor := aitools.NewWorkspaceExecutor(workspaces)
 	toolExecutor.SetImageStore(attachmentService)
 	approvalBroker := approval.NewMemoryBroker()
 	questionBroker := question.NewMemoryBroker()
 	toolCatalog := aitools.NewCatalog()
-	chatService := app.NewChatService(catalogService, toolCatalog, toolExecutor, approvalBroker, questionBroker, app.NewAGENTSInstructionSource(workspaceOps), attachmentService, usageService)
+	chatService := app.NewChatService(catalogService, toolCatalog, toolExecutor, approvalBroker, questionBroker, workspaces, attachmentService, usageService)
 	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService))
 	agentRuns := storage.NewAgentRunRepository(db)
 	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService).WithImageLoader(attachmentService)

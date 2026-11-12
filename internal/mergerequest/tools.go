@@ -150,6 +150,19 @@ func (s *service) taskMergeRequest(ctx context.Context, userID, workspaceID int6
 	return mr, nil
 }
 
+// ReviewTarget returns the project and target branch of the merge request
+// whose pending review a workspace is the sandbox of.
+func (s *service) ReviewTarget(ctx context.Context, userID, workspaceID int64) (int64, string, bool, error) {
+	_, mr, err := s.pendingReview(ctx, userID, workspaceID)
+	if errors.Is(err, ErrNotFound) {
+		return 0, "", false, nil
+	}
+	if err != nil {
+		return 0, "", false, err
+	}
+	return mr.ProjectID, mr.TargetBranch, true, nil
+}
+
 // pendingReview finds the review a workspace's agent is writing.
 func (s *service) pendingReview(ctx context.Context, userID, workspaceID int64) (*Review, *MergeRequest, error) {
 	rv, err := s.repo.GetPendingReviewByWorkspace(ctx, workspaceID)

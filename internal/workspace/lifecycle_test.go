@@ -75,6 +75,15 @@ func TestRestartUpdatesAgentWithOneRestart(t *testing.T) {
 	if _, err := svc.Restart(ctx, 1, ws.ID); err != nil {
 		t.Fatalf("second restart: %v", err)
 	}
+	if err := svc.CheckRunning(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("check running: %v", err)
+	}
+	if err := svc.CheckRunning(ctx, 2, ws.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("check another user's: got %v, want ErrForbidden", err)
+	}
+	if err := svc.CheckRunning(ctx, 1, ws.ID+1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("check unknown: got %v, want ErrNotFound", err)
+	}
 	if len(cm.copied) != 1 || len(cm.restarted) != 2 {
 		t.Fatalf("after second restart: copied %v, restarted %d times", cm.copied, len(cm.restarted))
 	}
@@ -83,6 +92,9 @@ func TestRestartUpdatesAgentWithOneRestart(t *testing.T) {
 	// outside its project.
 	if _, err := svc.Stop(ctx, 1, ws.ID); err != nil {
 		t.Fatalf("stop: %v", err)
+	}
+	if err := svc.CheckRunning(ctx, 1, ws.ID); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("check stopped: got %v, want ErrNotRunning", err)
 	}
 	startedBefore := len(cm.started)
 	if _, err := svc.Restart(ctx, 1, ws.ID); !errors.Is(err, ErrNotRunning) {
