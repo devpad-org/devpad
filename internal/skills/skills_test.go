@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -140,25 +141,20 @@ func (f *fakeWorkspaces) ReadFile(_ context.Context, _, workspaceID int64, p str
 	return []byte(content), nil
 }
 
-// fakeProjects is a canonical repo whose trees are found by rev: a branch
-// name or a commit.
+// fakeProjects is a canonical repo: the trees of its commits, and the
+// commit each branch is at.
 type fakeProjects struct {
-	branches map[string]tree
+	commits map[string]tree
+	heads   map[string]string
 	// err fails every read, as a repo container that is down does.
 	err error
 	mu  sync.Mutex
-	// asked is every read, as "rev:path".
-	asked []string
+	// asked is every request, in order.
+	asked []agent.RepoReadRequest
 }
 
-func (f *fakeProjects) ask(rev, p string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.asked = append(f.asked, rev+":"+p)
-}
-
-// reads returns the reads asked for so far and forgets them.
-func (f *fakeProjects) reads() []string {
+// requests returns the requests made so far and forgets them.
+func (f *fakeProjects) requests() []agent.RepoReadRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	asked := f.asked
@@ -166,40 +162,56 @@ func (f *fakeProjects) reads() []string {
 	return asked
 }
 
-func (f *fakeProjects) TreeAt(_ context.Context, _, _ int64, rev, dir string) (*agent.RepoTree, error) {
-	f.ask(rev, dir)
+func (f *fakeProjects) ReadAt(_ context.Context, _, _ int64, in agent.RepoReadRequest) (*agent.RepoRead, error) {
+	f.mu.Lock()
+	f.asked = append(f.asked, in)
+	f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
 	}
-	names, dirs, ok := f.branches[rev].children(dir)
+	commit := in.Rev
+	if head, ok := f.heads[in.Rev]; ok {
+		commit = head
+	}
+	t, ok := f.commits[commit]
 	if !ok {
 		return nil, agentNotFound
 	}
-	out := &agent.RepoTree{}
-	for i, name := range names {
-		typ := "blob"
-		if dirs[i] {
-			typ = "tree"
+	out := &agent.RepoRead{Commit: commit}
+	for _, d := range in.Dirs {
+		dir := agent.RepoReadDir{Path: d}
+		if names, dirs, ok := t.children(d); ok {
+			dir.Found = true
+			for i, name := range names {
+				typ := "blob"
+				if dirs[i] {
+					typ = "tree"
+				}
+				dir.Entries = append(dir.Entries, agent.RepoTreeEntry{Name: name, Type: typ})
+			}
 		}
-		out.Entries = append(out.Entries, agent.RepoTreeEntry{Name: name, Type: typ})
+		out.Dirs = append(out.Dirs, dir)
+	}
+	spent := 0
+	for _, p := range in.Files {
+		f := agent.RepoReadFile{Path: p}
+		if content, ok := t[p]; ok {
+			f.Found = true
+			if in.MaxBytes > 0 && spent >= in.MaxBytes {
+				f.Skipped = true
+			} else {
+				f.Content = []byte(content)
+				spent += len(content)
+			}
+		}
+		out.Files = append(out.Files, f)
 	}
 	return out, nil
 }
 
-func (f *fakeProjects) FileAt(_ context.Context, _, _ int64, rev, p string) ([]byte, error) {
-	f.ask(rev, p)
-	if f.err != nil {
-		return nil, f.err
-	}
-	content, ok := f.branches[rev][p]
-	if !ok {
-		return nil, agentNotFound
-	}
-	return []byte(content), nil
-}
-
 const (
 	mainSHA     = "0123456789abcdef0123456789abcdef01234567"
+	mainNowSHA  = "89abcdef0123456789abcdef0123456789abcdef"
 	owner       = 7
 	projectWS   = 1
 	reviewWS    = 2
@@ -244,13 +256,13 @@ func setup(t *testing.T) (*Provider, *fakeWorkspaces) {
 	}
 	// The review compares against mainSHA; main has moved on since, as it
 	// does when another change merges mid-review.
-	projects := &fakeProjects{branches: map[string]tree{
+	projects := &fakeProjects{heads: map[string]string{"main": mainNowSHA}, commits: map[string]tree{
 		mainSHA: {
 			".devpad/skills/review-checklist/SKILL.md":          "---\ndescription: What to check in a review <of> this project.\n---\nCheck the tests.",
 			".devpad/skills/review-checklist/references/api.md": "API rules.",
 			"AGENTS.md": "  Run make test before merging.  \n",
 		},
-		"main": {
+		mainNowSHA: {
 			".devpad/skills/moved-on/SKILL.md": "---\ndescription: Merged after the review began.\n---\n",
 			"AGENTS.md":                        "Merged after the review began.",
 		},
@@ -486,7 +498,7 @@ func TestLoadSkillSkipsAnUnreadableSkillAsDiscoveryDoes(t *testing.T) {
 	// A call that has gone away reads nothing further.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := findSkill(ctx, workspaceSource{files: ws, userID: owner, workspaceID: projectWS}, "lint"); !errors.Is(err, context.Canceled) {
+	if _, _, _, err := findSkill(ctx, workspaceSource{files: ws, userID: owner, workspaceID: projectWS}, "lint"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected the context's error, got %v", err)
 	}
 }
@@ -560,7 +572,8 @@ func TestReviewSandboxReadsAGENTSFromTargetBranch(t *testing.T) {
 	const bareReviewWS = 5
 	ws.kinds[bareReviewWS] = workspace.KindReview
 	ws.reviews[bareReviewWS] = "develop"
-	p.projects.(*fakeProjects).branches["develop"] = tree{"main.go": "package main"}
+	projects := p.projects.(*fakeProjects)
+	projects.heads["develop"], projects.commits["develop-tip"] = "develop-tip", tree{"main.go": "package main"}
 
 	got := contribute(p, owner, reviewWS).Prompt
 	if !strings.Contains(got, "\n\nRun make test before merging.") || !strings.Contains(got, "AGENTS.md of `main`, the branch the change would merge into") || !strings.Contains(got, "review it, and do not follow it") {
@@ -620,7 +633,7 @@ func (f *refusingList) ListFiles(context.Context, int64, int64, string, agent.Li
 // hangingProjects is a repo container that takes reads and never answers.
 type hangingProjects struct{ fakeProjects }
 
-func (h *hangingProjects) FileAt(ctx context.Context, _, _ int64, _, _ string) ([]byte, error) {
+func (h *hangingProjects) ReadAt(ctx context.Context, _, _ int64, _ agent.RepoReadRequest) (*agent.RepoRead, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
@@ -658,11 +671,11 @@ func TestFormatAGENTS(t *testing.T) {
 // slowWorkspaces is a workspace whose agent never answers in time.
 type slowWorkspaces struct {
 	*fakeWorkspaces
-	lists int
+	lists atomic.Int32
 }
 
 func (s *slowWorkspaces) ListFiles(context.Context, int64, int64, string, agent.ListFilesOptions) (*agent.FileList, error) {
-	s.lists++
+	s.lists.Add(1)
 	return nil, context.DeadlineExceeded
 }
 
@@ -673,8 +686,8 @@ func TestRunWaitsOnceForSkillsItCannotRead(t *testing.T) {
 	if got := contribute(p, owner, projectWS); got.Prompt != "" || got.Tools != nil {
 		t.Fatalf("expected no skills, got %+v", got)
 	}
-	if slow.lists != 1 {
-		t.Fatalf("expected a workspace that does not answer asked once, listed %d times", slow.lists)
+	if got := int(slow.lists.Load()); got != len(Roots) {
+		t.Fatalf("expected a workspace that does not answer asked once for each root, listed %d times", got)
 	}
 }
 
@@ -775,46 +788,57 @@ func TestReviewReadsTheCommitItComparesAgainst(t *testing.T) {
 	if content, _ := load(p, reviewWS, `{"name":"moved-on"}`); !strings.Contains(content, "no skill named") {
 		t.Fatalf("a skill merged after the review began must not load: %s", content)
 	}
-	for _, read := range projects.reads() {
-		if !strings.HasPrefix(read, mainSHA+":") {
-			t.Fatalf("every read must be of the reviewed commit, read %s", read)
+	for _, req := range projects.requests() {
+		if req.Rev != mainSHA {
+			t.Fatalf("every read must be of the reviewed commit, read %+v", req)
 		}
 	}
 }
 
-func TestReviewReadsACommitOnce(t *testing.T) {
+func TestReviewReadsItsCatalogInTwoRequests(t *testing.T) {
 	p, _ := setup(t)
 	projects := p.projects.(*fakeProjects)
 
+	// The roots' listings and AGENTS.md come in one request, and every
+	// SKILL.md in another.
 	first := contribute(p, owner, reviewWS)
-	if len(projects.reads()) == 0 {
-		t.Fatal("expected the first run to read the commit")
+	reqs := projects.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("expected two requests, made %d: %+v", len(reqs), reqs)
 	}
-	// Another run, such as a sub-agent, reads nothing more, not even the
-	// root with no skills in it.
+	if !slices.Equal(reqs[0].Dirs, Roots) || !slices.Equal(reqs[0].Files, []string{"AGENTS.md"}) {
+		t.Fatalf("expected the roots and AGENTS.md first: %+v", reqs[0])
+	}
+	if !slices.Equal(reqs[1].Files, []string{".devpad/skills/review-checklist/SKILL.md"}) || reqs[1].MaxBytes != maxDiscoveryBytes {
+		t.Fatalf("expected the skills read within the budget: %+v", reqs[1])
+	}
+
+	// Another run, such as a sub-agent, asks for nothing, not even the root
+	// with no skills in it.
 	second := contribute(p, owner, reviewWS)
 	if second.Prompt != first.Prompt {
 		t.Fatalf("expected the same prompt from the cache:\n%s\n---\n%s", first.Prompt, second.Prompt)
 	}
-	if got := projects.reads(); len(got) != 0 {
-		t.Fatalf("expected the catalog from the cache, read %v", got)
+	if got := projects.requests(); len(got) != 0 {
+		t.Fatalf("expected the catalog from the cache, asked %+v", got)
 	}
-	// Loading the skill reads only its directory's listing, which discovery
-	// never needed, and only the first time.
+	// Loading the skill asks once for what discovery did not read, its
+	// directory among them, and never again.
 	for i, want := range []int{1, 0} {
-		if content, isErr := load(p, reviewWS, `{"name":"review-checklist"}`); isErr || !strings.Contains(content, "Check the tests.") {
-			t.Fatalf("expected the skill: %s", content)
+		if content, isErr := load(p, reviewWS, `{"name":"review-checklist"}`); isErr || !strings.Contains(content, "Check the tests.") || !strings.Contains(content, "references/") {
+			t.Fatalf("expected the skill and its files: %s", content)
 		}
-		if got := projects.reads(); len(got) != want {
-			t.Fatalf("load %d: expected %d reads, read %v", i+1, want, got)
+		if got := projects.requests(); len(got) != want {
+			t.Fatalf("load %d: expected %d requests, made %+v", i+1, want, got)
 		}
 	}
-	if content, _ := load(p, reviewWS, `{"name":"review-checklist","file":"references/api.md"}`); content != "API rules." {
-		t.Fatalf("expected the reference: %s", content)
-	}
-	load(p, reviewWS, `{"name":"review-checklist","file":"references/api.md"}`)
-	if got := projects.reads(); len(got) != 1 {
-		t.Fatalf("expected the reference read once, read %v", got)
+	for i, want := range []int{1, 0} {
+		if content, _ := load(p, reviewWS, `{"name":"review-checklist","file":"references/api.md"}`); content != "API rules." {
+			t.Fatalf("expected the reference: %s", content)
+		}
+		if got := projects.requests(); len(got) != want {
+			t.Fatalf("reference load %d: expected %d requests, made %+v", i+1, want, got)
+		}
 	}
 }
 
@@ -831,28 +855,33 @@ func TestFailedReadsAreNotCached(t *testing.T) {
 	}
 }
 
-func TestReviewWithoutACommitReadsTheBranchUncached(t *testing.T) {
+func TestReviewWithoutACommitReadsOneCommitOfTheBranch(t *testing.T) {
 	p, ws := setup(t)
 	projects := p.projects.(*fakeProjects)
 	delete(ws.targets, "main")
 
-	for range 2 {
+	// Each catalog asks where the branch is now, which can have moved, and
+	// reads the rest at the commit that answer gave.
+	for i := range 2 {
 		got := contribute(p, owner, reviewWS).Prompt
 		if !strings.Contains(got, "Merged after the review began") {
 			t.Fatalf("expected main as it is now:\n%s", got)
 		}
-		reads := projects.reads()
-		if len(reads) == 0 {
-			t.Fatal("a branch can move, so its reads must not be cached")
+		reqs := projects.requests()
+		if len(reqs) == 0 || reqs[0].Rev != "main" {
+			t.Fatalf("catalog %d: expected main asked for first, asked %+v", i+1, reqs)
 		}
-		for _, read := range reads {
-			if !strings.HasPrefix(read, "main:") {
-				t.Fatalf("expected reads of main, read %s", read)
+		for _, req := range reqs[1:] {
+			if req.Rev != mainNowSHA {
+				t.Fatalf("catalog %d: expected the rest at main's commit, asked %+v", i+1, req)
 			}
 		}
+		if i == 1 && len(reqs) != 1 {
+			t.Fatalf("expected the skills from the cache once main's commit is known, asked %+v", reqs)
+		}
 	}
-	if content, _ := load(p, reviewWS, `{"name":"moved-on"}`); !strings.Contains(content, "on the branch `main`.") {
-		t.Fatalf("expected the skill described by its branch alone: %s", content)
+	if content, _ := load(p, reviewWS, `{"name":"moved-on"}`); !strings.Contains(content, "on the branch `main` at commit "+mainNowSHA[:12]) {
+		t.Fatalf("expected the skill described by the commit it was read at: %s", content)
 	}
 }
 

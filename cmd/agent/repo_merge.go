@@ -320,65 +320,10 @@ type repoTreeEntry struct {
 	Type string `json:"type"`
 }
 
+// repoTree is a directory's entries, up to maxRepoTreeEntries.
 type repoTree struct {
 	Entries   []repoTreeEntry `json:"entries"`
 	Truncated bool            `json:"truncated"`
-}
-
-// handleRepoTree lists a directory at a commit or branch, the repo root
-// when path is empty.
-func handleRepoTree(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
-	defer cancel()
-
-	q := r.URL.Query()
-	sha, err := resolveRev(ctx, q.Get("rev"), "rev")
-	if err != nil {
-		writeRevError(w, err)
-		return
-	}
-	object := sha
-	if p := q.Get("path"); p != "" {
-		if err := validateRepoPath(p); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		// Everything after the colon is the path, so it cannot take a
-		// ^{tree} suffix: the type is checked on its own.
-		object = sha + ":" + p
-		if typ, err := gitStdout(ctx, "cat-file", "-t", object); err != nil || strings.TrimSpace(typ) != "tree" {
-			writeErr(w, http.StatusNotFound, "directory not found at "+sha[:12]+": "+p)
-			return
-		}
-	}
-	out, err := gitStdout(ctx, "ls-tree", "-z", object)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, parseRepoTree(out))
-}
-
-// parseRepoTree reads `git ls-tree -z` output: "<mode> <type> <object>\t<name>"
-// records, NUL-terminated.
-func parseRepoTree(out string) repoTree {
-	tree := repoTree{Entries: []repoTreeEntry{}}
-	for _, record := range strings.Split(out, "\x00") {
-		meta, name, ok := strings.Cut(record, "\t")
-		if !ok {
-			continue
-		}
-		fields := strings.Fields(meta)
-		if len(fields) != 3 {
-			continue
-		}
-		if len(tree.Entries) == maxRepoTreeEntries {
-			tree.Truncated = true
-			break
-		}
-		tree.Entries = append(tree.Entries, repoTreeEntry{Name: name, Type: fields[1]})
-	}
-	return tree
 }
 
 // validateRepoPath accepts a clean path relative to the repo root.

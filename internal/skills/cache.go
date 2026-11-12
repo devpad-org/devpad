@@ -39,6 +39,14 @@ type cached struct {
 	size    int
 }
 
+// err is errNotFound for a read that found nothing.
+func (v cached) err() error {
+	if v.missing {
+		return errNotFound
+	}
+	return nil
+}
+
 // commitCache keeps what has been read from commits of canonical repos,
 // least recently used first out. A commit never changes, so nothing it
 // keeps goes stale, and a read that failed for any reason other than there

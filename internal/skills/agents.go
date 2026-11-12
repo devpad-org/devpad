@@ -1,7 +1,6 @@
 package skills
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -19,18 +18,18 @@ const (
 	maxAgentsBytes = 16 * 1024
 )
 
-// readAGENTS returns a source's AGENTS.md, ready for the prompt. Like skills,
-// instructions are an addition to a run, and the repo container being down
-// should not fail a review: one that cannot be read is logged and left out.
-func readAGENTS(ctx context.Context, src source, workspaceID int64) string {
-	data, err := src.read(ctx, agentsFile)
-	if err != nil {
-		if !errors.Is(err, errNotFound) && !errors.Is(err, workspace.ErrNotRunning) {
-			log.Printf("%s for workspace %d: %v", agentsFile, workspaceID, err)
+// agentsFrom returns a source's AGENTS.md, as fetched, ready for the prompt.
+// Like skills, instructions are an addition to a run, and the repo container
+// being down should not fail a review: one that cannot be read is logged and
+// left out.
+func agentsFrom(f file, workspaceID int64) string {
+	if f.err != nil {
+		if !errors.Is(f.err, errNotFound) && !errors.Is(f.err, workspace.ErrNotRunning) {
+			log.Printf("%s for workspace %d: %v", agentsFile, workspaceID, f.err)
 		}
 		return ""
 	}
-	return formatAGENTS(data)
+	return formatAGENTS(f.data)
 }
 
 // formatAGENTS trims an AGENTS.md, cutting it to the most a run's prompt
