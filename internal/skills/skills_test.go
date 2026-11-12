@@ -346,8 +346,8 @@ func TestListFindsSkillsInBothRoots(t *testing.T) {
 
 func TestPromptAndToolsInWorkspace(t *testing.T) {
 	p, _ := setup(t)
-	if tools := contribute(p, owner, projectWS).Tools; len(tools) != 1 || tools[0].Function.Name != loadSkillTool {
-		t.Fatalf("expected load_skill, got %+v", tools)
+	if got := contribute(p, owner, projectWS); len(got.Tools) != 1 || got.Tools[0].Function.Name != loadSkillTool || got.Rank != aitools.RankInstructions {
+		t.Fatalf("expected load_skill, with the prompt leading the others, got %+v", got)
 	}
 	var schema map[string]any
 	if err := json.Unmarshal(loadSkillDefinition.Function.Parameters, &schema); err != nil {

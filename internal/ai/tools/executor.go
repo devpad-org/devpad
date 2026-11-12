@@ -122,7 +122,15 @@ type Contribution struct {
 	Tools []domain.ToolDefinition
 	// Prompt is added to the run's system prompt.
 	Prompt string
+	// Rank orders the prompt sections, lowest first; sections of the same
+	// rank keep the order their providers were added in. Most providers
+	// leave it zero.
+	Rank int
 }
+
+// RankInstructions is the rank of the repo's own instructions to every run,
+// such as its AGENTS.md, which lead what providers add to the prompt.
+const RankInstructions = -100
 
 // Approval describes a tool call the user must approve before it runs.
 type Approval struct {

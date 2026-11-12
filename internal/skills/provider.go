@@ -140,7 +140,7 @@ func (p *Provider) Contribute(ctx context.Context, scope aitools.Scope) aitools.
 	if c == nil {
 		return aitools.Contribution{}
 	}
-	var out aitools.Contribution
+	out := aitools.Contribution{Rank: aitools.RankInstructions}
 	if len(c.skills) > 0 {
 		out.Tools = []domain.ToolDefinition{loadSkillDefinition}
 	}

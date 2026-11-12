@@ -1,9 +1,11 @@
 package tools
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 
@@ -73,13 +75,18 @@ func (c *Catalog) For(ctx context.Context, scope Scope) ([]domain.ToolDefinition
 	providers := c.providers
 	c.mu.RUnlock()
 	defs := AgentTools()
-	var sections []string
+	var contributions []Contribution
 	for _, p := range providers {
 		contribution := p.Contribute(ctx, scope)
 		defs = append(defs, contribution.Tools...)
-		if section := strings.TrimSpace(contribution.Prompt); section != "" {
-			sections = append(sections, section)
+		if contribution.Prompt = strings.TrimSpace(contribution.Prompt); contribution.Prompt != "" {
+			contributions = append(contributions, contribution)
 		}
+	}
+	slices.SortStableFunc(contributions, func(a, b Contribution) int { return cmp.Compare(a.Rank, b.Rank) })
+	sections := make([]string, len(contributions))
+	for i, c := range contributions {
+		sections[i] = c.Prompt
 	}
 	return defs, strings.Join(sections, "\n\n")
 }

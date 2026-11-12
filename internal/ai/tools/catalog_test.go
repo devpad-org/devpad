@@ -212,3 +212,29 @@ func TestProvidersAddPromptContextAndApprovals(t *testing.T) {
 		t.Fatalf("expected the resolver's error, got needed=%v err=%v", needed, err)
 	}
 }
+
+// promptProvider adds one prompt section at a rank.
+type promptProvider struct {
+	prompt string
+	rank   int
+}
+
+func (p promptProvider) Contribute(context.Context, Scope) Contribution {
+	return Contribution{Prompt: p.prompt, Rank: p.rank}
+}
+
+func (promptProvider) ExecuteTool(context.Context, ExecutionRequest) (domain.ToolResultPart, bool) {
+	return domain.ToolResultPart{}, false
+}
+
+func TestPromptSectionsFollowTheirRankThenTheirProviders(t *testing.T) {
+	catalog := NewCatalog()
+	catalog.SetScopeResolver(&fakeScopes{})
+	for _, p := range []promptProvider{{prompt: "Review context"}, {prompt: "  "}, {prompt: "Project context"}, {prompt: "AGENTS.md", rank: RankInstructions}} {
+		catalog.AddProvider(p)
+	}
+	scope, _ := catalog.Scope(context.Background(), 1, 8)
+	if _, got := catalog.For(context.Background(), scope); got != "AGENTS.md\n\nReview context\n\nProject context" {
+		t.Fatalf("unexpected prompt order %q", got)
+	}
+}

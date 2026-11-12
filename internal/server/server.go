@@ -146,8 +146,7 @@ func New(cfg Config) (*Server, error) {
 	aiModule.SetScopeResolver(scopes)
 
 	// AGENTS.md and the project's skills, and load_skill. Review agents read
-	// them from the branch the change would merge into. This provider is added
-	// first because AGENTS.md leads what providers add to the system prompt.
+	// them from the branch the change would merge into.
 	skillsProvider := skills.NewProvider(workspaceService, projectService)
 	skillsHandler := skills.NewHandler(skillsProvider, scopes)
 	aiModule.AddToolProvider(skillsProvider)
