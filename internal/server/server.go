@@ -142,13 +142,14 @@ func New(cfg Config) (*Server, error) {
 
 	// What each run's workspace is, which every tool provider is told. It is
 	// set before any provider is added and before reconciling restarts runs.
-	aiModule.SetScopeResolver(runscope.New(workspaceService, mrService))
+	scopes := runscope.New(workspaceService, mrService)
+	aiModule.SetScopeResolver(scopes)
 
 	// AGENTS.md and the project's skills, and load_skill. Review agents read
 	// them from the branch the change would merge into. This provider is added
 	// first because AGENTS.md leads what providers add to the system prompt.
-	skillsProvider := skills.NewProvider(workspaceService, projectService, mrService)
-	skillsHandler := skills.NewHandler(skillsProvider)
+	skillsProvider := skills.NewProvider(workspaceService, projectService)
+	skillsHandler := skills.NewHandler(skillsProvider, scopes)
 	aiModule.AddToolProvider(skillsProvider)
 
 	aiModule.AddToolProvider(mrService)

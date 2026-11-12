@@ -762,15 +762,6 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	if _, handled := e.tool(e.owner, rv.WorkspaceID, "read_file", `{}`); handled {
 		t.Fatal("the provider must not claim other tools")
 	}
-	if projectID, branch, ok, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID); err != nil || !ok || projectID != e.pid() || branch != "main" {
-		t.Fatalf("expected the review's target branch, got %d %q %v %v", projectID, branch, ok, err)
-	}
-	if _, _, ok, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID+1); err != nil || ok {
-		t.Fatalf("a workspace with no pending review has no target, got %v %v", ok, err)
-	}
-	if _, _, ok, err := e.svc.ReviewTarget(ctx, e.stranger, rv.WorkspaceID); err != nil || ok {
-		t.Fatalf("another user must not learn the review's target, got %v %v", ok, err)
-	}
 	if s := e.scope(t, e.owner, rv.WorkspaceID); s.Review == nil || s.Review.ReviewID != rv.ID || s.Review.MergeRequestID != rv.MergeRequestID || s.Review.TargetBranch != "main" || s.TaskMR != nil {
 		t.Fatalf("expected the pending review in the sandbox's scope, got %+v", s)
 	}
@@ -811,9 +802,6 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	}
 	if got := e.contribution(e.owner, rv.WorkspaceID).Tools; got != nil {
 		t.Fatal("the review tools should go away once the review is submitted")
-	}
-	if _, _, ok, err := e.svc.ReviewTarget(ctx, e.owner, rv.WorkspaceID); err != nil || ok {
-		t.Fatalf("a submitted review has no target to read skills from, got %v %v", ok, err)
 	}
 	if s := e.scope(t, e.owner, rv.WorkspaceID); s.Review != nil {
 		t.Fatalf("a submitted review is not in the scope: %+v", s.Review)

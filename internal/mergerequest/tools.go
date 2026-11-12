@@ -152,19 +152,6 @@ func (s *service) taskMergeRequest(ctx context.Context, userID int64, ws *worksp
 	return mr, nil
 }
 
-// ReviewTarget returns the project and target branch of the merge request
-// whose pending review a workspace is the sandbox of.
-func (s *service) ReviewTarget(ctx context.Context, userID, workspaceID int64) (int64, string, bool, error) {
-	_, mr, err := s.pendingReview(ctx, userID, workspaceID)
-	if errors.Is(err, ErrNotFound) {
-		return 0, "", false, nil
-	}
-	if err != nil {
-		return 0, "", false, err
-	}
-	return mr.ProjectID, mr.TargetBranch, true, nil
-}
-
 // PendingReview returns the review a review sandbox's agent is writing, or
 // nil when it has none, for the run's scope.
 func (s *service) PendingReview(ctx context.Context, userID int64, ws *workspace.Workspace) (*aitools.ReviewScope, error) {

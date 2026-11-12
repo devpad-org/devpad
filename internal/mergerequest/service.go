@@ -60,10 +60,6 @@ type Service interface {
 	// task agents the tools to read and answer their merge request's
 	// comments, which their prompt tells them about.
 	aitools.ToolProvider
-	// ReviewTarget returns the project and target branch of the merge request
-	// whose pending review a workspace is the sandbox of; ok is false when it
-	// has none.
-	ReviewTarget(ctx context.Context, userID, workspaceID int64) (projectID int64, branch string, ok bool, err error)
 	// PendingReview and TaskMergeRequest tell the run scope resolver what a
 	// review or task sandbox is there for.
 	PendingReview(ctx context.Context, userID int64, ws *workspace.Workspace) (*aitools.ReviewScope, error)

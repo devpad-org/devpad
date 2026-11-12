@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/project"
 	"github.com/devpad-org/devpad/internal/workspace"
@@ -15,11 +16,13 @@ import (
 // Handler serves a workspace's skills to the IDE.
 type Handler struct {
 	provider *Provider
+	scopes   aitools.ScopeResolver
 }
 
-// NewHandler returns the skills HTTP handler.
-func NewHandler(p *Provider) *Handler {
-	return &Handler{provider: p}
+// NewHandler returns the skills HTTP handler. It lists the skills a run in
+// the workspace would get, so it resolves the workspace as runs do.
+func NewHandler(p *Provider, scopes aitools.ScopeResolver) *Handler {
+	return &Handler{provider: p, scopes: scopes}
 }
 
 // HandleList returns the skills a workspace offers.
@@ -30,7 +33,11 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid workspace id")
 		return
 	}
-	found, err := h.provider.List(r.Context(), user.ID, workspaceID)
+	scope, err := h.scopes.Resolve(r.Context(), user.ID, workspaceID)
+	var found []Skill
+	if err == nil {
+		found, err = h.provider.List(r.Context(), scope)
+	}
 	switch {
 	case errors.Is(err, workspace.ErrNotFound):
 		writeError(w, http.StatusNotFound, "workspace not found")
