@@ -236,7 +236,9 @@ func (p *Provider) loadSkill(ctx context.Context, req aitools.ExecutionRequest) 
 
 // findSkill reads the skill a name stands for: the first root's whose
 // SKILL.md makes it a skill, as discovery shadows them. It reads one
-// SKILL.md per root rather than finding every skill again.
+// SKILL.md per root rather than finding every skill again. Like discovery,
+// it takes a SKILL.md that cannot be read for no skill, so it loads the
+// skill the prompt listed rather than fail on one that shadows nothing.
 func findSkill(ctx context.Context, src source, name string) (Skill, []byte, error) {
 	if !namePattern.MatchString(name) {
 		return Skill{}, nil, errNotFound
@@ -244,11 +246,11 @@ func findSkill(ctx context.Context, src source, name string) (Skill, []byte, err
 	for _, root := range Roots {
 		dir := root + "/" + name
 		data, err := src.read(ctx, dir+"/"+skillFile)
-		if errors.Is(err, errNotFound) {
-			continue
+		if ctx.Err() != nil {
+			return Skill{}, nil, ctx.Err()
 		}
 		if err != nil {
-			return Skill{}, nil, err
+			continue
 		}
 		if s, ok := parseSkill(name, dir, data); ok {
 			return s, data, nil

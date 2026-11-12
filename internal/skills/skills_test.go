@@ -54,8 +54,10 @@ type fakeWorkspaces struct {
 	files  map[int64]tree
 	// reviews is the target branch of each review sandbox's pending review.
 	reviews map[int64]string
-	mu      sync.Mutex
-	reads   []string
+	// readErrs fails reading these paths, as an agent that errors does.
+	readErrs map[string]error
+	mu       sync.Mutex
+	reads    []string
 }
 
 func (f *fakeWorkspaces) Get(_ context.Context, userID, workspaceID int64) (*workspace.Workspace, error) {
@@ -125,6 +127,9 @@ func (f *fakeWorkspaces) ReadFile(_ context.Context, _, workspaceID int64, p str
 	f.mu.Lock()
 	f.reads = append(f.reads, p)
 	f.mu.Unlock()
+	if err := f.readErrs[p]; err != nil {
+		return nil, err
+	}
 	content, ok := f.files[workspaceID][p]
 	if !ok {
 		return nil, agentNotFound
@@ -426,6 +431,30 @@ func TestLoadSkill(t *testing.T) {
 	result, _ := p.ExecuteTool(context.Background(), aitools.ExecutionRequest{UserID: owner, WorkspaceID: projectWS, ToolName: loadSkillTool, Arguments: json.RawMessage(`{"name":"deploy"}`)})
 	if !result.IsError {
 		t.Fatalf("expected a call without a scope refused: %+v", result)
+	}
+}
+
+// A SKILL.md that cannot be read is no skill to load_skill, as it is to
+// discovery, so the skill the prompt lists from a later root still loads.
+func TestLoadSkillSkipsAnUnreadableSkillAsDiscoveryDoes(t *testing.T) {
+	p, ws := setup(t)
+	ws.files[projectWS][".devpad/skills/lint/SKILL.md"] = "---\ndescription: never read\n---\nShadow."
+	ws.files[projectWS][".claude/skills/lint/SKILL.md"] = "---\ndescription: Lint the code.\n---\nRun make lint."
+	ws.readErrs = map[string]error{".devpad/skills/lint/SKILL.md": &agent.AgentError{StatusCode: http.StatusInternalServerError, Message: "boom"}}
+
+	if prompt := contribute(p, owner, projectWS).Prompt; !strings.Contains(prompt, "Lint the code.") {
+		t.Fatalf("expected discovery to list the later root's skill:\n%s", prompt)
+	}
+	content, isErr := load(p, projectWS, `{"name":"lint"}`)
+	if isErr || !strings.Contains(content, "Run make lint.") || !strings.Contains(content, "/workspace/.claude/skills/lint") {
+		t.Fatalf("expected the skill the prompt listed: %s", content)
+	}
+
+	// A call that has gone away reads nothing further.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := findSkill(ctx, workspaceSource{files: ws, userID: owner, workspaceID: projectWS}, "lint"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the context's error, got %v", err)
 	}
 }
 
