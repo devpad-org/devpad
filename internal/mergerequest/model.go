@@ -111,11 +111,17 @@ type Review struct {
 	Verdict        Verdict
 	Body           string
 	HeadSHA        string
-	WorkspaceID    int64
-	RunID          int64
-	AgentID        string
-	Model          string
-	Effort         string
+	// TargetSHA is the commit of the target branch an agent review compares
+	// the change against, set when its sandbox starts. Its instructions and
+	// skills are read there, so the branch moving mid-review changes
+	// neither. Empty for a user's review and for agent reviews from before
+	// it was recorded.
+	TargetSHA   string
+	WorkspaceID int64
+	RunID       int64
+	AgentID     string
+	Model       string
+	Effort      string
 	// AutoFix sends a request-changes verdict straight to the task's agent.
 	AutoFix   bool
 	Error     string

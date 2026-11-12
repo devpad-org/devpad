@@ -165,7 +165,7 @@ func (s *service) PendingReview(ctx context.Context, userID int64, ws *workspace
 	if mr.ProjectID != ws.ProjectID {
 		return nil, nil
 	}
-	return &aitools.ReviewScope{ReviewID: rv.ID, MergeRequestID: mr.ID, TargetBranch: mr.TargetBranch}, nil
+	return &aitools.ReviewScope{ReviewID: rv.ID, MergeRequestID: mr.ID, TargetBranch: mr.TargetBranch, TargetSHA: rv.TargetSHA}, nil
 }
 
 // TaskMergeRequest returns the open merge request of the task whose

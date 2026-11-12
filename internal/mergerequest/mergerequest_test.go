@@ -110,8 +110,15 @@ func (f *fakeProjects) Diff(_ context.Context, _, _ int64, base, head string) (*
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.diffs = append(f.diffs, [2]string{base, head})
-	return &agent.RepoDiff{BaseSHA: base, HeadSHA: head, MergeBase: "mergebase", Files: f.files}, nil
+	baseSHA := base
+	if base == "main" {
+		baseSHA = mainTip
+	}
+	return &agent.RepoDiff{BaseSHA: baseSHA, HeadSHA: head, MergeBase: "mergebase", Files: f.files}, nil
 }
+
+// mainTip is the commit main resolves to.
+const mainTip = "0123456789abcdef0123456789abcdef01234567"
 
 func (f *fakeProjects) Log(_ context.Context, _, _ int64, base, head string) (*agent.RepoLog, error) {
 	f.mu.Lock()
@@ -762,7 +769,9 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	if _, handled := e.tool(e.owner, rv.WorkspaceID, "read_file", `{}`); handled {
 		t.Fatal("the provider must not claim other tools")
 	}
-	if s := e.scope(t, e.owner, rv.WorkspaceID); s.Review == nil || s.Review.ReviewID != rv.ID || s.Review.MergeRequestID != rv.MergeRequestID || s.Review.TargetBranch != "main" || s.TaskMR != nil {
+	// The review pins the commit of main it compares against, which its
+	// instructions are read from.
+	if s := e.scope(t, e.owner, rv.WorkspaceID); s.Review == nil || s.Review.ReviewID != rv.ID || s.Review.MergeRequestID != rv.MergeRequestID || s.Review.TargetBranch != "main" || s.Review.TargetSHA != mainTip || s.TaskMR != nil {
 		t.Fatalf("expected the pending review in the sandbox's scope, got %+v", s)
 	}
 	if _, err := runscope.New(e.workspaces, e.svc).Resolve(ctx, e.stranger, rv.WorkspaceID); err == nil {

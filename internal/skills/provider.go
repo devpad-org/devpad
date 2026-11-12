@@ -49,6 +49,9 @@ var loadSkillDefinition = domain.ToolDefinition{
 type Provider struct {
 	workspaces Workspaces
 	projects   Projects
+	// cache keeps what review sandboxes read from their target's commit,
+	// so each review, its sub-agents and its loads read it once.
+	cache *commitCache
 }
 
 var _ aitools.ToolProvider = (*Provider)(nil)
@@ -67,7 +70,7 @@ type catalog struct {
 
 // NewProvider creates the skills provider.
 func NewProvider(workspaces Workspaces, projects Projects) *Provider {
-	return &Provider{workspaces: workspaces, projects: projects}
+	return &Provider{workspaces: workspaces, projects: projects, cache: newCommitCache(commitCacheBytes)}
 }
 
 // List returns the skills a workspace offers, for the IDE's slash commands.
@@ -95,7 +98,8 @@ var (
 // source picks where a workspace's AGENTS.md and skills come from. A review
 // sandbox is a checkout of the change under review, which must not get to
 // tell its reviewer how to review it: they are those of the branch the change
-// would merge into, and it has none once its review is no longer pending.
+// would merge into, at the commit the review compares the change against,
+// and it has none once its review is no longer pending.
 func (p *Provider) source(scope aitools.Scope) (source, string, error) {
 	if scope.WorkspaceID == 0 {
 		return nil, "", errNoWorkspace
@@ -104,8 +108,11 @@ func (p *Provider) source(scope aitools.Scope) (source, string, error) {
 		if scope.Review == nil {
 			return nil, "", errNoReview
 		}
-		branch := scope.Review.TargetBranch
-		return branchSource{projects: p.projects, userID: scope.UserID, projectID: scope.ProjectID, branch: branch}, branch, nil
+		review := scope.Review
+		return branchSource{
+			projects: p.projects, cache: p.cache, userID: scope.UserID, projectID: scope.ProjectID,
+			branch: review.TargetBranch, commit: review.TargetSHA,
+		}, review.TargetBranch, nil
 	}
 	return workspaceSource{files: p.workspaces, userID: scope.UserID, workspaceID: scope.WorkspaceID}, "", nil
 }

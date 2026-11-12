@@ -161,40 +161,87 @@ type Projects interface {
 	FileAt(ctx context.Context, userID, projectID int64, rev, path string) ([]byte, error)
 }
 
-// branchSource reads skills from a branch of a project's canonical repo.
+// branchSource reads skills from a branch of a project's canonical repo: at
+// commit when it is set, which every read is then pinned to, and otherwise
+// at wherever the branch is at the time of each read. Only reads of a commit
+// are cached, since only a commit cannot change.
 type branchSource struct {
 	projects  Projects
+	cache     *commitCache
 	userID    int64
 	projectID int64
 	branch    string
+	commit    string
+}
+
+// rev is what each read is of.
+func (s branchSource) rev() string {
+	if s.commit != "" {
+		return s.commit
+	}
+	return s.branch
+}
+
+// cached reads through the cache when the source is pinned to a commit,
+// keeping what was found, including that nothing is there, and leaving out
+// any other failure.
+func (s branchSource) cached(ctx context.Context, k commitKey, fetch func(context.Context) (cached, error)) (cached, error) {
+	if s.commit == "" || s.cache == nil {
+		return fetch(ctx)
+	}
+	k.userID, k.projectID, k.commit = s.userID, s.projectID, s.commit
+	if v, ok := s.cache.get(k); ok {
+		if v.missing {
+			return cached{}, errNotFound
+		}
+		return v, nil
+	}
+	v, err := fetch(ctx)
+	switch {
+	case errors.Is(err, errNotFound):
+		s.cache.put(cached{key: k, missing: true})
+	case err == nil:
+		v.key = k
+		s.cache.put(v)
+	}
+	return v, err
 }
 
 func (s branchSource) list(ctx context.Context, dir string) ([]entry, error) {
-	tree, err := s.projects.TreeAt(ctx, s.userID, s.projectID, s.branch, dir)
-	if err != nil {
-		return nil, notFound(err)
-	}
-	entries := make([]entry, 0, min(len(tree.Entries), maxListedEntries))
-	for _, e := range tree.Entries {
-		if len(entries) == maxListedEntries {
-			break
+	v, err := s.cached(ctx, commitKey{path: dir, dir: true}, func(ctx context.Context) (cached, error) {
+		tree, err := s.projects.TreeAt(ctx, s.userID, s.projectID, s.rev(), dir)
+		if err != nil {
+			return cached{}, notFound(err)
 		}
-		// A symlink in a commit is a blob, which is not followed: only
-		// directories hold skills. Submodules are left out.
-		if e.Type == "blob" || e.Type == "tree" {
-			entries = append(entries, entry{name: e.Name, dir: e.Type == "tree", file: e.Type == "blob"})
+		entries := make([]entry, 0, min(len(tree.Entries), maxListedEntries))
+		for _, e := range tree.Entries {
+			if len(entries) == maxListedEntries {
+				break
+			}
+			// A symlink in a commit is a blob, which is not followed: only
+			// directories hold skills. Submodules are left out.
+			if e.Type == "blob" || e.Type == "tree" {
+				entries = append(entries, entry{name: e.Name, dir: e.Type == "tree", file: e.Type == "blob"})
+			}
 		}
-	}
-	return entries, nil
+		return cached{entries: entries}, nil
+	})
+	return v.entries, err
 }
 
 func (s branchSource) read(ctx context.Context, p string) ([]byte, error) {
-	data, err := s.projects.FileAt(ctx, s.userID, s.projectID, s.branch, p)
-	return data, notFound(err)
+	v, err := s.cached(ctx, commitKey{path: p}, func(ctx context.Context) (cached, error) {
+		data, err := s.projects.FileAt(ctx, s.userID, s.projectID, s.rev(), p)
+		return cached{data: data}, notFound(err)
+	})
+	return v.data, err
 }
 
 func (s branchSource) describe(dir string) string {
-	return dir + " on the branch `" + s.branch + "`"
+	if s.commit == "" {
+		return dir + " on the branch `" + s.branch + "`"
+	}
+	return dir + " on the branch `" + s.branch + "` at commit " + s.commit[:min(12, len(s.commit))]
 }
 
 // notFound turns an agent's 404 into errNotFound, and its 400 too: a path

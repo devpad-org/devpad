@@ -54,6 +54,9 @@ type fakeWorkspaces struct {
 	files  map[int64]tree
 	// reviews is the target branch of each review sandbox's pending review.
 	reviews map[int64]string
+	// targets is the commit each review of a branch compares against; a
+	// branch without one is a review from before devpad recorded it.
+	targets map[string]string
 	// readErrs fails reading these paths, as an agent that errors does.
 	readErrs map[string]error
 	mu       sync.Mutex
@@ -76,7 +79,7 @@ func (f *fakeWorkspaces) PendingReview(_ context.Context, _ int64, ws *workspace
 	if !ok {
 		return nil, nil
 	}
-	return &aitools.ReviewScope{ReviewID: 1, MergeRequestID: 1, TargetBranch: branch}, nil
+	return &aitools.ReviewScope{ReviewID: 1, MergeRequestID: 1, TargetBranch: branch, TargetSHA: f.targets[branch]}, nil
 }
 
 func (f *fakeWorkspaces) TaskMergeRequest(context.Context, int64, *workspace.Workspace) (*aitools.TaskMRScope, error) {
@@ -137,13 +140,34 @@ func (f *fakeWorkspaces) ReadFile(_ context.Context, _, workspaceID int64, p str
 	return []byte(content), nil
 }
 
+// fakeProjects is a canonical repo whose trees are found by rev: a branch
+// name or a commit.
 type fakeProjects struct {
 	branches map[string]tree
 	// err fails every read, as a repo container that is down does.
 	err error
+	mu  sync.Mutex
+	// asked is every read, as "rev:path".
+	asked []string
+}
+
+func (f *fakeProjects) ask(rev, p string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asked = append(f.asked, rev+":"+p)
+}
+
+// reads returns the reads asked for so far and forgets them.
+func (f *fakeProjects) reads() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	asked := f.asked
+	f.asked = nil
+	return asked
 }
 
 func (f *fakeProjects) TreeAt(_ context.Context, _, _ int64, rev, dir string) (*agent.RepoTree, error) {
+	f.ask(rev, dir)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -163,6 +187,7 @@ func (f *fakeProjects) TreeAt(_ context.Context, _, _ int64, rev, dir string) (*
 }
 
 func (f *fakeProjects) FileAt(_ context.Context, _, _ int64, rev, p string) ([]byte, error) {
+	f.ask(rev, p)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -174,6 +199,7 @@ func (f *fakeProjects) FileAt(_ context.Context, _, _ int64, rev, p string) ([]b
 }
 
 const (
+	mainSHA     = "0123456789abcdef0123456789abcdef01234567"
 	owner       = 7
 	projectWS   = 1
 	reviewWS    = 2
@@ -214,12 +240,19 @@ func setup(t *testing.T) (*Provider, *fakeWorkspaces) {
 			emptyWS:  {"main.go": "package main"},
 		},
 		reviews: map[int64]string{reviewWS: "main"},
+		targets: map[string]string{"main": mainSHA},
 	}
+	// The review compares against mainSHA; main has moved on since, as it
+	// does when another change merges mid-review.
 	projects := &fakeProjects{branches: map[string]tree{
-		"main": {
+		mainSHA: {
 			".devpad/skills/review-checklist/SKILL.md":          "---\ndescription: What to check in a review <of> this project.\n---\nCheck the tests.",
 			".devpad/skills/review-checklist/references/api.md": "API rules.",
 			"AGENTS.md": "  Run make test before merging.  \n",
+		},
+		"main": {
+			".devpad/skills/moved-on/SKILL.md": "---\ndescription: Merged after the review began.\n---\n",
+			"AGENTS.md":                        "Merged after the review began.",
 		},
 	}}
 	return NewProvider(ws, projects), ws
@@ -722,4 +755,156 @@ func TestHandleList(t *testing.T) {
 	if rec := get(owner+1, "1"); rec.Code != http.StatusForbidden {
 		t.Fatalf("expected another user refused, got %d", rec.Code)
 	}
+}
+
+func TestReviewReadsTheCommitItComparesAgainst(t *testing.T) {
+	p, _ := setup(t)
+	projects := p.projects.(*fakeProjects)
+
+	prompt := contribute(p, owner, reviewWS).Prompt
+	if !strings.Contains(prompt, "Run make test before merging.") || !strings.Contains(prompt, "review-checklist") {
+		t.Fatalf("expected the reviewed commit's instructions:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "Merged after the review began") || strings.Contains(prompt, "moved-on") {
+		t.Fatalf("main moving on must not change what the review reads:\n%s", prompt)
+	}
+	content, isErr := load(p, reviewWS, `{"name":"review-checklist"}`)
+	if isErr || !strings.Contains(content, "on the branch `main` at commit "+mainSHA[:12]) {
+		t.Fatalf("expected the skill from the reviewed commit: %s", content)
+	}
+	if content, _ := load(p, reviewWS, `{"name":"moved-on"}`); !strings.Contains(content, "no skill named") {
+		t.Fatalf("a skill merged after the review began must not load: %s", content)
+	}
+	for _, read := range projects.reads() {
+		if !strings.HasPrefix(read, mainSHA+":") {
+			t.Fatalf("every read must be of the reviewed commit, read %s", read)
+		}
+	}
+}
+
+func TestReviewReadsACommitOnce(t *testing.T) {
+	p, _ := setup(t)
+	projects := p.projects.(*fakeProjects)
+
+	first := contribute(p, owner, reviewWS)
+	if len(projects.reads()) == 0 {
+		t.Fatal("expected the first run to read the commit")
+	}
+	// Another run, such as a sub-agent, reads nothing more, not even the
+	// root with no skills in it.
+	second := contribute(p, owner, reviewWS)
+	if second.Prompt != first.Prompt {
+		t.Fatalf("expected the same prompt from the cache:\n%s\n---\n%s", first.Prompt, second.Prompt)
+	}
+	if got := projects.reads(); len(got) != 0 {
+		t.Fatalf("expected the catalog from the cache, read %v", got)
+	}
+	// Loading the skill reads only its directory's listing, which discovery
+	// never needed, and only the first time.
+	for i, want := range []int{1, 0} {
+		if content, isErr := load(p, reviewWS, `{"name":"review-checklist"}`); isErr || !strings.Contains(content, "Check the tests.") {
+			t.Fatalf("expected the skill: %s", content)
+		}
+		if got := projects.reads(); len(got) != want {
+			t.Fatalf("load %d: expected %d reads, read %v", i+1, want, got)
+		}
+	}
+	if content, _ := load(p, reviewWS, `{"name":"review-checklist","file":"references/api.md"}`); content != "API rules." {
+		t.Fatalf("expected the reference: %s", content)
+	}
+	load(p, reviewWS, `{"name":"review-checklist","file":"references/api.md"}`)
+	if got := projects.reads(); len(got) != 1 {
+		t.Fatalf("expected the reference read once, read %v", got)
+	}
+}
+
+func TestFailedReadsAreNotCached(t *testing.T) {
+	p, _ := setup(t)
+	projects := p.projects.(*fakeProjects)
+	projects.err = errors.New("repo container restarting")
+	if got := contribute(p, owner, reviewWS).Prompt; got != "" {
+		t.Fatalf("expected nothing while the repo container is down, got %q", got)
+	}
+	projects.err = nil
+	if got := contribute(p, owner, reviewWS).Prompt; !strings.Contains(got, "Run make test before merging.") || !strings.Contains(got, "review-checklist") {
+		t.Fatalf("expected the instructions once it is back:\n%s", got)
+	}
+}
+
+func TestReviewWithoutACommitReadsTheBranchUncached(t *testing.T) {
+	p, ws := setup(t)
+	projects := p.projects.(*fakeProjects)
+	delete(ws.targets, "main")
+
+	for range 2 {
+		got := contribute(p, owner, reviewWS).Prompt
+		if !strings.Contains(got, "Merged after the review began") {
+			t.Fatalf("expected main as it is now:\n%s", got)
+		}
+		reads := projects.reads()
+		if len(reads) == 0 {
+			t.Fatal("a branch can move, so its reads must not be cached")
+		}
+		for _, read := range reads {
+			if !strings.HasPrefix(read, "main:") {
+				t.Fatalf("expected reads of main, read %s", read)
+			}
+		}
+	}
+	if content, _ := load(p, reviewWS, `{"name":"moved-on"}`); !strings.Contains(content, "on the branch `main`.") {
+		t.Fatalf("expected the skill described by its branch alone: %s", content)
+	}
+}
+
+func TestCommitCache(t *testing.T) {
+	key := func(user int64, path string) commitKey {
+		return commitKey{userID: user, projectID: 3, commit: mainSHA, path: path}
+	}
+	t.Run("keeps reads apart by user", func(t *testing.T) {
+		c := newCommitCache(commitCacheBytes)
+		c.put(cached{key: key(1, "AGENTS.md"), data: []byte("mine")})
+		if _, ok := c.get(key(2, "AGENTS.md")); ok {
+			t.Fatal("one user's read must not be served to another")
+		}
+		if v, ok := c.get(key(1, "AGENTS.md")); !ok || string(v.data) != "mine" {
+			t.Fatalf("expected the read back, got %q, %v", v.data, ok)
+		}
+	})
+	t.Run("hands out copies", func(t *testing.T) {
+		c := newCommitCache(commitCacheBytes)
+		dir := commitKey{projectID: 3, commit: mainSHA, path: ".devpad/skills", dir: true}
+		c.put(cached{key: dir, entries: []entry{{name: "b"}, {name: "a"}}})
+		v, _ := c.get(dir)
+		v.entries[0].name = "changed"
+		if again, _ := c.get(dir); again.entries[0].name != "b" {
+			t.Fatalf("a caller changing its entries changed the cache: %+v", again.entries)
+		}
+	})
+	t.Run("evicts the least recently used", func(t *testing.T) {
+		big := make([]byte, 1000)
+		c := newCommitCache(3 * (len(big) + cachedOverhead + len(mainSHA) + 1))
+		c.put(cached{key: key(1, "a"), data: big})
+		c.put(cached{key: key(1, "b"), data: big})
+		c.put(cached{key: key(1, "c"), data: big})
+		c.get(key(1, "a"))
+		c.put(cached{key: key(1, "d"), data: big})
+		if _, ok := c.get(key(1, "b")); ok {
+			t.Fatal("expected the least recently used read evicted")
+		}
+		for _, p := range []string{"a", "c", "d"} {
+			if _, ok := c.get(key(1, p)); !ok {
+				t.Fatalf("expected %s kept", p)
+			}
+		}
+		if c.size > c.capacity {
+			t.Fatalf("cache holds %d bytes, over its %d", c.size, c.capacity)
+		}
+	})
+	t.Run("leaves out what is too large", func(t *testing.T) {
+		c := newCommitCache(commitCacheBytes)
+		c.put(cached{key: key(1, "huge"), data: make([]byte, maxCachedBytes)})
+		if _, ok := c.get(key(1, "huge")); ok || c.size != 0 {
+			t.Fatal("a file over the limit must not be kept")
+		}
+	})
 }
