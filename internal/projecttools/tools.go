@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"sort"
 	"strings"
@@ -199,9 +200,14 @@ func outsideProject(err error) bool {
 
 // Contribute gives the assistant in a project's workspace the project tools,
 // and tells it which project and branch it is on and what the tools are for.
+// A project that cannot be read leaves them out of the run, which is logged:
+// unlike a sandbox, the assistant was meant to have them.
 func (p *Provider) Contribute(ctx context.Context, scope aitools.Scope) aitools.Contribution {
 	proj, err := p.project(ctx, scope)
 	if err != nil {
+		if !outsideProject(err) {
+			log.Printf("project tools for workspace %d: %v", scope.WorkspaceID, err)
+		}
 		return aitools.Contribution{}
 	}
 	return aitools.Contribution{Tools: definitions, Prompt: p.prompt(ctx, scope, proj)}
