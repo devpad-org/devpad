@@ -122,8 +122,11 @@ type Review struct {
 	AgentID     string
 	Model       string
 	Effort      string
-	// AutoFix sends a request-changes verdict straight to the task's agent.
-	AutoFix   bool
+	// AutoFix sends a request-changes verdict straight to the task's agent,
+	// and reviews the commits it answers with, up to maxReviewRounds.
+	AutoFix bool
+	// Round is which review of the code and review loop this is, from 1.
+	Round     int
 	Error     string
 	CreatedAt time.Time
 	UpdatedAt time.Time

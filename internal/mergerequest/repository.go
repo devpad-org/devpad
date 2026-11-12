@@ -153,13 +153,15 @@ func (r *repository) ListPushes(ctx context.Context, mergeRequestID int64) ([]*P
 	})
 }
 
-const reviewColumns = `id, merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, run_id, agent_id, model, effort, auto_fix, error, created_at, updated_at`
+const reviewColumns = `id, merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, run_id, agent_id, model, effort, auto_fix, round, error, created_at, updated_at`
 
 func (r *repository) CreateReview(ctx context.Context, rv *Review) error {
 	now := time.Now()
+	// Every review is of some round, the first unless it follows another.
+	rv.Round = max(rv.Round, 1)
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO merge_request_reviews (merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, run_id, agent_id, model, effort, auto_fix, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		rv.MergeRequestID, rv.Author, rv.Status, rv.Verdict, rv.Body, rv.HeadSHA, rv.TargetSHA, nullableID(rv.WorkspaceID), nullableID(rv.RunID), rv.AgentID, rv.Model, rv.Effort, rv.AutoFix, rv.Error, now, now,
+		`INSERT INTO merge_request_reviews (merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, run_id, agent_id, model, effort, auto_fix, round, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rv.MergeRequestID, rv.Author, rv.Status, rv.Verdict, rv.Body, rv.HeadSHA, rv.TargetSHA, nullableID(rv.WorkspaceID), nullableID(rv.RunID), rv.AgentID, rv.Model, rv.Effort, rv.AutoFix, rv.Round, rv.Error, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting review: %w", err)
@@ -295,7 +297,7 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 func scanReview(row rowScanner) (*Review, error) {
 	var rv Review
 	var workspaceID, runID sql.NullInt64
-	if err := row.Scan(&rv.ID, &rv.MergeRequestID, &rv.Author, &rv.Status, &rv.Verdict, &rv.Body, &rv.HeadSHA, &rv.TargetSHA, &workspaceID, &runID, &rv.AgentID, &rv.Model, &rv.Effort, &rv.AutoFix, &rv.Error, &rv.CreatedAt, &rv.UpdatedAt); err != nil {
+	if err := row.Scan(&rv.ID, &rv.MergeRequestID, &rv.Author, &rv.Status, &rv.Verdict, &rv.Body, &rv.HeadSHA, &rv.TargetSHA, &workspaceID, &runID, &rv.AgentID, &rv.Model, &rv.Effort, &rv.AutoFix, &rv.Round, &rv.Error, &rv.CreatedAt, &rv.UpdatedAt); err != nil {
 		return nil, err
 	}
 	rv.WorkspaceID, rv.RunID = workspaceID.Int64, runID.Int64

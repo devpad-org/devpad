@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { REVIEW_ROUNDS } from '@/api/mergeRequests'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
@@ -103,6 +104,7 @@ async function submitComment() {
               <span class="card-header-end">
                 <span v-if="reviewCommentCount(item.review)" class="tag">{{ plural(reviewCommentCount(item.review), 'comment') }}</span>
                 <span v-if="item.review.model" class="tag">{{ item.review.model }}</span>
+                <span v-if="item.review.author === 'agent' && item.review.autoFix" class="tag" :title="`The task's agent and the review agent go back and forth up to ${REVIEW_ROUNDS} reviews; the last one's requested changes wait for you.`">round {{ item.review.round }} of {{ REVIEW_ROUNDS }}</span>
                 <span v-if="item.review.headSha && item.review.headSha !== mr.headSha" class="tag tag-outdated" :title="`Reviewed ${shortSha(item.review.headSha)}`">outdated</span>
                 <span v-if="item.review.status === 'pending'" class="spinner spinner-sm" />
               </span>

@@ -1392,7 +1392,7 @@ func TestAgentReviewKeepsAPickedModel(t *testing.T) {
 }
 
 // A project that reviews automatically starts the review agent on each new
-// merge request, once, and its requested changes wait for the user.
+// merge request, once, sending a task's agent the changes it requests.
 func TestAutoReviewStartsOnNewMergeRequests(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
@@ -1400,11 +1400,12 @@ func TestAutoReviewStartsOnNewMergeRequests(t *testing.T) {
 	mr := e.openTaskMR(t)
 	waitFor(t, "the automatic review run", func() bool { return len(e.runs.started()) == 1 })
 	reviews, _ := e.svc.repo.ListReviews(ctx, mr.ID)
-	if len(reviews) != 1 || reviews[0].Author != AuthorAgent || reviews[0].AgentID != domain.ReviewAgentID || reviews[0].Model != "claude-opus-5-5" || reviews[0].AutoFix {
-		t.Fatalf("expected one review agent on the task's model without auto-fix, got %+v", reviews)
+	if len(reviews) != 1 || reviews[0].Author != AuthorAgent || reviews[0].AgentID != domain.ReviewAgentID || reviews[0].Model != "claude-opus-5-5" || !reviews[0].AutoFix || reviews[0].Round != 1 {
+		t.Fatalf("expected one review agent on the task's model with auto-fix, got %+v", reviews)
 	}
 
-	// New commits on the same merge request are not a new merge request.
+	// New commits on the same merge request are not a new merge request,
+	// nor, while the review has not asked for them, a new round.
 	tk, _ := e.tasks.Get(ctx, e.owner, e.pid(), e.taskID)
 	tk.HeadSHA = "head2"
 	e.svc.TaskReadyForReview(ctx, tk, "")
@@ -1419,8 +1420,127 @@ func TestAutoReviewStartsOnNewMergeRequests(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	waitFor(t, "the second automatic review run", func() bool { return len(e.runs.started()) == 2 })
-	if reviews, _ := e.svc.repo.ListReviews(ctx, created.ID); len(reviews) != 1 || reviews[0].Model != "admin-review" {
-		t.Fatalf("expected the review agent on the admin's model, got %+v", reviews)
+	if reviews, _ := e.svc.repo.ListReviews(ctx, created.ID); len(reviews) != 1 || reviews[0].Model != "admin-review" || reviews[0].AutoFix {
+		t.Fatalf("expected the review agent on the admin's model, with no task to send changes to, got %+v", reviews)
+	}
+}
+
+// reviewRound waits for the merge request's nth review to start its run.
+func (e *env) reviewRound(t *testing.T, mr *MergeRequest, n int) *Review {
+	t.Helper()
+	var rv *Review
+	waitFor(t, fmt.Sprintf("review %d to start", n), func() bool {
+		reviews, _ := e.svc.repo.ListReviews(context.Background(), mr.ID)
+		if len(reviews) < n {
+			return false
+		}
+		rv = reviews[n-1]
+		return rv.RunID != 0 || rv.Status != ReviewPending
+	})
+	return rv
+}
+
+// fixed is the task's agent finishing a round of fixes at head.
+func (e *env) fixed(t *testing.T, head string) {
+	t.Helper()
+	e.tasks.mu.Lock()
+	e.tasks.tasks[e.taskID].Status = task.StatusInReview
+	e.tasks.mu.Unlock()
+	tk, _ := e.tasks.Get(context.Background(), e.owner, e.pid(), e.taskID)
+	tk.HeadSHA = head
+	e.svc.TaskReadyForReview(context.Background(), tk, "")
+}
+
+// The review agent and the task's agent go back and forth until the third
+// review, whose requested changes wait for the user.
+func TestReviewLoopStopsAfterThreeRounds(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.projects.project.AutoReview = true
+	mr := e.openTaskMR(t)
+
+	for round := 1; round <= maxReviewRounds; round++ {
+		rv := e.reviewRound(t, mr, round)
+		if rv.Round != round || !rv.AutoFix || rv.Model != "claude-opus-5-5" || rv.Effort != "high" || rv.HeadSHA != fmt.Sprintf("head%d", round) {
+			t.Fatalf("round %d: unexpected review %+v", round, rv)
+		}
+		if round == 1 {
+			if result, _ := e.tool(e.owner, rv.WorkspaceID, commentTool, `{"path":"cart.go","line":3,"body":"Missing nil check.","blocking":true}`); result.IsError {
+				t.Fatalf("comment: %+v", result)
+			}
+		}
+		if result, _ := e.tool(e.owner, rv.WorkspaceID, submitTool, `{"verdict":"request_changes","body":"Still needs a nil check."}`); result.IsError {
+			t.Fatalf("round %d: submit: %+v", round, result)
+		}
+		reqs := e.tasks.changeRequests()
+		if len(reqs) != round || reqs[round-1].start != (round < maxReviewRounds) {
+			t.Fatalf("round %d: expected the task's agent started for all but the last round, got %+v", round, reqs)
+		}
+		e.runs.finish(rv.RunID, domain.AgentRunCompleted, "")
+		e.fixed(t, fmt.Sprintf("head%d", round+1))
+	}
+	time.Sleep(20 * time.Millisecond)
+	if reviews, _ := e.svc.repo.ListReviews(ctx, mr.ID); len(reviews) != maxReviewRounds {
+		t.Fatalf("expected the loop to stop after %d reviews, got %d", maxReviewRounds, len(reviews))
+	}
+}
+
+func TestReviewLoopEndsEarly(t *testing.T) {
+	tests := []struct {
+		name string
+		// review ends the first round some way other than the review agent
+		// asking for changes the task's agent then commits.
+		review func(t *testing.T, e *env, mr *MergeRequest, rv *Review)
+		head   string
+	}{
+		{"the review approves", func(t *testing.T, e *env, _ *MergeRequest, rv *Review) {
+			if result, _ := e.tool(e.owner, rv.WorkspaceID, submitTool, `{"verdict":"approve","body":"Fine."}`); result.IsError {
+				t.Fatalf("submit: %+v", result)
+			}
+		}, "head2"},
+		{"the review only comments", func(t *testing.T, e *env, _ *MergeRequest, rv *Review) {
+			if result, _ := e.tool(e.owner, rv.WorkspaceID, submitTool, `{"verdict":"comment","body":"Looks fine."}`); result.IsError {
+				t.Fatalf("submit: %+v", result)
+			}
+		}, "head2"},
+		{"the user reviews after it", func(t *testing.T, e *env, mr *MergeRequest, rv *Review) {
+			e.requestChanges(t, rv)
+			if _, err := e.svc.Review(context.Background(), e.owner, e.pid(), mr.ID, ReviewInput{Verdict: VerdictComment, Body: "Let me look."}); err != nil {
+				t.Fatalf("user review: %v", err)
+			}
+		}, "head2"},
+		{"the fix has no new commits", func(t *testing.T, e *env, _ *MergeRequest, rv *Review) {
+			e.requestChanges(t, rv)
+		}, "head1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := setup(t)
+			e.projects.project.AutoReview = true
+			mr := e.openTaskMR(t)
+			rv := e.reviewRound(t, mr, 1)
+			tt.review(t, e, mr, rv)
+			e.runs.finish(rv.RunID, domain.AgentRunCompleted, "")
+			e.fixed(t, tt.head)
+			time.Sleep(20 * time.Millisecond)
+			reviews, _ := e.svc.repo.ListReviews(context.Background(), mr.ID)
+			for _, r := range reviews {
+				if r.Author == AuthorAgent && r.ID != rv.ID {
+					t.Fatalf("expected no second agent review, got %+v", r)
+				}
+			}
+		})
+	}
+}
+
+// requestChanges submits an agent review asking for a blocking fix.
+func (e *env) requestChanges(t *testing.T, rv *Review) {
+	t.Helper()
+	if result, _ := e.tool(e.owner, rv.WorkspaceID, commentTool, `{"path":"cart.go","line":3,"body":"Missing nil check.","blocking":true}`); result.IsError {
+		t.Fatalf("comment: %+v", result)
+	}
+	if result, _ := e.tool(e.owner, rv.WorkspaceID, submitTool, `{"verdict":"request_changes","body":"Needs a nil check."}`); result.IsError {
+		t.Fatalf("submit: %+v", result)
 	}
 }
 
