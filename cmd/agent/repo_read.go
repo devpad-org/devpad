@@ -21,6 +21,8 @@ import (
 
 const (
 	// maxRepoReadDirs and maxRepoReadFiles cap the paths one read asks for.
+	// The host's client has the same limits, agent.MaxRepoReadDirs and
+	// agent.MaxRepoReadFiles.
 	maxRepoReadDirs  = 16
 	maxRepoReadFiles = 512
 	// maxRepoReadBytes caps the file contents one read returns, and is the

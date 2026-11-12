@@ -248,6 +248,14 @@ type RepoTreeEntry struct {
 	Type string `json:"type"`
 }
 
+// MaxRepoReadDirs and MaxRepoReadFiles are the most paths the agent reads in
+// one RepoRead; callers with more split them across requests. They match
+// the agent's own limits.
+const (
+	MaxRepoReadDirs  = 16
+	MaxRepoReadFiles = 512
+)
+
 // RepoReadRequest lists directories and reads files at one rev.
 type RepoReadRequest struct {
 	Rev   string   `json:"rev"`
@@ -287,6 +295,11 @@ type RepoReadFile struct {
 // RepoRead lists directories and reads files at a branch or full commit
 // hash in one request.
 func (c *Client) RepoRead(ctx context.Context, in RepoReadRequest) (*RepoRead, error) {
+	// Refused here rather than by the agent, whose 400 callers may take for
+	// paths with nothing there.
+	if len(in.Dirs) > MaxRepoReadDirs || len(in.Files) > MaxRepoReadFiles {
+		return nil, fmt.Errorf("repo read: at most %d dirs and %d files can be read at once, asked for %d and %d", MaxRepoReadDirs, MaxRepoReadFiles, len(in.Dirs), len(in.Files))
+	}
 	payload, err := json.Marshal(in)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -168,6 +169,10 @@ func (f *fakeProjects) ReadAt(_ context.Context, _, _ int64, in agent.RepoReadRe
 	f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
+	}
+	// The agent refuses more paths than it reads at once with a 400.
+	if len(in.Dirs) > agent.MaxRepoReadDirs || len(in.Files) > agent.MaxRepoReadFiles {
+		return nil, &agent.AgentError{StatusCode: http.StatusBadRequest, Message: "too many paths"}
 	}
 	commit := in.Rev
 	if head, ok := f.heads[in.Rev]; ok {
@@ -936,4 +941,67 @@ func TestCommitCache(t *testing.T) {
 			t.Fatal("a file over the limit must not be kept")
 		}
 	})
+}
+
+func TestDiscoveryFromACommitReadsNoMoreThanOneRequestCan(t *testing.T) {
+	// More candidates than one request reads, and only those past the
+	// first request's worth are skills.
+	n := agent.MaxRepoReadFiles + 100
+	entries := make([]entry, n)
+	files := tree{}
+	for i := range n {
+		name := fmt.Sprintf("s%04d", i)
+		entries[i] = entry{name: name, dir: true}
+		if i >= agent.MaxRepoReadFiles+90 {
+			files[".devpad/skills/"+name+"/SKILL.md"] = "---\ndescription: d\n---\n"
+		}
+	}
+	projects := &fakeProjects{commits: map[string]tree{mainSHA: files}}
+	src := &branchSource{projects: projects, cache: newCommitCache(commitCacheBytes), userID: owner, projectID: 3, branch: "main", commit: mainSHA}
+	found, err := discoverIn(context.Background(), src, []listing{{entries: entries}, {err: errNotFound}})
+	if err != nil || len(found) != 10 {
+		t.Fatalf("expected the 10 skills past the first request, got %d %v", len(found), err)
+	}
+	for _, req := range projects.requests() {
+		if len(req.Files) > agent.MaxRepoReadFiles {
+			t.Fatalf("asked for %d files in one request", len(req.Files))
+		}
+	}
+}
+
+func TestCachedReadsKeepTheBudgetInOrder(t *testing.T) {
+	// small and large are read within a budget of 10 bytes in either order; which
+	// is left out depends only on the order, never on what is cached.
+	files := tree{"small": "aaaa", "large": "bbbbbbbbbbbb"}
+	fetch := func(order []string, warm string) []file {
+		t.Helper()
+		projects := &fakeProjects{commits: map[string]tree{mainSHA: files}}
+		src := &branchSource{projects: projects, cache: newCommitCache(commitCacheBytes), userID: owner, projectID: 3, branch: "main", commit: mainSHA}
+		if warm != "" {
+			if _, err := src.fetch(context.Background(), nil, []string{warm}, 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f, err := src.fetch(context.Background(), nil, order, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f.files
+	}
+	same := func(a, b []file) bool {
+		return slices.EqualFunc(a, b, func(x, y file) bool {
+			return string(x.data) == string(y.data) && errors.Is(x.err, y.err) && errors.Is(y.err, x.err)
+		})
+	}
+	for _, order := range [][]string{{"small", "large"}, {"large", "small"}} {
+		cold := fetch(order, "")
+		if cold[0].err != nil {
+			t.Fatalf("%v: the first file is always read: %+v", order, cold)
+		}
+		for _, warm := range order {
+			if got := fetch(order, warm); !same(got, cold) {
+				t.Errorf("%v with %s cached: got %+v, read cold %+v", order, warm, got, cold)
+			}
+		}
+	}
 }

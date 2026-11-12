@@ -73,7 +73,7 @@ type source interface {
 	// read in order until that many bytes of them have been, so the one
 	// that reaches it is still read, and the rest get errSkipped.
 	fetch(ctx context.Context, dirs, files []string, maxBytes int) (fetched, error)
-	// chunk is how many files discovery fetches at once, 0 for all of them.
+	// chunk is how many files discovery fetches at once.
 	chunk() int
 	// describe says where a skill's directory is, for the model.
 	describe(dir string) string
@@ -105,7 +105,7 @@ type candidate struct {
 
 // discoverIn finds the skills in a source from its roots' listings, one for
 // each of Roots in order. It reads the SKILL.md files in chunks the source
-// picks, all at once from a commit.
+// picks: from a commit, as many as one request can read.
 func discoverIn(ctx context.Context, src source, roots []listing) ([]Skill, error) {
 	var candidates []candidate
 	for i, root := range Roots {
@@ -127,10 +127,7 @@ func discoverIn(ctx context.Context, src source, roots []listing) ([]Skill, erro
 	var found []Skill
 	seen := map[string]bool{}
 	budget := maxDiscoveryBytes
-	size := src.chunk()
-	if size <= 0 {
-		size = len(candidates)
-	}
+	size := max(src.chunk(), 1)
 	for start := 0; start < len(candidates) && len(found) < maxSkills && budget > 0; start += size {
 		// A name an earlier chunk found is shadowed, so it is not read.
 		var batch []candidate
@@ -210,22 +207,29 @@ func (s workspaceSource) fetch(ctx context.Context, dirs, files []string, maxByt
 		run(func() { out.files[i].data, out.files[i].err = s.read(ctx, p) })
 	}
 	wg.Wait()
-	// Sizes are known only once read, so the budget is kept after, the
-	// same as a commit's: what is past it is left out.
-	if maxBytes > 0 {
-		spent := 0
-		for i := range out.files {
-			if out.files[i].err != nil {
-				continue
-			}
-			if spent >= maxBytes {
-				out.files[i] = file{err: errSkipped}
-				continue
-			}
-			spent += len(out.files[i].data)
-		}
-	}
+	// Sizes are known only once read, so the budget is kept after.
+	keepBudget(out.files, maxBytes)
 	return out, ctx.Err()
+}
+
+// keepBudget leaves out the files past maxBytes, when it is above zero:
+// reading them in order, the one that reaches it is kept and those after it
+// get errSkipped. Files with nothing read count for nothing.
+func keepBudget(files []file, maxBytes int) {
+	if maxBytes <= 0 {
+		return
+	}
+	spent := 0
+	for i := range files {
+		if files[i].err != nil {
+			continue
+		}
+		if spent >= maxBytes {
+			files[i] = file{err: errSkipped}
+			continue
+		}
+		spent += len(files[i].data)
+	}
 }
 
 func (s workspaceSource) list(ctx context.Context, dir string) ([]entry, error) {
@@ -262,7 +266,7 @@ type Projects interface {
 }
 
 // branchSource reads skills from a branch of a project's canonical repo,
-// each fetch in one request. Every read is of one commit: the one the review
+// each fetch in one request, so of no more paths than one can read. Every read is of one commit: the one the review
 // compares against, or, for a review from before devpad recorded that, the
 // one its first fetch found the branch at. Reads of the commit are cached,
 // and a commit cannot change, so only that first fetch of a branch goes to
@@ -276,7 +280,7 @@ type branchSource struct {
 	commit    string
 }
 
-func (s *branchSource) chunk() int { return 0 }
+func (s *branchSource) chunk() int { return agent.MaxRepoReadFiles }
 
 func (s *branchSource) key(p string, dir bool) commitKey {
 	return commitKey{userID: s.userID, projectID: s.projectID, commit: s.commit, path: p, dir: dir}
@@ -310,27 +314,41 @@ func (s *branchSource) fetch(ctx context.Context, dirs, files []string, maxBytes
 		}
 		askDirs, dirAt = append(askDirs, d), append(dirAt, i)
 	}
-	spent := 0
 	for i, p := range files {
 		if v, ok := s.cached(p, false); ok {
 			out.files[i] = file{data: v.data, err: v.err()}
-			spent += len(v.data)
 			continue
 		}
 		askFiles, fileAt = append(askFiles, p), append(fileAt, i)
 	}
-	// The budget is the request's less what the cache answered.
-	if maxBytes > 0 {
-		if maxBytes -= spent; maxBytes <= 0 {
+	// The budget is kept over every file in order once all are answered,
+	// so what the cache holds never changes what is left out. The request
+	// spends only what the cache's answers before its first file leave, so
+	// it reads every file that could be kept, and perhaps a few that are not.
+	ask := maxBytes
+	if maxBytes > 0 && len(fileAt) > 0 {
+		for _, f := range out.files[:fileAt[0]] {
+			ask -= len(f.data)
+		}
+		if ask <= 0 {
 			for _, i := range fileAt {
 				out.files[i] = file{err: errSkipped}
 			}
 			askFiles, fileAt = nil, nil
 		}
 	}
-	if len(askDirs) == 0 && len(askFiles) == 0 {
-		return out, nil
+	if len(askDirs) > 0 || len(askFiles) > 0 {
+		if err := s.ask(ctx, &out, askDirs, dirAt, askFiles, fileAt, ask); err != nil {
+			return fetched{}, err
+		}
 	}
+	keepBudget(out.files, maxBytes)
+	return out, nil
+}
+
+// ask reads what the cache did not have, putting each answer at its place
+// in out and keeping it in the cache.
+func (s *branchSource) ask(ctx context.Context, out *fetched, askDirs []string, dirAt []int, askFiles []string, fileAt []int, maxBytes int) error {
 
 	rev := s.commit
 	if rev == "" {
@@ -346,9 +364,9 @@ func (s *branchSource) fetch(ctx context.Context, dirs, files []string, maxBytes
 			for _, i := range fileAt {
 				out.files[i].err = errNotFound
 			}
-			return out, nil
+			return nil
 		}
-		return fetched{}, err
+		return err
 	}
 	if s.commit == "" && isCommit(res.Commit) {
 		s.commit = res.Commit
@@ -376,7 +394,7 @@ func (s *branchSource) fetch(ctx context.Context, dirs, files []string, maxBytes
 		}
 		out.files[fileAt[j]] = r
 	}
-	return out, nil
+	return nil
 }
 
 // treeEntries keeps the entries of a commit's directory skills can be in,

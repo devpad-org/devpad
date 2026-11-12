@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/devpad-org/devpad/internal/agent"
 )
 
 func readRepo(t *testing.T, canonical string, req repoReadRequest) (int, repoReadResult, string) {
@@ -102,6 +104,14 @@ func TestRepoReadStopsAtItsBudget(t *testing.T) {
 	}
 	if f := got.Files[3]; !f.Found || !f.Skipped || f.Content != nil {
 		t.Fatalf("expected c skipped past the budget: %+v", f)
+	}
+}
+
+// The host splits its reads by its client's limits, so the agent must take
+// as many paths as those allow.
+func TestRepoReadLimitsMatchTheClient(t *testing.T) {
+	if maxRepoReadDirs != agent.MaxRepoReadDirs || maxRepoReadFiles != agent.MaxRepoReadFiles {
+		t.Fatalf("agent limits %d dirs, %d files; client limits %d, %d", maxRepoReadDirs, maxRepoReadFiles, agent.MaxRepoReadDirs, agent.MaxRepoReadFiles)
 	}
 }
 
