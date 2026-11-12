@@ -57,7 +57,8 @@ type Service interface {
 }
 
 // ReviewHook is told each time a task's branch is published for review,
-// with the agent's closing summary.
+// with the agent's closing summary. It is told after the task is unlocked,
+// so it may call back into the task service.
 type ReviewHook interface {
 	TaskReadyForReview(ctx context.Context, t *Task, summary string)
 }
@@ -151,6 +152,10 @@ type service struct {
 	// mid-run takes effect at once.
 	runBudgets map[int64]*domain.Budget
 	reviewHook ReviewHook
+	// announced counts each task's announcements to the review hook, and
+	// announceGates make them one at a time; see announceReview.
+	announced     map[int64]uint64
+	announceGates map[int64]*sync.Mutex
 }
 
 // NewService creates a task Service. Background work stops on Shutdown.
@@ -170,6 +175,8 @@ func NewService(repo Repository, projects Projects, workspaces Workspaces, runs 
 		baseLocks:     make(map[int64]*sync.Mutex),
 		launching:     make(map[int64]bool),
 		runBudgets:    make(map[int64]*domain.Budget),
+		announced:     make(map[int64]uint64),
+		announceGates: make(map[int64]*sync.Mutex),
 	}
 	s.spawn(func(ctx context.Context) {
 		ticker := time.NewTicker(dispatchInterval)
@@ -1120,14 +1127,57 @@ func (s *service) collect(ctx context.Context, t *Task) error {
 	}
 	t.HeadSHA = result.SHA
 	s.endRound(ctx, t, StatusInReview, "")
-
-	s.mu.Lock()
-	hook := s.reviewHook
-	s.mu.Unlock()
-	if hook != nil {
-		hook.TaskReadyForReview(ctx, t, s.agentSummary(ctx, t))
-	}
+	s.announceReview(t, s.agentSummary(ctx, t))
 	return nil
+}
+
+// announceReview tells the review hook that a round of t's work is up for
+// review. The caller holds t's lock, so the hook runs on a goroutine of its
+// own once that is released: the hook takes merge request locks, and merge
+// requests call into tasks while holding theirs, as when a review requests
+// changes or a merge closes the task, so waiting for one under a task lock
+// could deadlock. A task's announcements run one at a time, and one that a
+// later round's has overtaken is dropped, so its merge request never moves
+// back to an older head.
+//
+// The caller runs on a goroutine Shutdown waits for, which every round's
+// end does, so Shutdown waits for the announcement too. It is made even as
+// the server stops, so a round collected then still reaches its merge
+// request.
+func (s *service) announceReview(t *Task, summary string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hook := s.reviewHook
+	if hook == nil {
+		return
+	}
+	s.announced[t.ID]++
+	seq := s.announced[t.ID]
+	gate := s.announceGate(t.ID)
+	round := *t
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		gate.Lock()
+		defer gate.Unlock()
+		s.mu.Lock()
+		latest := s.announced[round.ID] == seq
+		s.mu.Unlock()
+		if latest {
+			hook.TaskReadyForReview(context.WithoutCancel(s.rootCtx), &round, summary)
+		}
+	}()
+}
+
+// announceGate is the lock a task's announcements take one at a time. The
+// caller holds s.mu.
+func (s *service) announceGate(taskID int64) *sync.Mutex {
+	gate := s.announceGates[taskID]
+	if gate == nil {
+		gate = &sync.Mutex{}
+		s.announceGates[taskID] = gate
+	}
+	return gate
 }
 
 // agentSummary is the agent's closing message, which the prompt asks to be
@@ -1221,6 +1271,9 @@ func (s *service) Delete(ctx context.Context, userID, projectID, taskID int64) e
 	s.mu.Lock()
 	delete(s.locks, t.ID)
 	delete(s.runBudgets, t.ID)
+	// An announcement still to be made for the task is dropped.
+	delete(s.announced, t.ID)
+	delete(s.announceGates, t.ID)
 	s.mu.Unlock()
 	s.kick()
 	return nil

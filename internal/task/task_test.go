@@ -680,6 +680,101 @@ func (h *recordingHook) calls() ([]Task, []string) {
 	return append([]Task(nil), h.tasks...), append([]string(nil), h.summary...)
 }
 
+// lockingHook stands in for the merge request service, whose own lock a
+// review holds while it requests changes of the task.
+type lockingHook struct {
+	mu    *sync.Mutex
+	calls chan Task
+}
+
+func (h *lockingHook) TaskReadyForReview(_ context.Context, t *Task, _ string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls <- *t
+}
+
+// The review hook is told after the task is unlocked: a review requesting
+// changes while the task's round is announced must not deadlock with it.
+func TestReviewHookRunsOutsideTheTaskLock(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mrLock := &sync.Mutex{}
+	hook := &lockingHook{mu: mrLock, calls: make(chan Task, 1)}
+	e.svc.SetReviewHook(hook)
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	running := e.waitTask(t, task.ID, hasRun)
+
+	// A review is being recorded, holding the merge request, when the
+	// round ends and is announced.
+	mrLock.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			mrLock.Unlock()
+		}
+	}()
+	e.runs.finish(running.RunID, domain.AgentRunCompleted, "")
+	e.waitTask(t, task.ID, status(StatusInReview))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.svc.RequestChanges(ctx, owner, 1, task.ID, "Fix it.", false)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("request changes: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("requesting changes waited on the announcement of the round: deadlock")
+	}
+	mrLock.Unlock()
+	locked = false
+	select {
+	case got := <-hook.calls:
+		if got.ID != task.ID || got.HeadSHA != "f00d" {
+			t.Fatalf("unexpected announcement: %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the round was never announced")
+	}
+}
+
+// A task's announcements run one at a time, and one a later round's has
+// overtaken is dropped, so its merge request never moves back.
+func TestOvertakenReviewAnnouncementIsDropped(t *testing.T) {
+	e := setup(t)
+	hook := &recordingHook{}
+	e.svc.SetReviewHook(hook)
+	e.svc.mu.Lock()
+	gate := e.svc.announceGate(7)
+	e.svc.mu.Unlock()
+
+	gate.Lock()
+	e.svc.announceReview(&Task{ID: 7, HeadSHA: "older"}, "first round")
+	e.svc.announceReview(&Task{ID: 7, HeadSHA: "newer"}, "second round")
+	gate.Unlock()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if tasks, _ := hook.calls(); len(tasks) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no announcement was made")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The earlier announcement, run before or after, finds it was overtaken.
+	time.Sleep(50 * time.Millisecond)
+	tasks, summaries := hook.calls()
+	if len(tasks) != 1 || tasks[0].HeadSHA != "newer" || summaries[0] != "second round" {
+		t.Fatalf("expected only the later round announced, got %+v %q", tasks, summaries)
+	}
+}
+
 func TestReviewHookGetsTheAgentSummary(t *testing.T) {
 	e := setup(t)
 	hook := &recordingHook{}
