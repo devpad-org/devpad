@@ -122,7 +122,7 @@ function closeMergeRequest() {
       <AgentModelPicker v-model:model="agentModel" v-model:effort="agentEffort" :agent-id="REVIEW_AGENT_ID" class="side-picker" />
       <label v-if="mr.taskId" class="form-check side-check">
         <input v-model="autoFix" type="checkbox" />
-        Send requested changes to the task's agent
+        Send requested changes to the task's agent, and review its fixes
       </label>
       <button class="btn btn-secondary btn-sm side-button" :disabled="busy || pendingAgentReview || !agentModel" @click="startAgentReview">
         <span v-if="pendingAgentReview" class="spinner spinner-sm" />

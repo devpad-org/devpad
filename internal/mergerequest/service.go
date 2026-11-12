@@ -297,15 +297,16 @@ func (s *service) openAtHead(ctx context.Context, mr *MergeRequest) error {
 }
 
 // autoReview starts the review agent on a new merge request when its
-// project reviews them automatically, with the agent's default model. Its
-// requested changes wait for the user rather than starting the task's
-// agent. A review that cannot start is recorded as failed, so the merge
-// request shows why.
+// project reviews them automatically, with the agent's default model. On a
+// task's merge request its requested changes go straight to the task's
+// agent, and the loop of reviews and fixes runs up to maxReviewRounds. A
+// review that cannot start is recorded as failed, so the merge request
+// shows why.
 func (s *service) autoReview(ctx context.Context, p *project.Project, mr *MergeRequest) {
 	if !p.AutoReview {
 		return
 	}
-	_, err := s.StartAgentReview(ctx, mr.UserID, mr.ProjectID, mr.ID, AgentReviewInput{})
+	_, err := s.StartAgentReview(ctx, mr.UserID, mr.ProjectID, mr.ID, AgentReviewInput{AutoFix: mr.TaskID != 0})
 	if err == nil || s.rootCtx.Err() != nil {
 		// A review left pending by a shutdown starts again with the server.
 		return
@@ -354,6 +355,19 @@ func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary 
 		s.autoReview(ctx, p, mr)
 		return nil
 	}
+	moved, err := s.updateFromTask(ctx, mr, t, summary)
+	if err != nil || !moved {
+		return err
+	}
+	// Starting the review takes the merge request's lock, which updating it
+	// held.
+	s.nextReviewRound(ctx, mr)
+	return nil
+}
+
+// updateFromTask brings a task's open merge request up to date with the
+// task, reporting whether its head moved.
+func (s *service) updateFromTask(ctx context.Context, mr *MergeRequest, t *task.Task, summary string) (bool, error) {
 	unlockMR := s.lock("mr", mr.ID)
 	defer unlockMR()
 	mr.Title = t.Title
@@ -361,9 +375,47 @@ func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary 
 		mr.Description = summary
 	}
 	if t.HeadSHA != "" && t.HeadSHA != mr.HeadSHA {
-		return s.repo.UpdateHead(ctx, mr, t.HeadSHA, PushTask)
+		return true, s.repo.UpdateHead(ctx, mr, t.HeadSHA, PushTask)
 	}
-	return s.repo.Update(ctx, mr)
+	return false, s.repo.Update(ctx, mr)
+}
+
+// maxReviewRounds is how many times a review agent and a task's agent go
+// back and forth: the last review's requested changes wait for the user.
+const maxReviewRounds = 3
+
+// nextReviewRound reviews the commits the task's agent answered a review
+// agent's requested changes with, when that review sent them to it and was
+// not the last round. The new review runs the same agent and model. Anything
+// since, such as the user's own review, ends the loop, as does a verdict
+// other than request changes.
+func (s *service) nextReviewRound(ctx context.Context, mr *MergeRequest) {
+	reviews, err := s.repo.ListReviews(ctx, mr.ID)
+	if err != nil {
+		log.Printf("merge request %d: reading reviews for the next round: %v", mr.ID, err)
+		return
+	}
+	if len(reviews) == 0 {
+		return
+	}
+	last := reviews[len(reviews)-1]
+	if last.Author != AuthorAgent || last.Status != ReviewSubmitted || last.Verdict != VerdictRequestChanges || !last.AutoFix || last.Round >= maxReviewRounds {
+		return
+	}
+	in := AgentReviewInput{AgentID: last.AgentID, Model: last.Model, Effort: last.Effort, AutoFix: true}
+	_, err = s.startAgentReview(ctx, mr.UserID, mr.ProjectID, mr.ID, in, last.Round+1)
+	if err == nil || s.rootCtx.Err() != nil {
+		return
+	}
+	log.Printf("merge request %d: starting review round %d: %v", mr.ID, last.Round+1, err)
+	rv := &Review{
+		MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewFailed, HeadSHA: mr.HeadSHA,
+		AgentID: last.AgentID, Model: last.Model, Effort: last.Effort, AutoFix: true, Round: last.Round + 1,
+		Error: "The next round of review could not start: " + err.Error(),
+	}
+	if err := s.repo.CreateReview(ctx, rv); err != nil {
+		log.Printf("merge request %d: recording review round failure: %v", mr.ID, err)
+	}
 }
 
 func (s *service) BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string) {
@@ -742,6 +794,11 @@ func feedback(rv *Review, comments []*Comment) string {
 // review sandbox. It returns the pending review at once; the agent submits
 // it with the review tools.
 func (s *service) StartAgentReview(ctx context.Context, userID, projectID, mrID int64, in AgentReviewInput) (*Review, error) {
+	return s.startAgentReview(ctx, userID, projectID, mrID, in, 1)
+}
+
+// startAgentReview starts the given round of the code and review loop.
+func (s *service) startAgentReview(ctx context.Context, userID, projectID, mrID int64, in AgentReviewInput, round int) (*Review, error) {
 	unlock := s.lock("mr", mrID)
 	defer unlock()
 	mr, err := s.getOpen(ctx, userID, projectID, mrID)
@@ -785,7 +842,7 @@ func (s *service) StartAgentReview(ctx context.Context, userID, projectID, mrID 
 
 	rv := &Review{
 		MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewPending, HeadSHA: mr.HeadSHA,
-		AgentID: in.AgentID, Model: in.Model, Effort: in.Effort, AutoFix: in.AutoFix,
+		AgentID: in.AgentID, Model: in.Model, Effort: in.Effort, AutoFix: in.AutoFix, Round: round,
 	}
 	if err := s.repo.CreateReview(ctx, rv); err != nil {
 		return nil, err

@@ -38,10 +38,17 @@ export interface Review {
   model: string
   effort: string
   autoFix: boolean
+  // round is which review of the code and review loop this is, from 1.
+  round: number
   error: string
   createdAt: string
   updatedAt: string
 }
+
+// REVIEW_ROUNDS is how many reviews an auto-fixing review agent makes, each
+// of the task agent's fixes, before requested changes wait for the user.
+// It matches maxReviewRounds on the server.
+export const REVIEW_ROUNDS = 3
 
 // task_agent is the agent working on the merge request's task, and
 // assistant the assistant in the project's own workspace.

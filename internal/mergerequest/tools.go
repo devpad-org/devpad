@@ -582,7 +582,10 @@ func (s *service) submitReview(ctx context.Context, mr *MergeRequest, rv *Review
 				own = append(own, c)
 			}
 		}
-		if _, err := s.tasks.RequestChanges(ctx, mr.UserID, mr.ProjectID, mr.TaskID, feedback(rv, own), rv.AutoFix); err != nil {
+		// The last round's changes wait for the user, as do those of a task
+		// over its budget.
+		start := rv.AutoFix && rv.Round < maxReviewRounds
+		if _, err := s.tasks.RequestChanges(ctx, mr.UserID, mr.ProjectID, mr.TaskID, feedback(rv, own), start); err != nil {
 			log.Printf("review %d: requesting changes on task %d: %v", rv.ID, mr.TaskID, err)
 		}
 	}

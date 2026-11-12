@@ -395,6 +395,7 @@ func reviewResponse(rv *Review) map[string]any {
 		"model":       rv.Model,
 		"effort":      rv.Effort,
 		"autoFix":     rv.AutoFix,
+		"round":       rv.Round,
 		"error":       rv.Error,
 		"createdAt":   rv.CreatedAt,
 		"updatedAt":   rv.UpdatedAt,
