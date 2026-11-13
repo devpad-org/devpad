@@ -2314,8 +2314,20 @@ func TestReviewOfATaskOverBudgetWaitsForItsBudget(t *testing.T) {
 		t.Fatalf("continuing without raising the budget: expected ErrInvalidState, got %v", err)
 	}
 
-	raised := 6.0
-	rv, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, d.Reviews[0].ID, ContinueInput{TaskBudgetUSD: &raised})
+	// A continue that is refused leaves the task's budget as it was.
+	tooLittle, raised := 2.4, 6.0
+	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, d.Reviews[0].ID, ContinueInput{TaskBudgetUSD: &tooLittle}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("a raise below what is spent: expected ErrInvalidState, got %v", err)
+	}
+	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, d.Reviews[0].ID+100, ContinueInput{TaskBudgetUSD: &raised}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("another review: expected ErrInvalidState, got %v", err)
+	}
+	if got, _ := e.tasks.Get(ctx, e.owner, e.pid(), e.taskID); got.BudgetUSD != 2 {
+		t.Fatalf("expected a refused continue to leave the task's budget at $2, got %v", got.BudgetUSD)
+	}
+
+	reviewBudget := 7.0
+	rv, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, d.Reviews[0].ID, ContinueInput{TaskBudgetUSD: &raised, BudgetUSD: &reviewBudget})
 	if err != nil {
 		t.Fatalf("continue: %v", err)
 	}
@@ -2324,6 +2336,9 @@ func TestReviewOfATaskOverBudgetWaitsForItsBudget(t *testing.T) {
 	}
 	if rv.ID == d.Reviews[0].ID || rv.Status != ReviewPending || !rv.AutoFix || rv.Round != d.Reviews[0].Round {
 		t.Fatalf("expected a new review of the same round, got %+v", rv)
+	}
+	if rv.BudgetUSD != 7 {
+		t.Fatalf("expected the new review to start with the raised $7 budget, not the default, got %v", rv.BudgetUSD)
 	}
 	waitFor(t, "the review run", func() bool { return len(e.runs.started()) == 1 })
 }
@@ -2348,6 +2363,15 @@ func TestContinueReviewAfterItsBudgetRanOut(t *testing.T) {
 	}
 	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, rv.ID, ContinueInput{}); !errors.Is(err, ErrInvalidState) || !strings.Contains(err.Error(), "raise its budget") {
 		t.Fatalf("continuing without raising the budget: expected ErrInvalidState, got %v", err)
+	}
+	// Raising only the task's budget cannot let it go on, so it is not raised.
+	taskBudget := e.tasks.tasks[e.taskID].BudgetUSD
+	onlyTask := taskBudget + 50
+	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, rv.ID, ContinueInput{TaskBudgetUSD: &onlyTask}); !errors.Is(err, ErrInvalidState) || !strings.Contains(err.Error(), "raise its budget") {
+		t.Fatalf("raising only the task's budget: expected ErrInvalidState, got %v", err)
+	}
+	if got, _ := e.tasks.Get(ctx, e.owner, e.pid(), e.taskID); got.BudgetUSD != taskBudget {
+		t.Fatalf("expected a refused continue to leave the task's budget at %v, got %v", taskBudget, got.BudgetUSD)
 	}
 	negative := -1.0
 	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, rv.ID, ContinueInput{BudgetUSD: &negative}); !errors.Is(err, ErrInvalidInput) {
@@ -2395,6 +2419,43 @@ func TestContinueReviewAfterItsBudgetRanOut(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.Status != ReviewPending {
 		t.Fatalf("the earlier run's end must not settle the continued review, got %+v", got)
+	}
+}
+
+// A review's budget is kept only while a run could still spend from it:
+// not once the review is submitted, nor once a later review supersedes it.
+func TestReviewBudgetsAreForgottenWhenDone(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	kept := func(id int64) bool {
+		e.svc.mu.Lock()
+		defer e.svc.mu.Unlock()
+		return e.svc.reviewBudgets[id] != nil
+	}
+
+	submitted := e.startAgentReview(t, mr, AgentReviewInput{})
+	if !kept(submitted.ID) {
+		t.Fatal("expected a running review's budget kept")
+	}
+	if result, _ := e.tool(e.owner, submitted.WorkspaceID, submitTool, `{"verdict":"approve","body":"Fine."}`); result.IsError {
+		t.Fatalf("submit: %s", result.Content)
+	}
+	e.runs.finish(submitted.RunID, domain.AgentRunCompleted, "")
+	waitFor(t, "the submitted review's budget dropped", func() bool { return !kept(submitted.ID) })
+
+	failed := e.startAgentReview(t, mr, AgentReviewInput{})
+	e.runs.finish(failed.RunID, domain.AgentRunFailed, "boom")
+	waitFor(t, "the review to fail", func() bool {
+		got, _ := e.svc.repo.GetReview(ctx, failed.ID)
+		return got.Status == ReviewFailed
+	})
+	if !kept(failed.ID) {
+		t.Fatal("expected a failed review's budget kept, since it can be continued")
+	}
+	next := e.startAgentReview(t, mr, AgentReviewInput{})
+	if kept(failed.ID) || !kept(next.ID) {
+		t.Fatal("expected a superseded review's budget dropped and the new one's kept")
 	}
 }
 

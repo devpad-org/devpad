@@ -160,8 +160,9 @@ type service struct {
 	closed bool
 	locks  map[string]*sync.Mutex
 	// reviewBudgets holds the budget of each agent review that has run since
-	// devpad started, so its runs, the sub-agents a run leaves running, and
-	// a continued run share one limit.
+	// devpad started and could still be continued, so its runs, the
+	// sub-agents a run leaves running, and a continued run share one limit.
+	// See forgetReviewBudgets.
 	reviewBudgets map[int64]*domain.Budget
 }
 
@@ -421,7 +422,7 @@ func (s *service) nextReviewRound(ctx context.Context, mr *MergeRequest) {
 		return
 	}
 	in := AgentReviewInput{AgentID: last.AgentID, Model: last.Model, Effort: last.Effort, AutoFix: true}
-	_, err = s.startAgentReviewLocked(ctx, mr.UserID, mr.ProjectID, mr.ID, in, last.Round+1)
+	_, err = s.startAgentReviewLocked(ctx, mr.UserID, mr.ProjectID, mr.ID, in, last.Round+1, nil)
 	if err == nil || s.rootCtx.Err() != nil {
 		return
 	}
@@ -814,28 +815,16 @@ func feedback(rv *Review, comments []*Comment) string {
 func (s *service) StartAgentReview(ctx context.Context, userID, projectID, mrID int64, in AgentReviewInput) (*Review, error) {
 	unlock := s.lock("mr", mrID)
 	defer unlock()
-	return s.startAgentReviewLocked(ctx, userID, projectID, mrID, in, 1)
+	return s.startAgentReviewLocked(ctx, userID, projectID, mrID, in, 1, nil)
 }
 
 func (s *service) ContinueReview(ctx context.Context, userID, projectID, mrID, reviewID int64, in ContinueInput) (*Review, error) {
-	if in.BudgetUSD != nil {
-		if err := domain.ValidateBudget(*in.BudgetUSD); err != nil {
+	for _, usd := range []*float64{in.BudgetUSD, in.TaskBudgetUSD} {
+		if usd == nil {
+			continue
+		}
+		if err := domain.ValidateBudget(*usd); err != nil {
 			return nil, invalid("%v", err)
-		}
-	}
-	// The task's budget is raised before the merge request is locked: a task
-	// finishing a round holds its own lock while it takes the merge
-	// request's.
-	if in.TaskBudgetUSD != nil {
-		mr, err := s.getOpen(ctx, userID, projectID, mrID)
-		if err != nil {
-			return nil, err
-		}
-		if mr.TaskID == 0 {
-			return nil, invalid("this merge request has no task")
-		}
-		if _, err := s.tasks.SetBudget(ctx, userID, projectID, mr.TaskID, *in.TaskBudgetUSD); err != nil {
-			return nil, err
 		}
 	}
 
@@ -844,6 +833,9 @@ func (s *service) ContinueReview(ctx context.Context, userID, projectID, mrID, r
 	mr, err := s.getOpen(ctx, userID, projectID, mrID)
 	if err != nil {
 		return nil, err
+	}
+	if in.TaskBudgetUSD != nil && mr.TaskID == 0 {
+		return nil, invalid("this merge request has no task")
 	}
 	reviews, err := s.repo.ListReviews(ctx, mr.ID)
 	if err != nil {
@@ -868,10 +860,13 @@ func (s *service) ContinueReview(ctx context.Context, userID, projectID, mrID, r
 		return nil, fmt.Errorf("%w: the change has moved on since this review; start a new one", ErrInvalidState)
 	}
 	// A review that never ran has nothing to pick up, so it starts again as
-	// a new review of the same round.
+	// a new review of the same round, with the budget it was given.
 	if last.RunID == 0 && last.ConversationID == 0 {
-		in := AgentReviewInput{AgentID: last.AgentID, Model: last.Model, Effort: last.Effort, AutoFix: last.AutoFix}
-		return s.startAgentReviewLocked(ctx, userID, projectID, mrID, in, last.Round)
+		if err := s.checkTaskBudget(ctx, userID, projectID, mr, in.TaskBudgetUSD); err != nil {
+			return nil, err
+		}
+		again := AgentReviewInput{AgentID: last.AgentID, Model: last.Model, Effort: last.Effort, AutoFix: last.AutoFix}
+		return s.startAgentReviewLocked(ctx, userID, projectID, mrID, again, last.Round, in.BudgetUSD)
 	}
 
 	unlockReview := s.lock("review", last.ID)
@@ -889,14 +884,8 @@ func (s *service) ContinueReview(ctx context.Context, userID, projectID, mrID, r
 	if rv.OverBudget() {
 		return nil, reviewBudgetError(rv)
 	}
-	if mr.TaskID != 0 {
-		t, err := s.tasks.Get(ctx, userID, projectID, mr.TaskID)
-		if err != nil && !errors.Is(err, task.ErrNotFound) {
-			return nil, err
-		}
-		if t != nil && t.OverBudget() {
-			return nil, taskBudgetError(t)
-		}
+	if err := s.checkTaskBudget(ctx, userID, projectID, mr, in.TaskBudgetUSD); err != nil {
+		return nil, err
 	}
 	// Reviews from before their transcript was recorded find it through
 	// their last run.
@@ -924,9 +913,40 @@ func (s *service) ContinueReview(ctx context.Context, userID, projectID, mrID, r
 	return rv, nil
 }
 
+// checkTaskBudget refuses to go on with a review of mr when its task has
+// spent its budget, replacing that budget with budgetUSD first when set. It
+// changes nothing when it refuses, so a raise too small to let the review go
+// on is not saved. Every other check on the review comes first, so a refused
+// continue leaves the task's budget alone. The caller holds the merge
+// request's lock, which merge requests hold when they call into tasks.
+func (s *service) checkTaskBudget(ctx context.Context, userID, projectID int64, mr *MergeRequest, budgetUSD *float64) error {
+	if mr.TaskID == 0 {
+		return nil
+	}
+	t, err := s.tasks.Get(ctx, userID, projectID, mr.TaskID)
+	if errors.Is(err, task.ErrNotFound) && budgetUSD == nil {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if budgetUSD != nil {
+		t.BudgetUSD = *budgetUSD
+	}
+	if t.OverBudget() {
+		return taskBudgetError(t)
+	}
+	if budgetUSD == nil {
+		return nil
+	}
+	_, err = s.tasks.SetBudget(ctx, userID, projectID, mr.TaskID, *budgetUSD)
+	return err
+}
+
 // startAgentReviewLocked starts the given round of the code and review
-// loop. The caller holds the merge request's lock.
-func (s *service) startAgentReviewLocked(ctx context.Context, userID, projectID, mrID int64, in AgentReviewInput, round int) (*Review, error) {
+// loop, with budgetUSD as the review's budget, or the admin's per-review
+// default when nil. The caller holds the merge request's lock.
+func (s *service) startAgentReviewLocked(ctx context.Context, userID, projectID, mrID int64, in AgentReviewInput, round int, budgetUSD *float64) (*Review, error) {
 	mr, err := s.getOpen(ctx, userID, projectID, mrID)
 	if err != nil {
 		return nil, err
@@ -974,19 +994,29 @@ func (s *service) startAgentReviewLocked(ctx context.Context, userID, projectID,
 	if in.Model == "" {
 		return nil, errNoModel
 	}
-	budgets, err := s.budgets.BudgetDefaults(ctx)
-	if err != nil {
-		return nil, err
+	if budgetUSD == nil {
+		budgets, err := s.budgets.BudgetDefaults(ctx)
+		if err != nil {
+			return nil, err
+		}
+		budgetUSD = &budgets.ReviewUSD
 	}
 
 	rv := &Review{
 		MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewPending, HeadSHA: mr.HeadSHA,
 		AgentID: in.AgentID, Model: in.Model, Effort: in.Effort, AutoFix: in.AutoFix, Round: round,
-		BudgetUSD: budgets.ReviewUSD,
+		BudgetUSD: *budgetUSD,
 	}
 	if err := s.repo.CreateReview(ctx, rv); err != nil {
 		return nil, err
 	}
+	// Only the latest agent review can be continued, so no run spends from
+	// the earlier reviews' budgets again.
+	earlier := make([]int64, len(reviews))
+	for i, r := range reviews {
+		earlier[i] = r.ID
+	}
+	s.forgetReviewBudgets(earlier...)
 	id := rv.ID
 	if !s.spawn(func(ctx context.Context) { s.launchReview(ctx, id) }) {
 		return nil, errors.New("the server is shutting down")
@@ -1288,6 +1318,18 @@ func (s *service) reviewBudget(ctx context.Context, mr *MergeRequest, rv *Review
 	return b, nil
 }
 
+// forgetReviewBudgets drops the budgets of reviews no run will spend from
+// again: one submitted, one a later review has superseded, or one whose merge
+// request is merged or closed. A sub-agent its run left going keeps the
+// budget it holds.
+func (s *service) forgetReviewBudgets(ids ...int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range ids {
+		delete(s.reviewBudgets, id)
+	}
+}
+
 // reviewHistory is what a re-review is told of the merge request's earlier
 // rounds.
 type reviewHistory struct {
@@ -1436,6 +1478,10 @@ func (s *service) settleReview(ctx context.Context, mr *MergeRequest, rv *Review
 		return
 	}
 	if rv.Status != ReviewPending {
+		// A submitted review is done, so no run spends from its budget again.
+		if rv.Status == ReviewSubmitted {
+			s.forgetReviewBudgets(rv.ID)
+		}
 		s.stopReviewSandbox(ctx, mr, rv)
 		return
 	}
@@ -1596,9 +1642,7 @@ func (s *service) removeReviewSandboxes(ctx context.Context, mr *MergeRequest, r
 		if err := s.repo.UpdateReview(ctx, rv); err != nil {
 			log.Printf("review %d: %v", rv.ID, err)
 		}
-		s.mu.Lock()
-		delete(s.reviewBudgets, rv.ID)
-		s.mu.Unlock()
+		s.forgetReviewBudgets(rv.ID)
 		unlock()
 	}
 }
