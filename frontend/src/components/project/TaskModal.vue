@@ -8,6 +8,7 @@ import { confirmDiscardKey } from '@/components/ide/ideShell'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { branchActionError } from './branchErrors'
 import AgentModelPicker from './AgentModelPicker.vue'
+import BudgetReached, { type SpentBudget } from './BudgetReached.vue'
 import MrIcon, { type MrIconName } from './MrIcon.vue'
 import StatusBadge from './StatusBadge.vue'
 import { TASK_STAGES, TASK_STATUS } from './taskStatus'
@@ -52,7 +53,6 @@ const confirmingDelete = ref(false)
 const composerOpen = ref(true)
 const error = ref('')
 const titleInput = ref<HTMLInputElement | null>(null)
-const budgetInput = ref<HTMLInputElement | null>(null)
 
 const projectStore = useActiveProjectStore()
 const confirmDiscard = inject(confirmDiscardKey, () => Promise.resolve(true))
@@ -102,8 +102,23 @@ const canEdit = computed(() => props.task !== null && !ACTIVE.has(props.task.sta
 const agentReviewing = computed(
   () => !!props.mergeRequest?.agentReviewing && info.value.step === TASK_STAGES.indexOf('Review'),
 )
-// The task's agents have spent its budget, so it cannot start until it is raised.
+// The task's agent and reviews have spent its budget, so neither can start
+// until it is raised.
 const overBudget = computed(() => !!props.task && props.task.budgetUsd > 0 && props.task.costUsd >= props.task.budgetUsd)
+const spentBudget = computed<SpentBudget[]>(() =>
+  props.task
+    ? [{ key: 'task', owner: 'This task', label: 'Task budget', spentUsd: props.task.costUsd, budgetUsd: props.task.budgetUsd }]
+    : [],
+)
+// A failed task, or feedback waiting for the agent, goes on as soon as the
+// budget is raised; in review, a review the budget stopped continues from
+// the merge request.
+const continuesOnRaise = computed(() => props.task?.status === 'failed' || props.task?.status === 'changes_requested')
+const budgetHint = computed(() => {
+  const shared = "The task's agent and the reviews of its merge request share its budget."
+  if (continuesOnRaise.value || !props.mergeRequest) return shared
+  return `${shared} Once it is raised, continue a review it stopped from !${props.mergeRequest.id}.`
+})
 
 const steps = computed(() => {
   const t = props.task
@@ -216,14 +231,14 @@ async function run(action: () => Promise<void>) {
   }
 }
 
-function startEditing(focus: 'title' | 'budget' = 'title') {
+function startEditing() {
   if (!props.task) return
   title.value = props.task.title
   body.value = props.task.body
   budget.value = props.task.budgetUsd > 0 ? String(props.task.budgetUsd) : ''
   error.value = ''
   editing.value = true
-  void nextTick(() => (focus === 'budget' ? budgetInput.value : titleInput.value)?.focus())
+  void nextTick(() => titleInput.value?.focus())
 }
 
 function save() {
@@ -242,6 +257,26 @@ function save() {
     const res = await taskApi.update(props.projectId, id, { title: title.value.trim(), body: body.value, budgetUsd })
     editing.value = false
     emit('changed', res.task)
+  })
+}
+
+// Raises the budget and, when the agent stopped or feedback waits for it,
+// starts the agent again with what the composer holds.
+function raiseBudget(raised: Record<string, number>) {
+  if (!props.task || raised.task === undefined) return
+  const id = props.task.id
+  const andStart = continuesOnRaise.value
+  void run(async () => {
+    const res = await taskApi.setBudget(props.projectId, id, raised.task)
+    emit('changed', res.task)
+    if (!andStart) return
+    const started = await taskApi.start(props.projectId, id, {
+      message: message.value.trim() || undefined,
+      model: model.value || undefined,
+      effort: effort.value || undefined,
+    })
+    message.value = ''
+    emit('changed', started.task)
   })
 }
 
@@ -386,7 +421,6 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 <label class="form-label" for="task-budget">Budget (USD)</label>
                 <input
                   id="task-budget"
-                  ref="budgetInput"
                   v-model="budget"
                   class="form-input budget-input"
                   type="number"
@@ -435,13 +469,14 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               </div>
             </section>
 
-            <p v-if="canStart && overBudget && !editing" class="notice notice-warning notice-row">
-              <MrIcon name="warning" :size="14" />
-              <span class="budget-notice-text">
-                The agent has spent this task's {{ formatUsd(task.budgetUsd) }} budget. Raise it to start the agent again.
-              </span>
-              <button class="btn btn-secondary btn-sm" @click="startEditing('budget')">Raise budget</button>
-            </p>
+            <BudgetReached
+              v-if="canStart && overBudget && !editing"
+              :budgets="spentBudget"
+              :action="continuesOnRaise ? 'Raise and continue' : 'Raise budget'"
+              :hint="budgetHint"
+              :busy="busy"
+              @raise="raiseBudget"
+            />
 
             <section v-if="canStart && !editing" class="composer">
               <button v-if="!composerOpen" class="composer-toggle" @click="composerOpen = true">
@@ -982,10 +1017,6 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 
 .details dd.over-budget {
   color: var(--error);
-}
-
-.budget-notice-text {
-  flex: 1;
 }
 
 .budget-input {

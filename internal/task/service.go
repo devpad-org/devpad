@@ -22,6 +22,13 @@ type Service interface {
 	Create(ctx context.Context, userID, projectID int64, in CreateInput) (*Task, error)
 	Get(ctx context.Context, userID, projectID, taskID int64) (*Task, error)
 	Update(ctx context.Context, userID, projectID, taskID int64, in UpdateInput) (*Task, error)
+	// SetBudget replaces the task's budget; zero means no limit. Runs
+	// spending from it, the task's agent's and its reviews', see the new
+	// limit at once.
+	SetBudget(ctx context.Context, userID, projectID, taskID int64, budgetUSD float64) (*Task, error)
+	// Budget is the task's budget, which every round of its agent spends
+	// from, and the reviews of its merge request too.
+	Budget(ctx context.Context, userID, projectID, taskID int64) (*domain.Budget, error)
 	Delete(ctx context.Context, userID, projectID, taskID int64) error
 	Start(ctx context.Context, userID, projectID, taskID int64, in StartInput) (*Task, error)
 	Cancel(ctx context.Context, userID, projectID, taskID int64) (*Task, error)
@@ -50,7 +57,8 @@ type Service interface {
 }
 
 // ReviewHook is told each time a task's branch is published for review,
-// with the agent's closing summary.
+// with the agent's closing summary. It is told after the task is unlocked,
+// so it may call back into the task service.
 type ReviewHook interface {
 	TaskReadyForReview(ctx context.Context, t *Task, summary string)
 }
@@ -137,12 +145,17 @@ type service struct {
 	// launching holds the tasks being launched, so a dispatch while one
 	// waits for its sandbox's setup does not launch it again.
 	launching map[int64]bool
-	// runBudgets holds the budget of each task whose agent has run since
-	// devpad started. Every round of the agent, the sub-agents a round leaves
-	// running, and Update share it, so one limit covers them all and a
-	// budget changed mid-run takes effect at once.
+	// runBudgets holds the budget of each task whose agent or reviews have
+	// run since devpad started. Every round of the agent, the sub-agents a
+	// round leaves running, the reviews of the task's merge request, and
+	// Update share it, so one limit covers them all and a budget changed
+	// mid-run takes effect at once.
 	runBudgets map[int64]*domain.Budget
 	reviewHook ReviewHook
+	// announced counts each task's announcements to the review hook, and
+	// announceGates make them one at a time; see announceReview.
+	announced     map[int64]uint64
+	announceGates map[int64]*sync.Mutex
 }
 
 // NewService creates a task Service. Background work stops on Shutdown.
@@ -162,6 +175,8 @@ func NewService(repo Repository, projects Projects, workspaces Workspaces, runs 
 		baseLocks:     make(map[int64]*sync.Mutex),
 		launching:     make(map[int64]bool),
 		runBudgets:    make(map[int64]*domain.Budget),
+		announced:     make(map[int64]uint64),
+		announceGates: make(map[int64]*sync.Mutex),
 	}
 	s.spawn(func(ctx context.Context) {
 		ticker := time.NewTicker(dispatchInterval)
@@ -459,15 +474,45 @@ func (s *service) Update(ctx context.Context, userID, projectID, taskID int64, i
 		}
 		t.BudgetUSD = *in.BudgetUSD
 	}
-	if err := s.repo.Update(ctx, t); err != nil {
+	return t, s.save(ctx, t)
+}
+
+func (s *service) SetBudget(ctx context.Context, userID, projectID, taskID int64, budgetUSD float64) (*Task, error) {
+	if err := domain.ValidateBudget(budgetUSD); err != nil {
+		return nil, invalid("%v", err)
+	}
+	unlock := s.lock(taskID)
+	defer unlock()
+	t, err := s.get(ctx, userID, projectID, taskID)
+	if err != nil {
 		return nil, err
+	}
+	t.BudgetUSD = budgetUSD
+	return t, s.save(ctx, t)
+}
+
+// save saves an edited task the caller has locked, and gives the runs
+// spending from its budget the budget's limit.
+func (s *service) save(ctx context.Context, t *Task) error {
+	if err := s.repo.Update(ctx, t); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	if b := s.runBudgets[t.ID]; b != nil {
 		b.SetLimit(t.BudgetUSD)
 	}
 	s.mu.Unlock()
-	return t, nil
+	return nil
+}
+
+func (s *service) Budget(ctx context.Context, userID, projectID, taskID int64) (*domain.Budget, error) {
+	unlock := s.lock(taskID)
+	defer unlock()
+	t, err := s.get(ctx, userID, projectID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	return s.runBudget(t), nil
 }
 
 // Start queues the task for an agent. It returns at once; the task launches
@@ -794,10 +839,11 @@ func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace
 	return nil
 }
 
-// runBudget is the budget of a run of the task's agent: the task's, shared
-// with its earlier rounds, with what it has spent saved on the task after
-// each request. Each save writes the whole total, so one that fails is made
-// good by the next.
+// runBudget is the task's budget: shared by every round of its agent and
+// the reviews of its merge request, with what they have spent saved on the
+// task after each request. Each save writes the whole total, so one that
+// fails is made good by the next. The caller holds the task lock, or has
+// just read the task, so the total it starts from is current.
 func (s *service) runBudget(t *Task) *domain.Budget {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -811,7 +857,7 @@ func (s *service) runBudget(t *Task) *domain.Budget {
 		if err := s.repo.RecordCost(context.Background(), taskID, spentUSD); err != nil {
 			log.Printf("task %d: recording the agent's cost: %v", taskID, err)
 		}
-	})
+	}).Owned(fmt.Sprintf("task #%d", taskID))
 	s.runBudgets[taskID] = b
 	return b
 }
@@ -929,7 +975,7 @@ func (s *service) buildTurns(ctx context.Context, t *Task, p *project.Project, e
 		turns, err := s.conversations.GetTurns(ctx, t.ConversationID, t.UserID)
 		if err == nil && len(turns) > 0 {
 			if previousError != "" {
-				return appendUserText(turns, continuePrompt(t, message, previousError)), nil
+				return domain.AppendUserText(turns, continuePrompt(t, message, previousError)), nil
 			}
 			carried = carryOver(turns, maxCarriedBytes)
 		}
@@ -943,24 +989,13 @@ func (s *service) buildTurns(ctx context.Context, t *Task, p *project.Project, e
 	}
 	t.ConversationID = conv.ID
 	if len(carried) > 0 {
-		return appendUserText(carried, newRoundPrompt(t, message)), nil
+		return domain.AppendUserText(carried, newRoundPrompt(t, message)), nil
 	}
 	prompt := implementPrompt(p, t, env, setup)
 	if message != "" {
 		prompt += "\n\n## Additional instructions\n\n" + message
 	}
 	return []domain.Turn{domain.NewTextTurn(domain.RoleUser, prompt)}, nil
-}
-
-// appendUserText adds a user message, joining it to a trailing user turn
-// (such as one carrying tool results) instead of sending two in a row.
-func appendUserText(turns []domain.Turn, text string) []domain.Turn {
-	part := domain.Part{Kind: domain.PartText, Text: text}
-	if last := len(turns) - 1; turns[last].Role == domain.RoleUser {
-		turns[last].Parts = append(turns[last].Parts, part)
-		return turns
-	}
-	return append(turns, domain.Turn{Role: domain.RoleUser, Parts: []domain.Part{part}})
 }
 
 func implementPrompt(p *project.Project, t *Task, env *project.Environment, setup *project.Setup) string {
@@ -1092,14 +1127,57 @@ func (s *service) collect(ctx context.Context, t *Task) error {
 	}
 	t.HeadSHA = result.SHA
 	s.endRound(ctx, t, StatusInReview, "")
-
-	s.mu.Lock()
-	hook := s.reviewHook
-	s.mu.Unlock()
-	if hook != nil {
-		hook.TaskReadyForReview(ctx, t, s.agentSummary(ctx, t))
-	}
+	s.announceReview(t, s.agentSummary(ctx, t))
 	return nil
+}
+
+// announceReview tells the review hook that a round of t's work is up for
+// review. The caller holds t's lock, so the hook runs on a goroutine of its
+// own once that is released: the hook takes merge request locks, and merge
+// requests call into tasks while holding theirs, as when a review requests
+// changes or a merge closes the task, so waiting for one under a task lock
+// could deadlock. A task's announcements run one at a time, and one that a
+// later round's has overtaken is dropped, so its merge request never moves
+// back to an older head.
+//
+// The caller runs on a goroutine Shutdown waits for, which every round's
+// end does, so Shutdown waits for the announcement too. It is made even as
+// the server stops, so a round collected then still reaches its merge
+// request.
+func (s *service) announceReview(t *Task, summary string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hook := s.reviewHook
+	if hook == nil {
+		return
+	}
+	s.announced[t.ID]++
+	seq := s.announced[t.ID]
+	gate := s.announceGate(t.ID)
+	round := *t
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		gate.Lock()
+		defer gate.Unlock()
+		s.mu.Lock()
+		latest := s.announced[round.ID] == seq
+		s.mu.Unlock()
+		if latest {
+			hook.TaskReadyForReview(context.WithoutCancel(s.rootCtx), &round, summary)
+		}
+	}()
+}
+
+// announceGate is the lock a task's announcements take one at a time. The
+// caller holds s.mu.
+func (s *service) announceGate(taskID int64) *sync.Mutex {
+	gate := s.announceGates[taskID]
+	if gate == nil {
+		gate = &sync.Mutex{}
+		s.announceGates[taskID] = gate
+	}
+	return gate
 }
 
 // agentSummary is the agent's closing message, which the prompt asks to be
@@ -1193,6 +1271,9 @@ func (s *service) Delete(ctx context.Context, userID, projectID, taskID int64) e
 	s.mu.Lock()
 	delete(s.locks, t.ID)
 	delete(s.runBudgets, t.ID)
+	// An announcement still to be made for the task is dropped.
+	delete(s.announced, t.ID)
+	delete(s.announceGates, t.ID)
 	s.mu.Unlock()
 	s.kick()
 	return nil

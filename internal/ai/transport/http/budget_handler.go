@@ -53,5 +53,5 @@ func (h *Handler) assistantBudget(ctx context.Context) (*domain.Budget, error) {
 	if defaults.AssistantUSD <= 0 {
 		return nil, nil
 	}
-	return domain.NewBudget(defaults.AssistantUSD, 0, nil), nil
+	return domain.NewBudget(defaults.AssistantUSD, 0, nil).Owned("this reply"), nil
 }

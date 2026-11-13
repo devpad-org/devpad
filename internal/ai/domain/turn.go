@@ -97,6 +97,18 @@ func NewTextTurn(role Role, text string) Turn {
 	return turn
 }
 
+// AppendUserText adds a user message to a transcript that is not empty,
+// joining it to a trailing user turn (such as one carrying tool results)
+// instead of sending two in a row.
+func AppendUserText(turns []Turn, text string) []Turn {
+	part := Part{Kind: PartText, Text: text}
+	if last := len(turns) - 1; turns[last].Role == RoleUser {
+		turns[last].Parts = append(turns[last].Parts, part)
+		return turns
+	}
+	return append(turns, Turn{Role: RoleUser, Parts: []Part{part}})
+}
+
 // NewToolResultTurn creates a user turn with a single tool-result part.
 func NewToolResultTurn(toolCallID, name, content string, isError bool) Turn {
 	return NewToolResultTurnFromPart(ToolResultPart{

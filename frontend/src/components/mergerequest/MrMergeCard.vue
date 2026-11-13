@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import BudgetReached from '@/components/project/BudgetReached.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
 import { shortSha } from './format'
@@ -21,6 +22,9 @@ const {
   statusIcon,
   merge,
   resolveConflicts,
+  taskBudgetStop,
+  continueTask,
+  continueError,
 } = useMergeRequest()
 </script>
 
@@ -39,6 +43,16 @@ const {
           </span>
         </li>
       </ul>
+      <BudgetReached
+        v-if="taskBudgetStop"
+        class="budget-stop"
+        :budgets="taskBudgetStop.budgets"
+        :action="taskBudgetStop.action"
+        :hint="taskBudgetStop.hint"
+        :busy="busy"
+        :error="continueError"
+        @raise="continueTask"
+      />
       <div v-if="conflicts" class="conflicts">
         <ul class="conflict-list">
           <li v-for="file in conflicts" :key="file" class="mono">
@@ -106,6 +120,10 @@ const {
 <style scoped>
 .merge-card {
   overflow: hidden;
+}
+
+.budget-stop {
+  margin: 0 var(--space-4) var(--space-3);
 }
 
 .checks {

@@ -97,8 +97,9 @@ export interface BuiltInAgentDefaults {
 }
 
 // What agents may spend, in USD, as an admin set it. Zero means no limit.
-// A new task starts with taskUsd as its budget; reviewUsd covers one review
-// agent and assistantUsd one reply of the assistant.
+// A new task starts with taskUsd as its budget, which its agent and the
+// reviews of its merge request spend from; reviewUsd covers one review agent
+// and assistantUsd one reply of the assistant.
 export interface BudgetDefaults {
   taskUsd: number
   reviewUsd: number

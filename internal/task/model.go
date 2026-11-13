@@ -71,9 +71,10 @@ type Task struct {
 	// Handoff is the conversation the task was handed off from, given to its
 	// agent as context when a conversation starts.
 	Handoff string
-	// BudgetUSD is what every round of the task's agent, with the sub-agents
-	// they start, may spend in all; zero means no limit. CostUSD is what
-	// they have spent on requests to models with known prices.
+	// BudgetUSD is what every round of the task's agent, and every review
+	// of its merge request, with the sub-agents they start, may spend in
+	// all; zero means no limit. CostUSD is what they have spent on requests
+	// to models with known prices.
 	BudgetUSD float64
 	CostUSD   float64
 	CreatedAt time.Time
@@ -85,7 +86,8 @@ func BranchName(taskID int64) string {
 	return fmt.Sprintf("task/%d", taskID)
 }
 
-// OverBudget reports whether the task's agents have spent its budget.
+// OverBudget reports whether the task's agents and reviews have spent its
+// budget.
 func (t *Task) OverBudget() bool {
 	return t.BudgetUSD > 0 && t.CostUSD >= t.BudgetUSD
 }

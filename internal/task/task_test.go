@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -679,6 +680,101 @@ func (h *recordingHook) calls() ([]Task, []string) {
 	return append([]Task(nil), h.tasks...), append([]string(nil), h.summary...)
 }
 
+// lockingHook stands in for the merge request service, whose own lock a
+// review holds while it requests changes of the task.
+type lockingHook struct {
+	mu    *sync.Mutex
+	calls chan Task
+}
+
+func (h *lockingHook) TaskReadyForReview(_ context.Context, t *Task, _ string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls <- *t
+}
+
+// The review hook is told after the task is unlocked: a review requesting
+// changes while the task's round is announced must not deadlock with it.
+func TestReviewHookRunsOutsideTheTaskLock(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mrLock := &sync.Mutex{}
+	hook := &lockingHook{mu: mrLock, calls: make(chan Task, 1)}
+	e.svc.SetReviewHook(hook)
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	running := e.waitTask(t, task.ID, hasRun)
+
+	// A review is being recorded, holding the merge request, when the
+	// round ends and is announced.
+	mrLock.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			mrLock.Unlock()
+		}
+	}()
+	e.runs.finish(running.RunID, domain.AgentRunCompleted, "")
+	e.waitTask(t, task.ID, status(StatusInReview))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.svc.RequestChanges(ctx, owner, 1, task.ID, "Fix it.", false)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("request changes: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("requesting changes waited on the announcement of the round: deadlock")
+	}
+	mrLock.Unlock()
+	locked = false
+	select {
+	case got := <-hook.calls:
+		if got.ID != task.ID || got.HeadSHA != "f00d" {
+			t.Fatalf("unexpected announcement: %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the round was never announced")
+	}
+}
+
+// A task's announcements run one at a time, and one a later round's has
+// overtaken is dropped, so its merge request never moves back.
+func TestOvertakenReviewAnnouncementIsDropped(t *testing.T) {
+	e := setup(t)
+	hook := &recordingHook{}
+	e.svc.SetReviewHook(hook)
+	e.svc.mu.Lock()
+	gate := e.svc.announceGate(7)
+	e.svc.mu.Unlock()
+
+	gate.Lock()
+	e.svc.announceReview(&Task{ID: 7, HeadSHA: "older"}, "first round")
+	e.svc.announceReview(&Task{ID: 7, HeadSHA: "newer"}, "second round")
+	gate.Unlock()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if tasks, _ := hook.calls(); len(tasks) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no announcement was made")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The earlier announcement, run before or after, finds it was overtaken.
+	time.Sleep(50 * time.Millisecond)
+	tasks, summaries := hook.calls()
+	if len(tasks) != 1 || tasks[0].HeadSHA != "newer" || summaries[0] != "second round" {
+		t.Fatalf("expected only the later round announced, got %+v %q", tasks, summaries)
+	}
+}
+
 func TestReviewHookGetsTheAgentSummary(t *testing.T) {
 	e := setup(t)
 	hook := &recordingHook{}
@@ -783,7 +879,7 @@ func TestTaskBudgetCoversEveryRoundOfItsAgent(t *testing.T) {
 	}
 	e.runs.finish(first.RunID, domain.AgentRunFailed, budget.ExhaustedMessage())
 	failed := e.waitTask(t, task.ID, status(StatusFailed))
-	if !strings.Contains(failed.Error, "budget of $2.00 is spent") {
+	if !strings.Contains(failed.Error, fmt.Sprintf("Budget reached: task #%d has spent $2.25 of its $2.00 budget", task.ID)) {
 		t.Fatalf("unexpected error: %q", failed.Error)
 	}
 
@@ -923,6 +1019,48 @@ func TestTaskBudgetChangedMidRunTakesEffect(t *testing.T) {
 	budget.Spend(4)
 	if !next.Exhausted() {
 		t.Fatal("expected leftover spend to count against the next round")
+	}
+}
+
+// The reviews of a task's merge request spend from the same budget as its
+// agent, and SetBudget raises it for them all at once.
+func TestTaskBudgetIsSharedWithItsReviews(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.budgets.defaults = domain.BudgetDefaults{TaskUSD: 5}
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	e.waitTask(t, task.ID, hasRun)
+	runBudget := e.runs.startedRequests()[0].Budget
+
+	shared, err := e.svc.Budget(ctx, owner, 1, task.ID)
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
+	if shared != runBudget {
+		t.Fatal("expected the task's reviews to get the budget its agent spends from")
+	}
+	review := domain.NewBudget(0, 0, nil).Within(shared)
+	review.Spend(5)
+	if got, _ := e.repo.GetByID(ctx, task.ID); got.CostUSD != 5 || !got.OverBudget() {
+		t.Fatalf("expected a review's spend recorded on the task, got $%v", got.CostUSD)
+	}
+	if !runBudget.Exhausted() {
+		t.Fatal("expected what a review spends to count against the task's agent")
+	}
+
+	if _, err := e.svc.SetBudget(ctx, owner, 1, task.ID, -1); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("a negative budget: expected ErrInvalidInput, got %v", err)
+	}
+	raised, err := e.svc.SetBudget(ctx, owner, 1, task.ID, 8)
+	if err != nil || raised.BudgetUSD != 8 || raised.Title != task.Title {
+		t.Fatalf("set budget: %+v %v", raised, err)
+	}
+	if runBudget.Exhausted() || review.Exhausted() {
+		t.Fatal("expected the raised budget to reach the running agent and its reviews")
+	}
+	if _, err := e.svc.Budget(ctx, owner+1, 1, task.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another user's task: expected ErrNotFound, got %v", err)
 	}
 }
 
@@ -1484,11 +1622,11 @@ func TestShutdownLeavesInterruptedLaunchesForReconcile(t *testing.T) {
 
 func TestAppendUserTextJoinsTrailingUserTurn(t *testing.T) {
 	toolResult := domain.Turn{Role: domain.RoleUser, Parts: []domain.Part{{Kind: domain.PartToolResult, ToolResult: &domain.ToolResultPart{ToolCallID: "1"}}}}
-	turns := appendUserText([]domain.Turn{domain.NewTextTurn(domain.RoleAssistant, "a"), toolResult}, "continue")
+	turns := domain.AppendUserText([]domain.Turn{domain.NewTextTurn(domain.RoleAssistant, "a"), toolResult}, "continue")
 	if len(turns) != 2 || len(turns[1].Parts) != 2 || turns[1].Parts[1].Text != "continue" {
 		t.Fatalf("expected the text joined to the tool result turn: %+v", turns)
 	}
-	turns = appendUserText([]domain.Turn{domain.NewTextTurn(domain.RoleAssistant, "a")}, "continue")
+	turns = domain.AppendUserText([]domain.Turn{domain.NewTextTurn(domain.RoleAssistant, "a")}, "continue")
 	if len(turns) != 2 || turns[1].Role != domain.RoleUser {
 		t.Fatalf("expected a new user turn: %+v", turns)
 	}
@@ -1503,6 +1641,7 @@ func TestHandler(t *testing.T) {
 	mux.HandleFunc("POST /api/projects/{id}/tasks/{taskId}/start", h.HandleStart)
 	mux.HandleFunc("GET /api/projects/{id}/tasks/{taskId}", h.HandleGet)
 	mux.HandleFunc("POST /api/projects/{id}/tasks/handoff", h.HandleHandoff)
+	mux.HandleFunc("PUT /api/projects/{id}/tasks/{taskId}/budget", h.HandleSetBudget)
 
 	do := func(userID int64, method, path, body string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -1543,6 +1682,10 @@ func TestHandler(t *testing.T) {
 		{"bad id", owner, http.MethodGet, "/api/projects/1/tasks/x", "", http.StatusBadRequest},
 		{"unpublished base", owner, http.MethodPost, "/api/projects/1/tasks", `{"title":"x","baseBranch":"nope"}`, http.StatusBadRequest},
 		{"handoff without a project workspace", owner, http.MethodPost, "/api/projects/1/tasks/handoff", `{"conversationId":1,"title":"x"}`, http.StatusConflict},
+		{"set budget", owner, http.MethodPut, "/api/projects/1/tasks/1/budget", `{"budgetUsd":12.5}`, http.StatusOK},
+		{"set budget without one", owner, http.MethodPut, "/api/projects/1/tasks/1/budget", `{}`, http.StatusBadRequest},
+		{"negative budget", owner, http.MethodPut, "/api/projects/1/tasks/1/budget", `{"budgetUsd":-1}`, http.StatusBadRequest},
+		{"other user's budget", stranger, http.MethodPut, "/api/projects/1/tasks/1/budget", `{"budgetUsd":1}`, http.StatusNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

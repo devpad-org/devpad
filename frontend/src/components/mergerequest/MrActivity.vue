@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { REVIEW_ROUNDS } from '@/api/mergeRequests'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
+import BudgetReached from '@/components/project/BudgetReached.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
 import MrCommits from './MrCommits.vue'
@@ -26,6 +27,10 @@ const {
   statusIcon,
   reviewCommentCount,
   postComment,
+  busy,
+  stoppedReview,
+  continueReview,
+  continueError,
 } = useMergeRequest()
 
 const items = computed(() =>
@@ -110,7 +115,16 @@ async function submitComment() {
               </span>
             </div>
             <div v-if="item.review.error || item.review.body || (item.review.workspaceId && item.review.status === 'pending')" class="card-body">
-              <p v-if="item.review.error" class="notice notice-error">{{ item.review.error }}</p>
+              <BudgetReached
+                v-if="stoppedReview?.review.id === item.review.id"
+                :budgets="stoppedReview.stop.budgets"
+                :action="stoppedReview.stop.action"
+                :hint="stoppedReview.stop.hint"
+                :busy="busy"
+                :error="continueError"
+                @raise="continueReview"
+              />
+              <p v-else-if="item.review.error" class="notice notice-error">{{ item.review.error }}</p>
               <MarkdownMessage v-if="item.review.body" :content="item.review.body" />
               <RouterLink
                 v-if="item.review.workspaceId && item.review.status === 'pending'"

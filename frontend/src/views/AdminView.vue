@@ -895,12 +895,12 @@ function isSelf(user: AdminUser): boolean {
           <div class="form-field">
             <label for="budget-task">Per task (USD)</label>
             <input id="budget-task" v-model="budgetForm.taskUsd" type="number" min="0" step="any" placeholder="No limit" />
-            <p class="field-hint">Every run of a task's agent, across retries and rounds of feedback. New tasks start with this; it can be raised on each task.</p>
+            <p class="field-hint">Every run of a task's agent, across retries and rounds of feedback, and every review of its merge request. New tasks start with this; it can be raised on each task.</p>
           </div>
           <div class="form-field">
             <label for="budget-review">Per review (USD)</label>
             <input id="budget-review" v-model="budgetForm.reviewUsd" type="number" min="0" step="any" placeholder="No limit" />
-            <p class="field-hint">One review agent's run on a merge request.</p>
+            <p class="field-hint">One review agent on a merge request. A review of a task's change also spends from the task's budget. It can be raised on a review that reached it.</p>
           </div>
           <div class="form-field">
             <label for="budget-assistant">Per assistant reply (USD)</label>
@@ -909,7 +909,7 @@ function isSelf(user: AdminUser): boolean {
           </div>
         </div>
         <div class="ai-provider-actions">
-          <span class="agent-default-hint">A run that reaches its budget stops with an error after its current request.</span>
+          <span class="agent-default-hint">A run that reaches its budget stops after its current request; raising the budget lets a task's agent or a review continue.</span>
           <button type="submit" class="btn-primary" :disabled="budgetsSubmitting">
             {{ budgetsSubmitting ? 'Saving...' : 'Save' }}
           </button>

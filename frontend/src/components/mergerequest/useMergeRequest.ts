@@ -15,6 +15,8 @@ import {
   type Verdict,
 } from '@/api/mergeRequests'
 import type { MrIconName } from '@/components/project/MrIcon.vue'
+import type { SpentBudget } from '@/components/project/BudgetReached.vue'
+import { taskApi } from '@/api/tasks'
 import { branchActionError } from '@/components/project/branchErrors'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { STRATEGIES, authorName, dirName, errorText, plural, type Author, type Tone } from './format'
@@ -48,6 +50,15 @@ export type TimelineItem =
 
 // What the activity shows: everything, or only the threads still open.
 export type ActivityFilter = 'all' | 'open'
+
+// An agent a spent budget stopped, with the budgets to raise to let it go
+// on: the latest agent review, stopped before it submitted, or the task's
+// agent.
+export interface BudgetStop {
+  budgets: SpentBudget[]
+  action: string
+  hint?: string
+}
 
 export interface Check {
   key: string
@@ -106,6 +117,9 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   const agentModel = ref('')
   const agentEffort = ref('')
   const autoFix = ref(true)
+
+  // Why continuing a stopped review failed, shown with the budget it needs.
+  const continueError = ref('')
 
   const sendBackOpen = ref(false)
   const sendBackNote = ref('')
@@ -218,6 +232,47 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   // Publishing only fast-forwards, so a workspace branch that also lacks
   // some of the project's commits must merge them first.
   const workspaceDiverged = computed(() => unpublishedCommits.value > 0 && (workspaceBranch.value?.behind ?? 0) > 0)
+
+  // The task's budget, when its agent and the reviews of this merge request
+  // have spent it.
+  const spentTaskBudget = computed<SpentBudget | null>(() => {
+    const t = task.value
+    if (!t || t.budgetUsd <= 0 || t.costUsd < t.budgetUsd) return null
+    return { key: 'task', owner: `Task #${t.id}`, label: `Task #${t.id} budget`, spentUsd: t.costUsd, budgetUsd: t.budgetUsd }
+  })
+  const taskBudgetHint = 'The task\'s agent and the reviews of its merge request share its budget.'
+
+  // The latest agent review, when it stopped before submitting because a
+  // budget it spends from ran out. Only a review of the change as it stands
+  // can go on.
+  const stoppedReview = computed(() => {
+    if (!isOpen.value || pendingAgentReview.value) return null
+    const review = [...timelineReviews.value].reverse().find((r) => r.author === 'agent')
+    if (!review || review.status !== 'failed' || review.headSha !== mr.value?.headSha) return null
+    const budgets: SpentBudget[] = []
+    if (spentTaskBudget.value) budgets.push(spentTaskBudget.value)
+    if (review.budgetUsd > 0 && review.costUsd >= review.budgetUsd) {
+      budgets.push({ key: 'review', owner: 'This review', label: 'Review budget', spentUsd: review.costUsd, budgetUsd: review.budgetUsd })
+    }
+    if (!budgets.length) return null
+    const stop: BudgetStop = {
+      budgets,
+      // A review that never ran starts afresh; one that ran picks up its
+      // transcript.
+      action: review.runId ? 'Raise and continue the review' : 'Raise and start the review',
+      hint: spentTaskBudget.value ? taskBudgetHint : undefined,
+    }
+    return { review, stop }
+  })
+
+  // The task's agent, when it stopped, or its feedback waits, because the
+  // task's budget is spent.
+  const taskBudgetStop = computed<BudgetStop | null>(() => {
+    const t = task.value
+    if (!isOpen.value || stoppedReview.value || !spentTaskBudget.value || !t) return null
+    if (t.status !== 'failed' && t.status !== 'changes_requested') return null
+    return { budgets: [spentTaskBudget.value], action: "Raise and continue the task's agent", hint: taskBudgetHint }
+  })
 
   const latestAgentReview = computed(() => [...timelineReviews.value].reverse().find((r) => r.author === 'agent' && r.status !== 'pending' && r.model) ?? null)
   const totals = computed(() =>
@@ -683,6 +738,34 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     })
   }
 
+  // Starts the review agent that stopped again, with the budgets that
+  // stopped it raised.
+  function continueReview(raised: Record<string, number>) {
+    const review = stoppedReview.value?.review
+    if (!review) return
+    void act(async () => {
+      await mergeRequestApi.continueReview(projectId.value, mrId.value, review.id, {
+        budgetUsd: raised.review,
+        taskBudgetUsd: raised.task,
+      })
+      showNotice(review.runId ? 'The review agent is picking up where it stopped.' : 'A review agent is reading the change.')
+      await refreshAll()
+    }, continueError)
+  }
+
+  // Raises the task's budget and starts its agent again, on any feedback
+  // waiting for it.
+  function continueTask(raised: Record<string, number>) {
+    const t = task.value
+    if (!t || raised.task === undefined) return
+    void act(async () => {
+      await taskApi.setBudget(projectId.value, t.id, raised.task)
+      await taskApi.start(projectId.value, t.id)
+      showNotice("The task's agent is picking up where it stopped.")
+      await refreshAll()
+    }, continueError)
+  }
+
   // Reviews the change again with the last review agent's settings, or the
   // review agent's defaults when there was none.
   function rereview() {
@@ -888,6 +971,11 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     setResolved,
     submitReview,
     startAgentReview,
+    continueReview,
+    continueTask,
+    continueError,
+    stoppedReview,
+    taskBudgetStop,
     rereview,
     publishWorkspaceCommits,
     sendBack,
