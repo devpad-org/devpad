@@ -1,11 +1,8 @@
 <script setup lang="ts">
-import type { AIModel, TokenPrices } from '@/api/ai'
+import type { TokenPrices } from '@/api/ai'
+import { useAllAIModels } from './useAllAIModels'
 
-defineProps<{
-  models: AIModel[]
-  loading: boolean
-  error: string
-}>()
+const { models, loading, error } = useAllAIModels()
 
 const priceFormat = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -32,12 +29,14 @@ const priceColumns: { key: keyof TokenPrices; label: string }[] = [
 </script>
 
 <template>
-  <section class="settings-section">
-    <h2 class="section-title">AI Model Pricing</h2>
-    <p class="section-desc">
-      USD per million tokens, used to work out what each agent run costs and to keep it within its budget. Prices are
-      built into devpad.
-    </p>
+  <div>
+    <header class="page-header">
+      <h2 class="page-title">Model Pricing</h2>
+      <p class="page-desc">
+        USD per million tokens, used to work out what each agent run costs and to keep it within its budget. Prices are
+        built into devpad.
+      </p>
+    </header>
 
     <div v-if="error" class="alert alert-error">{{ error }}</div>
 
@@ -80,16 +79,21 @@ const priceColumns: { key: keyof TokenPrices; label: string }[] = [
         first for a request whose prompt is over that many tokens.
       </p>
     </template>
-  </section>
+  </div>
 </template>
 
-<style scoped src="./ai-settings.css"></style>
+<style scoped src="./settings.css"></style>
 
 <style scoped>
 .pricing-table-wrap {
+  background: var(--bg-surface);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   overflow-x: auto;
+}
+
+.pricing-table-wrap + .field-hint {
+  margin-top: var(--space-2);
 }
 
 .pricing-table {

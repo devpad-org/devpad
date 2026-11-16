@@ -4,9 +4,10 @@ import { aiApi, type AIModel, type BuiltInAgentDefaults } from '@/api/ai'
 import { useAiModelStore } from '@/stores/aiModels'
 import { thinkingEffortLabel } from '@/utils/aiModels'
 import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
+import { useAllAIModels } from './useAllAIModels'
 
 // Every model, with whether the user has a key for its provider.
-const props = defineProps<{ models: AIModel[] }>()
+const { models } = useAllAIModels()
 
 const aiModelStore = useAiModelStore()
 
@@ -33,7 +34,7 @@ onMounted(async () => {
 })
 
 function findModel(id: string): AIModel | undefined {
-  return props.models.find((m) => m.id === id)
+  return models.value.find((m) => m.id === id)
 }
 
 // Models the user has a key for, plus the one already chosen if they have
@@ -41,7 +42,7 @@ function findModel(id: string): AIModel | undefined {
 function modelMenu(chosen: string, emptyLabel: string): SelectMenuOption[] {
   return [
     { value: '', label: emptyLabel },
-    ...props.models
+    ...models.value
       .filter((m) => m.configured || m.id === chosen)
       .map((m) => ({
         value: m.id,
@@ -112,12 +113,14 @@ function saveSummary() {
 </script>
 
 <template>
-  <section class="settings-section">
-    <h2 class="section-title">Default Models</h2>
-    <p class="section-desc">
-      The model and reasoning effort each built-in agent runs with unless whoever starts it picks another, including
-      agents started by other agents.
-    </p>
+  <div>
+    <header class="page-header">
+      <h2 class="page-title">Default Models</h2>
+      <p class="page-desc">
+        The model and reasoning effort each built-in agent runs with unless whoever starts it picks another, including
+        agents started by other agents.
+      </p>
+    </header>
 
     <div v-if="error" class="alert alert-error">{{ error }}</div>
     <div v-if="success" class="alert alert-success">{{ success }}</div>
@@ -203,7 +206,7 @@ function saveSummary() {
         </form>
       </div>
     </div>
-  </section>
+  </div>
 </template>
 
-<style scoped src="./ai-settings.css"></style>
+<style scoped src="./settings.css"></style>

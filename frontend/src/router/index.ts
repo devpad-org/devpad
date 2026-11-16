@@ -5,6 +5,12 @@ import LoginView from '@/views/LoginView.vue'
 import SetupView from '@/views/SetupView.vue'
 import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
+import SecuritySettings from '@/components/settings/SecuritySettings.vue'
+import SSHKeySettings from '@/components/settings/SSHKeySettings.vue'
+import AIProviderKeys from '@/components/settings/AIProviderKeys.vue'
+import AIDefaultModels from '@/components/settings/AIDefaultModels.vue'
+import AIBudgets from '@/components/settings/AIBudgets.vue'
+import AIModelPricing from '@/components/settings/AIModelPricing.vue'
 import InboxView from '@/views/InboxView.vue'
 import UsageView from '@/views/UsageView.vue'
 const IdeView = () => import('@/views/IdeView.vue')
@@ -18,11 +24,20 @@ export const router = createRouter({
       component: HomeView,
       meta: { requiresAuth: true },
     },
+    // Settings is a sidebar of pages, each with its own URL.
     {
       path: '/settings',
-      name: 'settings',
       component: SettingsView,
       meta: { requiresAuth: true },
+      children: [
+        { path: '', name: 'settings', redirect: { name: 'settings-security' } },
+        { path: 'security', name: 'settings-security', component: SecuritySettings },
+        { path: 'ssh-key', name: 'settings-ssh-key', component: SSHKeySettings },
+        { path: 'ai/keys', name: 'settings-ai-keys', component: AIProviderKeys },
+        { path: 'ai/models', name: 'settings-ai-models', component: AIDefaultModels },
+        { path: 'ai/budgets', name: 'settings-ai-budgets', component: AIBudgets },
+        { path: 'ai/pricing', name: 'settings-ai-pricing', component: AIModelPricing },
+      ],
     },
     // The launcher at / lists projects.
     {

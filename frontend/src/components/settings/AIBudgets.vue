@@ -53,20 +53,22 @@ async function save() {
 </script>
 
 <template>
-  <section class="settings-section">
-    <h2 class="section-title">Agent Budgets</h2>
-    <p class="section-desc">
-      What your agents may spend before they stop, counting the agents they start. Leave a budget empty for no limit.
-      Requests to models without prices aren't counted, so those runs stop only at devpad's limit of 500 model requests
-      per run.
-    </p>
+  <div>
+    <header class="page-header">
+      <h2 class="page-title">Agent Budgets</h2>
+      <p class="page-desc">
+        What your agents may spend before they stop, counting the agents they start. Leave a budget empty for no limit.
+        Requests to models without prices aren't counted, so those runs stop only at devpad's limit of 500 model requests
+        per run.
+      </p>
+    </header>
 
     <div v-if="error" class="alert alert-error">{{ error }}</div>
     <div v-if="success" class="alert alert-success">{{ success }}</div>
 
     <div v-if="loading" class="loading-state">Loading budgets...</div>
 
-    <form v-else @submit.prevent="save">
+    <form v-else class="card" @submit.prevent="save">
       <div class="form-field">
         <label for="budget-task">Per task (USD)</label>
         <input id="budget-task" v-model="form.taskUsd" type="number" min="0" step="any" placeholder="No limit" />
@@ -107,7 +109,7 @@ async function save() {
         </div>
       </div>
     </form>
-  </section>
+  </div>
 </template>
 
-<style scoped src="./ai-settings.css"></style>
+<style scoped src="./settings.css"></style>
