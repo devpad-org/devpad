@@ -114,6 +114,7 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 		}
 
 		chatReq := domain.ChatRequest{
+			UserID:   req.UserID,
 			Model:    req.Model,
 			Turns:    turns,
 			Thinking: req.Thinking,

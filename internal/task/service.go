@@ -101,16 +101,16 @@ type Conversations interface {
 	GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error)
 }
 
-// Budgets looks up the limits an admin set on what agents may spend.
+// Budgets looks up the limits a user set on what their agents may spend.
 type Budgets interface {
-	BudgetDefaults(ctx context.Context) (domain.BudgetDefaults, error)
+	BudgetDefaults(ctx context.Context, userID int64) (domain.BudgetDefaults, error)
 }
 
-// AgentDefaults looks up the model and effort an admin set for a built-in
+// AgentDefaults looks up the model and effort a user set for a built-in
 // agent, or nil when it has none a run could use. An effort picked without
 // a model is kept when the default model supports it.
 type AgentDefaults interface {
-	DefaultsFor(ctx context.Context, agentID, effort string) (*domain.AgentDefaults, error)
+	DefaultsFor(ctx context.Context, userID int64, agentID, effort string) (*domain.AgentDefaults, error)
 }
 
 const (
@@ -199,13 +199,13 @@ func (s *service) SetReviewHook(h ReviewHook) {
 	s.reviewHook = h
 }
 
-// withDefaults fills in the model an admin set for the agent when none was
+// withDefaults fills in the model the user set for the agent when none was
 // picked, keeping a picked effort only if that model supports it.
-func (s *service) withDefaults(ctx context.Context, settings AgentSettings) (AgentSettings, error) {
+func (s *service) withDefaults(ctx context.Context, userID int64, settings AgentSettings) (AgentSettings, error) {
 	if settings.Model != "" {
 		return settings, nil
 	}
-	d, err := s.defaults.DefaultsFor(ctx, settings.AgentID, settings.Effort)
+	d, err := s.defaults.DefaultsFor(ctx, userID, settings.AgentID, settings.Effort)
 	if err != nil {
 		return settings, fmt.Errorf("looking up the agent's default model: %w", err)
 	}
@@ -304,7 +304,7 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 			return nil, project.ErrNotReady
 		}
 		in.Model = strings.TrimSpace(in.Model)
-		if in.AgentSettings, err = s.withDefaults(ctx, in.AgentSettings); err != nil {
+		if in.AgentSettings, err = s.withDefaults(ctx, userID, in.AgentSettings); err != nil {
 			return nil, err
 		}
 		if in.Model == "" {
@@ -315,7 +315,7 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 	if in.BudgetUSD != nil {
 		budgetUSD = *in.BudgetUSD
 	} else {
-		budgets, err := s.budgets.BudgetDefaults(ctx)
+		budgets, err := s.budgets.BudgetDefaults(ctx, userID)
 		if err != nil {
 			return nil, err
 		}
@@ -559,8 +559,8 @@ func (s *service) start(ctx context.Context, t *Task, in StartInput) (*Task, err
 		}
 	}
 	// A task keeps the model it first ran with, default or not, across later
-	// rounds; a new admin default reaches only tasks not started yet.
-	settings, err := s.withDefaults(ctx, AgentSettings{AgentID: t.AgentID, Model: t.Model, Effort: t.Effort})
+	// rounds; a new default reaches only tasks not started yet.
+	settings, err := s.withDefaults(ctx, t.UserID, AgentSettings{AgentID: t.AgentID, Model: t.Model, Effort: t.Effort})
 	if err != nil {
 		return nil, err
 	}

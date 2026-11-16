@@ -1,12 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { aiApi, type UsagePeriod, type UsageProject, type UsageReport, type UsageTotals } from '@/api/ai'
-import { useAuthStore } from '@/stores/auth'
 import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
 import UsageChart, { type ChartColumn, type ChartSeries } from '@/components/usage/UsageChart.vue'
 import { formatCost, formatCount, formatTokens } from '@/components/usage/format'
-
-const auth = useAuthStore()
 
 const SERIES_SLOTS = 8
 const OTHER = '\u0000other'
@@ -22,7 +19,6 @@ const perPeriod: Record<UsagePeriod, string> = { day: 'day', week: 'week', month
 const period = ref<UsagePeriod>('day')
 const span = ref(spans.day.initial)
 const projectFilter = ref<number | 'all'>('all')
-const everyone = ref(false)
 
 const report = ref<UsageReport | null>(null)
 const loading = ref(false)
@@ -69,7 +65,6 @@ async function load() {
       from: isoDate(rangeStart(period.value, span.value, today)),
       to: isoDate(today),
       tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      everyone: everyone.value,
     })
     if (seq !== loadSeq) return
     report.value = result
@@ -82,11 +77,7 @@ async function load() {
   }
 }
 
-watch([period, span, everyone], load, { immediate: true })
-watch(everyone, () => {
-  knownProjects.value = new Map()
-  projectFilter.value = 'all'
-})
+watch([period, span], load, { immediate: true })
 
 const projectOptions = computed(() =>
   [...knownProjects.value.values()].sort((a, b) => projectName(a).localeCompare(projectName(b))),
@@ -231,7 +222,7 @@ const byProject = computed(() => {
     <div class="page-header">
       <div>
         <h1 class="page-title">Usage</h1>
-        <p class="page-subtitle">What AI requests cost, by project and model</p>
+        <p class="page-subtitle">What your AI requests cost, by project and model</p>
       </div>
     </div>
 
@@ -252,14 +243,6 @@ const byProject = computed(() => {
       </div>
       <SelectMenu v-model="span" class="filter-select" :options="spanOptions" title="Range" variant="field" />
       <SelectMenu v-model="projectFilter" class="filter-select" :options="projectFilterOptions" title="Project" variant="field" />
-      <div v-if="auth.isAdmin" class="segmented" role="radiogroup" aria-label="Whose usage">
-        <button type="button" role="radio" class="segment" :class="{ active: !everyone }" :aria-checked="!everyone" @click="everyone = false">
-          Mine
-        </button>
-        <button type="button" role="radio" class="segment" :class="{ active: everyone }" :aria-checked="everyone" @click="everyone = true">
-          Everyone
-        </button>
-      </div>
     </div>
 
     <div v-if="error" class="notice notice-error">{{ error }}</div>

@@ -61,7 +61,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
-	// Encryption cipher for secrets (SSH private keys).
+	// Encryption cipher for secrets (SSH private keys and AI provider keys).
 	if cfg.EncryptionKey == "" {
 		key, err := encrypt.GenerateKey()
 		if err != nil {
@@ -125,7 +125,7 @@ func New(cfg Config) (*Server, error) {
 	projectHandler := project.NewHandler(projectService)
 
 	// AI layer
-	aiModule := ai.NewModule(db.Conn(), workspaceService)
+	aiModule := ai.NewModule(db.Conn(), workspaceService, cipher)
 
 	// Task layer (agents implementing tasks in project sandboxes)
 	taskService := task.NewService(task.NewRepository(db.Conn()), projectService, workspaceService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults, aiModule.BudgetDefaults)
@@ -371,11 +371,14 @@ type aiRouteHandler interface {
 	HandleUploadAttachment(http.ResponseWriter, *http.Request)
 	HandleGetAttachment(http.ResponseWriter, *http.Request)
 	HandleListProviders(http.ResponseWriter, *http.Request)
-	HandleUpdateProvider(http.ResponseWriter, *http.Request)
+	HandleSetProviderKey(http.ResponseWriter, *http.Request)
+	HandleRemoveProviderKey(http.ResponseWriter, *http.Request)
 	HandleListAgentDefaults(http.ResponseWriter, *http.Request)
 	HandleSetAgentDefaults(http.ResponseWriter, *http.Request)
 	HandleGetBudgetDefaults(http.ResponseWriter, *http.Request)
 	HandleSetBudgetDefaults(http.ResponseWriter, *http.Request)
+	HandleGetSummaryModel(http.ResponseWriter, *http.Request)
+	HandleSetSummaryModel(http.ResponseWriter, *http.Request)
 	HandleUsageReport(http.ResponseWriter, *http.Request)
 }
 
@@ -548,13 +551,17 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/ai/attachments", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleUploadAttachment)))
 	mux.Handle("GET /api/ai/attachments/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetAttachment)))
 
-	// AI admin routes
-	mux.Handle("GET /api/ai/providers", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleListProviders)))
-	mux.Handle("PUT /api/ai/providers/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleUpdateProvider)))
-	mux.Handle("GET /api/ai/agent-defaults", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleListAgentDefaults)))
-	mux.Handle("PUT /api/ai/agent-defaults/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleSetAgentDefaults)))
-	mux.Handle("GET /api/ai/budgets", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleGetBudgetDefaults)))
-	mux.Handle("PUT /api/ai/budgets", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleSetBudgetDefaults)))
+	// Each user's own AI settings: provider keys, agent defaults, budgets
+	// and the summary model.
+	mux.Handle("GET /api/ai/providers", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListProviders)))
+	mux.Handle("PUT /api/ai/providers/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleSetProviderKey)))
+	mux.Handle("DELETE /api/ai/providers/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleRemoveProviderKey)))
+	mux.Handle("GET /api/ai/agent-defaults", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListAgentDefaults)))
+	mux.Handle("PUT /api/ai/agent-defaults/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleSetAgentDefaults)))
+	mux.Handle("GET /api/ai/budgets", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetBudgetDefaults)))
+	mux.Handle("PUT /api/ai/budgets", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleSetBudgetDefaults)))
+	mux.Handle("GET /api/ai/summary-model", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetSummaryModel)))
+	mux.Handle("PUT /api/ai/summary-model", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleSetSummaryModel)))
 
 	// Unknown API paths get a JSON 404 rather than the SPA, so a client
 	// calling a removed or mistyped endpoint sees a real error.

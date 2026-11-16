@@ -66,9 +66,8 @@ const (
 	UsageMonth UsagePeriod = "month"
 )
 
-// UsageQuery asks for the usage between two dates, both included, in
-// periods counted in Location. Weeks start on Monday. A zero UserID covers
-// every user.
+// UsageQuery asks for a user's usage between two dates, both included, in
+// periods counted in Location. Weeks start on Monday.
 type UsageQuery struct {
 	UserID   int64
 	Period   UsagePeriod

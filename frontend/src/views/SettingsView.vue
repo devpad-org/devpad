@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { settingsApi, type TOTPSetup } from '@/api/settings'
+import { aiApi, type AIModel } from '@/api/ai'
+import { useAiModelStore } from '@/stores/aiModels'
+import AIProviderKeys from '@/components/settings/AIProviderKeys.vue'
+import AIDefaultModels from '@/components/settings/AIDefaultModels.vue'
+import AIBudgets from '@/components/settings/AIBudgets.vue'
+import AIModelPricing from '@/components/settings/AIModelPricing.vue'
 
 // Password change
 const currentPassword = ref('')
@@ -30,7 +36,33 @@ const sshSubmitting = ref(false)
 const showRegenerateConfirm = ref(false)
 const sshCopied = ref(false)
 
+// Every model, with whether the user has a key for its provider, for the
+// default model pickers and the pricing table.
+const aiModelStore = useAiModelStore()
+const allAIModels = ref<AIModel[]>([])
+const aiModelsLoading = ref(true)
+const aiModelsError = ref('')
+
+async function loadAIModels() {
+  try {
+    allAIModels.value = (await aiApi.listModels()).models
+    aiModelsError.value = ''
+  } catch {
+    aiModelsError.value = 'Failed to load AI models'
+  } finally {
+    aiModelsLoading.value = false
+  }
+}
+
+// A key saved or removed changes which models the user's agents can use.
+function onProviderKeysChanged() {
+  void loadAIModels()
+  void aiModelStore.fetchModels()
+}
+
 onMounted(async () => {
+  void loadAIModels()
+
   try {
     const status = await settingsApi.getMFAStatus()
     totpEnabled.value = status.totpEnabled
@@ -191,7 +223,7 @@ function openRegenerateConfirm() {
   <div class="settings-page">
     <div class="settings-container">
       <h1 class="settings-title">Settings</h1>
-      <p class="settings-subtitle">Manage your account and security preferences</p>
+      <p class="settings-subtitle">Manage your account, security and AI preferences</p>
 
       <!-- Password Section -->
       <section class="settings-section">
@@ -416,6 +448,11 @@ function openRegenerateConfirm() {
           </div>
         </template>
       </section>
+
+      <AIProviderKeys @changed="onProviderKeysChanged" />
+      <AIDefaultModels :models="allAIModels" />
+      <AIBudgets />
+      <AIModelPricing :models="allAIModels" :loading="aiModelsLoading" :error="aiModelsError" />
     </div>
   </div>
 </template>
@@ -428,7 +465,7 @@ function openRegenerateConfirm() {
 }
 
 .settings-container {
-  max-width: 600px;
+  max-width: 720px;
   margin: 0 auto;
 }
 

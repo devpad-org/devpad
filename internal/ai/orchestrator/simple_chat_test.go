@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func TestSimpleChatOrchestrator_PricesUsage(t *testing.T) {
 			return ch, nil
 		},
 	})
-	stream, err := orch.Stream(context.Background(), domain.ChatRequest{Model: "model-1"}, nil)
+	stream, err := orch.Stream(context.Background(), domain.ChatRequest{Model: "model-1"}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,7 +57,7 @@ func TestSimpleChatOrchestrator_PricesAFallbackAttemptAtItsModelsPrices(t *testi
 		},
 	})
 	var recorded []domain.Usage
-	stream, err := orch.Stream(context.Background(), domain.ChatRequest{Model: "model-1"}, func(usage domain.Usage) {
+	stream, err := orch.Stream(context.Background(), domain.ChatRequest{Model: "model-1"}, nil, func(usage domain.Usage) {
 		recorded = append(recorded, usage)
 	})
 	if err != nil {
@@ -89,7 +90,7 @@ func TestSimpleChatOrchestrator_RecordsARequestCutShort(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	recorded := make(chan domain.Usage, 1)
-	stream, err := orch.Stream(ctx, domain.ChatRequest{Model: "model-1"}, func(usage domain.Usage) { recorded <- usage })
+	stream, err := orch.Stream(ctx, domain.ChatRequest{Model: "model-1"}, nil, func(usage domain.Usage) { recorded <- usage })
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,5 +111,41 @@ func TestSimpleChatOrchestrator_RecordsARequestCutShort(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the request cut short was never recorded")
+	}
+}
+
+// A chat a run's tool call makes, such as a file summary, spends from the
+// run's budget and is refused once that is spent.
+func TestSimpleChatOrchestrator_SpendsAndRespectsTheBudget(t *testing.T) {
+	requests := 0
+	orch := NewSimpleChatOrchestrator(&mockChatService{
+		findModelFn: func(modelID string) (domain.Model, error) {
+			return domain.Model{ID: modelID, Pricing: &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1000}}}, nil
+		},
+		chatStreamFn: func(_ context.Context, _ domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+			requests++
+			ch := make(chan domain.ProviderEvent, 2)
+			ch <- domain.ProviderEvent{Usage: &domain.Usage{InputTokens: 1000}}
+			ch <- domain.ProviderEvent{Done: true}
+			close(ch)
+			return ch, nil
+		},
+	})
+	budget := domain.NewBudget(1, 0, nil).Owned("task #3")
+
+	stream, err := orch.Stream(context.Background(), domain.ChatRequest{Model: "model-1"}, budget, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	collectEvents(t, stream)
+	if !budget.Exhausted() {
+		t.Fatal("expected the chat's $1 cost spent from the budget")
+	}
+
+	if _, err := orch.Stream(context.Background(), domain.ChatRequest{Model: "model-1"}, budget, nil); err == nil || !strings.Contains(err.Error(), "task #3") {
+		t.Fatalf("expected a spent budget to refuse the chat, got %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("expected no request once the budget is spent, got %d", requests)
 	}
 }

@@ -8,29 +8,48 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
+// testUser is the user the tests' defaults belong to; any other user has
+// none and no keys.
+const testUser int64 = 1
+
+// memoryAgentDefaultsRepo keeps testUser's defaults in defaults and every
+// other user's in others.
 type memoryAgentDefaultsRepo struct {
 	defaults map[string]domain.AgentDefaults
+	others   map[int64]map[string]domain.AgentDefaults
 }
 
-func (r *memoryAgentDefaultsRepo) ListAgentDefaults(context.Context) ([]domain.AgentDefaults, error) {
-	out := make([]domain.AgentDefaults, 0, len(r.defaults))
-	for _, d := range r.defaults {
+func (r *memoryAgentDefaultsRepo) forUser(userID int64) map[string]domain.AgentDefaults {
+	if userID == testUser {
+		return r.defaults
+	}
+	if r.others[userID] == nil {
+		r.others[userID] = map[string]domain.AgentDefaults{}
+	}
+	return r.others[userID]
+}
+
+func (r *memoryAgentDefaultsRepo) ListAgentDefaults(_ context.Context, userID int64) ([]domain.AgentDefaults, error) {
+	defaults := r.forUser(userID)
+	out := make([]domain.AgentDefaults, 0, len(defaults))
+	for _, d := range defaults {
 		out = append(out, d)
 	}
 	return out, nil
 }
 
-func (r *memoryAgentDefaultsRepo) SetAgentDefaults(_ context.Context, d domain.AgentDefaults) error {
-	r.defaults[d.AgentID] = d
+func (r *memoryAgentDefaultsRepo) SetAgentDefaults(_ context.Context, userID int64, d domain.AgentDefaults) error {
+	r.forUser(userID)[d.AgentID] = d
 	return nil
 }
 
-func (r *memoryAgentDefaultsRepo) DeleteAgentDefaults(_ context.Context, agentID string) error {
-	delete(r.defaults, agentID)
+func (r *memoryAgentDefaultsRepo) DeleteAgentDefaults(_ context.Context, userID int64, agentID string) error {
+	delete(r.forUser(userID), agentID)
 	return nil
 }
 
-// stubModelCatalog offers its models; only the configured ones can run.
+// stubModelCatalog offers its models; only the configured ones can run, and
+// only for testUser.
 type stubModelCatalog struct {
 	models     map[string]domain.Model
 	configured map[string]bool
@@ -43,19 +62,19 @@ func (c stubModelCatalog) FindModel(id string) (domain.Model, error) {
 	return domain.Model{}, domain.ErrModelNotFound
 }
 
-func (c stubModelCatalog) ResolveChatTarget(_ context.Context, id string) (ResolvedTarget, error) {
+func (c stubModelCatalog) ResolveChatTarget(_ context.Context, userID int64, id string) (ResolvedTarget, error) {
 	model, err := c.FindModel(id)
 	if err != nil {
 		return ResolvedTarget{}, err
 	}
-	if !c.configured[id] {
+	if !c.configured[id] || userID != testUser {
 		return ResolvedTarget{}, domain.ErrNoAPIKey
 	}
 	return ResolvedTarget{Model: model}, nil
 }
 
 func newTestAgentDefaultsService() (*memoryAgentDefaultsRepo, AgentDefaultsService) {
-	repo := &memoryAgentDefaultsRepo{defaults: map[string]domain.AgentDefaults{}}
+	repo := &memoryAgentDefaultsRepo{defaults: map[string]domain.AgentDefaults{}, others: map[int64]map[string]domain.AgentDefaults{}}
 	catalog := stubModelCatalog{
 		models: map[string]domain.Model{
 			"thinker": {ID: "thinker", Thinking: domain.ThinkingCapability{Supported: true, SupportedEfforts: []string{"low", "high"}}},
@@ -70,14 +89,14 @@ func TestAgentDefaultsServiceSetsAndClearsDefaults(t *testing.T) {
 	repo, service := newTestAgentDefaultsService()
 	ctx := context.Background()
 
-	got, err := service.SetAgentDefaults(ctx, domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: " thinker ", Effort: "high"})
+	got, err := service.SetAgentDefaults(ctx, testUser, domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: " thinker ", Effort: "high"})
 	if err != nil {
 		t.Fatalf("set defaults: %v", err)
 	}
 	if got.Model != "thinker" || got.Effort != "high" {
 		t.Fatalf("expected trimmed defaults, got %+v", got)
 	}
-	listed, err := service.ListAgentDefaults(ctx)
+	listed, err := service.ListAgentDefaults(ctx, testUser)
 	if err != nil {
 		t.Fatalf("list defaults: %v", err)
 	}
@@ -85,7 +104,7 @@ func TestAgentDefaultsServiceSetsAndClearsDefaults(t *testing.T) {
 		t.Fatalf("expected review defaults listed, got %+v", listed)
 	}
 
-	if _, err := service.SetAgentDefaults(ctx, domain.AgentDefaults{AgentID: domain.ReviewAgentID}); err != nil {
+	if _, err := service.SetAgentDefaults(ctx, testUser, domain.AgentDefaults{AgentID: domain.ReviewAgentID}); err != nil {
 		t.Fatalf("clear defaults: %v", err)
 	}
 	if _, ok := repo.defaults[domain.ReviewAgentID]; ok {
@@ -107,7 +126,7 @@ func TestAgentDefaultsServiceRejectsInvalidDefaults(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo, service := newTestAgentDefaultsService()
-			if _, err := service.SetAgentDefaults(context.Background(), tt.defaults); !errors.Is(err, tt.want) {
+			if _, err := service.SetAgentDefaults(context.Background(), testUser, tt.defaults); !errors.Is(err, tt.want) {
 				t.Fatalf("expected %v, got %v", tt.want, err)
 			}
 			if len(repo.defaults) != 0 {
@@ -126,7 +145,7 @@ func TestAgentDefaultsServiceSkipsStaleDefaults(t *testing.T) {
 	repo.defaults[domain.ReviewAgentID] = domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: "thinker", Effort: "xhigh"}
 	repo.defaults["gone"] = domain.AgentDefaults{AgentID: "gone", Model: "plain"}
 
-	listed, err := service.ListAgentDefaults(context.Background())
+	listed, err := service.ListAgentDefaults(context.Background(), testUser)
 	if err != nil {
 		t.Fatalf("list defaults: %v", err)
 	}
@@ -144,7 +163,7 @@ func TestAgentDefaultsServiceDefaultsForSkipsUnconfiguredModels(t *testing.T) {
 	repo.defaults[domain.CodingAgentID] = domain.AgentDefaults{AgentID: domain.CodingAgentID, Model: "thinker", Effort: "low"}
 	repo.defaults[domain.ReviewAgentID] = domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: "plain"}
 
-	got, err := service.DefaultsFor(ctx, "", "")
+	got, err := service.DefaultsFor(ctx, testUser, "", "")
 	if err != nil {
 		t.Fatalf("defaults for the default agent: %v", err)
 	}
@@ -152,7 +171,7 @@ func TestAgentDefaultsServiceDefaultsForSkipsUnconfiguredModels(t *testing.T) {
 		t.Fatalf("expected the coding agent's defaults for an empty agent ID, got %+v", got)
 	}
 	for _, agentID := range []string{domain.ReviewAgentID, "7"} {
-		if got, err := service.DefaultsFor(ctx, agentID, ""); err != nil || got != nil {
+		if got, err := service.DefaultsFor(ctx, testUser, agentID, ""); err != nil || got != nil {
 			t.Fatalf("%s: expected no usable defaults, got %+v, %v", agentID, got, err)
 		}
 	}
@@ -166,12 +185,34 @@ func TestAgentDefaultsServiceDefaultsForKeepsASupportedEffort(t *testing.T) {
 	repo.defaults[domain.CodingAgentID] = domain.AgentDefaults{AgentID: domain.CodingAgentID, Model: "thinker", Effort: "low"}
 
 	for effort, want := range map[string]string{"high": "high", "xhigh": "low", "": "low"} {
-		got, err := service.DefaultsFor(ctx, domain.CodingAgentID, effort)
+		got, err := service.DefaultsFor(ctx, testUser, domain.CodingAgentID, effort)
 		if err != nil {
 			t.Fatalf("%q: %v", effort, err)
 		}
 		if got == nil || got.Model != "thinker" || got.Effort != want {
 			t.Errorf("%q: expected thinker at %q, got %+v", effort, want, got)
 		}
+	}
+}
+
+// Each user has their own defaults, and another user's default is none
+// for a user without a key for its model.
+func TestAgentDefaultsServiceKeepsEachUsersDefaults(t *testing.T) {
+	repo, service := newTestAgentDefaultsService()
+	ctx := context.Background()
+	const other int64 = 2
+	if _, err := service.SetAgentDefaults(ctx, other, domain.AgentDefaults{AgentID: domain.CodingAgentID, Model: "plain"}); err != nil {
+		t.Fatalf("set the other user's defaults: %v", err)
+	}
+	if len(repo.defaults) != 0 {
+		t.Fatalf("expected the test user's defaults untouched, got %+v", repo.defaults)
+	}
+	listed, err := service.ListAgentDefaults(ctx, other)
+	if err != nil || listed[domain.CodingAgentID].Model != "plain" {
+		t.Fatalf("expected the other user's own default listed, got %+v %v", listed, err)
+	}
+	repo.defaults[domain.CodingAgentID] = domain.AgentDefaults{AgentID: domain.CodingAgentID, Model: "thinker"}
+	if got, err := service.DefaultsFor(ctx, other, domain.CodingAgentID, ""); err != nil || got != nil {
+		t.Fatalf("expected no usable default for a user without a key, got %+v %v", got, err)
 	}
 }

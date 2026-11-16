@@ -178,7 +178,7 @@ func (f fakeMRs) AssistantComment(_ context.Context, _, projectID, mrID int64, i
 // support every effort except "unsupported".
 type fakeDefaults map[string]domain.AgentDefaults
 
-func (f fakeDefaults) DefaultsFor(_ context.Context, agentID, effort string) (*domain.AgentDefaults, error) {
+func (f fakeDefaults) DefaultsFor(_ context.Context, _ int64, agentID, effort string) (*domain.AgentDefaults, error) {
 	if agentID == "" {
 		agentID = domain.DefaultAgentID
 	}

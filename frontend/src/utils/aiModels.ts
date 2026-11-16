@@ -10,7 +10,7 @@ export function isBuiltInAgentId(agentId: string): boolean {
   return agentId === CODING_AGENT_ID || agentId === REVIEW_AGENT_ID
 }
 
-// The model to start on: the agent's admin-set default when it can be used,
+// The model to start on: the agent's default the user set when it can be used,
 // otherwise devpad's own.
 export function defaultAIModel(availableModels: AIModel[], agentDefaults?: AgentDefaults): AIModel | undefined {
   return (
@@ -20,7 +20,7 @@ export function defaultAIModel(availableModels: AIModel[], agentDefaults?: Agent
   )
 }
 
-// The effort to start on with a model: the agent's admin-set default when it
+// The effort to start on with a model: the agent's default the user set when it
 // is for this model, otherwise the model's own.
 export function defaultThinkingEffort(model: AIModel, agentDefaults?: AgentDefaults): string {
   const effort = agentDefaults?.model === model.id ? agentDefaults.effort : undefined

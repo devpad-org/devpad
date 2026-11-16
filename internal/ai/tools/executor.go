@@ -33,9 +33,12 @@ type ExecutionRequest struct {
 type FileSummaryRequest struct {
 	UserID      int64
 	WorkspaceID int64
-	Path        string
-	Focus       string
-	Content     string
+	// RunID is the run whose tool call asked for the summary, which pays
+	// for it from its budget.
+	RunID   int64
+	Path    string
+	Focus   string
+	Content string
 }
 
 // FileSummarizer produces concise AI-oriented repository file summaries.
@@ -48,11 +51,11 @@ type AgentLister interface {
 	ListAgents(ctx context.Context, userID, workspaceID int64) ([]domain.Agent, error)
 }
 
-// AgentDefaults looks up the model and effort an admin set for a built-in
+// AgentDefaults looks up the model and effort a user set for a built-in
 // agent, or nil when it has none a run could use. An effort picked without
 // a model is kept when the default model supports it.
 type AgentDefaults interface {
-	DefaultsFor(ctx context.Context, agentID, effort string) (*domain.AgentDefaults, error)
+	DefaultsFor(ctx context.Context, userID int64, agentID, effort string) (*domain.AgentDefaults, error)
 }
 
 // ImageStore keeps the images tools return, so the run's transcript can

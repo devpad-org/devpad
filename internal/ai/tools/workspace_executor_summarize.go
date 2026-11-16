@@ -8,7 +8,7 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
-func (e *WorkspaceExecutor) summarizeFile(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
+func (e *WorkspaceExecutor) summarizeFile(ctx context.Context, req ExecutionRequest, params map[string]any) domain.ToolResultPart {
 	path, _ := params["path"].(string)
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -20,14 +20,15 @@ func (e *WorkspaceExecutor) summarizeFile(ctx context.Context, userID, workspace
 	focus, _ := params["focus"].(string)
 	focus = strings.TrimSpace(focus)
 
-	data, err := e.ws.ReadFile(ctx, userID, workspaceID, path)
+	data, err := e.ws.ReadFile(ctx, req.UserID, req.WorkspaceID, path)
 	if err != nil {
 		return toolFailure("summarize_file", "Error reading file: %v", err)
 	}
 
 	summary, err := e.summarizer.SummarizeFile(ctx, FileSummaryRequest{
-		UserID:      userID,
-		WorkspaceID: workspaceID,
+		UserID:      req.UserID,
+		WorkspaceID: req.WorkspaceID,
+		RunID:       req.CurrentRunID,
 		Path:        path,
 		Focus:       focus,
 		Content:     truncateToolText(lineNumberedContent(string(data)), maxSummaryInputBytes, summaryInputNotice),

@@ -18,9 +18,15 @@ type SimpleChatRequest struct {
 	// WorkspaceID is the workspace the chat is for, if any, so its usage is
 	// counted under the workspace's project.
 	WorkspaceID int64
-	Model       string
-	Turns       []domain.Turn
-	Thinking    *domain.ThinkingConfig
+	// RunID is the agent run the chat is part of, if any, such as one a
+	// tool call of the run makes, so its usage is counted under the run.
+	RunID    int64
+	Model    string
+	Turns    []domain.Turn
+	Thinking *domain.ThinkingConfig
+	// Budget, which may be nil, is spent by the chat and refuses it when it
+	// is already spent.
+	Budget *domain.Budget
 }
 
 // AgentChatRequest contains the inputs for tool-enabled agent chat.
@@ -51,6 +57,7 @@ type ChatService interface {
 }
 
 type chatService struct {
+	catalog    CatalogService
 	simple     *orchestrator.SimpleChatOrchestrator
 	agent      orchestrator.AgentChatOrchestrator
 	workspaces WorkspaceChecker
@@ -69,6 +76,7 @@ func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog
 	backend := &providerChatBackend{catalog: catalog}
 
 	return &chatService{
+		catalog:    catalog,
 		simple:     orchestrator.NewSimpleChatOrchestrator(backend),
 		agent:      orchestrator.NewAgentChatOrchestrator(backend, toolCatalog, executor, approvals, questions),
 		workspaces: workspaces,
@@ -83,12 +91,14 @@ func (s *chatService) StreamSimple(ctx context.Context, req SimpleChatRequest) (
 		return nil, err
 	}
 	return s.simple.Stream(ctx, domain.ChatRequest{
+		UserID:   req.UserID,
 		Model:    req.Model,
 		Turns:    turns,
 		Thinking: req.Thinking,
-	}, usageRecorderFor(s.usage, domain.UsageRecord{
+	}, req.Budget, usageRecorderFor(s.usage, domain.UsageRecord{
 		UserID:      req.UserID,
 		WorkspaceID: req.WorkspaceID,
+		RunID:       req.RunID,
 		Model:       req.Model,
 	}))
 }
@@ -96,6 +106,12 @@ func (s *chatService) StreamSimple(ctx context.Context, req SimpleChatRequest) (
 func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-chan domain.ClientEvent, error) {
 	if err := s.workspaces.CheckRunning(ctx, req.UserID, req.WorkspaceID); err != nil {
 		return nil, fmt.Errorf("checking the run's workspace: %w", err)
+	}
+	// A user without a key for the model's provider is refused before the
+	// run starts, not by its first request. Each request checks again, so
+	// removing the key stops the run.
+	if _, err := s.catalog.ResolveChatTarget(ctx, req.UserID, req.Model); err != nil {
+		return nil, err
 	}
 	turns, err := s.hydrate(ctx, req.UserID, req.Turns)
 	if err != nil {
@@ -138,7 +154,7 @@ func (s *providerChatBackend) ChatStream(ctx context.Context, req domain.ChatReq
 		return nil, err
 	}
 
-	target, err := s.catalog.ResolveChatTarget(ctx, req.Model)
+	target, err := s.catalog.ResolveChatTarget(ctx, req.UserID, req.Model)
 	if err != nil {
 		return nil, err
 	}

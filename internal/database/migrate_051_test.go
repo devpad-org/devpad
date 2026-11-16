@@ -40,8 +40,8 @@ func TestMigration051MovesOpenHaiku45ChoicesToHaiku55(t *testing.T) {
 		query string
 		want  string
 	}{
-		{`SELECT model FROM ai_agent_defaults WHERE agent_id = 'explore'`, "claude-haiku-5-5"},
-		{`SELECT model || '/' || effort FROM ai_agent_defaults WHERE agent_id = 'review'`, "claude-opus-5-5/high"},
+		{`SELECT model FROM user_ai_agent_defaults WHERE user_id = 1 AND agent_id = 'explore'`, "claude-haiku-5-5"},
+		{`SELECT model || '/' || effort FROM user_ai_agent_defaults WHERE user_id = 1 AND agent_id = 'review'`, "claude-opus-5-5/high"},
 		{`SELECT model FROM tasks WHERE id = 1`, "claude-haiku-5-5"},
 		{`SELECT model FROM tasks WHERE id = 2`, "claude-haiku-5-5"},
 		{`SELECT model FROM tasks WHERE id = 3`, "claude-haiku-4-5"},

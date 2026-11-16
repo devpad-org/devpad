@@ -72,21 +72,23 @@ export interface AgentRun {
   completedAt?: string
 }
 
+// A provider and whether the user has a key for it. keyUnreadable marks a
+// saved key the server can no longer decrypt, which must be entered again.
 export interface AIProvider {
   id: string
   name: string
-  enabled: boolean
   hasApiKey: boolean
+  keyUnreadable?: boolean
 }
 
-// The model and reasoning effort an admin set for a built-in agent. An empty
+// The model and reasoning effort the user set for a built-in agent. An empty
 // effort means the model's default.
 export interface AgentDefaults {
   model: string
   effort?: string
 }
 
-// A built-in agent with the defaults set for it, as admins edit them. An
+// A built-in agent with the defaults the user set for it, as Settings edits them. An
 // empty model means devpad's own default.
 export interface BuiltInAgentDefaults {
   agentId: string
@@ -96,7 +98,7 @@ export interface BuiltInAgentDefaults {
   effort: string
 }
 
-// What agents may spend, in USD, as an admin set it. Zero means no limit.
+// What the user's agents may spend, in USD. Zero means no limit.
 // A new task starts with taskUsd as its budget, which its agent and the
 // reviews of its merge request spend from; reviewUsd covers one review agent
 // and assistantUsd one reply of the assistant.
@@ -150,8 +152,6 @@ export interface UsageQuery {
   from: string
   to: string
   tz: string
-  // Every user's usage; admins only.
-  everyone?: boolean
 }
 
 export interface AIAgent {
@@ -539,8 +539,12 @@ export const aiApi = {
     return apiClient.delete(`/api/ai/agents/${id}`)
   },
 
-  updateProvider(id: string, apiKey: string, enabled: boolean): Promise<void> {
-    return apiClient.put<void>(`/api/ai/providers/${id}`, { apiKey, enabled })
+  setProviderKey(id: string, apiKey: string): Promise<void> {
+    return apiClient.put<void>(`/api/ai/providers/${encodeURIComponent(id)}`, { apiKey })
+  },
+
+  removeProviderKey(id: string): Promise<void> {
+    return apiClient.delete(`/api/ai/providers/${encodeURIComponent(id)}`)
   },
 
   listAgentDefaults(): Promise<{ agents: BuiltInAgentDefaults[] }> {
@@ -559,9 +563,18 @@ export const aiApi = {
     return apiClient.put<{ budgets: BudgetDefaults }>('/api/ai/budgets', budgets)
   },
 
+  // The model summarize_file uses; '' means the cheapest priced model the
+  // user has a key for.
+  getSummaryModel(): Promise<{ model: string }> {
+    return apiClient.get<{ model: string }>('/api/ai/summary-model')
+  },
+
+  setSummaryModel(model: string): Promise<{ model: string }> {
+    return apiClient.put<{ model: string }>('/api/ai/summary-model', { model })
+  },
+
   getUsage(query: UsageQuery): Promise<UsageReport> {
     const params = new URLSearchParams({ period: query.period, from: query.from, to: query.to, tz: query.tz })
-    if (query.everyone) params.set('scope', 'all')
     return apiClient.get<UsageReport>(`/api/ai/usage?${params}`)
   },
 

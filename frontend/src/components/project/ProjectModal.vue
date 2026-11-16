@@ -244,7 +244,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                   <input v-model="autoReview" class="toggle-input" type="checkbox" role="switch" />
                   <span class="toggle-switch" aria-hidden="true" />
                 </label>
-                <p class="form-hint">Starts the review agent on each merge request as it opens, with the model an admin set for it, else the task's. On a task's merge request, changes it requests go to the task's agent and its fixes are reviewed again, up to three reviews; the third review's requested changes wait for you.</p>
+                <p class="form-hint">Starts the review agent on each merge request as it opens, with the model you set for it in Settings, else the task's. On a task's merge request, changes it requests go to the task's agent and its fixes are reviewed again, up to three reviews; the third review's requested changes wait for you.</p>
               </div>
             </section>
           </div>

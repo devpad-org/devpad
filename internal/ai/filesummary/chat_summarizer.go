@@ -11,31 +11,53 @@ import (
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 )
 
-const fileSummaryModel = "mistral-small-latest"
-
 // SimpleChatStreamer is the narrow chat capability required to summarize files.
 type SimpleChatStreamer interface {
 	StreamSimple(ctx context.Context, req app.SimpleChatRequest) (<-chan domain.ClientEvent, error)
 }
 
-type chatSummarizer struct {
-	chat SimpleChatStreamer
+// ModelResolver picks the model a user's summaries use.
+type ModelResolver interface {
+	ResolveSummaryModel(ctx context.Context, userID int64) (string, error)
 }
 
-// NewChatSummarizer adapts simple AI chat into the summarize_file tool contract.
-func NewChatSummarizer(chat SimpleChatStreamer) aitools.FileSummarizer {
-	return chatSummarizer{chat: chat}
+// RunBudgets finds the budget of the run a summary is for, which pays for it.
+type RunBudgets interface {
+	BudgetForRun(runID int64) *domain.Budget
+}
+
+type chatSummarizer struct {
+	chat    SimpleChatStreamer
+	models  ModelResolver
+	budgets RunBudgets
+}
+
+// NewChatSummarizer adapts simple AI chat into the summarize_file tool
+// contract. Each summary uses the model the user chose for summaries, and
+// spends from the budget of the run that asked for it; budgets may be nil.
+func NewChatSummarizer(chat SimpleChatStreamer, models ModelResolver, budgets RunBudgets) aitools.FileSummarizer {
+	return chatSummarizer{chat: chat, models: models, budgets: budgets}
 }
 
 func (s chatSummarizer) SummarizeFile(ctx context.Context, req aitools.FileSummaryRequest) (string, error) {
-	if s.chat == nil {
+	if s.chat == nil || s.models == nil {
 		return "", errors.New("chat service is not configured")
+	}
+	model, err := s.models.ResolveSummaryModel(ctx, req.UserID)
+	if err != nil {
+		return "", fmt.Errorf("choosing the summary model: %w", err)
+	}
+	var budget *domain.Budget
+	if s.budgets != nil && req.RunID > 0 {
+		budget = s.budgets.BudgetForRun(req.RunID)
 	}
 
 	stream, err := s.chat.StreamSimple(ctx, app.SimpleChatRequest{
 		UserID:      req.UserID,
 		WorkspaceID: req.WorkspaceID,
-		Model:       fileSummaryModel,
+		RunID:       req.RunID,
+		Model:       model,
+		Budget:      budget,
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleSystem, fileSummarySystemPrompt),
 			domain.NewTextTurn(domain.RoleUser, buildFileSummaryPrompt(req)),

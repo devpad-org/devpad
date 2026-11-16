@@ -566,19 +566,19 @@ func TestWorkspaceExecutor_SpawnSubAgentStartsChildRun(t *testing.T) {
 
 type stubAgentDefaults map[string]domain.AgentDefaults
 
-func (s stubAgentDefaults) DefaultsFor(_ context.Context, agentID, _ string) (*domain.AgentDefaults, error) {
+func (s stubAgentDefaults) DefaultsFor(_ context.Context, _ int64, agentID, _ string) (*domain.AgentDefaults, error) {
 	if d, ok := s[agentID]; ok {
 		return &d, nil
 	}
 	return nil, nil
 }
 
-// A child without a model runs the admin's default for its agent with that
+// A child without a model runs the user's default for its agent with that
 // effort. Only a child on the parent's model takes the parent's thinking.
 func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
 	var got []ChildAgentRunRequest
 	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
-	executor.SetAgentDefaults(stubAgentDefaults{domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "admin-review", Effort: "low"}})
+	executor.SetAgentDefaults(stubAgentDefaults{domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "user-review", Effort: "low"}})
 	executor.SetChildAgentRunner(stubChildAgentRunner{startFn: func(_ context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error) {
 		got = append(got, req)
 		return &ChildAgentRun{ID: int64(len(got)), AgentID: req.AgentID, Model: req.Model, Status: "queued"}, nil
@@ -599,7 +599,7 @@ func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
 		}
 	}
 
-	if got[0].Model != "admin-review" || got[0].Thinking == nil || got[0].Thinking.Effort != "low" {
+	if got[0].Model != "user-review" || got[0].Thinking == nil || got[0].Thinking.Effort != "low" {
 		t.Errorf("expected the review agent's defaults, got %+v %+v", got[0], got[0].Thinking)
 	}
 	if got[1].Model != "picked" || got[1].Thinking != nil {

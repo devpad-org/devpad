@@ -42,9 +42,9 @@ func TestMigration052MovesOpenOpus47AndSonnet46ChoicesTo55(t *testing.T) {
 		query string
 		want  string
 	}{
-		{`SELECT model || '/' || effort FROM ai_agent_defaults WHERE agent_id = 'task'`, "claude-opus-5-5/xhigh"},
-		{`SELECT model || '/' || effort FROM ai_agent_defaults WHERE agent_id = 'explore'`, "claude-sonnet-5-5/"},
-		{`SELECT model || '/' || effort FROM ai_agent_defaults WHERE agent_id = 'review'`, "claude-haiku-5-5/high"},
+		{`SELECT model || '/' || effort FROM user_ai_agent_defaults WHERE user_id = 1 AND agent_id = 'task'`, "claude-opus-5-5/xhigh"},
+		{`SELECT model || '/' || effort FROM user_ai_agent_defaults WHERE user_id = 1 AND agent_id = 'explore'`, "claude-sonnet-5-5/"},
+		{`SELECT model || '/' || effort FROM user_ai_agent_defaults WHERE user_id = 1 AND agent_id = 'review'`, "claude-haiku-5-5/high"},
 		{`SELECT model FROM tasks WHERE id = 1`, "claude-opus-5-5"},
 		{`SELECT model FROM tasks WHERE id = 2`, "claude-sonnet-5-5"},
 		{`SELECT model FROM tasks WHERE id = 3`, "claude-opus-4-7"},

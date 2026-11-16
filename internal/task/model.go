@@ -121,7 +121,7 @@ type CreateInput struct {
 	// the default branch.
 	BaseBranch string
 	// BudgetUSD is what the task's agents may spend in all; nil takes the
-	// admin's default and zero means no limit.
+	// user's default and zero means no limit.
 	BudgetUSD *float64
 	// Handoff is conversation context for the task's agent.
 	Handoff string

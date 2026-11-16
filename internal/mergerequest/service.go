@@ -122,16 +122,16 @@ type Conversations interface {
 	GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error)
 }
 
-// AgentDefaults looks up the model and effort an admin set for a built-in
+// AgentDefaults looks up the model and effort a user set for a built-in
 // agent, or nil when it has none a run could use. An effort picked without
 // a model is kept when the default model supports it.
 type AgentDefaults interface {
-	DefaultsFor(ctx context.Context, agentID, effort string) (*domain.AgentDefaults, error)
+	DefaultsFor(ctx context.Context, userID int64, agentID, effort string) (*domain.AgentDefaults, error)
 }
 
-// Budgets looks up the limits an admin set on what agents may spend.
+// Budgets looks up the limits a user set on what their agents may spend.
 type Budgets interface {
-	BudgetDefaults(ctx context.Context) (domain.BudgetDefaults, error)
+	BudgetDefaults(ctx context.Context, userID int64) (domain.BudgetDefaults, error)
 }
 
 // cancelWait bounds how long closing a merge request waits for a review run
@@ -330,7 +330,7 @@ func (s *service) autoReview(ctx context.Context, p *project.Project, mr *MergeR
 	log.Printf("merge request %d: starting automatic review: %v", mr.ID, err)
 	msg := "The automatic review could not start: " + err.Error()
 	if errors.Is(err, errNoModel) {
-		msg = "The automatic review could not start: the review agent has no default model. Start a review with a model picked, or ask an admin to set one for the agent."
+		msg = "The automatic review could not start: the review agent has no default model. Start a review with a model picked, or set a default model for the review agent in Settings."
 	}
 	rv := &Review{
 		MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewFailed, HeadSHA: mr.HeadSHA,
@@ -944,7 +944,7 @@ func (s *service) checkTaskBudget(ctx context.Context, userID, projectID int64, 
 }
 
 // startAgentReviewLocked starts the given round of the code and review
-// loop, with budgetUSD as the review's budget, or the admin's per-review
+// loop, with budgetUSD as the review's budget, or the user's per-review
 // default when nil. The caller holds the merge request's lock.
 func (s *service) startAgentReviewLocked(ctx context.Context, userID, projectID, mrID int64, in AgentReviewInput, round int, budgetUSD *float64) (*Review, error) {
 	mr, err := s.getOpen(ctx, userID, projectID, mrID)
@@ -964,12 +964,12 @@ func (s *service) startAgentReviewLocked(ctx context.Context, userID, projectID,
 		}
 	}
 	// Reviews run the built-in review agent unless another is picked, and
-	// the model an admin set for their agent, else the task's model.
+	// the model the user set for their agent, else the task's model.
 	if in.AgentID == "" {
 		in.AgentID = domain.ReviewAgentID
 	}
 	if in.Model == "" {
-		d, err := s.defaults.DefaultsFor(ctx, in.AgentID, in.Effort)
+		d, err := s.defaults.DefaultsFor(ctx, mr.UserID, in.AgentID, in.Effort)
 		if err != nil {
 			return nil, fmt.Errorf("looking up the review agent's default model: %w", err)
 		}
@@ -995,7 +995,7 @@ func (s *service) startAgentReviewLocked(ctx context.Context, userID, projectID,
 		return nil, errNoModel
 	}
 	if budgetUSD == nil {
-		budgets, err := s.budgets.BudgetDefaults(ctx)
+		budgets, err := s.budgets.BudgetDefaults(ctx, mr.UserID)
 		if err != nil {
 			return nil, err
 		}

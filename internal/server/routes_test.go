@@ -34,7 +34,10 @@ func (noopAI) HandleSaveMessages(http.ResponseWriter, *http.Request)       {}
 func (noopAI) HandleUploadAttachment(http.ResponseWriter, *http.Request)   {}
 func (noopAI) HandleGetAttachment(http.ResponseWriter, *http.Request)      {}
 func (noopAI) HandleListProviders(http.ResponseWriter, *http.Request)      {}
-func (noopAI) HandleUpdateProvider(http.ResponseWriter, *http.Request)     {}
+func (noopAI) HandleSetProviderKey(http.ResponseWriter, *http.Request)     {}
+func (noopAI) HandleRemoveProviderKey(http.ResponseWriter, *http.Request)  {}
+func (noopAI) HandleGetSummaryModel(http.ResponseWriter, *http.Request)    {}
+func (noopAI) HandleSetSummaryModel(http.ResponseWriter, *http.Request)    {}
 func (noopAI) HandleListAgentDefaults(http.ResponseWriter, *http.Request)  {}
 func (noopAI) HandleSetAgentDefaults(http.ResponseWriter, *http.Request)   {}
 func (noopAI) HandleGetBudgetDefaults(http.ResponseWriter, *http.Request)  {}

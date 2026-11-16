@@ -14,6 +14,8 @@ type ThinkingConfig struct {
 
 // ChatRequest is the input for a chat completion.
 type ChatRequest struct {
+	// UserID is whose provider key the request is sent with.
+	UserID      int64            `json:"-"`
 	Model       string           `json:"model"`
 	Turns       []Turn           `json:"turns"`
 	Thinking    *ThinkingConfig  `json:"thinking,omitempty"`

@@ -31,7 +31,7 @@ func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	model, thinking, err := h.withAgentDefaults(r.Context(), req.AgentID, req.Model, ToDomainThinking(req.Thinking))
+	model, thinking, err := h.withAgentDefaults(r.Context(), user.ID, req.AgentID, req.Model, ToDomainThinking(req.Thinking))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to look up the agent's default model")
 		return
@@ -50,7 +50,7 @@ func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// A child of an active run with a budget shares that budget instead.
-	budget, err := h.assistantBudget(r.Context())
+	budget, err := h.assistantBudget(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to look up the assistant's budget")
 		return
@@ -263,10 +263,8 @@ func (h *Handler) writeAgentRunError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "agent not found")
 	case errors.Is(err, domain.ErrModelNotFound):
 		writeError(w, http.StatusBadRequest, "model not found")
-	case errors.Is(err, domain.ErrProviderNotEnabled):
-		writeError(w, http.StatusBadRequest, "AI provider is not enabled")
-	case errors.Is(err, domain.ErrNoAPIKey):
-		writeError(w, http.StatusBadRequest, "no API key configured for this provider")
+	case errors.Is(err, domain.ErrNoAPIKey), errors.Is(err, domain.ErrAPIKeyUnreadable):
+		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, domain.ErrThinkingNotSupported), errors.Is(err, domain.ErrThinkingCannotBeDisabled), isAttachmentError(err):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:

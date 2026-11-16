@@ -686,6 +686,12 @@ func (s *agentRunService) unregisterCancel(runID int64) {
 	delete(s.budgets, runID)
 }
 
+// BudgetForRun returns an active run's budget, or nil when it has none or
+// is not running, for what a run's tool calls spend on its behalf.
+func (s *agentRunService) BudgetForRun(runID int64) *domain.Budget {
+	return s.budgetForRun(runID)
+}
+
 // budgetForRun returns an active run's budget, or nil when it has none.
 func (s *agentRunService) budgetForRun(runID int64) *domain.Budget {
 	s.mu.Lock()

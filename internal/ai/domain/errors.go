@@ -4,9 +4,9 @@ import "errors"
 
 var (
 	ErrProviderNotFound               = errors.New("AI provider not found")
-	ErrProviderNotEnabled             = errors.New("AI provider is not enabled")
 	ErrModelNotFound                  = errors.New("AI model not found")
-	ErrNoAPIKey                       = errors.New("no API key configured for provider")
+	ErrNoAPIKey                       = errors.New("no API key for this provider; add one in Settings")
+	ErrAPIKeyUnreadable               = errors.New("the saved API key for this provider can no longer be read; enter it again in Settings")
 	ErrThinkingNotSupported           = errors.New("model does not support thinking")
 	ErrThinkingCannotBeDisabled       = errors.New("thinking cannot be disabled for this model")
 	ErrThinkingEffortNotSupported     = errors.New("thinking effort is not supported for this model")

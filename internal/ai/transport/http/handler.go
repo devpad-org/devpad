@@ -23,6 +23,7 @@ type Handler struct {
 	agents      app.AgentService
 	defaults    app.AgentDefaultsService
 	budgets     app.BudgetDefaultsService
+	summary     app.SummaryModelService
 	usage       app.UsageService
 	chat        app.ChatService
 	runs        app.AgentRunService
@@ -33,12 +34,13 @@ type Handler struct {
 }
 
 // NewHandler creates a new AI handler.
-func NewHandler(catalog app.CatalogService, agents app.AgentService, defaults app.AgentDefaultsService, budgets app.BudgetDefaultsService, usage app.UsageService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, attachments app.AttachmentService, approvals approval.Broker, questions question.Broker) *Handler {
+func NewHandler(catalog app.CatalogService, agents app.AgentService, defaults app.AgentDefaultsService, budgets app.BudgetDefaultsService, summary app.SummaryModelService, usage app.UsageService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, attachments app.AttachmentService, approvals approval.Broker, questions question.Broker) *Handler {
 	return &Handler{
 		catalog:     catalog,
 		agents:      agents,
 		defaults:    defaults,
 		budgets:     budgets,
+		summary:     summary,
 		usage:       usage,
 		chat:        chat,
 		runs:        runs,
@@ -57,17 +59,22 @@ func isThinkingRequestError(err error) bool {
 		errors.Is(err, domain.ErrThinkingEffortRequiresThinking)
 }
 
-// HandleListModels returns all available AI models with their configuration
-// status, and the defaults an admin set for built-in agents.
+// HandleListModels returns all available AI models with whether the user
+// has a key for their provider, and the defaults the user set for built-in
+// agents.
 func (h *Handler) HandleListModels(w http.ResponseWriter, r *http.Request) {
-	models, err := h.catalog.ListModels(r.Context())
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	models, err := h.catalog.ListModels(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list models")
 		return
 	}
 	// Pickers fall back to devpad's own defaults, so models still list
-	// without the admin's.
-	defaults, err := h.defaults.ListAgentDefaults(r.Context())
+	// without the user's.
+	defaults, err := h.defaults.ListAgentDefaults(r.Context(), user.ID)
 	if err != nil {
 		log.Printf("listing agent defaults: %v", err)
 		defaults = map[string]domain.AgentDefaults{}
@@ -75,9 +82,24 @@ func (h *Handler) HandleListModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"models": models, "agentDefaults": defaults})
 }
 
-// HandleListProviders returns all registered AI providers with their config status (admin only).
+// requireUser returns the signed-in user, or writes 401 and returns false.
+func requireUser(w http.ResponseWriter, r *http.Request) (*auth.User, bool) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return nil, false
+	}
+	return user, true
+}
+
+// HandleListProviders returns every AI provider with whether the user has a
+// key for it.
 func (h *Handler) HandleListProviders(w http.ResponseWriter, r *http.Request) {
-	providers, err := h.catalog.ListProviders(r.Context())
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	providers, err := h.catalog.ListProviders(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list providers")
 		return
@@ -85,33 +107,90 @@ func (h *Handler) HandleListProviders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
 }
 
-// HandleUpdateProvider updates an AI provider's configuration (admin only).
-func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
-	providerID := r.PathValue("id")
-	if providerID == "" {
-		writeError(w, http.StatusBadRequest, "provider ID is required")
+// HandleSetProviderKey saves the user's key for a provider.
+func (h *Handler) HandleSetProviderKey(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
 		return
 	}
-
 	var req struct {
-		APIKey  string `json:"apiKey"`
-		Enabled bool   `json:"enabled"`
+		APIKey string `json:"apiKey"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	if err := h.catalog.UpdateProvider(r.Context(), providerID, req.APIKey, req.Enabled); err != nil {
-		if errors.Is(err, domain.ErrProviderNotFound) {
-			writeError(w, http.StatusNotFound, "provider not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to update provider")
+	err := h.catalog.SetProviderKey(r.Context(), user.ID, r.PathValue("id"), req.APIKey)
+	switch {
+	case errors.Is(err, domain.ErrProviderNotFound):
+		writeError(w, http.StatusNotFound, "provider not found")
+	case errors.Is(err, domain.ErrNoAPIKey):
+		writeError(w, http.StatusBadRequest, "apiKey is required")
+	case err != nil:
+		log.Printf("failed to save provider key: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to save the provider key")
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+// HandleRemoveProviderKey deletes the user's key for a provider.
+func (h *Handler) HandleRemoveProviderKey(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
 		return
 	}
+	err := h.catalog.RemoveProviderKey(r.Context(), user.ID, r.PathValue("id"))
+	switch {
+	case errors.Is(err, domain.ErrProviderNotFound):
+		writeError(w, http.StatusNotFound, "provider not found")
+	case err != nil:
+		log.Printf("failed to remove provider key: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to remove the provider key")
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+// HandleGetSummaryModel returns the model the user chose for
+// summarize_file; "" means automatic.
+func (h *Handler) HandleGetSummaryModel(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	model, err := h.summary.SummaryModel(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load the summary model")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"model": model})
+}
+
+// HandleSetSummaryModel sets the model summarize_file uses for the user;
+// "" means automatic.
+func (h *Handler) HandleSetSummaryModel(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	model, err := h.summary.SetSummaryModel(r.Context(), user.ID, req.Model)
+	switch {
+	case errors.Is(err, domain.ErrModelNotFound):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "failed to save the summary model")
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{"model": model})
+	}
 }
 
 // HandleChat handles a streaming chat completion request via SSE.
@@ -148,10 +227,8 @@ func (h *Handler) HandleChat(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, domain.ErrModelNotFound):
 			writeError(w, http.StatusBadRequest, "model not found")
-		case errors.Is(err, domain.ErrProviderNotEnabled):
-			writeError(w, http.StatusBadRequest, "AI provider is not enabled")
-		case errors.Is(err, domain.ErrNoAPIKey):
-			writeError(w, http.StatusBadRequest, "no API key configured for this provider")
+		case errors.Is(err, domain.ErrNoAPIKey), errors.Is(err, domain.ErrAPIKeyUnreadable):
+			writeError(w, http.StatusBadRequest, err.Error())
 		case isThinkingRequestError(err), isAttachmentError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
@@ -192,7 +269,7 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	model, thinking, err := h.withAgentDefaults(r.Context(), req.AgentID, req.Model, ToDomainThinking(req.Thinking))
+	model, thinking, err := h.withAgentDefaults(r.Context(), user.ID, req.AgentID, req.Model, ToDomainThinking(req.Thinking))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to look up the agent's default model")
 		return
@@ -219,7 +296,7 @@ func (h *Handler) HandleAgentChat(w http.ResponseWriter, r *http.Request) {
 		}
 		agentPrompt = agent.Instructions
 	}
-	budget, err := h.assistantBudget(r.Context())
+	budget, err := h.assistantBudget(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to look up the assistant's budget")
 		return

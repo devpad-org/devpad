@@ -9,7 +9,8 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
-// AgentDefaultsRepository stores the model defaults set for built-in agents.
+// AgentDefaultsRepository stores the model defaults each user set for
+// built-in agents.
 type AgentDefaultsRepository struct {
 	db *sql.DB
 }
@@ -19,8 +20,10 @@ func NewAgentDefaultsRepository(db *sql.DB) *AgentDefaultsRepository {
 	return &AgentDefaultsRepository{db: db}
 }
 
-func (r *AgentDefaultsRepository) ListAgentDefaults(ctx context.Context) ([]domain.AgentDefaults, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT agent_id, model, effort FROM ai_agent_defaults ORDER BY agent_id`)
+func (r *AgentDefaultsRepository) ListAgentDefaults(ctx context.Context, userID int64) ([]domain.AgentDefaults, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT agent_id, model, effort FROM user_ai_agent_defaults WHERE user_id = ? ORDER BY agent_id`, userID,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("querying agent defaults: %w", err)
 	}
@@ -40,11 +43,12 @@ func (r *AgentDefaultsRepository) ListAgentDefaults(ctx context.Context) ([]doma
 	return defaults, nil
 }
 
-func (r *AgentDefaultsRepository) SetAgentDefaults(ctx context.Context, defaults domain.AgentDefaults) error {
+func (r *AgentDefaultsRepository) SetAgentDefaults(ctx context.Context, userID int64, defaults domain.AgentDefaults) error {
 	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO ai_agent_defaults (agent_id, model, effort, updated_at)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(agent_id) DO UPDATE SET model = excluded.model, effort = excluded.effort, updated_at = excluded.updated_at`,
+		`INSERT INTO user_ai_agent_defaults (user_id, agent_id, model, effort, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id, agent_id) DO UPDATE SET model = excluded.model, effort = excluded.effort, updated_at = excluded.updated_at`,
+		userID,
 		defaults.AgentID,
 		defaults.Model,
 		defaults.Effort,
@@ -55,8 +59,10 @@ func (r *AgentDefaultsRepository) SetAgentDefaults(ctx context.Context, defaults
 	return nil
 }
 
-func (r *AgentDefaultsRepository) DeleteAgentDefaults(ctx context.Context, agentID string) error {
-	if _, err := r.db.ExecContext(ctx, `DELETE FROM ai_agent_defaults WHERE agent_id = ?`, agentID); err != nil {
+func (r *AgentDefaultsRepository) DeleteAgentDefaults(ctx context.Context, userID int64, agentID string) error {
+	if _, err := r.db.ExecContext(ctx,
+		`DELETE FROM user_ai_agent_defaults WHERE user_id = ? AND agent_id = ?`, userID, agentID,
+	); err != nil {
 		return fmt.Errorf("deleting agent defaults: %w", err)
 	}
 	return nil

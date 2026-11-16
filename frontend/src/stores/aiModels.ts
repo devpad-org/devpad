@@ -7,7 +7,7 @@ export { type AIModel }
 export const useAiModelStore = defineStore('aiModels', () => {
   // Only configured models: those a new run can actually be started with.
   const models = ref<AIModel[]>([])
-  // The defaults an admin set for built-in agents, keyed by agent ID.
+  // The defaults the user set for built-in agents, keyed by agent ID.
   const agentDefaults = ref<Record<string, AgentDefaults>>({})
   const loaded = ref(false)
 

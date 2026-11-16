@@ -56,8 +56,8 @@ func (r *UsageRepository) RecordUsage(ctx context.Context, rec domain.UsageRecor
 	return nil
 }
 
-// ListUsageSlots totals the ledger by quarter hour, project and model from
-// from up to but not including to. A zero userID covers every user. A
+// ListUsageSlots totals the user's ledger by quarter hour, project and
+// model from from up to but not including to. A
 // project is named as it is now, or, once deleted, as it was when last used.
 func (r *UsageRepository) ListUsageSlots(ctx context.Context, userID int64, from, to time.Time) ([]domain.UsageSlot, error) {
 	query := `SELECT u.created_at / ? AS slot, COALESCE(u.project_id, 0), COALESCE(p.name, MAX(u.project_name)),
@@ -66,13 +66,9 @@ func (r *UsageRepository) ListUsageSlots(ctx context.Context, userID int64, from
 	                 SUM(u.cache_read_tokens), SUM(u.cache_write_tokens), COALESCE(SUM(u.cost_usd), 0)
 	          FROM ai_usage u
 	          LEFT JOIN projects p ON p.id = u.project_id
-	          WHERE u.created_at >= ? AND u.created_at < ?`
-	args := []any{usageSlotSeconds, from.Unix(), to.Unix()}
-	if userID != 0 {
-		query += ` AND u.user_id = ?`
-		args = append(args, userID)
-	}
-	rows, err := r.db.QueryContext(ctx, query+` GROUP BY slot, u.project_id, u.model ORDER BY slot`, args...)
+	          WHERE u.user_id = ? AND u.created_at >= ? AND u.created_at < ?
+	          GROUP BY slot, u.project_id, u.model ORDER BY slot`
+	rows, err := r.db.QueryContext(ctx, query, usageSlotSeconds, userID, from.Unix(), to.Unix())
 	if err != nil {
 		return nil, fmt.Errorf("querying usage: %w", err)
 	}

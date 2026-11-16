@@ -79,12 +79,9 @@ func TestUsageRepositoryKeepsUsageAfterTheProjectIsGone(t *testing.T) {
 		}
 	}
 
-	everyone, err := repo.ListUsageSlots(ctx, 0, at.Add(-time.Hour), at.Add(2*time.Hour))
-	if err != nil {
-		t.Fatalf("list everyone: %v", err)
-	}
-	if len(everyone) != len(want)+1 {
-		t.Fatalf("expected user 2's request too, got %+v", everyone)
+	// There is no report of everyone's usage: each user pays for their own.
+	if none, err := repo.ListUsageSlots(ctx, 0, at.Add(-time.Hour), at.Add(2*time.Hour)); err != nil || len(none) != 0 {
+		t.Fatalf("expected no user's usage for user 0, got %+v %v", none, err)
 	}
 
 	others, err := repo.ListUsageSlots(ctx, 2, at.Add(-time.Hour), at.Add(2*time.Hour))

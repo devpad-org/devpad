@@ -62,7 +62,7 @@ func (e *WorkspaceExecutor) SetAgentLister(lister AgentLister) {
 	e.agentLister = lister
 }
 
-// SetAgentDefaults wires the admin's agent defaults, which child runs use
+// SetAgentDefaults wires users' agent defaults, which child runs use
 // when spawn_sub_agent names no model.
 func (e *WorkspaceExecutor) SetAgentDefaults(defaults AgentDefaults) {
 	e.defaults = defaults
@@ -151,7 +151,7 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 	case "read_file":
 		return e.readFile(ctx, req, params)
 	case "summarize_file":
-		return e.summarizeFile(ctx, req.UserID, req.WorkspaceID, params)
+		return e.summarizeFile(ctx, req, params)
 	case "write_file":
 		return e.writeFile(ctx, req.UserID, req.WorkspaceID, params)
 	case "list_files":

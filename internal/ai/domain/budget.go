@@ -107,7 +107,7 @@ func (b *Budget) ExhaustedMessage() string {
 	return fmt.Sprintf("Budget reached: %s has spent $%.2f of its $%.2f budget", b.owner, b.spentUSD, b.limitUSD)
 }
 
-// BudgetDefaults are the limits an admin set on what agents may spend, in
+// BudgetDefaults are the limits a user set on what their agents may spend, in
 // USD. Zero means no limit.
 type BudgetDefaults struct {
 	// TaskUSD is the budget a new task starts with, covering every round of

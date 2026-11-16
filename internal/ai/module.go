@@ -49,8 +49,10 @@ type Workspaces interface {
 }
 
 // NewModule assembles the AI subpackages behind the root composition facade.
-func NewModule(db *sql.DB, workspaces Workspaces) *Module {
-	providerConfigs := storage.NewProviderConfigRepository(db)
+// keys seals users' provider keys at rest.
+func NewModule(db *sql.DB, workspaces Workspaces, keys app.KeyCipher) *Module {
+	providerKeys := storage.NewProviderKeyRepository(db)
+	userSettings := storage.NewUserAISettingsRepository(db)
 	conversations := storage.NewConversationRepository(db)
 	attachmentService := app.NewAttachmentService(storage.NewAttachmentRepository(db))
 	agents := storage.NewAgentRepository(db)
@@ -62,10 +64,11 @@ func NewModule(db *sql.DB, workspaces Workspaces) *Module {
 		openairesponses.NewAdapter(),
 	)
 
-	catalogService := app.NewCatalogService(providerConfigs, registry)
+	catalogService := app.NewCatalogService(providerKeys, keys, registry)
 	agentService := app.NewAgentService(agents)
 	agentDefaultsService := app.NewAgentDefaultsService(storage.NewAgentDefaultsRepository(db), catalogService)
-	budgetDefaultsService := app.NewBudgetDefaultsService(storage.NewBudgetDefaultsRepository(db))
+	budgetDefaultsService := app.NewBudgetDefaultsService(userSettings)
+	summaryModelService := app.NewSummaryModelService(userSettings, catalogService)
 	conversationService := app.NewConversationService(conversations)
 	usageService := app.NewUsageService(storage.NewUsageRepository(db), catalogService)
 	toolExecutor := aitools.NewWorkspaceExecutor(workspaces)
@@ -74,9 +77,9 @@ func NewModule(db *sql.DB, workspaces Workspaces) *Module {
 	questionBroker := question.NewMemoryBroker()
 	toolCatalog := aitools.NewCatalog()
 	chatService := app.NewChatService(catalogService, toolCatalog, toolExecutor, approvalBroker, questionBroker, workspaces, attachmentService, usageService)
-	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService))
 	agentRuns := storage.NewAgentRunRepository(db)
 	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService).WithImageLoader(attachmentService)
+	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService, summaryModelService, agentRunService))
 	toolExecutor.SetChildAgentRunner(childAgentRunStarter{runs: agentRunService})
 	toolExecutor.SetAgentLister(agentService)
 	toolExecutor.SetAgentDefaults(agentDefaultsService)
@@ -91,7 +94,7 @@ func NewModule(db *sql.DB, workspaces Workspaces) *Module {
 		AgentRunService:     agentRunService,
 		ConversationService: conversationService,
 		ToolExecutor:        toolExecutor,
-		Handler:             httptransport.NewHandler(catalogService, agentService, agentDefaultsService, budgetDefaultsService, usageService, chatService, agentRunService, conversationService, attachmentService, approvalBroker, questionBroker),
+		Handler:             httptransport.NewHandler(catalogService, agentService, agentDefaultsService, budgetDefaultsService, summaryModelService, usageService, chatService, agentRunService, conversationService, attachmentService, approvalBroker, questionBroker),
 		runListeners:        agentRunService,
 		toolCatalog:         toolCatalog,
 		toolExecutor:        toolExecutor,

@@ -222,7 +222,7 @@ const canSend = computed(() =>
   !pendingImagesBlocked.value &&
   !pendingImagesFailed.value,
 )
-// The model and effort an admin set for the selected agent, if it is built in.
+// The model and effort the user set for the selected agent, if it is built in.
 const currentAgentDefaults = computed(() => aiModelStore.agentDefaults[props.selectedAgentId])
 
 const viewingFocusedRun = computed(() => props.focusedRunId !== null && props.focusedRunId !== undefined)
@@ -427,7 +427,7 @@ onUnmounted(() => {
   clearPendingImages()
 })
 
-// Switching to a built-in agent moves to its default model: the one an admin
+// Switching to a built-in agent moves to its default model: the one the user
 // set for it, else devpad's. Custom agents keep the model in use.
 watch(() => props.selectedAgentId, (agentId) => {
   if (!isBuiltInAgentId(agentId)) return
@@ -1185,8 +1185,8 @@ async function sendMessage() {
   if (!selectedModel.value) {
     messages.value.push({
       role: 'assistant',
-      content: 'No AI model is configured. Ask an admin to set up an AI provider in Settings.',
-      segments: [{ type: 'text', content: 'No AI model is configured. Ask an admin to set up an AI provider in Settings.' }],
+      content: 'No AI model is configured. Add an API key for an AI provider in Settings.',
+      segments: [{ type: 'text', content: 'No AI model is configured. Add an API key for an AI provider in Settings.' }],
     })
     await nextTick()
     scrollToBottom({ force: true })

@@ -531,7 +531,7 @@ type env struct {
 // fakeBudgets is the admin's budget defaults.
 type fakeBudgets struct{ defaults domain.BudgetDefaults }
 
-func (f *fakeBudgets) BudgetDefaults(context.Context) (domain.BudgetDefaults, error) {
+func (f *fakeBudgets) BudgetDefaults(context.Context, int64) (domain.BudgetDefaults, error) {
 	return f.defaults, nil
 }
 
@@ -539,7 +539,7 @@ func (f *fakeBudgets) BudgetDefaults(context.Context) (domain.BudgetDefaults, er
 // support every effort except "unsupported".
 type fakeDefaults map[string]domain.AgentDefaults
 
-func (f fakeDefaults) DefaultsFor(_ context.Context, agentID, effort string) (*domain.AgentDefaults, error) {
+func (f fakeDefaults) DefaultsFor(_ context.Context, _ int64, agentID, effort string) (*domain.AgentDefaults, error) {
 	if agentID == "" {
 		agentID = domain.DefaultAgentID
 	}

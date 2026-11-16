@@ -13,10 +13,11 @@ import (
 	"github.com/devpad-org/devpad/internal/auth"
 )
 
-// HandleUsageReport returns what provider requests cost, by period, project
-// and model. Query parameters: period (day, week or month), from and to
-// (YYYY-MM-DD, both included), tz (an IANA zone, UTC by default) and
-// scope=all, which covers every user's usage and is for admins only.
+// HandleUsageReport returns what the user's provider requests cost, by
+// period, project and model. Query parameters: period (day, week or month),
+// from and to (YYYY-MM-DD, both included) and tz (an IANA zone, UTC by
+// default). Each user sees only their own usage, admins included: each pays
+// for their own requests with their own keys.
 func (h *Handler) HandleUsageReport(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
@@ -42,22 +43,8 @@ func (h *Handler) HandleUsageReport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "to must be a date as YYYY-MM-DD")
 		return
 	}
-	userID := user.ID
-	switch query.Get("scope") {
-	case "", "mine":
-	case "all":
-		if !user.IsAdmin {
-			writeError(w, http.StatusForbidden, "only admins can see everyone's usage")
-			return
-		}
-		userID = 0
-	default:
-		writeError(w, http.StatusBadRequest, "scope must be mine or all")
-		return
-	}
-
 	report, err := h.usage.Report(r.Context(), domain.UsageQuery{
-		UserID:   userID,
+		UserID:   user.ID,
 		Period:   domain.UsagePeriod(query.Get("period")),
 		From:     from,
 		To:       to,

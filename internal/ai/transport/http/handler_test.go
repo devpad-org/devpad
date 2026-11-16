@@ -20,20 +20,36 @@ import (
 
 type stubCatalogService struct{}
 
-func (stubCatalogService) ListModels(context.Context) ([]domain.ModelInfo, error) {
+func (stubCatalogService) ListModels(context.Context, int64) ([]domain.ModelInfo, error) {
 	return nil, nil
 }
 
-func (stubCatalogService) ListProviders(context.Context) ([]app.ProviderInfo, error) {
+func (stubCatalogService) ListProviders(context.Context, int64) ([]app.ProviderInfo, error) {
 	return nil, nil
 }
 
-func (stubCatalogService) UpdateProvider(context.Context, string, string, bool) error {
+func (stubCatalogService) SetProviderKey(context.Context, int64, string, string) error {
 	return nil
 }
 
-func (stubCatalogService) ResolveChatTarget(context.Context, string) (app.ResolvedTarget, error) {
+func (stubCatalogService) RemoveProviderKey(context.Context, int64, string) error {
+	return nil
+}
+
+func (stubCatalogService) ResolveChatTarget(context.Context, int64, string) (app.ResolvedTarget, error) {
 	return app.ResolvedTarget{}, nil
+}
+
+func (stubCatalogService) CheapestConfiguredModel(context.Context, int64) (domain.Model, error) {
+	return domain.Model{}, nil
+}
+
+// testUserID is the signed-in user of requests made with asTestUser, the
+// only user the stub agent defaults have any for.
+const testUserID int64 = 11
+
+func asTestUser(req *http.Request) *http.Request {
+	return req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: testUserID}))
 }
 
 func (stubCatalogService) FindModel(string) (domain.Model, error) {
@@ -273,7 +289,7 @@ func TestHandleAgentChat_UsesAppChatService(t *testing.T) {
 	h := &Handler{catalog: stubCatalogService{}, chat: chat}
 	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":42,"turns":[{"role":"user","parts":[{"kind":"text","text":"hello"}]}]}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/agent", body)
-	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 11}))
+	req = asTestUser(req)
 	w := httptest.NewRecorder()
 
 	h.HandleAgentChat(w, req)
@@ -321,7 +337,7 @@ func TestHandleCreateAgentRun_StartsBackgroundRun(t *testing.T) {
 	h := &Handler{runs: runs}
 	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":42,"conversationId":77,"parentRunId":9,"turns":[{"role":"user","parts":[{"kind":"text","text":"hello"}]}]}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/agent/runs", body)
-	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 11}))
+	req = asTestUser(req)
 	w := httptest.NewRecorder()
 
 	h.HandleCreateAgentRun(w, req)
@@ -447,11 +463,17 @@ type stubAgentDefaultsService struct {
 	setFn    func(domain.AgentDefaults) (*domain.AgentDefaults, error)
 }
 
-func (s stubAgentDefaultsService) ListAgentDefaults(context.Context) (map[string]domain.AgentDefaults, error) {
+func (s stubAgentDefaultsService) ListAgentDefaults(_ context.Context, userID int64) (map[string]domain.AgentDefaults, error) {
+	if userID != testUserID {
+		return map[string]domain.AgentDefaults{}, s.listErr
+	}
 	return s.defaults, s.listErr
 }
 
-func (s stubAgentDefaultsService) DefaultsFor(_ context.Context, agentID, effort string) (*domain.AgentDefaults, error) {
+func (s stubAgentDefaultsService) DefaultsFor(_ context.Context, userID int64, agentID, effort string) (*domain.AgentDefaults, error) {
+	if userID != testUserID {
+		return nil, nil
+	}
 	d, ok := s.defaults[agentID]
 	if !ok {
 		return nil, nil
@@ -462,7 +484,10 @@ func (s stubAgentDefaultsService) DefaultsFor(_ context.Context, agentID, effort
 	return &d, nil
 }
 
-func (s stubAgentDefaultsService) SetAgentDefaults(_ context.Context, d domain.AgentDefaults) (*domain.AgentDefaults, error) {
+func (s stubAgentDefaultsService) SetAgentDefaults(_ context.Context, userID int64, d domain.AgentDefaults) (*domain.AgentDefaults, error) {
+	if userID != testUserID {
+		return nil, errors.New("defaults set for the wrong user")
+	}
 	return s.setFn(d)
 }
 
@@ -472,7 +497,7 @@ func TestHandleListModels_IncludesAgentDefaults(t *testing.T) {
 	}}}
 	w := httptest.NewRecorder()
 
-	h.HandleListModels(w, httptest.NewRequest(http.MethodGet, "/api/ai/models", nil))
+	h.HandleListModels(w, asTestUser(httptest.NewRequest(http.MethodGet, "/api/ai/models", nil)))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
@@ -488,7 +513,7 @@ func TestHandleListAgentDefaults_ListsEveryBuiltInAgent(t *testing.T) {
 	}}}
 	w := httptest.NewRecorder()
 
-	h.HandleListAgentDefaults(w, httptest.NewRequest(http.MethodGet, "/api/ai/agent-defaults", nil))
+	h.HandleListAgentDefaults(w, asTestUser(httptest.NewRequest(http.MethodGet, "/api/ai/agent-defaults", nil)))
 
 	var resp struct {
 		Agents []agentDefaultsDTO `json:"agents"`
@@ -530,7 +555,7 @@ func TestHandleSetAgentDefaults(t *testing.T) {
 				}
 				return &d, nil
 			}}}
-			req := httptest.NewRequest(http.MethodPut, "/api/ai/agent-defaults/"+tt.agentID, strings.NewReader(`{"model":"gpt-5.4","effort":"low"}`))
+			req := asTestUser(httptest.NewRequest(http.MethodPut, "/api/ai/agent-defaults/"+tt.agentID, strings.NewReader(`{"model":"gpt-5.4","effort":"low"}`)))
 			req.SetPathValue("id", tt.agentID)
 			w := httptest.NewRecorder()
 
@@ -543,12 +568,12 @@ func TestHandleSetAgentDefaults(t *testing.T) {
 	}
 }
 
-// Losing the admin's defaults must not take the model list down with them.
+// Losing the user's defaults must not take the model list down with them.
 func TestHandleListModels_ListsModelsWhenDefaultsFail(t *testing.T) {
 	h := &Handler{catalog: stubCatalogService{}, defaults: stubAgentDefaultsService{listErr: errors.New("disk I/O error")}}
 	w := httptest.NewRecorder()
 
-	h.HandleListModels(w, httptest.NewRequest(http.MethodGet, "/api/ai/models", nil))
+	h.HandleListModels(w, asTestUser(httptest.NewRequest(http.MethodGet, "/api/ai/models", nil)))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
@@ -558,7 +583,7 @@ func TestHandleListModels_ListsModelsWhenDefaultsFail(t *testing.T) {
 	}
 }
 
-// A run of a built-in agent without a model runs the admin's default; one
+// A run of a built-in agent without a model runs the user's default; one
 // without either fails as before.
 func TestHandleCreateAgentRun_UsesTheAgentsDefaults(t *testing.T) {
 	var got app.StartAgentRunRequest
@@ -567,11 +592,11 @@ func TestHandleCreateAgentRun_UsesTheAgentsDefaults(t *testing.T) {
 		return &domain.AgentRun{ID: 1, Model: req.Model, Status: domain.AgentRunRunning}, nil
 	}}
 	h := &Handler{runs: runs, defaults: stubAgentDefaultsService{defaults: map[string]domain.AgentDefaults{
-		domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "admin-review", Effort: "low"},
+		domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "user-review", Effort: "low"},
 	}}}
 	post := func(body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/api/ai/agent/runs", strings.NewReader(body))
-		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 11}))
+		req = asTestUser(req)
 		w := httptest.NewRecorder()
 		h.HandleCreateAgentRun(w, req)
 		return w.Code
@@ -581,7 +606,7 @@ func TestHandleCreateAgentRun_UsesTheAgentsDefaults(t *testing.T) {
 	if code := post(`{"agentId":"review",` + turns + `}`); code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", code)
 	}
-	if got.Model != "admin-review" || got.Thinking == nil || got.Thinking.Effort != "low" {
+	if got.Model != "user-review" || got.Thinking == nil || got.Thinking.Effort != "low" {
 		t.Fatalf("expected the review agent's defaults, got %+v %+v", got, got.Thinking)
 	}
 	if code := post(`{"agentId":"review","thinking":{"enabled":false},` + turns + `}`); code != http.StatusCreated {
@@ -592,5 +617,34 @@ func TestHandleCreateAgentRun_UsesTheAgentsDefaults(t *testing.T) {
 	}
 	if code := post(`{"agentId":"default",` + turns + `}`); code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for an agent without defaults, got %d", code)
+	}
+}
+
+type stubUsageService struct {
+	app.UsageService
+	got *domain.UsageQuery
+}
+
+func (s stubUsageService) Report(_ context.Context, q domain.UsageQuery) (*domain.UsageReport, error) {
+	*s.got = q
+	return &domain.UsageReport{}, nil
+}
+
+// Each user sees only their own usage, admins included, whatever scope
+// they ask for.
+func TestHandleUsageReport_ReportsOnlyTheUsersOwnUsage(t *testing.T) {
+	var got domain.UsageQuery
+	h := &Handler{usage: stubUsageService{got: &got}}
+	req := httptest.NewRequest(http.MethodGet, "/api/ai/usage?period=day&from=2026-11-01&to=2026-11-16&scope=all", nil)
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 4, IsAdmin: true}))
+	w := httptest.NewRecorder()
+
+	h.HandleUsageReport(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body)
+	}
+	if got.UserID != 4 {
+		t.Fatalf("expected the admin's own usage, got user %d", got.UserID)
 	}
 }

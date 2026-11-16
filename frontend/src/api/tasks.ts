@@ -49,7 +49,7 @@ export const taskApi = {
     return apiClient.get(`/api/projects/${projectId}/tasks`)
   },
 
-  // Without budgetUsd the task gets the admin's default budget; zero means no limit.
+  // Without budgetUsd the task gets the user's default budget; zero means no limit.
   create(
     projectId: number,
     input: { title: string; body: string; start: boolean; baseBranch?: string; budgetUsd?: number } & AgentSettings,

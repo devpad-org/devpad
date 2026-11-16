@@ -5,7 +5,7 @@ import { useAiModelStore } from '@/stores/aiModels'
 import { CODING_AGENT_ID, defaultAIModel, defaultThinkingEffort, thinkingEffortLabel } from '@/utils/aiModels'
 
 // Picks the model and reasoning effort agents run with, starting on the
-// defaults an admin set for the agent.
+// defaults the user set for the agent.
 const props = withDefaults(defineProps<{ agentId?: string }>(), { agentId: CODING_AGENT_ID })
 const model = defineModel<string>('model', { required: true })
 const effort = defineModel<string>('effort', { default: '' })

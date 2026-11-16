@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
@@ -17,18 +18,23 @@ func NewSimpleChatOrchestrator(service ChatService) *SimpleChatOrchestrator {
 }
 
 // Stream delegates directly to the provider-backed chat service, pricing
-// each request's usage when the model's prices are known. recordUsage, which
-// may be nil, is told what each request was billed for.
-func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequest, recordUsage func(domain.Usage)) (<-chan domain.ClientEvent, error) {
+// each request's usage when the model's prices are known. budget, which may
+// be nil, is spent by the request, which is refused when it is already
+// spent. recordUsage, which may be nil, is told what each request was billed
+// for.
+func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequest, budget *domain.Budget, recordUsage func(domain.Usage)) (<-chan domain.ClientEvent, error) {
 	model, err := o.service.FindModel(req.Model)
 	if err != nil {
 		return nil, err
+	}
+	if budget.Exhausted() {
+		return nil, errors.New(budget.ExhaustedMessage())
 	}
 	stream, err := o.service.ChatStream(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	meter := usageMeter{model: model, record: recordUsage}
+	meter := usageMeter{model: model, budget: budget, record: recordUsage}
 
 	out := make(chan domain.ClientEvent)
 	go func() {
