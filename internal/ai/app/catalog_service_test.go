@@ -160,9 +160,8 @@ func TestResolveChatTargetUsesOnlyTheUsersOwnKey(t *testing.T) {
 	}
 }
 
-// A key sealed with an encryption key the server no longer has, such as a
-// generated one before a restart, is reported so the user can enter it
-// again.
+// A key sealed with an encryption key the server no longer has, as after
+// the server's key changed, is reported so the user can enter it again.
 func TestResolveChatTargetReportsAnUnreadableKey(t *testing.T) {
 	keys := memoryProviderKeys{}
 	if err := newTwoProviderCatalog(t, keys, newTestCipher(t, "a")).SetProviderKey(context.Background(), 1, "anthropic", "k"); err != nil {

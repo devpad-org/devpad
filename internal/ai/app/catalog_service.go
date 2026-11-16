@@ -32,8 +32,8 @@ type ProviderInfo struct {
 	Name      string `json:"name"`
 	HasAPIKey bool   `json:"hasApiKey"`
 	// KeyUnreadable reports a saved key that can no longer be decrypted,
-	// such as after the server restarted without its encryption key. The
-	// user must enter it again.
+	// such as after the server's encryption key changed. The user must
+	// enter it again.
 	KeyUnreadable bool `json:"keyUnreadable,omitempty"`
 }
 

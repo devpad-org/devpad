@@ -8,8 +8,11 @@ A web-based IDE that connects to Docker-based workspaces.
 # Build
 make build
 
+# Make an encryption key once and keep it (see Encryption below)
+openssl rand -hex 32
+
 # Run in development mode (HTTP on port 8080)
-./bin/devpad
+DEVPAD_ENCRYPTION_KEY="your-64-char-hex-key" ./bin/devpad
 ```
 
 ## Configuration
@@ -26,7 +29,7 @@ Devpad is configured via command-line flags and/or environment variables. Flags 
 | `--http-redirect-port` | `DEVPAD_HTTP_REDIRECT_PORT` | — | Port for HTTP→HTTPS redirect server. Requires `--domain` |
 | `--db-path` | `DEVPAD_DB_PATH` | `devpad.db` | Path to the SQLite database file |
 | `--preview-domain` | `DEVPAD_PREVIEW_DOMAIN` | — | Domain for workspace previews (e.g. `preview.example.com`) |
-| `--encryption-key` | `DEVPAD_ENCRYPTION_KEY` | — | Hex-encoded 32-byte key for encrypting secrets (SSH private keys). Auto-generated if not set |
+| `--encryption-key` | `DEVPAD_ENCRYPTION_KEY` | — | Hex-encoded 32-byte key for encrypting secrets (SSH private keys and AI provider keys). **Required**: devpad will not start without one |
 | — | `DEVPAD_CONTAINER_ID` | autodetected | ID or name of devpad's own container. Only needed when devpad runs in a container and cannot detect it (see below) |
 
 ### Running devpad in a container
@@ -43,6 +46,8 @@ its hostname. If detection fails, devpad logs a warning at workspace start; set
 configuration — it already routes to workspace networks.
 
 ### Examples
+
+The examples assume `DEVPAD_ENCRYPTION_KEY` is set in the environment.
 
 **Development** — plain HTTP on the default port:
 
@@ -117,7 +122,7 @@ The strongest setup puts previews on a **separate registrable domain** from the 
 
 ### Encryption Key
 
-Devpad encrypts sensitive data at rest (SSH private keys) using AES-256-GCM. An encryption key is required for production use.
+Devpad encrypts sensitive data at rest (SSH private keys and AI provider keys) using AES-256-GCM, and will not start without an encryption key.
 
 Generate a key:
 
@@ -133,7 +138,7 @@ Then pass it via flag or environment variable:
 DEVPAD_ENCRYPTION_KEY="your-64-char-hex-key" ./bin/devpad
 ```
 
-If no key is configured, Devpad generates an ephemeral key on startup and logs it. **Save this key** — without it, previously encrypted data (SSH private keys) cannot be decrypted after a restart.
+Make the key once and keep it: data encrypted with it cannot be read with any other key. If the key is lost or changed, each user must generate a new SSH key and enter their AI provider keys again in **Settings**.
 
 ### SSH Keys
 

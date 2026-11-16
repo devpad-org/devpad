@@ -80,7 +80,7 @@ function remove(provider: AIProvider) {
           <span v-else class="badge">No key</span>
         </div>
         <p v-if="provider.keyUnreadable" class="card-hint card-desc">
-          The saved key can no longer be read, as happens when the server restarts without its encryption key. Enter it
+          The saved key can no longer be read, as happens when the server's encryption key changes. Enter it
           again to use {{ provider.name }}.
         </p>
         <form @submit.prevent="save(provider)">

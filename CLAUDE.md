@@ -13,7 +13,7 @@ Run all commands from the repository root unless noted.
 | Frontend install | `make install-frontend` |
 | Frontend build + type-check | `make frontend` |
 | Frontend type-check only | `cd frontend && npm run type-check` |
-| Backend dev server | `go run .` |
+| Backend dev server | `DEVPAD_ENCRYPTION_KEY=<key> go run .` (required; make one once with `openssl rand -hex 32` and reuse it) |
 | Frontend dev server | `make dev-frontend` |
 | All Go tests with coverage | `make test` |
 | All Go tests without coverage | `go test ./...` |

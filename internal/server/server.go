@@ -52,6 +52,14 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
+	// Encryption cipher for secrets (SSH private keys and AI provider keys).
+	// Devpad never makes one up: secrets sealed with a key that is gone
+	// with the process could not be read after a restart.
+	cipher, err := newCipher(cfg.EncryptionKey)
+	if err != nil {
+		return nil, err
+	}
+
 	db, err := database.Open(cfg.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
@@ -59,20 +67,6 @@ func New(cfg Config) (*Server, error) {
 
 	if err := db.Migrate(); err != nil {
 		return nil, fmt.Errorf("running migrations: %w", err)
-	}
-
-	// Encryption cipher for secrets (SSH private keys and AI provider keys).
-	if cfg.EncryptionKey == "" {
-		key, err := encrypt.GenerateKey()
-		if err != nil {
-			return nil, fmt.Errorf("generating encryption key: %w", err)
-		}
-		cfg.EncryptionKey = key
-		log.Printf("WARNING: No encryption key configured. Generated ephemeral key. SSH keys encrypted with this key will be lost on restart. Use 'openssl rand -hex 32' to generate a persistent key and set DEVPAD_ENCRYPTION_KEY.")
-	}
-	cipher, err := encrypt.NewCipher(cfg.EncryptionKey)
-	if err != nil {
-		return nil, fmt.Errorf("creating encryption cipher: %w", err)
 	}
 
 	// Auth layer
@@ -613,6 +607,20 @@ func validateDomains(cfg Config) error {
 		return fmt.Errorf("--domain %q must not be the preview domain %q or a subdomain of it: every host under the preview domain is served as a workspace preview", cfg.Domain, cfg.PreviewDomain)
 	}
 	return nil
+}
+
+// newCipher builds the cipher secrets are sealed with from the configured
+// key, which is required: devpad will not start without one rather than
+// seal secrets with a key that is lost when it stops.
+func newCipher(key string) (*encrypt.Cipher, error) {
+	if key == "" {
+		return nil, fmt.Errorf("an encryption key is required: set --encryption-key or DEVPAD_ENCRYPTION_KEY to a key made once with 'openssl rand -hex 32' and keep it, since SSH and AI provider keys sealed with it cannot be read with any other")
+	}
+	cipher, err := encrypt.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("invalid encryption key: %w", err)
+	}
+	return cipher, nil
 }
 
 // denyFraming stops other pages, previews included, from framing the app. A
