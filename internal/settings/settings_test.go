@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -662,5 +665,34 @@ func TestHandler_UserPreferences_ConcurrentUpdatesKeepBoth(t *testing.T) {
 		if want := (UserPreferences{DiffViewSideBySide: false, Theme: "modern-light"}); got != want {
 			t.Fatalf("round %d: preferences = %+v, want %+v", round, got, want)
 		}
+	}
+}
+
+// The server accepts exactly the themes the frontend offers, with the same
+// default: a theme the picker shows but the server refuses would snap back on
+// every click.
+func TestThemesMatchFrontend(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "frontend", "src", "theme", "index.ts"))
+	if err != nil {
+		t.Fatalf("reading the frontend's themes: %v", err)
+	}
+	block := regexp.MustCompile(`(?s)export const THEMES = \[(.*?)\n\]`).FindSubmatch(source)
+	if block == nil {
+		t.Fatal("cannot find THEMES in frontend/src/theme/index.ts")
+	}
+	var frontend []string
+	for _, m := range regexp.MustCompile(`\bid: '([\w-]+)'`).FindAllSubmatch(block[1], -1) {
+		frontend = append(frontend, string(m[1]))
+	}
+	if !slices.Equal(frontend, Themes) {
+		t.Errorf("settings.Themes = %v, but the frontend's THEMES are %v", Themes, frontend)
+	}
+
+	def := regexp.MustCompile(`export const DEFAULT_THEME: ThemeId = '([\w-]+)'`).FindSubmatch(source)
+	if def == nil {
+		t.Fatal("cannot find DEFAULT_THEME in frontend/src/theme/index.ts")
+	}
+	if string(def[1]) != DefaultTheme {
+		t.Errorf("settings.DefaultTheme = %q, but the frontend's DEFAULT_THEME is %q", DefaultTheme, def[1])
 	}
 }

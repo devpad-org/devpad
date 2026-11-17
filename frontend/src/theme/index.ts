@@ -7,7 +7,17 @@ import { ref, readonly } from 'vue'
 import type * as MonacoType from 'monaco-editor'
 import type { ITheme } from '@xterm/xterm'
 
-export type ThemeId = 'gruvbox-dark' | 'gruvbox-light' | 'modern-dark' | 'modern-light'
+// Each id is the `data-theme` value its block in assets/styles/themes.css is
+// chosen by. The server keeps the same list (settings.Themes); a Go test and
+// `npm run check-themes` fail when the three disagree.
+export const THEMES = [
+  { id: 'gruvbox-dark', label: 'Gruvbox Dark', description: 'Warm, retro and easy on the eyes. The default.', kind: 'dark' },
+  { id: 'gruvbox-light', label: 'Gruvbox Light', description: 'The same warm palette on cream paper.', kind: 'light' },
+  { id: 'modern-dark', label: 'Modern Dark', description: 'Cool, neutral surfaces with a blue accent.', kind: 'dark' },
+  { id: 'modern-light', label: 'Modern Light', description: 'Clean and bright, with a blue accent.', kind: 'light' },
+] as const satisfies readonly { id: string; label: string; description: string; kind: 'dark' | 'light' }[]
+
+export type ThemeId = (typeof THEMES)[number]['id']
 
 export interface ThemeInfo {
   id: ThemeId
@@ -15,13 +25,6 @@ export interface ThemeInfo {
   description: string
   kind: 'dark' | 'light'
 }
-
-export const THEMES: readonly ThemeInfo[] = [
-  { id: 'gruvbox-dark', label: 'Gruvbox Dark', description: 'Warm, retro and easy on the eyes. The default.', kind: 'dark' },
-  { id: 'gruvbox-light', label: 'Gruvbox Light', description: 'The same warm palette on cream paper.', kind: 'light' },
-  { id: 'modern-dark', label: 'Modern Dark', description: 'Cool, neutral surfaces with a blue accent.', kind: 'dark' },
-  { id: 'modern-light', label: 'Modern Light', description: 'Clean and bright, with a blue accent.', kind: 'light' },
-]
 
 export const DEFAULT_THEME: ThemeId = 'gruvbox-dark'
 
@@ -81,16 +84,32 @@ function normalise(color: string): string {
   return canvas.fillStyle
 }
 
-function hex(color: string): string {
+// A CSS colour as #rrggbb or #rrggbbaa, or null when it is missing or is not
+// one this can turn into hex (color-mix(), oklch() and the like).
+function hex(color: string): string | null {
   if (/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(color)) return color
   if (/^#[0-9a-f]{3,4}$/i.test(color)) return '#' + [...color.slice(1)].map((d) => d + d).join('')
+  if (!color || !CSS.supports('color', color)) return null
   const value = normalise(color)
   if (/^#[0-9a-f]{6}$/i.test(value)) return value
   const m = value.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+))?\s*\)$/)
-  if (!m) return '#000000'
+  if (!m) return null
   const byte = (n: number) => Math.round(Math.min(255, Math.max(0, n))).toString(16).padStart(2, '0')
   const alpha = m[4] === undefined ? '' : byte(Number(m[4]) * 255)
   return `#${byte(Number(m[1]))}${byte(Number(m[2]))}${byte(Number(m[3]))}${alpha}`
+}
+
+// A colour token as hex, for Monaco and the browser's chrome. A token that is
+// missing or unreadable becomes black, so say so while developing; `npm run
+// check-themes` refuses such a token at build time.
+function tokenHex(t: (name: string) => string, name: string): string {
+  const value = hex(t(name))
+  if (value) return value
+  if (import.meta.env.DEV) {
+    const raw = t(name)
+    console.warn(`[theme] ${current.value}: ${name} ${raw ? `is "${raw}", which is not a colour the editor theme can use` : 'is not defined'}; using black`)
+  }
+  return '#000000'
 }
 
 // ── Terminal ───────────────────────────────────────────────────────────────
@@ -198,7 +217,7 @@ const SYNTAX_RULES: [token: string, syntax: string, fontStyle?: string][] = [
 
 function monacoTheme(): MonacoType.editor.IStandaloneThemeData {
   const t = tokens()
-  const c = (name: string) => hex(t(name))
+  const c = (name: string) => tokenHex(t, name)
   const transparent = '#00000000'
 
   return {
@@ -386,7 +405,7 @@ export function registerDevpadTheme(m: typeof MonacoType) {
 // The tab icon and the browser's own chrome follow the theme too.
 function applyDocumentChrome() {
   const t = tokens()
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', hex(t('--bg-elevated')))
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', tokenHex(t, '--bg-elevated'))
 
   const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
   if (icon) {

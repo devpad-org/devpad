@@ -17,7 +17,8 @@ type UserPreferences struct {
 // DefaultTheme is the theme of a user who has not chosen one.
 const DefaultTheme = "gruvbox-dark"
 
-// Themes are the colour themes the frontend has (frontend/src/theme/index.ts).
+// Themes are the colour themes the frontend offers, in its order (THEMES in
+// frontend/src/theme/index.ts); TestThemesMatchFrontend keeps them the same.
 var Themes = []string{DefaultTheme, "gruvbox-light", "modern-dark", "modern-light"}
 
 // PreferencesUpdate changes some of a user's preferences; a nil field keeps
