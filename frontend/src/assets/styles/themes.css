@@ -11,7 +11,7 @@
  *
  * `npm run check-themes`, which `npm run build` runs too, checks that every
  * theme here is in THEMES (src/theme/index.ts), that every theme defines the
- * same tokens, that the colours the editor and terminal read are ones they can
+ * same tokens and a color-scheme of light or dark (the editor's base follows it), that the colours the editor and terminal read are ones they can
  * use, and every theme's text and syntax colours for contrast against the
  * surfaces they are used on.
  */

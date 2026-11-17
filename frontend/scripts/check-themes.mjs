@@ -1,4 +1,5 @@
 // Checks the themes in src/assets/styles/themes.css:
+//  - every theme sets color-scheme to light or dark;
 //  - the themes there are the ones src/theme/index.ts offers (THEMES), and the
 //    default is the same in both;
 //  - every theme defines the same tokens;
@@ -29,6 +30,7 @@ function fail(message) {
 const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selectors, body]) => ({
   selectors: selectors.split(',').map((s) => s.trim()),
   tokens: Object.fromEntries([...body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map(([, k, v]) => [k, v.trim()])),
+  colorScheme: body.match(/(?:^|[;{\s])color-scheme\s*:\s*([^;]+);/)?.[1].trim(),
 }))
 
 const themeIdOf = (selector) => selector.match(/^\[data-theme='([\w-]+)'\]$/)?.[1]
@@ -139,6 +141,13 @@ for (const id of themeIds) {
   const problems = new Map()
   for (const [name, value] of Object.entries(t)) {
     if (value.includes('MISSING')) problems.set(name, 'refers to a token the theme does not define')
+  }
+  // Whether a theme is light or dark is its color-scheme: the browser draws
+  // form controls and scrollbars by it, and the editor picks its base by it.
+  const schemes = rules.filter((r) => r.selectors.includes(`[data-theme='${id}']`) && r.colorScheme).map((r) => r.colorScheme)
+  const scheme = schemes.at(-1)
+  if (scheme !== 'light' && scheme !== 'dark') {
+    problems.set('color-scheme', scheme ? `is "${scheme}", but must be light or dark` : 'is not set, but must be light or dark')
   }
   const color = (name) => {
     if (problems.has(name)) return null

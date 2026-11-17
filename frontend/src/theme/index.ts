@@ -11,20 +11,13 @@ import type { ITheme } from '@xterm/xterm'
 // chosen by. The server keeps the same list (settings.Themes); a Go test and
 // `npm run check-themes` fail when the three disagree.
 export const THEMES = [
-  { id: 'gruvbox-dark', label: 'Gruvbox Dark', description: 'Warm, retro and easy on the eyes. The default.', kind: 'dark' },
-  { id: 'gruvbox-light', label: 'Gruvbox Light', description: 'The same warm palette on cream paper.', kind: 'light' },
-  { id: 'modern-dark', label: 'Modern Dark', description: 'Cool, neutral surfaces with a blue accent.', kind: 'dark' },
-  { id: 'modern-light', label: 'Modern Light', description: 'Clean and bright, with a blue accent.', kind: 'light' },
-] as const satisfies readonly { id: string; label: string; description: string; kind: 'dark' | 'light' }[]
+  { id: 'gruvbox-dark', label: 'Gruvbox Dark', description: 'Warm, retro and easy on the eyes. The default.' },
+  { id: 'gruvbox-light', label: 'Gruvbox Light', description: 'The same warm palette on cream paper.' },
+  { id: 'modern-dark', label: 'Modern Dark', description: 'Cool, neutral surfaces with a blue accent.' },
+  { id: 'modern-light', label: 'Modern Light', description: 'Clean and bright, with a blue accent.' },
+] as const satisfies readonly { id: string; label: string; description: string }[]
 
 export type ThemeId = (typeof THEMES)[number]['id']
-
-export interface ThemeInfo {
-  id: ThemeId
-  label: string
-  description: string
-  kind: 'dark' | 'light'
-}
 
 export const DEFAULT_THEME: ThemeId = 'gruvbox-dark'
 
@@ -58,10 +51,6 @@ export function themeSwitchCount(): number {
 
 /** The theme in use. Changes when the user picks another, here or in another tab. */
 export const currentTheme = readonly(current)
-
-export function themeInfo(id: ThemeId): ThemeInfo {
-  return THEMES.find((t) => t.id === id) ?? THEMES[0]
-}
 
 // ── Reading tokens ─────────────────────────────────────────────────────────
 
@@ -221,7 +210,8 @@ function monacoTheme(): MonacoType.editor.IStandaloneThemeData {
   const transparent = '#00000000'
 
   return {
-    base: themeInfo(current.value).kind === 'dark' ? 'vs-dark' : 'vs',
+    // Light or dark comes from the theme's color-scheme in themes.css.
+    base: t('color-scheme') === 'dark' ? 'vs-dark' : 'vs',
     inherit: false,
     rules: SYNTAX_RULES.map(([token, syntax, fontStyle]) => ({
       token,
