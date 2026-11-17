@@ -52,9 +52,10 @@ func DefaultUserPreferences() UserPreferences {
 
 func (r *preferencesRepository) Get(ctx context.Context, userID int64) (UserPreferences, error) {
 	preferences := DefaultUserPreferences()
+	// A NULL theme was never chosen, so it is whatever the default is now.
 	err := r.db.QueryRowContext(ctx,
-		`SELECT diff_view_side_by_side, theme FROM user_preferences WHERE user_id = ?`,
-		userID,
+		`SELECT diff_view_side_by_side, COALESCE(theme, ?) FROM user_preferences WHERE user_id = ?`,
+		DefaultTheme, userID,
 	).Scan(&preferences.DiffViewSideBySide, &preferences.Theme)
 	if err == sql.ErrNoRows {
 		return preferences, nil
@@ -70,14 +71,15 @@ func (r *preferencesRepository) Update(ctx context.Context, userID int64, update
 	now := time.Now()
 	var preferences UserPreferences
 	// ?2 and ?3 are the changes, NULL for a preference that keeps its value.
+	// A theme that was never chosen stays NULL, so it follows the default.
 	err := r.db.QueryRowContext(ctx,
 		`INSERT INTO user_preferences (user_id, diff_view_side_by_side, theme, created_at, updated_at)
-		 VALUES (?1, COALESCE(?2, ?4), COALESCE(?3, ?5), ?6, ?6)
+		 VALUES (?1, COALESCE(?2, ?4), ?3, ?6, ?6)
 		 ON CONFLICT(user_id) DO UPDATE SET
 		   diff_view_side_by_side = COALESCE(?2, diff_view_side_by_side),
 		   theme = COALESCE(?3, theme),
 		   updated_at = excluded.updated_at
-		 RETURNING diff_view_side_by_side, theme`,
+		 RETURNING diff_view_side_by_side, COALESCE(theme, ?5)`,
 		userID, update.DiffViewSideBySide, update.Theme, defaults.DiffViewSideBySide, defaults.Theme, now,
 	).Scan(&preferences.DiffViewSideBySide, &preferences.Theme)
 	if err != nil {

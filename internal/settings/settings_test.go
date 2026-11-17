@@ -54,7 +54,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 	CREATE TABLE user_preferences (
 		user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
 		diff_view_side_by_side BOOLEAN NOT NULL DEFAULT 1,
-		theme TEXT NOT NULL DEFAULT 'gruvbox-dark',
+		theme TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`
@@ -604,6 +604,28 @@ func TestPreferencesRepository_ThemeOnMigratedSchema(t *testing.T) {
 	}
 	if want := (UserPreferences{DiffViewSideBySide: false, Theme: DefaultTheme}); got != want {
 		t.Fatalf("preferences = %+v, want %+v", got, want)
+	}
+
+	// Saving another preference, as the first save or a later one, stores no
+	// theme, so a user who never chose one keeps following the default.
+	if _, err := db.Conn().Exec(`INSERT INTO users (id, username, email, password) VALUES (2, 'new', 'new@example.com', 'hashed')`); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	for _, userID := range []int64{1, 2} {
+		updated, err := repo.Update(ctx, userID, PreferencesUpdate{DiffViewSideBySide: new(true)})
+		if err != nil {
+			t.Fatalf("updating user %d: %v", userID, err)
+		}
+		if updated.Theme != DefaultTheme {
+			t.Fatalf("user %d: returned theme = %q, want %q", userID, updated.Theme, DefaultTheme)
+		}
+		var stored sql.NullString
+		if err := db.Conn().QueryRow(`SELECT theme FROM user_preferences WHERE user_id = ?`, userID).Scan(&stored); err != nil {
+			t.Fatalf("user %d: reading stored theme: %v", userID, err)
+		}
+		if stored.Valid {
+			t.Fatalf("user %d: stored theme = %q, want NULL", userID, stored.String)
+		}
 	}
 
 	for _, theme := range Themes {

@@ -1,7 +1,9 @@
 package database
 
 import (
+	"database/sql"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -113,7 +115,9 @@ func createPreWaitingUserAgentRunSchema(t *testing.T, db *DB) {
 		);
 		CREATE TABLE user_preferences (
 			user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-			diff_view_side_by_side BOOLEAN NOT NULL DEFAULT 1
+			diff_view_side_by_side BOOLEAN NOT NULL DEFAULT 1,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE TABLE workspaces (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -232,6 +236,82 @@ func TestMigrateAddsImagePartsKeepingExistingParts(t *testing.T) {
 	}
 	if attachments != 0 {
 		t.Fatalf("attachments after deleting their conversation = %d, want 0", attachments)
+	}
+}
+
+// 058 makes the theme nullable, keeping every row; the theme 057 stored as
+// the default becomes NULL, a theme chosen otherwise stays.
+func TestMigrateMakesUserThemeNullable(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "devpad.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// Apply everything up to 057, seed, then apply 058.
+	markMigrationsAppliedFrom(t, db, "058_user_theme_nullable")
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate to 057: %v", err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO users (id, username, email, password) VALUES (1, 'a', 'a@example.com', 'hashed'), (2, 'b', 'b@example.com', 'hashed')`,
+		`INSERT INTO user_preferences (user_id, diff_view_side_by_side) VALUES (1, 0)`,
+		`INSERT INTO user_preferences (user_id, diff_view_side_by_side, theme) VALUES (2, 1, 'modern-dark')`,
+		`DELETE FROM schema_migrations WHERE version = '058_user_theme_nullable'`,
+	} {
+		if _, err := db.Conn().Exec(stmt); err != nil {
+			t.Fatalf("seed %q: %v", stmt, err)
+		}
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	rows, err := db.Conn().Query(`SELECT user_id, diff_view_side_by_side, theme FROM user_preferences ORDER BY user_id`)
+	if err != nil {
+		t.Fatalf("query preferences: %v", err)
+	}
+	defer rows.Close()
+	type row struct {
+		userID     int64
+		sideBySide bool
+		theme      sql.NullString
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.userID, &r.sideBySide, &r.theme); err != nil {
+			t.Fatalf("scan preferences: %v", err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read preferences: %v", err)
+	}
+	want := []row{
+		{1, false, sql.NullString{}},
+		{2, true, sql.NullString{String: "modern-dark", Valid: true}},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("preferences = %+v, want %+v", got, want)
+	}
+
+	if _, err := db.Conn().Exec(`INSERT INTO users (id, username, email, password) VALUES (3, 'c', 'c@example.com', 'hashed')`); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	if _, err := db.Conn().Exec(`INSERT INTO user_preferences (user_id, diff_view_side_by_side, theme) VALUES (3, 1, NULL)`); err != nil {
+		t.Fatalf("insert preferences with no theme: %v", err)
+	}
+	// The table still goes with its user.
+	if _, err := db.Conn().Exec(`DELETE FROM users WHERE id = 3`); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	var left int
+	if err := db.Conn().QueryRow(`SELECT COUNT(*) FROM user_preferences WHERE user_id = 3`).Scan(&left); err != nil {
+		t.Fatalf("count preferences: %v", err)
+	}
+	if left != 0 {
+		t.Fatalf("preferences left after deleting their user = %d, want 0", left)
 	}
 }
 
