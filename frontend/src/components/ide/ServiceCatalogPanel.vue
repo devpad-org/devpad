@@ -4,6 +4,7 @@ import { ApiError } from '@/api/client'
 import type { ServiceCatalogEntry } from '@/api/services'
 import { useServiceStore } from '@/stores/services'
 import { serviceCatalogItem, serviceCatalogOrder, type ServiceCatalogItem } from './serviceCatalog'
+import ServiceLogo from './ServiceLogo.vue'
 
 const props = defineProps<{
   workspaceId: number
@@ -89,7 +90,7 @@ async function deployService(row: CatalogRow) {
 
       <article v-for="{ entry, item } in rows" :key="entry.type" class="catalog-card">
         <div class="catalog-card-main">
-          <span class="catalog-icon">{{ item.icon }}</span>
+          <ServiceLogo class="catalog-icon" :type="entry.type" />
           <div class="catalog-meta">
             <h3>{{ item.label }}</h3>
             <p v-if="item.description">{{ item.description }}</p>
@@ -216,8 +217,6 @@ async function deployService(row: CatalogRow) {
 
 .catalog-icon {
   font-size: 1rem;
-  line-height: 1;
-  flex-shrink: 0;
 }
 
 .catalog-meta {

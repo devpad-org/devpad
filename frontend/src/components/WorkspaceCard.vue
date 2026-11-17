@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import type { Workspace } from '@/api/workspaces'
 import { serviceApi, type WorkspaceService } from '@/api/services'
 import { useWorkspaceStore } from '@/stores/workspaces'
-import { serviceTypeIcon } from '@/components/ide/serviceCatalog'
+import ServiceLogo from '@/components/ide/ServiceLogo.vue'
 
 const props = defineProps<{
   workspace: Workspace
@@ -102,7 +102,7 @@ function formatDate(dateStr: string) {
           ]"
           :title="`${svc.serviceType} — ${svc.status}`"
         >
-          <span class="service-badge-icon">{{ serviceTypeIcon(svc.serviceType) }}</span>
+          <ServiceLogo class="service-badge-icon" :type="svc.serviceType" />
           <svg v-if="svc.status === 'stopped' && workspace.status === 'running' && loadingServices" class="badge-spinner" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
           </svg>
@@ -453,23 +453,22 @@ function formatDate(dateStr: string) {
 
 .service-badge-icon {
   font-size: 0.75rem;
-  line-height: 1;
 }
 
 .service-badge-dot {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--text-muted);
+  background: var(--text-tertiary);
 }
 
 .service-running .service-badge-dot {
-  background: var(--accent-green);
-  box-shadow: 0 0 4px var(--accent-green);
+  background: var(--success);
+  box-shadow: 0 0 4px var(--success);
 }
 
 .badge-spinner {
   animation: spin 1s linear infinite;
-  color: var(--accent-amber);
+  color: var(--warning);
 }
 </style>
