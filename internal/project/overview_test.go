@@ -33,10 +33,10 @@ func TestOverviews(t *testing.T) {
 
 	// Workspaces: the project workspace and a stopped sandbox don't count as
 	// running agents; a running task and review sandbox do.
-	execSQL(t, e, `INSERT INTO workspaces (user_id, name, status, project_id, kind, branch) VALUES (?, 'mine', 'running', ?, 'interactive', '')`, e.userID, busy)
+	mine := execSQL(t, e, `INSERT INTO workspaces (user_id, name, status, project_id, kind, branch) VALUES (?, 'mine', 'running', ?, 'interactive', '')`, e.userID, busy)
 	taskWS := execSQL(t, e, `INSERT INTO workspaces (user_id, name, status, project_id, kind, branch) VALUES (?, 't', 'running', ?, 'task', 'task/1')`, e.userID, busy)
 	reviewWS := execSQL(t, e, `INSERT INTO workspaces (user_id, name, status, project_id, kind, branch) VALUES (?, 'r', 'running', ?, 'review', 'review/1')`, e.userID, busy)
-	execSQL(t, e, `INSERT INTO workspaces (user_id, name, status, project_id, kind, branch) VALUES (?, 's', 'stopped', ?, 'task', 'task/2')`, e.userID, busy)
+	stoppedWS := execSQL(t, e, `INSERT INTO workspaces (user_id, name, status, project_id, kind, branch) VALUES (?, 's', 'stopped', ?, 'task', 'task/2')`, e.userID, busy)
 	execSQL(t, e, `INSERT INTO workspaces (user_id, name, status) VALUES (?, 'standalone', 'running')`, e.userID)
 
 	working := execSQL(t, e, `INSERT INTO tasks (project_id, user_id, title, status, workspace_id, updated_at) VALUES (?, ?, 'working', 'in_progress', ?, ?)`, busy, e.userID, taskWS, recent)
@@ -130,6 +130,12 @@ func TestOverviews(t *testing.T) {
 	}
 	if len(links) != 4 {
 		t.Fatalf("expected 4 project workspace links (standalone excluded), got %d", len(links))
+	}
+	if l := linkByWS[mine]; l == nil || l.Kind != "interactive" || l.Status != "running" {
+		t.Fatalf("project workspace link = %+v", l)
+	}
+	if l := linkByWS[stoppedWS]; l == nil || l.Status != "stopped" {
+		t.Fatalf("stopped sandbox link = %+v", l)
 	}
 	if l := linkByWS[taskWS]; l == nil || l.TaskID != working || l.ProjectID != busy || l.Kind != "task" {
 		t.Fatalf("task sandbox link = %+v", l)

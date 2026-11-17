@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAttentionStore } from '@/stores/attention'
 import { useProjectStore } from '@/stores/projects'
-import type { Project, ProjectInput } from '@/api/projects'
+import type { Project, ProjectInput, WorkspaceLink } from '@/api/projects'
 import { projectsOpenedAt } from '@/utils/recentProjects'
 import { fullTime, timeAgo } from '@/utils/time'
 import { projectEmblem } from '@/utils/projectEmblem'
@@ -42,8 +42,19 @@ const waitingAgents = computed(() => {
   return counts
 })
 
+// Each project's own workspace's state.
+const workspaceStatus = computed(() => {
+  const statuses = new Map<number, WorkspaceLink['status']>()
+  for (const link of projects.workspaceLinks.values()) {
+    if (link.kind === 'interactive') statuses.set(link.projectId, link.status)
+  }
+  return statuses
+})
+
 interface Card {
   project: Project
+  // Undefined until the project has its workspace.
+  workspaceStatus?: WorkspaceLink['status']
   hue: string
   origin: string
   needsYou: number
@@ -68,6 +79,7 @@ const cards = computed<Card[]>(() =>
         project,
         hue: projectEmblem(project.name).hue,
         origin: upstreamLabel(project.upstreamUrl),
+        workspaceStatus: workspaceStatus.value.get(project.id),
         needsYou: waiting + awaitingReview,
         waiting,
         awaitingReview,
@@ -124,6 +136,12 @@ function plural(n: number, one: string, many = `${one}s`): string {
 
 function slotsTitle(card: Card): string {
   return `${card.runningAgents} of ${plural(card.project.maxSandboxes, 'sandbox', 'sandboxes')} running`
+}
+
+const WORKSPACE_STATUS_TITLES: Record<WorkspaceLink['status'], string> = {
+  creating: 'Workspace starting',
+  running: 'Workspace running',
+  stopped: 'Workspace stopped',
 }
 
 function latest(a: string, b: string): string {
@@ -284,6 +302,14 @@ async function handleCreate(input: ProjectInput) {
                 {{ card.runningAgents }}/{{ card.project.maxSandboxes }}
               </span>
             </span>
+            <span
+              v-if="card.workspaceStatus"
+              class="ws-dot"
+              :class="`ws-${card.workspaceStatus}`"
+              :title="WORKSPACE_STATUS_TITLES[card.workspaceStatus]"
+              :aria-label="WORKSPACE_STATUS_TITLES[card.workspaceStatus]"
+              role="img"
+            />
           </div>
         </RouterLink>
 
@@ -372,7 +398,7 @@ async function handleCreate(input: ProjectInput) {
 
 .card-origin {
   font-size: 0.7rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -454,7 +480,8 @@ async function handleCreate(input: ProjectInput) {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pulse {
+  .pulse,
+  .ws-dot.ws-creating {
     animation: none;
   }
 }
@@ -467,7 +494,7 @@ async function handleCreate(input: ProjectInput) {
   padding-top: var(--space-3);
   border-top: 0.5px solid var(--border-hairline);
   font-size: 0.75rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   min-width: 0;
 }
 
@@ -510,15 +537,42 @@ async function handleCreate(input: ProjectInput) {
   font-size: 0.7rem;
 }
 
+/* The project workspace's state, after its sandbox slots: lit while it runs,
+   an empty ring while it is stopped. */
+.ws-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  /* Sits a little closer to the slots than the footer's gap. */
+  margin-left: calc(var(--space-2) - var(--space-3));
+  border-radius: 50%;
+  box-sizing: border-box;
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.ws-dot.ws-running {
+  background: var(--success);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 22%, transparent);
+}
+
+.ws-dot.ws-creating {
+  background: var(--warning);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.ws-dot.ws-stopped {
+  border: 1px solid var(--text-dim);
+}
+
 .new-card {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
   min-height: 120px;
-  border: 0.5px dashed var(--border-active);
+  border: 0.5px dashed var(--border-strong);
   border-radius: var(--radius-lg);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.8rem;
   transition: all var(--transition-fast);
 }

@@ -31,9 +31,12 @@ type Overview struct {
 // WorkspaceLink ties a project-linked workspace to what it is for, so an
 // agent waiting in it can be traced back to its task or merge request.
 type WorkspaceLink struct {
-	WorkspaceID    int64
-	ProjectID      int64
-	Kind           string
+	WorkspaceID int64
+	ProjectID   int64
+	Kind        string
+	// Status is the workspace's lifecycle state: creating, running or
+	// stopped.
+	Status         string
 	TaskID         int64
 	MergeRequestID int64
 }
@@ -181,7 +184,7 @@ func (r *repository) Overviews(ctx context.Context, userID int64) ([]*Overview, 
 
 func (r *repository) WorkspaceLinks(ctx context.Context, userID int64) ([]*WorkspaceLink, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT w.id, w.project_id, w.kind,
+		SELECT w.id, w.project_id, w.kind, w.status,
 		       COALESCE((SELECT t.id FROM tasks t WHERE t.workspace_id = w.id ORDER BY t.id DESC LIMIT 1), 0),
 		       COALESCE((SELECT rv.merge_request_id FROM merge_request_reviews rv WHERE rv.workspace_id = w.id ORDER BY rv.id DESC LIMIT 1), 0)
 		FROM workspaces w
@@ -193,7 +196,7 @@ func (r *repository) WorkspaceLinks(ctx context.Context, userID int64) ([]*Works
 	var links []*WorkspaceLink
 	err = eachRow(rows, func() error {
 		l := &WorkspaceLink{}
-		if err := rows.Scan(&l.WorkspaceID, &l.ProjectID, &l.Kind, &l.TaskID, &l.MergeRequestID); err != nil {
+		if err := rows.Scan(&l.WorkspaceID, &l.ProjectID, &l.Kind, &l.Status, &l.TaskID, &l.MergeRequestID); err != nil {
 			return err
 		}
 		links = append(links, l)

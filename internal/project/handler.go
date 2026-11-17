@@ -64,6 +64,7 @@ func (h *Handler) HandleOverview(w http.ResponseWriter, r *http.Request) {
 			"workspaceId":    l.WorkspaceID,
 			"projectId":      l.ProjectID,
 			"kind":           l.Kind,
+			"status":         l.Status,
 			"taskId":         l.TaskID,
 			"mergeRequestId": l.MergeRequestID,
 		})

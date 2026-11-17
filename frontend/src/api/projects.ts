@@ -197,6 +197,7 @@ export interface WorkspaceLink {
   workspaceId: number
   projectId: number
   kind: 'interactive' | 'task' | 'review'
+  status: 'creating' | 'running' | 'stopped'
   taskId: number
   mergeRequestId: number
 }
