@@ -299,6 +299,7 @@ func TestHandler_CreateUser_Validation(t *testing.T) {
 		{"empty body", `{}`, http.StatusBadRequest},
 		{"missing password", `{"username":"a","email":"a@b.com"}`, http.StatusBadRequest},
 		{"short password", `{"username":"a","email":"a@b.com","password":"short"}`, http.StatusBadRequest},
+		{"long password", `{"username":"a","email":"a@b.com","password":"` + strings.Repeat("x", 73) + `"}`, http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {

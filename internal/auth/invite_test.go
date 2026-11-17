@@ -2,54 +2,91 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/devpad-org/devpad/internal/database"
 )
 
 type inviteFixture struct {
+	db      *sql.DB
 	svc     Service
+	users   UserRepository
 	invites *inviteService
 	handler *InviteHandler
 	admin   *User
 	clock   time.Time
 }
 
+// setupInvites runs against the real schema, every migration applied, so the
+// tests cover what the migration does when an admin is demoted or deleted.
 func setupInvites(t *testing.T) *inviteFixture {
 	t.Helper()
-	svc, db := setupTestService(t)
-	admin, err := svc.Setup(context.Background(), "admin", "admin@test.com", "password123")
+	db, err := database.Open(filepath.Join(t.TempDir(), "devpad.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	conn := db.Conn()
+	f := &inviteFixture{db: conn, users: NewUserRepository(conn), clock: time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)}
+	f.svc = NewService(f.users, NewSessionRepository(conn))
+	f.admin, err = f.svc.Setup(context.Background(), "admin", "admin@test.com", "password123")
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	f := &inviteFixture{svc: svc, admin: admin, clock: time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)}
-	inv := NewInviteService(NewInviteRepository(db), NewSessionRepository(db)).(*inviteService)
+	inv := NewInviteService(NewInviteRepository(conn), NewSessionRepository(conn)).(*inviteService)
 	inv.now = func() time.Time { return f.clock }
 	f.invites = inv
-	f.handler = NewInviteHandler(inv, NewHandler(svc, false))
+	f.handler = NewInviteHandler(inv, NewHandler(f.svc, false))
 	return f
 }
 
-func (f *inviteFixture) create(t *testing.T, email string, isAdmin bool) (*Invite, string) {
+func (f *inviteFixture) create(t *testing.T, by *User, isAdmin bool) (*Invite, string) {
 	t.Helper()
-	inv, token, err := f.invites.Create(context.Background(), f.admin.ID, email, isAdmin, 0)
+	inv, token, err := f.invites.Create(context.Background(), by.ID, isAdmin, 0)
 	if err != nil {
 		t.Fatalf("creating invite: %v", err)
 	}
 	return inv, token
 }
 
+// accept redeems a fresh invite from by, failing the test if it can't.
+func (f *inviteFixture) accept(t *testing.T, by *User, isAdmin bool, username string) *User {
+	t.Helper()
+	_, token := f.create(t, by, isAdmin)
+	user, _, err := f.invites.Accept(context.Background(), token, username, username+"@test.com", "password123")
+	if err != nil {
+		t.Fatalf("accepting invite as %s: %v", username, err)
+	}
+	return user
+}
+
+func (f *inviteFixture) setAdmin(t *testing.T, user *User, isAdmin bool) {
+	t.Helper()
+	user.IsAdmin = isAdmin
+	if err := f.users.Update(context.Background(), user); err != nil {
+		t.Fatalf("updating user: %v", err)
+	}
+}
+
 func TestInvite_AcceptCreatesUserAndSignsIn(t *testing.T) {
 	f := setupInvites(t)
 	ctx := context.Background()
-	_, token := f.create(t, "", false)
+	_, token := f.create(t, f.admin, false)
 
-	user, session, err := f.invites.Accept(ctx, token, " alice ", "alice@test.com", "password123")
+	user, session, err := f.invites.Accept(ctx, token, " alice ", " alice@test.com ", "password123")
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}
@@ -75,7 +112,7 @@ func TestInvite_AcceptCreatesUserAndSignsIn(t *testing.T) {
 func TestInvite_IsSingleUse(t *testing.T) {
 	f := setupInvites(t)
 	ctx := context.Background()
-	_, token := f.create(t, "", false)
+	_, token := f.create(t, f.admin, false)
 
 	if _, _, err := f.invites.Accept(ctx, token, "alice", "alice@test.com", "password123"); err != nil {
 		t.Fatalf("first accept: %v", err)
@@ -91,7 +128,7 @@ func TestInvite_IsSingleUse(t *testing.T) {
 func TestInvite_ConcurrentAcceptsMakeOneUser(t *testing.T) {
 	f := setupInvites(t)
 	ctx := context.Background()
-	_, token := f.create(t, "", false)
+	_, token := f.create(t, f.admin, false)
 
 	var wg sync.WaitGroup
 	errs := make([]error, 5)
@@ -122,9 +159,9 @@ func TestInvite_ConcurrentAcceptsMakeOneUser(t *testing.T) {
 func TestInvite_Expires(t *testing.T) {
 	f := setupInvites(t)
 	ctx := context.Background()
-	_, token := f.create(t, "", false)
+	_, token := f.create(t, f.admin, false)
 
-	f.clock = f.clock.Add(DefaultInviteTTL)
+	f.clock = f.clock.AddDate(0, 0, DefaultInviteDays)
 	if _, err := f.invites.Check(ctx, token); !errors.Is(err, ErrInviteInvalid) {
 		t.Fatalf("check: got %v, want ErrInviteInvalid", err)
 	}
@@ -141,36 +178,46 @@ func TestInvite_Expires(t *testing.T) {
 	}
 }
 
-func TestInvite_FixesEmailAndAdmin(t *testing.T) {
+func TestInvite_AdminInviteMakesAnAdmin(t *testing.T) {
 	f := setupInvites(t)
-	ctx := context.Background()
-	_, token := f.create(t, "carol@test.com", true)
-
-	user, _, err := f.invites.Accept(ctx, token, "carol", "someone-else@test.com", "password123")
-	if err != nil {
-		t.Fatalf("accept: %v", err)
-	}
-	if user.Email != "carol@test.com" {
-		t.Errorf("email = %q, want the invite's", user.Email)
-	}
-	if !user.IsAdmin {
+	if user := f.accept(t, f.admin, true, "carol"); !user.IsAdmin {
 		t.Error("expected an admin, as the invite says")
+	}
+	if user := f.accept(t, f.admin, false, "dave"); user.IsAdmin {
+		t.Error("expected a plain user, as the invite says")
 	}
 }
 
-func TestInvite_RequiresEmailWhenInviteHasNone(t *testing.T) {
+func TestInvite_AcceptValidatesInput(t *testing.T) {
 	f := setupInvites(t)
-	_, token := f.create(t, "", false)
+	ctx := context.Background()
+	_, token := f.create(t, f.admin, false)
 
-	if _, _, err := f.invites.Accept(context.Background(), token, "dave", "  ", "password123"); !errors.Is(err, ErrEmailRequired) {
-		t.Fatalf("got %v, want ErrEmailRequired", err)
+	tests := []struct {
+		name, username, email, password string
+		want                            error
+	}{
+		{"no username", "  ", "e@test.com", "password123", ErrUsernameRequired},
+		{"no email", "erin", "  ", "password123", ErrEmailRequired},
+		{"short password", "erin", "e@test.com", "short", ErrPasswordTooShort},
+		{"long password", "erin", "e@test.com", strings.Repeat("x", MaxPasswordLength+1), ErrPasswordTooLong},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, _, err := f.invites.Accept(ctx, token, tt.username, tt.email, tt.password); !errors.Is(err, tt.want) {
+				t.Fatalf("got %v, want %v", err, tt.want)
+			}
+		})
+	}
+	if _, err := f.invites.Check(ctx, token); err != nil {
+		t.Fatalf("refused accepts used the invite: %v", err)
 	}
 }
 
 func TestInvite_TakenUsernameLeavesInviteUsable(t *testing.T) {
 	f := setupInvites(t)
 	ctx := context.Background()
-	_, token := f.create(t, "", false)
+	_, token := f.create(t, f.admin, false)
 
 	if _, _, err := f.invites.Accept(ctx, token, "admin", "new@test.com", "password123"); !errors.Is(err, ErrUserExists) {
 		t.Fatalf("got %v, want ErrUserExists", err)
@@ -180,24 +227,27 @@ func TestInvite_TakenUsernameLeavesInviteUsable(t *testing.T) {
 	}
 }
 
-func TestInvite_CreateRefusesTakenEmailAndBadTTL(t *testing.T) {
+func TestInvite_CreateRefusesBadDays(t *testing.T) {
 	f := setupInvites(t)
-	ctx := context.Background()
-
-	if _, _, err := f.invites.Create(ctx, f.admin.ID, "admin@test.com", false, 0); !errors.Is(err, ErrEmailTaken) {
-		t.Fatalf("taken email: got %v, want ErrEmailTaken", err)
-	}
-	for _, ttl := range []time.Duration{-time.Hour, time.Minute, MaxInviteTTL + time.Hour} {
-		if _, _, err := f.invites.Create(ctx, f.admin.ID, "", false, ttl); !errors.Is(err, ErrInviteTTL) {
-			t.Errorf("ttl %v: got %v, want ErrInviteTTL", ttl, err)
+	for _, days := range []int{-1, MaxInviteDays + 1} {
+		if _, _, err := f.invites.Create(context.Background(), f.admin.ID, false, days); !errors.Is(err, ErrInviteDays) {
+			t.Errorf("%d days: got %v, want ErrInviteDays", days, err)
 		}
+	}
+}
+
+func TestInvite_OnlyAnAdminCanCreate(t *testing.T) {
+	f := setupInvites(t)
+	user := f.accept(t, f.admin, false, "frank")
+	if _, _, err := f.invites.Create(context.Background(), user.ID, false, 0); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("got %v, want ErrNotAdmin", err)
 	}
 }
 
 func TestInvite_RevokeAndStoreOnlyHash(t *testing.T) {
 	f := setupInvites(t)
 	ctx := context.Background()
-	inv, token := f.create(t, "", false)
+	inv, token := f.create(t, f.admin, false)
 
 	if len(token) < 40 {
 		t.Fatalf("token %q is too short", token)
@@ -218,11 +268,63 @@ func TestInvite_RevokeAndStoreOnlyHash(t *testing.T) {
 	}
 }
 
+func TestInvite_DemotingAdminRevokesTheirPendingInvites(t *testing.T) {
+	f := setupInvites(t)
+	ctx := context.Background()
+	other := f.accept(t, f.admin, true, "gina")
+	_, theirs := f.create(t, other, true)
+	_, mine := f.create(t, f.admin, false)
+	invitee := f.accept(t, other, false, "hal")
+
+	f.setAdmin(t, other, false)
+	if _, err := f.invites.Check(ctx, theirs); !errors.Is(err, ErrInviteInvalid) {
+		t.Fatalf("demoted admin's invite: got %v, want ErrInviteInvalid", err)
+	}
+	// Promoting them again doesn't bring it back.
+	f.setAdmin(t, other, true)
+	if _, err := f.invites.Check(ctx, theirs); !errors.Is(err, ErrInviteInvalid) {
+		t.Fatalf("after promoting again: got %v, want ErrInviteInvalid", err)
+	}
+
+	if _, err := f.invites.Check(ctx, mine); err != nil {
+		t.Fatalf("another admin's invite went too: %v", err)
+	}
+	var usedBy sql.NullInt64
+	if err := f.db.QueryRow(`SELECT used_by FROM user_invites WHERE created_by = ? AND used_at IS NOT NULL`, other.ID).Scan(&usedBy); err != nil {
+		t.Fatalf("their used invite went too: %v", err)
+	}
+	if usedBy.Int64 != invitee.ID {
+		t.Fatalf("used invite records %v, want %d", usedBy, invitee.ID)
+	}
+}
+
+func TestInvite_UpdatingAnAdminKeepsTheirInvites(t *testing.T) {
+	f := setupInvites(t)
+	_, token := f.create(t, f.admin, false)
+	f.admin.Email = "new-admin@test.com"
+	f.setAdmin(t, f.admin, true)
+	if _, err := f.invites.Check(context.Background(), token); err != nil {
+		t.Fatalf("an update that kept admin revoked the invite: %v", err)
+	}
+}
+
+func TestInvite_DeletingAdminRevokesTheirInvites(t *testing.T) {
+	f := setupInvites(t)
+	other := f.accept(t, f.admin, true, "jo")
+	_, token := f.create(t, other, false)
+	if err := f.users.Delete(context.Background(), other.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := f.invites.Check(context.Background(), token); !errors.Is(err, ErrInviteInvalid) {
+		t.Fatalf("got %v, want the deleted admin's invite gone", err)
+	}
+}
+
 func TestInviteHandler_AcceptSetsSessionCookie(t *testing.T) {
 	f := setupInvites(t)
-	_, token := f.create(t, "", false)
+	_, token := f.create(t, f.admin, false)
 
-	body := `{"token":"` + token + `","username":"frank","email":"frank@test.com","password":"password123"}`
+	body := `{"token":"` + token + `","username":"kim","email":"kim@test.com","password":"password123"}`
 	rec := httptest.NewRecorder()
 	f.handler.HandleAccept(rec, httptest.NewRequest(http.MethodPost, "/api/auth/invites/accept", strings.NewReader(body)))
 	if rec.Code != http.StatusCreated {
@@ -233,20 +335,20 @@ func TestInviteHandler_AcceptSetsSessionCookie(t *testing.T) {
 		t.Fatal("expected a session cookie")
 	}
 	user, err := f.svc.ValidateSession(context.Background(), cookie.Value)
-	if err != nil || user == nil || user.Username != "frank" {
+	if err != nil || user == nil || user.Username != "kim" {
 		t.Fatalf("session belongs to %+v (%v)", user, err)
 	}
 }
 
 func TestInviteHandler_AcceptRefusesSignedInUser(t *testing.T) {
 	f := setupInvites(t)
-	_, token := f.create(t, "", false)
+	_, token := f.create(t, f.admin, false)
 	session, err := f.svc.Login(context.Background(), "admin", "password123", "")
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
 
-	body := `{"token":"` + token + `","username":"gina","email":"gina@test.com","password":"password123"}`
+	body := `{"token":"` + token + `","username":"lee","email":"lee@test.com","password":"password123"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/invites/accept", strings.NewReader(body))
 	req.AddCookie(&http.Cookie{Name: cookieName, Value: session.Token})
 	rec := httptest.NewRecorder()
@@ -262,9 +364,9 @@ func TestInviteHandler_AcceptRefusesSignedInUser(t *testing.T) {
 	}
 }
 
-func TestInviteHandler_Validation(t *testing.T) {
+func TestInviteHandler_AcceptStatuses(t *testing.T) {
 	f := setupInvites(t)
-	_, token := f.create(t, "", false)
+	_, token := f.create(t, f.admin, false)
 
 	tests := []struct {
 		name string
@@ -273,9 +375,11 @@ func TestInviteHandler_Validation(t *testing.T) {
 	}{
 		{"bad token", `{"token":"nope","username":"h","email":"h@test.com","password":"password123"}`, http.StatusNotFound},
 		{"no username", `{"token":"` + token + `","username":" ","email":"h@test.com","password":"password123"}`, http.StatusBadRequest},
+		{"no email", `{"token":"` + token + `","username":"h","email":"","password":"password123"}`, http.StatusBadRequest},
 		{"short password", `{"token":"` + token + `","username":"h","email":"h@test.com","password":"short"}`, http.StatusBadRequest},
 		{"long password", `{"token":"` + token + `","username":"h","email":"h@test.com","password":"` + strings.Repeat("x", 73) + `"}`, http.StatusBadRequest},
 		{"taken username", `{"token":"` + token + `","username":"admin","email":"h@test.com","password":"password123"}`, http.StatusConflict},
+		{"taken email", `{"token":"` + token + `","username":"h","email":"admin@test.com","password":"password123"}`, http.StatusConflict},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -293,15 +397,16 @@ func TestInviteHandler_CreateListCheck(t *testing.T) {
 	ctx := context.WithValue(context.Background(), UserContextKey, f.admin)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/admin/invites", strings.NewReader(`{"email":"ivy@test.com","validDays":3}`)).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/invites", strings.NewReader(`{"isAdmin":true,"validDays":3}`)).WithContext(ctx)
 	f.handler.HandleCreate(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: status %d: %s", rec.Code, rec.Body.String())
 	}
 	var created struct {
 		Invite struct {
+			ID        int64     `json:"id"`
 			Token     string    `json:"token"`
-			Email     string    `json:"email"`
+			IsAdmin   bool      `json:"isAdmin"`
 			CreatedBy string    `json:"createdBy"`
 			ExpiresAt time.Time `json:"expiresAt"`
 		} `json:"invite"`
@@ -309,16 +414,16 @@ func TestInviteHandler_CreateListCheck(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
 		t.Fatalf("decoding: %v", err)
 	}
-	if created.Invite.Token == "" || created.Invite.Email != "ivy@test.com" || created.Invite.CreatedBy != "admin" {
+	if created.Invite.Token == "" || !created.Invite.IsAdmin || created.Invite.CreatedBy != "admin" {
 		t.Fatalf("unexpected invite %+v", created.Invite)
 	}
-	if want := f.clock.Add(3 * 24 * time.Hour); !created.Invite.ExpiresAt.Equal(want) {
+	if want := f.clock.AddDate(0, 0, 3); !created.Invite.ExpiresAt.Equal(want) {
 		t.Errorf("expires %v, want %v", created.Invite.ExpiresAt, want)
 	}
 
 	rec = httptest.NewRecorder()
 	f.handler.HandleList(rec, httptest.NewRequest(http.MethodGet, "/api/admin/invites", nil))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "ivy@test.com") || strings.Contains(rec.Body.String(), created.Invite.Token) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"createdBy":"admin"`) || strings.Contains(rec.Body.String(), created.Invite.Token) {
 		t.Fatalf("list: status %d: %s", rec.Code, rec.Body.String())
 	}
 
@@ -334,29 +439,4 @@ func TestInviteHandler_CreateListCheck(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("31 days: status %d, want 400", rec.Code)
 	}
-}
-
-func TestInvite_DeletingAdminRevokesTheirInvites(t *testing.T) {
-	f := setupInvites(t)
-	ctx := context.Background()
-	other, _, err := f.invites.Accept(ctx, mustToken(t, f), "jo", "jo@test.com", "password123")
-	if err != nil {
-		t.Fatalf("accept: %v", err)
-	}
-	_, token, err := f.invites.Create(ctx, other.ID, "", false, 0)
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if err := NewUserRepository(f.invites.invites.(*inviteRepository).db).Delete(ctx, other.ID); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
-	if _, err := f.invites.Check(ctx, token); !errors.Is(err, ErrInviteInvalid) {
-		t.Fatalf("got %v, want the deleted admin's invite gone", err)
-	}
-}
-
-func mustToken(t *testing.T, f *inviteFixture) string {
-	t.Helper()
-	_, token := f.create(t, "", true)
-	return token
 }

@@ -63,18 +63,11 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
-  async function createInvite(data: { email: string; isAdmin: boolean; validDays: number }) {
+  async function createInvite(data: { isAdmin: boolean; validDays: number }) {
     const { invite } = await adminApi.createInvite(data)
     // The list never holds a token: it is shown once, then gone.
-    invites.value.unshift({
-      id: invite.id,
-      email: invite.email,
-      isAdmin: invite.isAdmin,
-      createdBy: invite.createdBy,
-      expiresAt: invite.expiresAt,
-      createdAt: invite.createdAt,
-      expired: invite.expired,
-    })
+    const { token: _token, ...listed } = invite
+    invites.value.unshift(listed)
     return invite
   }
 

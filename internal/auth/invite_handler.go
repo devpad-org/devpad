@@ -3,10 +3,8 @@ package auth
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -26,7 +24,6 @@ func NewInviteHandler(invites InviteService, auth *Handler) *InviteHandler {
 func inviteResponse(inv *Invite, now time.Time) map[string]any {
 	return map[string]any{
 		"id":        inv.ID,
-		"email":     inv.Email,
 		"isAdmin":   inv.IsAdmin,
 		"createdBy": inv.CreatedByName,
 		"expiresAt": inv.ExpiresAt,
@@ -44,27 +41,21 @@ func (h *InviteHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Email     string `json:"email"`
-		IsAdmin   bool   `json:"isAdmin"`
-		ValidDays int    `json:"validDays"`
+		IsAdmin   bool `json:"isAdmin"`
+		ValidDays int  `json:"validDays"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	maxDays := int(MaxInviteTTL / (24 * time.Hour))
-	if req.ValidDays < 0 || req.ValidDays > maxDays {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("an invite can last at most %d days", maxDays))
-		return
-	}
 
-	inv, token, err := h.invites.Create(r.Context(), caller.ID, req.Email, req.IsAdmin, time.Duration(req.ValidDays)*24*time.Hour)
+	inv, token, err := h.invites.Create(r.Context(), caller.ID, req.IsAdmin, req.ValidDays)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrEmailTaken):
-			writeError(w, http.StatusConflict, err.Error())
-		case errors.Is(err, ErrInviteTTL):
+		case errors.Is(err, ErrInviteDays):
 			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, ErrNotAdmin):
+			writeError(w, http.StatusForbidden, err.Error())
 		default:
 			writeError(w, http.StatusInternalServerError, "failed to create invite")
 		}
@@ -132,7 +123,6 @@ func (h *InviteHandler) HandleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"invite": map[string]any{
-			"email":     inv.Email,
 			"isAdmin":   inv.IsAdmin,
 			"invitedBy": inv.CreatedByName,
 			"expiresAt": inv.ExpiresAt,
@@ -161,19 +151,6 @@ func (h *InviteHandler) HandleAccept(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if strings.TrimSpace(req.Username) == "" {
-		writeError(w, http.StatusBadRequest, "username is required")
-		return
-	}
-	if len(req.Password) < MinPasswordLength {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("password must be at least %d characters", MinPasswordLength))
-		return
-	}
-	if len(req.Password) > MaxPasswordLength {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("password must be at most %d bytes", MaxPasswordLength))
-		return
-	}
-
 	user, session, err := h.invites.Accept(r.Context(), req.Token, req.Username, req.Email, req.Password)
 	if err != nil {
 		switch {
@@ -181,7 +158,8 @@ func (h *InviteHandler) HandleAccept(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, ErrUserExists):
 			writeError(w, http.StatusConflict, "that username or email is already taken")
-		case errors.Is(err, ErrEmailRequired):
+		case errors.Is(err, ErrUsernameRequired), errors.Is(err, ErrEmailRequired),
+			errors.Is(err, ErrPasswordTooShort), errors.Is(err, ErrPasswordTooLong):
 			writeError(w, http.StatusBadRequest, err.Error())
 		case user != nil:
 			writeError(w, http.StatusInternalServerError, "account created but failed to sign in; sign in with your new password")

@@ -23,8 +23,6 @@ interface SetupCheckResponse {
 
 /** What an invite will make, as shown to the person holding its link. */
 export interface InviteInfo {
-  /** When set, the new account's email; the invitee can't change it. */
-  email: string
   isAdmin: boolean
   invitedBy: string
   expiresAt: string

@@ -4,6 +4,7 @@ import { useAdminStore } from '@/stores/admin'
 import { useAuthStore } from '@/stores/auth'
 import type { AdminInvite, AdminUser, AdminWorkspace, CreatedInvite } from '@/api/admin'
 import { writeClipboardText } from '@/utils/clipboard'
+import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
 
 const admin = useAdminStore()
 const auth = useAuthStore()
@@ -28,7 +29,12 @@ const resetForm = ref({ password: '', confirmPassword: '' })
 
 // Invite modal: a form, then the new link, which is shown only this once.
 const showInviteModal = ref(false)
-const inviteForm = ref({ email: '', isAdmin: false, validDays: 7 })
+const inviteForm = ref({ isAdmin: false, validDays: 7 })
+const inviteDayOptions: SelectMenuOption<number>[] = [
+  { value: 1, label: '1 day' },
+  { value: 7, label: '7 days' },
+  { value: 30, label: '30 days' },
+]
 const inviteError = ref('')
 const inviteSubmitting = ref(false)
 const createdInvite = ref<CreatedInvite | null>(null)
@@ -170,7 +176,7 @@ async function handleDelete() {
 }
 
 function openInvite() {
-  inviteForm.value = { email: '', isAdmin: false, validDays: 7 }
+  inviteForm.value = { isAdmin: false, validDays: 7 }
   inviteError.value = ''
   createdInvite.value = null
   inviteCopied.value = false
@@ -188,11 +194,7 @@ async function handleCreateInvite() {
   inviteError.value = ''
   inviteSubmitting.value = true
   try {
-    createdInvite.value = await admin.createInvite({
-      email: inviteForm.value.email.trim(),
-      isAdmin: inviteForm.value.isAdmin,
-      validDays: inviteForm.value.validDays,
-    })
+    createdInvite.value = await admin.createInvite({ ...inviteForm.value })
   } catch (e) {
     inviteError.value = e instanceof Error ? e.message : 'Failed to create invite'
   } finally {
@@ -363,7 +365,6 @@ function isSelf(user: AdminUser): boolean {
         <table v-if="admin.invites.length > 0" class="users-table">
           <thead>
             <tr>
-              <th>For</th>
               <th>Role</th>
               <th>Invited by</th>
               <th>Expires</th>
@@ -372,7 +373,6 @@ function isSelf(user: AdminUser): boolean {
           </thead>
           <tbody>
             <tr v-for="invite in admin.invites" :key="invite.id">
-              <td :class="invite.email ? 'cell-email' : 'cell-anyone'">{{ invite.email || 'Anyone with the link' }}</td>
               <td>
                 <span class="badge-role" :class="invite.isAdmin ? 'admin' : 'user'">
                   {{ invite.isAdmin ? 'Admin' : 'User' }}
@@ -407,22 +407,20 @@ function isSelf(user: AdminUser): boolean {
           <template v-if="!createdInvite">
             <h2 class="modal-title">Invite User</h2>
             <p class="modal-subtitle">
-              Make a one-time link someone can use to create their own account. Send it to them yourself.
+              Make a one-time link someone can use to create their own account, choosing their own username and
+              email. Send it to them yourself.
             </p>
             <div v-if="inviteError" class="alert alert-error">{{ inviteError }}</div>
             <form @submit.prevent="handleCreateInvite">
               <div class="form-field">
-                <label for="invite-email">Email <span class="label-optional">(optional)</span></label>
-                <input id="invite-email" v-model="inviteForm.email" type="email" autofocus placeholder="user@example.com" />
-                <p class="field-hint">If set, the account gets this email. Otherwise they choose one.</p>
-              </div>
-              <div class="form-field">
                 <label for="invite-valid">Link expires after</label>
-                <select id="invite-valid" v-model.number="inviteForm.validDays">
-                  <option :value="1">1 day</option>
-                  <option :value="7">7 days</option>
-                  <option :value="30">30 days</option>
-                </select>
+                <SelectMenu
+                  id="invite-valid"
+                  v-model="inviteForm.validDays"
+                  :options="inviteDayOptions"
+                  title="Link expires after"
+                  variant="field"
+                />
               </div>
               <div class="form-field form-checkbox">
                 <label>
@@ -444,8 +442,7 @@ function isSelf(user: AdminUser): boolean {
             <p class="modal-subtitle">
               Anyone with this link can create
               <template v-if="createdInvite.isAdmin"><strong>an admin account</strong></template>
-              <template v-else>an account</template>
-              <template v-if="createdInvite.email"> for <strong>{{ createdInvite.email }}</strong></template>,
+              <template v-else>an account</template>,
               once, until {{ formatDateTime(createdInvite.expiresAt) }}.
               <strong>This is the only time it's shown.</strong>
             </p>
@@ -721,16 +718,6 @@ function isSelf(user: AdminUser): boolean {
   margin-top: var(--space-6);
 }
 
-.cell-anyone {
-  font-style: italic;
-  color: var(--text-tertiary);
-}
-
-.label-optional {
-  font-weight: 400;
-  color: var(--text-tertiary);
-}
-
 .invite-link-row {
   display: flex;
   gap: var(--space-2);
@@ -748,22 +735,10 @@ function isSelf(user: AdminUser): boolean {
   font-size: 0.8rem;
 }
 
-.invite-link:focus,
-.form-field select:focus {
+.invite-link:focus {
   outline: none;
   border-color: var(--accent-border);
   box-shadow: 0 0 0 3px var(--accent-glow);
-}
-
-.form-field select {
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-base);
-  border: 0.5px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: 0.9rem;
 }
 
 .badge-status.expired {

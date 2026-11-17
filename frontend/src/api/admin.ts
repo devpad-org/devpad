@@ -23,8 +23,6 @@ export interface AdminWorkspace {
 
 export interface AdminInvite {
   id: number
-  /** Empty when the invitee picks their own email. */
-  email: string
   isAdmin: boolean
   createdBy: string
   expiresAt: string
@@ -78,7 +76,7 @@ export const adminApi = {
     return apiClient.get<{ invites: AdminInvite[] }>('/api/admin/invites')
   },
 
-  createInvite(data: { email: string; isAdmin: boolean; validDays: number }): Promise<{ invite: CreatedInvite }> {
+  createInvite(data: { isAdmin: boolean; validDays: number }): Promise<{ invite: CreatedInvite }> {
     return apiClient.post<{ invite: CreatedInvite }>('/api/admin/invites', data)
   },
 

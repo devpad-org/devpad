@@ -12,13 +12,35 @@ import (
 
 const sessionDuration = 7 * 24 * time.Hour
 
+const (
+	// MinPasswordLength is the shortest password devpad accepts.
+	MinPasswordLength = 8
+	// MaxPasswordLength is bcrypt's limit in bytes: it refuses anything longer.
+	MaxPasswordLength = 72
+)
+
 var (
 	ErrInvalidCredentials = errors.New("invalid username or password")
 	ErrUserExists         = errors.New("username or email already exists")
 	ErrSetupCompleted     = errors.New("setup already completed")
 	ErrTOTPRequired       = errors.New("TOTP code required")
 	ErrInvalidTOTP        = errors.New("invalid TOTP code")
+	ErrPasswordTooShort   = fmt.Errorf("password must be at least %d characters", MinPasswordLength)
+	ErrPasswordTooLong    = fmt.Errorf("password must be at most %d bytes", MaxPasswordLength)
 )
+
+// ValidatePassword returns ErrPasswordTooShort or ErrPasswordTooLong when
+// password can't be used, and nil when it can. Their messages are fit to
+// show the user.
+func ValidatePassword(password string) error {
+	switch {
+	case len(password) < MinPasswordLength:
+		return ErrPasswordTooShort
+	case len(password) > MaxPasswordLength:
+		return ErrPasswordTooLong
+	}
+	return nil
+}
 
 // Service defines authentication business logic.
 type Service interface {

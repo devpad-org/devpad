@@ -42,7 +42,6 @@ async function checkInvite() {
   try {
     const response = await authApi.checkInvite(token.value)
     invite.value = response.invite
-    email.value = response.invite.email
     state.value = 'ready'
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) {
@@ -167,10 +166,8 @@ onMounted(checkInvite)
             type="email"
             autocomplete="email"
             required
-            :readonly="!!invite?.email"
             placeholder="you@example.com"
           />
-          <p v-if="invite?.email" class="field-hint">This invite is for this address.</p>
         </div>
 
         <div class="form-field">
@@ -297,10 +294,6 @@ onMounted(checkInvite)
   transition: border-color var(--transition-fast);
 }
 
-.form-field input:read-only {
-  color: var(--text-secondary);
-}
-
 .form-field input:focus {
   outline: none;
   border-color: var(--accent-border);
@@ -308,12 +301,6 @@ onMounted(checkInvite)
 }
 
 .form-field input::placeholder {
-  color: var(--text-tertiary);
-}
-
-.field-hint {
-  margin-top: var(--space-1);
-  font-size: 0.75rem;
   color: var(--text-tertiary);
 }
 
