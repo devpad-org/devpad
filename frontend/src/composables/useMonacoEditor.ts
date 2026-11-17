@@ -42,8 +42,6 @@ export async function loadMonaco(): Promise<typeof MonacoType> {
   return monacoPromise
 }
 
-export { DEVPAD_MONACO_THEME, registerDevpadTheme }
-
 /** Map file extensions to Monaco language IDs */
 export function getLanguageFromPath(filePath: string): string {
   const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
