@@ -36,7 +36,9 @@ func TestOpenConfiguresSQLiteForConcurrentUse(t *testing.T) {
 	}
 }
 
-func TestMigrateAllowsMeilisearchWorkspaceService(t *testing.T) {
+// The application decides which service types exist; the schema only
+// checks a service's status.
+func TestMigrateLeavesWorkspaceServiceTypesToTheApplication(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "devpad.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -53,8 +55,46 @@ func TestMigrateAllowsMeilisearchWorkspaceService(t *testing.T) {
 	if _, err := db.Conn().Exec(`INSERT INTO workspaces (id, user_id, name) VALUES (1, 1, 'workspace')`); err != nil {
 		t.Fatalf("insert workspace: %v", err)
 	}
-	if _, err := db.Conn().Exec(`INSERT INTO workspace_services (workspace_id, service_type, status, config) VALUES (1, 'meilisearch', 'stopped', '{}')`); err != nil {
-		t.Fatalf("insert Meilisearch workspace service: %v", err)
+	if _, err := db.Conn().Exec(`INSERT INTO workspace_services (workspace_id, service_type, status, config) VALUES (1, 'oracle', 'stopped', '{}')`); err != nil {
+		t.Fatalf("expected a service type the schema does not list to be stored: %v", err)
+	}
+	if _, err := db.Conn().Exec(`INSERT INTO workspace_services (workspace_id, service_type, status, config) VALUES (1, 'redis', 'paused', '{}')`); err == nil {
+		t.Fatal("expected an unknown status to be refused")
+	}
+}
+
+func TestMigrateKeepsWorkspaceServicesWhenRebuildingTheirTable(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "devpad.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	createPreWaitingUserAgentRunSchema(t, db)
+	markMigrationsAppliedBefore(t, db, "059_add_sqlserver_service_type")
+	if _, err := db.Conn().Exec(`INSERT INTO users (id, username, email, password) VALUES (1, 'test', 'test@example.com', 'hashed')`); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	if _, err := db.Conn().Exec(`INSERT INTO workspaces (id, user_id, name) VALUES (1, 1, 'workspace')`); err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+	if _, err := db.Conn().Exec(`INSERT INTO workspace_services (id, workspace_id, service_type, container_id, volume_name, status, config) VALUES (7, 1, 'postgres', 'abc', 'vol', 'running', '{"port":5432}')`); err != nil {
+		t.Fatalf("insert workspace service: %v", err)
+	}
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	var serviceType, containerID, volumeName, status, config string
+	if err := db.Conn().QueryRow(`SELECT service_type, container_id, volume_name, status, config FROM workspace_services WHERE id = 7`).Scan(&serviceType, &containerID, &volumeName, &status, &config); err != nil {
+		t.Fatalf("read workspace service: %v", err)
+	}
+	if serviceType != "postgres" || containerID != "abc" || volumeName != "vol" || status != "running" || config != `{"port":5432}` {
+		t.Fatalf("workspace service changed: %s %s %s %s %s", serviceType, containerID, volumeName, status, config)
+	}
+	if _, err := db.Conn().Exec(`INSERT INTO workspace_services (workspace_id, service_type) VALUES (1, 'sqlserver')`); err != nil {
+		t.Fatalf("insert sqlserver workspace service: %v", err)
 	}
 }
 
@@ -124,6 +164,18 @@ func createPreWaitingUserAgentRunSchema(t *testing.T, db *DB) {
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			name TEXT NOT NULL
 		);
+		CREATE TABLE workspace_services (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id  INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+			service_type  TEXT    NOT NULL CHECK(service_type IN ('postgres','mongodb','mariadb','couchdb','meilisearch')),
+			container_id  TEXT    NOT NULL DEFAULT '',
+			volume_name   TEXT    NOT NULL DEFAULT '',
+			status        TEXT    NOT NULL DEFAULT 'stopped' CHECK(status IN ('running','stopped')),
+			config        TEXT    NOT NULL DEFAULT '{}',
+			created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX idx_workspace_services_workspace_id ON workspace_services(workspace_id);
 		CREATE TABLE ai_conversations (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

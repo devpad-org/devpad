@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/container"
 )
@@ -16,11 +19,29 @@ var (
 	ErrNotFound      = errors.New("service not found")
 	ErrDuplicateType = errors.New("workspace already has a service of this type")
 	ErrInvalidType   = errors.New("unsupported service type")
+	// ErrLicenseNotAccepted is returned when a service with licence terms
+	// is created without the user accepting them, or would get a container
+	// without a record of their acceptance.
+	ErrLicenseNotAccepted = errors.New("the service's licence terms were not accepted")
+	// ErrUnsupportedArch is returned when the Docker daemon's architecture
+	// cannot run a service's image.
+	ErrUnsupportedArch = errors.New("the service's image does not support this Docker host's architecture")
 )
+
+// CreateOptions carries who is creating a service and what they agreed to.
+type CreateOptions struct {
+	UserID int64
+	// AcceptLicense is the user's acceptance of the service's licence
+	// terms, required for a service that has them (see Catalog).
+	AcceptLicense bool
+}
 
 // Service defines workspace service business logic.
 type Service interface {
-	Create(ctx context.Context, workspaceID int64, serviceType ServiceType) (*WorkspaceService, error)
+	Create(ctx context.Context, workspaceID int64, serviceType ServiceType, opts CreateOptions) (*WorkspaceService, error)
+	// Catalog lists every service type a workspace can deploy, sorted, with
+	// its licence terms and whether this Docker host can run it.
+	Catalog(ctx context.Context) []CatalogEntry
 	List(ctx context.Context, workspaceID int64) ([]*WorkspaceService, error)
 	Get(ctx context.Context, id int64) (*WorkspaceService, error)
 	Delete(ctx context.Context, id int64) error
@@ -42,16 +63,28 @@ type Service interface {
 type service struct {
 	repo      Repository
 	container container.Manager
+	now       func() time.Time
+
+	// arch caches the Docker daemon's architecture once read.
+	archMu sync.Mutex
+	arch   string
 }
 
 // NewService creates a new workspace service Service.
 func NewService(repo Repository, cm container.Manager) Service {
-	return &service{repo: repo, container: cm}
+	return &service{repo: repo, container: cm, now: time.Now}
 }
 
-func (s *service) Create(ctx context.Context, workspaceID int64, serviceType ServiceType) (*WorkspaceService, error) {
-	if !ValidServiceType(serviceType) {
+func (s *service) Create(ctx context.Context, workspaceID int64, serviceType ServiceType, opts CreateOptions) (*WorkspaceService, error) {
+	def, ok := lookupDefinition(serviceType)
+	if !ok {
 		return nil, ErrInvalidType
+	}
+	if err := s.checkArch(ctx, serviceType, def); err != nil {
+		return nil, err
+	}
+	if def.license != nil && !opts.AcceptLicense {
+		return nil, ErrLicenseNotAccepted
 	}
 
 	// Check for duplicate service type on this workspace.
@@ -65,8 +98,16 @@ func (s *service) Create(ctx context.Context, workspaceID int64, serviceType Ser
 		}
 	}
 
-	cfg := DefaultConfigs[serviceType]
+	cfg := def.defaults
 	cfg.DefaultPass = generatePassword(24)
+	if def.license != nil {
+		cfg.LicenseAcceptance = &LicenseAcceptance{
+			UserID:     opts.UserID,
+			AcceptedAt: s.now().UTC(),
+			TermsURL:   def.license.URL,
+			Image:      cfg.Image,
+		}
+	}
 	configJSON, _ := json.Marshal(cfg)
 
 	volumeName := fmt.Sprintf("devpad-svc-%d-%s", workspaceID, serviceType)
@@ -86,6 +127,65 @@ func (s *service) Create(ctx context.Context, workspaceID int64, serviceType Ser
 		return nil, fmt.Errorf("creating service record: %w", err)
 	}
 	return svc, nil
+}
+
+// checkArch refuses a service whose image the Docker daemon cannot run.
+func (s *service) checkArch(ctx context.Context, serviceType ServiceType, def definition) error {
+	want := def.requiredArch
+	if want == "" {
+		return nil
+	}
+	arch, err := s.daemonArch(ctx)
+	if err != nil {
+		return fmt.Errorf("checking docker architecture: %w", err)
+	}
+	if arch != want {
+		return fmt.Errorf("%w: %s needs %s, the Docker host is %s", ErrUnsupportedArch, serviceType, want, arch)
+	}
+	return nil
+}
+
+// daemonArch returns the Docker daemon's architecture, asking Docker only
+// until it answers: the architecture cannot change while devpad runs.
+func (s *service) daemonArch(ctx context.Context) (string, error) {
+	s.archMu.Lock()
+	defer s.archMu.Unlock()
+	if s.arch != "" {
+		return s.arch, nil
+	}
+	arch, err := s.container.DaemonArch(ctx)
+	if err != nil {
+		return "", err
+	}
+	s.arch = arch
+	return arch, nil
+}
+
+func (s *service) Catalog(ctx context.Context) []CatalogEntry {
+	catalog := make([]CatalogEntry, 0, len(definitions))
+	var arch string
+	archKnown := true
+	for _, t := range SupportedTypes() {
+		serviceType := ServiceType(t)
+		def := definitions[serviceType]
+		entry := CatalogEntry{Type: serviceType, License: def.catalogLicense()}
+		// Docker is asked only when some service needs a particular
+		// architecture. If it cannot say, Create refuses with the reason.
+		if def.requiredArch != "" && archKnown {
+			if arch == "" {
+				var err error
+				if arch, err = s.daemonArch(ctx); err != nil {
+					log.Printf("checking docker architecture: %v", err)
+					archKnown = false
+				}
+			}
+			if archKnown && arch != def.requiredArch {
+				entry.Unavailable = fmt.Sprintf("needs an %s Docker host; this one is %s", def.requiredArch, arch)
+			}
+		}
+		catalog = append(catalog, entry)
+	}
+	return catalog
 }
 
 func (s *service) List(ctx context.Context, workspaceID int64) ([]*WorkspaceService, error) {
@@ -116,7 +216,7 @@ func (s *service) Delete(ctx context.Context, id int64) error {
 	// Stop and remove the container if running.
 	if svc.ContainerID != "" {
 		_ = s.container.Stop(ctx, svc.ContainerID)
-		if err := s.container.Remove(ctx, svc.ContainerID); err != nil {
+		if err := s.container.RemoveSidecar(ctx, svc.ContainerID); err != nil {
 			log.Printf("service %d: failed to remove container: %v", svc.ID, err)
 		}
 	}
@@ -196,7 +296,11 @@ func (s *service) EnvVars(ctx context.Context, workspaceID int64, networkName st
 		// within the shared network.
 		host := sidecarContainerName(workspaceID, svc.ServiceType)
 
-		envs = append(envs, serviceConnectionEnv(svc.ServiceType, host, cfg)...)
+		def, ok := lookupDefinition(svc.ServiceType)
+		if !ok {
+			continue
+		}
+		envs = append(envs, def.connectionVars(svc.ServiceType, host, cfg)...)
 	}
 	return envs, nil
 }
@@ -235,9 +339,22 @@ func (s *service) startOne(ctx context.Context, svc *WorkspaceService, networkNa
 
 	// If no container exists yet, create one.
 	if svc.ContainerID == "" {
-		env := sidecarEnv(svc.ServiceType, cfg)
-		name := sidecarContainerName(svc.WorkspaceID, svc.ServiceType)
-		containerID, err := s.container.CreateSidecar(ctx, name, cfg.Image, svc.VolumeName, networkName, env, cfg.Port)
+		def, ok := lookupDefinition(svc.ServiceType)
+		if !ok {
+			return ErrInvalidType
+		}
+		env, err := def.containerEnv(cfg)
+		if err != nil {
+			return err
+		}
+		containerID, err := s.container.CreateSidecar(ctx, container.SidecarSpec{
+			Name:    sidecarContainerName(svc.WorkspaceID, svc.ServiceType),
+			Image:   cfg.Image,
+			Network: networkName,
+			Env:     env,
+			Volume:  svc.VolumeName,
+			DataDir: def.dataDir,
+		})
 		if err != nil {
 			return fmt.Errorf("creating sidecar container: %w", err)
 		}
@@ -276,13 +393,29 @@ func (s *service) stopOne(ctx context.Context, svc *WorkspaceService) error {
 }
 
 // generatePassword returns a cryptographically random alphanumeric string of
-// the given length.
+// the given length, with at least one lower-case letter, upper-case letter
+// and digit: SQL Server refuses to start with a password drawing on fewer
+// than three character classes. Alphanumeric keeps it safe in connection
+// URLs.
 func generatePassword(length int) string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, length)
-	for i := range b {
-		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
-		b[i] = alphabet[n.Int64()]
+	const (
+		lower = "abcdefghijklmnopqrstuvwxyz"
+		upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		digit = "0123456789"
+	)
+	for {
+		b := make([]byte, length)
+		for i := range b {
+			b[i] = randomByte(lower + upper + digit)
+		}
+		p := string(b)
+		if strings.ContainsAny(p, lower) && strings.ContainsAny(p, upper) && strings.ContainsAny(p, digit) {
+			return p
+		}
 	}
-	return string(b)
+}
+
+func randomByte(alphabet string) byte {
+	n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+	return alphabet[n.Int64()]
 }

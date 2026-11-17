@@ -38,23 +38,20 @@ func TestStartMeilisearchServiceConfiguresContainerAndConnectionEnv(t *testing.T
 		t.Fatalf("expected container id to be set, got %q", started.ContainerID)
 	}
 
-	if manager.sidecarName != "devpad-svc-42-meilisearch" {
-		t.Fatalf("expected sidecar name devpad-svc-42-meilisearch, got %q", manager.sidecarName)
+	want := containerpkg.SidecarSpec{
+		Name:    "devpad-svc-42-meilisearch",
+		Image:   "getmeili/meilisearch:v1.45",
+		Network: "devpad-net-42",
+		Volume:  "devpad-svc-42-meilisearch",
+		DataDir: "/data",
 	}
-	if manager.sidecarImage != "getmeili/meilisearch:v1.45" {
-		t.Fatalf("expected Meilisearch image, got %q", manager.sidecarImage)
-	}
-	if manager.sidecarVolume != "devpad-svc-42-meilisearch" {
-		t.Fatalf("expected Meilisearch volume, got %q", manager.sidecarVolume)
-	}
-	if manager.sidecarNetwork != "devpad-net-42" {
-		t.Fatalf("expected sidecar network devpad-net-42, got %q", manager.sidecarNetwork)
-	}
-	if manager.sidecarPort != 7700 {
-		t.Fatalf("expected sidecar port 7700, got %d", manager.sidecarPort)
+	got := manager.sidecar
+	got.Env = nil
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected sidecar spec:\nwant: %+v\n got: %+v", want, got)
 	}
 
-	assertStringSet(t, manager.sidecarEnv, []string{
+	assertStringSet(t, manager.sidecar.Env, []string{
 		"MEILI_MASTER_KEY=master-key",
 		"MEILI_DB_PATH=/data",
 		"MEILI_NO_ANALYTICS=true",
@@ -126,12 +123,13 @@ func (r *fakeRepository) Delete(_ context.Context, id int64) error {
 
 type fakeContainerManager struct {
 	sidecarID      string
-	sidecarName    string
-	sidecarImage   string
-	sidecarVolume  string
-	sidecarNetwork string
-	sidecarEnv     []string
-	sidecarPort    int
+	sidecar        containerpkg.SidecarSpec
+	sidecarCreates int
+	volumes        []string
+	arch           string
+	archCalls      int
+	removed        []string
+	removedSidecar []string
 }
 
 func (m *fakeContainerManager) Create(_ context.Context, _, _, _, _ string, _ []string, _, _ int64) (string, error) {
@@ -150,7 +148,13 @@ func (m *fakeContainerManager) Restart(_ context.Context, _ string) error {
 	return nil
 }
 
-func (m *fakeContainerManager) Remove(_ context.Context, _ string) error {
+func (m *fakeContainerManager) Remove(_ context.Context, id string) error {
+	m.removed = append(m.removed, id)
+	return nil
+}
+
+func (m *fakeContainerManager) RemoveSidecar(_ context.Context, id string) error {
+	m.removedSidecar = append(m.removedSidecar, id)
 	return nil
 }
 
@@ -190,7 +194,8 @@ func (m *fakeContainerManager) DetachSelf(_ context.Context, _ string) error {
 	return nil
 }
 
-func (m *fakeContainerManager) CreateVolume(_ context.Context, _ string) error {
+func (m *fakeContainerManager) CreateVolume(_ context.Context, name string) error {
+	m.volumes = append(m.volumes, name)
 	return nil
 }
 
@@ -227,12 +232,16 @@ func (m *fakeContainerManager) BuildImage(_ context.Context, _ []byte, _ []byte,
 	return nil
 }
 
-func (m *fakeContainerManager) CreateSidecar(_ context.Context, name, imageName, volumeName, networkName string, env []string, port int) (string, error) {
-	m.sidecarName = name
-	m.sidecarImage = imageName
-	m.sidecarVolume = volumeName
-	m.sidecarNetwork = networkName
-	m.sidecarEnv = append([]string(nil), env...)
-	m.sidecarPort = port
+func (m *fakeContainerManager) CreateSidecar(_ context.Context, spec containerpkg.SidecarSpec) (string, error) {
+	m.sidecar = spec
+	m.sidecarCreates++
 	return m.sidecarID, nil
+}
+
+func (m *fakeContainerManager) DaemonArch(context.Context) (string, error) {
+	m.archCalls++
+	if m.arch == "" {
+		return "amd64", nil
+	}
+	return m.arch, nil
 }

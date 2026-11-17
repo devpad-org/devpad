@@ -70,8 +70,14 @@ func (m *mockContainerManager) RemoveImage(context.Context, string) error { retu
 func (m *mockContainerManager) BuildImage(_ context.Context, _ []byte, _ []byte, _ string) error {
 	return nil
 }
-func (m *mockContainerManager) CreateSidecar(_ context.Context, _, _, _, _ string, _ []string, _ int) (string, error) {
+func (m *mockContainerManager) CreateSidecar(context.Context, container.SidecarSpec) (string, error) {
 	return "sidecar-id", nil
+}
+
+func (m *mockContainerManager) RemoveSidecar(context.Context, string) error { return nil }
+
+func (m *mockContainerManager) DaemonArch(context.Context) (string, error) {
+	return "amd64", nil
 }
 
 func setupTestDB(t *testing.T) *sql.DB {

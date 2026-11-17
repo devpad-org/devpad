@@ -85,7 +85,27 @@ type Manager interface {
 	// RemoveImage removes a tag, and the image once nothing else names it.
 	// Docker refuses while a container uses the image.
 	RemoveImage(ctx context.Context, ref string) error
-	CreateSidecar(ctx context.Context, name, imageName, volumeName, networkName string, env []string, port int) (containerID string, err error)
+	CreateSidecar(ctx context.Context, spec SidecarSpec) (containerID string, err error)
+	// RemoveSidecar removes a sidecar container and the anonymous volumes
+	// its image declared. A sidecar's data is in its named volume, so an
+	// anonymous one holds nothing worth keeping and would otherwise leak.
+	RemoveSidecar(ctx context.Context, containerID string) error
+	// DaemonArch returns the Docker daemon's CPU architecture in Go's
+	// naming, such as amd64 or arm64.
+	DaemonArch(ctx context.Context) (string, error)
+}
+
+// SidecarSpec describes a sidecar service container.
+type SidecarSpec struct {
+	Name    string
+	Image   string
+	Network string
+	Env     []string
+	// Volume, when set, is mounted at DataDir: the directory the image keeps
+	// its data in, so that the data lives in the volume and not in an
+	// anonymous one the image declares.
+	Volume  string
+	DataDir string
 }
 
 // HijackedResponse wraps the Docker hijacked connection for exec.
@@ -228,6 +248,13 @@ func (m *manager) CopyFileToContainer(ctx context.Context, containerID, destPath
 func (m *manager) Remove(ctx context.Context, containerID string) error {
 	if _, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true}); err != nil {
 		return fmt.Errorf("removing container: %w", err)
+	}
+	return nil
+}
+
+func (m *manager) RemoveSidecar(ctx context.Context, containerID string) error {
+	if _, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
+		return fmt.Errorf("removing sidecar container: %w", err)
 	}
 	return nil
 }
@@ -552,33 +579,36 @@ func (m *manager) pullImageIfNeeded(ctx context.Context, imageName string) error
 	return nil
 }
 
-func (m *manager) CreateSidecar(ctx context.Context, name, imageName, volumeName, networkName string, env []string, port int) (string, error) {
-	if err := m.pullImageIfNeeded(ctx, imageName); err != nil {
+func (m *manager) CreateSidecar(ctx context.Context, spec SidecarSpec) (string, error) {
+	if err := m.pullImageIfNeeded(ctx, spec.Image); err != nil {
 		return "", fmt.Errorf("pulling sidecar image: %w", err)
 	}
 
 	var mounts []mount.Mount
-	if volumeName != "" {
+	if spec.Volume != "" {
+		if spec.DataDir == "" {
+			return "", fmt.Errorf("sidecar %s has a volume but no data directory", spec.Name)
+		}
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeVolume,
-			Source: volumeName,
-			Target: "/data",
+			Source: spec.Volume,
+			Target: spec.DataDir,
 		})
 	}
 
 	var networkingConfig *network.NetworkingConfig
-	if networkName != "" {
+	if spec.Network != "" {
 		networkingConfig = &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
-				networkName: {},
+				spec.Network: {},
 			},
 		}
 	}
 
 	resp, err := m.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
-			Image: imageName,
-			Env:   env,
+			Image: spec.Image,
+			Env:   spec.Env,
 			Labels: map[string]string{
 				"devpad.managed": "true",
 				"devpad.sidecar": "true",
@@ -589,11 +619,19 @@ func (m *manager) CreateSidecar(ctx context.Context, name, imageName, volumeName
 			Mounts:        mounts,
 		},
 		NetworkingConfig: networkingConfig,
-		Name:             name,
+		Name:             spec.Name,
 	})
 	if err != nil {
 		return "", fmt.Errorf("creating sidecar container: %w", err)
 	}
 
 	return resp.ID, nil
+}
+
+func (m *manager) DaemonArch(ctx context.Context) (string, error) {
+	v, err := m.cli.ServerVersion(ctx, client.ServerVersionOptions{})
+	if err != nil {
+		return "", fmt.Errorf("reading docker version: %w", err)
+	}
+	return v.Arch, nil
 }

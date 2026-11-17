@@ -11,6 +11,7 @@ const (
 	ServiceMariaDB     ServiceType = "mariadb"
 	ServiceCouchDB     ServiceType = "couchdb"
 	ServiceMeilisearch ServiceType = "meilisearch"
+	ServiceSQLServer   ServiceType = "sqlserver"
 )
 
 // ServiceStatus represents the lifecycle state of a service.
@@ -28,44 +29,22 @@ type ServiceConfig struct {
 	DefaultUser string `json:"defaultUser"`
 	DefaultPass string `json:"defaultPass"`
 	DefaultDB   string `json:"defaultDb"`
+
+	// LicenseAcceptance records who accepted a service's licence terms, for
+	// a service that has them (see definition.license). Its container is
+	// created only once they are accepted.
+	LicenseAcceptance *LicenseAcceptance `json:"licenseAcceptance,omitempty"`
 }
 
-// DefaultConfigs maps each supported service type to its default configuration.
-var DefaultConfigs = map[ServiceType]ServiceConfig{
-	ServicePostgres: {
-		Image:       "postgres:17",
-		Port:        5432,
-		DefaultUser: "devpad",
-		DefaultDB:   "devpad",
-	},
-	ServiceMongoDB: {
-		Image:       "mongo:8",
-		Port:        27017,
-		DefaultUser: "devpad",
-		DefaultDB:   "devpad",
-	},
-	ServiceMariaDB: {
-		Image:       "mariadb:11",
-		Port:        3306,
-		DefaultUser: "devpad",
-		DefaultDB:   "devpad",
-	},
-	ServiceCouchDB: {
-		Image:       "couchdb:3",
-		Port:        5984,
-		DefaultUser: "devpad",
-		DefaultDB:   "devpad",
-	},
-	ServiceMeilisearch: {
-		Image: "getmeili/meilisearch:v1.45",
-		Port:  7700,
-	},
-}
-
-// ValidServiceType returns true if the given type is supported.
-func ValidServiceType(t ServiceType) bool {
-	_, ok := DefaultConfigs[t]
-	return ok
+// LicenseAcceptance is one user's acceptance of a service's licence terms.
+type LicenseAcceptance struct {
+	UserID     int64     `json:"userId"`
+	AcceptedAt time.Time `json:"acceptedAt"`
+	TermsURL   string    `json:"termsUrl"`
+	// Image is the image the terms were accepted for, as the service names
+	// it: the terms URL is a redirect whose target can change, so it alone
+	// does not say what was deployed.
+	Image string `json:"image"`
 }
 
 // WorkspaceService represents a sidecar service attached to a workspace.

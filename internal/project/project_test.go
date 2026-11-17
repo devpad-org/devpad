@@ -200,8 +200,14 @@ func (f *fakeContainers) CopyFileToContainer(_ context.Context, id, path string,
 	return nil
 }
 func (f *fakeContainers) BuildImage(context.Context, []byte, []byte, string) error { return nil }
-func (f *fakeContainers) CreateSidecar(context.Context, string, string, string, string, []string, int) (string, error) {
+func (f *fakeContainers) CreateSidecar(context.Context, container.SidecarSpec) (string, error) {
 	return "", nil
+}
+
+func (f *fakeContainers) RemoveSidecar(context.Context, string) error { return nil }
+
+func (f *fakeContainers) DaemonArch(context.Context) (string, error) {
+	return "amd64", nil
 }
 
 // fakeRepoAgent stands in for the agent in a project's repo container.

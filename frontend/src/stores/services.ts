@@ -1,9 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { serviceApi, type WorkspaceService } from '@/api/services'
+import { serviceApi, type CreateServiceOptions, type ServiceCatalogEntry, type WorkspaceService } from '@/api/services'
 
 export const useServiceStore = defineStore('services', () => {
   const services = ref<WorkspaceService[]>([])
+  const catalog = ref<ServiceCatalogEntry[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
 
@@ -13,6 +14,7 @@ export const useServiceStore = defineStore('services', () => {
     try {
       const response = await serviceApi.list(workspaceId)
       services.value = response.services
+      catalog.value = response.catalog ?? []
     } catch {
       error.value = 'Failed to load services'
     } finally {
@@ -20,8 +22,8 @@ export const useServiceStore = defineStore('services', () => {
     }
   }
 
-  async function addService(workspaceId: number, serviceType: string) {
-    const response = await serviceApi.create(workspaceId, serviceType)
+  async function addService(workspaceId: number, serviceType: string, options: CreateServiceOptions = {}) {
+    const response = await serviceApi.create(workspaceId, serviceType, options)
     const index = services.value.findIndex((s) => s.id === response.service.id)
     if (index !== -1) {
       services.value[index] = response.service
@@ -56,9 +58,10 @@ export const useServiceStore = defineStore('services', () => {
 
   function $reset() {
     services.value = []
+    catalog.value = []
     loading.value = false
     error.value = null
   }
 
-  return { services, loading, error, fetchServices, addService, startService, stopService, removeService, $reset }
+  return { services, catalog, loading, error, fetchServices, addService, startService, stopService, removeService, $reset }
 })

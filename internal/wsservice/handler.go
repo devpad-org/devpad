@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/workspace"
@@ -47,7 +48,10 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	for _, svc := range services {
 		items = append(items, serviceResponse(svc))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"services": items})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"services": items,
+		"catalog":  h.service.Catalog(r.Context()),
+	})
 }
 
 // HandleCreate creates a new service for a workspace.
@@ -67,6 +71,9 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		ServiceType string `json:"serviceType"`
+		// AcceptLicense is the user accepting the service's licence
+		// terms, which a service such as SQL Server requires.
+		AcceptLicense bool `json:"acceptLicense"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -78,7 +85,10 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc, err := h.service.Create(r.Context(), wsID, ServiceType(req.ServiceType))
+	svc, err := h.service.Create(r.Context(), wsID, ServiceType(req.ServiceType), CreateOptions{
+		UserID:        user.ID,
+		AcceptLicense: req.AcceptLicense,
+	})
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -230,11 +240,24 @@ func serviceResponse(svc *WorkspaceService) map[string]any {
 	var cfg ServiceConfig
 	_ = json.Unmarshal([]byte(svc.Config), &cfg)
 
+	// How the IDE shows a client reaching the service. A row whose type
+	// devpad no longer defines is shown with its host alone.
+	host := sidecarContainerName(svc.WorkspaceID, svc.ServiceType)
+	connection := Connection{}
+	credentials := []Credential{}
+	if def, ok := lookupDefinition(svc.ServiceType); ok {
+		connection = def.connection(host, cfg)
+		credentials = def.credentialFields(cfg)
+	}
+
 	return map[string]any{
 		"id":          svc.ID,
 		"workspaceId": svc.WorkspaceID,
 		"serviceType": svc.ServiceType,
 		"status":      svc.Status,
+		"host":        host,
+		"connection":  connection,
+		"credentials": credentials,
 		"config": map[string]any{
 			"image":       cfg.Image,
 			"port":        cfg.Port,
@@ -257,7 +280,15 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, ErrInvalidType) {
-		writeError(w, http.StatusBadRequest, "unsupported service type; supported: postgres, mongodb, mariadb, couchdb, meilisearch")
+		writeError(w, http.StatusBadRequest, "unsupported service type; supported: "+strings.Join(SupportedTypes(), ", "))
+		return
+	}
+	if errors.Is(err, ErrLicenseNotAccepted) {
+		writeError(w, http.StatusBadRequest, "this service's licence terms must be accepted to deploy it")
+		return
+	}
+	if errors.Is(err, ErrUnsupportedArch) {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "internal server error")

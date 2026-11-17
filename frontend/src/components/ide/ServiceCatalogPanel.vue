@@ -1,33 +1,62 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
+import { ApiError } from '@/api/client'
+import type { ServiceCatalogEntry } from '@/api/services'
 import { useServiceStore } from '@/stores/services'
-import { serviceCatalog, type ServiceCatalogItem } from './serviceCatalog'
+import { serviceCatalogItem, serviceCatalogOrder, type ServiceCatalogItem } from './serviceCatalog'
 
 const props = defineProps<{
   workspaceId: number
 }>()
 
 const store = useServiceStore()
-const deployingType = ref<ServiceCatalogItem['value'] | null>(null)
+const deployingType = ref<string | null>(null)
 const addError = ref('')
+// Licence terms accepted for this deploy, by service type. Never remembered:
+// whoever deploys a service with terms accepts them each time.
+const accepted = reactive<Record<string, boolean>>({})
+
+interface CatalogRow {
+  // What the server says of the type: its licence terms, so the terms shown
+  // are the ones it records as accepted, and whether this host can run it.
+  entry: ServiceCatalogEntry
+  // How the IDE shows it.
+  item: ServiceCatalogItem
+}
+
+const rows = computed<CatalogRow[]>(() => store.catalog
+  .map((entry) => ({ entry, item: serviceCatalogItem(entry.type) }))
+  .sort((a, b) => serviceCatalogOrder(a.entry.type) - serviceCatalogOrder(b.entry.type)))
 
 const attachedTypes = computed(() => new Set(store.services.map((service) => service.serviceType)))
 
-function isAttached(type: ServiceCatalogItem['value']) {
+function isAttached(type: string) {
   return attachedTypes.value.has(type)
 }
 
-async function deployService(service: ServiceCatalogItem) {
-  if (!props.workspaceId || deployingType.value || isAttached(service.value)) return
+function canDeploy({ entry }: CatalogRow) {
+  return !isAttached(entry.type)
+    && !deployingType.value
+    && !entry.unavailable
+    && (!entry.license || !!accepted[entry.type])
+}
 
-  deployingType.value = service.value
+async function deployService(row: CatalogRow) {
+  if (!props.workspaceId || !canDeploy(row)) return
+
+  const { entry, item } = row
+  deployingType.value = entry.type
   addError.value = ''
 
   try {
-    await store.addService(props.workspaceId, service.value)
+    await store.addService(props.workspaceId, entry.type, {
+      acceptLicense: !!entry.license && !!accepted[entry.type],
+    })
+    accepted[entry.type] = false
   } catch (error) {
-    const message = error instanceof Error ? error.message : ''
-    addError.value = message.includes('409') ? 'Already attached' : `Failed to deploy ${service.label}`
+    addError.value = error instanceof ApiError && error.status < 500
+      ? error.message
+      : `Failed to deploy ${item.label}`
   } finally {
     deployingType.value = null
   }
@@ -54,32 +83,53 @@ async function deployService(service: ServiceCatalogItem) {
     <div v-if="addError" class="catalog-error">{{ addError }}</div>
 
     <div class="catalog-list">
-      <article v-for="service in serviceCatalog" :key="service.value" class="catalog-card">
+      <p v-if="rows.length === 0" class="catalog-empty">
+        {{ store.loading ? 'Loading services…' : store.error ?? 'No services available.' }}
+      </p>
+
+      <article v-for="{ entry, item } in rows" :key="entry.type" class="catalog-card">
         <div class="catalog-card-main">
-          <span class="catalog-icon">{{ service.icon }}</span>
+          <span class="catalog-icon">{{ item.icon }}</span>
           <div class="catalog-meta">
-            <h3>{{ service.label }}</h3>
-            <p>{{ service.description }}</p>
+            <h3>{{ item.label }}</h3>
+            <p v-if="item.description">{{ item.description }}</p>
           </div>
+        </div>
+
+        <p v-if="entry.unavailable" class="catalog-unavailable">
+          Unavailable: {{ entry.unavailable }}
+        </p>
+
+        <div v-else-if="entry.license && !isAttached(entry.type)" class="catalog-license">
+          <ul>
+            <li v-for="note in entry.license.notes" :key="note">{{ note }}</li>
+          </ul>
+          <label>
+            <input v-model="accepted[entry.type]" type="checkbox" :disabled="!!deployingType" />
+            <span>
+              I accept the
+              <a :href="entry.license.url" target="_blank" rel="noopener noreferrer">{{ entry.license.name }}</a>
+            </span>
+          </label>
         </div>
 
         <button
           class="catalog-deploy-btn"
-          :class="{ attached: isAttached(service.value) }"
-          :disabled="isAttached(service.value) || !!deployingType"
-          @click="deployService(service)"
+          :class="{ attached: isAttached(entry.type) }"
+          :disabled="!canDeploy({ entry, item })"
+          @click="deployService({ entry, item })"
         >
-          <svg v-if="deployingType === service.value" class="spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <svg v-if="deployingType === entry.type" class="spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
           </svg>
-          <svg v-else-if="!isAttached(service.value)" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <svg v-else-if="!isAttached(entry.type)" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 5v14" />
             <path d="M5 12h14" />
           </svg>
           <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M20 6 9 17l-5-5" />
           </svg>
-          {{ isAttached(service.value) ? 'Attached' : deployingType === service.value ? 'Deploying' : 'Deploy' }}
+          {{ isAttached(entry.type) ? 'Attached' : deployingType === entry.type ? 'Deploying' : 'Deploy' }}
         </button>
       </article>
     </div>
@@ -100,7 +150,7 @@ async function deployService(service: ServiceCatalogItem) {
   display: flex;
   align-items: center;
   padding: 0 var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
   background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
@@ -122,16 +172,16 @@ async function deployService(service: ServiceCatalogItem) {
 
 .catalog-copy {
   padding: var(--space-3);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.75rem;
   line-height: 1.45;
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
 }
 
 .catalog-error {
   padding: var(--space-2) var(--space-3);
   font-size: 0.72rem;
-  color: var(--accent-rose);
+  color: var(--error);
   background: var(--error-bg);
   border-bottom: 0.5px solid var(--error-border);
 }
@@ -149,14 +199,14 @@ async function deployService(service: ServiceCatalogItem) {
   gap: var(--space-3);
   padding: var(--space-3);
   background: var(--bg-elevated);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
 .catalog-card:hover {
   background: var(--bg-hover);
-  border-color: var(--border-active);
+  border-color: var(--border-strong);
 }
 
 .catalog-card-main {
@@ -182,7 +232,7 @@ async function deployService(service: ServiceCatalogItem) {
 
 .catalog-meta p {
   margin-top: 2px;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.72rem;
   line-height: 1.4;
 }
@@ -194,7 +244,7 @@ async function deployService(service: ServiceCatalogItem) {
   gap: 5px;
   align-self: stretch;
   padding: var(--space-1) var(--space-2);
-  color: var(--accent-green);
+  color: var(--success);
   background: var(--success-bg);
   border: 0.5px solid var(--success-border);
   border-radius: var(--radius-sm);
@@ -204,7 +254,7 @@ async function deployService(service: ServiceCatalogItem) {
 }
 
 .catalog-deploy-btn:hover:not(:disabled) {
-  border-color: var(--accent-green);
+  border-color: var(--success);
 }
 
 .catalog-deploy-btn:disabled {
@@ -213,9 +263,51 @@ async function deployService(service: ServiceCatalogItem) {
 }
 
 .catalog-deploy-btn.attached {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   background: var(--bg-neutral);
-  border-color: var(--border-default);
+  border-color: var(--border-subtle);
+}
+
+.catalog-empty {
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+}
+
+.catalog-unavailable {
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.catalog-license {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.catalog-license ul {
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--text-secondary);
+}
+
+.catalog-license label {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.catalog-license input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.catalog-license a {
+  color: var(--accent);
 }
 
 .spinner {
