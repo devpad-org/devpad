@@ -44,6 +44,12 @@ func TestEveryServiceDefinitionIsComplete(t *testing.T) {
 		if def.dataDir == "" {
 			t.Errorf("%s: no data directory", serviceType)
 		}
+		// Provision waits on it before a sandbox's setup runs.
+		if def.healthcheck == nil {
+			t.Errorf("%s: no health check", serviceType)
+		} else if hc := def.healthcheck(cfg); len(hc) < 2 || (hc[0] != "CMD" && hc[0] != "CMD-SHELL") {
+			t.Errorf("%s: health check must be in Docker's CMD or CMD-SHELL form, got %v", serviceType, hc)
+		}
 		if def.env == nil || len(def.env(cfg)) == 0 {
 			t.Errorf("%s: no container environment", serviceType)
 		}

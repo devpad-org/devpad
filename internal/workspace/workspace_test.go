@@ -35,11 +35,14 @@ type mockContainerManager struct {
 	// runs on each restart.
 	copied    []string
 	onRestart func()
+	// envs records each container's environment, in the order made.
+	envs [][]string
 }
 
 func (m *mockContainerManager) Create(_ context.Context, name, image, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
 	m.lastCreatedID = "mock-container-" + name
 	m.created = append(m.created, name+" "+image)
+	m.envs = append(m.envs, env)
 	return m.lastCreatedID, nil
 }
 func (m *mockContainerManager) Rename(_ context.Context, id, name string) error {
@@ -116,6 +119,10 @@ func (m *mockContainerManager) CreateSidecar(context.Context, container.SidecarS
 }
 
 func (m *mockContainerManager) RemoveSidecar(context.Context, string) error { return nil }
+
+func (m *mockContainerManager) SidecarHealth(context.Context, string) (container.SidecarHealth, error) {
+	return container.SidecarHealth{Running: true, Status: "healthy"}, nil
+}
 
 func (m *mockContainerManager) DaemonArch(context.Context) (string, error) {
 	return "amd64", nil

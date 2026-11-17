@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -90,9 +91,20 @@ type Manager interface {
 	// its image declared. A sidecar's data is in its named volume, so an
 	// anonymous one holds nothing worth keeping and would otherwise leak.
 	RemoveSidecar(ctx context.Context, containerID string) error
+	// SidecarHealth reports whether a sidecar is running and what its
+	// health check says.
+	SidecarHealth(ctx context.Context, containerID string) (SidecarHealth, error)
 	// DaemonArch returns the Docker daemon's CPU architecture in Go's
 	// naming, such as amd64 or arm64.
 	DaemonArch(ctx context.Context) (string, error)
+}
+
+// SidecarHealth is a sidecar's state as Docker reports it.
+type SidecarHealth struct {
+	Running bool
+	// Status is Docker's health status: "starting", "healthy" or
+	// "unhealthy", or "none" for a container without a health check.
+	Status string
 }
 
 // SidecarSpec describes a sidecar service container.
@@ -106,7 +118,22 @@ type SidecarSpec struct {
 	// anonymous one the image declares.
 	Volume  string
 	DataDir string
+	// Healthcheck, when set, is the test Docker runs in the container to
+	// tell when the service accepts connections, in Docker's form:
+	// {"CMD", args...} or {"CMD-SHELL", command}.
+	Healthcheck []string
 }
+
+// Sidecar health checks run every second while the service starts, where
+// failures do not count, then rarely: they are for knowing when a new
+// service is ready, not for watching it.
+const (
+	sidecarHealthStartPeriod   = 3 * time.Minute
+	sidecarHealthStartInterval = time.Second
+	sidecarHealthInterval      = time.Minute
+	sidecarHealthTimeout       = 10 * time.Second
+	sidecarHealthRetries       = 3
+)
 
 // HijackedResponse wraps the Docker hijacked connection for exec.
 type HijackedResponse struct {
@@ -605,10 +632,23 @@ func (m *manager) CreateSidecar(ctx context.Context, spec SidecarSpec) (string, 
 		}
 	}
 
+	var healthcheck *container.HealthConfig
+	if len(spec.Healthcheck) > 0 {
+		healthcheck = &container.HealthConfig{
+			Test:          spec.Healthcheck,
+			Interval:      sidecarHealthInterval,
+			Timeout:       sidecarHealthTimeout,
+			StartPeriod:   sidecarHealthStartPeriod,
+			StartInterval: sidecarHealthStartInterval,
+			Retries:       sidecarHealthRetries,
+		}
+	}
+
 	resp, err := m.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
-			Image: spec.Image,
-			Env:   spec.Env,
+			Image:       spec.Image,
+			Env:         spec.Env,
+			Healthcheck: healthcheck,
 			Labels: map[string]string{
 				"devpad.managed": "true",
 				"devpad.sidecar": "true",
@@ -626,6 +666,21 @@ func (m *manager) CreateSidecar(ctx context.Context, spec SidecarSpec) (string, 
 	}
 
 	return resp.ID, nil
+}
+
+func (m *manager) SidecarHealth(ctx context.Context, containerID string) (SidecarHealth, error) {
+	res, err := m.cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		return SidecarHealth{}, fmt.Errorf("inspecting sidecar: %w", err)
+	}
+	h := SidecarHealth{Status: string(container.NoHealthcheck)}
+	if st := res.Container.State; st != nil {
+		h.Running = st.Running
+		if st.Health != nil {
+			h.Status = string(st.Health.Status)
+		}
+	}
+	return h, nil
 }
 
 func (m *manager) DaemonArch(ctx context.Context) (string, error) {

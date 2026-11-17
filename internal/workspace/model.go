@@ -56,6 +56,11 @@ type SidecarService interface {
 	StopAll(ctx context.Context, workspaceID int64) error
 	DeleteAll(ctx context.Context, workspaceID int64) error
 	EnvVars(ctx context.Context, workspaceID int64, networkName string) ([]string, error)
+	// Provision gives a workspace of a project its own copy of each of the
+	// project's services it lacks, started when start is set.
+	Provision(ctx context.Context, workspaceID, projectID int64, networkName string, start bool) error
+	// AwaitReady waits until each running service of a workspace is ready.
+	AwaitReady(ctx context.Context, workspaceID int64) error
 }
 
 // Workspace represents a user's development workspace.

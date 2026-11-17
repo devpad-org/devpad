@@ -92,3 +92,36 @@ export const serviceApi = {
     return apiClient.delete(`/api/workspaces/${workspaceId}/services/${serviceId}`)
   },
 }
+
+/**
+ * A service each new workspace of a project gets its own copy of: every new
+ * sandbox, and the project workspace when it is made or rebuilt.
+ */
+export interface ProjectService {
+  serviceType: string
+  /** When its licence terms were accepted, for a service that has them. */
+  licenseAcceptedAt?: string
+  createdAt: string
+}
+
+interface ProjectServiceListResponse {
+  services: ProjectService[]
+  catalog?: ServiceCatalogEntry[]
+}
+
+export const projectServiceApi = {
+  list(projectId: number): Promise<ProjectServiceListResponse> {
+    return apiClient.get<ProjectServiceListResponse>(`/api/projects/${projectId}/services`)
+  },
+
+  add(projectId: number, serviceType: string, options: CreateServiceOptions = {}): Promise<{ service: ProjectService }> {
+    return apiClient.post<{ service: ProjectService }>(`/api/projects/${projectId}/services`, {
+      serviceType,
+      acceptLicense: options.acceptLicense ?? false,
+    })
+  },
+
+  remove(projectId: number, serviceType: string): Promise<void> {
+    return apiClient.delete(`/api/projects/${projectId}/services/${encodeURIComponent(serviceType)}`)
+  },
+}

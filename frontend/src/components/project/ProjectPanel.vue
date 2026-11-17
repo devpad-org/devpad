@@ -9,6 +9,7 @@ import ConversionNotice from './ConversionNotice.vue'
 import ProjectBranchesModal from './ProjectBranchesModal.vue'
 import ProjectModal from './ProjectModal.vue'
 import ProjectEnvironment from './ProjectEnvironment.vue'
+import ProjectServices from './ProjectServices.vue'
 import ProjectSetup from './ProjectSetup.vue'
 import ProjectUpstream from './ProjectUpstream.vue'
 import StatusBadge from './StatusBadge.vue'
@@ -17,6 +18,8 @@ import StatusBadge from './StatusBadge.vue'
 defineProps<{
   // The project workspace's status, or 'none' before it is created.
   workspaceStatus: string
+  // The project workspace, when there is one.
+  workspaceId?: number | null
 }>()
 
 const router = useRouter()
@@ -124,6 +127,7 @@ async function dismissConversion() {
 
       <ProjectUpstream />
       <ProjectEnvironment :workspace-status="workspaceStatus" />
+      <ProjectServices :workspace-status="workspaceStatus" :workspace-id="workspaceId ?? null" />
       <ProjectSetup :workspace-status="workspaceStatus" />
 
       <div class="side-section actions">

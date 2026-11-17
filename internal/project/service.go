@@ -114,6 +114,16 @@ type Service interface {
 	SetUpstreamHook(h UpstreamHook)
 	// AddBranchGuard adds one of those asked before a branch is deleted.
 	AddBranchGuard(g BranchGuard)
+	// SetServiceAdopter registers who makes a converted workspace's
+	// services the project's.
+	SetServiceAdopter(a ServiceAdopter)
+}
+
+// ServiceAdopter makes the services a workspace has its project's, so that
+// a workspace converted into a project's workspace gives the project's
+// sandboxes the services it already uses. It is idempotent.
+type ServiceAdopter interface {
+	AdoptWorkspaceServices(ctx context.Context, workspaceID, projectID int64) error
 }
 
 // PublishHook is told each time a branch is published from the project
@@ -201,6 +211,7 @@ type service struct {
 	publishHook  PublishHook
 	upstreamHook UpstreamHook
 	branchGuards []BranchGuard
+	adopter      ServiceAdopter
 	// branchLocks serialize changes to each project's branches, which may
 	// move its canonical repo's HEAD, and syncs from the upstream.
 	branchLocks map[int64]*sync.Mutex
@@ -250,6 +261,12 @@ func (s *service) SetUpstreamHook(h UpstreamHook) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.upstreamHook = h
+}
+
+func (s *service) SetServiceAdopter(a ServiceAdopter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adopter = a
 }
 
 func (s *service) AddBranchGuard(g BranchGuard) {

@@ -88,20 +88,43 @@ func (s *service) create(ctx context.Context, ws *Workspace) (*Workspace, error)
 		return nil, fmt.Errorf("creating volume: %w", err)
 	}
 
-	containerEnv := s.containerEnv(ctx, ws.ID, agentToken, networkName)
-	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.Image, volumeName, networkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
-	if err != nil {
+	// undo removes what was made so far: the services, then the volume,
+	// network and record.
+	undo := func() {
+		if s.sidecar != nil {
+			if err := s.sidecar.DeleteAll(ctx, ws.ID); err != nil {
+				log.Printf("workspace %d: removing services after a failed create: %v", ws.ID, err)
+			}
+		}
 		_ = s.container.RemoveVolume(ctx, volumeName)
 		_ = s.container.RemoveNetwork(ctx, networkName)
 		_ = s.repo.Delete(ctx, ws.ID)
+	}
+
+	// The project's services come first, so the container is made knowing
+	// how to reach them. A sandbox without them would leave its agent
+	// working against services that are not there, so it is not made; the
+	// project workspace is, and can get them by being rebuilt.
+	if ws.ProjectID != 0 && s.sidecar != nil {
+		if err := s.sidecar.Provision(ctx, ws.ID, ws.ProjectID, networkName, true); err != nil {
+			if ws.IsSandbox() {
+				undo()
+				return nil, fmt.Errorf("starting the project's services: %w", err)
+			}
+			log.Printf("workspace %d: starting the project's services: %v", ws.ID, err)
+		}
+	}
+
+	containerEnv := s.containerEnv(ctx, ws.ID, agentToken, networkName)
+	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.Image, volumeName, networkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
+	if err != nil {
+		undo()
 		return nil, fmt.Errorf("creating container: %w", err)
 	}
 
 	if err := s.container.Start(ctx, containerID); err != nil {
 		_ = s.container.Remove(ctx, containerID)
-		_ = s.container.RemoveVolume(ctx, volumeName)
-		_ = s.container.RemoveNetwork(ctx, networkName)
-		_ = s.repo.Delete(ctx, ws.ID)
+		undo()
 		return nil, fmt.Errorf("starting container: %w", err)
 	}
 
@@ -112,15 +135,25 @@ func (s *service) create(ctx context.Context, ws *Workspace) (*Workspace, error)
 	if err := s.repo.Update(ctx, ws); err != nil {
 		_ = s.container.Stop(ctx, containerID)
 		_ = s.container.Remove(ctx, containerID)
-		_ = s.container.RemoveVolume(ctx, volumeName)
-		_ = s.container.RemoveNetwork(ctx, networkName)
-		_ = s.repo.Delete(ctx, ws.ID)
+		undo()
 		return nil, fmt.Errorf("updating workspace: %w", err)
 	}
 
 	// Wait for the agent to be ready before performing post-start actions.
 	if err := s.waitForAgent(ctx, ws); err != nil {
 		log.Printf("workspace %d: agent not ready after create: %v", ws.ID, err)
+	}
+
+	// A sandbox's setup and agent run as soon as it is made, so its
+	// services must be ready by then. They started before the container,
+	// so they got ready while the agent did.
+	if ws.IsSandbox() && s.sidecar != nil {
+		if err := s.sidecar.AwaitReady(ctx, ws.ID); err != nil {
+			_ = s.container.Stop(ctx, containerID)
+			_ = s.container.Remove(ctx, containerID)
+			undo()
+			return nil, fmt.Errorf("waiting for the project's services: %w", err)
+		}
 	}
 
 	s.injectUserSSHKeys(ctx, ws)

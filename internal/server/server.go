@@ -119,6 +119,8 @@ func New(cfg Config) (*Server, error) {
 	projectRepo := project.NewRepository(db.Conn())
 	projectService := project.NewService(projectRepo, containerManager, workspaceService, userRepo, cipher, settingsService)
 	projectHandler := project.NewHandler(projectService)
+	projectService.SetServiceAdopter(wsServiceService)
+	projectServicesHandler := wsservice.NewProjectHandler(wsServiceService, projectService)
 
 	// AI layer
 	aiModule := ai.NewModule(db.Conn(), workspaceService, cipher)
@@ -149,6 +151,9 @@ func New(cfg Config) (*Server, error) {
 
 	aiModule.AddToolProvider(mrService)
 	mrHandler := mergerequest.NewHandler(mrService)
+
+	// Which services the run's workspace has and how to reach them.
+	aiModule.AddToolProvider(wsservice.NewPromptProvider(wsServiceService, workspaceService, containerManager))
 
 	// git push and fetch through the devpad remote in a project's workspace.
 	gitBridge := gitbridge.New(workspaceService, projectService)
@@ -184,7 +189,7 @@ func New(cfg Config) (*Server, error) {
 	authRateLimiter := auth.NewRateLimiter(rate.Limit(5), 10)
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, inviteHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectHandler, taskHandler, mrHandler, gitBridgeHandler, skillsHandler, aiModule.Handler, previewHandler)
+	registerRoutes(mux, authHandler, inviteHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectServicesHandler, projectHandler, taskHandler, mrHandler, gitBridgeHandler, skillsHandler, aiModule.Handler, previewHandler)
 
 	handler := buildHandler(mux, http.HandlerFunc(previewHandler.HandleProxy), cfg)
 
@@ -382,7 +387,7 @@ type aiRouteHandler interface {
 }
 
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, inviteHandler *auth.InviteHandler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, projectHandler *project.Handler, taskHandler *task.Handler, mrHandler *mergerequest.Handler, gitBridgeHandler *gitbridge.Handler, skillsHandler *skills.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, inviteHandler *auth.InviteHandler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, projectServicesHandler *wsservice.ProjectHandler, projectHandler *project.Handler, taskHandler *task.Handler, mrHandler *mergerequest.Handler, gitBridgeHandler *gitbridge.Handler, skillsHandler *skills.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
@@ -499,6 +504,9 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, inviteHandler
 	mux.Handle("POST /api/projects/{id}/workspace/rebuild", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleRebuildWorkspace)))
 	mux.Handle("GET /api/projects/{id}/environment", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleEnvironment)))
 	mux.Handle("POST /api/projects/{id}/environment/build", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleBuildEnvironment)))
+	mux.Handle("GET /api/projects/{id}/services", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleList)))
+	mux.Handle("POST /api/projects/{id}/services", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleAdd)))
+	mux.Handle("DELETE /api/projects/{id}/services/{type}", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleRemove)))
 	mux.Handle("GET /api/projects/{id}/git-activity", authMiddleware.RequireAuth(http.HandlerFunc(gitBridgeHandler.HandleActivity)))
 	mux.Handle("GET /api/workspaces/{id}/conversion", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDiscoverConversion)))
 	mux.Handle("POST /api/workspaces/{id}/convert", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleConvertWorkspace)))

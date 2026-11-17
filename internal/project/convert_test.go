@@ -511,3 +511,28 @@ func TestConvertHandlerListsCredentialsToStrip(t *testing.T) {
 		t.Fatalf("unexpected response %d: %s", rec.Code, rec.Body)
 	}
 }
+
+type recordingAdopter struct {
+	adopted []string
+}
+
+func (a *recordingAdopter) AdoptWorkspaceServices(_ context.Context, workspaceID, projectID int64) error {
+	a.adopted = append(a.adopted, fmt.Sprintf("workspace %d project %d", workspaceID, projectID))
+	return nil
+}
+
+func TestConvertWorkspaceAdoptsItsServices(t *testing.T) {
+	e := setupTest(t)
+	adopter := &recordingAdopter{}
+	e.svc.SetServiceAdopter(adopter)
+	ws := e.standalone()
+
+	result, err := e.convert(ws.ID, ConvertInput{RepoPath: ".", Name: "App"})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	want := []string{fmt.Sprintf("workspace %d project %d", ws.ID, result.Project.ID)}
+	if !slices.Equal(adopter.adopted, want) {
+		t.Fatalf("expected %v, got %v", want, adopter.adopted)
+	}
+}

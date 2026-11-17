@@ -207,6 +207,10 @@ func (f *fakeContainers) CreateSidecar(context.Context, container.SidecarSpec) (
 
 func (f *fakeContainers) RemoveSidecar(context.Context, string) error { return nil }
 
+func (f *fakeContainers) SidecarHealth(context.Context, string) (container.SidecarHealth, error) {
+	return container.SidecarHealth{Running: true, Status: "healthy"}, nil
+}
+
 func (f *fakeContainers) DaemonArch(context.Context) (string, error) {
 	return "amd64", nil
 }

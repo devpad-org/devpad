@@ -59,3 +59,15 @@ type WorkspaceService struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
+
+// ProjectService is a service every new workspace of a project gets its own
+// copy of: each new sandbox, and the project workspace when it is created or
+// rebuilt. No two workspaces ever share one.
+type ProjectService struct {
+	ProjectID   int64
+	ServiceType ServiceType
+	// LicenseAcceptance is the user accepting the service's licence terms,
+	// for a service that has them; each copy is deployed under it.
+	LicenseAcceptance *LicenseAcceptance
+	CreatedAt         time.Time
+}
