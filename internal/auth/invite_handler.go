@@ -25,7 +25,7 @@ func inviteResponse(inv *Invite, now time.Time) map[string]any {
 	return map[string]any{
 		"id":        inv.ID,
 		"isAdmin":   inv.IsAdmin,
-		"createdBy": inv.CreatedByName,
+		"invitedBy": inv.CreatedByName,
 		"expiresAt": inv.ExpiresAt,
 		"createdAt": inv.CreatedAt,
 		"expired":   inv.Expired(now),
@@ -61,7 +61,6 @@ func (h *InviteHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	inv.CreatedByName = caller.Username
 
 	resp := inviteResponse(inv, time.Now())
 	resp["token"] = token
@@ -156,9 +155,7 @@ func (h *InviteHandler) HandleAccept(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, ErrUserExists):
 			writeError(w, http.StatusConflict, "that username or email is already taken")
-		case errors.Is(err, ErrUsernameRequired), errors.Is(err, ErrEmailRequired),
-			errors.Is(err, ErrUsernameInvalid), errors.Is(err, ErrEmailInvalid),
-			errors.Is(err, ErrPasswordTooShort), errors.Is(err, ErrPasswordTooLong):
+		case IsValidationError(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		case user != nil:
 			writeError(w, http.StatusInternalServerError, "account created but failed to sign in; sign in with your new password")

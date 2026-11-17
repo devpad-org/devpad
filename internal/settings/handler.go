@@ -41,7 +41,7 @@ func (h *Handler) HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := auth.ValidatePassword(req.NewPassword); err != nil {
-		writeError(w, http.StatusBadRequest, "new "+err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

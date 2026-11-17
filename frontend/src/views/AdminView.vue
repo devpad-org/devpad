@@ -6,6 +6,7 @@ import type { AdminInvite, AdminUser, AdminWorkspace, CreatedInvite } from '@/ap
 import { writeClipboardText } from '@/utils/clipboard'
 import { passwordProblem } from '@/utils/password'
 import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
+import ConfirmModal from '@/components/ConfirmModal.vue'
 
 const admin = useAdminStore()
 const auth = useAuthStore()
@@ -41,6 +42,7 @@ const inviteSubmitting = ref(false)
 const createdInvite = ref<CreatedInvite | null>(null)
 const inviteCopied = ref(false)
 const revokingInviteId = ref<number | null>(null)
+const revokeTarget = ref<AdminInvite | null>(null)
 
 const inviteLink = computed(() =>
   createdInvite.value ? `${window.location.origin}/invite#${createdInvite.value.token}` : '',
@@ -214,6 +216,23 @@ async function copyInviteLink() {
   }
 }
 
+// A working link is revoked only once the admin confirms; an expired one
+// goes straight away, since removing it changes nothing anyone can do.
+function requestRevoke(invite: AdminInvite) {
+  if (invite.expired) {
+    void revokeInvite(invite)
+  } else {
+    revokeTarget.value = invite
+  }
+}
+
+async function confirmRevoke() {
+  if (revokeTarget.value) {
+    await revokeInvite(revokeTarget.value)
+  }
+  revokeTarget.value = null
+}
+
 async function revokeInvite(invite: AdminInvite) {
   revokingInviteId.value = invite.id
   admin.invitesError = ''
@@ -381,7 +400,7 @@ function isSelf(user: AdminUser): boolean {
                   {{ invite.isAdmin ? 'Admin' : 'User' }}
                 </span>
               </td>
-              <td>{{ invite.createdBy || 'Deleted user' }}</td>
+              <td>{{ invite.invitedBy }}</td>
               <td class="cell-date">
                 <span v-if="invite.expired" class="badge-status expired">Expired</span>
                 <template v-else>{{ formatDateTime(invite.expiresAt) }}</template>
@@ -391,7 +410,7 @@ function isSelf(user: AdminUser): boolean {
                   class="btn-action btn-danger"
                   :title="invite.expired ? 'Remove invite' : 'Revoke invite'"
                   :disabled="revokingInviteId === invite.id"
-                  @click="revokeInvite(invite)"
+                  @click="requestRevoke(invite)"
                 >
                   {{ invite.expired ? 'Remove' : 'Revoke' }}
                 </button>
@@ -469,6 +488,17 @@ function isSelf(user: AdminUser): boolean {
         </div>
       </div>
     </Teleport>
+
+    <ConfirmModal
+      :show="revokeTarget !== null"
+      title="Revoke invite"
+      message="Its link will stop working. Anyone you sent it to will need a new one."
+      confirm-label="Revoke"
+      variant="danger"
+      :loading="revokeTarget !== null && revokingInviteId === revokeTarget.id"
+      @confirm="confirmRevoke"
+      @cancel="revokeTarget = null"
+    />
 
     <!-- Create User Modal -->
     <Teleport to="body">

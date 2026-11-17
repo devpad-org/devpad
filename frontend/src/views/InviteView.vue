@@ -46,12 +46,19 @@ async function checkInvite() {
     state.value = 'ready'
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) {
-      state.value = 'invalid'
+      markInvalid()
     } else {
       state.value = 'ready'
       error.value = e instanceof Error ? e.message : 'Could not check this invite'
     }
   }
+}
+
+// The server refused the token, so it is dead: take it out of the address
+// bar and the browser's history.
+function markInvalid() {
+  state.value = 'invalid'
+  void router.replace({ hash: '' })
 }
 
 async function signOut() {
@@ -90,7 +97,7 @@ async function handleSubmit() {
     router.replace({ name: 'home' })
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) {
-      state.value = 'invalid'
+      markInvalid()
       return
     }
     error.value = e instanceof Error ? e.message : 'Could not create your account'
@@ -140,7 +147,7 @@ onMounted(checkInvite)
       <form v-else @submit.prevent="handleSubmit">
         <p class="card-subtitle">Create your account</p>
         <p v-if="invite" class="card-text">
-          <strong>{{ invite.invitedBy || 'An administrator' }}</strong> invited you to Devpad<template
+          <strong>{{ invite.invitedBy }}</strong> invited you to Devpad<template
             v-if="invite.isAdmin"
           > as an administrator</template>. This invite works once and expires {{ expiresOn }}.
         </p>

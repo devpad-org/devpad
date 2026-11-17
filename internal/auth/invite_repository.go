@@ -10,9 +10,10 @@ import (
 
 // InviteRepository stores invites.
 type InviteRepository interface {
-	// Create stores invite, but only while its creator is an admin: it
-	// returns ErrNotAdmin otherwise, so an invite made while its creator is
-	// being demoted can't outlive the demotion.
+	// Create stores invite, filling in its ID and CreatedByName, but only
+	// while its creator is an admin: it returns ErrNotAdmin otherwise, so an
+	// invite made while its creator is being demoted can't outlive the
+	// demotion.
 	Create(ctx context.Context, invite *Invite, tokenHash string) error
 	// GetByTokenHash returns nil when no invite has that hash.
 	GetByTokenHash(ctx context.Context, tokenHash string) (*Invite, error)
@@ -34,8 +35,10 @@ func NewInviteRepository(db *sql.DB) InviteRepository {
 	return &inviteRepository{db: db}
 }
 
-const inviteSelect = `SELECT i.id, i.is_admin, i.created_by, COALESCE(u.username, ''), i.expires_at, i.used_at, i.used_by, i.created_at
-	FROM user_invites i LEFT JOIN users u ON u.id = i.created_by`
+// An invite goes when its creator does (ON DELETE CASCADE), so every invite
+// has one to join.
+const inviteSelect = `SELECT i.id, i.is_admin, i.created_by, u.username, i.expires_at, i.used_at, i.used_by, i.created_at
+	FROM user_invites i JOIN users u ON u.id = i.created_by`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -58,24 +61,18 @@ func scanInvite(row rowScanner) (*Invite, error) {
 }
 
 func (r *inviteRepository) Create(ctx context.Context, invite *Invite, tokenHash string) error {
-	result, err := r.db.ExecContext(ctx,
+	err := r.db.QueryRowContext(ctx,
 		`INSERT INTO user_invites (token_hash, is_admin, created_by, expires_at, created_at)
-		 SELECT ?, ?, id, ?, ? FROM users WHERE id = ? AND is_admin`,
+		 SELECT ?, ?, id, ?, ? FROM users WHERE id = ? AND is_admin
+		 RETURNING id, (SELECT username FROM users WHERE users.id = created_by)`,
 		tokenHash, invite.IsAdmin, invite.ExpiresAt.UTC(), invite.CreatedAt.UTC(), invite.CreatedBy,
-	)
-	if err != nil {
-		return fmt.Errorf("inserting invite: %w", err)
-	}
-	if n, err := result.RowsAffected(); err != nil {
-		return fmt.Errorf("inserting invite: %w", err)
-	} else if n == 0 {
+	).Scan(&invite.ID, &invite.CreatedByName)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotAdmin
 	}
-	id, err := result.LastInsertId()
 	if err != nil {
-		return fmt.Errorf("getting inserted id: %w", err)
+		return fmt.Errorf("inserting invite: %w", err)
 	}
-	invite.ID = id
 	return nil
 }
 

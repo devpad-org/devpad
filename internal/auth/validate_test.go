@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -68,6 +69,29 @@ func TestCleanIdentity(t *testing.T) {
 				t.Fatalf("got %q, %q; want %q, %q", username, email, tt.wantUsername, tt.wantEmail)
 			}
 		})
+	}
+}
+
+// Handlers answer any validation error with 400 by asking IsValidationError,
+// so every error the validators return must be one.
+func TestValidatorsReturnOnlyValidationErrors(t *testing.T) {
+	errs := []error{
+		ValidatePassword("short"),
+		ValidatePassword(strings.Repeat("x", MaxPasswordLength+1)),
+	}
+	for _, in := range [][2]string{{"", "a@b"}, {"a", ""}, {"-a", "a@b"}, {"a", "a.b"}} {
+		_, _, err := CleanIdentity(in[0], in[1])
+		errs = append(errs, err)
+	}
+	for _, err := range errs {
+		if err == nil || !IsValidationError(fmt.Errorf("wrapped: %w", err)) {
+			t.Errorf("%v: want a validation error", err)
+		}
+	}
+	for _, err := range []error{nil, ErrUserExists, ErrInviteInvalid, errors.New(ErrEmailRequired.Error())} {
+		if IsValidationError(err) {
+			t.Errorf("%v: not a validation error", err)
+		}
 	}
 }
 

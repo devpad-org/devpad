@@ -430,14 +430,14 @@ func TestInviteHandler_CreateListCheck(t *testing.T) {
 			ID        int64     `json:"id"`
 			Token     string    `json:"token"`
 			IsAdmin   bool      `json:"isAdmin"`
-			CreatedBy string    `json:"createdBy"`
+			InvitedBy string    `json:"invitedBy"`
 			ExpiresAt time.Time `json:"expiresAt"`
 		} `json:"invite"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
 		t.Fatalf("decoding: %v", err)
 	}
-	if created.Invite.Token == "" || !created.Invite.IsAdmin || created.Invite.CreatedBy != "admin" {
+	if created.Invite.Token == "" || !created.Invite.IsAdmin || created.Invite.InvitedBy != "admin" {
 		t.Fatalf("unexpected invite %+v", created.Invite)
 	}
 	if want := f.clock.AddDate(0, 0, 3); !created.Invite.ExpiresAt.Equal(want) {
@@ -446,7 +446,7 @@ func TestInviteHandler_CreateListCheck(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	f.handler.HandleList(rec, httptest.NewRequest(http.MethodGet, "/api/admin/invites", nil))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"createdBy":"admin"`) || strings.Contains(rec.Body.String(), created.Invite.Token) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"invitedBy":"admin"`) || strings.Contains(rec.Body.String(), created.Invite.Token) {
 		t.Fatalf("list: status %d: %s", rec.Code, rec.Body.String())
 	}
 

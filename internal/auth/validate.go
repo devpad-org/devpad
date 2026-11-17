@@ -19,14 +19,26 @@ const (
 	MaxEmailLength = 254
 )
 
-// Every error here has a message fit to show the user.
+// validationError is a username, email or password the user must change. Its
+// message is fit to show them.
+type validationError string
+
+func (e validationError) Error() string { return string(e) }
+
+// IsValidationError reports whether err, or an error it wraps, is one of the
+// errors below, which a handler answers with 400 and the error's message.
+func IsValidationError(err error) bool {
+	var v validationError
+	return errors.As(err, &v)
+}
+
 var (
-	ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", MinPasswordLength)
-	ErrPasswordTooLong  = fmt.Errorf("password must be at most %d bytes (letters outside plain ASCII take 2 to 4 bytes each)", MaxPasswordLength)
-	ErrUsernameRequired = errors.New("username is required")
-	ErrEmailRequired    = errors.New("email is required")
-	ErrUsernameInvalid  = fmt.Errorf("username must be at most %d characters, must not start with '-', and must not contain '<', '>' or control characters", MaxUsernameLength)
-	ErrEmailInvalid     = errors.New("email must look like name@example.com, without spaces, '<' or '>'")
+	ErrPasswordTooShort = validationError(fmt.Sprintf("password must be at least %d characters", MinPasswordLength))
+	ErrPasswordTooLong  = validationError(fmt.Sprintf("password must be at most %d bytes (letters outside plain ASCII take 2 to 4 bytes each)", MaxPasswordLength))
+	ErrUsernameRequired = validationError("username is required")
+	ErrEmailRequired    = validationError("email is required")
+	ErrUsernameInvalid  = validationError(fmt.Sprintf("username must be at most %d characters, must not start with '-', and must not contain '<', '>' or control characters", MaxUsernameLength))
+	ErrEmailInvalid     = validationError("email must look like name@example.com, without spaces, '<' or '>'")
 )
 
 // ValidatePassword returns ErrPasswordTooShort or ErrPasswordTooLong when

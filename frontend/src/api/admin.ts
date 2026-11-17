@@ -24,7 +24,7 @@ export interface AdminWorkspace {
 export interface AdminInvite {
   id: number
   isAdmin: boolean
-  createdBy: string
+  invitedBy: string
   expiresAt: string
   createdAt: string
   expired: boolean
