@@ -61,6 +61,12 @@ for (const id of listed) if (!themeIds.includes(id)) fail(`  FAIL ${id} is in TH
 if (defaultTheme && !listed.includes(defaultTheme)) fail(`  FAIL DEFAULT_THEME ${defaultTheme} is not in THEMES`)
 if (rootThemes.length !== 1) fail(`  FAIL exactly one theme block must also be :root, found ${rootThemes.length}`)
 else if (defaultTheme && rootThemes[0] !== defaultTheme) fail(`  FAIL the :root block is ${rootThemes[0]}, but DEFAULT_THEME is ${defaultTheme}`)
+// :root and [data-theme='…'] are equally specific, so on <html> the later
+// block wins: below another theme, the default's would override it.
+const firstThemeRule = rules.find((r) => r.selectors.some(themeIdOf))
+if (rootThemes.length === 1 && !firstThemeRule?.selectors.includes(':root')) {
+  fail(`  FAIL the :root block (${rootThemes[0]}) must be the first theme block in themes.css, or it overrides every theme above it`)
+}
 if (failures === before) console.log(`  ok   ${themeIds.join(', ')}`)
 
 // ── Every theme defines the same tokens ────────────────────────────────────

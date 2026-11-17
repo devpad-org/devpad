@@ -116,8 +116,8 @@ function onKeydown(event: KeyboardEvent, index: number) {
   display: flex;
   flex-direction: column;
   text-align: left;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   overflow: hidden;
   transition:
@@ -145,7 +145,7 @@ function onKeydown(event: KeyboardEvent, index: number) {
   flex-direction: column;
   height: 132px;
   background: var(--bg-base);
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .preview-bar {
@@ -278,7 +278,7 @@ function onKeydown(event: KeyboardEvent, index: number) {
   width: 16px;
   height: 16px;
   margin-top: 2px;
-  border: 1.5px solid var(--text-muted);
+  border: 1.5px solid var(--text-tertiary);
   border-radius: 50%;
   transition: all var(--transition-fast);
 }
@@ -302,7 +302,7 @@ function onKeydown(event: KeyboardEvent, index: number) {
 
 .theme-desc {
   font-size: 0.78rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   line-height: 1.45;
 }
 

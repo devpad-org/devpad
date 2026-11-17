@@ -644,7 +644,11 @@
   --ide-header-bg: var(--bg-elevated);
   --ide-header-icon: var(--accent);
 
-  /* Older names for the same tokens. */
+  /* Deprecated: older names, kept only until the code still using them moves
+     to the tokens above. Never use them in new code. --accent-blue is not the
+     accent (in Gruvbox the accent is yellow): replace it with --accent where
+     it marks focus, selection or the primary action, and with --hue-blue
+     where it means blue as such (info, a status, a chart). */
   --bg-primary: var(--bg-base);
   --bg-secondary: var(--bg-void);
   --bg-tertiary: var(--bg-elevated);
