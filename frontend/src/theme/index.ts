@@ -60,9 +60,25 @@ function tokens(): (name: string) => string {
 }
 
 // Monaco takes only hex colours, and some UI tokens are rgb()/rgba().
+let canvas: CanvasRenderingContext2D | null | undefined
+
+// Any CSS colour as the browser's own #rrggbb or rgba(): the production
+// build minifies the tokens, so #ffffff arrives as #fff and a hex colour
+// may arrive as a colour name.
+function normalise(color: string): string {
+  if (canvas === undefined) canvas = document.createElement('canvas').getContext('2d')
+  if (!canvas) return color
+  canvas.fillStyle = '#000000'
+  canvas.fillStyle = color
+  return canvas.fillStyle
+}
+
 function hex(color: string): string {
-  if (color.startsWith('#')) return color
-  const m = color.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+))?\s*\)$/)
+  if (/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(color)) return color
+  if (/^#[0-9a-f]{3,4}$/i.test(color)) return '#' + [...color.slice(1)].map((d) => d + d).join('')
+  const value = normalise(color)
+  if (/^#[0-9a-f]{6}$/i.test(value)) return value
+  const m = value.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+))?\s*\)$/)
   if (!m) return '#000000'
   const byte = (n: number) => Math.round(Math.min(255, Math.max(0, n))).toString(16).padStart(2, '0')
   const alpha = m[4] === undefined ? '' : byte(Number(m[4]) * 255)
