@@ -37,8 +37,8 @@ var (
 	ErrPasswordTooLong  = validationError(fmt.Sprintf("password must be at most %d bytes (letters outside plain ASCII take 2 to 4 bytes each)", MaxPasswordLength))
 	ErrUsernameRequired = validationError("username is required")
 	ErrEmailRequired    = validationError("email is required")
-	ErrUsernameInvalid  = validationError(fmt.Sprintf("username must be at most %d characters, must not start with '-', and must not contain '<', '>' or control characters", MaxUsernameLength))
-	ErrEmailInvalid     = validationError("email must look like name@example.com, without spaces, '<' or '>'")
+	ErrUsernameInvalid  = validationError(fmt.Sprintf("username must be at most %d characters, must not start with '-', and must not contain '<', '>', or invisible or control characters other than plain spaces", MaxUsernameLength))
+	ErrEmailInvalid     = validationError("email must look like name@example.com, without spaces, '<', '>', or invisible characters")
 )
 
 // ValidatePassword returns ErrPasswordTooShort or ErrPasswordTooLong when
@@ -73,11 +73,23 @@ func CleanIdentity(username, email string) (string, string, error) {
 	return username, email, nil
 }
 
+// hidden reports whether r is a control character or an invisible format
+// character, such as a bidi override or a zero-width space. People choose
+// their own usernames and emails through invites, and others see them in
+// devpad and in git history, so neither may hide or reorder what they show.
+func hidden(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+}
+
 func validUsername(s string) bool {
 	return utf8.ValidString(s) &&
 		utf8.RuneCountInString(s) <= MaxUsernameLength &&
 		!strings.HasPrefix(s, "-") &&
-		!strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) || r == '<' || r == '>' })
+		!strings.ContainsFunc(s, func(r rune) bool {
+			// Only a plain space: others, like U+00A0 or U+2028, look like
+			// it or break lines.
+			return hidden(r) || (unicode.IsSpace(r) && r != ' ') || r == '<' || r == '>'
+		})
 }
 
 func validEmail(s string) bool {
@@ -86,5 +98,5 @@ func validEmail(s string) bool {
 		len(s) <= MaxEmailLength &&
 		at > 0 && at < len(s)-1 &&
 		!strings.HasPrefix(s, "-") &&
-		!strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) || r == '<' || r == '>' })
+		!strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || hidden(r) || r == '<' || r == '>' })
 }
