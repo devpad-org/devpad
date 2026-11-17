@@ -25,11 +25,17 @@ function unavailableReason(type: ServiceCatalogItem['value']) {
   return store.unavailable[type] ?? ''
 }
 
+// The server says which services have licence terms, so the terms shown are
+// the ones it records as accepted.
+function license(type: ServiceCatalogItem['value']) {
+  return store.licenses[type]
+}
+
 function canDeploy(service: ServiceCatalogItem) {
   return !isAttached(service.value)
     && !deployingType.value
     && !unavailableReason(service.value)
-    && (!service.license || !!accepted[service.value])
+    && (!license(service.value) || !!accepted[service.value])
 }
 
 async function deployService(service: ServiceCatalogItem) {
@@ -40,7 +46,7 @@ async function deployService(service: ServiceCatalogItem) {
 
   try {
     await store.addService(props.workspaceId, service.value, {
-      acceptLicense: !!service.license && !!accepted[service.value],
+      acceptLicense: !!license(service.value) && !!accepted[service.value],
     })
     accepted[service.value] = false
   } catch (error) {
@@ -86,15 +92,15 @@ async function deployService(service: ServiceCatalogItem) {
           Unavailable: {{ unavailableReason(service.value) }}
         </p>
 
-        <div v-else-if="service.license && !isAttached(service.value)" class="catalog-license">
+        <div v-else-if="license(service.value) && !isAttached(service.value)" class="catalog-license">
           <ul>
-            <li v-for="note in service.license.notes" :key="note">{{ note }}</li>
+            <li v-for="note in license(service.value)?.notes" :key="note">{{ note }}</li>
           </ul>
           <label>
             <input v-model="accepted[service.value]" type="checkbox" :disabled="!!deployingType" />
             <span>
               I accept the
-              <a :href="service.license.url" target="_blank" rel="noopener noreferrer">{{ service.license.name }}</a>
+              <a :href="license(service.value)?.url" target="_blank" rel="noopener noreferrer">{{ license(service.value)?.name }}</a>
             </span>
           </label>
         </div>

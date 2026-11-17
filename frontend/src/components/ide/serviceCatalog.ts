@@ -1,20 +1,10 @@
 import type { WorkspaceService } from '@/api/services'
 
-export interface ServiceLicense {
-  /** Link text for the terms, read as "I accept the …". */
-  name: string
-  url: string
-  /** What accepting them means here, shown beside the checkbox. */
-  notes: string[]
-}
-
 export interface ServiceCatalogItem {
   value: WorkspaceService['serviceType']
   label: string
   icon: string
   description: string
-  /** Terms the user must accept before the service is deployed. */
-  license?: ServiceLicense
 }
 
 export const serviceCatalog: ServiceCatalogItem[] = [
@@ -53,15 +43,6 @@ export const serviceCatalog: ServiceCatalogItem[] = [
     label: 'SQL Server',
     icon: '🗄️',
     description: 'Microsoft SQL Server 2025, free Enterprise Developer edition. Needs 2 GB of memory and an x86-64 host.',
-    license: {
-      name: 'Microsoft SQL Server licence terms',
-      // The link SQL Server itself prints; the server records it with the acceptance.
-      url: 'https://go.microsoft.com/fwlink/?LinkId=746388',
-      notes: [
-        'Developer edition is for development and testing only, not production.',
-        'SQL Server sends usage data to Microsoft, which free editions cannot turn off.',
-      ],
-    },
   },
 ]
 

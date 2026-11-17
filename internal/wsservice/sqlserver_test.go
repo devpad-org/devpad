@@ -39,7 +39,12 @@ func TestCreateSQLServerRecordsWhoAcceptedTheLicense(t *testing.T) {
 	if err := json.Unmarshal([]byte(created.Config), &cfg); err != nil {
 		t.Fatalf("parsing config: %v", err)
 	}
-	want := LicenseAcceptance{UserID: 3, AcceptedAt: accepted, TermsURL: Licenses[ServiceSQLServer].URL}
+	want := LicenseAcceptance{
+		UserID:     3,
+		AcceptedAt: accepted,
+		TermsURL:   "https://go.microsoft.com/fwlink/?LinkId=746388",
+		Image:      "mcr.microsoft.com/mssql/server:2025-latest",
+	}
 	if cfg.LicenseAcceptance == nil || *cfg.LicenseAcceptance != want {
 		t.Fatalf("expected licence acceptance %+v, got %+v", want, cfg.LicenseAcceptance)
 	}
@@ -137,15 +142,52 @@ func TestSidecarVolumesMountWhereEachImageKeepsItsData(t *testing.T) {
 		ServiceMeilisearch: "/data",
 		ServiceSQLServer:   "/var/opt/mssql",
 	}
-	for serviceType := range DefaultConfigs {
+	for serviceType, def := range definitions {
 		dir, ok := want[serviceType]
 		if !ok {
 			t.Errorf("%s: no data directory listed in this test", serviceType)
 			continue
 		}
-		if got := sidecarDataDir(serviceType); got != dir {
-			t.Errorf("%s: expected data directory %s, got %s", serviceType, dir, got)
+		if def.dataDir != dir {
+			t.Errorf("%s: expected data directory %s, got %s", serviceType, dir, def.dataDir)
 		}
+	}
+}
+
+func TestEveryServiceDefinitionIsComplete(t *testing.T) {
+	cfg := ServiceConfig{DefaultUser: "u", DefaultPass: "p", DefaultDB: "d"}
+	for serviceType, def := range definitions {
+		if def.defaults.Image == "" || def.defaults.Port == 0 {
+			t.Errorf("%s: no image or port", serviceType)
+		}
+		if def.dataDir == "" {
+			t.Errorf("%s: no data directory", serviceType)
+		}
+		if def.env == nil || len(def.env(cfg)) == 0 {
+			t.Errorf("%s: no container environment", serviceType)
+		}
+		if len(def.connectionVars(serviceType, "host", cfg)) == 0 {
+			t.Errorf("%s: no connection environment", serviceType)
+		}
+		if l := def.license; l != nil && (l.Name == "" || !strings.HasPrefix(l.URL, "https://")) {
+			t.Errorf("%s: licence needs a name and an https URL, got %+v", serviceType, *l)
+		}
+	}
+}
+
+func TestLicensesListsOnlyServicesWithTerms(t *testing.T) {
+	licenses := Licenses()
+	if len(licenses) != 1 {
+		t.Fatalf("expected only sqlserver to have licence terms, got %v", licenses)
+	}
+	sqlserver, ok := licenses[ServiceSQLServer]
+	if !ok || len(sqlserver.Notes) == 0 {
+		t.Fatalf("expected sqlserver's terms with notes, got %+v", sqlserver)
+	}
+	// The catalog gets a copy: changing it must not change the terms.
+	sqlserver.Notes[0] = "changed"
+	if Licenses()[ServiceSQLServer].Notes[0] == "changed" {
+		t.Fatal("Licenses returned the definition's own notes")
 	}
 }
 

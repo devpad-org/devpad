@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { serviceApi, type CreateServiceOptions, type WorkspaceService } from '@/api/services'
+import { serviceApi, type CreateServiceOptions, type ServiceLicense, type WorkspaceService } from '@/api/services'
 
 export const useServiceStore = defineStore('services', () => {
   const services = ref<WorkspaceService[]>([])
   const unavailable = ref<Partial<Record<WorkspaceService['serviceType'], string>>>({})
+  const licenses = ref<Partial<Record<WorkspaceService['serviceType'], ServiceLicense>>>({})
   const loading = ref(false)
   const error = ref<string | null>(null)
 
@@ -15,6 +16,7 @@ export const useServiceStore = defineStore('services', () => {
       const response = await serviceApi.list(workspaceId)
       services.value = response.services
       unavailable.value = response.unavailable ?? {}
+      licenses.value = response.licenses ?? {}
     } catch {
       error.value = 'Failed to load services'
     } finally {
@@ -59,9 +61,10 @@ export const useServiceStore = defineStore('services', () => {
   function $reset() {
     services.value = []
     unavailable.value = {}
+    licenses.value = {}
     loading.value = false
     error.value = null
   }
 
-  return { services, unavailable, loading, error, fetchServices, addService, startService, stopService, removeService, $reset }
+  return { services, unavailable, licenses, loading, error, fetchServices, addService, startService, stopService, removeService, $reset }
 })

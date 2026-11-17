@@ -103,8 +103,8 @@ const emit = defineEmits<{
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--space-4);
-  background: var(--bg-surface);
-  border: 0.5px solid var(--border-default);
+  background: var(--bg-elevated);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-popover);
 }
@@ -132,7 +132,7 @@ const emit = defineEmits<{
 .service-title-block p, .info-row dd, .connection-block code { overflow-wrap: anywhere; }
 
 .service-title-block p {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-size: 0.72rem;
 }
@@ -147,7 +147,7 @@ const emit = defineEmits<{
 .service-status {
   gap: 5px;
   padding: 2px var(--space-2);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: 999px;
   font-size: 0.72rem;
   font-weight: 600;
@@ -157,22 +157,22 @@ const emit = defineEmits<{
 .status-dot { width: 6px; height: 6px; border-radius: 50%; }
 
 .status-running {
-  color: var(--accent-green);
+  color: var(--success);
   border-color: var(--success-border);
   background: var(--success-bg);
 }
 
-.status-running .status-dot { background: var(--accent-green); box-shadow: 0 0 5px var(--accent-green); }
+.status-running .status-dot { background: var(--success); box-shadow: 0 0 5px var(--success); }
 
 .status-stopped {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   background: var(--bg-neutral);
 }
 
-.status-stopped .status-dot { background: var(--text-muted); }
+.status-stopped .status-dot { background: var(--text-tertiary); }
 
 .status-toggling {
-  color: var(--accent-amber);
+  color: var(--warning);
   border-color: var(--warning-border);
   background: var(--warning-bg);
 }
@@ -181,8 +181,8 @@ const emit = defineEmits<{
 
 .info-row,
 .connection-block {
-  background: var(--bg-primary);
-  border: 0.5px solid var(--border-default);
+  background: var(--bg-base);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-sm);
 }
 
@@ -190,7 +190,7 @@ const emit = defineEmits<{
 
 .info-row dt,
 .connection-block span {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.7rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -244,18 +244,18 @@ const emit = defineEmits<{
 .service-toggle-btn, .service-delete-btn { padding: var(--space-1) var(--space-3); }
 
 .toggle-start {
-  color: var(--accent-green);
+  color: var(--success);
   background: var(--success-bg);
   border: 0.5px solid var(--success-border);
 }
 
 .toggle-stop {
-  color: var(--accent-amber);
+  color: var(--warning);
   background: var(--warning-bg);
   border: 0.5px solid var(--warning-border);
 }
 
-.service-delete-btn { color: var(--text-muted); border: 0.5px solid var(--border-default); }
+.service-delete-btn { color: var(--text-tertiary); border: 0.5px solid var(--border-subtle); }
 
 .toggle-start:hover:not(:disabled),
 .toggle-stop:hover:not(:disabled) {
@@ -263,7 +263,7 @@ const emit = defineEmits<{
 }
 
 .service-delete-btn:hover:not(:disabled) {
-  color: var(--accent-rose);
+  color: var(--error);
   background: var(--error-bg);
   border-color: var(--error-border);
 }

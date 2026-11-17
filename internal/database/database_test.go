@@ -36,7 +36,9 @@ func TestOpenConfiguresSQLiteForConcurrentUse(t *testing.T) {
 	}
 }
 
-func TestMigrateAllowsEveryWorkspaceServiceType(t *testing.T) {
+// The application decides which service types exist; the schema only
+// checks a service's status.
+func TestMigrateLeavesWorkspaceServiceTypesToTheApplication(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "devpad.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -58,12 +60,15 @@ func TestMigrateAllowsEveryWorkspaceServiceType(t *testing.T) {
 			t.Fatalf("insert %s workspace service: %v", serviceType, err)
 		}
 	}
-	if _, err := db.Conn().Exec(`INSERT INTO workspace_services (workspace_id, service_type, status, config) VALUES (1, 'oracle', 'stopped', '{}')`); err == nil {
-		t.Fatal("expected an unknown service type to be refused")
+	if _, err := db.Conn().Exec(`INSERT INTO workspace_services (workspace_id, service_type, status, config) VALUES (1, 'oracle', 'stopped', '{}')`); err != nil {
+		t.Fatalf("expected a service type the schema does not list to be stored: %v", err)
+	}
+	if _, err := db.Conn().Exec(`INSERT INTO workspace_services (workspace_id, service_type, status, config) VALUES (1, 'redis', 'paused', '{}')`); err == nil {
+		t.Fatal("expected an unknown status to be refused")
 	}
 }
 
-func TestMigrateKeepsWorkspaceServicesWhenAddingSQLServer(t *testing.T) {
+func TestMigrateKeepsWorkspaceServicesWhenRebuildingTheirTable(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "devpad.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)

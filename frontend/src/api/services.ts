@@ -18,14 +18,25 @@ export interface WorkspaceService {
   updatedAt: string
 }
 
+/** Terms a user must accept before devpad deploys a service. */
+export interface ServiceLicense {
+  /** Link text for the terms, read as "I accept the …". */
+  name: string
+  url: string
+  /** What accepting them means here, shown beside the checkbox. */
+  notes: string[]
+}
+
 interface ServiceListResponse {
   services: WorkspaceService[]
   /** Service types this Docker host cannot run, each with the reason. */
   unavailable?: Partial<Record<WorkspaceService['serviceType'], string>>
+  /** The licence terms of each service type that has them. */
+  licenses?: Partial<Record<WorkspaceService['serviceType'], ServiceLicense>>
 }
 
 export interface CreateServiceOptions {
-  /** The user accepting the service's licence terms, which SQL Server requires. */
+  /** The user accepting the service's licence terms, for a service that has them. */
   acceptLicense?: boolean
 }
 

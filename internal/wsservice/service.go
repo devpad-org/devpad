@@ -31,7 +31,7 @@ var (
 type CreateOptions struct {
 	UserID int64
 	// AcceptLicense is the user's acceptance of the service's licence
-	// terms, required for a service listed in Licenses.
+	// terms, required for a service that has them (see Licenses).
 	AcceptLicense bool
 }
 
@@ -75,14 +75,14 @@ func NewService(repo Repository, cm container.Manager) Service {
 }
 
 func (s *service) Create(ctx context.Context, workspaceID int64, serviceType ServiceType, opts CreateOptions) (*WorkspaceService, error) {
-	if !ValidServiceType(serviceType) {
+	def, ok := lookupDefinition(serviceType)
+	if !ok {
 		return nil, ErrInvalidType
 	}
-	if err := s.checkArch(ctx, serviceType); err != nil {
+	if err := s.checkArch(ctx, serviceType, def); err != nil {
 		return nil, err
 	}
-	license, hasLicense := Licenses[serviceType]
-	if hasLicense && !opts.AcceptLicense {
+	if def.license != nil && !opts.AcceptLicense {
 		return nil, ErrLicenseNotAccepted
 	}
 
@@ -97,13 +97,14 @@ func (s *service) Create(ctx context.Context, workspaceID int64, serviceType Ser
 		}
 	}
 
-	cfg := DefaultConfigs[serviceType]
+	cfg := def.defaults
 	cfg.DefaultPass = generatePassword(24)
-	if hasLicense {
+	if def.license != nil {
 		cfg.LicenseAcceptance = &LicenseAcceptance{
 			UserID:     opts.UserID,
 			AcceptedAt: s.now().UTC(),
-			TermsURL:   license.URL,
+			TermsURL:   def.license.URL,
+			Image:      cfg.Image,
 		}
 	}
 	configJSON, _ := json.Marshal(cfg)
@@ -128,9 +129,9 @@ func (s *service) Create(ctx context.Context, workspaceID int64, serviceType Ser
 }
 
 // checkArch refuses a service whose image the Docker daemon cannot run.
-func (s *service) checkArch(ctx context.Context, serviceType ServiceType) error {
-	want, ok := RequiredArch[serviceType]
-	if !ok {
+func (s *service) checkArch(ctx context.Context, serviceType ServiceType, def definition) error {
+	want := def.requiredArch
+	if want == "" {
 		return nil
 	}
 	arch, err := s.daemonArch(ctx)
@@ -161,17 +162,22 @@ func (s *service) daemonArch(ctx context.Context) (string, error) {
 
 func (s *service) Unavailable(ctx context.Context) map[ServiceType]string {
 	unavailable := map[ServiceType]string{}
-	if len(RequiredArch) == 0 {
-		return unavailable
-	}
-	arch, err := s.daemonArch(ctx)
-	if err != nil {
-		log.Printf("checking docker architecture: %v", err)
-		return unavailable
-	}
-	for serviceType, want := range RequiredArch {
-		if arch != want {
-			unavailable[serviceType] = fmt.Sprintf("needs an %s Docker host; this one is %s", want, arch)
+	var arch string
+	for serviceType, def := range definitions {
+		if def.requiredArch == "" {
+			continue
+		}
+		// Docker is asked only when some service needs a particular
+		// architecture.
+		if arch == "" {
+			var err error
+			if arch, err = s.daemonArch(ctx); err != nil {
+				log.Printf("checking docker architecture: %v", err)
+				return map[ServiceType]string{}
+			}
+		}
+		if arch != def.requiredArch {
+			unavailable[serviceType] = fmt.Sprintf("needs an %s Docker host; this one is %s", def.requiredArch, arch)
 		}
 	}
 	return unavailable
@@ -285,7 +291,11 @@ func (s *service) EnvVars(ctx context.Context, workspaceID int64, networkName st
 		// within the shared network.
 		host := sidecarContainerName(workspaceID, svc.ServiceType)
 
-		envs = append(envs, serviceConnectionEnv(svc.ServiceType, host, cfg)...)
+		def, ok := lookupDefinition(svc.ServiceType)
+		if !ok {
+			continue
+		}
+		envs = append(envs, def.connectionVars(svc.ServiceType, host, cfg)...)
 	}
 	return envs, nil
 }
@@ -324,18 +334,22 @@ func (s *service) startOne(ctx context.Context, svc *WorkspaceService, networkNa
 
 	// If no container exists yet, create one.
 	if svc.ContainerID == "" {
+		def, ok := lookupDefinition(svc.ServiceType)
+		if !ok {
+			return ErrInvalidType
+		}
 		// The image's licence terms are accepted for it in its
 		// environment, so only once a user has accepted them.
-		if _, ok := Licenses[svc.ServiceType]; ok && cfg.LicenseAcceptance == nil {
+		if def.license != nil && cfg.LicenseAcceptance == nil {
 			return ErrLicenseNotAccepted
 		}
 		containerID, err := s.container.CreateSidecar(ctx, container.SidecarSpec{
 			Name:    sidecarContainerName(svc.WorkspaceID, svc.ServiceType),
 			Image:   cfg.Image,
 			Network: networkName,
-			Env:     sidecarEnv(svc.ServiceType, cfg),
+			Env:     def.env(cfg),
 			Volume:  svc.VolumeName,
-			DataDir: sidecarDataDir(svc.ServiceType),
+			DataDir: def.dataDir,
 		})
 		if err != nil {
 			return fmt.Errorf("creating sidecar container: %w", err)

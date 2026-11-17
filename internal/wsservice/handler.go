@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -52,6 +51,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"services":    items,
 		"unavailable": h.service.Unavailable(r.Context()),
+		"licenses":    Licenses(),
 	})
 }
 
@@ -268,7 +268,7 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, ErrInvalidType) {
-		writeError(w, http.StatusBadRequest, "unsupported service type; supported: "+strings.Join(supportedTypes(), ", "))
+		writeError(w, http.StatusBadRequest, "unsupported service type; supported: "+strings.Join(SupportedTypes(), ", "))
 		return
 	}
 	if errors.Is(err, ErrLicenseNotAccepted) {
@@ -280,15 +280,6 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "internal server error")
-}
-
-func supportedTypes() []string {
-	types := make([]string, 0, len(DefaultConfigs))
-	for t := range DefaultConfigs {
-		types = append(types, string(t))
-	}
-	sort.Strings(types)
-	return types
 }
 
 func handleWorkspaceError(w http.ResponseWriter, err error) {
