@@ -13,6 +13,7 @@ Run all commands from the repository root unless noted.
 | Frontend install | `make install-frontend` |
 | Frontend build + type-check | `make frontend` |
 | Frontend type-check only | `cd frontend && npm run type-check` |
+| Theme contrast check | `cd frontend && npm run check-themes` |
 | Backend dev server | `DEVPAD_ENCRYPTION_KEY=<key> go run .` (required; make one once with `openssl rand -hex 32` and reuse it) |
 | Frontend dev server | `make dev-frontend` |
 | All Go tests with coverage | `make test` |
@@ -68,6 +69,7 @@ Devpad is a Go web server that serves an embedded Vue 3 IDE frontend and manages
 **Frontend**
 - Use Vue 3 `<script setup lang="ts">`, strict TypeScript, and the `@/` alias for `frontend/src`.
 - Components call API modules or stores instead of constructing endpoint logic inline (except for streaming/WebSocket cases — match the nearby pattern).
-- UI styling uses the Gruvbox-themed CSS custom properties in `frontend/src/assets/styles/main.css`; use existing tokens (`--bg-*`, `--text-*`, `--accent-*`, `--border-*`, spacing, radius, transition) over hardcoded values.
+- UI styling uses the CSS custom properties in `frontend/src/assets/styles/`: colours in `themes.css`, everything else (spacing, radius, transition, fonts) in `main.css`. Use existing tokens (`--bg-*`, `--text-*`, `--accent-*`, `--hue-*`, `--border-*`) and never a hardcoded colour or a palette's own name: a component must look right in every theme.
+- Themes (Gruvbox Dark, the default, Gruvbox Light, Modern Dark, Modern Light) are one block of tokens each in `themes.css`, chosen by `data-theme` on `<html>`. `frontend/src/theme/index.ts` applies the theme and builds the Monaco and xterm themes, the tab icon and the browser's `theme-color` from those same tokens (`--editor-*`, `--syntax-*`, `--term-*`), so a colour is only ever defined in CSS. The theme is a user preference (`user_preferences.theme`, Settings > Appearance) that each browser also remembers in `localStorage`, which an inline script in `index.html` applies before the first paint. A new theme needs its block, an entry in `THEMES` and in `settings.Themes`, and to pass `npm run check-themes` (WCAG contrast of text, hue, syntax and terminal tokens on the surfaces they are used on).
 
 **Build artifacts** — do not include generated artifacts in source changes unless the task is specifically about embedded assets. `web/dist/`, `bin/`, `internal/agentbin/devpad-agent`, and `internal/dockerfile/Dockerfile` are produced by Make targets.

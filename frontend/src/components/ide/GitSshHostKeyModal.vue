@@ -68,17 +68,13 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-.modal-overlay {
-  background: color-mix(in srgb, var(--bg-secondary) 70%, transparent);
-}
-
 .modal {
   background: var(--bg-surface);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 480px;
-  box-shadow: 0 16px 48px color-mix(in srgb, var(--bg-secondary) 70%, transparent);
+  box-shadow: var(--shadow-strong);
   overflow: hidden;
 }
 

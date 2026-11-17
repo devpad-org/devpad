@@ -220,7 +220,7 @@ function handleSubmit() {
 }
 
 .btn-confirm:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent-blue) 85%, var(--fill-hover-mix));
 }
 
 .btn:disabled {

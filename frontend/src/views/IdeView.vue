@@ -1989,7 +1989,7 @@ const backLabel = computed(() => {
 }
 
 .activity-btn--services {
-  --activity-accent: var(--gruvbox-aqua);
+  --activity-accent: var(--hue-aqua);
 }
 
 .activity-btn--tasks {
@@ -2001,11 +2001,11 @@ const backLabel = computed(() => {
 }
 
 .activity-btn--agents {
-  --activity-accent: var(--gruvbox-orange);
+  --activity-accent: var(--hue-orange);
 }
 
 .activity-btn--project {
-  --activity-accent: var(--gruvbox-yellow);
+  --activity-accent: var(--hue-yellow);
 }
 
 .activity-separator {
@@ -2340,7 +2340,7 @@ const backLabel = computed(() => {
 }
 
 .mobile-tab--agents {
-  --activity-accent: var(--gruvbox-orange);
+  --activity-accent: var(--hue-orange);
 }
 
 .mobile-tab--ai {

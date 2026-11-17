@@ -492,7 +492,7 @@ onUnmounted(stopTimer)
 }
 
 .project-primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent-blue) 85%, var(--fill-hover-mix));
 }
 
 .project-primary.quiet {
@@ -640,7 +640,7 @@ onUnmounted(stopTimer)
 }
 
 .mr-btn--primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent-blue) 85%, var(--fill-hover-mix));
   color: var(--text-on-accent);
 }
 

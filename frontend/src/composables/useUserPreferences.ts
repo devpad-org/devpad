@@ -1,8 +1,10 @@
 import { ref } from 'vue'
 import { settingsApi, type UserPreferences } from '@/api/settings'
+import { DEFAULT_THEME } from '@/theme'
 
 const defaultPreferences: UserPreferences = {
   diffViewSideBySide: true,
+  theme: DEFAULT_THEME,
 }
 
 export function useUserPreferences() {
@@ -29,7 +31,7 @@ export function useUserPreferences() {
     saving.value = true
     error.value = ''
     try {
-      preferences.value = await settingsApi.updatePreferences(preferences.value)
+      preferences.value = await settingsApi.updatePreferences({ diffViewSideBySide: sideBySide })
     } catch (e) {
       preferences.value = previous
       error.value = e instanceof Error ? e.message : 'Failed to save preferences'

@@ -13,6 +13,10 @@ const groups = [
     ],
   },
   {
+    label: 'Interface',
+    pages: [{ name: 'settings-appearance', label: 'Appearance' }],
+  },
+  {
     label: 'AI',
     pages: [
       { name: 'settings-ai-keys', label: 'Provider Keys' },

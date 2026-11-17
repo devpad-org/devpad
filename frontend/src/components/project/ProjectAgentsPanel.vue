@@ -155,7 +155,7 @@ async function checkout(sandbox: Sandbox) {
 <style scoped src="./panel.css"></style>
 <style scoped>
 .agents-panel {
-  --ide-header-icon: var(--gruvbox-orange);
+  --ide-header-icon: var(--hue-orange);
 }
 
 .sandbox-count {

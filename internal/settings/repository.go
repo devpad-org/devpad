@@ -10,7 +10,15 @@ import (
 // UserPreferences stores per-user UI preferences.
 type UserPreferences struct {
 	DiffViewSideBySide bool `json:"diffViewSideBySide"`
+	// Theme is one of Themes.
+	Theme string `json:"theme"`
 }
+
+// DefaultTheme is the theme of a user who has not chosen one.
+const DefaultTheme = "gruvbox-dark"
+
+// Themes are the colour themes the frontend has (frontend/src/theme/index.ts).
+var Themes = []string{DefaultTheme, "gruvbox-light", "modern-dark", "modern-light"}
 
 // PreferencesRepository defines data access for user preferences.
 type PreferencesRepository interface {
@@ -28,15 +36,15 @@ func NewPreferencesRepository(db *sql.DB) PreferencesRepository {
 }
 
 func DefaultUserPreferences() UserPreferences {
-	return UserPreferences{DiffViewSideBySide: true}
+	return UserPreferences{DiffViewSideBySide: true, Theme: DefaultTheme}
 }
 
 func (r *preferencesRepository) Get(ctx context.Context, userID int64) (UserPreferences, error) {
 	preferences := DefaultUserPreferences()
 	err := r.db.QueryRowContext(ctx,
-		`SELECT diff_view_side_by_side FROM user_preferences WHERE user_id = ?`,
+		`SELECT diff_view_side_by_side, theme FROM user_preferences WHERE user_id = ?`,
 		userID,
-	).Scan(&preferences.DiffViewSideBySide)
+	).Scan(&preferences.DiffViewSideBySide, &preferences.Theme)
 	if err == sql.ErrNoRows {
 		return preferences, nil
 	}
@@ -49,12 +57,13 @@ func (r *preferencesRepository) Get(ctx context.Context, userID int64) (UserPref
 func (r *preferencesRepository) Update(ctx context.Context, userID int64, preferences UserPreferences) (UserPreferences, error) {
 	now := time.Now()
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO user_preferences (user_id, diff_view_side_by_side, created_at, updated_at)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO user_preferences (user_id, diff_view_side_by_side, theme, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id) DO UPDATE SET
 		   diff_view_side_by_side = excluded.diff_view_side_by_side,
+		   theme = excluded.theme,
 		   updated_at = excluded.updated_at`,
-		userID, preferences.DiffViewSideBySide, now, now,
+		userID, preferences.DiffViewSideBySide, preferences.Theme, now, now,
 	)
 	if err != nil {
 		return UserPreferences{}, fmt.Errorf("upserting user preferences: %w", err)

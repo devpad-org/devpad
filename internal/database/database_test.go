@@ -111,6 +111,10 @@ func createPreWaitingUserAgentRunSchema(t *testing.T, db *DB) {
 			email TEXT NOT NULL,
 			password TEXT NOT NULL
 		);
+		CREATE TABLE user_preferences (
+			user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			diff_view_side_by_side BOOLEAN NOT NULL DEFAULT 1
+		);
 		CREATE TABLE workspaces (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

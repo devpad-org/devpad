@@ -1,5 +1,5 @@
-// A project's emblem: a 2x2 Bauhaus-style tile drawn from the Gruvbox
-// palette, generated from the project's name so it stays the same everywhere
+// A project's emblem: a 2x2 Bauhaus-style tile drawn from the theme's emblem
+// colours, generated from the project's name so it stays the same everywhere
 // and needs nothing stored. Each cell is a coloured square with one shape on
 // it; the emblem's hue also tints the project's card.
 
@@ -16,7 +16,7 @@ export interface EmblemCell {
 }
 
 export interface Emblem {
-  // The emblem's main colour, as a CSS value.
+  // The emblem's main colour, as a CSS value that also reads as text.
   hue: string
   cells: EmblemCell[]
 }
@@ -29,10 +29,10 @@ const HUES = ['red', 'green', 'yellow', 'blue', 'purple', 'aqua', 'orange'] as c
 const LEADS = ['green', 'yellow', 'blue', 'purple', 'aqua'] as const
 const SHAPES: EmblemShape[] = ['quarter', 'half', 'circle', 'ring', 'triangle', 'leaf', 'bars']
 
-const bright = (hue: string) => `var(--gruvbox-${hue})`
-const neutral = (hue: string) => `var(--gruvbox-neutral-${hue})`
-const CREAM = 'var(--gruvbox-fg1)'
-const DEEP = 'var(--gruvbox-bg1)'
+const bright = (hue: string) => `var(--emblem-${hue})`
+const neutral = (hue: string) => `var(--emblem-${hue}-muted)`
+const CREAM = 'var(--emblem-light)'
+const DEEP = 'var(--emblem-dark)'
 
 // FNV-1a, then mulberry32 seeded with it: small, fast and stable across
 // browsers, which is all an emblem needs.
@@ -90,5 +90,5 @@ export function projectEmblem(name: string): Emblem {
     cells[Math.floor(next() * cells.length)].foreground = bright(primary)
   }
 
-  return { hue: bright(primary), cells }
+  return { hue: `var(--hue-${primary})`, cells }
 }

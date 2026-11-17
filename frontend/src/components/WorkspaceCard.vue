@@ -347,7 +347,7 @@ function formatDate(dateStr: string) {
 }
 
 .btn-open:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent-blue) 85%, var(--fill-hover-mix));
 }
 
 .btn-start {

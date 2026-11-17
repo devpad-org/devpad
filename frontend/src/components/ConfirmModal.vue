@@ -164,7 +164,7 @@ const emit = defineEmits<{
 }
 
 .btn-confirm.danger:hover {
-  background: color-mix(in srgb, var(--accent-rose) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent-rose) 85%, var(--fill-hover-mix));
 }
 
 .btn-confirm.default {
@@ -173,7 +173,7 @@ const emit = defineEmits<{
 }
 
 .btn-confirm.default:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent-blue) 85%, var(--fill-hover-mix));
 }
 
 .btn:disabled {

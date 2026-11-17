@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/devpad-org/devpad/internal/auth"
 )
@@ -224,6 +225,8 @@ func (h *Handler) HandleGetPreferences(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleUpdatePreferences updates the authenticated user's UI preferences.
+// Only the preferences in the request change, so one page saving its own
+// preference never overwrites another's with what it loaded earlier.
 func (h *Handler) HandleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
@@ -232,20 +235,35 @@ func (h *Handler) HandleUpdatePreferences(w http.ResponseWriter, r *http.Request
 	}
 
 	var req struct {
-		DiffViewSideBySide *bool `json:"diffViewSideBySide"`
+		DiffViewSideBySide *bool   `json:"diffViewSideBySide"`
+		Theme              *string `json:"theme"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.DiffViewSideBySide == nil {
-		writeError(w, http.StatusBadRequest, "diffViewSideBySide is required")
+	if req.DiffViewSideBySide == nil && req.Theme == nil {
+		writeError(w, http.StatusBadRequest, "no preference to update")
+		return
+	}
+	if req.Theme != nil && !slices.Contains(Themes, *req.Theme) {
+		writeError(w, http.StatusBadRequest, "unknown theme")
 		return
 	}
 
-	preferences, err := h.service.UpdatePreferences(r.Context(), user.ID, UserPreferences{
-		DiffViewSideBySide: *req.DiffViewSideBySide,
-	})
+	preferences, err := h.service.GetPreferences(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get preferences")
+		return
+	}
+	if req.DiffViewSideBySide != nil {
+		preferences.DiffViewSideBySide = *req.DiffViewSideBySide
+	}
+	if req.Theme != nil {
+		preferences.Theme = *req.Theme
+	}
+
+	preferences, err = h.service.UpdatePreferences(r.Context(), user.ID, preferences)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update preferences")
 		return
