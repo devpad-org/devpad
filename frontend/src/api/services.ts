@@ -11,7 +11,7 @@ export interface ServiceConfig {
 export interface WorkspaceService {
   id: number
   workspaceId: number
-  serviceType: 'postgres' | 'mongodb' | 'mariadb' | 'couchdb' | 'meilisearch'
+  serviceType: 'postgres' | 'mongodb' | 'mariadb' | 'couchdb' | 'meilisearch' | 'sqlserver'
   status: 'running' | 'stopped'
   config: ServiceConfig
   createdAt: string
@@ -20,6 +20,13 @@ export interface WorkspaceService {
 
 interface ServiceListResponse {
   services: WorkspaceService[]
+  /** Service types this Docker host cannot run, each with the reason. */
+  unavailable?: Partial<Record<WorkspaceService['serviceType'], string>>
+}
+
+export interface CreateServiceOptions {
+  /** The user accepting the service's licence terms, which SQL Server requires. */
+  acceptLicense?: boolean
 }
 
 interface ServiceResponse {
@@ -31,8 +38,11 @@ export const serviceApi = {
     return apiClient.get<ServiceListResponse>(`/api/workspaces/${workspaceId}/services`)
   },
 
-  create(workspaceId: number, serviceType: string): Promise<ServiceResponse> {
-    return apiClient.post<ServiceResponse>(`/api/workspaces/${workspaceId}/services`, { serviceType })
+  create(workspaceId: number, serviceType: string, options: CreateServiceOptions = {}): Promise<ServiceResponse> {
+    return apiClient.post<ServiceResponse>(`/api/workspaces/${workspaceId}/services`, {
+      serviceType,
+      acceptLicense: options.acceptLicense ?? false,
+    })
   },
 
   start(workspaceId: number, serviceId: number): Promise<ServiceResponse> {

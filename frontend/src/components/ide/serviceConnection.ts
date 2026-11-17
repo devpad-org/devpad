@@ -23,8 +23,17 @@ export function connectionString(service: WorkspaceService): string {
   if (service.serviceType === 'meilisearch') {
     return `http://${host}:${config.port}`
   }
+  if (service.serviceType === 'sqlserver') {
+    // ADO.NET form. SQL Server's certificate is self-signed, so clients
+    // that encrypt by default have to be told to trust it.
+    return `Server=${host},${config.port};Database=${config.defaultDb};User Id=${config.defaultUser};Password=${config.defaultPass};TrustServerCertificate=True`
+  }
 
   return ''
+}
+
+export function connectionLabel(service: WorkspaceService): string {
+  return service.serviceType === 'sqlserver' ? 'Connection string' : 'Connection URL'
 }
 
 export interface ServiceCredentialField {

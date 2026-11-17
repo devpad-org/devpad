@@ -42,8 +42,48 @@ func sidecarEnv(serviceType ServiceType, cfg ServiceConfig) []string {
 			"MEILI_DB_PATH=/data",
 			"MEILI_NO_ANALYTICS=true",
 		}
+	case ServiceSQLServer:
+		return []string{
+			// Only set once the user deploying it has accepted the licence
+			// terms; see startOne.
+			"ACCEPT_EULA=Y",
+			// The free Enterprise Developer edition, which has no production
+			// use rights. Never a paid edition or a product key.
+			"MSSQL_PID=EnterpriseDeveloper",
+			fmt.Sprintf("MSSQL_SA_PASSWORD=%s", cfg.DefaultPass),
+			// SQL Server creates this database and login on first start.
+			fmt.Sprintf("MSSQL_DB=%s", cfg.DefaultDB),
+			fmt.Sprintf("MSSQL_USER=%s", cfg.DefaultUser),
+			fmt.Sprintf("MSSQL_PASSWORD=%s", cfg.DefaultPass),
+			// SQL Server otherwise takes up to 80% of the host's memory.
+			"MSSQL_MEMORY_LIMIT_MB=2048",
+		}
 	default:
 		return nil
+	}
+}
+
+// sidecarDataDir is where a service's image keeps its data, and so where its
+// volume is mounted. It must be the directory the image declares as a
+// VOLUME, when it declares one: Docker mounts an anonymous volume over any
+// such directory a mount does not cover exactly, and the data would live
+// there instead.
+func sidecarDataDir(serviceType ServiceType) string {
+	switch serviceType {
+	case ServiceMongoDB:
+		return "/data/db"
+	case ServiceMariaDB:
+		return "/var/lib/mysql"
+	case ServiceCouchDB:
+		return "/opt/couchdb/data"
+	case ServiceSQLServer:
+		// The image's data, logs and secrets all live under here, owned
+		// by the image's non-root mssql user.
+		return "/var/opt/mssql"
+	default:
+		// Postgres (PGDATA) and Meilisearch (MEILI_DB_PATH) are told to
+		// keep their data here.
+		return "/data"
 	}
 }
 

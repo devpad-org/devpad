@@ -5,7 +5,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/workspace"
@@ -47,7 +49,10 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	for _, svc := range services {
 		items = append(items, serviceResponse(svc))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"services": items})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"services":    items,
+		"unavailable": h.service.Unavailable(r.Context()),
+	})
 }
 
 // HandleCreate creates a new service for a workspace.
@@ -67,6 +72,9 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		ServiceType string `json:"serviceType"`
+		// AcceptLicense is the user accepting the service's licence
+		// terms, which a service such as SQL Server requires.
+		AcceptLicense bool `json:"acceptLicense"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -78,7 +86,10 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc, err := h.service.Create(r.Context(), wsID, ServiceType(req.ServiceType))
+	svc, err := h.service.Create(r.Context(), wsID, ServiceType(req.ServiceType), CreateOptions{
+		UserID:        user.ID,
+		AcceptLicense: req.AcceptLicense,
+	})
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -257,10 +268,27 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, ErrInvalidType) {
-		writeError(w, http.StatusBadRequest, "unsupported service type; supported: postgres, mongodb, mariadb, couchdb, meilisearch")
+		writeError(w, http.StatusBadRequest, "unsupported service type; supported: "+strings.Join(supportedTypes(), ", "))
+		return
+	}
+	if errors.Is(err, ErrLicenseNotAccepted) {
+		writeError(w, http.StatusBadRequest, "this service's licence terms must be accepted to deploy it")
+		return
+	}
+	if errors.Is(err, ErrUnsupportedArch) {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "internal server error")
+}
+
+func supportedTypes() []string {
+	types := make([]string, 0, len(DefaultConfigs))
+	for t := range DefaultConfigs {
+		types = append(types, string(t))
+	}
+	sort.Strings(types)
+	return types
 }
 
 func handleWorkspaceError(w http.ResponseWriter, err error) {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
+import { ApiError } from '@/api/client'
 import { useServiceStore } from '@/stores/services'
 import { serviceCatalog, type ServiceCatalogItem } from './serviceCatalog'
 
@@ -10,6 +11,9 @@ const props = defineProps<{
 const store = useServiceStore()
 const deployingType = ref<ServiceCatalogItem['value'] | null>(null)
 const addError = ref('')
+// Licence terms accepted for this deploy, by service type. Never remembered:
+// whoever deploys a service with terms accepts them each time.
+const accepted = reactive<Partial<Record<ServiceCatalogItem['value'], boolean>>>({})
 
 const attachedTypes = computed(() => new Set(store.services.map((service) => service.serviceType)))
 
@@ -17,17 +21,32 @@ function isAttached(type: ServiceCatalogItem['value']) {
   return attachedTypes.value.has(type)
 }
 
+function unavailableReason(type: ServiceCatalogItem['value']) {
+  return store.unavailable[type] ?? ''
+}
+
+function canDeploy(service: ServiceCatalogItem) {
+  return !isAttached(service.value)
+    && !deployingType.value
+    && !unavailableReason(service.value)
+    && (!service.license || !!accepted[service.value])
+}
+
 async function deployService(service: ServiceCatalogItem) {
-  if (!props.workspaceId || deployingType.value || isAttached(service.value)) return
+  if (!props.workspaceId || !canDeploy(service)) return
 
   deployingType.value = service.value
   addError.value = ''
 
   try {
-    await store.addService(props.workspaceId, service.value)
+    await store.addService(props.workspaceId, service.value, {
+      acceptLicense: !!service.license && !!accepted[service.value],
+    })
+    accepted[service.value] = false
   } catch (error) {
-    const message = error instanceof Error ? error.message : ''
-    addError.value = message.includes('409') ? 'Already attached' : `Failed to deploy ${service.label}`
+    addError.value = error instanceof ApiError && error.status < 500
+      ? error.message
+      : `Failed to deploy ${service.label}`
   } finally {
     deployingType.value = null
   }
@@ -63,10 +82,27 @@ async function deployService(service: ServiceCatalogItem) {
           </div>
         </div>
 
+        <p v-if="unavailableReason(service.value)" class="catalog-unavailable">
+          Unavailable: {{ unavailableReason(service.value) }}
+        </p>
+
+        <div v-else-if="service.license && !isAttached(service.value)" class="catalog-license">
+          <ul>
+            <li v-for="note in service.license.notes" :key="note">{{ note }}</li>
+          </ul>
+          <label>
+            <input v-model="accepted[service.value]" type="checkbox" :disabled="!!deployingType" />
+            <span>
+              I accept the
+              <a :href="service.license.url" target="_blank" rel="noopener noreferrer">{{ service.license.name }}</a>
+            </span>
+          </label>
+        </div>
+
         <button
           class="catalog-deploy-btn"
           :class="{ attached: isAttached(service.value) }"
-          :disabled="isAttached(service.value) || !!deployingType"
+          :disabled="!canDeploy(service)"
           @click="deployService(service)"
         >
           <svg v-if="deployingType === service.value" class="spinner" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -100,7 +136,7 @@ async function deployService(service: ServiceCatalogItem) {
   display: flex;
   align-items: center;
   padding: 0 var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
   background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
@@ -122,16 +158,16 @@ async function deployService(service: ServiceCatalogItem) {
 
 .catalog-copy {
   padding: var(--space-3);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.75rem;
   line-height: 1.45;
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
 }
 
 .catalog-error {
   padding: var(--space-2) var(--space-3);
   font-size: 0.72rem;
-  color: var(--accent-rose);
+  color: var(--error);
   background: var(--error-bg);
   border-bottom: 0.5px solid var(--error-border);
 }
@@ -149,14 +185,14 @@ async function deployService(service: ServiceCatalogItem) {
   gap: var(--space-3);
   padding: var(--space-3);
   background: var(--bg-elevated);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
 .catalog-card:hover {
   background: var(--bg-hover);
-  border-color: var(--border-active);
+  border-color: var(--border-strong);
 }
 
 .catalog-card-main {
@@ -182,7 +218,7 @@ async function deployService(service: ServiceCatalogItem) {
 
 .catalog-meta p {
   margin-top: 2px;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.72rem;
   line-height: 1.4;
 }
@@ -194,7 +230,7 @@ async function deployService(service: ServiceCatalogItem) {
   gap: 5px;
   align-self: stretch;
   padding: var(--space-1) var(--space-2);
-  color: var(--accent-green);
+  color: var(--success);
   background: var(--success-bg);
   border: 0.5px solid var(--success-border);
   border-radius: var(--radius-sm);
@@ -204,7 +240,7 @@ async function deployService(service: ServiceCatalogItem) {
 }
 
 .catalog-deploy-btn:hover:not(:disabled) {
-  border-color: var(--accent-green);
+  border-color: var(--success);
 }
 
 .catalog-deploy-btn:disabled {
@@ -213,9 +249,46 @@ async function deployService(service: ServiceCatalogItem) {
 }
 
 .catalog-deploy-btn.attached {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   background: var(--bg-neutral);
-  border-color: var(--border-default);
+  border-color: var(--border-subtle);
+}
+
+.catalog-unavailable {
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.catalog-license {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.catalog-license ul {
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--text-secondary);
+}
+
+.catalog-license label {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.catalog-license input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.catalog-license a {
+  color: var(--accent);
 }
 
 .spinner {

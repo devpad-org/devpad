@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { WorkspaceService } from '@/api/services'
 import ServiceCopyButton from './ServiceCopyButton.vue'
-import { connectionString, serviceCredentialFields, serviceHost } from './serviceConnection'
+import { connectionLabel, connectionString, serviceCredentialFields, serviceHost } from './serviceConnection'
 import { serviceTypeIcon, serviceTypeLabel } from './serviceCatalog'
 
 defineProps<{
@@ -63,10 +63,10 @@ const emit = defineEmits<{
 
     <div class="connection-block">
       <div>
-        <span>Connection URL</span>
+        <span>{{ connectionLabel(service) }}</span>
         <code>{{ connectionString(service) }}</code>
       </div>
-      <ServiceCopyButton :value="connectionString(service)" label="connection URL" />
+      <ServiceCopyButton :value="connectionString(service)" :label="connectionLabel(service).toLowerCase()" />
     </div>
 
     <div class="service-actions">
