@@ -1,6 +1,6 @@
 /*
  * Colour themes. Each theme is one block of tokens, chosen by `data-theme` on
- * <html> (see src/theme/index.ts); Gruvbox Dark is also the default with no
+ * <html> (see src/theme/index.ts); Modern Dark is also the default with no
  * attribute. The selectors are not tied to :root, so any element can show a
  * theme by carrying the attribute, which is how the theme picker draws its
  * previews.
@@ -16,8 +16,157 @@
  * surfaces they are used on.
  */
 
-/* ── Gruvbox Dark (default) ─────────────────────────────────────────────── */
+/* ── Modern Dark (default) ──────────────────────────────────────────────── */
+/* Cool neutral surfaces with one blue accent. */
 :root,
+[data-theme='modern-dark'] {
+  color-scheme: dark;
+
+  --bg-void: #0f1115;
+  --bg-base: #15181d;
+  --bg-elevated: #1b1f26;
+  --bg-raised: #252a33;
+  --bg-hover: rgba(228, 231, 236, 0.06);
+  --bg-selected: rgba(106, 169, 255, 0.15);
+  --bg-overlay: rgba(5, 7, 10, 0.72);
+  --bg-neutral: rgba(146, 153, 166, 0.14);
+
+  --border-hairline: rgba(228, 231, 236, 0.07);
+  --border-subtle: rgba(228, 231, 236, 0.11);
+  --border-strong: rgba(228, 231, 236, 0.2);
+  --border-top-highlight: rgba(255, 255, 255, 0.06);
+
+  --text-primary: #e4e7ec;
+  --text-secondary: #b3b9c4;
+  --text-tertiary: #969dab;
+  --text-dim: #6f7785;
+  --text-on-accent: #0b0d12;
+  --text-decoration-muted: rgba(228, 231, 236, 0.2);
+
+  --hue-red: #ff7a7a;
+  --hue-green: #4fcf8e;
+  --hue-yellow: #e6b450;
+  --hue-blue: #6aa9ff;
+  --hue-purple: #b794f6;
+  --hue-aqua: #4cc9c0;
+  --hue-orange: #f2955a;
+
+  --accent: var(--hue-blue);
+  --accent-dim: #4b8be6;
+  --accent-glow: rgba(106, 169, 255, 0.18);
+  --accent-border: rgba(106, 169, 255, 0.45);
+
+  --success: var(--hue-green);
+  --warning: var(--hue-yellow);
+  --error: var(--hue-red);
+  --attention: var(--hue-orange);
+  --error-bg: rgba(255, 122, 122, 0.12);
+  --error-border: rgba(255, 122, 122, 0.3);
+  --success-bg: rgba(79, 207, 142, 0.12);
+  --success-border: rgba(79, 207, 142, 0.3);
+  --warning-bg: rgba(230, 180, 80, 0.12);
+  --warning-border: rgba(230, 180, 80, 0.3);
+  --attention-bg: rgba(242, 149, 90, 0.12);
+  --attention-border: rgba(242, 149, 90, 0.3);
+
+  --fill-hover-mix: #ffffff;
+
+  --emblem-red: #f06a6a;
+  --emblem-green: #3fbf7f;
+  --emblem-yellow: #f0b93a;
+  --emblem-blue: #5b9cf5;
+  --emblem-purple: #a07cf0;
+  --emblem-aqua: #35bdb4;
+  --emblem-orange: #f08a4b;
+  --emblem-red-muted: #cf4444;
+  --emblem-green-muted: #1f8f58;
+  --emblem-yellow-muted: #c98f0e;
+  --emblem-blue-muted: #2f6fd0;
+  --emblem-purple-muted: #7350c8;
+  --emblem-aqua-muted: #148f88;
+  --emblem-orange-muted: #cc6424;
+  --emblem-light: #e4e7ec;
+  --emblem-dark: #252a33;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #0ca30c;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --series-other: #6f7785;
+
+  --shadow-strong: 0 16px 48px rgba(0, 0, 0, 0.6);
+  --shadow-popover: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --spinner-track: rgba(228, 231, 236, 0.25);
+  --qr-bg: #ffffff;
+
+  --editor-bg: #0f1115;
+  --editor-fg: #e4e7ec;
+  --editor-line-highlight: #1b1f26;
+  --editor-selection: #2b4a78;
+  --editor-selection-inactive: #252a33;
+  --editor-selection-highlight: #6aa9ff26;
+  --editor-line-number: #5d6572;
+  --editor-line-number-active: #b3b9c4;
+  --editor-cursor: #6aa9ff;
+  --editor-indent-guide: #252a33;
+  --editor-indent-guide-active: #3d4452;
+  --editor-bracket-match-bg: #6aa9ff1f;
+  --editor-bracket-match-border: #6aa9ff66;
+  --editor-find-match: #e6b45066;
+  --editor-find-match-highlight: #e6b4502e;
+  --editor-diff-inserted: #4fcf8e24;
+  --editor-diff-removed: #ff7a7a24;
+  --editor-scrollbar: #6f778540;
+  --editor-scrollbar-hover: #6f778570;
+  --editor-scrollbar-active: #969dab80;
+
+  --syntax-comment: #7d8594;
+  --syntax-comment-doc: #969dab;
+  --syntax-keyword: #c4a2ff;
+  --syntax-operator: #9fb1c9;
+  --syntax-storage: #c4a2ff;
+  --syntax-type: #e6b450;
+  --syntax-string: #7fd69b;
+  --syntax-escape: #4cc9c0;
+  --syntax-number: #f2955a;
+  --syntax-function: #6aa9ff;
+  --syntax-variable: #e4e7ec;
+  --syntax-parameter: #c7ccd6;
+  --syntax-language: #f2955a;
+  --syntax-tag: #ff7a7a;
+  --syntax-tag-class: #4cc9c0;
+  --syntax-delimiter: #969dab;
+  --syntax-bracket: #9fb1c9;
+  --syntax-curly: #b794f6;
+  --syntax-invalid: #ff7a7a;
+
+  --terminal-bg: #0f1115;
+  --term-fg: #e4e7ec;
+  --term-cursor: #6aa9ff;
+  --term-selection: rgba(106, 169, 255, 0.3);
+  --term-black: #1b1f26;
+  --term-red: #f0616b;
+  --term-green: #3fb97a;
+  --term-yellow: #d9a441;
+  --term-blue: #4f8fe8;
+  --term-magenta: #a57be8;
+  --term-cyan: #36b3aa;
+  --term-white: #b3b9c4;
+  --term-bright-black: #6f7785;
+  --term-bright-red: #ff7a7a;
+  --term-bright-green: #4fcf8e;
+  --term-bright-yellow: #e6b450;
+  --term-bright-blue: #6aa9ff;
+  --term-bright-magenta: #b794f6;
+  --term-bright-cyan: #4cc9c0;
+  --term-bright-white: #f4f6f9;
+}
+
+/* ── Gruvbox Dark ───────────────────────────────────────────────────────── */
 [data-theme='gruvbox-dark'] {
   color-scheme: dark;
 
@@ -335,155 +484,6 @@
   --term-bright-magenta: #8f3f71;
   --term-bright-cyan: #427b58;
   --term-bright-white: #3c3836;
-}
-
-/* ── Modern Dark ────────────────────────────────────────────────────────── */
-/* Cool neutral surfaces with one blue accent. */
-[data-theme='modern-dark'] {
-  color-scheme: dark;
-
-  --bg-void: #0f1115;
-  --bg-base: #15181d;
-  --bg-elevated: #1b1f26;
-  --bg-raised: #252a33;
-  --bg-hover: rgba(228, 231, 236, 0.06);
-  --bg-selected: rgba(106, 169, 255, 0.15);
-  --bg-overlay: rgba(5, 7, 10, 0.72);
-  --bg-neutral: rgba(146, 153, 166, 0.14);
-
-  --border-hairline: rgba(228, 231, 236, 0.07);
-  --border-subtle: rgba(228, 231, 236, 0.11);
-  --border-strong: rgba(228, 231, 236, 0.2);
-  --border-top-highlight: rgba(255, 255, 255, 0.06);
-
-  --text-primary: #e4e7ec;
-  --text-secondary: #b3b9c4;
-  --text-tertiary: #969dab;
-  --text-dim: #6f7785;
-  --text-on-accent: #0b0d12;
-  --text-decoration-muted: rgba(228, 231, 236, 0.2);
-
-  --hue-red: #ff7a7a;
-  --hue-green: #4fcf8e;
-  --hue-yellow: #e6b450;
-  --hue-blue: #6aa9ff;
-  --hue-purple: #b794f6;
-  --hue-aqua: #4cc9c0;
-  --hue-orange: #f2955a;
-
-  --accent: var(--hue-blue);
-  --accent-dim: #4b8be6;
-  --accent-glow: rgba(106, 169, 255, 0.18);
-  --accent-border: rgba(106, 169, 255, 0.45);
-
-  --success: var(--hue-green);
-  --warning: var(--hue-yellow);
-  --error: var(--hue-red);
-  --attention: var(--hue-orange);
-  --error-bg: rgba(255, 122, 122, 0.12);
-  --error-border: rgba(255, 122, 122, 0.3);
-  --success-bg: rgba(79, 207, 142, 0.12);
-  --success-border: rgba(79, 207, 142, 0.3);
-  --warning-bg: rgba(230, 180, 80, 0.12);
-  --warning-border: rgba(230, 180, 80, 0.3);
-  --attention-bg: rgba(242, 149, 90, 0.12);
-  --attention-border: rgba(242, 149, 90, 0.3);
-
-  --fill-hover-mix: #ffffff;
-
-  --emblem-red: #f06a6a;
-  --emblem-green: #3fbf7f;
-  --emblem-yellow: #f0b93a;
-  --emblem-blue: #5b9cf5;
-  --emblem-purple: #a07cf0;
-  --emblem-aqua: #35bdb4;
-  --emblem-orange: #f08a4b;
-  --emblem-red-muted: #cf4444;
-  --emblem-green-muted: #1f8f58;
-  --emblem-yellow-muted: #c98f0e;
-  --emblem-blue-muted: #2f6fd0;
-  --emblem-purple-muted: #7350c8;
-  --emblem-aqua-muted: #148f88;
-  --emblem-orange-muted: #cc6424;
-  --emblem-light: #e4e7ec;
-  --emblem-dark: #252a33;
-
-  --series-1: #3987e5;
-  --series-2: #d95926;
-  --series-3: #199e70;
-  --series-4: #c98500;
-  --series-5: #d55181;
-  --series-6: #0ca30c;
-  --series-7: #9085e9;
-  --series-8: #e66767;
-  --series-other: #6f7785;
-
-  --shadow-strong: 0 16px 48px rgba(0, 0, 0, 0.6);
-  --shadow-popover: 0 4px 16px rgba(0, 0, 0, 0.5);
-  --spinner-track: rgba(228, 231, 236, 0.25);
-  --qr-bg: #ffffff;
-
-  --editor-bg: #0f1115;
-  --editor-fg: #e4e7ec;
-  --editor-line-highlight: #1b1f26;
-  --editor-selection: #2b4a78;
-  --editor-selection-inactive: #252a33;
-  --editor-selection-highlight: #6aa9ff26;
-  --editor-line-number: #5d6572;
-  --editor-line-number-active: #b3b9c4;
-  --editor-cursor: #6aa9ff;
-  --editor-indent-guide: #252a33;
-  --editor-indent-guide-active: #3d4452;
-  --editor-bracket-match-bg: #6aa9ff1f;
-  --editor-bracket-match-border: #6aa9ff66;
-  --editor-find-match: #e6b45066;
-  --editor-find-match-highlight: #e6b4502e;
-  --editor-diff-inserted: #4fcf8e24;
-  --editor-diff-removed: #ff7a7a24;
-  --editor-scrollbar: #6f778540;
-  --editor-scrollbar-hover: #6f778570;
-  --editor-scrollbar-active: #969dab80;
-
-  --syntax-comment: #7d8594;
-  --syntax-comment-doc: #969dab;
-  --syntax-keyword: #c4a2ff;
-  --syntax-operator: #9fb1c9;
-  --syntax-storage: #c4a2ff;
-  --syntax-type: #e6b450;
-  --syntax-string: #7fd69b;
-  --syntax-escape: #4cc9c0;
-  --syntax-number: #f2955a;
-  --syntax-function: #6aa9ff;
-  --syntax-variable: #e4e7ec;
-  --syntax-parameter: #c7ccd6;
-  --syntax-language: #f2955a;
-  --syntax-tag: #ff7a7a;
-  --syntax-tag-class: #4cc9c0;
-  --syntax-delimiter: #969dab;
-  --syntax-bracket: #9fb1c9;
-  --syntax-curly: #b794f6;
-  --syntax-invalid: #ff7a7a;
-
-  --terminal-bg: #0f1115;
-  --term-fg: #e4e7ec;
-  --term-cursor: #6aa9ff;
-  --term-selection: rgba(106, 169, 255, 0.3);
-  --term-black: #1b1f26;
-  --term-red: #f0616b;
-  --term-green: #3fb97a;
-  --term-yellow: #d9a441;
-  --term-blue: #4f8fe8;
-  --term-magenta: #a57be8;
-  --term-cyan: #36b3aa;
-  --term-white: #b3b9c4;
-  --term-bright-black: #6f7785;
-  --term-bright-red: #ff7a7a;
-  --term-bright-green: #4fcf8e;
-  --term-bright-yellow: #e6b450;
-  --term-bright-blue: #6aa9ff;
-  --term-bright-magenta: #b794f6;
-  --term-bright-cyan: #4cc9c0;
-  --term-bright-white: #f4f6f9;
 }
 
 /* ── Modern Light ───────────────────────────────────────────────────────── */

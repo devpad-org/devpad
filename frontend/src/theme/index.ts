@@ -11,15 +11,15 @@ import type { ITheme } from '@xterm/xterm'
 // chosen by. The server keeps the same list (settings.Themes); a Go test and
 // `npm run check-themes` fail when the three disagree.
 export const THEMES = [
-  { id: 'gruvbox-dark', label: 'Gruvbox Dark', description: 'Warm, retro and easy on the eyes. The default.' },
+  { id: 'gruvbox-dark', label: 'Gruvbox Dark', description: 'Warm, retro and easy on the eyes.' },
   { id: 'gruvbox-light', label: 'Gruvbox Light', description: 'The same warm palette on cream paper.' },
-  { id: 'modern-dark', label: 'Modern Dark', description: 'Cool, neutral surfaces with a blue accent.' },
+  { id: 'modern-dark', label: 'Modern Dark', description: 'Cool, neutral surfaces with a blue accent. The default.' },
   { id: 'modern-light', label: 'Modern Light', description: 'Clean and bright, with a blue accent.' },
 ] as const satisfies readonly { id: string; label: string; description: string }[]
 
 export type ThemeId = (typeof THEMES)[number]['id']
 
-export const DEFAULT_THEME: ThemeId = 'gruvbox-dark'
+export const DEFAULT_THEME: ThemeId = 'modern-dark'
 
 // Also read by the inline script in index.html, which applies the theme
 // before the first paint.
