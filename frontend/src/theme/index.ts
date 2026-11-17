@@ -45,6 +45,14 @@ function storedTheme(): ThemeId {
 
 const current = ref<ThemeId>(storedTheme())
 
+// How many times the theme has been switched, here or in another tab.
+let switches = 0
+
+/** Counts every switch of theme, so a caller can tell whether one happened while it waited. */
+export function themeSwitchCount(): number {
+  return switches
+}
+
 /** The theme in use. Changes when the user picks another, here or in another tab. */
 export const currentTheme = readonly(current)
 
@@ -393,6 +401,7 @@ function applyDocumentChrome() {
 }
 
 function apply(id: ThemeId) {
+  switches++
   document.documentElement.dataset.theme = id
   current.value = id
   applyDocumentChrome()

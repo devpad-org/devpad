@@ -3,12 +3,18 @@
 // can paint in it before anyone has signed in.
 
 import { settingsApi } from '@/api/settings'
-import { currentTheme, isThemeId, setTheme, type ThemeId } from '.'
+import { currentTheme, isThemeId, setTheme, themeSwitchCount, type ThemeId } from '.'
 
-/** Switches to the signed-in user's theme, if this browser was showing another. */
+/**
+ * Switches to the signed-in user's theme, if this browser was showing another.
+ * A theme picked while the request is out, here or in another tab, is newer
+ * than the one it brings back, so it stays.
+ */
 export async function syncThemeFromAccount() {
+  const switches = themeSwitchCount()
   try {
     const { theme } = await settingsApi.getPreferences()
+    if (themeSwitchCount() !== switches) return
     if (isThemeId(theme) && theme !== currentTheme.value) setTheme(theme)
   } catch {
     // The browser's remembered theme stays.

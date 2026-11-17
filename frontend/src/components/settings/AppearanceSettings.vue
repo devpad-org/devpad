@@ -5,6 +5,11 @@ import { chooseTheme } from '@/theme/account'
 
 const saving = ref(false)
 const error = ref('')
+const group = ref<HTMLElement | null>(null)
+
+function focusOption(id: ThemeId) {
+  group.value?.querySelector<HTMLElement>(`[data-theme-option="${id}"]`)?.focus()
+}
 
 async function choose(id: ThemeId) {
   if (saving.value || id === currentTheme.value) return
@@ -14,20 +19,23 @@ async function choose(id: ThemeId) {
     await chooseTheme(id)
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to save the theme'
+    // The choice was undone: focus goes back with it to the checked option.
+    if (group.value?.contains(document.activeElement)) focusOption(currentTheme.value)
   } finally {
     saving.value = false
   }
 }
 
-// Arrow keys move the choice, as in any radio group.
+// Arrow keys move the choice, as in any radio group. Focus moves with it,
+// so while a choice is still saving, the key does nothing.
 function onKeydown(event: KeyboardEvent, index: number) {
   const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key]
   if (!step) return
   event.preventDefault()
+  if (saving.value) return
   const next = THEMES[(index + step + THEMES.length) % THEMES.length]
   void choose(next.id)
-  const group = (event.currentTarget as HTMLElement).parentElement
-  group?.querySelector<HTMLElement>(`[data-theme-option="${next.id}"]`)?.focus()
+  focusOption(next.id)
 }
 </script>
 
@@ -40,7 +48,7 @@ function onKeydown(event: KeyboardEvent, index: number) {
 
     <div v-if="error" class="alert alert-error" role="alert">{{ error }}</div>
 
-    <div class="theme-grid" role="radiogroup" aria-label="Theme">
+    <div ref="group" class="theme-grid" role="radiogroup" aria-label="Theme">
       <button
         v-for="(theme, index) in THEMES"
         :key="theme.id"
