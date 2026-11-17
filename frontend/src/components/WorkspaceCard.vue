@@ -342,12 +342,12 @@ function formatDate(dateStr: string) {
 }
 
 .btn-open {
-  background: var(--accent-blue);
-  color: var(--bg-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
 }
 
 .btn-open:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--fill-hover-mix));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
 }
 
 .btn-start {

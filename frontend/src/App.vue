@@ -156,7 +156,7 @@ async function handleLogout() {
 }
 
 .nav-link.router-link-active {
-  color: var(--accent-blue);
+  color: var(--accent);
   background: var(--accent-glow);
 }
 

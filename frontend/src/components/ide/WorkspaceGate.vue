@@ -86,8 +86,8 @@ const emit = defineEmits<{
 
 .gate-btn {
   padding: var(--space-2) var(--space-4);
-  background: var(--accent-blue);
-  color: var(--bg-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
   border-radius: var(--radius-md);
   font-size: 0.8rem;
   font-weight: 500;
@@ -95,7 +95,7 @@ const emit = defineEmits<{
 }
 
 .gate-btn:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--fill-hover-mix));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
 }
 
 .gate-error {

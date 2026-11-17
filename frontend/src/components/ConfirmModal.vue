@@ -113,7 +113,7 @@ const emit = defineEmits<{
 
 .modal-icon.default {
   background: var(--accent-glow);
-  color: var(--accent-blue);
+  color: var(--accent);
 }
 
 .modal-title {
@@ -168,12 +168,12 @@ const emit = defineEmits<{
 }
 
 .btn-confirm.default {
-  background: var(--accent-blue);
-  color: var(--bg-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
 }
 
 .btn-confirm.default:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--fill-hover-mix));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
 }
 
 .btn:disabled {

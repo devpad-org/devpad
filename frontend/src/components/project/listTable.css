@@ -69,8 +69,8 @@
   height: 24px;
   padding: 0 var(--space-2);
   border-radius: var(--radius-md);
-  background: var(--accent-blue);
-  color: var(--bg-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
   font-size: 0.72rem;
   font-weight: 500;
   white-space: nowrap;
@@ -79,7 +79,7 @@
 
 .new-btn:hover:not(:disabled),
 .btn-primary-sm:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--fill-hover-mix));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
 }
 
 .new-btn:disabled {

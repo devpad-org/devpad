@@ -93,12 +93,12 @@
 }
 
 .btn-primary {
-  background: var(--accent-blue);
-  color: var(--bg-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--fill-hover-mix));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
 }
 
 .btn-secondary {

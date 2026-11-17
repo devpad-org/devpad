@@ -94,7 +94,7 @@ const emit = defineEmits<{
   border-radius: 50%;
   flex-shrink: 0;
   background: var(--accent-glow);
-  color: var(--accent-blue);
+  color: var(--accent);
 }
 
 .modal-title {
@@ -182,12 +182,12 @@ const emit = defineEmits<{
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  background: var(--accent-blue);
-  color: var(--bg-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
 }
 
 .btn-confirm:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--text-primary));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
 }
 
 .btn:disabled {

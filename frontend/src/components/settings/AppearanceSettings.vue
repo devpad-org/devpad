@@ -169,7 +169,7 @@ function onKeydown(event: KeyboardEvent, index: number) {
   height: 9px;
   margin-left: auto;
   border-radius: 2px;
-  background: var(--accent-blue);
+  background: var(--accent);
 }
 
 .preview-body {

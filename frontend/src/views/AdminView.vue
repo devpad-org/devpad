@@ -614,7 +614,7 @@ function isSelf(user: AdminUser): boolean {
   letter-spacing: 0.05em;
   border-radius: var(--radius-sm);
   background: var(--accent-glow);
-  color: var(--accent-blue);
+  color: var(--accent);
   border: 0.5px solid var(--accent-border);
 }
 
