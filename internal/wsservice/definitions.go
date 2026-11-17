@@ -8,8 +8,9 @@ import (
 )
 
 // definition is everything devpad knows about one kind of service. Adding a
-// service is one entry in definitions, plus its type in the frontend's
-// catalog for its label, icon and description.
+// service is one entry in definitions; the frontend's serviceCatalog gives
+// it a label, icon and description (TestServiceCatalogMatchesFrontend keeps
+// the two in step).
 type definition struct {
 	// defaults is the service's configuration before devpad generates its
 	// password.
@@ -21,13 +22,20 @@ type definition struct {
 	// mount covers exactly, so data kept there would not be in the
 	// service's volume.
 	dataDir string
-	// env is the sidecar container's environment.
+	// env is the sidecar container's environment. It never accepts licence
+	// terms: that is the license's acceptEnv, which containerEnv adds only
+	// once a user has accepted them.
 	env func(cfg ServiceConfig) []string
 	// connectionEnv is what a workspace is given to reach the service. Nil
 	// gives the usual <TYPE>_HOST, _PORT, _USER, _PASSWORD and _DATABASE.
 	connectionEnv func(host string, cfg ServiceConfig) []string
+	// connection is what the IDE shows a client to reach the service with.
+	connection func(host string, cfg ServiceConfig) Connection
+	// credentials are the names and secrets the IDE shows beside the
+	// connection. Nil gives the service's user, password and database.
+	credentials func(cfg ServiceConfig) []Credential
 	// license, when set, is terms the user must accept before the service
-	// is deployed, because its environment accepts them for the image.
+	// is deployed, because its container accepts them for the image.
 	license *License
 	// requiredArch, when set, is the only Docker daemon architecture the
 	// image supports.
@@ -44,6 +52,33 @@ type License struct {
 	URL  string `json:"url"`
 	// Notes say what accepting the terms means here.
 	Notes []string `json:"notes"`
+	// acceptEnv is what accepts the terms for the image. It is added to the
+	// container's environment only for a service whose config records a
+	// user accepting them, and never sent to the browser.
+	acceptEnv []string
+}
+
+// Connection is what a client reaches a service with, as the IDE shows it.
+type Connection struct {
+	// Label names the value, such as "Connection URL".
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// Credential is one name or secret a client needs, shown on its own.
+type Credential struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// CatalogEntry is one service type a workspace can deploy, as the catalog
+// shows it.
+type CatalogEntry struct {
+	Type ServiceType `json:"type"`
+	// License, when set, is the terms a user must accept to deploy it.
+	License *License `json:"license,omitempty"`
+	// Unavailable, when set, is why this Docker host cannot run it.
+	Unavailable string `json:"unavailable,omitempty"`
 }
 
 var definitions = map[ServiceType]definition{
@@ -59,6 +94,9 @@ var definitions = map[ServiceType]definition{
 				"PGDATA=/data/pgdata",
 			}
 		},
+		connection: func(host string, cfg ServiceConfig) Connection {
+			return connectionURL(fmt.Sprintf("postgresql://%s:%s@%s:%d/%s", cfg.DefaultUser, cfg.DefaultPass, host, cfg.Port, cfg.DefaultDB))
+		},
 	},
 	ServiceMongoDB: {
 		defaults: ServiceConfig{Image: "mongo:8", Port: 27017, DefaultUser: "devpad", DefaultDB: "devpad"},
@@ -69,6 +107,10 @@ var definitions = map[ServiceType]definition{
 				"MONGO_INITDB_ROOT_PASSWORD=" + cfg.DefaultPass,
 				"MONGO_INITDB_DATABASE=" + cfg.DefaultDB,
 			}
+		},
+		connection: func(host string, cfg ServiceConfig) Connection {
+			// The user is a root user, so it authenticates against admin.
+			return connectionURL(fmt.Sprintf("mongodb://%s:%s@%s:%d/%s?authSource=admin", cfg.DefaultUser, cfg.DefaultPass, host, cfg.Port, cfg.DefaultDB))
 		},
 	},
 	ServiceMariaDB: {
@@ -82,6 +124,9 @@ var definitions = map[ServiceType]definition{
 				"MARIADB_ROOT_PASSWORD=" + cfg.DefaultPass,
 			}
 		},
+		connection: func(host string, cfg ServiceConfig) Connection {
+			return connectionURL(fmt.Sprintf("mysql://%s:%s@%s:%d/%s", cfg.DefaultUser, cfg.DefaultPass, host, cfg.Port, cfg.DefaultDB))
+		},
 	},
 	ServiceCouchDB: {
 		defaults: ServiceConfig{Image: "couchdb:3", Port: 5984, DefaultUser: "devpad", DefaultDB: "devpad"},
@@ -91,6 +136,9 @@ var definitions = map[ServiceType]definition{
 				"COUCHDB_USER=" + cfg.DefaultUser,
 				"COUCHDB_PASSWORD=" + cfg.DefaultPass,
 			}
+		},
+		connection: func(host string, cfg ServiceConfig) Connection {
+			return connectionURL(fmt.Sprintf("http://%s:%s@%s:%d/%s", cfg.DefaultUser, cfg.DefaultPass, host, cfg.Port, cfg.DefaultDB))
 		},
 	},
 	ServiceMeilisearch: {
@@ -114,6 +162,12 @@ var definitions = map[ServiceType]definition{
 				"MEILI_MASTER_KEY=" + cfg.DefaultPass,
 			}
 		},
+		connection: func(host string, cfg ServiceConfig) Connection {
+			return connectionURL(fmt.Sprintf("http://%s:%d", host, cfg.Port))
+		},
+		credentials: func(cfg ServiceConfig) []Credential {
+			return []Credential{{Label: "Master key", Value: cfg.DefaultPass}}
+		},
 	},
 	ServiceSQLServer: {
 		defaults: ServiceConfig{Image: "mcr.microsoft.com/mssql/server:2025-latest", Port: 1433, DefaultUser: "devpad", DefaultDB: "devpad"},
@@ -122,9 +176,6 @@ var definitions = map[ServiceType]definition{
 		dataDir: "/var/opt/mssql",
 		env: func(cfg ServiceConfig) []string {
 			return []string{
-				// Only set once the user deploying it has accepted the
-				// licence terms; see startOne.
-				"ACCEPT_EULA=Y",
 				// The free Enterprise Developer edition, which has no
 				// production use rights. Never a paid edition or a product
 				// key.
@@ -138,6 +189,14 @@ var definitions = map[ServiceType]definition{
 				"MSSQL_MEMORY_LIMIT_MB=2048",
 			}
 		},
+		connection: func(host string, cfg ServiceConfig) Connection {
+			// ADO.NET form. SQL Server's certificate is self-signed, so
+			// clients that encrypt by default have to be told to trust it.
+			return Connection{
+				Label: "Connection string",
+				Value: fmt.Sprintf("Server=%s,%d;Database=%s;User Id=%s;Password=%s;TrustServerCertificate=True", host, cfg.Port, cfg.DefaultDB, cfg.DefaultUser, cfg.DefaultPass),
+			}
+		},
 		license: &License{
 			Name: "Microsoft SQL Server licence terms",
 			// The link SQL Server itself prints when its EULA isn't accepted.
@@ -146,6 +205,7 @@ var definitions = map[ServiceType]definition{
 				"Developer edition is for development and testing only, not production.",
 				"SQL Server sends usage data to Microsoft, which free editions cannot turn off.",
 			},
+			acceptEnv: []string{"ACCEPT_EULA=Y"},
 		},
 		// Microsoft publishes SQL Server images for x86-64 only, and
 		// supports them under emulation on no other architecture.
@@ -174,17 +234,29 @@ func SupportedTypes() []string {
 	return types
 }
 
-// Licenses maps each service type with licence terms to them.
-func Licenses() map[ServiceType]License {
-	licenses := map[ServiceType]License{}
-	for t, def := range definitions {
-		if def.license != nil {
-			l := *def.license
-			l.Notes = slices.Clone(l.Notes)
-			licenses[t] = l
-		}
+// catalogLicense returns a copy of the definition's licence terms for the
+// catalog, or nil when it has none.
+func (d definition) catalogLicense() *License {
+	if d.license == nil {
+		return nil
 	}
-	return licenses
+	l := *d.license
+	l.Notes = slices.Clone(l.Notes)
+	l.acceptEnv = nil
+	return &l
+}
+
+// containerEnv is the sidecar container's environment. For a service with
+// licence terms it accepts them for the image, and so it refuses unless cfg
+// records a user accepting them.
+func (d definition) containerEnv(cfg ServiceConfig) ([]string, error) {
+	if d.license == nil {
+		return d.env(cfg), nil
+	}
+	if cfg.LicenseAcceptance == nil {
+		return nil, ErrLicenseNotAccepted
+	}
+	return slices.Concat(d.env(cfg), d.license.acceptEnv), nil
 }
 
 // connectionVars is what a workspace is given to reach a service of type t
@@ -201,4 +273,20 @@ func (d definition) connectionVars(t ServiceType, host string, cfg ServiceConfig
 		fmt.Sprintf("%s_PASSWORD=%s", prefix, cfg.DefaultPass),
 		fmt.Sprintf("%s_DATABASE=%s", prefix, cfg.DefaultDB),
 	}
+}
+
+// credentialFields are the names and secrets the IDE shows for the service.
+func (d definition) credentialFields(cfg ServiceConfig) []Credential {
+	if d.credentials != nil {
+		return d.credentials(cfg)
+	}
+	return []Credential{
+		{Label: "User", Value: cfg.DefaultUser},
+		{Label: "Password", Value: cfg.DefaultPass},
+		{Label: "Database", Value: cfg.DefaultDB},
+	}
+}
+
+func connectionURL(url string) Connection {
+	return Connection{Label: "Connection URL", Value: url}
 }

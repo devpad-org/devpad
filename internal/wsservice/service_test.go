@@ -128,6 +128,8 @@ type fakeContainerManager struct {
 	volumes        []string
 	arch           string
 	archCalls      int
+	removed        []string
+	removedSidecar []string
 }
 
 func (m *fakeContainerManager) Create(_ context.Context, _, _, _, _ string, _ []string, _, _ int64) (string, error) {
@@ -146,7 +148,13 @@ func (m *fakeContainerManager) Restart(_ context.Context, _ string) error {
 	return nil
 }
 
-func (m *fakeContainerManager) Remove(_ context.Context, _ string) error {
+func (m *fakeContainerManager) Remove(_ context.Context, id string) error {
+	m.removed = append(m.removed, id)
+	return nil
+}
+
+func (m *fakeContainerManager) RemoveSidecar(_ context.Context, id string) error {
+	m.removedSidecar = append(m.removedSidecar, id)
 	return nil
 }
 

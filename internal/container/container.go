@@ -86,6 +86,10 @@ type Manager interface {
 	// Docker refuses while a container uses the image.
 	RemoveImage(ctx context.Context, ref string) error
 	CreateSidecar(ctx context.Context, spec SidecarSpec) (containerID string, err error)
+	// RemoveSidecar removes a sidecar container and the anonymous volumes
+	// its image declared. A sidecar's data is in its named volume, so an
+	// anonymous one holds nothing worth keeping and would otherwise leak.
+	RemoveSidecar(ctx context.Context, containerID string) error
 	// DaemonArch returns the Docker daemon's CPU architecture in Go's
 	// naming, such as amd64 or arm64.
 	DaemonArch(ctx context.Context) (string, error)
@@ -242,8 +246,15 @@ func (m *manager) CopyFileToContainer(ctx context.Context, containerID, destPath
 }
 
 func (m *manager) Remove(ctx context.Context, containerID string) error {
-	if _, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
+	if _, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true}); err != nil {
 		return fmt.Errorf("removing container: %w", err)
+	}
+	return nil
+}
+
+func (m *manager) RemoveSidecar(ctx context.Context, containerID string) error {
+	if _, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
+		return fmt.Errorf("removing sidecar container: %w", err)
 	}
 	return nil
 }

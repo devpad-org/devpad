@@ -20,7 +20,8 @@ var (
 	ErrDuplicateType = errors.New("workspace already has a service of this type")
 	ErrInvalidType   = errors.New("unsupported service type")
 	// ErrLicenseNotAccepted is returned when a service with licence terms
-	// is created without the user accepting them.
+	// is created without the user accepting them, or would get a container
+	// without a record of their acceptance.
 	ErrLicenseNotAccepted = errors.New("the service's licence terms were not accepted")
 	// ErrUnsupportedArch is returned when the Docker daemon's architecture
 	// cannot run a service's image.
@@ -31,16 +32,16 @@ var (
 type CreateOptions struct {
 	UserID int64
 	// AcceptLicense is the user's acceptance of the service's licence
-	// terms, required for a service that has them (see Licenses).
+	// terms, required for a service that has them (see Catalog).
 	AcceptLicense bool
 }
 
 // Service defines workspace service business logic.
 type Service interface {
 	Create(ctx context.Context, workspaceID int64, serviceType ServiceType, opts CreateOptions) (*WorkspaceService, error)
-	// Unavailable maps each service type this Docker host cannot run to
-	// the reason why.
-	Unavailable(ctx context.Context) map[ServiceType]string
+	// Catalog lists every service type a workspace can deploy, sorted, with
+	// its licence terms and whether this Docker host can run it.
+	Catalog(ctx context.Context) []CatalogEntry
 	List(ctx context.Context, workspaceID int64) ([]*WorkspaceService, error)
 	Get(ctx context.Context, id int64) (*WorkspaceService, error)
 	Delete(ctx context.Context, id int64) error
@@ -160,27 +161,31 @@ func (s *service) daemonArch(ctx context.Context) (string, error) {
 	return arch, nil
 }
 
-func (s *service) Unavailable(ctx context.Context) map[ServiceType]string {
-	unavailable := map[ServiceType]string{}
+func (s *service) Catalog(ctx context.Context) []CatalogEntry {
+	catalog := make([]CatalogEntry, 0, len(definitions))
 	var arch string
-	for serviceType, def := range definitions {
-		if def.requiredArch == "" {
-			continue
-		}
+	archKnown := true
+	for _, t := range SupportedTypes() {
+		serviceType := ServiceType(t)
+		def := definitions[serviceType]
+		entry := CatalogEntry{Type: serviceType, License: def.catalogLicense()}
 		// Docker is asked only when some service needs a particular
-		// architecture.
-		if arch == "" {
-			var err error
-			if arch, err = s.daemonArch(ctx); err != nil {
-				log.Printf("checking docker architecture: %v", err)
-				return map[ServiceType]string{}
+		// architecture. If it cannot say, Create refuses with the reason.
+		if def.requiredArch != "" && archKnown {
+			if arch == "" {
+				var err error
+				if arch, err = s.daemonArch(ctx); err != nil {
+					log.Printf("checking docker architecture: %v", err)
+					archKnown = false
+				}
+			}
+			if archKnown && arch != def.requiredArch {
+				entry.Unavailable = fmt.Sprintf("needs an %s Docker host; this one is %s", def.requiredArch, arch)
 			}
 		}
-		if arch != def.requiredArch {
-			unavailable[serviceType] = fmt.Sprintf("needs an %s Docker host; this one is %s", def.requiredArch, arch)
-		}
+		catalog = append(catalog, entry)
 	}
-	return unavailable
+	return catalog
 }
 
 func (s *service) List(ctx context.Context, workspaceID int64) ([]*WorkspaceService, error) {
@@ -211,7 +216,7 @@ func (s *service) Delete(ctx context.Context, id int64) error {
 	// Stop and remove the container if running.
 	if svc.ContainerID != "" {
 		_ = s.container.Stop(ctx, svc.ContainerID)
-		if err := s.container.Remove(ctx, svc.ContainerID); err != nil {
+		if err := s.container.RemoveSidecar(ctx, svc.ContainerID); err != nil {
 			log.Printf("service %d: failed to remove container: %v", svc.ID, err)
 		}
 	}
@@ -338,16 +343,15 @@ func (s *service) startOne(ctx context.Context, svc *WorkspaceService, networkNa
 		if !ok {
 			return ErrInvalidType
 		}
-		// The image's licence terms are accepted for it in its
-		// environment, so only once a user has accepted them.
-		if def.license != nil && cfg.LicenseAcceptance == nil {
-			return ErrLicenseNotAccepted
+		env, err := def.containerEnv(cfg)
+		if err != nil {
+			return err
 		}
 		containerID, err := s.container.CreateSidecar(ctx, container.SidecarSpec{
 			Name:    sidecarContainerName(svc.WorkspaceID, svc.ServiceType),
 			Image:   cfg.Image,
 			Network: networkName,
-			Env:     def.env(cfg),
+			Env:     env,
 			Volume:  svc.VolumeName,
 			DataDir: def.dataDir,
 		})

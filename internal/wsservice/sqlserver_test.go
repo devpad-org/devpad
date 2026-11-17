@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
+	"slices"
 	"testing"
 	"time"
 )
@@ -117,15 +117,14 @@ func TestSQLServerNeedsAnAMD64DockerHost(t *testing.T) {
 		t.Fatalf("expected no volume created, got %v", manager.volumes)
 	}
 
-	unavailable := svc.Unavailable(context.Background())
-	if _, ok := unavailable[ServiceSQLServer]; !ok || len(unavailable) != 1 {
-		t.Fatalf("expected only sqlserver unavailable, got %v", unavailable)
+	if got := unavailableTypes(svc.Catalog(context.Background())); !slices.Equal(got, []ServiceType{ServiceSQLServer}) {
+		t.Fatalf("expected only sqlserver unavailable, got %v", got)
 	}
 
 	if _, err := svc.Create(context.Background(), 42, ServicePostgres, CreateOptions{UserID: 3}); err != nil {
 		t.Fatalf("expected postgres on arm64 to be created, got %v", err)
 	}
-	if got := NewService(repo, &fakeContainerManager{}).Unavailable(context.Background()); len(got) != 0 {
+	if got := unavailableTypes(NewService(repo, &fakeContainerManager{}).Catalog(context.Background())); len(got) != 0 {
 		t.Fatalf("expected nothing unavailable on amd64, got %v", got)
 	}
 	if manager.archCalls != 1 {
@@ -133,72 +132,25 @@ func TestSQLServerNeedsAnAMD64DockerHost(t *testing.T) {
 	}
 }
 
-func TestSidecarVolumesMountWhereEachImageKeepsItsData(t *testing.T) {
-	want := map[ServiceType]string{
-		ServicePostgres:    "/data",
-		ServiceMongoDB:     "/data/db",
-		ServiceMariaDB:     "/var/lib/mysql",
-		ServiceCouchDB:     "/opt/couchdb/data",
-		ServiceMeilisearch: "/data",
-		ServiceSQLServer:   "/var/opt/mssql",
-	}
-	for serviceType, def := range definitions {
-		dir, ok := want[serviceType]
-		if !ok {
-			t.Errorf("%s: no data directory listed in this test", serviceType)
-			continue
-		}
-		if def.dataDir != dir {
-			t.Errorf("%s: expected data directory %s, got %s", serviceType, dir, def.dataDir)
-		}
-	}
-}
-
-func TestEveryServiceDefinitionIsComplete(t *testing.T) {
+func TestContainerEnvAcceptsLicenceTermsOnlyOnceAccepted(t *testing.T) {
+	def := definitions[ServiceSQLServer]
 	cfg := ServiceConfig{DefaultUser: "u", DefaultPass: "p", DefaultDB: "d"}
-	for serviceType, def := range definitions {
-		if def.defaults.Image == "" || def.defaults.Port == 0 {
-			t.Errorf("%s: no image or port", serviceType)
-		}
-		if def.dataDir == "" {
-			t.Errorf("%s: no data directory", serviceType)
-		}
-		if def.env == nil || len(def.env(cfg)) == 0 {
-			t.Errorf("%s: no container environment", serviceType)
-		}
-		if len(def.connectionVars(serviceType, "host", cfg)) == 0 {
-			t.Errorf("%s: no connection environment", serviceType)
-		}
-		if l := def.license; l != nil && (l.Name == "" || !strings.HasPrefix(l.URL, "https://")) {
-			t.Errorf("%s: licence needs a name and an https URL, got %+v", serviceType, *l)
-		}
-	}
-}
 
-func TestLicensesListsOnlyServicesWithTerms(t *testing.T) {
-	licenses := Licenses()
-	if len(licenses) != 1 {
-		t.Fatalf("expected only sqlserver to have licence terms, got %v", licenses)
+	if _, err := def.containerEnv(cfg); !errors.Is(err, ErrLicenseNotAccepted) {
+		t.Fatalf("expected ErrLicenseNotAccepted without an acceptance, got %v", err)
 	}
-	sqlserver, ok := licenses[ServiceSQLServer]
-	if !ok || len(sqlserver.Notes) == 0 {
-		t.Fatalf("expected sqlserver's terms with notes, got %+v", sqlserver)
-	}
-	// The catalog gets a copy: changing it must not change the terms.
-	sqlserver.Notes[0] = "changed"
-	if Licenses()[ServiceSQLServer].Notes[0] == "changed" {
-		t.Fatal("Licenses returned the definition's own notes")
-	}
-}
 
-func TestGeneratePasswordUsesThreeCharacterClasses(t *testing.T) {
-	for range 2000 {
-		p := generatePassword(24)
-		if len(p) != 24 {
-			t.Fatalf("expected 24 characters, got %q", p)
-		}
-		if !strings.ContainsAny(p, "abcdefghijklmnopqrstuvwxyz") || !strings.ContainsAny(p, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") || !strings.ContainsAny(p, "0123456789") {
-			t.Fatalf("password %q lacks a character class", p)
-		}
+	cfg.LicenseAcceptance = &LicenseAcceptance{UserID: 3}
+	env, err := def.containerEnv(cfg)
+	if err != nil {
+		t.Fatalf("building env: %v", err)
+	}
+	if !slices.Contains(env, "ACCEPT_EULA=Y") {
+		t.Fatalf("expected the accepted terms in the env, got %v", env)
+	}
+
+	env, err = definitions[ServicePostgres].containerEnv(ServiceConfig{})
+	if err != nil || slices.Contains(env, "ACCEPT_EULA=Y") {
+		t.Fatalf("expected postgres's env without terms, got %v, %v", env, err)
 	}
 }

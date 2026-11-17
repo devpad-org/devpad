@@ -49,9 +49,8 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		items = append(items, serviceResponse(svc))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"services":    items,
-		"unavailable": h.service.Unavailable(r.Context()),
-		"licenses":    Licenses(),
+		"services": items,
+		"catalog":  h.service.Catalog(r.Context()),
 	})
 }
 
@@ -241,11 +240,24 @@ func serviceResponse(svc *WorkspaceService) map[string]any {
 	var cfg ServiceConfig
 	_ = json.Unmarshal([]byte(svc.Config), &cfg)
 
+	// How the IDE shows a client reaching the service. A row whose type
+	// devpad no longer defines is shown with its host alone.
+	host := sidecarContainerName(svc.WorkspaceID, svc.ServiceType)
+	connection := Connection{}
+	credentials := []Credential{}
+	if def, ok := lookupDefinition(svc.ServiceType); ok {
+		connection = def.connection(host, cfg)
+		credentials = def.credentialFields(cfg)
+	}
+
 	return map[string]any{
 		"id":          svc.ID,
 		"workspaceId": svc.WorkspaceID,
 		"serviceType": svc.ServiceType,
 		"status":      svc.Status,
+		"host":        host,
+		"connection":  connection,
+		"credentials": credentials,
 		"config": map[string]any{
 			"image":       cfg.Image,
 			"port":        cfg.Port,

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import type { WorkspaceService } from '@/api/services'
 import ServiceCopyButton from './ServiceCopyButton.vue'
-import { connectionLabel, connectionString, serviceCredentialFields, serviceHost } from './serviceConnection'
 import { serviceTypeIcon, serviceTypeLabel } from './serviceCatalog'
 
 defineProps<{
@@ -41,8 +40,8 @@ const emit = defineEmits<{
       <div class="info-row">
         <dt>Host</dt>
         <dd>
-          <span class="mono">{{ serviceHost(service) }}</span>
-          <ServiceCopyButton :value="serviceHost(service)" label="service host" />
+          <span class="mono">{{ service.host }}</span>
+          <ServiceCopyButton :value="service.host" label="service host" />
         </dd>
       </div>
       <div class="info-row">
@@ -52,21 +51,21 @@ const emit = defineEmits<{
           <ServiceCopyButton :value="service.config.port" label="service port" />
         </dd>
       </div>
-      <div v-for="field in serviceCredentialFields(service)" :key="field.label" class="info-row">
+      <div v-for="field in service.credentials" :key="field.label" class="info-row">
         <dt>{{ field.label }}</dt>
         <dd>
           <span class="mono">{{ field.value }}</span>
-          <ServiceCopyButton :value="field.value" :label="field.copyLabel" />
+          <ServiceCopyButton :value="field.value" :label="`${serviceTypeLabel(service.serviceType)} ${field.label.toLowerCase()}`" />
         </dd>
       </div>
     </dl>
 
     <div class="connection-block">
       <div>
-        <span>{{ connectionLabel(service) }}</span>
-        <code>{{ connectionString(service) }}</code>
+        <span>{{ service.connection.label }}</span>
+        <code>{{ service.connection.value }}</code>
       </div>
-      <ServiceCopyButton :value="connectionString(service)" :label="connectionLabel(service).toLowerCase()" />
+      <ServiceCopyButton :value="service.connection.value" :label="service.connection.label.toLowerCase()" />
     </div>
 
     <div class="service-actions">

@@ -1,12 +1,15 @@
-import type { WorkspaceService } from '@/api/services'
-
+/** How the IDE shows a service type the server defines. */
 export interface ServiceCatalogItem {
-  value: WorkspaceService['serviceType']
+  value: string
   label: string
   icon: string
   description: string
 }
 
+// Every service type internal/wsservice defines, in the order the catalog
+// lists them: TestServiceCatalogMatchesFrontend fails when the two differ.
+// What a service is and needs (its terms, its host architecture, how to
+// connect) comes from the server.
 export const serviceCatalog: ServiceCatalogItem[] = [
   {
     value: 'postgres',
@@ -42,14 +45,26 @@ export const serviceCatalog: ServiceCatalogItem[] = [
     value: 'sqlserver',
     label: 'SQL Server',
     icon: '🗄️',
-    description: 'Microsoft SQL Server 2025, free Enterprise Developer edition. Needs 2 GB of memory and an x86-64 host.',
+    description: 'Microsoft SQL Server 2025, free Enterprise Developer edition. Needs 2 GB of memory.',
   },
 ]
 
-export function serviceTypeLabel(type: WorkspaceService['serviceType'] | string) {
-  return serviceCatalog.find((service) => service.value === type)?.label ?? type
+/** How to show a service type, with plain defaults for one not listed. */
+export function serviceCatalogItem(type: string): ServiceCatalogItem {
+  return serviceCatalog.find((service) => service.value === type)
+    ?? { value: type, label: type, icon: '📦', description: '' }
 }
 
-export function serviceTypeIcon(type: WorkspaceService['serviceType'] | string) {
-  return serviceCatalog.find((service) => service.value === type)?.icon ?? '📦'
+/** Where a service type comes in the catalog; unlisted types come last. */
+export function serviceCatalogOrder(type: string): number {
+  const index = serviceCatalog.findIndex((service) => service.value === type)
+  return index === -1 ? serviceCatalog.length : index
+}
+
+export function serviceTypeLabel(type: string) {
+  return serviceCatalogItem(type).label
+}
+
+export function serviceTypeIcon(type: string) {
+  return serviceCatalogItem(type).icon
 }

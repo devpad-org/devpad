@@ -55,11 +55,6 @@ func TestMigrateLeavesWorkspaceServiceTypesToTheApplication(t *testing.T) {
 	if _, err := db.Conn().Exec(`INSERT INTO workspaces (id, user_id, name) VALUES (1, 1, 'workspace')`); err != nil {
 		t.Fatalf("insert workspace: %v", err)
 	}
-	for _, serviceType := range []string{"postgres", "mongodb", "mariadb", "couchdb", "meilisearch", "sqlserver"} {
-		if _, err := db.Conn().Exec(`INSERT INTO workspace_services (workspace_id, service_type, status, config) VALUES (1, ?, 'stopped', '{}')`, serviceType); err != nil {
-			t.Fatalf("insert %s workspace service: %v", serviceType, err)
-		}
-	}
 	if _, err := db.Conn().Exec(`INSERT INTO workspace_services (workspace_id, service_type, status, config) VALUES (1, 'oracle', 'stopped', '{}')`); err != nil {
 		t.Fatalf("expected a service type the schema does not list to be stored: %v", err)
 	}

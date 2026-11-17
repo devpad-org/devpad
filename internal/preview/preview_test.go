@@ -74,6 +74,8 @@ func (m *mockContainerManager) CreateSidecar(context.Context, container.SidecarS
 	return "sidecar-id", nil
 }
 
+func (m *mockContainerManager) RemoveSidecar(context.Context, string) error { return nil }
+
 func (m *mockContainerManager) DaemonArch(context.Context) (string, error) {
 	return "amd64", nil
 }
