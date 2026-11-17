@@ -52,6 +52,11 @@ export const useAuthStore = defineStore('auth', () => {
     needsSetup.value = false
   }
 
+  async function acceptInvite(data: { token: string; username: string; email: string; password: string }) {
+    const response = await authApi.acceptInvite(data)
+    user.value = response.user
+  }
+
   async function logout() {
     await authApi.logout()
     user.value = null
@@ -66,6 +71,7 @@ export const useAuthStore = defineStore('auth', () => {
     checkStatus,
     login,
     setup,
+    acceptInvite,
     logout,
   }
 })

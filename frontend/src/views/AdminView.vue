@@ -2,8 +2,8 @@
 import { ref, onMounted, computed } from 'vue'
 import { useAdminStore } from '@/stores/admin'
 import { useAuthStore } from '@/stores/auth'
-import type { AdminUser } from '@/api/admin'
-import type { AdminWorkspace } from '@/api/admin'
+import type { AdminInvite, AdminUser, AdminWorkspace, CreatedInvite } from '@/api/admin'
+import { writeClipboardText } from '@/utils/clipboard'
 
 const admin = useAdminStore()
 const auth = useAuthStore()
@@ -26,6 +26,19 @@ const editForm = ref({ username: '', email: '', isAdmin: false })
 // Reset password form
 const resetForm = ref({ password: '', confirmPassword: '' })
 
+// Invite modal: a form, then the new link, which is shown only this once.
+const showInviteModal = ref(false)
+const inviteForm = ref({ email: '', isAdmin: false, validDays: 7 })
+const inviteError = ref('')
+const inviteSubmitting = ref(false)
+const createdInvite = ref<CreatedInvite | null>(null)
+const inviteCopied = ref(false)
+const revokingInviteId = ref<number | null>(null)
+
+const inviteLink = computed(() =>
+  createdInvite.value ? `${window.location.origin}/invite#${createdInvite.value.token}` : '',
+)
+
 // Workspace limits modal
 const showLimitsModal = ref(false)
 const selectedWorkspace = ref<AdminWorkspace | null>(null)
@@ -45,6 +58,7 @@ const usernameMap = computed(() => {
 onMounted(() => {
   admin.fetchUsers()
   admin.fetchWorkspaces()
+  admin.fetchInvites()
 })
 
 function openCreate() {
@@ -155,6 +169,62 @@ async function handleDelete() {
   }
 }
 
+function openInvite() {
+  inviteForm.value = { email: '', isAdmin: false, validDays: 7 }
+  inviteError.value = ''
+  createdInvite.value = null
+  inviteCopied.value = false
+  showInviteModal.value = true
+}
+
+function closeInviteModal() {
+  showInviteModal.value = false
+  // Drop the token from memory once the dialog is closed.
+  createdInvite.value = null
+  inviteError.value = ''
+}
+
+async function handleCreateInvite() {
+  inviteError.value = ''
+  inviteSubmitting.value = true
+  try {
+    createdInvite.value = await admin.createInvite({
+      email: inviteForm.value.email.trim(),
+      isAdmin: inviteForm.value.isAdmin,
+      validDays: inviteForm.value.validDays,
+    })
+  } catch (e) {
+    inviteError.value = e instanceof Error ? e.message : 'Failed to create invite'
+  } finally {
+    inviteSubmitting.value = false
+  }
+}
+
+async function copyInviteLink() {
+  try {
+    await writeClipboardText(inviteLink.value)
+    inviteCopied.value = true
+  } catch {
+    inviteError.value = 'Could not copy; select the link and copy it yourself'
+  }
+}
+
+async function revokeInvite(invite: AdminInvite) {
+  revokingInviteId.value = invite.id
+  admin.invitesError = ''
+  try {
+    await admin.revokeInvite(invite.id)
+  } catch (e) {
+    admin.invitesError = e instanceof Error ? e.message : 'Failed to revoke invite'
+  } finally {
+    revokingInviteId.value = null
+  }
+}
+
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
+
 function openLimitsModal(ws: AdminWorkspace) {
   selectedWorkspace.value = ws
   limitsForm.value = {
@@ -221,7 +291,10 @@ function isSelf(user: AdminUser): boolean {
           <h1 class="admin-title">User Management</h1>
           <p class="admin-subtitle">Manage user accounts and permissions</p>
         </div>
-        <button class="btn-create" @click="openCreate">+ New User</button>
+        <div class="header-actions">
+          <button class="btn-secondary" @click="openInvite">Invite User</button>
+          <button class="btn-create" @click="openCreate">+ New User</button>
+        </div>
       </div>
 
       <div v-if="admin.error" class="alert alert-error">{{ admin.error }}</div>
@@ -272,6 +345,130 @@ function isSelf(user: AdminUser): boolean {
         </div>
       </div>
     </div>
+
+    <!-- Invites Section -->
+    <div class="admin-container section">
+      <div class="admin-header">
+        <div>
+          <h1 class="admin-title">Pending Invites</h1>
+          <p class="admin-subtitle">Invite links nobody has used yet. Revoking one stops its link working.</p>
+        </div>
+      </div>
+
+      <div v-if="admin.invitesError" class="alert alert-error">{{ admin.invitesError }}</div>
+
+      <div v-if="admin.invitesLoading" class="loading-state">Loading invites...</div>
+
+      <div v-else class="users-table-wrap">
+        <table v-if="admin.invites.length > 0" class="users-table">
+          <thead>
+            <tr>
+              <th>For</th>
+              <th>Role</th>
+              <th>Invited by</th>
+              <th>Expires</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="invite in admin.invites" :key="invite.id">
+              <td :class="invite.email ? 'cell-email' : 'cell-anyone'">{{ invite.email || 'Anyone with the link' }}</td>
+              <td>
+                <span class="badge-role" :class="invite.isAdmin ? 'admin' : 'user'">
+                  {{ invite.isAdmin ? 'Admin' : 'User' }}
+                </span>
+              </td>
+              <td>{{ invite.createdBy || 'Deleted user' }}</td>
+              <td class="cell-date">
+                <span v-if="invite.expired" class="badge-status expired">Expired</span>
+                <template v-else>{{ formatDateTime(invite.expiresAt) }}</template>
+              </td>
+              <td class="cell-actions">
+                <button
+                  class="btn-action btn-danger"
+                  :title="invite.expired ? 'Remove invite' : 'Revoke invite'"
+                  :disabled="revokingInviteId === invite.id"
+                  @click="revokeInvite(invite)"
+                >
+                  {{ invite.expired ? 'Remove' : 'Revoke' }}
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty-state">No pending invites.</div>
+      </div>
+    </div>
+
+    <!-- Invite User Modal -->
+    <Teleport to="body">
+      <div v-if="showInviteModal" class="modal-overlay" @click.self="closeInviteModal">
+        <div class="modal">
+          <template v-if="!createdInvite">
+            <h2 class="modal-title">Invite User</h2>
+            <p class="modal-subtitle">
+              Make a one-time link someone can use to create their own account. Send it to them yourself.
+            </p>
+            <div v-if="inviteError" class="alert alert-error">{{ inviteError }}</div>
+            <form @submit.prevent="handleCreateInvite">
+              <div class="form-field">
+                <label for="invite-email">Email <span class="label-optional">(optional)</span></label>
+                <input id="invite-email" v-model="inviteForm.email" type="email" autofocus placeholder="user@example.com" />
+                <p class="field-hint">If set, the account gets this email. Otherwise they choose one.</p>
+              </div>
+              <div class="form-field">
+                <label for="invite-valid">Link expires after</label>
+                <select id="invite-valid" v-model.number="inviteForm.validDays">
+                  <option :value="1">1 day</option>
+                  <option :value="7">7 days</option>
+                  <option :value="30">30 days</option>
+                </select>
+              </div>
+              <div class="form-field form-checkbox">
+                <label>
+                  <input v-model="inviteForm.isAdmin" type="checkbox" />
+                  <span>Admin privileges</span>
+                </label>
+              </div>
+              <div class="modal-actions">
+                <button type="button" class="btn-secondary" @click="closeInviteModal">Cancel</button>
+                <button type="submit" class="btn-primary" :disabled="inviteSubmitting">
+                  {{ inviteSubmitting ? 'Creating...' : 'Create Invite Link' }}
+                </button>
+              </div>
+            </form>
+          </template>
+
+          <template v-else>
+            <h2 class="modal-title">Invite Link</h2>
+            <p class="modal-subtitle">
+              Anyone with this link can create
+              <template v-if="createdInvite.isAdmin"><strong>an admin account</strong></template>
+              <template v-else>an account</template>
+              <template v-if="createdInvite.email"> for <strong>{{ createdInvite.email }}</strong></template>,
+              once, until {{ formatDateTime(createdInvite.expiresAt) }}.
+              <strong>This is the only time it's shown.</strong>
+            </p>
+            <div v-if="inviteError" class="alert alert-error">{{ inviteError }}</div>
+            <div class="invite-link-row">
+              <input
+                class="invite-link"
+                :value="inviteLink"
+                readonly
+                aria-label="Invite link"
+                @focus="($event.target as HTMLInputElement).select()"
+              />
+              <button type="button" class="btn-primary" @click="copyInviteLink">
+                {{ inviteCopied ? 'Copied' : 'Copy' }}
+              </button>
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn-secondary" @click="closeInviteModal">Done</button>
+            </div>
+          </template>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Create User Modal -->
     <Teleport to="body">
@@ -390,7 +587,7 @@ function isSelf(user: AdminUser): boolean {
     </Teleport>
 
     <!-- Workspaces Section -->
-    <div class="admin-container" style="margin-top: var(--space-6);">
+    <div class="admin-container section">
       <div class="admin-header">
         <div>
           <h1 class="admin-title">Workspaces</h1>
@@ -511,8 +708,69 @@ function isSelf(user: AdminUser): boolean {
 }
 
 .admin-subtitle {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.85rem;
+}
+
+.header-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.section {
+  margin-top: var(--space-6);
+}
+
+.cell-anyone {
+  font-style: italic;
+  color: var(--text-tertiary);
+}
+
+.label-optional {
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+
+.invite-link-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.invite-link {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-base);
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.invite-link:focus,
+.form-field select:focus {
+  outline: none;
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.form-field select {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-base);
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+.badge-status.expired {
+  background: var(--bg-neutral);
+  color: var(--text-secondary);
+  border: 0.5px solid var(--border-subtle);
+  text-transform: none;
 }
 
 .btn-create {
@@ -540,18 +798,18 @@ function isSelf(user: AdminUser): boolean {
 .alert-error {
   background: var(--error-bg);
   border: 0.5px solid var(--error-border);
-  color: var(--accent-rose);
+  color: var(--error);
 }
 
 .loading-state {
   text-align: center;
   padding: var(--space-8);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .users-table-wrap {
-  background: var(--bg-surface);
-  border: 0.5px solid var(--border-default);
+  background: var(--bg-elevated);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   overflow-x: auto;
 }
@@ -568,16 +826,16 @@ function isSelf(user: AdminUser): boolean {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--text-muted);
-  background: var(--bg-surface-alt);
-  border-bottom: 0.5px solid var(--border-default);
+  color: var(--text-tertiary);
+  background: var(--bg-raised);
+  border-bottom: 0.5px solid var(--border-subtle);
 }
 
 .users-table td {
   padding: var(--space-3) var(--space-4);
   font-size: 0.85rem;
   color: var(--text-secondary);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
 }
 
 .users-table tr:last-child td {
@@ -600,7 +858,7 @@ function isSelf(user: AdminUser): boolean {
 
 .cell-date {
   font-size: 0.8rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .badge-you {
@@ -635,7 +893,7 @@ function isSelf(user: AdminUser): boolean {
 .badge-role.user {
   background: var(--bg-neutral);
   color: var(--text-secondary);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
 }
 
 .cell-actions {
@@ -647,7 +905,7 @@ function isSelf(user: AdminUser): boolean {
   padding: var(--space-1) var(--space-2);
   font-size: 0.75rem;
   color: var(--text-secondary);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   transition: all var(--transition-fast);
   white-space: nowrap;
@@ -655,12 +913,12 @@ function isSelf(user: AdminUser): boolean {
 
 .btn-action:hover:not(:disabled) {
   color: var(--text-primary);
-  border-color: var(--border-active);
+  border-color: var(--border-strong);
   background: var(--bg-hover);
 }
 
 .btn-action.btn-danger:hover:not(:disabled) {
-  color: var(--accent-rose);
+  color: var(--error);
   border-color: var(--error-border);
   background: var(--error-bg);
 }
@@ -673,7 +931,7 @@ function isSelf(user: AdminUser): boolean {
 .empty-state {
   text-align: center;
   padding: var(--space-8);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.9rem;
 }
 
@@ -686,8 +944,8 @@ function isSelf(user: AdminUser): boolean {
   width: 100%;
   max-width: 420px;
   padding: var(--space-6);
-  background: var(--bg-surface);
-  border: 0.5px solid var(--border-default);
+  background: var(--bg-elevated);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-strong);
 }
@@ -727,8 +985,8 @@ function isSelf(user: AdminUser): boolean {
 .form-field input[type='password'] {
   width: 100%;
   padding: var(--space-2) var(--space-3);
-  background: var(--bg-primary);
-  border: 0.5px solid var(--border-default);
+  background: var(--bg-base);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: inherit;
@@ -743,7 +1001,7 @@ function isSelf(user: AdminUser): boolean {
 }
 
 .form-field input::placeholder {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .form-checkbox label {
@@ -756,7 +1014,7 @@ function isSelf(user: AdminUser): boolean {
 .form-checkbox input[type='checkbox'] {
   width: 16px;
   height: 16px;
-  accent-color: var(--accent-purple);
+  accent-color: var(--accent);
   cursor: pointer;
 }
 
@@ -768,7 +1026,7 @@ function isSelf(user: AdminUser): boolean {
 .field-hint {
   margin-top: var(--space-1);
   font-size: 0.75rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .modal-actions {
@@ -801,14 +1059,14 @@ function isSelf(user: AdminUser): boolean {
   padding: var(--space-2) var(--space-4);
   font-size: 0.85rem;
   color: var(--text-secondary);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   transition: all var(--transition-fast);
 }
 
 .btn-secondary:hover {
   color: var(--text-primary);
-  border-color: var(--border-active);
+  border-color: var(--border-strong);
   background: var(--bg-hover);
 }
 
@@ -818,7 +1076,7 @@ function isSelf(user: AdminUser): boolean {
   font-size: 0.85rem;
   border-radius: var(--radius-md);
   background: var(--error-bg);
-  color: var(--accent-rose);
+  color: var(--error);
   border: 0.5px solid var(--error-border);
   transition: all var(--transition-fast);
 }
@@ -843,19 +1101,19 @@ function isSelf(user: AdminUser): boolean {
 
 .badge-status.running {
   background: var(--success-bg);
-  color: var(--accent-green);
+  color: var(--success);
   border: 0.5px solid var(--success-border);
 }
 
 .badge-status.stopped {
   background: var(--bg-neutral);
   color: var(--text-secondary);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
 }
 
 .badge-status.creating {
   background: var(--warning-bg);
-  color: var(--accent-amber);
+  color: var(--warning);
   border: 0.5px solid var(--warning-border);
 }
 
@@ -868,8 +1126,8 @@ function isSelf(user: AdminUser): boolean {
 .form-field input[type='number'] {
   width: 100%;
   padding: var(--space-2) var(--space-3);
-  background: var(--bg-primary);
-  border: 0.5px solid var(--border-default);
+  background: var(--bg-base);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: var(--font-mono);

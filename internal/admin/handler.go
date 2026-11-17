@@ -60,6 +60,10 @@ func (h *Handler) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.service.CreateUser(r.Context(), req.Username, req.Email, req.Password, req.IsAdmin)
 	if err != nil {
+		if errors.Is(err, auth.ErrUserExists) {
+			writeError(w, http.StatusConflict, "username or email is already taken")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to create user")
 		return
 	}

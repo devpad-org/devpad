@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -28,12 +29,26 @@ func NewUserRepository(db *sql.DB) UserRepository {
 }
 
 func (r *userRepository) Create(ctx context.Context, user *User) error {
+	return insertUser(ctx, r.db, user)
+}
+
+// execer is what insertUser needs from a *sql.DB or a *sql.Tx.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// insertUser adds user and fills in its ID and timestamps. A username or
+// email that is already taken comes back as ErrUserExists.
+func insertUser(ctx context.Context, db execer, user *User) error {
 	now := time.Now()
-	result, err := r.db.ExecContext(ctx,
+	result, err := db.ExecContext(ctx,
 		`INSERT INTO users (username, email, password, is_admin, totp_secret, totp_enabled, ssh_public_key, ssh_private_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		user.Username, user.Email, user.Password, user.IsAdmin, user.TOTPSecret, user.TOTPEnabled, user.SSHPublicKey, user.SSHPrivateKey, now, now,
 	)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed: users.") {
+			return fmt.Errorf("inserting user: %w", ErrUserExists)
+		}
 		return fmt.Errorf("inserting user: %w", err)
 	}
 

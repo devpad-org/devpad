@@ -19,6 +19,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("opening test db: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
+	// Each connection to :memory: is its own database; keep to one.
+	db.SetMaxOpenConns(1)
 
 	schema := `
 	CREATE TABLE users (
@@ -40,6 +42,17 @@ func setupTestDB(t *testing.T) *sql.DB {
 		token TEXT NOT NULL UNIQUE,
 		expires_at DATETIME NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE user_invites (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		token_hash TEXT NOT NULL UNIQUE,
+		email TEXT NOT NULL DEFAULT '',
+		is_admin BOOLEAN NOT NULL DEFAULT 0,
+		created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		expires_at DATETIME NOT NULL,
+		used_at DATETIME,
+		used_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);`
 	if _, err := db.Exec(schema); err != nil {
 		t.Fatalf("creating schema: %v", err)

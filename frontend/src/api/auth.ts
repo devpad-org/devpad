@@ -21,6 +21,15 @@ interface SetupCheckResponse {
   needsSetup: boolean
 }
 
+/** What an invite will make, as shown to the person holding its link. */
+export interface InviteInfo {
+  /** When set, the new account's email; the invitee can't change it. */
+  email: string
+  isAdmin: boolean
+  invitedBy: string
+  expiresAt: string
+}
+
 export const authApi = {
   checkSetup(): Promise<SetupCheckResponse> {
     return apiClient.get<SetupCheckResponse>('/api/auth/setup')
@@ -36,6 +45,15 @@ export const authApi = {
 
   logout(): Promise<void> {
     return apiClient.post<void>('/api/auth/logout', {})
+  },
+
+  // The token goes in the body, never the URL, so it stays out of logs.
+  checkInvite(token: string): Promise<{ invite: InviteInfo }> {
+    return apiClient.post<{ invite: InviteInfo }>('/api/auth/invites/check', { token })
+  },
+
+  acceptInvite(data: { token: string; username: string; email: string; password: string }): Promise<AuthResponse> {
+    return apiClient.post<AuthResponse>('/api/auth/invites/accept', data)
   },
 
   me(): Promise<AuthResponse> {

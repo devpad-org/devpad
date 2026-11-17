@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { adminApi, type AdminUser, type AdminWorkspace } from '@/api/admin'
+import { adminApi, type AdminInvite, type AdminUser, type AdminWorkspace } from '@/api/admin'
 
 export const useAdminStore = defineStore('admin', () => {
   const users = ref<AdminUser[]>([])
@@ -9,6 +9,9 @@ export const useAdminStore = defineStore('admin', () => {
   const workspacesLoading = ref(false)
   const error = ref('')
   const workspacesError = ref('')
+  const invites = ref<AdminInvite[]>([])
+  const invitesLoading = ref(false)
+  const invitesError = ref('')
 
   async function fetchUsers() {
     loading.value = true
@@ -47,6 +50,39 @@ export const useAdminStore = defineStore('admin', () => {
     users.value = users.value.filter((u) => u.id !== id)
   }
 
+  async function fetchInvites() {
+    invitesLoading.value = true
+    invitesError.value = ''
+    try {
+      const response = await adminApi.listInvites()
+      invites.value = response.invites
+    } catch (e) {
+      invitesError.value = e instanceof Error ? e.message : 'Failed to load invites'
+    } finally {
+      invitesLoading.value = false
+    }
+  }
+
+  async function createInvite(data: { email: string; isAdmin: boolean; validDays: number }) {
+    const { invite } = await adminApi.createInvite(data)
+    // The list never holds a token: it is shown once, then gone.
+    invites.value.unshift({
+      id: invite.id,
+      email: invite.email,
+      isAdmin: invite.isAdmin,
+      createdBy: invite.createdBy,
+      expiresAt: invite.expiresAt,
+      createdAt: invite.createdAt,
+      expired: invite.expired,
+    })
+    return invite
+  }
+
+  async function revokeInvite(id: number) {
+    await adminApi.revokeInvite(id)
+    invites.value = invites.value.filter((i) => i.id !== id)
+  }
+
   async function fetchWorkspaces() {
     workspacesLoading.value = true
     workspacesError.value = ''
@@ -76,11 +112,17 @@ export const useAdminStore = defineStore('admin', () => {
     workspacesLoading,
     error,
     workspacesError,
+    invites,
+    invitesLoading,
+    invitesError,
     fetchUsers,
     createUser,
     updateUser,
     resetPassword,
     deleteUser,
+    fetchInvites,
+    createInvite,
+    revokeInvite,
     fetchWorkspaces,
     updateWorkspaceLimits,
   }
