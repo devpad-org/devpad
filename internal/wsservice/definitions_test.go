@@ -213,7 +213,7 @@ func TestServiceResponseShowsHowToConnect(t *testing.T) {
 	}
 }
 
-// The frontend's catalog gives each service type its label, icon and
+// The frontend's catalog gives each service type its label, logo and
 // description, and lists them in catalog order.
 func TestServiceCatalogMatchesFrontend(t *testing.T) {
 	source, err := os.ReadFile(filepath.Join("..", "..", "frontend", "src", "components", "ide", "serviceCatalog.ts"))

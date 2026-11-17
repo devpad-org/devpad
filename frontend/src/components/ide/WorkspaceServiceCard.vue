@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { WorkspaceService } from '@/api/services'
 import ServiceCopyButton from './ServiceCopyButton.vue'
-import { serviceTypeIcon, serviceTypeLabel } from './serviceCatalog'
+import { serviceTypeLabel } from './serviceCatalog'
+import ServiceLogo from './ServiceLogo.vue'
 
 defineProps<{
   service: WorkspaceService
@@ -18,7 +19,7 @@ const emit = defineEmits<{
   <article class="service-card">
     <div class="service-card-header">
       <div class="service-heading">
-        <span class="service-icon">{{ serviceTypeIcon(service.serviceType) }}</span>
+        <ServiceLogo class="service-icon" :type="service.serviceType" />
         <div class="service-title-block">
           <h3>{{ serviceTypeLabel(service.serviceType) }}</h3>
           <p>{{ service.config.image }}</p>
@@ -120,7 +121,7 @@ const emit = defineEmits<{
 .service-card-header { justify-content: space-between; align-items: flex-start; gap: var(--space-3); }
 .service-heading { align-items: flex-start; gap: var(--space-3); min-width: 0; }
 
-.service-icon { font-size: 1.35rem; line-height: 1; }
+.service-icon { font-size: 1.35rem; }
 
 .service-heading h3 {
   color: var(--text-primary);
