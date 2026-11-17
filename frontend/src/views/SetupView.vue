@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { passwordProblem } from '@/utils/password'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -21,8 +22,9 @@ async function handleSubmit() {
     return
   }
 
-  if (password.value.length < 8) {
-    error.value = 'Password must be at least 8 characters'
+  const problem = passwordProblem(password.value)
+  if (problem) {
+    error.value = problem
     return
   }
 

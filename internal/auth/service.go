@@ -12,12 +12,11 @@ import (
 
 const sessionDuration = 7 * 24 * time.Hour
 
-const (
-	// MinPasswordLength is the shortest password devpad accepts.
-	MinPasswordLength = 8
-	// MaxPasswordLength is bcrypt's limit in bytes: it refuses anything longer.
-	MaxPasswordLength = 72
-)
+// newSession starts a session for userID, lasting sessionDuration on the
+// wall clock. Every sign-in makes its session here.
+func newSession(userID int64) *Session {
+	return &Session{UserID: userID, ExpiresAt: time.Now().Add(sessionDuration)}
+}
 
 var (
 	ErrInvalidCredentials = errors.New("invalid username or password")
@@ -25,22 +24,7 @@ var (
 	ErrSetupCompleted     = errors.New("setup already completed")
 	ErrTOTPRequired       = errors.New("TOTP code required")
 	ErrInvalidTOTP        = errors.New("invalid TOTP code")
-	ErrPasswordTooShort   = fmt.Errorf("password must be at least %d characters", MinPasswordLength)
-	ErrPasswordTooLong    = fmt.Errorf("password must be at most %d bytes", MaxPasswordLength)
 )
-
-// ValidatePassword returns ErrPasswordTooShort or ErrPasswordTooLong when
-// password can't be used, and nil when it can. Their messages are fit to
-// show the user.
-func ValidatePassword(password string) error {
-	switch {
-	case len(password) < MinPasswordLength:
-		return ErrPasswordTooShort
-	case len(password) > MaxPasswordLength:
-		return ErrPasswordTooLong
-	}
-	return nil
-}
 
 // Service defines authentication business logic.
 type Service interface {
@@ -119,11 +103,7 @@ func (s *service) Login(ctx context.Context, username, password, totpCode string
 		}
 	}
 
-	session := &Session{
-		UserID:    user.ID,
-		ExpiresAt: time.Now().Add(sessionDuration),
-	}
-
+	session := newSession(user.ID)
 	if err := s.sessions.Create(ctx, session); err != nil {
 		return nil, fmt.Errorf("creating session: %w", err)
 	}

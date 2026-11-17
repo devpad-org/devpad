@@ -288,6 +288,7 @@ func TestHandler_ChangePassword(t *testing.T) {
 	}{
 		{"empty body", `{}`, http.StatusBadRequest},
 		{"short password", `{"currentPassword":"password123","newPassword":"short"}`, http.StatusBadRequest},
+		{"long password", `{"currentPassword":"password123","newPassword":"` + strings.Repeat("x", 73) + `"}`, http.StatusBadRequest},
 		{"wrong current", `{"currentPassword":"wrong","newPassword":"newpassword123"}`, http.StatusUnauthorized},
 		{"success", `{"currentPassword":"password123","newPassword":"newpassword123"}`, http.StatusOK},
 	}

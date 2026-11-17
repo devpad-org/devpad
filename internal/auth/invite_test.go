@@ -178,6 +178,26 @@ func TestInvite_Expires(t *testing.T) {
 	}
 }
 
+// Redeem checks expiry itself, so an invite that expires between Accept's
+// check and its claim still can't be used.
+func TestInvite_RedeemRefusesExpiredInvite(t *testing.T) {
+	f := setupInvites(t)
+	ctx := context.Background()
+	inv, token := f.create(t, f.admin, false)
+
+	user := &User{Username: "alice", Email: "alice@test.com", Password: "x"}
+	err := f.invites.invites.Redeem(ctx, hashInviteToken(token), user, inv.ExpiresAt)
+	if !errors.Is(err, ErrInviteInvalid) {
+		t.Fatalf("redeem at expiry: got %v, want ErrInviteInvalid", err)
+	}
+	if got, err := f.users.GetByUsername(ctx, "alice"); err != nil || got != nil {
+		t.Fatalf("expected no user made, got %+v (%v)", got, err)
+	}
+	if err := f.invites.invites.Redeem(ctx, hashInviteToken(token), user, inv.ExpiresAt.Add(-time.Second)); err != nil {
+		t.Fatalf("redeem just before expiry: %v", err)
+	}
+}
+
 func TestInvite_AdminInviteMakesAnAdmin(t *testing.T) {
 	f := setupInvites(t)
 	if user := f.accept(t, f.admin, true, "carol"); !user.IsAdmin {
@@ -201,6 +221,9 @@ func TestInvite_AcceptValidatesInput(t *testing.T) {
 		{"no email", "erin", "  ", "password123", ErrEmailRequired},
 		{"short password", "erin", "e@test.com", "short", ErrPasswordTooShort},
 		{"long password", "erin", "e@test.com", strings.Repeat("x", MaxPasswordLength+1), ErrPasswordTooLong},
+		{"username like a flag", "-erin", "e@test.com", "password123", ErrUsernameInvalid},
+		{"email like a flag", "erin", "-e@test.com", "password123", ErrEmailInvalid},
+		{"email without a domain", "erin", "erin@", "password123", ErrEmailInvalid},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

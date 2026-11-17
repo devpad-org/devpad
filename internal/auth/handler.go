@@ -58,17 +58,17 @@ func (h *Handler) HandleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Username == "" || req.Email == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "username, email, and password are required")
+	username, email, err := CleanIdentity(req.Username, req.Email)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
 	if err := ValidatePassword(req.Password); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	user, err := h.service.Setup(r.Context(), req.Username, req.Email, req.Password)
+	user, err := h.service.Setup(r.Context(), username, email, req.Password)
 	if err != nil {
 		if errors.Is(err, ErrSetupCompleted) {
 			writeError(w, http.StatusConflict, "setup already completed")
@@ -135,6 +135,20 @@ func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user": userResponse(user),
 	})
+}
+
+// signedInUser returns the user whose valid session cookie r carries, or nil.
+// It is for public routes, which the auth middleware doesn't run on.
+func (h *Handler) signedInUser(r *http.Request) *User {
+	cookie, err := r.Cookie(h.cookieName)
+	if err != nil {
+		return nil
+	}
+	user, err := h.service.ValidateSession(r.Context(), cookie.Value)
+	if err != nil {
+		return nil
+	}
+	return user
 }
 
 func (h *Handler) setSessionCookie(w http.ResponseWriter, session *Session) {

@@ -1,0 +1,83 @@
+package auth
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestValidatePassword(t *testing.T) {
+	tests := []struct {
+		name, password string
+		want           error
+	}{
+		{"eight ASCII characters", "abcdefgh", nil},
+		{"seven ASCII characters", "abcdefg", ErrPasswordTooShort},
+		// Eight characters but 32 bytes: the minimum counts characters.
+		{"eight emoji", strings.Repeat("🔑", 8), nil},
+		// Four characters but 16 bytes: still too few characters.
+		{"four emoji", strings.Repeat("🔑", 4), ErrPasswordTooShort},
+		{"72 bytes", strings.Repeat("x", MaxPasswordLength), nil},
+		{"73 bytes", strings.Repeat("x", MaxPasswordLength+1), ErrPasswordTooLong},
+		// 19 characters but 76 bytes: the maximum counts bytes, as bcrypt does.
+		{"nineteen emoji", strings.Repeat("🔑", 19), ErrPasswordTooLong},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ValidatePassword(tt.password); !errors.Is(got, tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCleanIdentity(t *testing.T) {
+	tests := []struct {
+		name, username, email string
+		wantUsername          string
+		wantEmail             string
+		want                  error
+	}{
+		{"plain", "alice", "alice@example.com", "alice", "alice@example.com", nil},
+		{"trimmed", "  alice ", " alice@example.com\t", "alice", "alice@example.com", nil},
+		{"space and accents in username", "Zoë Smith", "zoe@example.com", "Zoë Smith", "zoe@example.com", nil},
+		{"longest username", strings.Repeat("é", MaxUsernameLength), "a@b", strings.Repeat("é", MaxUsernameLength), "a@b", nil},
+		{"blank username", "   ", "a@b", "", "", ErrUsernameRequired},
+		{"blank email", "alice", "", "", "", ErrEmailRequired},
+		{"username too long", strings.Repeat("a", MaxUsernameLength+1), "a@b", "", "", ErrUsernameInvalid},
+		{"username like a flag", "-alice", "a@b", "", "", ErrUsernameInvalid},
+		{"username with angle bracket", "alice<", "a@b", "", "", ErrUsernameInvalid},
+		{"username with newline", "ali\nce", "a@b", "", "", ErrUsernameInvalid},
+		{"username not UTF-8", "ali\xffce", "a@b", "", "", ErrUsernameInvalid},
+		{"email without at", "alice", "alice.example.com", "", "", ErrEmailInvalid},
+		{"email without local part", "alice", "@example.com", "", "", ErrEmailInvalid},
+		{"email without domain", "alice", "alice@", "", "", ErrEmailInvalid},
+		{"email with space", "alice", "al ice@example.com", "", "", ErrEmailInvalid},
+		{"email like a flag", "alice", "-alice@example.com", "", "", ErrEmailInvalid},
+		{"email with angle bracket", "alice", "<alice@example.com>", "", "", ErrEmailInvalid},
+		{"email too long", "alice", strings.Repeat("a", MaxEmailLength) + "@b", "", "", ErrEmailInvalid},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			username, email, err := CleanIdentity(tt.username, tt.email)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("got error %v, want %v", err, tt.want)
+			}
+			if username != tt.wantUsername || email != tt.wantEmail {
+				t.Fatalf("got %q, %q; want %q, %q", username, email, tt.wantUsername, tt.wantEmail)
+			}
+		})
+	}
+}
+
+func TestUserRepository_UpdateToTakenUsernameIsUserExists(t *testing.T) {
+	f := setupInvites(t)
+	ctx := context.Background()
+	alice := f.accept(t, f.admin, false, "alice")
+
+	alice.Username = "admin"
+	if err := f.users.Update(ctx, alice); !errors.Is(err, ErrUserExists) {
+		t.Fatalf("got %v, want ErrUserExists", err)
+	}
+}

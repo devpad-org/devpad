@@ -13,6 +13,7 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/app"
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
+	"github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/project"
 	"github.com/devpad-org/devpad/internal/task"
 	"github.com/devpad-org/devpad/internal/workspace"
@@ -303,7 +304,7 @@ func (s *service) openAtHead(ctx context.Context, mr *MergeRequest) error {
 		return invalid("branch %q does not exist", mr.SourceBranch)
 	}
 	if err := s.repo.Create(ctx, mr); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if database.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: %s already has an open merge request", ErrInvalidState, mr.SourceBranch)
 		}
 		return err

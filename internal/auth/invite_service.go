@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -22,12 +21,10 @@ const (
 )
 
 var (
-	ErrInviteInvalid    = errors.New("invite is invalid, expired or already used")
-	ErrInviteNotFound   = errors.New("invite not found")
-	ErrInviteDays       = fmt.Errorf("an invite must last between 1 and %d days", MaxInviteDays)
-	ErrNotAdmin         = errors.New("only an admin can invite users")
-	ErrUsernameRequired = errors.New("username is required")
-	ErrEmailRequired    = errors.New("email is required")
+	ErrInviteInvalid  = errors.New("invite is invalid, expired or already used")
+	ErrInviteNotFound = errors.New("invite not found")
+	ErrInviteDays     = fmt.Errorf("an invite must last between 1 and %d days", MaxInviteDays)
+	ErrNotAdmin       = errors.New("only an admin can invite users")
 )
 
 // Invite is a one-time link an admin hands someone so they can create their
@@ -134,21 +131,18 @@ func (s *inviteService) Check(ctx context.Context, token string) (*Invite, error
 }
 
 func (s *inviteService) Accept(ctx context.Context, token, username, email, password string) (*User, *Session, error) {
-	username, email = strings.TrimSpace(username), strings.TrimSpace(email)
-	switch {
-	case username == "":
-		return nil, nil, ErrUsernameRequired
-	case email == "":
-		return nil, nil, ErrEmailRequired
+	username, email, err := CleanIdentity(username, email)
+	if err != nil {
+		return nil, nil, err
 	}
 	if err := ValidatePassword(password); err != nil {
 		return nil, nil, err
 	}
 
 	// Checked before hashing so a bad token costs no bcrypt. Redeem then
-	// claims the invite only if it is still unused: an invite never changes
-	// otherwise, so what Check read still holds, and one revoked or deleted
-	// meanwhile is gone.
+	// claims the invite only if it is still unused and unexpired: an invite
+	// never changes otherwise, so what Check read still holds, and one
+	// revoked or deleted meanwhile is gone.
 	inv, err := s.Check(ctx, token)
 	if err != nil {
 		return nil, nil, err
@@ -167,8 +161,7 @@ func (s *inviteService) Accept(ctx context.Context, token, username, email, pass
 		return nil, nil, err
 	}
 
-	// Sessions run on the wall clock, as Login's do.
-	session := &Session{UserID: user.ID, ExpiresAt: time.Now().Add(sessionDuration)}
+	session := newSession(user.ID)
 	if err := s.sessions.Create(ctx, session); err != nil {
 		return user, nil, fmt.Errorf("creating session: %w", err)
 	}

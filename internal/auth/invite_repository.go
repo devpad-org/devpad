@@ -18,10 +18,10 @@ type InviteRepository interface {
 	GetByTokenHash(ctx context.Context, tokenHash string) (*Invite, error)
 	ListPending(ctx context.Context) ([]*Invite, error)
 	DeletePending(ctx context.Context, id int64) (bool, error)
-	// Redeem marks the unused invite with tokenHash used and creates user,
-	// both or neither. It returns ErrInviteInvalid when there is no such
-	// invite (never made, revoked or already used) and ErrUserExists when
-	// the username or email is taken.
+	// Redeem marks the unused, unexpired invite with tokenHash used and
+	// creates user, both or neither. It returns ErrInviteInvalid when there
+	// is no such invite (never made, revoked, expired or already used) and
+	// ErrUserExists when the username or email is taken.
 	Redeem(ctx context.Context, tokenHash string, user *User, now time.Time) error
 }
 
@@ -61,7 +61,7 @@ func (r *inviteRepository) Create(ctx context.Context, invite *Invite, tokenHash
 	result, err := r.db.ExecContext(ctx,
 		`INSERT INTO user_invites (token_hash, is_admin, created_by, expires_at, created_at)
 		 SELECT ?, ?, id, ?, ? FROM users WHERE id = ? AND is_admin`,
-		tokenHash, invite.IsAdmin, invite.ExpiresAt, invite.CreatedAt, invite.CreatedBy,
+		tokenHash, invite.IsAdmin, invite.ExpiresAt.UTC(), invite.CreatedAt.UTC(), invite.CreatedBy,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting invite: %w", err)
@@ -131,8 +131,8 @@ func (r *inviteRepository) Redeem(ctx context.Context, tokenHash string, user *U
 	// past here, whatever the transaction mode.
 	var id int64
 	err = tx.QueryRowContext(ctx,
-		`UPDATE user_invites SET used_at = ? WHERE token_hash = ? AND used_at IS NULL RETURNING id`,
-		now, tokenHash).Scan(&id)
+		`UPDATE user_invites SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING id`,
+		now.UTC(), tokenHash, now.UTC()).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrInviteInvalid
 	}

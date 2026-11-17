@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { settingsApi } from '@/api/settings'
+import { passwordProblem } from '@/utils/password'
 
 const currentPassword = ref('')
 const newPassword = ref('')
@@ -17,8 +18,9 @@ async function save() {
     error.value = 'All fields are required'
     return
   }
-  if (newPassword.value.length < 8) {
-    error.value = 'New password must be at least 8 characters'
+  const problem = passwordProblem(newPassword.value)
+  if (problem) {
+    error.value = problem
     return
   }
   if (newPassword.value !== confirmPassword.value) {

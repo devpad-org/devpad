@@ -4,6 +4,7 @@ import { useAdminStore } from '@/stores/admin'
 import { useAuthStore } from '@/stores/auth'
 import type { AdminInvite, AdminUser, AdminWorkspace, CreatedInvite } from '@/api/admin'
 import { writeClipboardText } from '@/utils/clipboard'
+import { passwordProblem } from '@/utils/password'
 import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
 
 const admin = useAdminStore()
@@ -107,8 +108,9 @@ async function handleCreate() {
     modalError.value = 'All fields are required'
     return
   }
-  if (createForm.value.password.length < 8) {
-    modalError.value = 'Password must be at least 8 characters'
+  const problem = passwordProblem(createForm.value.password)
+  if (problem) {
+    modalError.value = problem
     return
   }
   modalSubmitting.value = true
@@ -147,8 +149,9 @@ async function handleResetPassword() {
     modalError.value = 'Passwords do not match'
     return
   }
-  if (resetForm.value.password.length < 8) {
-    modalError.value = 'Password must be at least 8 characters'
+  const problem = passwordProblem(resetForm.value.password)
+  if (problem) {
+    modalError.value = problem
     return
   }
   modalSubmitting.value = true

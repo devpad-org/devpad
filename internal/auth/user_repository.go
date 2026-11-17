@@ -4,8 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
+
+	"github.com/devpad-org/devpad/internal/database"
 )
 
 // UserRepository defines data access for users.
@@ -46,7 +47,7 @@ func insertUser(ctx context.Context, db execer, user *User) error {
 		user.Username, user.Email, user.Password, user.IsAdmin, user.TOTPSecret, user.TOTPEnabled, user.SSHPublicKey, user.SSHPrivateKey, now, now,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed: users.") {
+		if database.IsUniqueViolation(err) {
 			return fmt.Errorf("inserting user: %w", ErrUserExists)
 		}
 		return fmt.Errorf("inserting user: %w", err)
@@ -128,6 +129,9 @@ func (r *userRepository) Update(ctx context.Context, user *User) error {
 		user.Username, user.Email, user.Password, user.IsAdmin, user.TOTPSecret, user.TOTPEnabled, user.SSHPublicKey, user.SSHPrivateKey, now, user.ID,
 	)
 	if err != nil {
+		if database.IsUniqueViolation(err) {
+			return fmt.Errorf("updating user: %w", ErrUserExists)
+		}
 		return fmt.Errorf("updating user: %w", err)
 	}
 	user.UpdatedAt = now

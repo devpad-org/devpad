@@ -25,6 +25,7 @@ import (
 	"github.com/devpad-org/devpad/internal/container"
 	appdb "github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/workspace"
+	"github.com/mattn/go-sqlite3"
 )
 
 // fakeContainers records the Docker resources a project creates and removes.
@@ -526,7 +527,7 @@ func (f *fakeWorkspaces) CreateProjectWorkspace(_ context.Context, userID int64,
 	for _, ws := range f.byID {
 		if ws.ProjectID == spec.ProjectID && ws.IsProjectWorkspace() {
 			f.mu.Unlock()
-			return nil, fmt.Errorf("inserting workspace: UNIQUE constraint failed")
+			return nil, fmt.Errorf("inserting workspace: %w", sqlite3.Error{Code: sqlite3.ErrConstraint, ExtendedCode: sqlite3.ErrConstraintUnique})
 		}
 	}
 	f.mu.Unlock()

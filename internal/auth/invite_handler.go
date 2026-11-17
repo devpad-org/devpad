@@ -134,11 +134,9 @@ func (h *InviteHandler) HandleCheck(w http.ResponseWriter, r *http.Request) {
 // already signed in must sign out first, so an invite is never accepted by
 // accident in a browser that belongs to another account.
 func (h *InviteHandler) HandleAccept(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(h.auth.cookieName); err == nil {
-		if user, err := h.auth.service.ValidateSession(r.Context(), cookie.Value); err == nil && user != nil {
-			writeError(w, http.StatusConflict, "you are signed in as "+user.Username+"; sign out to accept this invite")
-			return
-		}
+	if user := h.auth.signedInUser(r); user != nil {
+		writeError(w, http.StatusConflict, "you are signed in as "+user.Username+"; sign out to accept this invite")
+		return
 	}
 
 	var req struct {
@@ -159,6 +157,7 @@ func (h *InviteHandler) HandleAccept(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrUserExists):
 			writeError(w, http.StatusConflict, "that username or email is already taken")
 		case errors.Is(err, ErrUsernameRequired), errors.Is(err, ErrEmailRequired),
+			errors.Is(err, ErrUsernameInvalid), errors.Is(err, ErrEmailInvalid),
 			errors.Is(err, ErrPasswordTooShort), errors.Is(err, ErrPasswordTooLong):
 			writeError(w, http.StatusBadRequest, err.Error())
 		case user != nil:

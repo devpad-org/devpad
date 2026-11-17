@@ -1,0 +1,78 @@
+package auth
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
+
+const (
+	// MinPasswordLength is the fewest characters a password may have.
+	MinPasswordLength = 8
+	// MaxPasswordLength is bcrypt's limit in bytes: it refuses anything longer.
+	MaxPasswordLength = 72
+	// MaxUsernameLength is the most characters a username may have.
+	MaxUsernameLength = 64
+	// MaxEmailLength is the most bytes an email address may have.
+	MaxEmailLength = 254
+)
+
+// Every error here has a message fit to show the user.
+var (
+	ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", MinPasswordLength)
+	ErrPasswordTooLong  = fmt.Errorf("password must be at most %d bytes (letters outside plain ASCII take 2 to 4 bytes each)", MaxPasswordLength)
+	ErrUsernameRequired = errors.New("username is required")
+	ErrEmailRequired    = errors.New("email is required")
+	ErrUsernameInvalid  = fmt.Errorf("username must be at most %d characters, must not start with '-', and must not contain '<', '>' or control characters", MaxUsernameLength)
+	ErrEmailInvalid     = errors.New("email must look like name@example.com, without spaces, '<' or '>'")
+)
+
+// ValidatePassword returns ErrPasswordTooShort or ErrPasswordTooLong when
+// password can't be used, and nil when it can. The minimum counts
+// characters, as people do; the maximum counts bytes, as bcrypt does.
+func ValidatePassword(password string) error {
+	switch {
+	case utf8.RuneCountInString(password) < MinPasswordLength:
+		return ErrPasswordTooShort
+	case len(password) > MaxPasswordLength:
+		return ErrPasswordTooLong
+	}
+	return nil
+}
+
+// CleanIdentity trims a username and email someone chose and checks them,
+// returning the trimmed values. Both become the user's git identity in
+// their workspaces, where the agent refuses a value starting with '-' and
+// git drops '<' and '>', so neither may have them.
+func CleanIdentity(username, email string) (string, string, error) {
+	username, email = strings.TrimSpace(username), strings.TrimSpace(email)
+	switch {
+	case username == "":
+		return "", "", ErrUsernameRequired
+	case email == "":
+		return "", "", ErrEmailRequired
+	case !validUsername(username):
+		return "", "", ErrUsernameInvalid
+	case !validEmail(email):
+		return "", "", ErrEmailInvalid
+	}
+	return username, email, nil
+}
+
+func validUsername(s string) bool {
+	return utf8.ValidString(s) &&
+		utf8.RuneCountInString(s) <= MaxUsernameLength &&
+		!strings.HasPrefix(s, "-") &&
+		!strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) || r == '<' || r == '>' })
+}
+
+func validEmail(s string) bool {
+	at := strings.LastIndexByte(s, '@')
+	return utf8.ValidString(s) &&
+		len(s) <= MaxEmailLength &&
+		at > 0 && at < len(s)-1 &&
+		!strings.HasPrefix(s, "-") &&
+		!strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) || r == '<' || r == '>' })
+}

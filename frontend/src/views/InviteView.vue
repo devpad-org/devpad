@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { authApi, type InviteInfo } from '@/api/auth'
 import { ApiError } from '@/api/client'
+import { passwordProblem } from '@/utils/password'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -72,8 +73,9 @@ async function handleSubmit() {
     error.value = 'Passwords do not match'
     return
   }
-  if (password.value.length < 8) {
-    error.value = 'Password must be at least 8 characters'
+  const problem = passwordProblem(password.value)
+  if (problem) {
+    error.value = problem
     return
   }
 
@@ -178,8 +180,6 @@ onMounted(checkInvite)
             type="password"
             autocomplete="new-password"
             required
-            minlength="8"
-            maxlength="72"
             placeholder="At least 8 characters"
           />
         </div>
