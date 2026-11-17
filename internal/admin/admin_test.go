@@ -299,6 +299,9 @@ func TestHandler_CreateUser_Validation(t *testing.T) {
 		{"empty body", `{}`, http.StatusBadRequest},
 		{"missing password", `{"username":"a","email":"a@b.com"}`, http.StatusBadRequest},
 		{"short password", `{"username":"a","email":"a@b.com","password":"short"}`, http.StatusBadRequest},
+		{"long password", `{"username":"a","email":"a@b.com","password":"` + strings.Repeat("x", 73) + `"}`, http.StatusBadRequest},
+		{"username like a flag", `{"username":"-a","email":"a@b.com","password":"password123"}`, http.StatusBadRequest},
+		{"invalid email", `{"username":"a","email":"a.b.com","password":"password123"}`, http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {
@@ -311,6 +314,60 @@ func TestHandler_CreateUser_Validation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandler_UpdateUser_Validation(t *testing.T) {
+	handler, svc, _ := setupTestHandler(t)
+	ctx := context.Background()
+	admin := seedAdmin(t, svc, ctx)
+	alice, err := svc.CreateUser(ctx, "alice", "alice@test.com", "password123", false)
+	if err != nil {
+		t.Fatalf("creating alice: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		body   string
+		status int
+	}{
+		{"blank username", `{"username":" ","email":"alice@test.com"}`, http.StatusBadRequest},
+		{"username like a flag", `{"username":"-alice","email":"alice@test.com"}`, http.StatusBadRequest},
+		{"invalid email", `{"username":"alice","email":"alice"}`, http.StatusBadRequest},
+		{"taken username", `{"username":"admin","email":"alice@test.com"}`, http.StatusConflict},
+		{"taken email", `{"username":"alice","email":"admin@test.com"}`, http.StatusConflict},
+		{"trimmed", `{"username":" alicia ","email":" alicia@test.com "}`, http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "/api/admin/users/"+fmt.Sprint(alice.ID), strings.NewReader(tt.body))
+			req.SetPathValue("id", fmt.Sprint(alice.ID))
+			req = withAdminContext(req, admin)
+			rec := httptest.NewRecorder()
+			handler.HandleUpdateUser(rec, req)
+			if rec.Code != tt.status {
+				t.Errorf("expected status %d, got %d: %s", tt.status, rec.Code, rec.Body.String())
+			}
+		})
+	}
+	if got, want := identityOf(t, svc, alice.ID), "alicia alicia@test.com"; got != want {
+		t.Errorf("after the trimmed update: got %q, want %q", got, want)
+	}
+}
+
+// identityOf returns the user's username and email, separated by a space.
+func identityOf(t *testing.T, svc Service, id int64) string {
+	t.Helper()
+	users, err := svc.ListUsers(context.Background())
+	if err != nil {
+		t.Fatalf("listing users: %v", err)
+	}
+	for _, u := range users {
+		if u.ID == id {
+			return u.Username + " " + u.Email
+		}
+	}
+	t.Fatalf("user %d not found", id)
+	return ""
 }
 
 func TestHandler_DeleteUser_SelfProtection(t *testing.T) {

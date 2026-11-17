@@ -48,18 +48,22 @@ func (h *Handler) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Username == "" || req.Email == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "username, email, and password are required")
-		return
-	}
-
-	if len(req.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
-		return
-	}
-
-	user, err := h.service.CreateUser(r.Context(), req.Username, req.Email, req.Password, req.IsAdmin)
+	username, email, err := auth.CleanIdentity(req.Username, req.Email)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := auth.ValidatePassword(req.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	user, err := h.service.CreateUser(r.Context(), username, email, req.Password, req.IsAdmin)
+	if err != nil {
+		if errors.Is(err, auth.ErrUserExists) {
+			writeError(w, http.StatusConflict, "username or email is already taken")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to create user")
 		return
 	}
@@ -85,8 +89,9 @@ func (h *Handler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Username == "" || req.Email == "" {
-		writeError(w, http.StatusBadRequest, "username and email are required")
+	username, email, err := auth.CleanIdentity(req.Username, req.Email)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -97,10 +102,14 @@ func (h *Handler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.service.UpdateUser(r.Context(), id, req.Username, req.Email, req.IsAdmin)
+	user, err := h.service.UpdateUser(r.Context(), id, username, email, req.IsAdmin)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
 			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		if errors.Is(err, auth.ErrUserExists) {
+			writeError(w, http.StatusConflict, "username or email is already taken")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to update user")
@@ -126,8 +135,8 @@ func (h *Handler) HandleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
+	if err := auth.ValidatePassword(req.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

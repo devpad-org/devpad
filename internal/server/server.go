@@ -79,6 +79,8 @@ func New(cfg Config) (*Server, error) {
 	}
 	authHandler := auth.NewHandler(authService, secureCookie)
 	authMiddleware := auth.NewMiddleware(authService, secureCookie)
+	inviteService := auth.NewInviteService(auth.NewInviteRepository(db.Conn()), sessionRepo)
+	inviteHandler := auth.NewInviteHandler(inviteService, authHandler)
 
 	// Settings layer
 	preferencesRepo := settings.NewPreferencesRepository(db.Conn())
@@ -182,11 +184,11 @@ func New(cfg Config) (*Server, error) {
 	authRateLimiter := auth.NewRateLimiter(rate.Limit(5), 10)
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectHandler, taskHandler, mrHandler, gitBridgeHandler, skillsHandler, aiModule.Handler, previewHandler)
+	registerRoutes(mux, authHandler, inviteHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectHandler, taskHandler, mrHandler, gitBridgeHandler, skillsHandler, aiModule.Handler, previewHandler)
 
 	handler := buildHandler(mux, http.HandlerFunc(previewHandler.HandleProxy), cfg)
 
-	// Start periodic cleanup of expired sessions and preview tokens.
+	// Start periodic cleanup of expired sessions, preview tokens and invites.
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
@@ -199,6 +201,9 @@ func New(cfg Config) (*Server, error) {
 				}
 				if err := previewRepo.DeleteExpired(cleanupCtx); err != nil {
 					log.Printf("preview token cleanup: %v", err)
+				}
+				if err := inviteService.PurgeExpired(cleanupCtx); err != nil {
+					log.Printf("invite cleanup: %v", err)
 				}
 			case <-cleanupCtx.Done():
 				return
@@ -377,12 +382,14 @@ type aiRouteHandler interface {
 }
 
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, projectHandler *project.Handler, taskHandler *task.Handler, mrHandler *mergerequest.Handler, gitBridgeHandler *gitbridge.Handler, skillsHandler *skills.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, inviteHandler *auth.InviteHandler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, projectHandler *project.Handler, taskHandler *task.Handler, mrHandler *mergerequest.Handler, gitBridgeHandler *gitbridge.Handler, skillsHandler *skills.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
 	mux.Handle("POST /api/auth/setup", authRateLimiter.LimitFunc(authHandler.HandleSetup))
 	mux.Handle("POST /api/auth/login", authRateLimiter.LimitFunc(authHandler.HandleLogin))
+	mux.Handle("POST /api/auth/invites/check", authRateLimiter.LimitFunc(inviteHandler.HandleCheck))
+	mux.Handle("POST /api/auth/invites/accept", authRateLimiter.LimitFunc(inviteHandler.HandleAccept))
 	mux.HandleFunc("POST /api/auth/logout", authHandler.HandleLogout)
 
 	// Protected API routes
@@ -407,6 +414,9 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("PUT /api/admin/users/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleUpdateUser)))
 	mux.Handle("POST /api/admin/users/{id}/reset-password", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleResetPassword)))
 	mux.Handle("DELETE /api/admin/users/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleDeleteUser)))
+	mux.Handle("GET /api/admin/invites", authMiddleware.RequireAdmin(http.HandlerFunc(inviteHandler.HandleList)))
+	mux.Handle("POST /api/admin/invites", authMiddleware.RequireAdmin(http.HandlerFunc(inviteHandler.HandleCreate)))
+	mux.Handle("DELETE /api/admin/invites/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(inviteHandler.HandleRevoke)))
 
 	// Admin workspace routes
 	mux.Handle("GET /api/admin/workspaces", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleListWorkspaces)))

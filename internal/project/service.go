@@ -17,6 +17,7 @@ import (
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/container"
+	"github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/encrypt"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
@@ -802,7 +803,7 @@ func (s *service) CreateSandbox(ctx context.Context, userID, projectID int64, in
 		Image:     imageFor(p),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if database.IsUniqueViolation(err) {
 			return nil, ErrBranchInUse
 		}
 		return nil, err

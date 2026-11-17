@@ -3,6 +3,7 @@ import { useAuthStore } from '@/stores/auth'
 import HomeView from '@/views/HomeView.vue'
 import LoginView from '@/views/LoginView.vue'
 import SetupView from '@/views/SetupView.vue'
+import InviteView from '@/views/InviteView.vue'
 import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import SecuritySettings from '@/components/settings/SecuritySettings.vue'
@@ -87,6 +88,14 @@ export const router = createRouter({
       name: 'setup',
       component: SetupView,
       meta: { guest: true },
+    },
+    // An invite link: /invite#<token>. The page itself tells someone signed in
+    // to sign out first, so it is neither guest-only nor behind auth.
+    {
+      path: '/invite',
+      name: 'invite',
+      component: InviteView,
+      meta: { hideChrome: true },
     },
     {
       path: '/admin',
