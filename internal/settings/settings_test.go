@@ -3,10 +3,12 @@ package settings
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -360,7 +362,7 @@ func TestService_UserPreferences_DefaultAndUpdate(t *testing.T) {
 		t.Fatal("expected side-by-side diff view to be enabled by default")
 	}
 
-	updated, err := settingsSvc.UpdatePreferences(ctx, user.ID, UserPreferences{DiffViewSideBySide: false})
+	updated, err := settingsSvc.UpdatePreferences(ctx, user.ID, PreferencesUpdate{DiffViewSideBySide: new(false)})
 	if err != nil {
 		t.Fatalf("updating preferences: %v", err)
 	}
@@ -602,7 +604,7 @@ func TestPreferencesRepository_ThemeOnMigratedSchema(t *testing.T) {
 	}
 
 	for _, theme := range Themes {
-		if _, err := repo.Update(ctx, 1, UserPreferences{DiffViewSideBySide: false, Theme: theme}); err != nil {
+		if _, err := repo.Update(ctx, 1, PreferencesUpdate{Theme: &theme}); err != nil {
 			t.Fatalf("updating to %s: %v", theme, err)
 		}
 		got, err := repo.Get(ctx, 1)
@@ -611,6 +613,54 @@ func TestPreferencesRepository_ThemeOnMigratedSchema(t *testing.T) {
 		}
 		if got.Theme != theme {
 			t.Fatalf("theme = %q, want %q", got.Theme, theme)
+		}
+	}
+}
+
+// Two pages saving different preferences at once both keep their change: a
+// save never writes back another preference it read before the other saved.
+func TestHandler_UserPreferences_ConcurrentUpdatesKeepBoth(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "devpad.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	userRepo := auth.NewUserRepository(db.Conn())
+	authSvc := auth.NewService(userRepo, auth.NewSessionRepository(db.Conn()))
+	user := createTestUser(t, authSvc)
+	handler := NewHandler(NewService(userRepo, NewPreferencesRepository(db.Conn()), nil))
+
+	put := func(body string) {
+		req := httptest.NewRequest(http.MethodPut, "/api/settings/preferences", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, user))
+		rec := httptest.NewRecorder()
+		handler.HandleUpdatePreferences(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("PUT %s: status %d: %s", body, rec.Code, rec.Body.String())
+		}
+	}
+
+	for round := range 50 {
+		put(`{"diffViewSideBySide":true,"theme":"gruvbox-dark"}`)
+
+		var wg sync.WaitGroup
+		wg.Go(func() { put(`{"theme":"modern-light"}`) })
+		wg.Go(func() { put(`{"diffViewSideBySide":false}`) })
+		wg.Wait()
+
+		req := httptest.NewRequest(http.MethodGet, "/api/settings/preferences", nil)
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, user))
+		rec := httptest.NewRecorder()
+		handler.HandleGetPreferences(rec, req)
+		var got UserPreferences
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decoding preferences: %v", err)
+		}
+		if want := (UserPreferences{DiffViewSideBySide: false, Theme: "modern-light"}); got != want {
+			t.Fatalf("round %d: preferences = %+v, want %+v", round, got, want)
 		}
 	}
 }

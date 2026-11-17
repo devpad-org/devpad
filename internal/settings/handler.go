@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"slices"
 
 	"github.com/devpad-org/devpad/internal/auth"
 )
@@ -226,7 +225,7 @@ func (h *Handler) HandleGetPreferences(w http.ResponseWriter, r *http.Request) {
 
 // HandleUpdatePreferences updates the authenticated user's UI preferences.
 // Only the preferences in the request change, so one page saving its own
-// preference never overwrites another's with what it loaded earlier.
+// preference never overwrites another's, even when both save at once.
 func (h *Handler) HandleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
@@ -242,29 +241,16 @@ func (h *Handler) HandleUpdatePreferences(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.DiffViewSideBySide == nil && req.Theme == nil {
-		writeError(w, http.StatusBadRequest, "no preference to update")
-		return
-	}
-	if req.Theme != nil && !slices.Contains(Themes, *req.Theme) {
-		writeError(w, http.StatusBadRequest, "unknown theme")
-		return
-	}
 
-	preferences, err := h.service.GetPreferences(r.Context(), user.ID)
+	preferences, err := h.service.UpdatePreferences(r.Context(), user.ID, PreferencesUpdate{
+		DiffViewSideBySide: req.DiffViewSideBySide,
+		Theme:              req.Theme,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get preferences")
-		return
-	}
-	if req.DiffViewSideBySide != nil {
-		preferences.DiffViewSideBySide = *req.DiffViewSideBySide
-	}
-	if req.Theme != nil {
-		preferences.Theme = *req.Theme
-	}
-
-	preferences, err = h.service.UpdatePreferences(r.Context(), user.ID, preferences)
-	if err != nil {
+		if errors.Is(err, ErrNoPreferenceChange) || errors.Is(err, ErrUnknownTheme) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to update preferences")
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/encrypt"
@@ -17,6 +18,8 @@ var (
 	ErrTOTPAlreadyEnabled     = errors.New("TOTP is already enabled")
 	ErrTOTPNotEnabled         = errors.New("TOTP is not enabled")
 	ErrInvalidTOTPCode        = errors.New("invalid TOTP code")
+	ErrNoPreferenceChange     = errors.New("no preference to update")
+	ErrUnknownTheme           = errors.New("unknown theme")
 )
 
 // Service defines settings business logic.
@@ -29,7 +32,9 @@ type Service interface {
 	GetSSHPublicKey(ctx context.Context, userID int64) (publicKey string, err error)
 	GenerateSSHKey(ctx context.Context, userID int64) (publicKey string, err error)
 	GetPreferences(ctx context.Context, userID int64) (UserPreferences, error)
-	UpdatePreferences(ctx context.Context, userID int64, preferences UserPreferences) (UserPreferences, error)
+	// UpdatePreferences changes only the preferences the update sets and
+	// returns them all.
+	UpdatePreferences(ctx context.Context, userID int64, update PreferencesUpdate) (UserPreferences, error)
 }
 
 type service struct {
@@ -218,11 +223,17 @@ func (s *service) GetPreferences(ctx context.Context, userID int64) (UserPrefere
 	return preferences, nil
 }
 
-func (s *service) UpdatePreferences(ctx context.Context, userID int64, preferences UserPreferences) (UserPreferences, error) {
+func (s *service) UpdatePreferences(ctx context.Context, userID int64, update PreferencesUpdate) (UserPreferences, error) {
+	if update.DiffViewSideBySide == nil && update.Theme == nil {
+		return UserPreferences{}, ErrNoPreferenceChange
+	}
+	if update.Theme != nil && !slices.Contains(Themes, *update.Theme) {
+		return UserPreferences{}, ErrUnknownTheme
+	}
 	if err := s.ensureUser(ctx, userID); err != nil {
 		return UserPreferences{}, err
 	}
-	updated, err := s.preferences.Update(ctx, userID, preferences)
+	updated, err := s.preferences.Update(ctx, userID, update)
 	if err != nil {
 		return UserPreferences{}, fmt.Errorf("updating user preferences: %w", err)
 	}
