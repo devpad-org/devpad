@@ -1,6 +1,6 @@
 import { ref, shallowRef, reactive, computed, onBeforeUnmount, watch, toValue, type Ref, type MaybeRefOrGetter } from 'vue'
 import type * as MonacoType from 'monaco-editor'
-import { gruvboxMonacoTheme } from '@/theme/gruvbox'
+import { DEVPAD_MONACO_THEME, registerDevpadTheme } from '@/theme'
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker'
 import CssWorker from 'monaco-editor/language/css/css.worker?worker'
 import HtmlWorker from 'monaco-editor/language/html/html.worker?worker'
@@ -40,18 +40,6 @@ export async function loadMonaco(): Promise<typeof MonacoType> {
     })
   }
   return monacoPromise
-}
-
-export const DEVPAD_MONACO_THEME = 'devpad-gruvbox'
-
-// Register Devpad editor theme once
-let themeRegistered = false
-
-export function registerDevpadTheme(m: typeof MonacoType) {
-  if (themeRegistered) return
-  themeRegistered = true
-
-  m.editor.defineTheme(DEVPAD_MONACO_THEME, gruvboxMonacoTheme)
 }
 
 /** Map file extensions to Monaco language IDs */

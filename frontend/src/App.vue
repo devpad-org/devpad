@@ -5,6 +5,7 @@ import { computed, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useAttentionStore } from '@/stores/attention'
 import InboxPopover from '@/components/inbox/InboxPopover.vue'
+import { syncThemeFromAccount } from '@/theme/account'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -15,12 +16,15 @@ const attention = useAttentionStore()
 const hideChrome = computed(() => route.meta.hideChrome === true)
 
 // The header, and the IDE's title bar where the header is hidden, show how
-// many agents are waiting for the user.
+// many agents are waiting for the user. Signing in also brings the user's
+// theme.
 watch(
   () => auth.isAuthenticated,
   (showing, wasShowing) => {
-    if (showing) attention.watch()
-    else if (wasShowing) attention.unwatch()
+    if (showing) {
+      attention.watch()
+      void syncThemeFromAccount()
+    } else if (wasShowing) attention.unwatch()
   },
   { immediate: true },
 )
@@ -152,7 +156,7 @@ async function handleLogout() {
 }
 
 .nav-link.router-link-active {
-  color: var(--accent-blue);
+  color: var(--accent);
   background: var(--accent-glow);
 }
 

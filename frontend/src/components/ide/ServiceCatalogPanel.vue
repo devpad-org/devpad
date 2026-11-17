@@ -88,7 +88,7 @@ async function deployService(service: ServiceCatalogItem) {
 
 <style scoped>
 .service-catalog-panel {
-  --ide-header-icon: var(--gruvbox-aqua);
+  --ide-header-icon: var(--hue-aqua);
   display: flex;
   flex-direction: column;
   height: 100%;

@@ -2404,7 +2404,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 
 .msg-assistant .msg-avatar {
   background: var(--accent);
-  color: var(--bg-base);
+  color: var(--text-on-accent);
 }
 
 .msg-user .msg-avatar {
@@ -2689,7 +2689,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 
 .agent-send.active {
   background: var(--accent);
-  color: var(--bg-base);
+  color: var(--text-on-accent);
   border-color: var(--accent-border);
 }
 
@@ -2699,7 +2699,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 
 .agent-stop {
   background: var(--warning) !important;
-  color: var(--bg-base) !important;
+  color: var(--text-on-accent) !important;
   border-color: var(--warning-border) !important;
 }
 

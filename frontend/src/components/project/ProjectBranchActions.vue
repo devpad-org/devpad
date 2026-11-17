@@ -483,7 +483,7 @@ onUnmounted(stopTimer)
   height: 26px;
   padding: 0 10px;
   border-radius: var(--radius-md);
-  background: var(--accent-blue);
+  background: var(--accent);
   color: var(--text-on-accent);
   font-size: 0.72rem;
   font-weight: 600;
@@ -492,7 +492,7 @@ onUnmounted(stopTimer)
 }
 
 .project-primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
 }
 
 .project-primary.quiet {
@@ -634,13 +634,13 @@ onUnmounted(stopTimer)
 }
 
 .mr-btn--primary {
-  background: var(--accent-blue);
+  background: var(--accent);
   color: var(--text-on-accent);
   font-weight: 600;
 }
 
 .mr-btn--primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
   color: var(--text-on-accent);
 }
 

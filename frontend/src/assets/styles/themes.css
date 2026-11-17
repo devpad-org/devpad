@@ -1,0 +1,670 @@
+/*
+ * Colour themes. Each theme is one block of tokens, chosen by `data-theme` on
+ * <html> (see src/theme/index.ts); Gruvbox Dark is also the default with no
+ * attribute. The selectors are not tied to :root, so any element can show a
+ * theme by carrying the attribute, which is how the theme picker draws its
+ * previews.
+ *
+ * The editor and terminal are themed from the --editor-*, --syntax-* and
+ * --term-* tokens here: src/theme/index.ts reads them into Monaco and xterm
+ * themes, so those must be plain hex or rgb()/rgba() colours.
+ *
+ * `npm run check-themes`, which `npm run build` runs too, checks that every
+ * theme here is in THEMES (src/theme/index.ts), that every theme defines the
+ * same tokens and a color-scheme of light or dark (the editor's base follows it), that the colours the editor and terminal read are ones they can
+ * use, and every theme's text and syntax colours for contrast against the
+ * surfaces they are used on.
+ */
+
+/* ── Gruvbox Dark (default) ─────────────────────────────────────────────── */
+:root,
+[data-theme='gruvbox-dark'] {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg-void: #1d2021;
+  --bg-base: #282828;
+  --bg-elevated: #32302f;
+  --bg-raised: #3c3836;
+  --bg-hover: rgba(235, 219, 178, 0.07);
+  --bg-selected: rgba(250, 189, 47, 0.13);
+  --bg-overlay: rgba(29, 32, 33, 0.74);
+  --bg-neutral: rgba(168, 153, 132, 0.13);
+
+  /* Borders */
+  --border-hairline: rgba(235, 219, 178, 0.06);
+  --border-subtle: rgba(235, 219, 178, 0.1);
+  --border-strong: rgba(235, 219, 178, 0.18);
+  --border-top-highlight: rgba(251, 241, 199, 0.08);
+
+  /* Text */
+  --text-primary: #ebdbb2;
+  --text-secondary: #bdae93;
+  --text-tertiary: #afa089;
+  --text-dim: #8d8071;
+  --text-on-accent: #1d2021;
+  --text-decoration-muted: rgba(235, 219, 178, 0.18);
+
+  /* Hues, safe as text and icons on every surface. Gruvbox's own red, and
+     to a lesser degree its orange, blue and purple, are too dark to read as
+     small text on these surfaces, so they are lifted here; fills, syntax and
+     the terminal keep the originals. */
+  --hue-red: #fb896c;
+  --hue-green: #b8bb26;
+  --hue-yellow: #fabd2f;
+  --hue-blue: #89a99a;
+  --hue-purple: #d68d9e;
+  --hue-aqua: #8ec07c;
+  --hue-orange: #fe8927;
+
+  /* Accent */
+  --accent: var(--hue-yellow);
+  --accent-dim: #d79921;
+  --accent-glow: rgba(250, 189, 47, 0.14);
+  --accent-border: rgba(250, 189, 47, 0.34);
+
+  /* Semantic */
+  --success: var(--hue-green);
+  --warning: var(--hue-yellow);
+  --error: var(--hue-red);
+  --attention: var(--hue-orange);
+  --error-bg: rgba(251, 73, 52, 0.12);
+  --error-border: rgba(251, 73, 52, 0.28);
+  --success-bg: rgba(184, 187, 38, 0.12);
+  --success-border: rgba(184, 187, 38, 0.28);
+  --warning-bg: rgba(250, 189, 47, 0.12);
+  --warning-border: rgba(250, 189, 47, 0.28);
+  --attention-bg: rgba(254, 128, 25, 0.12);
+  --attention-border: rgba(254, 128, 25, 0.28);
+
+  /* What a filled button or a link mixes towards on hover. */
+  --fill-hover-mix: #fbf1c7;
+
+  /* Project emblems: fills only, never text. */
+  --emblem-red: #fb4934;
+  --emblem-green: #b8bb26;
+  --emblem-yellow: #fabd2f;
+  --emblem-blue: #83a598;
+  --emblem-purple: #d3869b;
+  --emblem-aqua: #8ec07c;
+  --emblem-orange: #fe8019;
+  --emblem-red-muted: #cc241d;
+  --emblem-green-muted: #98971a;
+  --emblem-yellow-muted: #d79921;
+  --emblem-blue-muted: #458588;
+  --emblem-purple-muted: #b16286;
+  --emblem-aqua-muted: #689d6a;
+  --emblem-orange-muted: #d65d0e;
+  --emblem-light: #ebdbb2;
+  --emblem-dark: #3c3836;
+
+  /* Chart series, in the order they are given out. They are not the theme's
+     own hues, which are too close in lightness to tell apart with color
+     vision deficiencies; each set passes those checks on its theme's
+     --bg-surface. A series past the eighth folds into --series-other. */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #0ca30c;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --series-other: #7c6f64;
+
+  /* Effects */
+  --shadow-strong: 0 16px 48px rgba(29, 32, 33, 0.55);
+  --shadow-popover: 0 4px 16px rgba(29, 32, 33, 0.48);
+  --spinner-track: rgba(235, 219, 178, 0.3);
+  --qr-bg: #fbf1c7;
+
+  /* Editor */
+  --editor-bg: #1d2021;
+  --editor-fg: #ebdbb2;
+  --editor-line-highlight: #3c383680;
+  --editor-selection: #504945;
+  --editor-selection-inactive: #3c383680;
+  --editor-selection-highlight: #fabd2f22;
+  --editor-line-number: #7c6f64;
+  --editor-line-number-active: #d5c4a1;
+  --editor-cursor: #fabd2f;
+  --editor-indent-guide: #50494580;
+  --editor-indent-guide-active: #665c54;
+  --editor-bracket-match-bg: #fabd2f18;
+  --editor-bracket-match-border: #fabd2f55;
+  --editor-find-match: #fe801966;
+  --editor-find-match-highlight: #fabd2f33;
+  --editor-diff-inserted: #b8bb2622;
+  --editor-diff-removed: #fb493422;
+  --editor-scrollbar: #50494566;
+  --editor-scrollbar-hover: #665c5488;
+  --editor-scrollbar-active: #7c6f64aa;
+
+  /* Syntax */
+  --syntax-comment: #958677;
+  --syntax-comment-doc: #a89984;
+  --syntax-keyword: #fb4934;
+  --syntax-operator: #fe8019;
+  --syntax-storage: #d3869b;
+  --syntax-type: #fabd2f;
+  --syntax-string: #b8bb26;
+  --syntax-escape: #8ec07c;
+  --syntax-number: #d3869b;
+  --syntax-function: #83a598;
+  --syntax-variable: #ebdbb2;
+  --syntax-parameter: #d5c4a1;
+  --syntax-language: #fe8019;
+  --syntax-tag: #83a598;
+  --syntax-tag-class: #8ec07c;
+  --syntax-delimiter: #a89984;
+  --syntax-bracket: #83a598;
+  --syntax-curly: #d3869b;
+  --syntax-invalid: #fb4934;
+
+  /* Terminal */
+  --terminal-bg: #1d2021;
+  --term-fg: #ebdbb2;
+  --term-cursor: #fabd2f;
+  --term-selection: rgba(250, 189, 47, 0.22);
+  --term-black: #282828;
+  --term-red: #cc241d;
+  --term-green: #98971a;
+  --term-yellow: #d79921;
+  --term-blue: #458588;
+  --term-magenta: #b16286;
+  --term-cyan: #689d6a;
+  --term-white: #a89984;
+  --term-bright-black: #928374;
+  --term-bright-red: #fb4934;
+  --term-bright-green: #b8bb26;
+  --term-bright-yellow: #fabd2f;
+  --term-bright-blue: #83a598;
+  --term-bright-magenta: #d3869b;
+  --term-bright-cyan: #8ec07c;
+  --term-bright-white: #ebdbb2;
+}
+
+/* ── Gruvbox Light ──────────────────────────────────────────────────────── */
+/* Gruvbox's "faded" hues are made for its light background, but several are
+   too pale to read as small text, so green, yellow and aqua are a step
+   deeper here. */
+[data-theme='gruvbox-light'] {
+  color-scheme: light;
+
+  --bg-void: #f9f5d7;
+  --bg-base: #fbf1c7;
+  --bg-elevated: #f2e5bc;
+  --bg-raised: #ebdbb2;
+  --bg-hover: rgba(60, 56, 54, 0.07);
+  --bg-selected: rgba(181, 118, 20, 0.17);
+  --bg-overlay: rgba(60, 56, 54, 0.5);
+  --bg-neutral: rgba(124, 111, 100, 0.15);
+
+  --border-hairline: rgba(60, 56, 54, 0.1);
+  --border-subtle: rgba(60, 56, 54, 0.17);
+  --border-strong: rgba(60, 56, 54, 0.3);
+  --border-top-highlight: rgba(255, 255, 255, 0.45);
+
+  --text-primary: #3c3836;
+  --text-secondary: #504945;
+  --text-tertiary: #665c54;
+  --text-dim: #7c6f64;
+  --text-on-accent: #fbf1c7;
+  --text-decoration-muted: rgba(60, 56, 54, 0.28);
+
+  --hue-red: #9d0006;
+  --hue-green: #5f5c08;
+  --hue-yellow: #7c4c00;
+  --hue-blue: #076678;
+  --hue-purple: #8f3f71;
+  --hue-aqua: #33654a;
+  --hue-orange: #a83703;
+
+  --accent: var(--hue-yellow);
+  --accent-dim: #b57614;
+  --accent-glow: rgba(181, 118, 20, 0.2);
+  --accent-border: rgba(181, 118, 20, 0.55);
+
+  --success: var(--hue-green);
+  --warning: var(--hue-yellow);
+  --error: var(--hue-red);
+  --attention: var(--hue-orange);
+  --error-bg: rgba(157, 0, 6, 0.09);
+  --error-border: rgba(157, 0, 6, 0.3);
+  --success-bg: rgba(121, 116, 14, 0.13);
+  --success-border: rgba(121, 116, 14, 0.38);
+  --warning-bg: rgba(181, 118, 20, 0.13);
+  --warning-border: rgba(181, 118, 20, 0.4);
+  --attention-bg: rgba(175, 58, 3, 0.1);
+  --attention-border: rgba(175, 58, 3, 0.32);
+
+  --fill-hover-mix: #1d2021;
+
+  --emblem-red: #fb4934;
+  --emblem-green: #b8bb26;
+  --emblem-yellow: #fabd2f;
+  --emblem-blue: #83a598;
+  --emblem-purple: #d3869b;
+  --emblem-aqua: #8ec07c;
+  --emblem-orange: #fe8019;
+  --emblem-red-muted: #cc241d;
+  --emblem-green-muted: #98971a;
+  --emblem-yellow-muted: #d79921;
+  --emblem-blue-muted: #458588;
+  --emblem-purple-muted: #b16286;
+  --emblem-aqua-muted: #689d6a;
+  --emblem-orange-muted: #d65d0e;
+  --emblem-light: #f9f5d7;
+  --emblem-dark: #3c3836;
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --series-other: #a89984;
+
+  --shadow-strong: 0 16px 48px rgba(60, 56, 54, 0.28);
+  --shadow-popover: 0 4px 16px rgba(60, 56, 54, 0.2);
+  --spinner-track: rgba(60, 56, 54, 0.22);
+  --qr-bg: #ffffff;
+
+  --editor-bg: #f9f5d7;
+  --editor-fg: #3c3836;
+  --editor-line-highlight: #ebdbb266;
+  --editor-selection: #d5c4a1;
+  --editor-selection-inactive: #ebdbb2aa;
+  --editor-selection-highlight: #b5761430;
+  --editor-line-number: #a89984;
+  --editor-line-number-active: #504945;
+  --editor-cursor: #af3a03;
+  --editor-indent-guide: #d5c4a180;
+  --editor-indent-guide-active: #bdae93;
+  --editor-bracket-match-bg: #b5761426;
+  --editor-bracket-match-border: #b5761488;
+  --editor-find-match: #d65d0e66;
+  --editor-find-match-highlight: #d7992144;
+  --editor-diff-inserted: #98971a36;
+  --editor-diff-removed: #cc241d2b;
+  --editor-scrollbar: #bdae9366;
+  --editor-scrollbar-hover: #a8998488;
+  --editor-scrollbar-active: #928374aa;
+
+  --syntax-comment: #766a60;
+  --syntax-comment-doc: #665c54;
+  --syntax-keyword: #9d0006;
+  --syntax-operator: #af3a03;
+  --syntax-storage: #8f3f71;
+  --syntax-type: #8f5a00;
+  --syntax-string: #6a6609;
+  --syntax-escape: #3a6f50;
+  --syntax-number: #8f3f71;
+  --syntax-function: #076678;
+  --syntax-variable: #3c3836;
+  --syntax-parameter: #504945;
+  --syntax-language: #af3a03;
+  --syntax-tag: #076678;
+  --syntax-tag-class: #3a6f50;
+  --syntax-delimiter: #665c54;
+  --syntax-bracket: #076678;
+  --syntax-curly: #8f3f71;
+  --syntax-invalid: #9d0006;
+
+  /* Gruvbox's own light terminal palette, where "black" is the paper and
+     "white" the ink. */
+  --terminal-bg: #f9f5d7;
+  --term-fg: #3c3836;
+  --term-cursor: #af3a03;
+  --term-selection: rgba(181, 118, 20, 0.28);
+  --term-black: #fbf1c7;
+  --term-red: #cc241d;
+  --term-green: #98971a;
+  --term-yellow: #d79921;
+  --term-blue: #458588;
+  --term-magenta: #b16286;
+  --term-cyan: #689d6a;
+  --term-white: #7c6f64;
+  --term-bright-black: #928374;
+  --term-bright-red: #9d0006;
+  --term-bright-green: #79740e;
+  --term-bright-yellow: #b57614;
+  --term-bright-blue: #076678;
+  --term-bright-magenta: #8f3f71;
+  --term-bright-cyan: #427b58;
+  --term-bright-white: #3c3836;
+}
+
+/* ── Modern Dark ────────────────────────────────────────────────────────── */
+/* Cool neutral surfaces with one blue accent. */
+[data-theme='modern-dark'] {
+  color-scheme: dark;
+
+  --bg-void: #0f1115;
+  --bg-base: #15181d;
+  --bg-elevated: #1b1f26;
+  --bg-raised: #252a33;
+  --bg-hover: rgba(228, 231, 236, 0.06);
+  --bg-selected: rgba(106, 169, 255, 0.15);
+  --bg-overlay: rgba(5, 7, 10, 0.72);
+  --bg-neutral: rgba(146, 153, 166, 0.14);
+
+  --border-hairline: rgba(228, 231, 236, 0.07);
+  --border-subtle: rgba(228, 231, 236, 0.11);
+  --border-strong: rgba(228, 231, 236, 0.2);
+  --border-top-highlight: rgba(255, 255, 255, 0.06);
+
+  --text-primary: #e4e7ec;
+  --text-secondary: #b3b9c4;
+  --text-tertiary: #969dab;
+  --text-dim: #6f7785;
+  --text-on-accent: #0b0d12;
+  --text-decoration-muted: rgba(228, 231, 236, 0.2);
+
+  --hue-red: #ff7a7a;
+  --hue-green: #4fcf8e;
+  --hue-yellow: #e6b450;
+  --hue-blue: #6aa9ff;
+  --hue-purple: #b794f6;
+  --hue-aqua: #4cc9c0;
+  --hue-orange: #f2955a;
+
+  --accent: var(--hue-blue);
+  --accent-dim: #4b8be6;
+  --accent-glow: rgba(106, 169, 255, 0.18);
+  --accent-border: rgba(106, 169, 255, 0.45);
+
+  --success: var(--hue-green);
+  --warning: var(--hue-yellow);
+  --error: var(--hue-red);
+  --attention: var(--hue-orange);
+  --error-bg: rgba(255, 122, 122, 0.12);
+  --error-border: rgba(255, 122, 122, 0.3);
+  --success-bg: rgba(79, 207, 142, 0.12);
+  --success-border: rgba(79, 207, 142, 0.3);
+  --warning-bg: rgba(230, 180, 80, 0.12);
+  --warning-border: rgba(230, 180, 80, 0.3);
+  --attention-bg: rgba(242, 149, 90, 0.12);
+  --attention-border: rgba(242, 149, 90, 0.3);
+
+  --fill-hover-mix: #ffffff;
+
+  --emblem-red: #f06a6a;
+  --emblem-green: #3fbf7f;
+  --emblem-yellow: #f0b93a;
+  --emblem-blue: #5b9cf5;
+  --emblem-purple: #a07cf0;
+  --emblem-aqua: #35bdb4;
+  --emblem-orange: #f08a4b;
+  --emblem-red-muted: #cf4444;
+  --emblem-green-muted: #1f8f58;
+  --emblem-yellow-muted: #c98f0e;
+  --emblem-blue-muted: #2f6fd0;
+  --emblem-purple-muted: #7350c8;
+  --emblem-aqua-muted: #148f88;
+  --emblem-orange-muted: #cc6424;
+  --emblem-light: #e4e7ec;
+  --emblem-dark: #252a33;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #0ca30c;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --series-other: #6f7785;
+
+  --shadow-strong: 0 16px 48px rgba(0, 0, 0, 0.6);
+  --shadow-popover: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --spinner-track: rgba(228, 231, 236, 0.25);
+  --qr-bg: #ffffff;
+
+  --editor-bg: #0f1115;
+  --editor-fg: #e4e7ec;
+  --editor-line-highlight: #1b1f26;
+  --editor-selection: #2b4a78;
+  --editor-selection-inactive: #252a33;
+  --editor-selection-highlight: #6aa9ff26;
+  --editor-line-number: #5d6572;
+  --editor-line-number-active: #b3b9c4;
+  --editor-cursor: #6aa9ff;
+  --editor-indent-guide: #252a33;
+  --editor-indent-guide-active: #3d4452;
+  --editor-bracket-match-bg: #6aa9ff1f;
+  --editor-bracket-match-border: #6aa9ff66;
+  --editor-find-match: #e6b45066;
+  --editor-find-match-highlight: #e6b4502e;
+  --editor-diff-inserted: #4fcf8e24;
+  --editor-diff-removed: #ff7a7a24;
+  --editor-scrollbar: #6f778540;
+  --editor-scrollbar-hover: #6f778570;
+  --editor-scrollbar-active: #969dab80;
+
+  --syntax-comment: #7d8594;
+  --syntax-comment-doc: #969dab;
+  --syntax-keyword: #c4a2ff;
+  --syntax-operator: #9fb1c9;
+  --syntax-storage: #c4a2ff;
+  --syntax-type: #e6b450;
+  --syntax-string: #7fd69b;
+  --syntax-escape: #4cc9c0;
+  --syntax-number: #f2955a;
+  --syntax-function: #6aa9ff;
+  --syntax-variable: #e4e7ec;
+  --syntax-parameter: #c7ccd6;
+  --syntax-language: #f2955a;
+  --syntax-tag: #ff7a7a;
+  --syntax-tag-class: #4cc9c0;
+  --syntax-delimiter: #969dab;
+  --syntax-bracket: #9fb1c9;
+  --syntax-curly: #b794f6;
+  --syntax-invalid: #ff7a7a;
+
+  --terminal-bg: #0f1115;
+  --term-fg: #e4e7ec;
+  --term-cursor: #6aa9ff;
+  --term-selection: rgba(106, 169, 255, 0.3);
+  --term-black: #1b1f26;
+  --term-red: #f0616b;
+  --term-green: #3fb97a;
+  --term-yellow: #d9a441;
+  --term-blue: #4f8fe8;
+  --term-magenta: #a57be8;
+  --term-cyan: #36b3aa;
+  --term-white: #b3b9c4;
+  --term-bright-black: #6f7785;
+  --term-bright-red: #ff7a7a;
+  --term-bright-green: #4fcf8e;
+  --term-bright-yellow: #e6b450;
+  --term-bright-blue: #6aa9ff;
+  --term-bright-magenta: #b794f6;
+  --term-bright-cyan: #4cc9c0;
+  --term-bright-white: #f4f6f9;
+}
+
+/* ── Modern Light ───────────────────────────────────────────────────────── */
+[data-theme='modern-light'] {
+  color-scheme: light;
+
+  --bg-void: #ffffff;
+  --bg-base: #f7f8fa;
+  --bg-elevated: #eff1f5;
+  --bg-raised: #e5e8ee;
+  --bg-hover: rgba(26, 30, 38, 0.06);
+  --bg-selected: rgba(18, 89, 199, 0.12);
+  --bg-overlay: rgba(26, 30, 38, 0.45);
+  --bg-neutral: rgba(88, 97, 112, 0.12);
+
+  --border-hairline: rgba(26, 30, 38, 0.09);
+  --border-subtle: rgba(26, 30, 38, 0.15);
+  --border-strong: rgba(26, 30, 38, 0.27);
+  --border-top-highlight: rgba(255, 255, 255, 0.7);
+
+  --text-primary: #1a1e26;
+  --text-secondary: #414a58;
+  --text-tertiary: #566070;
+  --text-dim: #7a8291;
+  --text-on-accent: #ffffff;
+  --text-decoration-muted: rgba(26, 30, 38, 0.25);
+
+  --hue-red: #bd2229;
+  --hue-green: #13733f;
+  --hue-yellow: #855c00;
+  --hue-blue: #1259c7;
+  --hue-purple: #6d3fc4;
+  --hue-aqua: #08727a;
+  --hue-orange: #a04505;
+
+  --accent: var(--hue-blue);
+  --accent-dim: #0f4fb3;
+  --accent-glow: rgba(18, 89, 199, 0.18);
+  --accent-border: rgba(18, 89, 199, 0.5);
+
+  --success: var(--hue-green);
+  --warning: var(--hue-yellow);
+  --error: var(--hue-red);
+  --attention: var(--hue-orange);
+  --error-bg: rgba(196, 38, 45, 0.08);
+  --error-border: rgba(196, 38, 45, 0.3);
+  --success-bg: rgba(19, 115, 63, 0.09);
+  --success-border: rgba(19, 115, 63, 0.32);
+  --warning-bg: rgba(180, 125, 0, 0.12);
+  --warning-border: rgba(150, 104, 0, 0.38);
+  --attention-bg: rgba(169, 74, 8, 0.09);
+  --attention-border: rgba(169, 74, 8, 0.32);
+
+  --fill-hover-mix: #000000;
+
+  --emblem-red: #f06a6a;
+  --emblem-green: #3fbf7f;
+  --emblem-yellow: #f0b93a;
+  --emblem-blue: #5b9cf5;
+  --emblem-purple: #a07cf0;
+  --emblem-aqua: #35bdb4;
+  --emblem-orange: #f08a4b;
+  --emblem-red-muted: #cf4444;
+  --emblem-green-muted: #1f8f58;
+  --emblem-yellow-muted: #c98f0e;
+  --emblem-blue-muted: #2f6fd0;
+  --emblem-purple-muted: #7350c8;
+  --emblem-aqua-muted: #148f88;
+  --emblem-orange-muted: #cc6424;
+  --emblem-light: #f7f8fa;
+  --emblem-dark: #252a33;
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --series-other: #a4abb8;
+
+  --shadow-strong: 0 16px 48px rgba(16, 24, 40, 0.2);
+  --shadow-popover: 0 4px 16px rgba(16, 24, 40, 0.14);
+  --spinner-track: rgba(26, 30, 38, 0.18);
+  --qr-bg: #ffffff;
+
+  --editor-bg: #ffffff;
+  --editor-fg: #1a1e26;
+  --editor-line-highlight: #f3f5f8;
+  --editor-selection: #cfe0fb;
+  --editor-selection-inactive: #e5e8ee;
+  --editor-selection-highlight: #1259c722;
+  --editor-line-number: #969eac;
+  --editor-line-number-active: #414a58;
+  --editor-cursor: #1259c7;
+  --editor-indent-guide: #e5e8ee;
+  --editor-indent-guide-active: #c3c9d4;
+  --editor-bracket-match-bg: #1259c71a;
+  --editor-bracket-match-border: #1259c766;
+  --editor-find-match: #f0b93a88;
+  --editor-find-match-highlight: #f0b93a40;
+  --editor-diff-inserted: #1baf7a30;
+  --editor-diff-removed: #e3494828;
+  --editor-scrollbar: #7a829140;
+  --editor-scrollbar-hover: #7a829170;
+  --editor-scrollbar-active: #56607080;
+
+  --syntax-comment: #697282;
+  --syntax-comment-doc: #566070;
+  --syntax-keyword: #7a3fd0;
+  --syntax-operator: #47617f;
+  --syntax-storage: #7a3fd0;
+  --syntax-type: #855c00;
+  --syntax-string: #13733f;
+  --syntax-escape: #08727a;
+  --syntax-number: #a94a08;
+  --syntax-function: #1259c7;
+  --syntax-variable: #1a1e26;
+  --syntax-parameter: #414a58;
+  --syntax-language: #a94a08;
+  --syntax-tag: #c4262d;
+  --syntax-tag-class: #08727a;
+  --syntax-delimiter: #566070;
+  --syntax-bracket: #47617f;
+  --syntax-curly: #6d3fc4;
+  --syntax-invalid: #c4262d;
+
+  --terminal-bg: #ffffff;
+  --term-fg: #1a1e26;
+  --term-cursor: #1259c7;
+  --term-selection: rgba(18, 89, 199, 0.22);
+  --term-black: #1a1e26;
+  --term-red: #c4262d;
+  --term-green: #13733f;
+  --term-yellow: #855c00;
+  --term-blue: #1259c7;
+  --term-magenta: #6d3fc4;
+  --term-cyan: #08727a;
+  --term-white: #566070;
+  --term-bright-black: #7a8291;
+  --term-bright-red: #d93a40;
+  --term-bright-green: #1a8a4c;
+  --term-bright-yellow: #9a6b00;
+  --term-bright-blue: #2a74e8;
+  --term-bright-magenta: #8250df;
+  --term-bright-cyan: #0b8a93;
+  --term-bright-white: #414a58;
+}
+
+/* ── Derived tokens ─────────────────────────────────────────────────────── */
+/* A var() is resolved where it is declared, so these are declared again on
+   every themed element rather than once on :root. */
+:root,
+[data-theme] {
+  --ide-surface-bg: var(--bg-void);
+  --ide-panel-bg: var(--bg-base);
+  --ide-header-bg: var(--bg-elevated);
+  --ide-header-icon: var(--accent);
+
+  /* Deprecated: older names, kept only until the code still using them moves
+     to the tokens above. Never use them in new code. --accent-blue is not the
+     accent (in Gruvbox the accent is yellow): replace it with --accent where
+     it marks focus, selection or the primary action, and with --hue-blue
+     where it means blue as such (info, a status, a chart). */
+  --bg-primary: var(--bg-base);
+  --bg-secondary: var(--bg-void);
+  --bg-tertiary: var(--bg-elevated);
+  --bg-surface: var(--bg-elevated);
+  --bg-surface-alt: var(--bg-raised);
+  --accent-blue: var(--hue-blue);
+  --accent-purple: var(--hue-purple);
+  --accent-green: var(--success);
+  --accent-amber: var(--warning);
+  --accent-rose: var(--error);
+  --text-muted: var(--text-tertiary);
+  --border-default: var(--border-subtle);
+  --border-active: var(--border-strong);
+}
+
+/* An element showing a theme of its own, such as a preview. */
+[data-theme] {
+  color: var(--text-primary);
+}

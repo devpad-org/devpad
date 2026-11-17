@@ -935,14 +935,14 @@ onUnmounted(() => {
 }
 
 .git-btn--primary {
-  background: var(--accent-blue);
+  background: var(--accent);
   color: var(--text-on-accent);
   border-color: transparent;
   font-weight: 600;
 }
 
 .git-btn--primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
   border-color: transparent;
 }
 

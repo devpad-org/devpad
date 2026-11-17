@@ -161,7 +161,7 @@ async function dismissConversion() {
 <style scoped src="./panel.css"></style>
 <style scoped>
 .project-panel {
-  --ide-header-icon: var(--gruvbox-yellow);
+  --ide-header-icon: var(--hue-yellow);
 }
 
 .project-name-row {

@@ -7,6 +7,7 @@ import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import SecuritySettings from '@/components/settings/SecuritySettings.vue'
 import SSHKeySettings from '@/components/settings/SSHKeySettings.vue'
+import AppearanceSettings from '@/components/settings/AppearanceSettings.vue'
 import AIProviderKeys from '@/components/settings/AIProviderKeys.vue'
 import AIDefaultModels from '@/components/settings/AIDefaultModels.vue'
 import AIBudgets from '@/components/settings/AIBudgets.vue'
@@ -33,6 +34,7 @@ export const router = createRouter({
         { path: '', name: 'settings', redirect: { name: 'settings-security' } },
         { path: 'security', name: 'settings-security', component: SecuritySettings },
         { path: 'ssh-key', name: 'settings-ssh-key', component: SSHKeySettings },
+        { path: 'appearance', name: 'settings-appearance', component: AppearanceSettings },
         { path: 'ai/keys', name: 'settings-ai-keys', component: AIProviderKeys },
         { path: 'ai/models', name: 'settings-ai-models', component: AIDefaultModels },
         { path: 'ai/budgets', name: 'settings-ai-budgets', component: AIBudgets },

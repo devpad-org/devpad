@@ -373,7 +373,7 @@ function statusLabel(status: 'pending' | UserQuestionResult['status']): string {
   border: 0.5px solid var(--accent-border);
   border-radius: var(--radius-md);
   background: var(--accent);
-  color: var(--bg-base);
+  color: var(--text-on-accent);
   font-size: 0.75rem;
   font-weight: 700;
   transition: opacity var(--transition-fast), transform var(--transition-fast), background var(--transition-fast);

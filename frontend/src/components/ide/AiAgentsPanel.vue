@@ -497,7 +497,7 @@ async function deleteEditingAgent(): Promise<void> {
 .agent-primary-btn {
   border: 0.5px solid var(--accent-border);
   background: var(--accent);
-  color: var(--bg-base);
+  color: var(--text-on-accent);
 }
 
 .agent-secondary-btn {

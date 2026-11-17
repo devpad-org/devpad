@@ -518,7 +518,7 @@ function isSelf(user: AdminUser): boolean {
 .btn-create {
   padding: var(--space-2) var(--space-4);
   background: var(--accent);
-  color: var(--bg-base);
+  color: var(--text-on-accent);
   font-weight: 500;
   font-size: 0.85rem;
   border-radius: var(--radius-lg);
@@ -614,7 +614,7 @@ function isSelf(user: AdminUser): boolean {
   letter-spacing: 0.05em;
   border-radius: var(--radius-sm);
   background: var(--accent-glow);
-  color: var(--accent-blue);
+  color: var(--accent);
   border: 0.5px solid var(--accent-border);
 }
 
@@ -781,7 +781,7 @@ function isSelf(user: AdminUser): boolean {
 .btn-primary {
   padding: var(--space-2) var(--space-4);
   background: var(--accent);
-  color: var(--bg-base);
+  color: var(--text-on-accent);
   font-weight: 500;
   font-size: 0.85rem;
   border-radius: var(--radius-lg);

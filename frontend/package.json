@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "vue-tsc --noEmit && node scripts/check-themes.mjs && vite build",
     "preview": "vite preview",
-    "type-check": "vue-tsc --noEmit"
+    "type-check": "vue-tsc --noEmit",
+    "check-themes": "node scripts/check-themes.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

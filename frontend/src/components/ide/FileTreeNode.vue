@@ -299,7 +299,7 @@ function focusInput(e: { el: HTMLElement }) {
 
 .tree-file.selected {
   background: var(--accent-glow);
-  color: var(--accent-blue);
+  color: var(--accent);
 }
 
 .dir-icon {

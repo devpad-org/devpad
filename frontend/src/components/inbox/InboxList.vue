@@ -256,7 +256,7 @@ function openChat(run: AgentRun) {
   padding: 0 var(--space-1);
   border-radius: var(--radius-sm);
   background: var(--accent-glow);
-  color: var(--accent-blue);
+  color: var(--accent);
   font-size: 0.68rem;
 }
 

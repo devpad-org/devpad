@@ -1,12 +1,8 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import type * as MonacoType from 'monaco-editor'
-import {
-  DEVPAD_MONACO_THEME,
-  getLanguageFromPath,
-  loadMonaco,
-  registerDevpadTheme,
-} from '@/composables/useMonacoEditor'
+import { getLanguageFromPath, loadMonaco } from '@/composables/useMonacoEditor'
+import { DEVPAD_MONACO_THEME, registerDevpadTheme } from '@/theme'
 
 const props = defineProps<{
   oldContent: string

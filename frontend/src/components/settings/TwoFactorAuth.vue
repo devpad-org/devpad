@@ -232,7 +232,7 @@ async function disable() {
   height: 24px;
   flex-shrink: 0;
   background: var(--accent);
-  color: var(--bg-base);
+  color: var(--text-on-accent);
   font-size: 0.75rem;
   font-weight: 500;
   border-radius: 50%;

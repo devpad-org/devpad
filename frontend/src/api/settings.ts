@@ -15,6 +15,8 @@ export interface SSHKeyResponse {
 
 export interface UserPreferences {
   diffViewSideBySide: boolean
+  // A theme id from @/theme.
+  theme: string
 }
 
 export const settingsApi = {
@@ -50,7 +52,8 @@ export const settingsApi = {
     return apiClient.get<UserPreferences>('/api/settings/preferences')
   },
 
-  updatePreferences(preferences: UserPreferences): Promise<UserPreferences> {
+  // Changes only the preferences given and returns them all.
+  updatePreferences(preferences: Partial<UserPreferences>): Promise<UserPreferences> {
     return apiClient.put<UserPreferences>('/api/settings/preferences', preferences)
   },
 }

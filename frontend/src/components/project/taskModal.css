@@ -246,7 +246,7 @@ kbd {
 }
 
 .btn-danger-solid:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--error) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--error) 85%, var(--fill-hover-mix));
 }
 
 .sr-only {

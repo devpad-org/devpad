@@ -3,13 +3,20 @@ package settings
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/encrypt"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/pquerna/otp/totp"
@@ -47,6 +54,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 	CREATE TABLE user_preferences (
 		user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
 		diff_view_side_by_side BOOLEAN NOT NULL DEFAULT 1,
+		theme TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`
@@ -357,7 +365,7 @@ func TestService_UserPreferences_DefaultAndUpdate(t *testing.T) {
 		t.Fatal("expected side-by-side diff view to be enabled by default")
 	}
 
-	updated, err := settingsSvc.UpdatePreferences(ctx, user.ID, UserPreferences{DiffViewSideBySide: false})
+	updated, err := settingsSvc.UpdatePreferences(ctx, user.ID, PreferencesUpdate{DiffViewSideBySide: new(false)})
 	if err != nil {
 		t.Fatalf("updating preferences: %v", err)
 	}
@@ -405,6 +413,56 @@ func TestHandler_UserPreferences(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"diffViewSideBySide":false`) {
 		t.Errorf("expected updated inline preference, got: %s", rec.Body.String())
+	}
+}
+
+func TestHandler_UserPreferences_Theme(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	handler := NewHandler(settingsSvc)
+
+	put := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/settings/preferences", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, user))
+		rec := httptest.NewRecorder()
+		handler.HandleUpdatePreferences(rec, req)
+		return rec
+	}
+
+	preferences, err := settingsSvc.GetPreferences(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("getting default preferences: %v", err)
+	}
+	if preferences.Theme != DefaultTheme {
+		t.Fatalf("default theme = %q, want %q", preferences.Theme, DefaultTheme)
+	}
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		want       UserPreferences
+	}{
+		{"theme alone keeps the diff view", `{"theme":"modern-light"}`, http.StatusOK, UserPreferences{DiffViewSideBySide: true, Theme: "modern-light"}},
+		{"diff view alone keeps the theme", `{"diffViewSideBySide":false}`, http.StatusOK, UserPreferences{DiffViewSideBySide: false, Theme: "modern-light"}},
+		{"both", `{"diffViewSideBySide":true,"theme":"gruvbox-light"}`, http.StatusOK, UserPreferences{DiffViewSideBySide: true, Theme: "gruvbox-light"}},
+		{"unknown theme", `{"theme":"solarized"}`, http.StatusBadRequest, UserPreferences{DiffViewSideBySide: true, Theme: "gruvbox-light"}},
+		{"nothing to update", `{}`, http.StatusBadRequest, UserPreferences{DiffViewSideBySide: true, Theme: "gruvbox-light"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if rec := put(tt.body); rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			got, err := settingsSvc.GetPreferences(context.Background(), user.ID)
+			if err != nil {
+				t.Fatalf("getting preferences: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("preferences = %+v, want %+v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -515,5 +573,148 @@ func TestHandler_GetSSHKey_Unauthenticated(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected status 401, got %d", rec.Code)
+	}
+}
+
+// The theme preference against the real schema: every migration applied, as
+// on a server that had preferences before themes existed.
+func TestPreferencesRepository_ThemeOnMigratedSchema(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "devpad.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	if _, err := db.Conn().Exec(`INSERT INTO users (id, username, email, password) VALUES (1, 'test', 'test@example.com', 'hashed')`); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	// A row written before the theme column existed gets the default.
+	if _, err := db.Conn().Exec(`INSERT INTO user_preferences (user_id, diff_view_side_by_side) VALUES (1, 0)`); err != nil {
+		t.Fatalf("insert preferences: %v", err)
+	}
+
+	repo := NewPreferencesRepository(db.Conn())
+	ctx := context.Background()
+
+	got, err := repo.Get(ctx, 1)
+	if err != nil {
+		t.Fatalf("getting preferences: %v", err)
+	}
+	if want := (UserPreferences{DiffViewSideBySide: false, Theme: DefaultTheme}); got != want {
+		t.Fatalf("preferences = %+v, want %+v", got, want)
+	}
+
+	// Saving another preference, as the first save or a later one, stores no
+	// theme, so a user who never chose one keeps following the default.
+	if _, err := db.Conn().Exec(`INSERT INTO users (id, username, email, password) VALUES (2, 'new', 'new@example.com', 'hashed')`); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	for _, userID := range []int64{1, 2} {
+		updated, err := repo.Update(ctx, userID, PreferencesUpdate{DiffViewSideBySide: new(true)})
+		if err != nil {
+			t.Fatalf("updating user %d: %v", userID, err)
+		}
+		if updated.Theme != DefaultTheme {
+			t.Fatalf("user %d: returned theme = %q, want %q", userID, updated.Theme, DefaultTheme)
+		}
+		var stored sql.NullString
+		if err := db.Conn().QueryRow(`SELECT theme FROM user_preferences WHERE user_id = ?`, userID).Scan(&stored); err != nil {
+			t.Fatalf("user %d: reading stored theme: %v", userID, err)
+		}
+		if stored.Valid {
+			t.Fatalf("user %d: stored theme = %q, want NULL", userID, stored.String)
+		}
+	}
+
+	for _, theme := range Themes {
+		if _, err := repo.Update(ctx, 1, PreferencesUpdate{Theme: &theme}); err != nil {
+			t.Fatalf("updating to %s: %v", theme, err)
+		}
+		got, err := repo.Get(ctx, 1)
+		if err != nil {
+			t.Fatalf("getting preferences: %v", err)
+		}
+		if got.Theme != theme {
+			t.Fatalf("theme = %q, want %q", got.Theme, theme)
+		}
+	}
+}
+
+// Two pages saving different preferences at once both keep their change: a
+// save never writes back another preference it read before the other saved.
+func TestHandler_UserPreferences_ConcurrentUpdatesKeepBoth(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "devpad.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	userRepo := auth.NewUserRepository(db.Conn())
+	authSvc := auth.NewService(userRepo, auth.NewSessionRepository(db.Conn()))
+	user := createTestUser(t, authSvc)
+	handler := NewHandler(NewService(userRepo, NewPreferencesRepository(db.Conn()), nil))
+
+	put := func(body string) {
+		req := httptest.NewRequest(http.MethodPut, "/api/settings/preferences", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, user))
+		rec := httptest.NewRecorder()
+		handler.HandleUpdatePreferences(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("PUT %s: status %d: %s", body, rec.Code, rec.Body.String())
+		}
+	}
+
+	for round := range 50 {
+		put(`{"diffViewSideBySide":true,"theme":"gruvbox-dark"}`)
+
+		var wg sync.WaitGroup
+		wg.Go(func() { put(`{"theme":"modern-light"}`) })
+		wg.Go(func() { put(`{"diffViewSideBySide":false}`) })
+		wg.Wait()
+
+		req := httptest.NewRequest(http.MethodGet, "/api/settings/preferences", nil)
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, user))
+		rec := httptest.NewRecorder()
+		handler.HandleGetPreferences(rec, req)
+		var got UserPreferences
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decoding preferences: %v", err)
+		}
+		if want := (UserPreferences{DiffViewSideBySide: false, Theme: "modern-light"}); got != want {
+			t.Fatalf("round %d: preferences = %+v, want %+v", round, got, want)
+		}
+	}
+}
+
+// The server accepts exactly the themes the frontend offers, with the same
+// default: a theme the picker shows but the server refuses would snap back on
+// every click.
+func TestThemesMatchFrontend(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "frontend", "src", "theme", "index.ts"))
+	if err != nil {
+		t.Fatalf("reading the frontend's themes: %v", err)
+	}
+	block := regexp.MustCompile(`(?s)export const THEMES = \[(.*?)\n\]`).FindSubmatch(source)
+	if block == nil {
+		t.Fatal("cannot find THEMES in frontend/src/theme/index.ts")
+	}
+	var frontend []string
+	for _, m := range regexp.MustCompile(`\bid: '([\w-]+)'`).FindAllSubmatch(block[1], -1) {
+		frontend = append(frontend, string(m[1]))
+	}
+	if !slices.Equal(frontend, Themes) {
+		t.Errorf("settings.Themes = %v, but the frontend's THEMES are %v", Themes, frontend)
+	}
+
+	def := regexp.MustCompile(`export const DEFAULT_THEME: ThemeId = '([\w-]+)'`).FindSubmatch(source)
+	if def == nil {
+		t.Fatal("cannot find DEFAULT_THEME in frontend/src/theme/index.ts")
+	}
+	if string(def[1]) != DefaultTheme {
+		t.Errorf("settings.DefaultTheme = %q, but the frontend's DEFAULT_THEME is %q", DefaultTheme, def[1])
 	}
 }

@@ -3,7 +3,7 @@ import { computed, ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { gruvboxTerminalTheme, terminalFontFamily } from '@/theme/gruvbox'
+import { currentTheme, terminalFontFamily, terminalTheme } from '@/theme'
 
 const props = defineProps<{
   workspaceId: number
@@ -49,7 +49,10 @@ function connect() {
     fontWeight: '400',
     fontWeightBold: '700',
     letterSpacing: 0,
-    theme: gruvboxTerminalTheme,
+    theme: terminalTheme(),
+    // Programs pick ANSI colours without knowing the background; xterm
+    // nudges any that would be hard to read on it.
+    minimumContrastRatio: 4.5,
   })
 
   fitAddon = new FitAddon()
@@ -179,6 +182,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   disconnect()
+})
+
+watch(currentTheme, () => {
+  if (terminal) terminal.options.theme = terminalTheme()
 })
 
 watch(() => props.workspaceId, () => {
