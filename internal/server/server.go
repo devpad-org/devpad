@@ -79,7 +79,8 @@ func New(cfg Config) (*Server, error) {
 	}
 	authHandler := auth.NewHandler(authService, secureCookie)
 	authMiddleware := auth.NewMiddleware(authService, secureCookie)
-	inviteHandler := auth.NewInviteHandler(auth.NewInviteService(auth.NewInviteRepository(db.Conn()), sessionRepo), authHandler)
+	inviteService := auth.NewInviteService(auth.NewInviteRepository(db.Conn()), sessionRepo)
+	inviteHandler := auth.NewInviteHandler(inviteService, authHandler)
 
 	// Settings layer
 	preferencesRepo := settings.NewPreferencesRepository(db.Conn())
@@ -187,7 +188,7 @@ func New(cfg Config) (*Server, error) {
 
 	handler := buildHandler(mux, http.HandlerFunc(previewHandler.HandleProxy), cfg)
 
-	// Start periodic cleanup of expired sessions and preview tokens.
+	// Start periodic cleanup of expired sessions, preview tokens and invites.
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
@@ -200,6 +201,9 @@ func New(cfg Config) (*Server, error) {
 				}
 				if err := previewRepo.DeleteExpired(cleanupCtx); err != nil {
 					log.Printf("preview token cleanup: %v", err)
+				}
+				if err := inviteService.PurgeExpired(cleanupCtx); err != nil {
+					log.Printf("invite cleanup: %v", err)
 				}
 			case <-cleanupCtx.Done():
 				return

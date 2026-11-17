@@ -19,6 +19,9 @@ type InviteRepository interface {
 	GetByTokenHash(ctx context.Context, tokenHash string) (*Invite, error)
 	ListPending(ctx context.Context) ([]*Invite, error)
 	DeletePending(ctx context.Context, id int64) (bool, error)
+	// DeleteExpiredBefore deletes the unused invites that expired before
+	// cutoff. Used invites stay, as the record of who invited whom.
+	DeleteExpiredBefore(ctx context.Context, cutoff time.Time) error
 	// Redeem marks the unused, unexpired invite with tokenHash used and
 	// creates user, both or neither. It returns ErrInviteInvalid when there
 	// is no such invite (never made, revoked, expired or already used) and
@@ -115,6 +118,13 @@ func (r *inviteRepository) DeletePending(ctx context.Context, id int64) (bool, e
 		return false, fmt.Errorf("counting deleted invites: %w", err)
 	}
 	return n > 0, nil
+}
+
+func (r *inviteRepository) DeleteExpiredBefore(ctx context.Context, cutoff time.Time) error {
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM user_invites WHERE used_at IS NULL AND expires_at < ?`, cutoff.UTC()); err != nil {
+		return fmt.Errorf("deleting expired invites: %w", err)
+	}
+	return nil
 }
 
 func (r *inviteRepository) Redeem(ctx context.Context, tokenHash string, user *User, now time.Time) error {

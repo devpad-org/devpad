@@ -321,6 +321,52 @@ func TestInvite_DemotingAdminRevokesTheirPendingInvites(t *testing.T) {
 	}
 }
 
+func TestInvite_PurgeExpiredKeepsRecentAndUsedInvites(t *testing.T) {
+	f := setupInvites(t)
+	ctx := context.Background()
+	f.create(t, f.admin, false) // expires first, unused
+	invitee := f.accept(t, f.admin, false, "kim")
+	f.clock = f.clock.AddDate(0, 0, DefaultInviteDays)
+	recent, _ := f.create(t, f.admin, false)
+	f.clock = f.clock.AddDate(0, 0, DefaultInviteDays)
+	live, _ := f.create(t, f.admin, false)
+
+	// The first invite expired exactly ExpiredInviteRetention ago: it stays
+	// until it is older than that.
+	if err := f.invites.PurgeExpired(ctx); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if got := pendingIDs(t, f); len(got) != 3 {
+		t.Fatalf("at the retention boundary: pending %v, want all three", got)
+	}
+
+	f.clock = f.clock.Add(time.Second)
+	if err := f.invites.PurgeExpired(ctx); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	got := pendingIDs(t, f)
+	if len(got) != 2 || got[0] != live.ID || got[1] != recent.ID {
+		t.Fatalf("pending %v, want [%d %d]", got, live.ID, recent.ID)
+	}
+	var usedBy int64
+	if err := f.db.QueryRow(`SELECT used_by FROM user_invites WHERE used_at IS NOT NULL`).Scan(&usedBy); err != nil || usedBy != invitee.ID {
+		t.Fatalf("used invite: used_by %d, err %v; want it kept for %d", usedBy, err, invitee.ID)
+	}
+}
+
+func pendingIDs(t *testing.T, f *inviteFixture) []int64 {
+	t.Helper()
+	invites, err := f.invites.ListPending(context.Background())
+	if err != nil {
+		t.Fatalf("listing invites: %v", err)
+	}
+	ids := make([]int64, len(invites))
+	for i, inv := range invites {
+		ids[i] = inv.ID
+	}
+	return ids
+}
+
 func TestInvite_UpdatingAnAdminKeepsTheirInvites(t *testing.T) {
 	f := setupInvites(t)
 	_, token := f.create(t, f.admin, false)

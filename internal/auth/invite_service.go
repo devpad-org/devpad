@@ -18,6 +18,10 @@ const (
 	DefaultInviteDays = 7
 	// MaxInviteDays is the longest an invite may last.
 	MaxInviteDays = 30
+	// ExpiredInviteRetention is how long an unused invite stays listed, as
+	// expired, before PurgeExpired deletes it: long enough for an admin to
+	// see why a link someone was sent stopped working.
+	ExpiredInviteRetention = 7 * 24 * time.Hour
 )
 
 var (
@@ -61,8 +65,14 @@ type InviteService interface {
 	Revoke(ctx context.Context, id int64) error
 	// Check returns the invite for token if it can still be used.
 	Check(ctx context.Context, token string) (*Invite, error)
-	// Accept creates the invitee's account and signs them in.
+	// Accept creates the invitee's account and signs them in. When the
+	// account is made but its session can't be, it returns the user, a nil
+	// session and an error: the invite is spent, and the invitee must sign
+	// in with the password they chose.
 	Accept(ctx context.Context, token, username, email, password string) (*User, *Session, error)
+	// PurgeExpired deletes the unused invites that expired more than
+	// ExpiredInviteRetention ago.
+	PurgeExpired(ctx context.Context) error
 }
 
 type inviteService struct {
@@ -114,6 +124,10 @@ func (s *inviteService) Revoke(ctx context.Context, id int64) error {
 		return ErrInviteNotFound
 	}
 	return nil
+}
+
+func (s *inviteService) PurgeExpired(ctx context.Context) error {
+	return s.invites.DeleteExpiredBefore(ctx, s.now().Add(-ExpiredInviteRetention))
 }
 
 func (s *inviteService) Check(ctx context.Context, token string) (*Invite, error) {

@@ -38,6 +38,9 @@ export const useAdminStore = defineStore('admin', () => {
     if (index !== -1) {
       users.value[index] = response.user
     }
+    // Demoting an admin deletes their unused invites, and renaming one
+    // renames them on theirs.
+    void fetchInvites({ quiet: true })
     return response.user
   }
 
@@ -48,10 +51,13 @@ export const useAdminStore = defineStore('admin', () => {
   async function deleteUser(id: number) {
     await adminApi.deleteUser(id)
     users.value = users.value.filter((u) => u.id !== id)
+    // Deleting an admin deletes their unused invites.
+    void fetchInvites({ quiet: true })
   }
 
-  async function fetchInvites() {
-    invitesLoading.value = true
+  /** quiet keeps the current list on screen while the new one loads. */
+  async function fetchInvites({ quiet = false } = {}) {
+    if (!quiet) invitesLoading.value = true
     invitesError.value = ''
     try {
       const response = await adminApi.listInvites()
