@@ -117,7 +117,7 @@
   padding: 0 4px;
   border-radius: 8px;
   background: var(--accent-blue);
-  color: var(--bg-void);
+  color: var(--text-on-accent);
   font-size: 0.65rem;
   font-weight: 600;
   line-height: 16px;
