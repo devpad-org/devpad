@@ -132,6 +132,26 @@ func TestBuildResponsesRequest_SystemAndToolMapping(t *testing.T) {
 	}
 }
 
+func TestBuildInput_LeavesOutOtherProvidersReasoningState(t *testing.T) {
+	for name, state := range map[string]string{
+		"anthropic": `[{"type":"thinking","thinking":"hm","signature":"sig"},{"type":"devpad_text_ref","bytes":5}]`,
+		"minimax":   `[{"type":"reasoning.text","id":"reasoning-text-1","text":"hm"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := buildInput([]domain.Turn{{
+				Role: domain.RoleAssistant,
+				Parts: []domain.Part{
+					{Kind: domain.PartThinking, Thinking: &domain.ThinkingPart{State: json.RawMessage(state)}},
+					{Kind: domain.PartText, Text: "Hello"},
+				},
+			}})
+			if len(input) != 1 || input[0].(map[string]any)["content"] != "Hello" {
+				t.Fatalf("expected only the assistant's message, got %+v", input)
+			}
+		})
+	}
+}
+
 func TestBuildResponsesRequest_AssistantToolHistoryAndReasoningState(t *testing.T) {
 	reasoningState := json.RawMessage(`[{"id":"rs_123","type":"reasoning","summary":[],"encrypted_content":"enc"}]`)
 	req := aiprovider.StreamRequest{

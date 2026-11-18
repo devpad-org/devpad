@@ -109,6 +109,33 @@ func AppendUserText(turns []Turn, text string) []Turn {
 	return append(turns, Turn{Role: RoleUser, Parts: []Part{part}})
 }
 
+// WithoutReasoningState returns a copy of turns fit for a model other than the
+// one that wrote them. Reasoning state and the provider's item IDs for tool
+// calls belong to that model, and a provider can refuse them from another, so
+// they go. The reasoning's text stays.
+func WithoutReasoningState(turns []Turn) []Turn {
+	out := make([]Turn, len(turns))
+	for i, turn := range turns {
+		parts := make([]Part, 0, len(turn.Parts))
+		for _, part := range turn.Parts {
+			if part.Thinking != nil {
+				if part.Thinking.Text == "" {
+					continue
+				}
+				part.Thinking = &ThinkingPart{Text: part.Thinking.Text}
+			}
+			if part.ToolCall != nil {
+				toolCall := *part.ToolCall
+				toolCall.ItemID = ""
+				part.ToolCall = &toolCall
+			}
+			parts = append(parts, part)
+		}
+		out[i] = Turn{Role: turn.Role, Parts: parts}
+	}
+	return out
+}
+
 // NewToolResultTurn creates a user turn with a single tool-result part.
 func NewToolResultTurn(toolCallID, name, content string, isError bool) Turn {
 	return NewToolResultTurnFromPart(ToolResultPart{

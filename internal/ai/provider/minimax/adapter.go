@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -371,11 +372,19 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	ch <- domain.ProviderEvent{Done: true}
 }
 
+// reasoningDetailsFromTurn returns the turn's reasoning details. The turn may
+// have come from another provider, whose state is not details of ours, so
+// anything else falls back to the reasoning's text.
 func reasoningDetailsFromTurn(turn domain.Turn) []reasoningDetail {
 	if state := turn.ThinkingState(); len(state) > 0 {
 		var details []reasoningDetail
-		if err := json.Unmarshal(state, &details); err == nil && len(details) > 0 {
-			return details
+		if err := json.Unmarshal(state, &details); err == nil {
+			details = slices.DeleteFunc(details, func(d reasoningDetail) bool {
+				return !strings.HasPrefix(d.Type, "reasoning.")
+			})
+			if len(details) > 0 {
+				return details
+			}
 		}
 	}
 	if turn.ThinkingText() == "" {

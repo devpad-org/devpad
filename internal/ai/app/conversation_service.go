@@ -25,6 +25,9 @@ type ConversationService interface {
 	ListConversations(ctx context.Context, userID, workspaceID int64) ([]domain.Conversation, error)
 	GetConversation(ctx context.Context, id, userID int64) (*domain.Conversation, error)
 	DeleteConversation(ctx context.Context, id, userID int64) error
+	// SetConversationModel records the model the conversation's transcript
+	// now goes on with.
+	SetConversationModel(ctx context.Context, id, userID int64, model string) error
 	SaveTurns(ctx context.Context, conversationID, userID int64, turns []domain.Turn) error
 	GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error)
 }
@@ -73,6 +76,21 @@ func (s *conversationService) GetConversation(ctx context.Context, id, userID in
 func (s *conversationService) DeleteConversation(ctx context.Context, id, userID int64) error {
 	if err := s.convRepo.DeleteConversation(ctx, id, userID); err != nil {
 		return fmt.Errorf("deleting conversation: %w", err)
+	}
+
+	return nil
+}
+
+func (s *conversationService) SetConversationModel(ctx context.Context, id, userID int64, model string) error {
+	conv, err := s.convRepo.GetConversation(ctx, id, userID)
+	if err != nil {
+		return fmt.Errorf("getting conversation: %w", err)
+	}
+	if conv == nil {
+		return domain.ErrConversationNotFound
+	}
+	if err := s.convRepo.UpdateConversation(ctx, id, userID, conv.Title, model); err != nil {
+		return fmt.Errorf("updating conversation model: %w", err)
 	}
 
 	return nil

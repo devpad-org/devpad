@@ -110,6 +110,21 @@ func TestBuildChatRequest_UsesReasoningSplitAndReasoningDetails(t *testing.T) {
 	}
 }
 
+func TestReasoningDetailsFromTurn_LeavesOutOtherProvidersState(t *testing.T) {
+	turn := domain.Turn{Role: domain.RoleAssistant, Parts: []domain.Part{{
+		Kind: domain.PartThinking,
+		Thinking: &domain.ThinkingPart{
+			Text:  "Check the files.",
+			State: json.RawMessage(`[{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"enc"}]`),
+		},
+	}}}
+
+	details := reasoningDetailsFromTurn(turn)
+	if len(details) != 1 || details[0].Type != "reasoning.text" || details[0].Text != "Check the files." {
+		t.Fatalf("expected a detail built from the reasoning's text, got %+v", details)
+	}
+}
+
 func TestBuildChatRequest_M3AdaptiveThinking(t *testing.T) {
 	model, ok := domain.ModelByID(NewAdapter().Models(), "MiniMax-M3")
 	if !ok {

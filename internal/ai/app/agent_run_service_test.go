@@ -201,6 +201,7 @@ type fakeConversationService struct {
 	mu       sync.Mutex
 	saveErr  error
 	saveCall []conversationSaveCall
+	model    string // the conversation's model; "" means there is no conversation
 }
 
 func (s *fakeConversationService) CreateConversation(context.Context, int64, int64, string) (*domain.Conversation, error) {
@@ -212,11 +213,32 @@ func (s *fakeConversationService) ListConversations(context.Context, int64, int6
 }
 
 func (s *fakeConversationService) GetConversation(context.Context, int64, int64) (*domain.Conversation, error) {
-	return nil, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.model == "" {
+		return nil, nil
+	}
+	return &domain.Conversation{Model: s.model}, nil
 }
 
 func (s *fakeConversationService) DeleteConversation(context.Context, int64, int64) error {
 	return nil
+}
+
+func (s *fakeConversationService) SetConversationModel(_ context.Context, _, _ int64, model string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.model = model
+	return nil
+}
+
+func (s *fakeConversationService) conversationModel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.model
 }
 
 func (s *fakeConversationService) SaveTurns(_ context.Context, conversationID, userID int64, turns []domain.Turn) error {
@@ -299,6 +321,69 @@ func TestAgentRunService_StartRunContinuesAfterRequestContextCancel(t *testing.T
 	}
 	if stored[0].Event.TextDelta != "still running" {
 		t.Fatalf("unexpected first event: %+v", stored[0].Event)
+	}
+}
+
+func TestAgentRunService_ReasoningStateStaysWithItsModel(t *testing.T) {
+	const state = `[{"id":"rs_1","type":"reasoning","encrypted_content":"enc"}]`
+	transcript := []domain.Turn{
+		domain.NewTextTurn(domain.RoleUser, "build it"),
+		{Role: domain.RoleAssistant, Parts: []domain.Part{
+			{Kind: domain.PartThinking, Thinking: &domain.ThinkingPart{Text: "tests first", State: []byte(state)}},
+			{Kind: domain.PartToolCall, ToolCall: &domain.ToolCall{ID: "call-1", ItemID: "fc_1", Type: "function"}},
+		}},
+		domain.NewToolResultTurn("call-1", "read_file", "contents", false),
+	}
+
+	for _, tt := range []struct {
+		name      string
+		convModel string
+		wantState string
+		wantItem  string
+	}{
+		{name: "same model keeps it", convModel: "gpt-6.2-sol", wantState: state, wantItem: "fc_1"},
+		{name: "another model drops it", convModel: "gpt-5.5"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFakeAgentRunRepository()
+			conversations := &fakeConversationService{model: tt.convModel}
+			events := make(chan domain.ClientEvent)
+			close(events)
+			var sent []domain.Turn
+			service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+				streamAgentFn: func(_ context.Context, req AgentChatRequest) (<-chan domain.ClientEvent, error) {
+					sent = req.Turns
+					return events, nil
+				},
+			}, conversations)
+			defer shutdownRunner(t, service)
+
+			if _, err := service.StartRun(context.Background(), StartAgentRunRequest{
+				UserID:         7,
+				WorkspaceID:    9,
+				ConversationID: 33,
+				Model:          "gpt-6.2-sol",
+				Turns:          transcript,
+			}); err != nil {
+				t.Fatalf("start run: %v", err)
+			}
+
+			for name, turns := range map[string][]domain.Turn{"sent": sent, "saved": conversations.saveCalls()[0].turns} {
+				assistant := turns[1]
+				if got := string(assistant.ThinkingState()); got != tt.wantState {
+					t.Errorf("%s: reasoning state = %q, want %q", name, got, tt.wantState)
+				}
+				if assistant.ThinkingText() != "tests first" {
+					t.Errorf("%s: reasoning text = %q", name, assistant.ThinkingText())
+				}
+				if call := assistant.ToolCalls()[0]; call.ID != "call-1" || call.ItemID != tt.wantItem {
+					t.Errorf("%s: tool call = %+v, want item ID %q", name, call, tt.wantItem)
+				}
+			}
+			if got := conversations.conversationModel(); got != "gpt-6.2-sol" {
+				t.Errorf("conversation model = %q, want the run's", got)
+			}
+		})
 	}
 }
 

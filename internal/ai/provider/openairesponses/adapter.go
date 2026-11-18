@@ -309,26 +309,26 @@ func inputImage(image domain.ImagePart) map[string]any {
 	}
 }
 
+// appendReasoningItems adds a turn's reasoning items to the input. The turn may
+// have come from another provider, whose state the API would refuse, so only
+// reasoning items go.
 func appendReasoningItems(input *[]any, raw json.RawMessage) {
 	if len(raw) == 0 {
 		return
 	}
 
-	var items []json.RawMessage
-	if err := json.Unmarshal(raw, &items); err == nil && len(items) > 0 {
-		for _, item := range items {
-			var parsed map[string]any
-			if err := json.Unmarshal(item, &parsed); err != nil {
-				continue
-			}
-			*input = append(*input, parsed)
+	var items []map[string]any
+	if err := json.Unmarshal(raw, &items); err != nil {
+		var item map[string]any
+		if err := json.Unmarshal(raw, &item); err != nil {
+			return
 		}
-		return
+		items = []map[string]any{item}
 	}
-
-	var item map[string]any
-	if err := json.Unmarshal(raw, &item); err == nil && len(item) > 0 {
-		*input = append(*input, item)
+	for _, item := range items {
+		if item["type"] == "reasoning" {
+			*input = append(*input, item)
+		}
 	}
 }
 

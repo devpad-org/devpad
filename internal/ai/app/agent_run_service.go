@@ -203,8 +203,25 @@ func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest
 		}
 	}
 	if req.ParentRunID == 0 && req.ConversationID > 0 && s.conversations != nil {
+		conv, err := s.conversations.GetConversation(ctx, req.ConversationID, req.UserID)
+		if err != nil {
+			return nil, fmt.Errorf("loading agent run conversation: %w", err)
+		}
+		// A transcript going on with another model, as when its model was
+		// retired, leaves behind what only the old model can read.
+		modelChanged := conv != nil && conv.Model != req.Model
+		if modelChanged {
+			req.Turns = domain.WithoutReasoningState(req.Turns)
+		}
 		if err := s.conversations.SaveTurns(ctx, req.ConversationID, req.UserID, cloneTurns(req.Turns)); err != nil {
 			return nil, fmt.Errorf("saving initial agent run conversation: %w", err)
+		}
+		// Recorded after the turns are saved, so a failure in between can only
+		// mean clearing them again.
+		if modelChanged {
+			if err := s.conversations.SetConversationModel(ctx, req.ConversationID, req.UserID, req.Model); err != nil {
+				return nil, fmt.Errorf("recording agent run conversation model: %w", err)
+			}
 		}
 	}
 
