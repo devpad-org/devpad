@@ -37,6 +37,11 @@ type service struct {
 	converting map[int64]bool
 	busy       map[int64]int
 	rebuilding map[int64]bool
+
+	// serviceEnvLocks serialise each workspace's syncs of its services'
+	// variables (serviceEnvLock).
+	serviceEnvMu    sync.Mutex
+	serviceEnvLocks map[int64]*sync.Mutex
 }
 
 // NewService creates a new workspace Service.

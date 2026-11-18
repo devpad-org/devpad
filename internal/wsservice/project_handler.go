@@ -4,30 +4,35 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/project"
+	"github.com/devpad-org/devpad/internal/workspace"
 )
 
-// ProjectAccess reads a project for a user, refusing one that is not
-// theirs.
+// ProjectAccess reads a project, and its project workspace, for a user,
+// refusing one that is not theirs.
 type ProjectAccess interface {
 	Get(ctx context.Context, userID, projectID int64) (*project.Project, error)
+	// Workspace returns the project workspace, or project.ErrNoWorkspace.
+	Workspace(ctx context.Context, userID, projectID int64) (*workspace.Workspace, error)
 }
 
 // ProjectHandler holds the HTTP handlers for a project's services: those
-// each new sandbox, and the project workspace when it is made or rebuilt,
-// gets its own copy of.
+// each new sandbox, and the project workspace when it is made or rebuilt or
+// asks for them, gets its own copy of.
 type ProjectHandler struct {
-	service  Service
-	projects ProjectAccess
+	service    Service
+	projects   ProjectAccess
+	workspaces workspace.ServiceEnvSyncer
 }
 
 // NewProjectHandler creates a ProjectHandler.
-func NewProjectHandler(service Service, projects ProjectAccess) *ProjectHandler {
-	return &ProjectHandler{service: service, projects: projects}
+func NewProjectHandler(service Service, projects ProjectAccess, workspaces workspace.ServiceEnvSyncer) *ProjectHandler {
+	return &ProjectHandler{service: service, projects: projects, workspaces: workspaces}
 }
 
 // HandleList returns a project's services and the catalog to add from.
@@ -99,6 +104,83 @@ func (h *ProjectHandler) HandleRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// HandleAddToWorkspace gives the project workspace its own copy of each of
+// the project's services it lacks, started when the workspace runs. A
+// running workspace's agent is sent their variables, so new terminals have
+// them without a rebuild.
+func (h *ProjectHandler) HandleAddToWorkspace(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := h.ownedProject(w, r)
+	if !ok {
+		return
+	}
+	user := auth.UserFromContext(r.Context())
+	ws, ok := h.projectWorkspace(w, r, user.ID, projectID)
+	if !ok {
+		return
+	}
+	running := ws.Status == workspace.StatusRunning
+	if !running && ws.Status != workspace.StatusStopped {
+		writeError(w, http.StatusConflict, "the workspace is busy; try again once it is running or stopped")
+		return
+	}
+	if err := h.service.Provision(r.Context(), ws.ID, projectID, ws.NetworkName, running); err != nil {
+		switch {
+		case errors.Is(err, ErrLicenseOutdated), errors.Is(err, ErrUnsupportedArch):
+			// Both say what to do about it.
+			writeError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, ErrDuplicateType):
+			writeError(w, http.StatusConflict, "the services are already being added")
+		default:
+			log.Printf("project %d: adding its services to workspace %d: %v", projectID, ws.ID, err)
+			writeError(w, http.StatusInternalServerError, "failed to add the services")
+		}
+		return
+	}
+	if running {
+		if err := h.workspaces.SyncServiceEnv(r.Context(), user.ID, ws.ID); err != nil {
+			// The services work; terminals opened since lack their variables.
+			log.Printf("workspace %d: syncing service variables: %v", ws.ID, err)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "added"})
+}
+
+// HandleAdopt adds the services the project workspace has to the project's,
+// so new sandboxes get a copy of each. A licence accepted for the
+// workspace's copy covers the project's.
+func (h *ProjectHandler) HandleAdopt(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := h.ownedProject(w, r)
+	if !ok {
+		return
+	}
+	user := auth.UserFromContext(r.Context())
+	ws, ok := h.projectWorkspace(w, r, user.ID, projectID)
+	if !ok {
+		return
+	}
+	if err := h.service.AdoptWorkspaceServices(r.Context(), ws.ID, projectID); err != nil {
+		log.Printf("project %d: adopting workspace %d's services: %v", projectID, ws.ID, err)
+		writeError(w, http.StatusInternalServerError, "failed to add the services")
+		return
+	}
+	h.HandleList(w, r)
+}
+
+// projectWorkspace reads the project workspace, writing the error and
+// returning false when there is none.
+func (h *ProjectHandler) projectWorkspace(w http.ResponseWriter, r *http.Request, userID, projectID int64) (*workspace.Workspace, bool) {
+	ws, err := h.projects.Workspace(r.Context(), userID, projectID)
+	switch {
+	case errors.Is(err, project.ErrNoWorkspace):
+		writeError(w, http.StatusConflict, "the project has no workspace yet")
+		return nil, false
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return nil, false
+	}
+	return ws, true
 }
 
 // ownedProject reads the project in the path, writing the error and

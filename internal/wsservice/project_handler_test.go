@@ -10,9 +10,13 @@ import (
 
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/project"
+	"github.com/devpad-org/devpad/internal/workspace"
 )
 
-type fakeProjects struct{}
+// fakeProjects gives user 1 project 1, whose project workspace is ws.
+type fakeProjects struct {
+	ws *workspace.Workspace
+}
 
 // Get gives user 1 project 1; any other project is not found, and project 2
 // is another user's.
@@ -28,6 +32,27 @@ func (fakeProjects) Get(_ context.Context, userID, projectID int64) (*project.Pr
 	return &project.Project{ID: 1, UserID: 1}, nil
 }
 
+func (f fakeProjects) Workspace(ctx context.Context, userID, projectID int64) (*workspace.Workspace, error) {
+	if _, err := f.Get(ctx, userID, projectID); err != nil {
+		return nil, err
+	}
+	if f.ws == nil {
+		return nil, project.ErrNoWorkspace
+	}
+	return f.ws, nil
+}
+
+// recordingSyncer records each workspace whose agent was sent its
+// services' variables.
+type recordingSyncer struct {
+	synced []int64
+}
+
+func (r *recordingSyncer) SyncServiceEnv(_ context.Context, _, workspaceID int64) error {
+	r.synced = append(r.synced, workspaceID)
+	return nil
+}
+
 func serveProject(t *testing.T, mux *http.ServeMux, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -38,7 +63,7 @@ func serveProject(t *testing.T, mux *http.ServeMux, method, path, body string) *
 }
 
 func TestProjectHandlerAddsListsAndRemovesServices(t *testing.T) {
-	h := NewProjectHandler(NewService(&fakeRepository{}, &fakeContainerManager{}), fakeProjects{})
+	h := NewProjectHandler(NewService(&fakeRepository{}, &fakeContainerManager{}), fakeProjects{}, &recordingSyncer{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/projects/{id}/services", h.HandleList)
 	mux.HandleFunc("POST /api/projects/{id}/services", h.HandleAdd)
@@ -92,5 +117,63 @@ func TestProjectHandlerAddsListsAndRemovesServices(t *testing.T) {
 		if rec := serveProject(t, mux, "POST", path, `{"serviceType":"postgres"}`); rec.Code != http.StatusNotFound {
 			t.Fatalf("%s: expected adding to be 404, got %d", path, rec.Code)
 		}
+	}
+}
+
+func TestProjectHandlerAddsTheProjectsServicesToItsWorkspace(t *testing.T) {
+	ctx := context.Background()
+	repo := &fakeRepository{projectServices: []*ProjectService{{ProjectID: 1, ServiceType: ServicePostgres}}}
+	svc := NewService(repo, &fakeContainerManager{})
+	ws := &workspace.Workspace{ID: 10, UserID: 1, ProjectID: 1, NetworkName: "devpad-net-10", Status: workspace.StatusRunning}
+	syncer := &recordingSyncer{}
+	h := NewProjectHandler(svc, fakeProjects{ws: ws}, syncer)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/projects/{id}/workspace/services", h.HandleAddToWorkspace)
+
+	if rec := serveProject(t, mux, "POST", "/api/projects/1/workspace/services", `{}`); rec.Code != http.StatusOK {
+		t.Fatalf("add to workspace: %d %s", rec.Code, rec.Body)
+	}
+	got, err := svc.List(ctx, 10)
+	if err != nil || len(got) != 1 || got[0].ServiceType != ServicePostgres || got[0].Status != StatusRunning {
+		t.Fatalf("expected a running postgres in the workspace, got %+v %v", got, err)
+	}
+	// Its agent is told, so new terminals have it without a rebuild.
+	if len(syncer.synced) != 1 || syncer.synced[0] != 10 {
+		t.Fatalf("expected workspace 10's agent sent the variables, got %v", syncer.synced)
+	}
+
+	// Without a project workspace there is nothing to add to.
+	h = NewProjectHandler(svc, fakeProjects{}, syncer)
+	mux = http.NewServeMux()
+	mux.HandleFunc("POST /api/projects/{id}/workspace/services", h.HandleAddToWorkspace)
+	if rec := serveProject(t, mux, "POST", "/api/projects/1/workspace/services", `{}`); rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 without a workspace, got %d", rec.Code)
+	}
+}
+
+func TestProjectHandlerAddsTheWorkspacesServicesToTheProject(t *testing.T) {
+	ctx := context.Background()
+	repo := &fakeRepository{}
+	svc := NewService(repo, &fakeContainerManager{})
+	if _, err := svc.Create(ctx, 10, ServiceMariaDB, CreateOptions{UserID: 1}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ws := &workspace.Workspace{ID: 10, UserID: 1, ProjectID: 1, NetworkName: "devpad-net-10", Status: workspace.StatusRunning}
+	h := NewProjectHandler(svc, fakeProjects{ws: ws}, &recordingSyncer{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/projects/{id}/services/adopt", h.HandleAdopt)
+
+	rec := serveProject(t, mux, "POST", "/api/projects/1/services/adopt", `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adopt: %d %s", rec.Code, rec.Body)
+	}
+	var listed struct {
+		Services []projectServiceJSON `json:"services"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(listed.Services) != 1 || listed.Services[0].ServiceType != ServiceMariaDB {
+		t.Fatalf("expected the project to list mariadb, got %+v", listed.Services)
 	}
 }

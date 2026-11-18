@@ -74,7 +74,7 @@ type WorkspaceService struct {
 
 // ProjectService is a service every new workspace of a project gets its own
 // copy of: each new sandbox, and the project workspace when it is created or
-// rebuilt. No two workspaces ever share one.
+// rebuilt or the user asks for them. No two workspaces ever share one.
 type ProjectService struct {
 	ProjectID   int64
 	ServiceType ServiceType

@@ -1625,7 +1625,7 @@ const backLabel = computed(() => {
               />
             </div>
             <div v-show="activeActivity === 'services'" class="ide-surface-pane">
-              <WorkspaceServicesPanel :workspace-id="workspace?.id ?? 0" />
+              <WorkspaceServicesPanel :workspace-id="workspace?.id ?? 0" :project-id="isProjectMode ? projectId : null" />
             </div>
           </template>
           <div

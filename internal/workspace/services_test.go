@@ -77,8 +77,14 @@ func TestCreateSandboxStartsTheProjectsServicesFirst(t *testing.T) {
 	}
 	// Provisioned before the container was made, so its environment says
 	// how to reach them.
-	if env := cm.envs[len(cm.envs)-1]; !slices.Contains(env, fmt.Sprintf("POSTGRES_HOST=devpad-svc-%d-postgres", ws.ID)) {
+	env := cm.envs[len(cm.envs)-1]
+	if !slices.Contains(env, fmt.Sprintf("POSTGRES_HOST=devpad-svc-%d-postgres", ws.ID)) {
 		t.Fatalf("expected the container's environment to name the service, got %v", env)
+	}
+	// And which of its variables are the services', for the agent to drop
+	// once a service is removed.
+	if !slices.Contains(env, "DEVPAD_SERVICE_VARS=POSTGRES_HOST") {
+		t.Fatalf("expected the container's environment to list the services' variables, got %v", env)
 	}
 }
 

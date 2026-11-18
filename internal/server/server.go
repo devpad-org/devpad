@@ -120,7 +120,7 @@ func New(cfg Config) (*Server, error) {
 	projectService := project.NewService(projectRepo, containerManager, workspaceService, userRepo, cipher, settingsService)
 	projectHandler := project.NewHandler(projectService)
 	projectService.SetSidecarServices(wsServiceService)
-	projectServicesHandler := wsservice.NewProjectHandler(wsServiceService, projectService)
+	projectServicesHandler := wsservice.NewProjectHandler(wsServiceService, projectService, workspaceService)
 
 	// AI layer
 	aiModule := ai.NewModule(db.Conn(), workspaceService, cipher)
@@ -507,6 +507,8 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, inviteHandler
 	mux.Handle("GET /api/projects/{id}/services", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleList)))
 	mux.Handle("POST /api/projects/{id}/services", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleAdd)))
 	mux.Handle("DELETE /api/projects/{id}/services/{type}", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleRemove)))
+	mux.Handle("POST /api/projects/{id}/services/adopt", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleAdopt)))
+	mux.Handle("POST /api/projects/{id}/workspace/services", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleAddToWorkspace)))
 	mux.Handle("GET /api/projects/{id}/git-activity", authMiddleware.RequireAuth(http.HandlerFunc(gitBridgeHandler.HandleActivity)))
 	mux.Handle("GET /api/workspaces/{id}/conversion", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDiscoverConversion)))
 	mux.Handle("POST /api/workspaces/{id}/convert", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleConvertWorkspace)))

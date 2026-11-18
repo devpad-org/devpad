@@ -37,6 +37,38 @@ func TestServiceEnvOverridesTheContainersAndOutlastsARestart(t *testing.T) {
 	}
 }
 
+func TestServiceEnvDropsTheVariablesOfRemovedServices(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".devpad", "service-env.json")
+	// The container was made with Postgres and MongoDB.
+	base := []string{"PATH=/bin", "POSTGRES_HOST=pg", "MONGODB_HOST=mongo", "DEVPAD_SERVICE_VARS=POSTGRES_HOST,MONGODB_HOST"}
+
+	// Until devpad sends the variables, the container's are the ones.
+	store := newServiceEnvStore(path)
+	if got, want := store.environ(base), []string{"PATH=/bin", "POSTGRES_HOST=pg", "MONGODB_HOST=mongo"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("before a sync, environ = %v, want %v", got, want)
+	}
+
+	// MongoDB was removed and MariaDB added.
+	if err := store.set([]string{"POSTGRES_HOST=pg", "MARIADB_HOST=maria"}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	want := []string{"PATH=/bin", "POSTGRES_HOST=pg", "MARIADB_HOST=maria"}
+	if got := store.environ(base); !reflect.DeepEqual(got, want) {
+		t.Fatalf("environ = %v, want %v", got, want)
+	}
+	if got := newServiceEnvStore(path).environ(base); !reflect.DeepEqual(got, want) {
+		t.Fatalf("after a restart, environ = %v, want %v", got, want)
+	}
+
+	// Removing every service leaves none.
+	if err := store.set(nil); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if got := newServiceEnvStore(path).environ(base); !reflect.DeepEqual(got, []string{"PATH=/bin"}) {
+		t.Fatalf("with no services, environ = %v", got)
+	}
+}
+
 func TestServiceEnvRefusesBadVariables(t *testing.T) {
 	store := newServiceEnvStore(filepath.Join(t.TempDir(), "env.json"))
 	for _, env := range [][]string{

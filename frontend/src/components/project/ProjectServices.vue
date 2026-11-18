@@ -1,15 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ApiError } from '@/api/client'
-import { projectApi } from '@/api/projects'
-import { projectServiceApi, serviceApi, type ProjectService, type ServiceCatalogEntry } from '@/api/services'
+import { projectServiceApi } from '@/api/services'
 import { useActiveProjectStore } from '@/stores/activeProject'
-import ConfirmModal from '@/components/ConfirmModal.vue'
+import { useServiceStore } from '@/stores/services'
 import ServiceLogo from '@/components/ide/ServiceLogo.vue'
 import { serviceCatalogItem, serviceCatalogOrder, serviceTypeLabel } from '@/components/ide/serviceCatalog'
 
 // The services each new sandbox gets its own copy of, and the project
-// workspace when it is made or rebuilt.
+// workspace when it is made or rebuilt or asks for them.
 const props = defineProps<{
   // The project workspace's status, or 'none' before it is created.
   workspaceStatus: string
@@ -18,32 +17,29 @@ const props = defineProps<{
 }>()
 
 const store = useActiveProjectStore()
+// Shared with the project workspace's services panel, which can add the
+// workspace's services to the project.
+const serviceStore = useServiceStore()
 
-const services = ref<ProjectService[]>([])
-const catalog = ref<ServiceCatalogEntry[]>([])
-// The service types the project workspace has.
-const workspaceTypes = ref<Set<string> | null>(null)
 const loaded = ref(false)
 const error = ref('')
 const notice = ref('')
 const adding = ref(false)
 const removing = ref<string | null>(null)
-const rebuilding = ref(false)
-const confirmRebuild = ref(false)
+const addingToWorkspace = ref(false)
 const selected = ref('')
 // Licence terms accepted for this add. Never remembered: whoever adds a
 // service with terms accepts them each time.
 const accepted = ref(false)
 
-// Bumped for each load, so a slow response can't overwrite a newer one.
-let seq = 0
+const services = computed(() => (serviceStore.projectLoadedFor === store.projectId ? serviceStore.projectServices : []))
 
 const sorted = computed(() => [...services.value]
   .sort((a, b) => serviceCatalogOrder(a.serviceType) - serviceCatalogOrder(b.serviceType)))
 
 const addable = computed(() => {
   const have = new Set(services.value.map((s) => s.serviceType))
-  return catalog.value
+  return serviceStore.catalog
     .filter((entry) => !have.has(entry.type))
     .sort((a, b) => serviceCatalogOrder(a.type) - serviceCatalogOrder(b.type))
 })
@@ -54,35 +50,28 @@ const canAdd = computed(() => {
   return !!entry && !entry.unavailable && (!entry.license || accepted.value) && !adding.value && store.projectId !== null
 })
 
-// The project's services the project workspace lacks, which it gets when
-// it is rebuilt.
+// The project's services the project workspace lacks, such as ones added
+// to the project since it was made.
 const missing = computed(() => {
-  const have = workspaceTypes.value
-  if (!have || props.workspaceStatus === 'none') return []
+  if (props.workspaceId === null || props.workspaceStatus === 'none' || serviceStore.loadedFor !== props.workspaceId) return []
+  const have = new Set(serviceStore.services.map((s) => s.serviceType))
   return sorted.value.filter((s) => !have.has(s.serviceType)).map((s) => serviceTypeLabel(s.serviceType))
 })
 
 async function load() {
   const id = store.projectId
   if (id === null) return
-  const mine = ++seq
   try {
-    const res = await projectServiceApi.list(id)
-    let types: Set<string> | null = null
+    const loads = [serviceStore.fetchProjectServices(id)]
     if (props.workspaceId !== null) {
-      const ws = await serviceApi.list(props.workspaceId)
-      types = new Set(ws.services.map((s) => s.serviceType))
+      loads.push(serviceStore.fetchServices(props.workspaceId))
     }
-    if (mine !== seq) return
-    services.value = res.services
-    catalog.value = res.catalog ?? []
-    workspaceTypes.value = types
+    await Promise.all(loads)
     error.value = ''
   } catch (e) {
-    if (mine !== seq) return
     error.value = e instanceof Error ? e.message : 'Failed to load the services'
   } finally {
-    if (mine === seq) loaded.value = true
+    loaded.value = true
   }
 }
 
@@ -125,21 +114,24 @@ async function remove(type: string) {
   }
 }
 
-async function rebuildWorkspace() {
+async function addToWorkspace() {
   const id = store.projectId
-  if (id === null) return
-  rebuilding.value = true
+  const workspaceId = props.workspaceId
+  if (id === null || workspaceId === null) return
+  const names = missing.value
+  addingToWorkspace.value = true
   error.value = ''
   notice.value = ''
   try {
-    await projectApi.rebuildWorkspace(id)
-    notice.value = 'The workspace was rebuilt.'
-    await load()
+    await projectServiceApi.addToWorkspace(id)
+    await serviceStore.fetchServices(workspaceId)
+    notice.value = props.workspaceStatus === 'running'
+      ? `Added ${names.join(', ')} to your workspace. New terminals have ${names.length === 1 ? 'its' : 'their'} connection variables.`
+      : `Added ${names.join(', ')} to your workspace. ${names.length === 1 ? 'It starts' : 'They start'} with the workspace.`
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to rebuild the workspace'
+    error.value = failure(e, 'Failed to add the services to your workspace')
   } finally {
-    confirmRebuild.value = false
-    rebuilding.value = false
+    addingToWorkspace.value = false
   }
 }
 
@@ -176,14 +168,14 @@ watch(() => [store.projectId, props.workspaceId, props.workspaceStatus], () => v
     </p>
 
     <template v-if="missing.length">
-      <p class="svc-note svc-missing">Your workspace doesn't have {{ missing.join(', ') }} yet; rebuilding it adds {{ missing.length === 1 ? 'it' : 'them' }}.</p>
+      <p class="svc-note svc-missing">Your workspace doesn't have {{ missing.join(', ') }} yet.</p>
       <div class="svc-actions">
         <button
           class="btn btn-secondary btn-sm"
-          :disabled="rebuilding || !store.ready"
-          @click="confirmRebuild = true"
+          :disabled="addingToWorkspace || !store.ready"
+          @click="addToWorkspace"
         >
-          Rebuild workspace
+          {{ addingToWorkspace ? 'Adding…' : 'Add to workspace' }}
         </button>
       </div>
     </template>
@@ -221,16 +213,6 @@ watch(() => [store.projectId, props.workspaceId, props.workspaceStatus], () => v
     <p v-if="error" class="notice notice-error svc-message">{{ error }}</p>
     <p v-if="notice" class="notice notice-success svc-message">{{ notice }}</p>
 
-    <ConfirmModal
-      :show="confirmRebuild"
-      title="Rebuild Workspace"
-      message="Rebuilding replaces the workspace's container with one made from the current environment, and adds the project's new services. Everything in /workspace is kept, including your repo and its uncommitted changes. Anything outside it is lost: packages you installed by hand, files in your home directory, and running processes. Terminals reconnect once it's back."
-      confirm-label="Rebuild"
-      variant="danger"
-      :loading="rebuilding"
-      @confirm="rebuildWorkspace"
-      @cancel="confirmRebuild = false"
-    />
   </div>
 </template>
 

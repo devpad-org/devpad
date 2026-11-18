@@ -68,7 +68,7 @@ type Service interface {
 	ProjectServices(ctx context.Context, projectID int64) ([]*ProjectService, error)
 	// AddProjectService adds a service to a project's list. Workspaces that
 	// already exist are not changed; the project workspace gets it when it
-	// is rebuilt.
+	// is rebuilt or the user adds the project's services to it (Provision).
 	AddProjectService(ctx context.Context, projectID int64, serviceType ServiceType, opts CreateOptions) (*ProjectService, error)
 	// RemoveProjectService removes a service from a project's list. The
 	// copies workspaces already have stay until they are deleted.

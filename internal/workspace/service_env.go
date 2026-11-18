@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/devpad-org/devpad/internal/agent"
@@ -16,13 +17,43 @@ import (
 // across restarts of the container; a rebuilt container has every service
 // in its own environment.
 
-// serviceEnvLocks serialises the syncs of each workspace, so an older list
-// of variables never lands after a newer one.
-var serviceEnvLocks sync.Map // map[int64]*sync.Mutex
+// serviceVarsEnv names, comma-separated, the variables of services in a
+// container's environment, so the agent can tell them from the image's
+// own: once devpad has sent it the services' variables, it drops those of
+// services since removed (cmd/agent/service_env.go).
+const serviceVarsEnv = "DEVPAD_SERVICE_VARS"
 
-func serviceEnvLock(workspaceID int64) *sync.Mutex {
-	mu, _ := serviceEnvLocks.LoadOrStore(workspaceID, &sync.Mutex{})
-	return mu.(*sync.Mutex)
+// envNames returns the names of NAME=value variables.
+func envNames(env []string) []string {
+	names := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		names = append(names, name)
+	}
+	return names
+}
+
+// serviceEnvLock returns the lock that serialises a workspace's syncs, so
+// an older list of variables never lands after a newer one.
+func (s *service) serviceEnvLock(workspaceID int64) *sync.Mutex {
+	s.serviceEnvMu.Lock()
+	defer s.serviceEnvMu.Unlock()
+	if s.serviceEnvLocks == nil {
+		s.serviceEnvLocks = make(map[int64]*sync.Mutex)
+	}
+	mu, ok := s.serviceEnvLocks[workspaceID]
+	if !ok {
+		mu = &sync.Mutex{}
+		s.serviceEnvLocks[workspaceID] = mu
+	}
+	return mu
+}
+
+// forgetServiceEnvLock drops a deleted workspace's sync lock.
+func (s *service) forgetServiceEnvLock(workspaceID int64) {
+	s.serviceEnvMu.Lock()
+	defer s.serviceEnvMu.Unlock()
+	delete(s.serviceEnvLocks, workspaceID)
 }
 
 // SyncServiceEnv sends a running workspace's agent the variables of the
@@ -43,7 +74,7 @@ func (s *service) syncServiceEnv(ctx context.Context, ws *Workspace) error {
 	if s.sidecar == nil {
 		return nil
 	}
-	mu := serviceEnvLock(ws.ID)
+	mu := s.serviceEnvLock(ws.ID)
 	mu.Lock()
 	defer mu.Unlock()
 

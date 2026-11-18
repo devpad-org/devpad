@@ -95,7 +95,7 @@ export const serviceApi = {
 
 /**
  * A service each new workspace of a project gets its own copy of: every new
- * sandbox, and the project workspace when it is made or rebuilt.
+ * sandbox, and the project workspace when it is made or rebuilt or asks for them.
  */
 export interface ProjectService {
   serviceType: string
@@ -104,7 +104,7 @@ export interface ProjectService {
   createdAt: string
 }
 
-interface ProjectServiceListResponse {
+export interface ProjectServiceListResponse {
   services: ProjectService[]
   catalog?: ServiceCatalogEntry[]
 }
@@ -123,5 +123,15 @@ export const projectServiceApi = {
 
   remove(projectId: number, serviceType: string): Promise<void> {
     return apiClient.delete(`/api/projects/${projectId}/services/${encodeURIComponent(serviceType)}`)
+  },
+
+  /** Adds the services the project workspace has to the project's. */
+  adoptFromWorkspace(projectId: number): Promise<ProjectServiceListResponse> {
+    return apiClient.post<ProjectServiceListResponse>(`/api/projects/${projectId}/services/adopt`, {})
+  },
+
+  /** Gives the project workspace its own copy of each project service it lacks. */
+  addToWorkspace(projectId: number): Promise<void> {
+    return apiClient.post(`/api/projects/${projectId}/workspace/services`, {})
   },
 }

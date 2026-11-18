@@ -21,6 +21,16 @@ import (
 // starts, over the container's own. They are kept in a file, so they
 // outlast a restart of the container; a rebuilt container starts without
 // the file, with every service in its environment.
+//
+// The container's environment also names the services' variables devpad
+// put in it (serviceVarsEnv). Once devpad has sent the variables, those it
+// no longer sends are of services since removed, so processes are not
+// given them.
+
+// serviceVarsEnv names, comma-separated, the variables in the container's
+// environment that are its services' (internal/workspace sets it). It is
+// for the agent only, and given to no process.
+const serviceVarsEnv = "DEVPAD_SERVICE_VARS"
 
 // maxServiceEnvBody bounds a request setting the services' variables.
 const maxServiceEnvBody = 64 << 10
@@ -34,6 +44,9 @@ type serviceEnvStore struct {
 
 	mu  sync.RWMutex
 	env []string
+	// synced is whether devpad has sent the variables, in this run of the
+	// container or one before it.
+	synced bool
 }
 
 var serviceEnv = newServiceEnvStore(serviceEnvPath())
@@ -68,7 +81,7 @@ func newServiceEnvStore(path string) *serviceEnvStore {
 		log.Printf("reading service environment: %v", err)
 		return s
 	}
-	s.env = env
+	s.env, s.synced = env, true
 	return s
 }
 
@@ -95,17 +108,36 @@ func (s *serviceEnvStore) set(env []string) error {
 		}
 	}
 	s.mu.Lock()
-	s.env = env
+	s.env, s.synced = env, true
 	s.mu.Unlock()
 	return nil
 }
 
 // environ is base with the services' variables over it, then extra over
-// both.
+// both. Once devpad has sent the variables, base's own variables of
+// services are dropped first, so those of a service since removed are
+// gone.
 func (s *serviceEnvStore) environ(base []string, extra ...string) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return mergeEnv(mergeEnv(base, s.env), extra)
+	drop := map[string]bool{serviceVarsEnv: true}
+	if s.synced {
+		for _, kv := range base {
+			if list, ok := strings.CutPrefix(kv, serviceVarsEnv+"="); ok {
+				for _, name := range strings.Split(list, ",") {
+					drop[name] = true
+				}
+			}
+		}
+	}
+	kept := make([]string, 0, len(base))
+	for _, kv := range base {
+		name, _, _ := strings.Cut(kv, "=")
+		if !drop[name] {
+			kept = append(kept, kv)
+		}
+	}
+	return mergeEnv(mergeEnv(kept, s.env), extra)
 }
 
 // mergeEnv returns base with each of over's variables set, replacing one

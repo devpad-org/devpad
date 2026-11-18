@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"strings"
 )
 
 // CreateSandbox creates a workspace that belongs to a project and owns one of
@@ -164,8 +165,9 @@ func (s *service) containerEnv(ctx context.Context, workspaceID int64, agentToke
 		svcEnv, err := s.sidecar.EnvVars(ctx, workspaceID, networkName)
 		if err != nil {
 			log.Printf("workspace %d: failed to get sidecar env vars: %v", workspaceID, err)
-		} else {
+		} else if len(svcEnv) > 0 {
 			env = append(env, svcEnv...)
+			env = append(env, serviceVarsEnv+"="+strings.Join(envNames(svcEnv), ","))
 		}
 	}
 	return env
@@ -218,6 +220,7 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 	if err := s.repo.Delete(ctx, ws.ID); err != nil {
 		return fmt.Errorf("deleting workspace: %w", err)
 	}
+	s.forgetServiceEnvLock(ws.ID)
 	return nil
 }
 
