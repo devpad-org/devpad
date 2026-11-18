@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, ref, watch } from 'vue'
 import type { Workspace } from '@/api/workspaces'
 import { ApiError } from '@/api/client'
@@ -276,7 +277,7 @@ function formatBytes(bytes: number): string {
     <div v-if="show && workspace" class="modal-overlay" @click.self="close">
       <div class="modal" role="dialog" aria-label="Convert to project">
         <div class="modal-header">
-          <h2 class="modal-title">Convert “{{ workspace.name }}” to a project</h2>
+          <h2 class="modal-title">Convert “{{ workspace.name }}” to a project<DocLink topic="standaloneWorkspaces" label="Converting workspaces" /></h2>
           <button class="modal-close" aria-label="Close" :disabled="converting" @click="close">&times;</button>
         </div>
 

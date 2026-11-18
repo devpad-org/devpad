@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { ref, onMounted } from 'vue'
 import { aiApi, type AIProvider } from '@/api/ai'
 import { useAiModelStore } from '@/stores/aiModels'
@@ -62,7 +63,7 @@ function remove(provider: AIProvider) {
 <template>
   <div>
     <header class="page-header">
-      <h2 class="page-title">Provider Keys</h2>
+      <h2 class="page-title">Provider Keys<DocLink topic="aiKeys" label="Provider keys" /></h2>
       <p class="page-desc">
         Your own API keys, which every agent you run uses: the assistant, your tasks and their reviews. Each provider bills
         you for what your agents use. Keys are stored encrypted and never shown again.

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { projectApi, type ProjectEnvironment } from '@/api/projects'
 import { useActiveProjectStore } from '@/stores/activeProject'
@@ -128,7 +129,7 @@ onUnmounted(() => {
 
 <template>
   <div v-if="loaded && (env || error)" class="side-section">
-    <div class="side-section-title">Environment</div>
+    <div class="side-section-title">Environment<DocLink topic="environment" label="Environments" /></div>
     <template v-if="env?.build || store.project?.environment.trim()">
       <p class="env-status" :class="env?.build ? `env-${env.build.status}` : ''">{{ statusLabel }}</p>
       <p v-if="fallbackNote" class="env-note">{{ fallbackNote }}</p>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAttentionStore } from '@/stores/attention'
@@ -203,7 +204,7 @@ async function handleCreate(input: ProjectInput) {
   <div class="page launcher">
     <div class="page-header">
       <div>
-        <h1 class="page-title">Projects</h1>
+        <h1 class="page-title">Projects<DocLink topic="gettingStarted" label="Getting started" /></h1>
         <p v-if="busy" class="page-subtitle summary">
           <span v-if="totals.needsYou" class="summary-item tone-attention">
             {{ totals.needsYou }} need{{ totals.needsYou === 1 ? 's' : '' }} you

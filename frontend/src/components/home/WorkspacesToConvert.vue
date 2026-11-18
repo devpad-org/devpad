@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useWorkspaceStore } from '@/stores/workspaces'
@@ -122,7 +123,7 @@ async function handleDelete() {
   <section v-if="visible" class="section">
     <div class="section-header">
       <div>
-        <h2 class="section-title">Workspaces to convert</h2>
+        <h2 class="section-title">Workspaces to convert<DocLink topic="standaloneWorkspaces" label="Converting workspaces" /></h2>
         <p class="section-hint">
           Left from before projects. Convert one to keep working in it with a board, agents and merge requests, or delete
           it once you've moved what you need.

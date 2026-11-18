@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { nextTick, ref, watch } from 'vue'
 
 const props = defineProps<{
@@ -55,7 +56,7 @@ function handleSubmit() {
                 <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
               </svg>
             </div>
-            <h2 class="modal-title">Open Preview in New Tab</h2>
+            <h2 class="modal-title">Open Preview in New Tab<DocLink topic="previews" label="Previews" /></h2>
           </div>
 
           <form class="modal-body" @submit.prevent="handleSubmit">

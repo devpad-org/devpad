@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { ref, onMounted, computed } from 'vue'
 import { useAdminStore } from '@/stores/admin'
 import { useAuthStore } from '@/stores/auth'
@@ -312,7 +313,7 @@ function isSelf(user: AdminUser): boolean {
     <div class="admin-container">
       <div class="admin-header">
         <div>
-          <h1 class="admin-title">User Management</h1>
+          <h1 class="admin-title">User Management<DocLink topic="administration" label="Administration" /></h1>
           <p class="admin-subtitle">Manage user accounts and permissions</p>
         </div>
         <div class="header-actions">

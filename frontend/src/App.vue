@@ -40,6 +40,7 @@ async function handleLogout() {
     <div class="header-left">
       <RouterLink to="/" class="header-brand">Devpad</RouterLink>
       <nav class="header-nav">
+        <RouterLink to="/docs" class="nav-link">Docs</RouterLink>
         <RouterLink to="/usage" class="nav-link">Usage</RouterLink>
         <RouterLink to="/settings" class="nav-link">Settings</RouterLink>
         <RouterLink v-if="auth.isAdmin" to="/admin" class="nav-link">Admin</RouterLink>
@@ -80,8 +81,8 @@ async function handleLogout() {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-2) var(--space-4);
-  background: var(--bg-surface);
-  border-bottom: 0.5px solid var(--border-default);
+  background: var(--bg-elevated);
+  border-bottom: 0.5px solid var(--border-subtle);
   flex-shrink: 0;
 }
 
@@ -173,16 +174,17 @@ async function handleLogout() {
 
 .btn-logout {
   padding: var(--space-1) var(--space-3);
+  white-space: nowrap;
   font-size: 0.8rem;
   color: var(--text-secondary);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   transition: all var(--transition-fast);
 }
 
 .btn-logout:hover {
   color: var(--text-primary);
-  border-color: var(--border-active);
+  border-color: var(--border-strong);
   background: var(--bg-hover);
 }
 
@@ -213,7 +215,12 @@ async function handleLogout() {
     display: none;
   }
 
-  .nav-link {
+  .header-nav {
+    gap: 0;
+  }
+
+  .nav-link,
+  .btn-logout {
     padding: var(--space-2);
   }
 }

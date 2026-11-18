@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { ApiError } from '@/api/client'
 import { useServiceStore } from '@/stores/services'
@@ -133,6 +134,7 @@ onUnmounted(() => {
           <path d="M3 12a9 3 0 0 0 18 0" />
         </svg>
         Workspace Services
+        <DocLink topic="services" label="Services" />
       </span>
       <span v-if="store.services.length > 0" class="services-summary">
         <span v-if="runningCount" class="summary-item is-running">

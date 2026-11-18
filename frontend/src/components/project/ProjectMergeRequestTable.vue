@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, ref } from 'vue'
 import type { MergeRequest, MergeRequestStatus } from '@/api/mergeRequests'
 import { useActiveProjectStore } from '@/stores/activeProject'
@@ -110,6 +111,7 @@ function select(mr: MergeRequest) {
           <MrIcon name="open" :size="16" :stroke-width="1.8" />
         </span>
         <span class="list-title-text">Merge requests</span>
+        <DocLink topic="mergeRequests" label="Merge requests" />
         <span v-if="store.ready" class="list-summary">
           <span>{{ counts.open }} open</span>
           <span v-if="agentWorking > 0" class="summary-working">

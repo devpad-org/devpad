@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed } from 'vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
@@ -26,6 +27,7 @@ const rereviewHint = computed(() => {
       <span class="eyebrow">
         <MrIcon name="open" :size="12" />
         Merge request !{{ mr.id }}
+        <DocLink topic="mergeRequests" label="Merge requests" />
       </span>
       <h2 id="mr-modal-title" class="modal-title">{{ mr.title }}</h2>
       <div class="summary">

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, ref, watch } from 'vue'
 import { aiApi, type UsagePeriod, type UsageProject, type UsageReport, type UsageTotals } from '@/api/ai'
 import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
@@ -221,7 +222,7 @@ const byProject = computed(() => {
   <div class="page usage-page">
     <div class="page-header">
       <div>
-        <h1 class="page-title">Usage</h1>
+        <h1 class="page-title">Usage<DocLink topic="usage" label="Usage" /></h1>
         <p class="page-subtitle">What your AI requests cost, by project and model</p>
       </div>
     </div>

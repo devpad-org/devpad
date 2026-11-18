@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, ref, watch } from 'vue'
 import { projectApi } from '@/api/projects'
 import SelectMenu from '@/components/SelectMenu.vue'
@@ -139,7 +140,7 @@ async function save() {
     <div v-if="show" class="modal-overlay" @click.self="emit('close')">
       <div class="modal">
         <div class="modal-header">
-          <h2 class="modal-title">Branches</h2>
+          <h2 class="modal-title">Branches<DocLink topic="protectedBranches" label="Protected branches" /></h2>
           <button class="modal-close" aria-label="Close" @click="emit('close')">&times;</button>
         </div>
         <form class="modal-body" @submit.prevent="save">
