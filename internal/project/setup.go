@@ -91,14 +91,25 @@ func (s *service) WorkspaceSetup(ctx context.Context, userID, projectID int64) (
 	if err != nil {
 		return nil, err
 	}
-	st, err := s.repo.GetSetup(ctx, ws.ID)
-	if err == nil && st != nil && st.Status == SetupPending {
-		// A run left pending while the workspace was stopped, or by a
-		// restart, is readied once the workspace runs; the IDE reads this
-		// as it does.
-		s.prepare(userID, ws.ID)
+	return s.repo.GetSetup(ctx, ws.ID)
+}
+
+// WorkspaceStarted readies a project workspace whose setup run was left
+// pending while it was stopped, now that its services have started again.
+// A sandbox is left to whoever started it, which readies it (AwaitSetup)
+// before its agent runs: a script started unasked could run beside one.
+func (s *service) WorkspaceStarted(ctx context.Context, ws *workspace.Workspace) {
+	if !ws.IsProjectWorkspace() {
+		return
 	}
-	return st, err
+	st, err := s.repo.GetSetup(ctx, ws.ID)
+	if err != nil {
+		log.Printf("workspace %d: reading its setup run: %v", ws.ID, err)
+		return
+	}
+	if st != nil && st.Status == SetupPending {
+		s.prepare(ws.UserID, ws.ID)
+	}
 }
 
 // RunWorkspaceSetup runs the project's current setup script in the project

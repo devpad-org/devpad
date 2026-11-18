@@ -120,6 +120,9 @@ type Service interface {
 	// SetSidecarServices registers the services of the project's
 	// workspaces, which a sandbox waits for before its setup script.
 	SetSidecarServices(svc SidecarServices)
+	// The project is told each time a workspace starts, to start a setup
+	// run left pending in its project workspace.
+	workspace.StartHook
 }
 
 // SidecarServices is what a project needs of its workspaces' services.

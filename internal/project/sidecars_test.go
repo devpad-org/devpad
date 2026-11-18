@@ -144,6 +144,19 @@ func TestStoppedSandboxLeavesItsSetupPending(t *testing.T) {
 	if got := e.workspaces.command(ws.ID); got != "" {
 		t.Fatalf("expected no script started in a stopped sandbox, got %q", got)
 	}
+
+	// Starting it again starts nothing by itself: its task or review readies
+	// it before its agent runs, so the script never runs beside one.
+	e.workspaces.setStatus(ws.ID, workspace.StatusRunning)
+	started, err := e.workspaces.Get(context.Background(), e.userID, ws.ID)
+	if err != nil {
+		t.Fatalf("get sandbox: %v", err)
+	}
+	e.svc.WorkspaceStarted(context.Background(), started)
+	time.Sleep(20 * time.Millisecond)
+	if got := e.workspaces.command(ws.ID); got != "" {
+		t.Fatalf("expected no script started by the sandbox starting, got %q", got)
+	}
 }
 
 func TestReconcileStartsSetupsLeftPending(t *testing.T) {
@@ -271,9 +284,9 @@ func TestProjectWorkspaceWhoseServicesAreNotReady(t *testing.T) {
 	waitForSetup(t, e, ws.ID, SetupSucceeded)
 }
 
-// A project workspace's run left pending while it was stopped starts once
-// the workspace runs, when the IDE next reads it.
-func TestProjectWorkspaceSetupLeftPendingStartsWhenRead(t *testing.T) {
+// A project workspace's run left pending while it was stopped starts when
+// the workspace starts again, and reading it starts nothing.
+func TestProjectWorkspaceSetupLeftPendingStartsWithIt(t *testing.T) {
 	e := setupTest(t)
 	e.svc.SetSidecarServices(&fakeSidecars{})
 	p := e.createProject(t, CreateInput{Name: "proj", SetupScript: "make migrate"})
@@ -301,6 +314,16 @@ func TestProjectWorkspaceSetupLeftPendingStartsWhenRead(t *testing.T) {
 	if _, err := e.svc.WorkspaceSetup(ctx, e.userID, p.ID); err != nil {
 		t.Fatalf("read setup: %v", err)
 	}
+	time.Sleep(20 * time.Millisecond)
+	if st, _ := e.svc.repo.GetSetup(ctx, ws.ID); st.Status != SetupPending {
+		t.Fatalf("expected reading it to start nothing, got %+v", st)
+	}
+
+	started, err := e.workspaces.Get(ctx, e.userID, ws.ID)
+	if err != nil {
+		t.Fatalf("get workspace: %v", err)
+	}
+	e.svc.WorkspaceStarted(ctx, started)
 	waitForSetup(t, e, ws.ID, SetupSucceeded)
 	if got := e.workspaces.command(ws.ID); got != "make seed" {
 		t.Fatalf("setup command = %q", got)

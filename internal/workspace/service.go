@@ -28,6 +28,7 @@ type service struct {
 	cipher    *encrypt.Cipher
 	agentPort int
 	sidecar   SidecarService
+	startHook StartHook
 
 	// converting holds the workspaces being converted into a project, and
 	// busy counts the starts, stops and deletes in flight for each; one
@@ -51,4 +52,8 @@ func NewService(repo Repository, cm container.Manager, users auth.UserRepository
 
 func (s *service) SetSidecarService(sidecar SidecarService) {
 	s.sidecar = sidecar
+}
+
+func (s *service) SetStartHook(h StartHook) {
+	s.startHook = h
 }

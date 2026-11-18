@@ -16,10 +16,15 @@ type fakeSidecars struct {
 	provisionErr error
 	// onProvision, when set, runs as each workspace is provisioned.
 	onProvision func()
+	// onStartAll, when set, runs as each workspace's services start.
+	onStartAll func()
 }
 
 func (f *fakeSidecars) StartAll(_ context.Context, id int64, _ string) error {
 	f.calls = append(f.calls, fmt.Sprintf("start-all %d", id))
+	if f.onStartAll != nil {
+		f.onStartAll()
+	}
 	return nil
 }
 func (f *fakeSidecars) StopAll(_ context.Context, id int64) error {
@@ -292,5 +297,51 @@ func TestProvisionProjectServicesHoldsTheWorkspace(t *testing.T) {
 	}
 	if err := s.ProvisionProjectServices(ctx, 2, ws.ID); err == nil {
 		t.Fatal("provisioned another user's workspace")
+	}
+}
+
+// recordingStartHook records the workspaces it is told have started.
+type recordingStartHook struct {
+	started []int64
+	ctxErrs []error
+}
+
+func (h *recordingStartHook) WorkspaceStarted(ctx context.Context, ws *Workspace) {
+	h.started = append(h.started, ws.ID)
+	h.ctxErrs = append(h.ctxErrs, ctx.Err())
+}
+
+// The start hook hears of a workspace once it and its services have
+// started, even when whoever started it has gone.
+func TestStartTellsTheStartHook(t *testing.T) {
+	s, _, sidecars := setupServicesTest(t)
+	hook := &recordingStartHook{}
+	s.SetStartHook(hook)
+	ctx := context.Background()
+
+	ws, err := s.CreateProjectWorkspace(ctx, 1, ProjectWorkspaceSpec{ProjectID: 7, Name: "proj"})
+	if err != nil {
+		t.Fatalf("create project workspace: %v", err)
+	}
+	if _, err := s.Stop(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if len(hook.started) != 0 {
+		t.Fatalf("expected no start heard before one, got %v", hook.started)
+	}
+
+	startCtx, cancel := context.WithCancel(ctx)
+	sidecars.onStartAll = cancel
+	if _, err := s.Start(startCtx, 1, ws.ID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !slices.Equal(hook.started, []int64{ws.ID}) {
+		t.Fatalf("expected the start of workspace %d heard, got %v", ws.ID, hook.started)
+	}
+	if hook.ctxErrs[0] != nil {
+		t.Fatalf("expected the hook's context to outlive its caller's, got %v", hook.ctxErrs[0])
+	}
+	if last := sidecars.calls[len(sidecars.calls)-1]; last != fmt.Sprintf("start-all %d", ws.ID) {
+		t.Fatalf("expected the services started before the hook, got %v", sidecars.calls)
 	}
 }

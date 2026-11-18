@@ -674,18 +674,25 @@ func (s *service) launch(ctx context.Context, taskID int64) {
 	if !ok {
 		return
 	}
-	// A sandbox stopped while it was readied is started again and readied
-	// again, once: a second stop meanwhile is no reason to keep the agent
-	// waiting longer.
-	for restarted := false; ; restarted = true {
-		setup, notReady, ok := s.awaitSetup(ctx, taskID, ws)
+	setup, notReady, ok := s.awaitSetup(ctx, taskID, ws)
+	if !ok {
+		return
+	}
+	if notReady == nil {
+		// A sandbox stopped while it was readied left its setup for when it
+		// starts again, so it is started and readied again, once: a second
+		// stop meanwhile is no reason to keep the agent waiting longer.
+		restarted, ok := s.restartIfStopped(ctx, taskID, ws)
 		if !ok {
 			return
 		}
-		if ws, ok = s.startPrepared(ctx, taskID, ws, env, setup, notReady, !restarted); !ok {
-			return
+		if restarted {
+			if setup, notReady, ok = s.awaitSetup(ctx, taskID, ws); !ok {
+				return
+			}
 		}
 	}
+	s.startPrepared(ctx, taskID, ws, env, setup, notReady)
 }
 
 // awaitSetup waits, with the task unlocked, for the sandbox's services and
@@ -708,45 +715,73 @@ func (s *service) awaitSetup(ctx context.Context, taskID int64, ws *workspace.Wo
 	return setup, nil, true
 }
 
-// startPrepared starts the agent run of a task whose sandbox awaitSetup
-// readied, if the task is still queued on it. A sandbox stopped meanwhile
-// is started again; with readyAgain, the run waits for it to be readied
-// again, and startPrepared returns the sandbox and true for the caller to
-// do that with the task unlocked.
-func (s *service) startPrepared(ctx context.Context, taskID int64, ws *workspace.Workspace, env *project.Environment, setup *project.Setup, notReady error, readyAgain bool) (*workspace.Workspace, bool) {
+// restartIfStopped starts the task's sandbox again if it was stopped while
+// it was readied, and reports whether it did; ok is false when the task is
+// no longer queued on it or the sandbox could not be started.
+func (s *service) restartIfStopped(ctx context.Context, taskID int64, ws *workspace.Workspace) (restarted, ok bool) {
 	unlock := s.lock(taskID)
 	defer unlock()
-	t, err := s.repo.GetByID(ctx, taskID)
-	if err != nil || t == nil || t.Status != StatusQueued || t.WorkspaceID != ws.ID {
-		return nil, false
+	t, ok := s.queuedOn(ctx, taskID, ws.ID)
+	if !ok {
+		return false, false
+	}
+	_, restarted, ok = s.startSandbox(ctx, t, ws.ID)
+	return restarted, ok
+}
+
+// startPrepared starts the agent run of a task whose sandbox awaitSetup
+// readied, if the task is still queued on it, or fails the task when the
+// sandbox's services did not get ready. A sandbox stopped again meanwhile
+// is started without being readied again.
+func (s *service) startPrepared(ctx context.Context, taskID int64, ws *workspace.Workspace, env *project.Environment, setup *project.Setup, notReady error) {
+	unlock := s.lock(taskID)
+	defer unlock()
+	t, ok := s.queuedOn(ctx, taskID, ws.ID)
+	if !ok {
+		return
 	}
 	if notReady != nil {
 		// Its agent would work against services that are not there.
 		// Starting the task again tries them again.
 		s.failUnlessShuttingDown(ctx, t, fmt.Sprintf("starting sandbox: %v", notReady))
-		return nil, false
+		return
 	}
-	// The sandbox may have been stopped while it was readied.
-	ws, err = s.workspaces.Get(ctx, t.UserID, ws.ID)
-	wasStopped := err == nil && ws.Status == workspace.StatusStopped
-	if err == nil {
-		ws, err = s.running(ctx, t, ws)
-	}
-	if err != nil {
-		if !errors.Is(err, project.ErrSandboxLimit) && !errors.Is(err, project.ErrBranchPublishing) {
-			s.failUnlessShuttingDown(ctx, t, fmt.Sprintf("starting sandbox: %v", err))
-		}
-		return nil, false
-	}
-	if wasStopped && readyAgain {
-		return ws, true
+	if ws, _, ok = s.startSandbox(ctx, t, ws.ID); !ok {
+		return
 	}
 	// The prompt describes the image the sandbox has, which can be older than
 	// the one read before it was made.
 	if err := s.startRun(ctx, t, ws, env.For(ws.Image), setup); err != nil {
 		s.failUnlessShuttingDown(ctx, t, err.Error())
 	}
-	return nil, false
+}
+
+// queuedOn reads a task, under its lock, and reports whether it is still
+// queued on the sandbox it was launched in.
+func (s *service) queuedOn(ctx context.Context, taskID, workspaceID int64) (*Task, bool) {
+	t, err := s.repo.GetByID(ctx, taskID)
+	if err != nil || t == nil || t.Status != StatusQueued || t.WorkspaceID != workspaceID {
+		return nil, false
+	}
+	return t, true
+}
+
+// startSandbox reads a queued task's sandbox and starts it if it is stopped,
+// reporting whether it was. A sandbox that cannot be started fails the
+// task, unless it waits for a free sandbox slot or a branch being published.
+func (s *service) startSandbox(ctx context.Context, t *Task, workspaceID int64) (ws *workspace.Workspace, wasStopped, ok bool) {
+	ws, err := s.workspaces.Get(ctx, t.UserID, workspaceID)
+	if err == nil {
+		wasStopped = ws.Status == workspace.StatusStopped
+		ws, err = s.running(ctx, t, ws)
+	}
+	if err != nil {
+		if !errors.Is(err, project.ErrSandboxLimit) && !errors.Is(err, project.ErrBranchPublishing) {
+			s.failUnlessShuttingDown(ctx, t, fmt.Sprintf("starting sandbox: %v", err))
+		}
+		return nil, false, false
+	}
+	return ws, wasStopped, true
 }
 
 // failOverBudget fails a queued task that is over budget before it is given

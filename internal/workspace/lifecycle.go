@@ -312,6 +312,11 @@ func (s *service) start(ctx context.Context, ws *Workspace) (*Workspace, error) 
 		s.logSyncServiceEnv(ctx, ws)
 	}
 
+	if s.startHook != nil {
+		// The workspace has started whether or not its caller is still
+		// there to see it.
+		s.startHook.WorkspaceStarted(context.WithoutCancel(ctx), ws)
+	}
 	return ws, nil
 }
 

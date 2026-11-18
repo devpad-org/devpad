@@ -120,6 +120,7 @@ func New(cfg Config) (*Server, error) {
 	projectService := project.NewService(projectRepo, containerManager, workspaceService, userRepo, cipher, settingsService)
 	projectHandler := project.NewHandler(projectService)
 	projectService.SetSidecarServices(wsServiceService)
+	workspaceService.SetStartHook(projectService)
 	projectServicesHandler := wsservice.NewProjectHandler(wsServiceService, projectService, workspaceService)
 
 	// AI layer

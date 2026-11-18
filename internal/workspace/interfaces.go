@@ -169,6 +169,17 @@ type SidecarBinder interface {
 	SetSidecarService(sidecar SidecarService)
 }
 
+// StartHook is told each time a workspace's container has started, once its
+// agent and services have been started with it.
+type StartHook interface {
+	WorkspaceStarted(ctx context.Context, ws *Workspace)
+}
+
+// StartHookBinder registers the StartHook.
+type StartHookBinder interface {
+	SetStartHook(h StartHook)
+}
+
 // Service is the full workspace capability set implemented by the concrete
 // workspace service. Consumers should depend on the smallest capability
 // interface they need instead of this aggregate.
@@ -190,6 +201,7 @@ type Service interface {
 	ServiceEnvSyncer
 	ProjectServiceProvisioner
 	SidecarBinder
+	StartHookBinder
 }
 
 // HandlerService is the workspace HTTP handler's required service surface.
