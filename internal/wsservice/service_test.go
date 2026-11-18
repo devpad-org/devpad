@@ -118,9 +118,16 @@ func (r *fakeRepository) RemoveProjectService(_ context.Context, projectID int64
 	return ErrNotFound
 }
 
+// Create refuses a second service of a type on a workspace, as the
+// database's unique index does.
 func (r *fakeRepository) Create(_ context.Context, svc *WorkspaceService) error {
 	if r.services == nil {
 		r.services = make(map[int64]*WorkspaceService)
+	}
+	for _, have := range r.services {
+		if have.WorkspaceID == svc.WorkspaceID && have.ServiceType == svc.ServiceType {
+			return ErrDuplicateType
+		}
 	}
 	svc.ID = int64(len(r.services) + 1)
 	now := time.Now()
@@ -159,6 +166,7 @@ type fakeContainerManager struct {
 	sidecar        containerpkg.SidecarSpec
 	sidecarCreates int
 	volumes        []string
+	removedVolumes []string
 	arch           string
 	archCalls      int
 	removed        []string
@@ -261,7 +269,8 @@ func (m *fakeContainerManager) CreateVolume(_ context.Context, name string) erro
 	return nil
 }
 
-func (m *fakeContainerManager) RemoveVolume(_ context.Context, _ string) error {
+func (m *fakeContainerManager) RemoveVolume(_ context.Context, name string) error {
+	m.removedVolumes = append(m.removedVolumes, name)
 	return nil
 }
 

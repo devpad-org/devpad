@@ -186,3 +186,123 @@ func TestAwaitEnvironmentPullsTheServicesImages(t *testing.T) {
 		t.Fatalf("expected the project's images pulled, got %v", sidecars.pulled)
 	}
 }
+
+// Stopping a sandbox stops its services, which then never get ready: that
+// is no failure of theirs, so the run is left for when it starts again.
+func TestSandboxStoppedWhileItsServicesGetReady(t *testing.T) {
+	e := setupTest(t)
+	sidecars := &fakeSidecars{}
+	e.svc.SetSidecarServices(sidecars)
+	p := e.createProject(t, CreateInput{Name: "proj", SetupScript: "npm ci"})
+	sidecars.ready = func(_ context.Context, workspaceID int64) error {
+		e.workspaces.setStatus(workspaceID, workspace.StatusStopped)
+		return errors.New("the postgres service is not running")
+	}
+	ws, err := e.svc.CreateSandbox(context.Background(), e.userID, p.ID, SandboxInput{})
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	st, err := e.svc.AwaitSetup(ctx, e.userID, p.ID, ws.ID)
+	if err != nil {
+		t.Fatalf("expected no failure for a stopped sandbox, got %v", err)
+	}
+	if st == nil || st.Status != SetupPending {
+		t.Fatalf("expected the setup left pending, got %+v", st)
+	}
+}
+
+func TestProjectWorkspaceSetupWaitsForItsServices(t *testing.T) {
+	e := setupTest(t)
+	sidecars := &fakeSidecars{}
+	gate := make(chan struct{})
+	sidecars.ready = func(context.Context, int64) error {
+		<-gate
+		return nil
+	}
+	e.svc.SetSidecarServices(sidecars)
+	p := e.createProject(t, CreateInput{Name: "proj", SetupScript: "make migrate"})
+
+	ws, _, err := e.svc.OpenWorkspace(context.Background(), e.userID, p.ID)
+	if err != nil {
+		close(gate)
+		t.Fatalf("open: %v", err)
+	}
+	waitForSetup(t, e, ws.ID, SetupPending)
+	if got := e.workspaces.command(ws.ID); got != "" {
+		close(gate)
+		t.Fatalf("expected the script to wait for the services, but %q started", got)
+	}
+	close(gate)
+	waitForSetup(t, e, ws.ID, SetupSucceeded)
+	if got := e.workspaces.command(ws.ID); got != "make migrate" {
+		t.Fatalf("setup command = %q", got)
+	}
+}
+
+// Nobody waits on the project workspace's run, so services that never get
+// ready fail it, saying why, and the user can run it again.
+func TestProjectWorkspaceWhoseServicesAreNotReady(t *testing.T) {
+	e := setupTest(t)
+	sidecars := &fakeSidecars{}
+	notReady := errors.New("the postgres service was not ready after 4m0s")
+	sidecars.ready = func(context.Context, int64) error { return notReady }
+	e.svc.SetSidecarServices(sidecars)
+	p := e.createProject(t, CreateInput{Name: "proj", SetupScript: "make migrate"})
+	ctx := context.Background()
+
+	ws, _, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	st := waitForSetup(t, e, ws.ID, SetupFailed)
+	if !strings.Contains(st.Error, "did not run") || !strings.Contains(st.Error, notReady.Error()) || st.FinishedAt == nil {
+		t.Fatalf("expected the failure to say why, got %+v", st)
+	}
+	if got := e.workspaces.command(ws.ID); got != "" {
+		t.Fatalf("expected no script started, got %q", got)
+	}
+
+	if _, err := e.svc.RunWorkspaceSetup(ctx, e.userID, p.ID); err != nil {
+		t.Fatalf("run again: %v", err)
+	}
+	waitForSetup(t, e, ws.ID, SetupSucceeded)
+}
+
+// A project workspace's run left pending while it was stopped starts once
+// the workspace runs, when the IDE next reads it.
+func TestProjectWorkspaceSetupLeftPendingStartsWhenRead(t *testing.T) {
+	e := setupTest(t)
+	e.svc.SetSidecarServices(&fakeSidecars{})
+	p := e.createProject(t, CreateInput{Name: "proj", SetupScript: "make migrate"})
+	ctx := context.Background()
+	ws, _, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	waitForSetup(t, e, ws.ID, SetupSucceeded)
+
+	e.workspaces.setStatus(ws.ID, workspace.StatusStopped)
+	if err := e.svc.repo.PutSetup(ctx, &Setup{WorkspaceID: ws.ID, UserID: e.userID, Script: "make seed", Status: SetupPending, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("put setup: %v", err)
+	}
+	if st, err := e.svc.WorkspaceSetup(ctx, e.userID, p.ID); err != nil || st.Status != SetupPending {
+		t.Fatalf("expected it pending while stopped, got %+v %v", st, err)
+	}
+	// Give a preparation started by that read time to (wrongly) start it.
+	time.Sleep(20 * time.Millisecond)
+	if st, _ := e.svc.repo.GetSetup(ctx, ws.ID); st.Status != SetupPending {
+		t.Fatalf("expected it still pending in a stopped workspace, got %+v", st)
+	}
+
+	e.workspaces.setStatus(ws.ID, workspace.StatusRunning)
+	if _, err := e.svc.WorkspaceSetup(ctx, e.userID, p.ID); err != nil {
+		t.Fatalf("read setup: %v", err)
+	}
+	waitForSetup(t, e, ws.ID, SetupSucceeded)
+	if got := e.workspaces.command(ws.ID); got != "make seed" {
+		t.Fatalf("setup command = %q", got)
+	}
+}

@@ -27,11 +27,11 @@ type ProjectAccess interface {
 type ProjectHandler struct {
 	service    Service
 	projects   ProjectAccess
-	workspaces workspace.ServiceEnvSyncer
+	workspaces workspace.ProjectServiceProvisioner
 }
 
 // NewProjectHandler creates a ProjectHandler.
-func NewProjectHandler(service Service, projects ProjectAccess, workspaces workspace.ServiceEnvSyncer) *ProjectHandler {
+func NewProjectHandler(service Service, projects ProjectAccess, workspaces workspace.ProjectServiceProvisioner) *ProjectHandler {
 	return &ProjectHandler{service: service, projects: projects, workspaces: workspaces}
 }
 
@@ -109,7 +109,7 @@ func (h *ProjectHandler) HandleRemove(w http.ResponseWriter, r *http.Request) {
 // HandleAddToWorkspace gives the project workspace its own copy of each of
 // the project's services it lacks, started when the workspace runs. A
 // running workspace's agent is sent their variables, so new terminals have
-// them without a rebuild.
+// them without a rebuild (workspace.ProvisionProjectServices).
 func (h *ProjectHandler) HandleAddToWorkspace(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := h.ownedProject(w, r)
 	if !ok {
@@ -120,29 +120,18 @@ func (h *ProjectHandler) HandleAddToWorkspace(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	running := ws.Status == workspace.StatusRunning
-	if !running && ws.Status != workspace.StatusStopped {
-		writeError(w, http.StatusConflict, "the workspace is busy; try again once it is running or stopped")
-		return
-	}
-	if err := h.service.Provision(r.Context(), ws.ID, projectID, ws.NetworkName, running); err != nil {
+	if err := h.workspaces.ProvisionProjectServices(r.Context(), user.ID, ws.ID); err != nil {
 		switch {
 		case errors.Is(err, ErrLicenseOutdated), errors.Is(err, ErrUnsupportedArch):
 			// Both say what to do about it.
 			writeError(w, http.StatusConflict, err.Error())
-		case errors.Is(err, ErrDuplicateType):
-			writeError(w, http.StatusConflict, "the services are already being added")
+		case errors.Is(err, workspace.ErrLifecycleBusy), errors.Is(err, workspace.ErrRebuilding), errors.Is(err, workspace.ErrConverting):
+			writeError(w, http.StatusConflict, "the workspace is busy; try again once it is running or stopped")
 		default:
 			log.Printf("project %d: adding its services to workspace %d: %v", projectID, ws.ID, err)
 			writeError(w, http.StatusInternalServerError, "failed to add the services")
 		}
 		return
-	}
-	if running {
-		if err := h.workspaces.SyncServiceEnv(r.Context(), user.ID, ws.ID); err != nil {
-			// The services work; terminals opened since lack their variables.
-			log.Printf("workspace %d: syncing service variables: %v", ws.ID, err)
-		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "added"})
 }

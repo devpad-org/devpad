@@ -35,8 +35,10 @@ func TestOpenWorkspaceCreatesOnceFromDefaultBranch(t *testing.T) {
 	if got := e.workspaces.seeds[ws.ID]; got != "main <- bundle-of-main" {
 		t.Fatalf("expected seed from main, got %q", got)
 	}
-	if e.workspaces.commands[ws.ID] != "make deps" {
-		t.Fatalf("expected setup script started, got %q", e.workspaces.commands[ws.ID])
+	// Started once its services are ready, in the background.
+	waitForSetup(t, e, ws.ID, SetupSucceeded)
+	if got := e.workspaces.command(ws.ID); got != "make deps" {
+		t.Fatalf("expected setup script started, got %q", got)
 	}
 
 	again, created, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID)

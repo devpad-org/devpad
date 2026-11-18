@@ -15,8 +15,8 @@ import (
 )
 
 // The project's setup script runs once in each workspace devpad seeds, as a
-// background command in /workspace. In a sandbox it waits for the sandbox's
-// services to be ready first, as pending. Devpad follows it to the end and
+// background command in /workspace. It waits as pending for the workspace's
+// services to be ready first. Devpad follows it to the end and
 // keeps how it went, so a sandbox's agent can start once it has finished and
 // the user can see it in the project workspace. Everything about a run is read
 // from the workspace, so it is only fit for showing: devpad bounds what it
@@ -26,8 +26,8 @@ import (
 type SetupStatus string
 
 const (
-	// SetupPending is a sandbox's run waiting for the sandbox's services to
-	// be ready before its script starts.
+	// SetupPending is a run waiting for its workspace's services to be
+	// ready before its script starts.
 	SetupPending   SetupStatus = "pending"
 	SetupRunning   SetupStatus = "running"
 	SetupSucceeded SetupStatus = "succeeded"
@@ -91,7 +91,14 @@ func (s *service) WorkspaceSetup(ctx context.Context, userID, projectID int64) (
 	if err != nil {
 		return nil, err
 	}
-	return s.repo.GetSetup(ctx, ws.ID)
+	st, err := s.repo.GetSetup(ctx, ws.ID)
+	if err == nil && st != nil && st.Status == SetupPending {
+		// A run left pending while the workspace was stopped, or by a
+		// restart, is readied once the workspace runs; the IDE reads this
+		// as it does.
+		s.prepare(userID, ws.ID)
+	}
+	return st, err
 }
 
 // RunWorkspaceSetup runs the project's current setup script in the project
@@ -160,18 +167,18 @@ func (s *service) AwaitSetup(ctx context.Context, userID, projectID, workspaceID
 	return s.repo.GetSetup(ctx, workspaceID)
 }
 
-// preparation is a sandbox being readied for its agent. err is set before
-// done is closed.
+// preparation is a workspace being readied: its services waited for, then
+// its setup script started. err is set before done is closed.
 type preparation struct {
 	done chan struct{}
 	err  error
 }
 
-// prepare readies a sandbox in the background, unless that is already
-// under way: it waits for the sandbox's services, then starts its setup
+// prepare readies a workspace in the background, unless that is already
+// under way: it waits for the workspace's services, then starts its setup
 // script if that is pending. It runs apart from whoever asked, so that a
-// sandbox nobody waits for, such as one the user made, still gets its
-// setup.
+// workspace nobody waits for, such as the project workspace or a sandbox
+// the user made, still gets its setup.
 func (s *service) prepare(userID, workspaceID int64) *preparation {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -183,7 +190,7 @@ func (s *service) prepare(userID, workspaceID int64) *preparation {
 	s.background.Add(1)
 	go func() {
 		defer s.background.Done()
-		prep.err = s.readySandbox(userID, workspaceID)
+		prep.err = s.readyWorkspace(userID, workspaceID)
 		s.mu.Lock()
 		delete(s.preparations, workspaceID)
 		s.mu.Unlock()
@@ -192,24 +199,44 @@ func (s *service) prepare(userID, workspaceID int64) *preparation {
 	return prep
 }
 
-// readySandbox waits for a running sandbox's services to be ready, then
-// starts its setup script if that is pending. A sandbox that is not
-// running is left as it is, for when it starts again.
-func (s *service) readySandbox(userID, workspaceID int64) error {
+// readyWorkspace waits for a running workspace's services to be ready, then
+// starts its setup script if that is pending. A workspace that is not
+// running, or stops meanwhile, is left as it is, for when it starts again:
+// stopping it stops its services, which is no reason to give up on them.
+//
+// Services that do not get ready leave a sandbox's run pending, for its
+// task or review to fail and try again. Nobody waits on the project
+// workspace's run, so it is recorded as failed, saying why, for the user to
+// run again.
+func (s *service) readyWorkspace(userID, workspaceID int64) error {
 	// No caller bounds it: the wait for the services has its own deadline,
 	// and the setup run is followed in the background.
 	ctx := context.Background()
-	if running, err := s.sandboxRunning(ctx, userID, workspaceID); err != nil || !running {
+	ws, running, err := s.workspaceRunning(ctx, userID, workspaceID)
+	if err != nil || !running {
 		return err
 	}
 	if sidecars := s.sidecarServices(); sidecars != nil {
-		if err := sidecars.AwaitReady(ctx, workspaceID); err != nil {
-			return fmt.Errorf("%w: %v", ErrServicesNotReady, err)
-		}
-		// It may have stopped while its services got ready.
-		if running, err := s.sandboxRunning(ctx, userID, workspaceID); err != nil || !running {
+		waitErr := sidecars.AwaitReady(ctx, workspaceID)
+		// It may have stopped while its services got ready, or stopping it
+		// may be why they did not.
+		if ws, running, err = s.workspaceRunning(ctx, userID, workspaceID); err != nil || !running {
 			return err
 		}
+		if waitErr != nil {
+			err := fmt.Errorf("%w: %v", ErrServicesNotReady, waitErr)
+			if !ws.IsSandbox() {
+				s.failPendingSetup(ctx, ws, err)
+			}
+			return err
+		}
+	}
+	if !ws.IsSandbox() {
+		// The user can run the project workspace's script again
+		// (RunWorkspaceSetup), so the pending run is started under the same
+		// lock, never beside one of theirs.
+		unlock := s.lockWorkspace(ws.ProjectID)
+		defer unlock()
 	}
 	st, err := s.repo.GetSetup(ctx, workspaceID)
 	if err != nil || st == nil || st.Status != SetupPending {
@@ -219,17 +246,32 @@ func (s *service) readySandbox(userID, workspaceID int64) error {
 	return err
 }
 
-func (s *service) sandboxRunning(ctx context.Context, userID, workspaceID int64) (bool, error) {
+// workspaceRunning reads a workspace and whether it is running.
+func (s *service) workspaceRunning(ctx context.Context, userID, workspaceID int64) (*workspace.Workspace, bool, error) {
 	ws, err := s.workspaces.Get(ctx, userID, workspaceID)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
-	return ws.Status == workspace.StatusRunning, nil
+	return ws, ws.Status == workspace.StatusRunning, nil
+}
+
+// failPendingSetup records a workspace's pending run as failed with why,
+// unless it has started or been replaced since.
+func (s *service) failPendingSetup(ctx context.Context, ws *workspace.Workspace, why error) {
+	st, err := s.repo.GetSetup(ctx, ws.ID)
+	if err != nil || st == nil || st.Status != SetupPending {
+		return
+	}
+	finished := time.Now().UTC()
+	st.Status, st.Error, st.FinishedAt = SetupFailed, clipError(fmt.Sprintf("the setup script did not run: %v", why)), &finished
+	if err := s.repo.FinishSetup(ctx, st); err != nil {
+		log.Printf("workspace %d: recording that its setup did not run: %v", ws.ID, err)
+	}
 }
 
 // queueSetup records the project's setup script as pending in a newly
-// seeded sandbox, to start once its services are ready. It does nothing
-// when the project has no script.
+// seeded workspace, to start once its services are ready (prepare). It does
+// nothing when the project has no script.
 func (s *service) queueSetup(ctx context.Context, p *Project, ws *workspace.Workspace) error {
 	if strings.TrimSpace(p.SetupScript) == "" {
 		return nil
@@ -272,7 +314,7 @@ func (s *service) beginSetup(ctx context.Context, st *Setup) (*Setup, error) {
 }
 
 // resumeSetups follows the setup runs a previous server process left
-// running, and readies the sandboxes whose run it left pending. Running
+// running, and readies the workspaces whose run it left pending. Running
 // ones whose workspace restarted meanwhile are recorded as interrupted.
 func (s *service) resumeSetups(ctx context.Context) error {
 	running, err := s.repo.SetupsWithStatus(ctx, SetupRunning)

@@ -36,6 +36,7 @@ type Repository interface {
 	// PutSetup records a new setup run in a workspace, replacing the last.
 	PutSetup(ctx context.Context, st *Setup) error
 	// FinishSetup records how a run ended, unless a newer run replaced it.
+	// A pending run, which has no command yet, ends without starting.
 	FinishSetup(ctx context.Context, st *Setup) error
 	// SetupsWithStatus lists the setup runs that stand at status, such as
 	// those pending or not yet recorded as ended.
@@ -377,9 +378,9 @@ func (r *repository) PutSetup(ctx context.Context, st *Setup) error {
 func (r *repository) FinishSetup(ctx context.Context, st *Setup) error {
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE workspace_setups SET status = ?, exit_code = ?, output = ?, error = ?, finished_at = ?
-		 WHERE workspace_id = ? AND command_id = ? AND status = ?`,
+		 WHERE workspace_id = ? AND command_id = ? AND status IN (?, ?)`,
 		st.Status, nullableInt(st.ExitCode), st.Output, st.Error, nullableTime(st.FinishedAt),
-		st.WorkspaceID, st.CommandID, SetupRunning,
+		st.WorkspaceID, st.CommandID, SetupPending, SetupRunning,
 	)
 	if err != nil {
 		return fmt.Errorf("recording end of setup run: %w", err)

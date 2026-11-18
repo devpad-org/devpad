@@ -123,7 +123,8 @@ export interface WorkspaceBranchStatus {
 export interface WorkspaceSetup {
   // The script as it was when the run started.
   script: string
-  status: 'running' | 'succeeded' | 'failed'
+  // pending: waiting for the workspace's services to be ready first.
+  status: 'pending' | 'running' | 'succeeded' | 'failed'
   // Set once the script has exited.
   exitCode: number | null
   output: string

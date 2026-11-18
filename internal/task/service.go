@@ -653,10 +653,11 @@ func (s *service) dispatch(ctx context.Context) {
 }
 
 // launch starts a queued task's sandbox and, once its services are ready
-// and the project's setup script has finished there, its agent run. A new sandbox first waits for
-// a build of the project's environment in progress. The task is unlocked
-// while either runs, so it can be cancelled or deleted meanwhile; the run
-// starts only if the task is still queued on the same sandbox after.
+// and the project's setup script has finished there, its agent run. A new
+// sandbox first waits for a build of the project's environment in
+// progress. The task is unlocked while either runs, so it can be cancelled
+// or deleted meanwhile; the run starts only if the task is still queued on
+// the same sandbox after.
 func (s *service) launch(ctx context.Context, taskID int64) {
 	if !s.beginLaunch(taskID) {
 		return
@@ -673,49 +674,79 @@ func (s *service) launch(ctx context.Context, taskID int64) {
 	if !ok {
 		return
 	}
-	var notReady error
+	// A sandbox stopped while it was readied is started again and readied
+	// again, once: a second stop meanwhile is no reason to keep the agent
+	// waiting longer.
+	for restarted := false; ; restarted = true {
+		setup, notReady, ok := s.awaitSetup(ctx, taskID, ws)
+		if !ok {
+			return
+		}
+		if ws, ok = s.startPrepared(ctx, taskID, ws, env, setup, notReady, !restarted); !ok {
+			return
+		}
+	}
+}
+
+// awaitSetup waits, with the task unlocked, for the sandbox's services and
+// setup. notReady is set when the services did not get ready; ok is false
+// when the service is shutting down.
+func (s *service) awaitSetup(ctx context.Context, taskID int64, ws *workspace.Workspace) (setup *project.Setup, notReady error, ok bool) {
 	setup, err := s.projects.AwaitSetup(ctx, ws.UserID, ws.ProjectID, ws.ID)
 	if err != nil {
 		if ctx.Err() != nil {
 			// Shutting down: the task stays queued for the next start.
-			return
+			return nil, nil, false
 		}
 		if errors.Is(err, project.ErrServicesNotReady) {
-			notReady = err
-		} else {
-			// Cancelling the task removes the sandbox, which ends the wait;
-			// anything else is no reason to hold the agent back.
-			log.Printf("task %d: waiting for setup in sandbox %d: %v", taskID, ws.ID, err)
+			return nil, err, true
 		}
+		// Cancelling the task removes the sandbox, which ends the wait;
+		// anything else is no reason to hold the agent back.
+		log.Printf("task %d: waiting for setup in sandbox %d: %v", taskID, ws.ID, err)
 	}
+	return setup, nil, true
+}
 
+// startPrepared starts the agent run of a task whose sandbox awaitSetup
+// readied, if the task is still queued on it. A sandbox stopped meanwhile
+// is started again; with readyAgain, the run waits for it to be readied
+// again, and startPrepared returns the sandbox and true for the caller to
+// do that with the task unlocked.
+func (s *service) startPrepared(ctx context.Context, taskID int64, ws *workspace.Workspace, env *project.Environment, setup *project.Setup, notReady error, readyAgain bool) (*workspace.Workspace, bool) {
 	unlock := s.lock(taskID)
 	defer unlock()
 	t, err := s.repo.GetByID(ctx, taskID)
 	if err != nil || t == nil || t.Status != StatusQueued || t.WorkspaceID != ws.ID {
-		return
+		return nil, false
 	}
 	if notReady != nil {
 		// Its agent would work against services that are not there.
 		// Starting the task again tries them again.
 		s.failUnlessShuttingDown(ctx, t, fmt.Sprintf("starting sandbox: %v", notReady))
-		return
+		return nil, false
 	}
-	// The sandbox may have been stopped while setup ran.
-	if ws, err = s.workspaces.Get(ctx, t.UserID, ws.ID); err == nil {
+	// The sandbox may have been stopped while it was readied.
+	ws, err = s.workspaces.Get(ctx, t.UserID, ws.ID)
+	wasStopped := err == nil && ws.Status == workspace.StatusStopped
+	if err == nil {
 		ws, err = s.running(ctx, t, ws)
 	}
 	if err != nil {
 		if !errors.Is(err, project.ErrSandboxLimit) && !errors.Is(err, project.ErrBranchPublishing) {
 			s.failUnlessShuttingDown(ctx, t, fmt.Sprintf("starting sandbox: %v", err))
 		}
-		return
+		return nil, false
+	}
+	if wasStopped && readyAgain {
+		return ws, true
 	}
 	// The prompt describes the image the sandbox has, which can be older than
 	// the one read before it was made.
 	if err := s.startRun(ctx, t, ws, env.For(ws.Image), setup); err != nil {
 		s.failUnlessShuttingDown(ctx, t, err.Error())
 	}
+	return nil, false
 }
 
 // failOverBudget fails a queued task that is over budget before it is given

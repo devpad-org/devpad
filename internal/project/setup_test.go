@@ -300,9 +300,10 @@ func TestRunWorkspaceSetup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	st, err := e.svc.WorkspaceSetup(ctx, e.userID, p.ID)
-	if err != nil || st == nil || st.Status != SetupRunning || st.Script != "make deps" {
-		t.Fatalf("expected the first run going, got %+v %v", st, err)
+	// It starts once the workspace's services are ready, in the background.
+	if st := waitForSetup(t, e, ws.ID, SetupRunning); st.Script != "make deps" {
+		close(gate)
+		t.Fatalf("expected the first run going, got %+v", st)
 	}
 	if _, err := e.svc.RunWorkspaceSetup(ctx, e.userID, p.ID); !errors.Is(err, ErrSetupRunning) {
 		t.Fatalf("expected ErrSetupRunning, got %v", err)
@@ -321,8 +322,8 @@ func TestRunWorkspaceSetup(t *testing.T) {
 	if got := waitForSetup(t, e, ws.ID, SetupSucceeded); got.Output != "fine\n" || got.ExitCode == nil || *got.ExitCode != 0 {
 		t.Fatalf("unexpected rerun record: %+v", got)
 	}
-	if e.workspaces.commands[ws.ID] != "make deps2" {
-		t.Fatalf("expected the current script run, got %q", e.workspaces.commands[ws.ID])
+	if got := e.workspaces.command(ws.ID); got != "make deps2" {
+		t.Fatalf("expected the current script run, got %q", got)
 	}
 
 	if _, err := e.svc.Update(ctx, e.userID, p.ID, UpdateInput{Name: "proj"}); err != nil {

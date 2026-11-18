@@ -71,6 +71,19 @@ func TestProjectServicesRepositoryRoundTrip(t *testing.T) {
 	if err := repo.RemoveProjectService(ctx, 1, ServicePostgres); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected removing it again to be ErrNotFound, got %v", err)
 	}
+
+	// A workspace has one service of each type too.
+	if _, err := db.Conn().Exec(`INSERT INTO workspaces (id, user_id, name) VALUES (10, 1, 'ws')`); err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+	first := &WorkspaceService{WorkspaceID: 10, ServiceType: ServicePostgres, VolumeName: "v", Status: StatusStopped, Config: "{}"}
+	if err := repo.Create(ctx, first); err != nil {
+		t.Fatalf("creating postgres: %v", err)
+	}
+	second := &WorkspaceService{WorkspaceID: 10, ServiceType: ServicePostgres, VolumeName: "v", Status: StatusStopped, Config: "{}"}
+	if err := repo.Create(ctx, second); !errors.Is(err, ErrDuplicateType) {
+		t.Fatalf("expected a second postgres on the workspace to be ErrDuplicateType, got %v", err)
+	}
 }
 
 func TestAddProjectServiceChecksLicenceAndArchitecture(t *testing.T) {
@@ -203,7 +216,7 @@ func TestAwaitReadyWaitsForServicesToBeHealthy(t *testing.T) {
 	repo := &fakeRepository{projectServices: []*ProjectService{{ProjectID: 1, ServiceType: ServicePostgres}}}
 	cm := &fakeContainerManager{health: map[string][]containerpkg.SidecarHealth{
 		"devpad-svc-10-postgres-container": {
-			{Running: false, Status: "starting"},
+			{Running: true, Status: "starting"},
 			{Running: true, Status: "starting"},
 			{Running: true, Status: "starting"},
 			{Running: true, Status: "healthy"},
@@ -242,6 +255,12 @@ func TestAwaitReadyFailsWhenAServiceIsNotReady(t *testing.T) {
 			{Running: false, Status: "starting", RestartCount: 1, ExitCode: 137},
 			{Running: true, Status: "starting", RestartCount: 1},
 		}, "stopped while starting, with exit code 137"},
+		// Stopped, as with its workspace: waiting would only run out the
+		// deadline.
+		{"stopped", []containerpkg.SidecarHealth{
+			{Running: true, Status: "starting"},
+			{Running: false, Status: "starting"},
+		}, "postgres service is not running"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -399,4 +418,44 @@ func mustConfig(t *testing.T, s *WorkspaceService) ServiceConfig {
 		t.Fatalf("parsing %s config: %v", s.ServiceType, err)
 	}
 	return cfg
+}
+
+// staleListRepository lists no services, as a read made just before another
+// request added one does.
+type staleListRepository struct {
+	*fakeRepository
+}
+
+func (staleListRepository) ListByWorkspaceID(context.Context, int64) ([]*WorkspaceService, error) {
+	return nil, nil
+}
+
+// Two requests adding a service at once both pass the check for an existing
+// one; the database refuses the second before its volume, which is the
+// first's, is touched.
+func TestCreateRefusesADuplicateThatRacedTheCheck(t *testing.T) {
+	ctx := context.Background()
+	inner := &fakeRepository{}
+	cm := &fakeContainerManager{}
+	if _, err := NewService(inner, cm).Create(ctx, 10, ServicePostgres, CreateOptions{UserID: 1}); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	cm.volumes = nil
+
+	svc := NewService(staleListRepository{inner}, cm)
+	if _, err := svc.Create(ctx, 10, ServicePostgres, CreateOptions{UserID: 1}); !errors.Is(err, ErrDuplicateType) {
+		t.Fatalf("expected ErrDuplicateType, got %v", err)
+	}
+	if len(cm.volumes) != 0 || len(cm.removedVolumes) != 0 {
+		t.Fatalf("expected the volume left alone, created %v removed %v", cm.volumes, cm.removedVolumes)
+	}
+
+	// Provisioning beside it takes the one already added as its own.
+	inner.projectServices = []*ProjectService{{ProjectID: 1, ServiceType: ServicePostgres}}
+	if err := svc.Provision(ctx, 10, 1, "devpad-net-10", true); err != nil {
+		t.Fatalf("expected provisioning to skip the service added meanwhile, got %v", err)
+	}
+	if got, _ := inner.ListByWorkspaceID(ctx, 10); len(got) != 1 {
+		t.Fatalf("expected one postgres, got %d", len(got))
+	}
 }

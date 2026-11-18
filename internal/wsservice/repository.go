@@ -12,6 +12,8 @@ import (
 
 // Repository defines data access for workspace services.
 type Repository interface {
+	// Create adds a service to a workspace, returning ErrDuplicateType when
+	// the workspace already has one of its type.
 	Create(ctx context.Context, svc *WorkspaceService) error
 	GetByID(ctx context.Context, id int64) (*WorkspaceService, error)
 	ListByWorkspaceID(ctx context.Context, workspaceID int64) ([]*WorkspaceService, error)
@@ -42,6 +44,9 @@ func (r *repository) Create(ctx context.Context, svc *WorkspaceService) error {
 		`INSERT INTO workspace_services (workspace_id, service_type, container_id, volume_name, status, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		svc.WorkspaceID, svc.ServiceType, svc.ContainerID, svc.VolumeName, svc.Status, svc.Config, now, now,
 	)
+	if database.IsUniqueViolation(err) {
+		return ErrDuplicateType
+	}
 	if err != nil {
 		return fmt.Errorf("inserting workspace service: %w", err)
 	}

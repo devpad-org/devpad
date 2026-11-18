@@ -101,6 +101,10 @@ const (
 // errReadyTimeout is why AwaitReady gave up waiting.
 var errReadyTimeout = errors.New("services not ready in time")
 
+// errServiceStopped is why AwaitReady stopped waiting for a service that is
+// no longer running.
+var errServiceStopped = errors.New("is not running")
+
 type service struct {
 	repo      Repository
 	container container.Manager
@@ -197,11 +201,11 @@ func (s *service) create(ctx context.Context, workspaceID int64, serviceType Ser
 	}
 	configJSON, _ := json.Marshal(cfg)
 
+	// The record comes first: the database refuses a second service of the
+	// type that a request at the same time slipped past the check above,
+	// before anything is done to the volume, which is named by the type and
+	// so would be the other service's.
 	volumeName := fmt.Sprintf("devpad-svc-%d-%s", workspaceID, serviceType)
-	if err := s.container.CreateVolume(ctx, volumeName); err != nil {
-		return nil, fmt.Errorf("creating service volume: %w", err)
-	}
-
 	svc := &WorkspaceService{
 		WorkspaceID: workspaceID,
 		ServiceType: serviceType,
@@ -210,8 +214,16 @@ func (s *service) create(ctx context.Context, workspaceID int64, serviceType Ser
 		Config:      string(configJSON),
 	}
 	if err := s.repo.Create(ctx, svc); err != nil {
-		_ = s.container.RemoveVolume(ctx, volumeName)
+		if errors.Is(err, ErrDuplicateType) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("creating service record: %w", err)
+	}
+	if err := s.container.CreateVolume(ctx, volumeName); err != nil {
+		if delErr := s.repo.Delete(context.WithoutCancel(ctx), svc.ID); delErr != nil {
+			log.Printf("service %d: removing its record after its volume failed: %v", svc.ID, delErr)
+		}
+		return nil, fmt.Errorf("creating service volume: %w", err)
 	}
 	return svc, nil
 }
@@ -545,6 +557,11 @@ func (s *service) Provision(ctx context.Context, workspaceID, projectID int64, n
 			return fmt.Errorf("the project's %s service: %w", ps.ServiceType, err)
 		}
 		svc, err := s.create(ctx, workspaceID, ps.ServiceType, ps.LicenseAcceptance)
+		if errors.Is(err, ErrDuplicateType) {
+			// Added since the list was read, by whoever else is deploying
+			// it; that one makes its container.
+			continue
+		}
 		if errors.Is(err, ErrLicenseOutdated) {
 			// Adding the service again is how the user accepts the new terms.
 			return fmt.Errorf("adding the project's %s service: %w; remove it from the project's services and add it again to accept the new terms", ps.ServiceType, err)
@@ -587,7 +604,8 @@ func (s *service) AwaitReady(ctx context.Context, workspaceID int64) error {
 // awaitReady waits until a started service's health check passes. A
 // service whose container has no health check is ready once it runs. One
 // that Docker restarts meanwhile exited, which a service that starts well
-// never does, so it is not waited for.
+// never does, and one that stopped will not get ready, so neither is
+// waited for.
 func (s *service) awaitReady(ctx context.Context, svc *WorkspaceService) error {
 	ticker := time.NewTicker(s.readyPoll)
 	defer ticker.Stop()
@@ -601,15 +619,18 @@ func (s *service) awaitReady(ctx context.Context, svc *WorkspaceService) error {
 			}
 		case restarts >= 0 && h.RestartCount > restarts:
 			return fmt.Errorf("the %s service stopped while starting, with exit code %d", svc.ServiceType, h.ExitCode)
+		case !h.Running:
+			// Docker reports one it is about to restart as running, so this
+			// one was stopped, such as with its workspace, and will not get
+			// ready by waiting.
+			return fmt.Errorf("the %s service %w", svc.ServiceType, errServiceStopped)
 		default:
 			restarts = h.RestartCount
-			if h.Running {
-				switch h.Status {
-				case "healthy", "none":
-					return nil
-				case "unhealthy":
-					return fmt.Errorf("the %s service started but is not accepting connections", svc.ServiceType)
-				}
+			switch h.Status {
+			case "healthy", "none":
+				return nil
+			case "unhealthy":
+				return fmt.Errorf("the %s service started but is not accepting connections", svc.ServiceType)
 			}
 		}
 		select {

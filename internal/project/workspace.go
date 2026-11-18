@@ -130,9 +130,12 @@ func (s *service) OpenWorkspace(ctx context.Context, userID, projectID int64) (w
 		return nil, false, fmt.Errorf("seeding workspace: %w", err)
 	}
 	ws.RepoSeeded = true
-	if _, err := s.startSetup(ctx, p, ws); err != nil {
-		log.Printf("project %d: starting setup script in workspace %d: %v", p.ID, ws.ID, err)
+	// Its services were started with it, and the script may need them, so
+	// it waits for them as a sandbox's does.
+	if err := s.queueSetup(ctx, p, ws); err != nil {
+		log.Printf("project %d: queueing the setup script in workspace %d: %v", p.ID, ws.ID, err)
 	}
+	s.prepare(userID, ws.ID)
 	return ws, true, nil
 }
 

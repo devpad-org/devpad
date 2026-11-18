@@ -142,6 +142,8 @@ type fakeSandboxes struct {
 	awaited   []int64
 	// setupErr, when set, is what AwaitSetup fails with.
 	setupErr error
+	// onAwaitSetup, when set, runs under mu as each wait for setup ends.
+	onAwaitSetup func(f *fakeSandboxes, workspaceID int64)
 	// environment is what AwaitEnvironment reports; while environmentGate
 	// is open it waits.
 	environment     *project.Environment
@@ -277,6 +279,9 @@ func (f *fakeSandboxes) AwaitSetup(ctx context.Context, _, _, workspaceID int64)
 	defer f.mu.Unlock()
 	if f.lookup(workspaceID) == nil {
 		return nil, project.ErrNotFound
+	}
+	if f.onAwaitSetup != nil {
+		f.onAwaitSetup(f, workspaceID)
 	}
 	if f.setupErr != nil {
 		return nil, f.setupErr
@@ -1875,6 +1880,36 @@ func TestTaskFailsWhenItsServicesAreNotReady(t *testing.T) {
 	}
 	if len(e.runs.startedRequests()) != 0 {
 		t.Fatal("the agent started without its services")
+	}
+}
+
+// A sandbox stopped while it is readied leaves its setup to run when it
+// starts again, so the task starts it and waits for that before its agent.
+func TestSandboxStoppedWhileReadiedIsReadiedAgain(t *testing.T) {
+	e := setup(t)
+	e.sandboxes.set(func(f *fakeSandboxes) {
+		f.onAwaitSetup = func(f *fakeSandboxes, workspaceID int64) {
+			// Every wait ends with it stopped, as a user stopping it again
+			// and again would.
+			f.lookup(workspaceID).Status = workspace.StatusStopped
+		}
+	})
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+
+	running := e.waitTask(t, task.ID, status(StatusInProgress))
+	e.sandboxes.mu.Lock()
+	awaited := len(e.sandboxes.awaited)
+	e.sandboxes.mu.Unlock()
+	// Readied again once after it was started again, then no more.
+	if awaited != 2 {
+		t.Fatalf("expected the setup awaited twice, got %d", awaited)
+	}
+	if got := e.sandboxes.status(running.WorkspaceID); got != workspace.StatusRunning {
+		t.Fatalf("expected the sandbox started again, got %s", got)
+	}
+	if len(e.runs.startedRequests()) != 1 {
+		t.Fatalf("expected one run, got %d", len(e.runs.startedRequests()))
 	}
 }
 

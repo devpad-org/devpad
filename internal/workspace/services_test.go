@@ -229,3 +229,68 @@ func TestServiceVariablesReachTheAgent(t *testing.T) {
 		t.Fatal("synced another user's workspace")
 	}
 }
+
+// Adding the project's services to its project workspace holds the
+// workspace as a start or stop does, so it never runs beside a rebuild,
+// which provisions the same services.
+func TestProvisionProjectServicesHoldsTheWorkspace(t *testing.T) {
+	svc, ra := setupSandboxService(t)
+	s := svc.(*service)
+	sidecars := &fakeSidecars{}
+	s.SetSidecarService(sidecars)
+	ctx := context.Background()
+	ws, err := s.CreateProjectWorkspace(ctx, 1, ProjectWorkspaceSpec{ProjectID: 7, Name: "proj"})
+	if err != nil {
+		t.Fatalf("create project workspace: %v", err)
+	}
+
+	sidecars.calls = nil
+	if err := s.ProvisionProjectServices(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if want := []string{fmt.Sprintf("provision %d project 7 start true", ws.ID)}; !slices.Equal(sidecars.calls, want) {
+		t.Fatalf("expected %v, got %v", want, sidecars.calls)
+	}
+	// A running workspace's agent is told, so new terminals have them.
+	if _, ok := ra.bodies["/api/env/services"]; !ok {
+		t.Fatal("expected the agent sent the services' variables")
+	}
+
+	done, err := s.beginRebuild(ws.ID)
+	if err != nil {
+		t.Fatalf("begin rebuild: %v", err)
+	}
+	sidecars.calls = nil
+	if err := s.ProvisionProjectServices(ctx, 1, ws.ID); !errors.Is(err, ErrRebuilding) {
+		t.Fatalf("expected ErrRebuilding during a rebuild, got %v", err)
+	}
+	if len(sidecars.calls) != 0 {
+		t.Fatalf("expected nothing provisioned during a rebuild, got %v", sidecars.calls)
+	}
+	done()
+
+	// A stopped workspace's copies start with it.
+	if _, err := s.Stop(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	sidecars.calls = nil
+	if err := s.ProvisionProjectServices(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("provision while stopped: %v", err)
+	}
+	if want := []string{fmt.Sprintf("provision %d project 7 start false", ws.ID)}; !slices.Equal(sidecars.calls, want) {
+		t.Fatalf("expected %v, got %v", want, sidecars.calls)
+	}
+
+	// Sandboxes get their copies when they are made, and nobody else's
+	// workspace is changed.
+	sandbox, err := s.CreateSandbox(ctx, 1, sandboxSpec("feature"))
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	if err := s.ProvisionProjectServices(ctx, 1, sandbox.ID); !errors.Is(err, ErrNotProjectWorkspace) {
+		t.Fatalf("expected a sandbox refused, got %v", err)
+	}
+	if err := s.ProvisionProjectServices(ctx, 2, ws.ID); err == nil {
+		t.Fatal("provisioned another user's workspace")
+	}
+}

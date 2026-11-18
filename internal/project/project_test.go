@@ -518,7 +518,10 @@ func (f *fakeWorkspaces) Get(_ context.Context, userID, id int64) (*workspace.Wo
 	if ws.UserID != userID {
 		return nil, workspace.ErrForbidden
 	}
-	return ws, nil
+	// A copy, as a read of the database gives: callers read it unlocked
+	// while tests change the stored one.
+	clone := *ws
+	return &clone, nil
 }
 
 func (f *fakeWorkspaces) CreateSandbox(_ context.Context, userID int64, spec workspace.SandboxSpec) (*workspace.Workspace, error) {

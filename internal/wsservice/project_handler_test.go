@@ -3,6 +3,7 @@ package wsservice
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -42,15 +43,16 @@ func (f fakeProjects) Workspace(ctx context.Context, userID, projectID int64) (*
 	return f.ws, nil
 }
 
-// recordingSyncer records each workspace whose agent was sent its
-// services' variables.
-type recordingSyncer struct {
-	synced []int64
+// recordingProvisioner records each workspace given its project's
+// services, failing with err.
+type recordingProvisioner struct {
+	provisioned []int64
+	err         error
 }
 
-func (r *recordingSyncer) SyncServiceEnv(_ context.Context, _, workspaceID int64) error {
-	r.synced = append(r.synced, workspaceID)
-	return nil
+func (r *recordingProvisioner) ProvisionProjectServices(_ context.Context, _, workspaceID int64) error {
+	r.provisioned = append(r.provisioned, workspaceID)
+	return r.err
 }
 
 func serveProject(t *testing.T, mux *http.ServeMux, method, path, body string) *httptest.ResponseRecorder {
@@ -63,7 +65,7 @@ func serveProject(t *testing.T, mux *http.ServeMux, method, path, body string) *
 }
 
 func TestProjectHandlerAddsListsAndRemovesServices(t *testing.T) {
-	h := NewProjectHandler(NewService(&fakeRepository{}, &fakeContainerManager{}), fakeProjects{}, &recordingSyncer{})
+	h := NewProjectHandler(NewService(&fakeRepository{}, &fakeContainerManager{}), fakeProjects{}, &recordingProvisioner{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/projects/{id}/services", h.HandleList)
 	mux.HandleFunc("POST /api/projects/{id}/services", h.HandleAdd)
@@ -121,32 +123,37 @@ func TestProjectHandlerAddsListsAndRemovesServices(t *testing.T) {
 }
 
 func TestProjectHandlerAddsTheProjectsServicesToItsWorkspace(t *testing.T) {
-	ctx := context.Background()
-	repo := &fakeRepository{projectServices: []*ProjectService{{ProjectID: 1, ServiceType: ServicePostgres}}}
-	svc := NewService(repo, &fakeContainerManager{})
+	svc := NewService(&fakeRepository{}, &fakeContainerManager{})
 	ws := &workspace.Workspace{ID: 10, UserID: 1, ProjectID: 1, NetworkName: "devpad-net-10", Status: workspace.StatusRunning}
-	syncer := &recordingSyncer{}
-	h := NewProjectHandler(svc, fakeProjects{ws: ws}, syncer)
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/projects/{id}/workspace/services", h.HandleAddToWorkspace)
+	serve := func(projects fakeProjects, provisioner *recordingProvisioner) *httptest.ResponseRecorder {
+		h := NewProjectHandler(svc, projects, provisioner)
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /api/projects/{id}/workspace/services", h.HandleAddToWorkspace)
+		return serveProject(t, mux, "POST", "/api/projects/1/workspace/services", `{}`)
+	}
 
-	if rec := serveProject(t, mux, "POST", "/api/projects/1/workspace/services", `{}`); rec.Code != http.StatusOK {
+	provisioner := &recordingProvisioner{}
+	if rec := serve(fakeProjects{ws: ws}, provisioner); rec.Code != http.StatusOK {
 		t.Fatalf("add to workspace: %d %s", rec.Code, rec.Body)
 	}
-	got, err := svc.List(ctx, 10)
-	if err != nil || len(got) != 1 || got[0].ServiceType != ServicePostgres || got[0].Status != StatusRunning {
-		t.Fatalf("expected a running postgres in the workspace, got %+v %v", got, err)
+	if len(provisioner.provisioned) != 1 || provisioner.provisioned[0] != 10 {
+		t.Fatalf("expected workspace 10 given the project's services, got %v", provisioner.provisioned)
 	}
-	// Its agent is told, so new terminals have it without a rebuild.
-	if len(syncer.synced) != 1 || syncer.synced[0] != 10 {
-		t.Fatalf("expected workspace 10's agent sent the variables, got %v", syncer.synced)
+
+	// A workspace being rebuilt, started or stopped is not changed meanwhile.
+	for _, err := range []error{workspace.ErrRebuilding, workspace.ErrLifecycleBusy, workspace.ErrConverting} {
+		if rec := serve(fakeProjects{ws: ws}, &recordingProvisioner{err: err}); rec.Code != http.StatusConflict {
+			t.Fatalf("%v: expected 409, got %d", err, rec.Code)
+		}
+	}
+	// A licence to accept again says so.
+	rec := serve(fakeProjects{ws: ws}, &recordingProvisioner{err: fmt.Errorf("adding: %w; add it again", ErrLicenseOutdated)})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "add it again") {
+		t.Fatalf("expected the outdated licence explained, got %d %s", rec.Code, rec.Body)
 	}
 
 	// Without a project workspace there is nothing to add to.
-	h = NewProjectHandler(svc, fakeProjects{}, syncer)
-	mux = http.NewServeMux()
-	mux.HandleFunc("POST /api/projects/{id}/workspace/services", h.HandleAddToWorkspace)
-	if rec := serveProject(t, mux, "POST", "/api/projects/1/workspace/services", `{}`); rec.Code != http.StatusConflict {
+	if rec := serve(fakeProjects{}, &recordingProvisioner{}); rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409 without a workspace, got %d", rec.Code)
 	}
 }
@@ -159,7 +166,7 @@ func TestProjectHandlerAddsTheWorkspacesServicesToTheProject(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	ws := &workspace.Workspace{ID: 10, UserID: 1, ProjectID: 1, NetworkName: "devpad-net-10", Status: workspace.StatusRunning}
-	h := NewProjectHandler(svc, fakeProjects{ws: ws}, &recordingSyncer{})
+	h := NewProjectHandler(svc, fakeProjects{ws: ws}, &recordingProvisioner{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/projects/{id}/services/adopt", h.HandleAdopt)
 

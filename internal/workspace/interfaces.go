@@ -158,6 +158,12 @@ type ServiceEnvSyncer interface {
 	SyncServiceEnv(ctx context.Context, userID, workspaceID int64) error
 }
 
+// ProjectServiceProvisioner gives a project workspace the services its
+// project has and it lacks.
+type ProjectServiceProvisioner interface {
+	ProvisionProjectServices(ctx context.Context, userID, workspaceID int64) error
+}
+
 // SidecarBinder injects the sidecar service lifecycle dependency.
 type SidecarBinder interface {
 	SetSidecarService(sidecar SidecarService)
@@ -182,6 +188,7 @@ type Service interface {
 	GitBridgeService
 	ConversionService
 	ServiceEnvSyncer
+	ProjectServiceProvisioner
 	SidecarBinder
 }
 
