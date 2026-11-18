@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { docsApi, type DocPage, type DocPageInfo } from '@/api/docs'
 import { renderDoc } from '@/utils/docs'
@@ -16,6 +16,15 @@ const loading = ref(true)
 const content = ref<HTMLElement | null>(null)
 const scroller = ref<HTMLElement | null>(null)
 const nav = ref<HTMLElement | null>(null)
+
+// The open page names the tab, and leaving the docs gives the tab back the
+// title it had.
+const appTitle = document.title
+let left = false
+onBeforeUnmount(() => {
+  left = true
+  document.title = appTitle
+})
 
 const slug = computed(() => (typeof route.params.slug === 'string' ? route.params.slug : ''))
 const html = computed(() => (page.value ? renderDoc(page.value.body) : ''))
@@ -43,15 +52,20 @@ watch(
     if (!s) return
     loading.value = true
     error.value = ''
+    let p: DocPage | null = null
+    let failure = ''
     try {
-      page.value = await docsApi.get(s)
-      document.title = `${page.value.title} · Devpad docs`
+      p = await docsApi.get(s)
     } catch (e) {
-      page.value = null
-      error.value = e instanceof Error && e.message !== 'no such page' ? e.message : 'There is no such page.'
-    } finally {
-      loading.value = false
+      failure = e instanceof Error && e.message !== 'no such page' ? e.message : 'There is no such page.'
     }
+    // A page that arrives after the docs were left, or after another was
+    // asked for, is dropped.
+    if (left || s !== slug.value) return
+    page.value = p
+    error.value = failure
+    loading.value = false
+    document.title = p ? `${p.title} · Devpad docs` : appTitle
     await nextTick()
     scrollToHash(true)
     nav.value?.querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
