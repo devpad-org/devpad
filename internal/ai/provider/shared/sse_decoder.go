@@ -139,8 +139,7 @@ func ReadSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 }
 
 // emitUsage sends what the request was billed for, before any error or the
-// end of the stream, with the cached and cache-written prompt tokens split out
-// to be billed at their own rates.
+// end of the stream.
 func emitUsage(ch chan<- domain.ProviderEvent, usage *chatUsage) {
 	if usage == nil {
 		return
@@ -149,14 +148,12 @@ func emitUsage(ch chan<- domain.ProviderEvent, usage *chatUsage) {
 	if cached == 0 {
 		cached = usage.CachedTokens
 	}
-	cached = min(cached, usage.PromptTokens)
-	written := min(usage.PromptTokensDetails.CacheWriteTokens, usage.PromptTokens-cached)
-	ch <- domain.ProviderEvent{Usage: &domain.Usage{
-		InputTokens:      usage.PromptTokens - cached - written,
+	ch <- domain.ProviderEvent{Usage: ReportedUsage{
+		PromptTokens:     usage.PromptTokens,
+		CachedTokens:     cached,
+		CacheWriteTokens: usage.PromptTokensDetails.CacheWriteTokens,
 		OutputTokens:     usage.CompletionTokens,
-		CacheReadTokens:  cached,
-		CacheWriteTokens: written,
-	}}
+	}.Billed()}
 }
 
 func emitToolCalls(ch chan<- domain.ProviderEvent, toolCalls []domain.ToolCall, toolCallArgs map[int]*strings.Builder) {

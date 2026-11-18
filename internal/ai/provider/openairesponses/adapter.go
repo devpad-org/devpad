@@ -719,21 +719,17 @@ func marshalReasoningState(items []json.RawMessage) json.RawMessage {
 	return raw
 }
 
-// emitResponseUsage sends what a finished response was billed for. Input read
-// from and written to the cache is billed at its own rates.
+// emitResponseUsage sends what a finished response was billed for.
 func emitResponseUsage(ch chan<- domain.ProviderEvent, response *responsePayload) {
 	if response == nil || response.Usage == nil {
 		return
 	}
-	input := response.Usage.InputTokens
-	cached := min(response.Usage.InputTokensDetails.CachedTokens, input)
-	written := min(response.Usage.InputTokensDetails.CacheWriteTokens, input-cached)
-	ch <- domain.ProviderEvent{Usage: &domain.Usage{
-		InputTokens:      input - cached - written,
+	ch <- domain.ProviderEvent{Usage: shared.ReportedUsage{
+		PromptTokens:     response.Usage.InputTokens,
+		CachedTokens:     response.Usage.InputTokensDetails.CachedTokens,
+		CacheWriteTokens: response.Usage.InputTokensDetails.CacheWriteTokens,
 		OutputTokens:     response.Usage.OutputTokens,
-		CacheReadTokens:  cached,
-		CacheWriteTokens: written,
-	}}
+	}.Billed()}
 }
 
 func responseErrorMessage(response *responsePayload) string {

@@ -429,17 +429,16 @@ func streamDelta(previous, current string) string {
 }
 
 // emitUsage sends what the request was billed for, before any error or the
-// end of the stream. Cached prompt tokens are billed at their own rate.
+// end of the stream.
 func emitUsage(ch chan<- domain.ProviderEvent, usage *chatUsage) {
 	if usage == nil {
 		return
 	}
-	cached := min(usage.PromptTokensDetails.CachedTokens, usage.PromptTokens)
-	ch <- domain.ProviderEvent{Usage: &domain.Usage{
-		InputTokens:     usage.PromptTokens - cached,
-		OutputTokens:    usage.CompletionTokens,
-		CacheReadTokens: cached,
-	}}
+	ch <- domain.ProviderEvent{Usage: shared.ReportedUsage{
+		PromptTokens: usage.PromptTokens,
+		CachedTokens: usage.PromptTokensDetails.CachedTokens,
+		OutputTokens: usage.CompletionTokens,
+	}.Billed()}
 }
 
 func emitToolCalls(ch chan<- domain.ProviderEvent, toolCalls []domain.ToolCall, toolCallArgs map[int]*strings.Builder) {
