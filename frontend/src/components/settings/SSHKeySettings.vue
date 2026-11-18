@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { ref, onMounted } from 'vue'
 import { settingsApi } from '@/api/settings'
 
@@ -58,7 +59,7 @@ function openRegenerateConfirm() {
 <template>
   <div>
     <header class="page-header">
-      <h2 class="page-title">SSH Key</h2>
+      <h2 class="page-title">SSH Key<DocLink topic="sshKey" label="Your SSH key" /></h2>
       <p class="page-desc">
         The key devpad uses to reach Git hosting services (GitHub, GitLab, Bitbucket) for you. Add the public key below
         to your Git provider's SSH key settings.

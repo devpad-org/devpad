@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Project, ProjectInput } from '@/api/projects'
 import MrIcon from './MrIcon.vue'
@@ -118,6 +119,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
             <h2 id="project-modal-heading" class="modal-title">
               <MrIcon name="folder" :size="15" class="title-icon" />
               {{ project ? 'Edit project' : 'New project' }}
+              <DocLink topic="createProject" label="Creating a project" />
             </h2>
             <p v-if="!project" class="modal-subtitle">
               A repository, the image its workspaces are made from, and how agents work on it.
@@ -254,6 +256,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               <div class="field-head">
                 <MrIcon name="box" :size="13" class="field-icon" />
                 <label class="form-label" for="project-environment">Environment</label>
+                <DocLink topic="environment" label="Environments" />
                 <span class="field-head-end code-tag">Dockerfile</span>
               </div>
               <div class="code-frame">
@@ -276,6 +279,7 @@ USER root</pre>
               <div class="field-head">
                 <MrIcon name="terminal" :size="13" class="field-icon" />
                 <label class="form-label" for="project-setup">Setup script</label>
+                <DocLink topic="setupScript" label="Setup scripts" />
                 <span class="field-head-end code-tag">/workspace</span>
               </div>
               <div class="code-frame">

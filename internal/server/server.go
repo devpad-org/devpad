@@ -17,6 +17,7 @@ import (
 	"github.com/devpad-org/devpad/internal/container"
 	"github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/dockerfile"
+	"github.com/devpad-org/devpad/internal/docs"
 	"github.com/devpad-org/devpad/internal/encrypt"
 	"github.com/devpad-org/devpad/internal/gitbridge"
 	"github.com/devpad-org/devpad/internal/mergerequest"
@@ -170,6 +171,10 @@ func New(cfg Config) (*Server, error) {
 	// The assistant in a project's workspace sees the board and hands work to
 	// task agents.
 	aiModule.AddToolProvider(projecttools.NewProvider(workspaceService, projectService, taskService, mrService, aiModule.AgentDefaults))
+
+	// devpad's own documentation, for the assistant to answer questions
+	// about devpad from.
+	aiModule.AddToolProvider(docs.NewProvider(userRepo))
 
 	if err := projectService.Reconcile(context.Background()); err != nil {
 		log.Printf("finishing interrupted workspace conversions: %v", err)
@@ -438,6 +443,11 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, inviteHandler
 	mux.Handle("POST /api/workspaces/{id}/restart", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleRestart)))
 	mux.Handle("GET /api/workspaces/{id}/info", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleInfo)))
 	mux.Handle("GET /api/workspaces/{id}/skills", authMiddleware.RequireAuth(http.HandlerFunc(skillsHandler.HandleList)))
+
+	// Documentation
+	docsHandler := docs.NewHandler()
+	mux.Handle("GET /api/docs", authMiddleware.RequireAuth(http.HandlerFunc(docsHandler.HandleList)))
+	mux.Handle("GET /api/docs/{slug}", authMiddleware.RequireAuth(http.HandlerFunc(docsHandler.HandleGet)))
 	mux.Handle("GET /api/workspaces/{id}/processes", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleListProcesses)))
 	mux.Handle("POST /api/workspaces/{id}/processes/{pid}/kill", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleKillProcess)))
 	mux.Handle("GET /api/workspaces/{id}/terminal", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleTerminal)))

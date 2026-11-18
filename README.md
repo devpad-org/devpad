@@ -2,6 +2,8 @@
 
 A web-based IDE that connects to Docker-based workspaces.
 
+Once it's running, **Docs** in the app's header explains how to use devpad and how it works. The pages are the Markdown files in [`docs/`](docs/).
+
 ## Quick Start
 
 ```bash

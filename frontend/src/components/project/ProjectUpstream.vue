@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { projectApi, type UpstreamBranch, type UpstreamStatus } from '@/api/projects'
 import { useActiveProjectStore } from '@/stores/activeProject'
@@ -136,7 +137,7 @@ onUnmounted(() => {
 
 <template>
   <div v-if="shown" class="side-section">
-    <div class="side-section-title">Upstream</div>
+    <div class="side-section-title">Upstream<DocLink topic="upstream" label="Upstream" /></div>
     <p class="upstream-sync" :title="fullTime(status?.fetchedAt)">{{ syncLabel }}</p>
 
     <ul v-if="status" class="upstream-branches">

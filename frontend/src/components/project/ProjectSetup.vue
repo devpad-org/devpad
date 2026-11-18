@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { projectApi, type WorkspaceSetup } from '@/api/projects'
 import { useActiveProjectStore } from '@/stores/activeProject'
@@ -102,7 +103,7 @@ onUnmounted(() => {
 
 <template>
   <div v-if="loaded && (hasScript || setup)" class="side-section">
-    <div class="side-section-title">Setup</div>
+    <div class="side-section-title">Setup<DocLink topic="setupScript" label="Setup scripts" /></div>
     <p class="setup-status" :class="setup ? `setup-${setup.status}` : ''">{{ statusLabel }}</p>
     <p v-if="changed" class="setup-note">The setup script has changed since this run.</p>
     <p v-if="!hasScript && setup" class="setup-note">The project no longer has a setup script.</p>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { ref, watch } from 'vue'
 import { formatUsd } from '@/utils/cost'
 import MrIcon from './MrIcon.vue'
@@ -73,6 +74,7 @@ function submit() {
     <p class="budget-head">
       <MrIcon name="warning" :size="14" />
       <strong>Budget reached</strong>
+      <DocLink topic="budgets" label="Budgets" />
     </p>
     <p v-for="b in budgets" :key="b.key" class="budget-line">
       {{ b.owner }} has spent {{ formatUsd(b.spentUsd) }} of its {{ formatUsd(b.budgetUsd) }} budget.

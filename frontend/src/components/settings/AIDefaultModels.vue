@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { ref, onMounted } from 'vue'
 import { aiApi, type AIModel, type BuiltInAgentDefaults } from '@/api/ai'
 import { useAiModelStore } from '@/stores/aiModels'
@@ -115,7 +116,7 @@ function saveSummary() {
 <template>
   <div>
     <header class="page-header">
-      <h2 class="page-title">Default Models</h2>
+      <h2 class="page-title">Default Models<DocLink topic="aiModels" label="Default models" /></h2>
       <p class="page-desc">
         The model and reasoning effort each built-in agent runs with unless whoever starts it picks another, including
         agents started by other agents.

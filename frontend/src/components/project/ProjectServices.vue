@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, ref, watch } from 'vue'
 import { ApiError } from '@/api/client'
 import { projectServiceApi } from '@/api/services'
@@ -149,7 +150,7 @@ watch(() => [store.projectId, props.workspaceId, props.workspaceStatus], () => v
 
 <template>
   <div v-if="loaded" class="side-section">
-    <div class="side-section-title">Services</div>
+    <div class="side-section-title">Services<DocLink topic="projectServices" label="Project services" /></div>
 
     <ul v-if="sorted.length" class="svc-list">
       <li v-for="svc in sorted" :key="svc.serviceType" class="svc-row">

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, reactive, ref } from 'vue'
 import { ApiError } from '@/api/client'
 import type { ServiceCatalogEntry, WorkspaceService } from '@/api/services'
@@ -94,6 +95,7 @@ async function deployService(row: CatalogRow) {
           <path d="M3 12a9 3 0 0 0 18 0" />
         </svg>
         Service Catalog
+        <DocLink topic="services" label="Services" />
       </span>
     </div>
 

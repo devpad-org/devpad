@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AgentModelPicker from '@/components/project/AgentModelPicker.vue'
@@ -115,7 +116,7 @@ function closeMergeRequest() {
     </section>
 
     <section v-if="isOpen" class="side-section">
-      <h3 class="side-title">Agent review</h3>
+      <h3 class="side-title">Agent review<DocLink topic="reviews" label="Reviews" /></h3>
       <p class="form-hint side-hint">
         An agent reads the change in its own sandbox, leaves comments and a verdict, and resolves the threads the change addresses.
       </p>

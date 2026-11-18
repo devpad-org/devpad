@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, ref, watch } from 'vue'
 import { mergeRequestApi } from '@/api/mergeRequests'
 import SelectMenu from '@/components/SelectMenu.vue'
@@ -106,7 +107,7 @@ async function submit() {
     <div v-if="show" class="modal-overlay" @click.self="emit('close')">
       <div class="modal">
         <div class="modal-header">
-          <h2 class="modal-title">New merge request</h2>
+          <h2 class="modal-title">New merge request<DocLink topic="mergeRequests" label="Merge requests" /></h2>
           <button class="modal-close" aria-label="Close" @click="emit('close')">&times;</button>
         </div>
         <form class="modal-body" @submit.prevent="submit">

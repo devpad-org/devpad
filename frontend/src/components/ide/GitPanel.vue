@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
 import {
   gitApi,
@@ -391,6 +392,7 @@ onUnmounted(() => {
           <path d="M6 21V9a9 9 0 0 0 9 9" />
         </svg>
         Source Control
+        <DocLink topic="publishing" label="Publishing branches" />
       </span>
       <div class="git-header-actions">
         <button class="git-icon-btn" @click="refresh()" title="Refresh" :disabled="loading">

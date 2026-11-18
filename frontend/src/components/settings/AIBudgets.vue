@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { ref, onMounted } from 'vue'
 import { aiApi, type BudgetDefaults } from '@/api/ai'
 
@@ -55,7 +56,7 @@ async function save() {
 <template>
   <div>
     <header class="page-header">
-      <h2 class="page-title">Agent Budgets</h2>
+      <h2 class="page-title">Agent Budgets<DocLink topic="budgets" label="Budgets" /></h2>
       <p class="page-desc">
         What your agents may spend before they stop, counting the agents they start. Leave a budget empty for no limit.
         Requests to models without prices aren't counted, so those runs stop only at devpad's limit of 500 model requests

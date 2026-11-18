@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { aiApi, attachmentUrl, type AISkill, type ChatImage, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalDetail, type ApprovalRequest, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
@@ -1677,6 +1678,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
           </svg>
         </span>
         <span class="agent-title">{{ focusedRunTitle }}</span>
+        <DocLink topic="assistant" label="The assistant" />
       </div>
       <div v-if="viewingFocusedRun" class="agent-header-actions">
         <span class="focused-run-status" :class="{ active: focusedRunActive }">

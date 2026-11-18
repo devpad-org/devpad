@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, ref } from 'vue'
 import type { Task } from '@/api/tasks'
 import type { MergeRequest } from '@/api/mergeRequests'
@@ -157,6 +158,7 @@ function created(task: Task) {
           </svg>
         </span>
         <span class="list-title-text">Tasks</span>
+        <DocLink topic="tasks" label="Tasks" />
         <span v-if="store.ready" class="list-summary">
           <span>{{ counts.open }} open</span>
           <span v-if="working > 0" class="summary-working">{{ working }} {{ working === 1 ? 'agent' : 'agents' }} working</span>

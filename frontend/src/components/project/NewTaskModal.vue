@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { taskApi, type Task } from '@/api/tasks'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
@@ -134,6 +135,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
           <h2 id="new-task-heading" class="modal-title">
             <MrIcon name="task" :size="15" class="title-icon" />
             New task
+            <DocLink topic="tasks" label="Tasks" />
           </h2>
           <button type="button" class="modal-close" aria-label="Close" title="Close (Esc)" @click="emit('close')">
             <MrIcon name="close" :size="16" />

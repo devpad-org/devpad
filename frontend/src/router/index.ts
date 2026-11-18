@@ -15,6 +15,7 @@ import AIBudgets from '@/components/settings/AIBudgets.vue'
 import AIModelPricing from '@/components/settings/AIModelPricing.vue'
 import InboxView from '@/views/InboxView.vue'
 import UsageView from '@/views/UsageView.vue'
+import DocsView from '@/views/DocsView.vue'
 const IdeView = () => import('@/views/IdeView.vue')
 
 export const router = createRouter({
@@ -75,6 +76,13 @@ export const router = createRouter({
       path: '/usage',
       name: 'usage',
       component: UsageView,
+      meta: { requiresAuth: true },
+    },
+    // The documentation: /docs opens its first page.
+    {
+      path: '/docs/:slug?',
+      name: 'docs',
+      component: DocsView,
       meta: { requiresAuth: true },
     },
     {

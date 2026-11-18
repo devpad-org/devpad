@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import type { TokenPrices } from '@/api/ai'
 import { useAllAIModels } from './useAllAIModels'
 
@@ -31,7 +32,7 @@ const priceColumns: { key: keyof TokenPrices; label: string }[] = [
 <template>
   <div>
     <header class="page-header">
-      <h2 class="page-title">Model Pricing</h2>
+      <h2 class="page-title">Model Pricing<DocLink topic="pricing" label="Model pricing" /></h2>
       <p class="page-desc">
         USD per million tokens, used to work out what each agent run costs and to keep it within its budget. Prices are
         built into devpad.
