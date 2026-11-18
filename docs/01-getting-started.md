@@ -31,4 +31,4 @@ The inbox icon in the header (and in the IDE's title bar) counts the agents wait
 
 ## Getting help in the IDE {#help}
 
-The small **?** links throughout devpad open the page of these docs that explains what's beside them. You can also ask the assistant in a project's **AI** panel how devpad works: it reads these same pages.
+The small **?** links throughout devpad open the page of these docs that explains what's beside them, in a new tab so you don't lose your place. You can also ask the assistant in a project's **AI** panel how devpad works: it reads these same pages.
