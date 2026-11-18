@@ -277,9 +277,9 @@ const moreActive = computed(() => !MOBILE_TABS.includes(activeActivity.value))
 const sidebar = useResizable({
   direction: 'horizontal',
   edge: 'left',
-  initialSize: 240,
+  initialSize: 320,
   minSize: 160,
-  maxSize: 480,
+  maxSize: 600,
 })
 
 const terminal = useResizable({
