@@ -6,6 +6,8 @@ export interface SelectMenuOption<V extends string | number = string> {
   value: V
   label: string
   description?: string
+  // Shown but not choosable, with its description saying why.
+  disabled?: boolean
 }
 
 const props = withDefaults(defineProps<{
@@ -79,7 +81,7 @@ function clampPopover() {
 }
 
 function optionButtons(): HTMLButtonElement[] {
-  return Array.from(menuEl.value?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? [])
+  return Array.from(menuEl.value?.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)') ?? [])
 }
 
 function focusOption(index: number) {
@@ -95,7 +97,7 @@ async function openMenu() {
   open.value = true
   await nextTick()
   if (!isMobile.value) clampPopover()
-  const selectedIndex = props.options.findIndex((option) => option.value === props.modelValue)
+  const selectedIndex = optionButtons().findIndex((button) => button.getAttribute('aria-selected') === 'true')
   focusOption(Math.max(0, selectedIndex))
 }
 
@@ -110,7 +112,9 @@ function toggle() {
   else void openMenu()
 }
 
-function select(value: T) {
+function select(option: SelectMenuOption<T>) {
+  if (option.disabled) return
+  const value = option.value
   if (value !== props.modelValue) emit('update:modelValue', value)
   close()
 }
@@ -221,7 +225,8 @@ onUnmounted(() => {
                 class="select-menu-option"
                 :class="{ selected: option.value === modelValue }"
                 :aria-selected="option.value === modelValue"
-                @click="select(option.value)"
+                :disabled="option.disabled"
+                @click="select(option)"
               >
                 <span class="select-menu-option-text">
                   <span class="select-menu-option-label">{{ option.label }}</span>
@@ -270,7 +275,7 @@ onUnmounted(() => {
   padding: 2px 6px 2px 8px;
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--bg-raised) 70%, var(--bg-elevated));
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   color: var(--text-secondary);
   font-size: 0.75rem;
   line-height: 1.3;
@@ -284,7 +289,7 @@ onUnmounted(() => {
 }
 
 .select-menu:disabled {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   cursor: default;
 }
 
@@ -301,7 +306,7 @@ onUnmounted(() => {
 }
 
 .select-menu-label.empty {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .select-menu-chevron {
@@ -325,7 +330,7 @@ onUnmounted(() => {
   gap: var(--space-2);
   min-height: 35px;
   padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
-  background: var(--bg-primary);
+  background: var(--bg-base);
   color: var(--text-primary);
   font-size: 0.85rem;
   text-align: left;
@@ -338,12 +343,12 @@ onUnmounted(() => {
 .is-field .select-menu:focus-visible,
 .is-field .select-menu.open {
   outline: none;
-  border-color: var(--accent-blue);
+  border-color: var(--accent);
   box-shadow: none;
 }
 
 .is-field .select-menu:disabled {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .mono .select-menu-label,
@@ -405,6 +410,15 @@ onUnmounted(() => {
 
 .select-menu-option.selected {
   color: var(--text-primary);
+}
+
+.select-menu-option:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+.select-menu-option:disabled:hover {
+  background: none;
 }
 
 .select-menu-option-text {

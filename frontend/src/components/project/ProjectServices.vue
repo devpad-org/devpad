@@ -5,6 +5,7 @@ import { projectServiceApi } from '@/api/services'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useServiceStore } from '@/stores/services'
 import ServiceLogo from '@/components/ide/ServiceLogo.vue'
+import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
 import { serviceCatalogItem, serviceCatalogOrder, serviceTypeLabel } from '@/components/ide/serviceCatalog'
 
 // The services each new sandbox gets its own copy of, and the project
@@ -43,6 +44,13 @@ const addable = computed(() => {
     .filter((entry) => !have.has(entry.type))
     .sort((a, b) => serviceCatalogOrder(a.type) - serviceCatalogOrder(b.type))
 })
+
+const addOptions = computed<SelectMenuOption[]>(() => addable.value.map((entry) => ({
+  value: entry.type,
+  label: serviceCatalogItem(entry.type).label,
+  description: entry.unavailable ? `Unavailable: ${entry.unavailable}` : undefined,
+  disabled: !!entry.unavailable,
+})))
 
 const selectedEntry = computed(() => addable.value.find((e) => e.type === selected.value) ?? null)
 const canAdd = computed(() => {
@@ -181,12 +189,14 @@ watch(() => [store.projectId, props.workspaceId, props.workspaceStatus], () => v
     </template>
 
     <div v-if="addable.length" class="svc-add">
-      <select v-model="selected" class="form-input svc-select" aria-label="Service to add" :disabled="adding">
-        <option value="" disabled>Add a service…</option>
-        <option v-for="entry in addable" :key="entry.type" :value="entry.type" :disabled="!!entry.unavailable">
-          {{ serviceCatalogItem(entry.type).label }}{{ entry.unavailable ? ' (unavailable)' : '' }}
-        </option>
-      </select>
+      <SelectMenu
+        v-model="selected"
+        :options="addOptions"
+        title="Service to add"
+        placeholder="Add a service…"
+        variant="field"
+        :disabled="adding"
+      />
       <template v-if="selectedEntry">
         <p v-if="serviceCatalogItem(selectedEntry.type).description" class="svc-note">{{ serviceCatalogItem(selectedEntry.type).description }}</p>
         <div v-if="selectedEntry.license" class="svc-license">
@@ -267,10 +277,6 @@ watch(() => [store.projectId, props.workspaceId, props.workspaceStatus], () => v
   flex-direction: column;
   gap: var(--space-1);
   margin-top: var(--space-2);
-}
-
-.svc-select {
-  font-size: 0.75rem;
 }
 
 .svc-license {
