@@ -310,6 +310,9 @@ func (s *service) start(ctx context.Context, ws *Workspace) (*Workspace, error) 
 		if err := s.sidecar.StartAll(ctx, ws.ID, ws.NetworkName); err != nil {
 			log.Printf("workspace %d: sidecar start failed: %v", ws.ID, err)
 		}
+		// Services added while it was stopped, or since its container was
+		// made, are not in the container's environment.
+		s.logSyncServiceEnv(ctx, ws)
 	}
 
 	return ws, nil
@@ -386,6 +389,9 @@ func (s *service) Restart(ctx context.Context, userID, workspaceID int64) (*Work
 	if err := s.ensureAgentUpdated(ctx, ws); err != nil {
 		log.Printf("workspace %d: agent update failed: %v", ws.ID, err)
 	}
+	// An agent that was just updated has none of the services' variables
+	// an older one may have been unable to keep.
+	s.logSyncServiceEnv(ctx, ws)
 
 	s.injectUserSSHKeys(ctx, ws)
 	return ws, nil

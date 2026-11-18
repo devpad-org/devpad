@@ -153,7 +153,7 @@ func New(cfg Config) (*Server, error) {
 	mrHandler := mergerequest.NewHandler(mrService)
 
 	// Which services the run's workspace has and how to reach them.
-	aiModule.AddToolProvider(wsservice.NewPromptProvider(wsServiceService, workspaceService, containerManager))
+	aiModule.AddToolProvider(wsservice.NewPromptProvider(wsServiceService))
 
 	// git push and fetch through the devpad remote in a project's workspace.
 	gitBridge := gitbridge.New(workspaceService, projectService)

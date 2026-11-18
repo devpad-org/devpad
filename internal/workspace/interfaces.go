@@ -152,6 +152,12 @@ type ConversionService interface {
 	RestartConverted(ctx context.Context, userID, workspaceID int64) error
 }
 
+// ServiceEnvSyncer sends a running workspace's agent the variables of the
+// services it has, for the processes it starts from then on.
+type ServiceEnvSyncer interface {
+	SyncServiceEnv(ctx context.Context, userID, workspaceID int64) error
+}
+
 // SidecarBinder injects the sidecar service lifecycle dependency.
 type SidecarBinder interface {
 	SetSidecarService(sidecar SidecarService)
@@ -175,6 +181,7 @@ type Service interface {
 	ProjectWorkspaceService
 	GitBridgeService
 	ConversionService
+	ServiceEnvSyncer
 	SidecarBinder
 }
 

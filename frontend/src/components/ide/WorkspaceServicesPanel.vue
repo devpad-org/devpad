@@ -114,16 +114,21 @@ onUnmounted(() => {
       <p>Select a database from the service catalog to deploy it into this workspace.</p>
     </div>
 
-    <div v-else class="services-grid">
-      <WorkspaceServiceCard
-        v-for="service in store.services"
-        :key="service.id"
-        :service="service"
-        :toggling="togglingId === service.id"
-        @toggle="toggleService"
-        @remove="confirmDelete"
-      />
-    </div>
+    <template v-else>
+      <div class="services-grid">
+        <WorkspaceServiceCard
+          v-for="service in store.services"
+          :key="service.id"
+          :service="service"
+          :toggling="togglingId === service.id"
+          @toggle="toggleService"
+          @remove="confirmDelete"
+        />
+      </div>
+      <p class="services-note">
+        Each service's connection details are in the environment of new terminals and commands, such as <code>POSTGRES_HOST</code>. Terminals opened before a service was added don't have them.
+      </p>
+    </template>
 
     <ConfirmModal
       :show="!!deleteTarget"
@@ -155,7 +160,7 @@ onUnmounted(() => {
   gap: var(--space-3);
   height: 38px;
   padding: 0 var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
   background: var(--ide-header-bg);
   flex-shrink: 0;
 }
@@ -181,7 +186,7 @@ onUnmounted(() => {
   padding: 0 6px;
   border-radius: 999px;
   background: var(--bg-raised);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.68rem;
   line-height: 18px;
   text-align: center;
@@ -205,7 +210,7 @@ onUnmounted(() => {
 
 .services-error {
   padding: var(--space-2) var(--space-6);
-  color: var(--accent-rose);
+  color: var(--error);
   background: var(--error-bg);
   border-bottom: 0.5px solid var(--error-border);
   font-size: 0.78rem;
@@ -220,7 +225,7 @@ onUnmounted(() => {
   justify-content: center;
   gap: var(--space-2);
   padding: var(--space-8);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   text-align: center;
 }
 
@@ -254,8 +259,8 @@ onUnmounted(() => {
 .services-spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid var(--border-default);
-  border-top-color: var(--accent-blue);
+  border: 2px solid var(--border-subtle);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -265,5 +270,18 @@ onUnmounted(() => {
   grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
   gap: var(--space-4);
   padding: var(--space-6);
+}
+
+.services-note {
+  margin: 0;
+  padding: 0 var(--space-6) var(--space-6);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.services-note code {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
 }
 </style>

@@ -169,3 +169,55 @@ func TestRebuildAddsTheProjectsNewServices(t *testing.T) {
 		}
 	}
 }
+
+// A service added while a workspace runs, or while it is stopped, is not in
+// its container's environment, so its agent is told the variables.
+func TestServiceVariablesReachTheAgent(t *testing.T) {
+	svc, ra := setupSandboxService(t)
+	s := svc.(*service)
+	sidecars := &fakeSidecars{}
+	s.SetSidecarService(sidecars)
+	ctx := context.Background()
+
+	ws, err := s.CreateSandbox(ctx, 1, sandboxSpec("feature"))
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	// Made with them in its environment.
+	if got := ra.paths(); slices.Contains(got, "/api/env/services?") {
+		t.Fatalf("create sent the variables, which its environment has: %v", got)
+	}
+	want := fmt.Sprintf(`{"env":["POSTGRES_HOST=devpad-svc-%d-postgres"]}`, ws.ID)
+
+	if err := s.SyncServiceEnv(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if got := ra.bodies["/api/env/services"]; got != want {
+		t.Fatalf("sync sent %q, want %q", got, want)
+	}
+
+	// A stopped workspace is told when it starts.
+	if _, err := s.Stop(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	delete(ra.bodies, "/api/env/services")
+	if err := s.SyncServiceEnv(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("sync while stopped: %v", err)
+	}
+	if _, ok := ra.bodies["/api/env/services"]; ok {
+		t.Fatal("a stopped workspace's agent was sent the variables")
+	}
+	delete(sidecars.provisioned, ws.ID)
+	if _, err := s.StartSandbox(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// Its services were removed while it was stopped.
+	if got := ra.bodies["/api/env/services"]; got != `{"env":[]}` {
+		t.Fatalf("start sent %q, want no variables", got)
+	}
+
+	// Another user's workspace is refused.
+	if err := s.SyncServiceEnv(ctx, 2, ws.ID); err == nil {
+		t.Fatal("synced another user's workspace")
+	}
+}
