@@ -75,20 +75,24 @@ async function copyValue(): Promise<void> {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   flex-shrink: 0;
-  border: 0.5px solid var(--border-subtle);
+  border: 0.5px solid transparent;
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--bg-raised) 82%, transparent);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   opacity: 0;
   transition: opacity var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
 }
 
+/* A copy button its parent always shows, rather than on hover. */
+.service-copy-btn.always {
+  opacity: 1;
+}
+
 .service-copy-btn:hover,
 .service-copy-btn:focus-visible {
-  border-color: var(--border-strong);
+  border-color: var(--border-subtle);
   background: var(--bg-hover);
   color: var(--text-primary);
   opacity: 1;
@@ -97,14 +101,14 @@ async function copyValue(): Promise<void> {
 .service-copy-btn.copied {
   border-color: var(--success-border);
   background: var(--success-bg);
-  color: var(--accent-green);
+  color: var(--success);
   opacity: 1;
 }
 
 .service-copy-btn.failed {
   border-color: var(--error-border);
   background: var(--error-bg);
-  color: var(--accent-rose);
+  color: var(--error);
   opacity: 1;
 }
 
@@ -114,4 +118,3 @@ async function copyValue(): Promise<void> {
   }
 }
 </style>
-
