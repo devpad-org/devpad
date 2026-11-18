@@ -44,6 +44,8 @@ func TestCreateSQLServerRecordsWhoAcceptedTheLicense(t *testing.T) {
 		AcceptedAt: accepted,
 		TermsURL:   "https://go.microsoft.com/fwlink/?LinkId=746388",
 		Image:      "mcr.microsoft.com/mssql/server:2025-latest",
+		// The terms' first version.
+		TermsVersion: 1,
 	}
 	if cfg.LicenseAcceptance == nil || *cfg.LicenseAcceptance != want {
 		t.Fatalf("expected licence acceptance %+v, got %+v", want, cfg.LicenseAcceptance)

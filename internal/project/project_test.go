@@ -211,6 +211,8 @@ func (f *fakeContainers) SidecarHealth(context.Context, string) (container.Sidec
 	return container.SidecarHealth{Running: true, Status: "healthy"}, nil
 }
 
+func (f *fakeContainers) PullImage(context.Context, string) error { return nil }
+
 func (f *fakeContainers) DaemonArch(context.Context) (string, error) {
 	return "amd64", nil
 }
@@ -677,6 +679,13 @@ func (f *fakeWorkspaces) setStatus(id int64, status workspace.Status) {
 	f.byID[id].Status = status
 }
 
+// command returns the command last started in a workspace.
+func (f *fakeWorkspaces) command(id int64) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.commands[id]
+}
+
 func (f *fakeWorkspaces) StartCommand(_ context.Context, _, id int64, command, _ string) (*agent.ManagedCommand, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -948,7 +957,9 @@ func TestCreateSandboxSeedsFromDefaultBranch(t *testing.T) {
 	if got := e.workspaces.seeds[ws.ID]; got != "main <- bundle-of-main" {
 		t.Fatalf("seed = %q", got)
 	}
-	if got := e.workspaces.commands[ws.ID]; got != "npm ci" {
+	// The script starts in the background, once the services are ready.
+	e.awaitSetup(t, p, ws)
+	if got := e.workspaces.command(ws.ID); got != "npm ci" {
 		t.Fatalf("setup command = %q", got)
 	}
 }

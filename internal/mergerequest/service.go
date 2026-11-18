@@ -1048,8 +1048,8 @@ func orDefault(value, fallback string) string {
 	return fallback
 }
 
-// launchReview starts a pending review's sandbox and, once the project's
-// setup script has finished there, its agent run. The sandbox first waits
+// launchReview starts a pending review's sandbox and, once its services are
+// ready and the project's setup script has finished there, its agent run. The sandbox first waits
 // for a build of the project's environment in progress, then for a free
 // sandbox slot. The review is unlocked while any of them runs, so closing
 // or merging the merge request meanwhile is not held up; the run starts
@@ -1063,15 +1063,20 @@ func (s *service) launchReview(ctx context.Context, reviewID int64) {
 	if !ok {
 		return
 	}
+	var notReady error
 	setup, err := s.projects.AwaitSetup(ctx, ws.UserID, ws.ProjectID, ws.ID)
 	if err != nil {
 		if ctx.Err() != nil {
 			// Shutting down: Reconcile settles the review on the next start.
 			return
 		}
-		// Closing the merge request removes the sandbox, which ends the
-		// wait; anything else is no reason to hold the review back.
-		log.Printf("review %d: waiting for setup in sandbox %d: %v", reviewID, ws.ID, err)
+		if errors.Is(err, project.ErrServicesNotReady) {
+			notReady = err
+		} else {
+			// Closing the merge request removes the sandbox, which ends the
+			// wait; anything else is no reason to hold the review back.
+			log.Printf("review %d: waiting for setup in sandbox %d: %v", reviewID, ws.ID, err)
+		}
 	}
 
 	unlock := s.lock("review", reviewID)
@@ -1082,6 +1087,14 @@ func (s *service) launchReview(ctx context.Context, reviewID int64) {
 	}
 	mr, err := s.repo.GetByID(ctx, rv.MergeRequestID)
 	if err != nil || mr == nil {
+		return
+	}
+	if notReady != nil {
+		// Its agent would review against services that are not there.
+		// Continuing the review tries them again.
+		if s.rootCtx.Err() == nil {
+			s.failReview(ctx, mr, rv, fmt.Sprintf("starting review sandbox: %v", notReady))
+		}
 		return
 	}
 	// The prompt describes the image the sandbox has, which can be older than

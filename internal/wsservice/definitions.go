@@ -58,6 +58,11 @@ type License struct {
 	URL  string `json:"url"`
 	// Notes say what accepting the terms means here.
 	Notes []string `json:"notes"`
+	// version numbers the terms, from 1. Raise it whenever what a user
+	// accepts changes, such as a new image under other terms or new terms
+	// behind the URL: copies a project deploys under an older acceptance
+	// are then refused until the user accepts again.
+	version int
 	// acceptEnv is what accepts the terms for the image. It is added to the
 	// container's environment only for a service whose config records a
 	// user accepting them, and never sent to the browser.
@@ -233,6 +238,7 @@ var definitions = map[ServiceType]definition{
 				"SQL Server sends usage data to Microsoft, which free editions cannot turn off.",
 			},
 			acceptEnv: []string{"ACCEPT_EULA=Y"},
+			version:   1,
 		},
 		// Microsoft publishes SQL Server images for x86-64 only, and
 		// supports them under emulation on no other architecture.

@@ -229,18 +229,25 @@ func TestAwaitReadyWaitsForServicesToBeHealthy(t *testing.T) {
 func TestAwaitReadyFailsWhenAServiceIsNotReady(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
-		name   string
-		health containerpkg.SidecarHealth
+		name string
+		// health is what each check reports, the last one from then on.
+		health []containerpkg.SidecarHealth
 		want   string
 	}{
-		{"unhealthy", containerpkg.SidecarHealth{Running: true, Status: "unhealthy"}, "not accepting connections"},
-		{"never ready", containerpkg.SidecarHealth{Running: true, Status: "starting"}, "was not ready after"},
+		{"unhealthy", []containerpkg.SidecarHealth{{Running: true, Status: "unhealthy"}}, "not accepting connections"},
+		{"never ready", []containerpkg.SidecarHealth{{Running: true, Status: "starting"}}, "was not ready after"},
+		// Docker restarting it means it exited, so it is not waited for.
+		{"restarted", []containerpkg.SidecarHealth{
+			{Running: true, Status: "starting"},
+			{Running: false, Status: "starting", RestartCount: 1, ExitCode: 137},
+			{Running: true, Status: "starting", RestartCount: 1},
+		}, "stopped while starting, with exit code 137"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepository{projectServices: []*ProjectService{{ProjectID: 1, ServiceType: ServicePostgres}}}
 			cm := &fakeContainerManager{health: map[string][]containerpkg.SidecarHealth{
-				"devpad-svc-10-postgres-container": {tt.health},
+				"devpad-svc-10-postgres-container": tt.health,
 			}}
 			svc := NewService(repo, cm).(*service)
 			svc.readyPoll = time.Millisecond
@@ -252,6 +259,104 @@ func TestAwaitReadyFailsWhenAServiceIsNotReady(t *testing.T) {
 			err := svc.AwaitReady(ctx, 10)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("expected an error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestAwaitReadyWaitsOnceForAllTheServices(t *testing.T) {
+	ctx := context.Background()
+	repo := &fakeRepository{projectServices: []*ProjectService{
+		{ProjectID: 1, ServiceType: ServicePostgres},
+		{ProjectID: 1, ServiceType: ServiceMariaDB},
+	}}
+	// Postgres gets ready late, and MariaDB never does.
+	slow := make([]containerpkg.SidecarHealth, 20)
+	for i := range slow {
+		slow[i] = containerpkg.SidecarHealth{Running: true, Status: "starting"}
+	}
+	cm := &fakeContainerManager{health: map[string][]containerpkg.SidecarHealth{
+		"devpad-svc-10-postgres-container": append(slow, containerpkg.SidecarHealth{Running: true, Status: "healthy"}),
+		"devpad-svc-10-mariadb-container":  {{Running: true, Status: "starting"}},
+	}}
+	svc := NewService(repo, cm).(*service)
+	svc.readyPoll = 10 * time.Millisecond
+	svc.readyTimeout = 300 * time.Millisecond
+	if err := svc.Provision(ctx, 10, 1, "devpad-net-10", true); err != nil {
+		t.Fatalf("provisioning: %v", err)
+	}
+
+	began := time.Now()
+	err := svc.AwaitReady(ctx, 10)
+	if err == nil || !strings.Contains(err.Error(), "mariadb service was not ready") {
+		t.Fatalf("expected MariaDB not ready, got %v", err)
+	}
+	// MariaDB is not given a deadline of its own after Postgres's wait,
+	// which would make it at least 500ms.
+	if took := time.Since(began); took > 450*time.Millisecond {
+		t.Fatalf("expected one deadline for both, took %s", took)
+	}
+}
+
+func TestPullImagesPullsWhatTheHostCanRun(t *testing.T) {
+	ctx := context.Background()
+	repo := &fakeRepository{projectServices: []*ProjectService{
+		{ProjectID: 1, ServiceType: ServicePostgres},
+		{ProjectID: 1, ServiceType: ServiceSQLServer},
+	}}
+	cm := &fakeContainerManager{arch: "arm64"}
+	svc := NewService(repo, cm)
+
+	if err := svc.PullImages(ctx, 1); err != nil {
+		t.Fatalf("pulling: %v", err)
+	}
+	// SQL Server runs on amd64 only; Provision says so when it is needed.
+	if want := []string{definitions[ServicePostgres].defaults.Image}; !slices.Equal(cm.pulled, want) {
+		t.Fatalf("expected %v pulled, got %v", want, cm.pulled)
+	}
+
+	cm.pullErr = errors.New("registry unreachable")
+	if err := svc.PullImages(ctx, 1); err == nil || !strings.Contains(err.Error(), "postgres service: registry unreachable") {
+		t.Fatalf("expected the pull's failure, got %v", err)
+	}
+}
+
+func TestProvisionRefusesAnOutdatedLicenceAcceptance(t *testing.T) {
+	ctx := context.Background()
+	license := definitions[ServiceSQLServer].license
+	tests := []struct {
+		name string
+		// current is the terms' version now; accepted the version accepted,
+		// 0 for an acceptance from before terms had versions.
+		current, accepted int
+		wantErr           error
+	}{
+		{"current", 1, 1, nil},
+		{"from before versions", 1, 0, nil},
+		{"changed since", 2, 1, ErrLicenseOutdated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			was := license.version
+			license.version = tt.current
+			t.Cleanup(func() { license.version = was })
+
+			acceptance := &LicenseAcceptance{UserID: 7, TermsURL: license.URL, Image: "mssql:1", TermsVersion: tt.accepted}
+			repo := &fakeRepository{projectServices: []*ProjectService{{ProjectID: 1, ServiceType: ServiceSQLServer, LicenseAcceptance: acceptance}}}
+			cm := &fakeContainerManager{arch: "amd64"}
+			svc := NewService(repo, cm)
+
+			err := svc.Provision(ctx, 10, 1, "devpad-net-10", true)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected %v, got %v", tt.wantErr, err)
+			}
+			if tt.wantErr != nil {
+				if !strings.Contains(err.Error(), "add it again") {
+					t.Fatalf("expected the error to say how to accept the new terms, got %v", err)
+				}
+				if cm.sidecarCreates != 0 {
+					t.Fatalf("expected no container under the old terms, got %d", cm.sidecarCreates)
+				}
 			}
 		})
 	}

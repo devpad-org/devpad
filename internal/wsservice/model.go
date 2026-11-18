@@ -45,6 +45,18 @@ type LicenseAcceptance struct {
 	// it: the terms URL is a redirect whose target can change, so it alone
 	// does not say what was deployed.
 	Image string `json:"image"`
+	// TermsVersion is the version of the terms accepted (License.version).
+	// Acceptances recorded before terms had versions have none, and were
+	// of the first.
+	TermsVersion int `json:"termsVersion,omitempty"`
+}
+
+// termsVersion is the version of the terms the acceptance is of.
+func (a *LicenseAcceptance) termsVersion() int {
+	if a.TermsVersion == 0 {
+		return 1
+	}
+	return a.TermsVersion
 }
 
 // WorkspaceService represents a sidecar service attached to a workspace.

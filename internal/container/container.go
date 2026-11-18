@@ -86,6 +86,8 @@ type Manager interface {
 	// RemoveImage removes a tag, and the image once nothing else names it.
 	// Docker refuses while a container uses the image.
 	RemoveImage(ctx context.Context, ref string) error
+	// PullImage pulls an image unless it is already local.
+	PullImage(ctx context.Context, ref string) error
 	CreateSidecar(ctx context.Context, spec SidecarSpec) (containerID string, err error)
 	// RemoveSidecar removes a sidecar container and the anonymous volumes
 	// its image declared. A sidecar's data is in its named volume, so an
@@ -105,6 +107,10 @@ type SidecarHealth struct {
 	// Status is Docker's health status: "starting", "healthy" or
 	// "unhealthy", or "none" for a container without a health check.
 	Status string
+	// RestartCount is how many times Docker has restarted the container
+	// after it exited, and ExitCode how its last run ended.
+	RestartCount int
+	ExitCode     int
 }
 
 // SidecarSpec describes a sidecar service container.
@@ -124,11 +130,14 @@ type SidecarSpec struct {
 	Healthcheck []string
 }
 
-// Sidecar health checks run every second while the service starts, where
-// failures do not count, then rarely: they are for knowing when a new
-// service is ready, not for watching it.
+// SidecarHealthStartPeriod is how long a sidecar has to pass its first
+// health check. Checks run every second meanwhile, where failures do not
+// count, then rarely: they are for knowing when a new service is ready,
+// not for watching it. Whoever waits for a new sidecar to be ready should
+// wait this long, since a check passing later is seen only a minute on.
+const SidecarHealthStartPeriod = 4 * time.Minute
+
 const (
-	sidecarHealthStartPeriod   = 3 * time.Minute
 	sidecarHealthStartInterval = time.Second
 	sidecarHealthInterval      = time.Minute
 	sidecarHealthTimeout       = 10 * time.Second
@@ -584,6 +593,10 @@ func (m *manager) BuildImage(ctx context.Context, dockerfileContent []byte, agen
 	return nil
 }
 
+func (m *manager) PullImage(ctx context.Context, ref string) error {
+	return m.pullImageIfNeeded(ctx, ref)
+}
+
 func (m *manager) pullImageIfNeeded(ctx context.Context, imageName string) error {
 	_, err := m.cli.ImageInspect(ctx, imageName)
 	if err == nil {
@@ -638,7 +651,7 @@ func (m *manager) CreateSidecar(ctx context.Context, spec SidecarSpec) (string, 
 			Test:          spec.Healthcheck,
 			Interval:      sidecarHealthInterval,
 			Timeout:       sidecarHealthTimeout,
-			StartPeriod:   sidecarHealthStartPeriod,
+			StartPeriod:   SidecarHealthStartPeriod,
 			StartInterval: sidecarHealthStartInterval,
 			Retries:       sidecarHealthRetries,
 		}
@@ -674,8 +687,10 @@ func (m *manager) SidecarHealth(ctx context.Context, containerID string) (Sideca
 		return SidecarHealth{}, fmt.Errorf("inspecting sidecar: %w", err)
 	}
 	h := SidecarHealth{Status: string(container.NoHealthcheck)}
+	h.RestartCount = res.Container.RestartCount
 	if st := res.Container.State; st != nil {
 		h.Running = st.Running
+		h.ExitCode = st.ExitCode
 		if st.Health != nil {
 			h.Status = string(st.Health.Status)
 		}

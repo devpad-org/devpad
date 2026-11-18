@@ -26,6 +26,10 @@ var (
 	// ErrUnsupportedArch is returned when the Docker daemon's architecture
 	// cannot run a service's image.
 	ErrUnsupportedArch = errors.New("the service's image does not support this Docker host's architecture")
+	// ErrLicenseOutdated is returned when a project's service would get a
+	// copy under licence terms that have changed since the user accepted
+	// them.
+	ErrLicenseOutdated = errors.New("the service's licence terms have changed since they were accepted")
 )
 
 // CreateOptions carries who is creating a service and what they agreed to.
@@ -77,18 +81,25 @@ type Service interface {
 	// AwaitReady waits until each running service of a workspace passes its
 	// health check.
 	AwaitReady(ctx context.Context, workspaceID int64) error
+	// PullImages pulls the images of a project's services that are not
+	// local yet, so that giving a workspace its copies does not wait for
+	// them.
+	PullImages(ctx context.Context, projectID int64) error
 	// AdoptWorkspaceServices adds the services a workspace has to its
 	// project's list, for a workspace that became a project's workspace.
 	AdoptWorkspaceServices(ctx context.Context, workspaceID, projectID int64) error
 }
 
-// Provision waits up to readyTimeout for each new service to be ready,
-// checking every readyPoll. The longest wait is for SQL Server's first
-// start.
+// AwaitReady waits up to readyTimeout for a workspace's services to be
+// ready, checking every readyPoll. That is as long as Docker checks a new
+// sidecar often; the longest wait is for SQL Server's first start.
 const (
-	defaultReadyTimeout = 4 * time.Minute
+	defaultReadyTimeout = container.SidecarHealthStartPeriod
 	defaultReadyPoll    = time.Second
 )
+
+// errReadyTimeout is why AwaitReady gave up waiting.
+var errReadyTimeout = errors.New("services not ready in time")
 
 type service struct {
 	repo      Repository
@@ -141,22 +152,30 @@ func (s *service) checkDeployable(ctx context.Context, serviceType ServiceType, 
 		return nil, ErrLicenseNotAccepted
 	}
 	return &LicenseAcceptance{
-		UserID:     opts.UserID,
-		AcceptedAt: s.now().UTC(),
-		TermsURL:   def.license.URL,
-		Image:      def.defaults.Image,
+		UserID:       opts.UserID,
+		AcceptedAt:   s.now().UTC(),
+		TermsURL:     def.license.URL,
+		Image:        def.defaults.Image,
+		TermsVersion: def.license.version,
 	}, nil
 }
 
 // create adds a stopped service of serviceType to a workspace, with a new
 // password and volume, deployed under acceptance when it has licence terms.
+// An acceptance of terms older than the service's current ones, kept by a
+// project, is refused.
 func (s *service) create(ctx context.Context, workspaceID int64, serviceType ServiceType, acceptance *LicenseAcceptance) (*WorkspaceService, error) {
 	def, ok := lookupDefinition(serviceType)
 	if !ok {
 		return nil, ErrInvalidType
 	}
-	if def.license != nil && acceptance == nil {
-		return nil, ErrLicenseNotAccepted
+	if def.license != nil {
+		if acceptance == nil {
+			return nil, ErrLicenseNotAccepted
+		}
+		if acceptance.termsVersion() != def.license.version {
+			return nil, ErrLicenseOutdated
+		}
 	}
 
 	// Check for duplicate service type on this workspace.
@@ -526,6 +545,10 @@ func (s *service) Provision(ctx context.Context, workspaceID, projectID int64, n
 			return fmt.Errorf("the project's %s service: %w", ps.ServiceType, err)
 		}
 		svc, err := s.create(ctx, workspaceID, ps.ServiceType, ps.LicenseAcceptance)
+		if errors.Is(err, ErrLicenseOutdated) {
+			// Adding the service again is how the user accepts the new terms.
+			return fmt.Errorf("adding the project's %s service: %w; remove it from the project's services and add it again to accept the new terms", ps.ServiceType, err)
+		}
 		if err != nil {
 			return fmt.Errorf("adding the project's %s service: %w", ps.ServiceType, err)
 		}
@@ -546,8 +569,10 @@ func (s *service) AwaitReady(ctx context.Context, workspaceID int64) error {
 	if err != nil {
 		return fmt.Errorf("listing services: %w", err)
 	}
-	// They were all started already, so they get ready side by side and
-	// this waits about as long as the slowest.
+	// One deadline for them all: they were started together, so they get
+	// ready side by side and this waits about as long as the slowest.
+	ctx, cancel := context.WithTimeoutCause(ctx, s.readyTimeout, errReadyTimeout)
+	defer cancel()
 	for _, svc := range services {
 		if svc.Status != StatusRunning || svc.ContainerID == "" {
 			continue
@@ -560,35 +585,64 @@ func (s *service) AwaitReady(ctx context.Context, workspaceID int64) error {
 }
 
 // awaitReady waits until a started service's health check passes. A
-// service whose container has no health check is ready once it runs.
+// service whose container has no health check is ready once it runs. One
+// that Docker restarts meanwhile exited, which a service that starts well
+// never does, so it is not waited for.
 func (s *service) awaitReady(ctx context.Context, svc *WorkspaceService) error {
-	ctx, cancel := context.WithTimeout(ctx, s.readyTimeout)
-	defer cancel()
 	ticker := time.NewTicker(s.readyPoll)
 	defer ticker.Stop()
+	restarts := -1
 	for {
 		h, err := s.container.SidecarHealth(ctx, svc.ContainerID)
-		if err != nil {
+		switch {
+		case err != nil:
 			if ctx.Err() == nil {
 				return fmt.Errorf("checking the %s service: %w", svc.ServiceType, err)
 			}
-		} else if h.Running {
-			switch h.Status {
-			case "healthy", "none":
-				return nil
-			case "unhealthy":
-				return fmt.Errorf("the %s service started but is not accepting connections", svc.ServiceType)
+		case restarts >= 0 && h.RestartCount > restarts:
+			return fmt.Errorf("the %s service stopped while starting, with exit code %d", svc.ServiceType, h.ExitCode)
+		default:
+			restarts = h.RestartCount
+			if h.Running {
+				switch h.Status {
+				case "healthy", "none":
+					return nil
+				case "unhealthy":
+					return fmt.Errorf("the %s service started but is not accepting connections", svc.ServiceType)
+				}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if errors.Is(context.Cause(ctx), errReadyTimeout) {
 				return fmt.Errorf("the %s service was not ready after %s", svc.ServiceType, s.readyTimeout)
 			}
 			return ctx.Err()
 		case <-ticker.C:
 		}
 	}
+}
+
+func (s *service) PullImages(ctx context.Context, projectID int64) error {
+	services, err := s.repo.ListProjectServices(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, ps := range services {
+		def, ok := lookupDefinition(ps.ServiceType)
+		if !ok {
+			continue
+		}
+		// Provision refuses one this host cannot run, and says why.
+		if s.checkArch(ctx, ps.ServiceType, def) != nil {
+			continue
+		}
+		if err := s.container.PullImage(ctx, def.defaults.Image); err != nil {
+			errs = append(errs, fmt.Errorf("the %s service: %w", ps.ServiceType, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (s *service) AdoptWorkspaceServices(ctx context.Context, workspaceID, projectID int64) error {

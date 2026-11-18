@@ -358,11 +358,8 @@ func (s *service) finishAttached(ctx context.Context, p *Project, conv *Conversi
 	if ready {
 		// Before it is done, so a conversion resumed after a failure here
 		// adopts them then.
-		s.mu.Lock()
-		adopter := s.adopter
-		s.mu.Unlock()
-		if adopter != nil {
-			if err := adopter.AdoptWorkspaceServices(ctx, conv.WorkspaceID, p.ID); err != nil {
+		if sidecars := s.sidecarServices(); sidecars != nil {
+			if err := sidecars.AdoptWorkspaceServices(ctx, conv.WorkspaceID, p.ID); err != nil {
 				log.Printf("project %d: adopting workspace %d's services: %v", p.ID, conv.WorkspaceID, err)
 			}
 		}

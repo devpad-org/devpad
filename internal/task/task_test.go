@@ -140,6 +140,8 @@ type fakeSandboxes struct {
 	setup     *project.Setup
 	setupGate chan struct{}
 	awaited   []int64
+	// setupErr, when set, is what AwaitSetup fails with.
+	setupErr error
 	// environment is what AwaitEnvironment reports; while environmentGate
 	// is open it waits.
 	environment     *project.Environment
@@ -275,6 +277,9 @@ func (f *fakeSandboxes) AwaitSetup(ctx context.Context, _, _, workspaceID int64)
 	defer f.mu.Unlock()
 	if f.lookup(workspaceID) == nil {
 		return nil, project.ErrNotFound
+	}
+	if f.setupErr != nil {
+		return nil, f.setupErr
 	}
 	return f.setup, nil
 }
@@ -1853,6 +1858,23 @@ func TestRunStartsOnceSetupFinishesAndIsToldHowItWent(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestTaskFailsWhenItsServicesAreNotReady(t *testing.T) {
+	e := setup(t)
+	e.sandboxes.set(func(f *fakeSandboxes) {
+		f.setupErr = fmt.Errorf("%w: the postgres service was not ready after 4m0s", project.ErrServicesNotReady)
+	})
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+
+	failed := e.waitTask(t, task.ID, status(StatusFailed))
+	if !strings.Contains(failed.Error, "the postgres service was not ready") {
+		t.Fatalf("expected the failure to say which service, got %q", failed.Error)
+	}
+	if len(e.runs.startedRequests()) != 0 {
+		t.Fatal("the agent started without its services")
 	}
 }
 

@@ -79,8 +79,11 @@ type Service interface {
 	// or nil; RunWorkspaceSetup runs the setup script there again.
 	WorkspaceSetup(ctx context.Context, userID, projectID int64) (*Setup, error)
 	RunWorkspaceSetup(ctx context.Context, userID, projectID int64) (*Setup, error)
-	// AwaitSetup waits for the setup run in a sandbox to finish and returns
-	// it, or nil when none runs there.
+	// AwaitSetup readies a sandbox for its agent: it waits for the
+	// sandbox's services to be ready, starts its setup script if that has
+	// yet to run, and waits for the run to finish. It returns the run, or
+	// nil when none runs there, and an error wrapping ErrServicesNotReady
+	// when a service is not ready.
 	AwaitSetup(ctx context.Context, userID, projectID, workspaceID int64) (*Setup, error)
 	// ProjectEnvironment returns how the project's environment stands, or
 	// nil when it has none; BuildEnvironment builds it again.
@@ -114,16 +117,23 @@ type Service interface {
 	SetUpstreamHook(h UpstreamHook)
 	// AddBranchGuard adds one of those asked before a branch is deleted.
 	AddBranchGuard(g BranchGuard)
-	// SetServiceAdopter registers who makes a converted workspace's
-	// services the project's.
-	SetServiceAdopter(a ServiceAdopter)
+	// SetSidecarServices registers the services of the project's
+	// workspaces, which a sandbox waits for before its setup script.
+	SetSidecarServices(svc SidecarServices)
 }
 
-// ServiceAdopter makes the services a workspace has its project's, so that
-// a workspace converted into a project's workspace gives the project's
-// sandboxes the services it already uses. It is idempotent.
-type ServiceAdopter interface {
+// SidecarServices is what a project needs of its workspaces' services.
+type SidecarServices interface {
+	// AdoptWorkspaceServices makes the services a workspace has its
+	// project's, so that a workspace converted into a project's workspace
+	// gives the project's sandboxes the services it already uses. It is
+	// idempotent.
 	AdoptWorkspaceServices(ctx context.Context, workspaceID, projectID int64) error
+	// PullImages pulls the images of the project's services that are not
+	// local yet.
+	PullImages(ctx context.Context, projectID int64) error
+	// AwaitReady waits until each running service of a workspace is ready.
+	AwaitReady(ctx context.Context, workspaceID int64) error
 }
 
 // PublishHook is told each time a branch is published from the project
@@ -211,7 +221,10 @@ type service struct {
 	publishHook  PublishHook
 	upstreamHook UpstreamHook
 	branchGuards []BranchGuard
-	adopter      ServiceAdopter
+	sidecars     SidecarServices
+	// preparations holds the sandboxes being readied for their agent:
+	// waiting for their services, then starting their setup script.
+	preparations map[int64]*preparation
 	// branchLocks serialize changes to each project's branches, which may
 	// move its canonical repo's HEAD, and syncs from the upstream.
 	branchLocks map[int64]*sync.Mutex
@@ -247,6 +260,7 @@ func NewService(repo Repository, cm container.Manager, workspaces Workspaces, us
 		branchLocks:    make(map[int64]*sync.Mutex),
 		upstreamSyncs:  make(map[int64]*upstreamSync),
 		setupWatches:   make(map[setupWatch]chan struct{}),
+		preparations:   make(map[int64]*preparation),
 		builds:         make(map[int64]*environmentBuild),
 	}
 }
@@ -263,10 +277,17 @@ func (s *service) SetUpstreamHook(h UpstreamHook) {
 	s.upstreamHook = h
 }
 
-func (s *service) SetServiceAdopter(a ServiceAdopter) {
+func (s *service) SetSidecarServices(svc SidecarServices) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.adopter = a
+	s.sidecars = svc
+}
+
+// sidecarServices returns the registered SidecarServices, or nil.
+func (s *service) sidecarServices() SidecarServices {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sidecars
 }
 
 func (s *service) AddBranchGuard(g BranchGuard) {
@@ -751,7 +772,8 @@ func (s *service) ListSandboxes(ctx context.Context, userID, projectID int64) ([
 // CreateSandbox starts a sandbox that owns one branch of the project, never
 // a protected one. A branch that already exists in the canonical repo is
 // resumed; otherwise it starts from the default branch. The setup script,
-// if any, starts once the repo is seeded; AwaitSetup waits for it to finish.
+// if any, starts once the repo is seeded and the sandbox's services are
+// ready; AwaitSetup waits for both.
 func (s *service) CreateSandbox(ctx context.Context, userID, projectID int64, in SandboxInput) (*workspace.Workspace, error) {
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
@@ -833,9 +855,13 @@ func (s *service) CreateSandbox(ctx context.Context, userID, projectID int64, in
 		return nil, fmt.Errorf("seeding sandbox: %w", err)
 	}
 
-	if _, err := s.startSetup(ctx, p, ws); err != nil {
-		log.Printf("project %d: starting setup script in sandbox %d: %v", p.ID, ws.ID, err)
+	// The setup script waits for the sandbox's services, which can take
+	// minutes, so it starts in the background rather than under the locks
+	// the caller may hold while the sandbox is made.
+	if err := s.queueSetup(ctx, p, ws); err != nil {
+		log.Printf("project %d: queueing the setup script in sandbox %d: %v", p.ID, ws.ID, err)
 	}
+	s.prepare(userID, ws.ID)
 	return ws, nil
 }
 

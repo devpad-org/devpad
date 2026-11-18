@@ -50,6 +50,8 @@ type fakeProjects struct {
 	setup     *project.Setup
 	setupGate chan struct{}
 	awaited   []int64
+	// setupErr, when set, is what AwaitSetup fails with.
+	setupErr error
 	// environment is what AwaitEnvironment reports.
 	environment *project.Environment
 	// sandboxErr, when set, is what CreateSandbox fails with.
@@ -88,6 +90,9 @@ func (f *fakeProjects) AwaitSetup(ctx context.Context, _, _, workspaceID int64) 
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.setupErr != nil {
+		return nil, f.setupErr
+	}
 	return f.setup, nil
 }
 
@@ -1390,6 +1395,28 @@ func TestAgentReviewStartsOnceSetupFinishes(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestAgentReviewFailsWhenItsServicesAreNotReady(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	e.projects.mu.Lock()
+	e.projects.setupErr = fmt.Errorf("%w: the postgres service was not ready after 4m0s", project.ErrServicesNotReady)
+	e.projects.mu.Unlock()
+
+	rv, err := e.svc.StartAgentReview(ctx, e.owner, e.pid(), mr.ID, AgentReviewInput{})
+	if err != nil {
+		t.Fatalf("start agent review: %v", err)
+	}
+	waitFor(t, "the review to fail", func() bool {
+		got, _ := e.svc.repo.GetReview(ctx, rv.ID)
+		return got.Status == ReviewFailed
+	})
+	got, _ := e.svc.repo.GetReview(ctx, rv.ID)
+	if !strings.Contains(got.Error, "the postgres service was not ready") || len(e.runs.started()) != 0 {
+		t.Fatalf("expected the review failed before its run, got %+v", got)
 	}
 }
 

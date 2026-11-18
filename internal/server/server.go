@@ -119,7 +119,7 @@ func New(cfg Config) (*Server, error) {
 	projectRepo := project.NewRepository(db.Conn())
 	projectService := project.NewService(projectRepo, containerManager, workspaceService, userRepo, cipher, settingsService)
 	projectHandler := project.NewHandler(projectService)
-	projectService.SetServiceAdopter(wsServiceService)
+	projectService.SetSidecarServices(wsServiceService)
 	projectServicesHandler := wsservice.NewProjectHandler(wsServiceService, projectService)
 
 	// AI layer

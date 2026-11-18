@@ -239,3 +239,13 @@ func TestServiceCatalogMatchesFrontend(t *testing.T) {
 		t.Errorf("wsservice defines %v, but the frontend's serviceCatalog lists %v", SupportedTypes(), frontend)
 	}
 }
+
+// A licence's version starts at 1, which acceptances recorded before terms
+// had versions count as.
+func TestLicencesHaveAVersion(t *testing.T) {
+	for serviceType, def := range definitions {
+		if def.license != nil && def.license.version < 1 {
+			t.Errorf("%s: licence version %d, want 1 or more", serviceType, def.license.version)
+		}
+	}
+}

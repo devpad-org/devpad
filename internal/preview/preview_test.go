@@ -80,6 +80,8 @@ func (m *mockContainerManager) SidecarHealth(context.Context, string) (container
 	return container.SidecarHealth{Running: true, Status: "healthy"}, nil
 }
 
+func (m *mockContainerManager) PullImage(context.Context, string) error { return nil }
+
 func (m *mockContainerManager) DaemonArch(context.Context) (string, error) {
 	return "amd64", nil
 }

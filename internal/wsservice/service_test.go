@@ -170,6 +170,14 @@ type fakeContainerManager struct {
 	// one is running and healthy. healthChecks counts the reads.
 	health       map[string][]containerpkg.SidecarHealth
 	healthChecks int
+	// pulled are the images pulled, in order; pullErr fails each pull.
+	pulled  []string
+	pullErr error
+}
+
+func (m *fakeContainerManager) PullImage(_ context.Context, ref string) error {
+	m.pulled = append(m.pulled, ref)
+	return m.pullErr
 }
 
 func (m *fakeContainerManager) SidecarHealth(_ context.Context, id string) (containerpkg.SidecarHealth, error) {

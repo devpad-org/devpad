@@ -100,7 +100,7 @@ func TestSandboxWithoutSetupScriptHasNoSetup(t *testing.T) {
 	if st := e.awaitSetup(t, p, ws); st != nil {
 		t.Fatalf("expected no setup, got %+v", st)
 	}
-	if _, ok := e.workspaces.commands[ws.ID]; ok {
+	if e.workspaces.command(ws.ID) != "" {
 		t.Fatal("a blank setup script was run")
 	}
 	if SetupPrompt(nil) != "" {
@@ -149,6 +149,9 @@ func TestSandboxSetupFailures(t *testing.T) {
 				t.Fatalf("create sandbox: %v", err)
 			}
 			if tt.stop {
+				// Once the script has started: a sandbox stopped before is
+				// left pending, for when it starts again.
+				waitForSetup(t, e, ws.ID, SetupRunning)
 				e.workspaces.setStatus(ws.ID, workspace.StatusStopped)
 			}
 			if len(replies) > 0 {
