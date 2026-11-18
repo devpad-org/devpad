@@ -79,12 +79,11 @@ const runListItems = computed<RunListItem[]>(() => {
     return latest
   }
 
-  const compareRuns = (a: AgentRun, b: AgentRun) =>
-    runActivityTime(b) - runActivityTime(a) || b.id - a.id
-
-  roots.sort(compareRuns)
+  // The most recently active conversation comes first, but within one its
+  // follow-ups and sub-agents read top to bottom in the order they started.
+  roots.sort((a, b) => runActivityTime(b) - runActivityTime(a) || b.id - a.id)
   for (const siblings of children.values()) {
-    siblings.sort(compareRuns)
+    siblings.sort((a, b) => runStartTime(a) - runStartTime(b) || a.id - b.id)
   }
 
   const usageTotals = (run: AgentRun): UsageTotals => {
@@ -279,6 +278,11 @@ function runTime(updatedAt: string, createdAt: string): number {
   const updated = new Date(updatedAt).getTime()
   if (Number.isFinite(updated)) return updated
   const created = new Date(createdAt).getTime()
+  return Number.isFinite(created) ? created : 0
+}
+
+function runStartTime(run: AgentRun): number {
+  const created = new Date(run.createdAt).getTime()
   return Number.isFinite(created) ? created : 0
 }
 
