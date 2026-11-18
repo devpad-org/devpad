@@ -211,8 +211,8 @@ func (r *repository) ListPendingReviews(ctx context.Context) ([]*Review, error) 
 func (r *repository) UpdateReview(ctx context.Context, rv *Review) error {
 	now := time.Now()
 	if _, err := r.db.ExecContext(ctx,
-		`UPDATE merge_request_reviews SET status = ?, verdict = ?, body = ?, target_sha = ?, workspace_id = ?, conversation_id = ?, run_id = ?, budget_usd = ?, error = ?, updated_at = ? WHERE id = ?`,
-		rv.Status, rv.Verdict, rv.Body, rv.TargetSHA, nullableID(rv.WorkspaceID), nullableID(rv.ConversationID), nullableID(rv.RunID), rv.BudgetUSD, rv.Error, now, rv.ID,
+		`UPDATE merge_request_reviews SET status = ?, verdict = ?, body = ?, target_sha = ?, workspace_id = ?, conversation_id = ?, run_id = ?, model = ?, effort = ?, budget_usd = ?, error = ?, updated_at = ? WHERE id = ?`,
+		rv.Status, rv.Verdict, rv.Body, rv.TargetSHA, nullableID(rv.WorkspaceID), nullableID(rv.ConversationID), nullableID(rv.RunID), rv.Model, rv.Effort, rv.BudgetUSD, rv.Error, now, rv.ID,
 	); err != nil {
 		return fmt.Errorf("updating review: %w", err)
 	}

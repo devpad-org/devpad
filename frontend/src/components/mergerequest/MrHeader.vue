@@ -10,14 +10,14 @@ import { useMergeRequest } from './useMergeRequest'
 // the actions that move it along: review again, send back to the task's agent.
 const emit = defineEmits<{ close: [] }>()
 
-const { mr, isOpen, busy, statusIcon, pendingAgentReview, latestAgentReview, canSendBack, taskWorking, rereview } = useMergeRequest()
+const { mr, isOpen, busy, statusIcon, pendingAgentReview, latestAgentReview, rereviewModel, canSendBack, taskWorking, rereview } = useMergeRequest()
 
 // The task's agent is about to change the branch, so a review now would be
 // of a commit on its way out.
 const rereviewHint = computed(() => {
   if (pendingAgentReview.value) return 'A review agent is reviewing it'
   if (taskWorking.value) return "Wait for the task's agent to finish its changes"
-  return `Review the latest commit again with ${latestAgentReview.value?.model}`
+  return rereviewModel.value ? `Review the latest commit again with ${rereviewModel.value}` : 'Review the latest commit again'
 })
 </script>
 

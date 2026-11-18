@@ -130,6 +130,12 @@ type AgentDefaults interface {
 	DefaultsFor(ctx context.Context, userID int64, agentID, effort string) (*domain.AgentDefaults, error)
 }
 
+// Models looks up the models devpad offers, which a model saved on an earlier
+// review may since have left.
+type Models interface {
+	FindModel(modelID string) (domain.Model, error)
+}
+
 // Budgets looks up the limits a user set on what their agents may spend.
 type Budgets interface {
 	BudgetDefaults(ctx context.Context, userID int64) (domain.BudgetDefaults, error)
@@ -152,6 +158,7 @@ type service struct {
 	conversations Conversations
 	defaults      AgentDefaults
 	budgets       Budgets
+	models        Models
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
@@ -169,7 +176,7 @@ type service struct {
 
 // NewService creates a merge request Service. Background work stops on
 // Shutdown.
-func NewService(repo Repository, projects Projects, workspaces Workspaces, tasks Tasks, runs Runs, conversations Conversations, defaults AgentDefaults, budgets Budgets) Service {
+func NewService(repo Repository, projects Projects, workspaces Workspaces, tasks Tasks, runs Runs, conversations Conversations, defaults AgentDefaults, budgets Budgets, models Models) Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &service{
 		repo:          repo,
@@ -180,6 +187,7 @@ func NewService(repo Repository, projects Projects, workspaces Workspaces, tasks
 		conversations: conversations,
 		defaults:      defaults,
 		budgets:       budgets,
+		models:        models,
 		rootCtx:       ctx,
 		rootCancel:    cancel,
 		locks:         make(map[string]*sync.Mutex),
@@ -860,13 +868,17 @@ func (s *service) ContinueReview(ctx context.Context, userID, projectID, mrID, r
 	if last.HeadSHA != mr.HeadSHA {
 		return nil, fmt.Errorf("%w: the change has moved on since this review; start a new one", ErrInvalidState)
 	}
+	model, effort, err := s.continuedReviewModel(ctx, userID, projectID, mr, last)
+	if err != nil {
+		return nil, err
+	}
 	// A review that never ran has nothing to pick up, so it starts again as
 	// a new review of the same round, with the budget it was given.
 	if last.RunID == 0 && last.ConversationID == 0 {
 		if err := s.checkTaskBudget(ctx, userID, projectID, mr, in.TaskBudgetUSD); err != nil {
 			return nil, err
 		}
-		again := AgentReviewInput{AgentID: last.AgentID, Model: last.Model, Effort: last.Effort, AutoFix: last.AutoFix}
+		again := AgentReviewInput{AgentID: last.AgentID, Model: model, Effort: effort, AutoFix: last.AutoFix}
 		return s.startAgentReviewLocked(ctx, userID, projectID, mrID, again, last.Round, in.BudgetUSD)
 	}
 
@@ -899,6 +911,7 @@ func (s *service) ContinueReview(ctx context.Context, userID, projectID, mrID, r
 	// told why it stopped; the run before is left behind, so its end is
 	// never taken for the new run's.
 	rv.Status, rv.RunID = ReviewPending, 0
+	rv.Model, rv.Effort = model, effort
 	if err := s.repo.UpdateReview(ctx, rv); err != nil {
 		return nil, err
 	}
@@ -964,36 +977,21 @@ func (s *service) startAgentReviewLocked(ctx context.Context, userID, projectID,
 			return nil, fmt.Errorf("%w: a review agent is already reviewing it", ErrInvalidState)
 		}
 	}
-	// Reviews run the built-in review agent unless another is picked, and
-	// the model the user set for their agent, else the task's model.
+	// Reviews run the built-in review agent unless another is picked.
 	if in.AgentID == "" {
 		in.AgentID = domain.ReviewAgentID
 	}
-	if in.Model == "" {
-		d, err := s.defaults.DefaultsFor(ctx, mr.UserID, in.AgentID, in.Effort)
-		if err != nil {
-			return nil, fmt.Errorf("looking up the review agent's default model: %w", err)
-		}
-		if d != nil {
-			in.Model, in.Effort = d.Model, d.Effort
-		}
-	}
-	var t *task.Task
-	if mr.TaskID != 0 {
-		if t, err = s.tasks.Get(ctx, userID, projectID, mr.TaskID); err != nil && !errors.Is(err, task.ErrNotFound) {
-			return nil, err
-		}
+	t, err := s.reviewTask(ctx, userID, projectID, mr)
+	if err != nil {
+		return nil, err
 	}
 	// A review of a task's change spends from the task's budget, so it
 	// cannot start once that is spent.
 	if t != nil && t.OverBudget() {
 		return nil, taskBudgetError(t)
 	}
-	if t != nil && in.Model == "" {
-		in.Model, in.Effort = t.Model, orDefault(in.Effort, t.Effort)
-	}
-	if in.Model == "" {
-		return nil, errNoModel
+	if in.Model, in.Effort, err = s.reviewModel(ctx, mr, t, in); err != nil {
+		return nil, err
 	}
 	if budgetUSD == nil {
 		budgets, err := s.budgets.BudgetDefaults(ctx, mr.UserID)
@@ -1025,6 +1023,67 @@ func (s *service) startAgentReviewLocked(ctx context.Context, userID, projectID,
 	return rv, nil
 }
 
+// reviewTask returns the task of mr, or nil when it has none or the task is
+// gone.
+func (s *service) reviewTask(ctx context.Context, userID, projectID int64, mr *MergeRequest) (*task.Task, error) {
+	if mr.TaskID == 0 {
+		return nil, nil
+	}
+	t, err := s.tasks.Get(ctx, userID, projectID, mr.TaskID)
+	if errors.Is(err, task.ErrNotFound) {
+		return nil, nil
+	}
+	return t, err
+}
+
+// reviewModel returns the model and effort a review runs on: the ones in
+// names, else the model the user set for the agent, else the task's. A model
+// devpad no longer offers counts as none, since the model of an earlier review
+// is reused for the next round and for Re-review, and its effort goes with it.
+func (s *service) reviewModel(ctx context.Context, mr *MergeRequest, t *task.Task, in AgentReviewInput) (string, string, error) {
+	model, effort := in.Model, in.Effort
+	retired := ""
+	if model != "" && !s.offersModel(model) {
+		retired, model, effort = model, "", ""
+	}
+	if model != "" {
+		return model, effort, nil
+	}
+	d, err := s.defaults.DefaultsFor(ctx, mr.UserID, in.AgentID, effort)
+	if err != nil {
+		return "", "", fmt.Errorf("looking up the review agent's default model: %w", err)
+	}
+	if d != nil {
+		return d.Model, d.Effort, nil
+	}
+	if t != nil && t.Model != "" && s.offersModel(t.Model) {
+		return t.Model, orDefault(effort, t.Effort), nil
+	}
+	if retired != "" {
+		return "", "", fmt.Errorf("%w: %s is no longer offered; start a review with another model", errNoModel, retired)
+	}
+	return "", "", errNoModel
+}
+
+// continuedReviewModel returns the model and effort rv goes on with: its own,
+// unless devpad no longer offers that model.
+func (s *service) continuedReviewModel(ctx context.Context, userID, projectID int64, mr *MergeRequest, rv *Review) (string, string, error) {
+	if rv.Model != "" && s.offersModel(rv.Model) {
+		return rv.Model, rv.Effort, nil
+	}
+	t, err := s.reviewTask(ctx, userID, projectID, mr)
+	if err != nil {
+		return "", "", err
+	}
+	in := AgentReviewInput{AgentID: orDefault(rv.AgentID, domain.ReviewAgentID), Model: rv.Model, Effort: rv.Effort}
+	return s.reviewModel(ctx, mr, t, in)
+}
+
+func (s *service) offersModel(id string) bool {
+	_, err := s.models.FindModel(id)
+	return !errors.Is(err, domain.ErrModelNotFound)
+}
+
 // taskBudgetError refuses to run a review agent on the merge request of a
 // task that has spent its budget.
 func taskBudgetError(t *task.Task) error {
@@ -1037,8 +1096,8 @@ func reviewBudgetError(rv *Review) error {
 	return fmt.Errorf("%w: Budget reached: this review has spent $%.2f of its $%.2f budget; raise its budget to continue it", ErrInvalidState, rv.CostUSD, rv.BudgetUSD)
 }
 
-// errNoModel refuses a review agent without a model: none was picked, the
-// agent has no default, and there is no task to take one from.
+// errNoModel refuses a review agent without a model: none that devpad offers
+// was picked, the agent has no default, and there is no task to take one from.
 var errNoModel = fmt.Errorf("%w: model is required", ErrInvalidInput)
 
 func orDefault(value, fallback string) string {

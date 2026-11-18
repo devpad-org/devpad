@@ -441,6 +441,7 @@ type env struct {
 	runs       *fakeRuns
 	defaults   fakeDefaults
 	budgets    *fakeBudgets
+	models     fakeModels
 	owner      int64
 	stranger   int64
 	taskID     int64
@@ -449,6 +450,16 @@ type env struct {
 // fakeDefaults is the admin's agent defaults, keyed by agent ID. Its models
 // support every effort except "unsupported".
 type fakeDefaults map[string]domain.AgentDefaults
+
+// fakeModels is the set of retired models. Every other model is offered.
+type fakeModels map[string]bool
+
+func (f fakeModels) FindModel(id string) (domain.Model, error) {
+	if id == "" || f[id] {
+		return domain.Model{}, domain.ErrModelNotFound
+	}
+	return domain.Model{ID: id}, nil
+}
 
 // fakeBudgets is the admin's budget defaults, or err when it is set.
 type fakeBudgets struct {
@@ -507,11 +518,12 @@ func setup(t *testing.T) *env {
 		runs:       &fakeRuns{db: conn},
 		defaults:   fakeDefaults{},
 		budgets:    &fakeBudgets{defaults: domain.BudgetDefaults{ReviewUSD: 5}},
+		models:     fakeModels{},
 		owner:      owner,
 		stranger:   stranger,
 		taskID:     taskID,
 	}
-	e.svc = NewService(NewRepository(conn), e.projects, e.workspaces, e.tasks, e.runs, fakeConversations{conn}, e.defaults, e.budgets).(*service)
+	e.svc = NewService(NewRepository(conn), e.projects, e.workspaces, e.tasks, e.runs, fakeConversations{conn}, e.defaults, e.budgets, e.models).(*service)
 	e.runs.onFinish = e.svc.RunFinished
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1500,6 +1512,130 @@ func TestAgentReviewKeepsAPickedModel(t *testing.T) {
 	}
 	if rv.Model != "picked" || rv.Effort != "low" {
 		t.Fatalf("expected the picked model, got %+v", rv)
+	}
+}
+
+func TestAgentReviewOnARetiredModelFallsBack(t *testing.T) {
+	retiredInput := AgentReviewInput{Model: "retired", Effort: "low"}
+
+	t.Run("to the agent's default", func(t *testing.T) {
+		e := setup(t)
+		e.models["retired"] = true
+		e.defaults[domain.ReviewAgentID] = domain.AgentDefaults{AgentID: domain.ReviewAgentID, Model: "admin-review", Effort: "medium"}
+		mr := e.openTaskMR(t)
+
+		rv, err := e.svc.StartAgentReview(context.Background(), e.owner, e.pid(), mr.ID, retiredInput)
+		if err != nil {
+			t.Fatalf("start agent review: %v", err)
+		}
+		if rv.Model != "admin-review" || rv.Effort != "medium" {
+			t.Fatalf("expected the agent's default, got %+v", rv)
+		}
+	})
+
+	t.Run("to the task's model", func(t *testing.T) {
+		e := setup(t)
+		e.models["retired"] = true
+		mr := e.openTaskMR(t)
+
+		rv, err := e.svc.StartAgentReview(context.Background(), e.owner, e.pid(), mr.ID, retiredInput)
+		if err != nil {
+			t.Fatalf("start agent review: %v", err)
+		}
+		if rv.Model != "claude-opus-5-5" || rv.Effort != "high" {
+			t.Fatalf("expected the task's model and effort, got %+v", rv)
+		}
+	})
+
+	t.Run("refused when the task's model is retired too", func(t *testing.T) {
+		e := setup(t)
+		e.models["retired"] = true
+		e.models["claude-opus-5-5"] = true
+		mr := e.openTaskMR(t)
+
+		_, err := e.svc.StartAgentReview(context.Background(), e.owner, e.pid(), mr.ID, retiredInput)
+		if !errors.Is(err, errNoModel) || !strings.Contains(err.Error(), "retired is no longer offered") {
+			t.Fatalf("expected errNoModel naming the model, got %v", err)
+		}
+	})
+}
+
+// The next round of an auto-fixing review leaves a retired model, and the
+// round that ran on it still says so.
+func TestReviewLoopLeavesARetiredModel(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.projects.project.AutoReview = true
+	mr := e.openTaskMR(t)
+	first := e.reviewRound(t, mr, 1)
+	if _, err := e.db.ExecContext(ctx, `UPDATE merge_request_reviews SET model = 'retired', effort = 'low' WHERE id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.models["retired"] = true
+
+	if result, _ := e.tool(e.owner, first.WorkspaceID, commentTool, `{"path":"cart.go","line":3,"body":"Missing nil check.","blocking":true}`); result.IsError {
+		t.Fatalf("comment: %+v", result)
+	}
+	if result, _ := e.tool(e.owner, first.WorkspaceID, submitTool, `{"verdict":"request_changes","body":"Needs a nil check."}`); result.IsError {
+		t.Fatalf("submit: %+v", result)
+	}
+	e.runs.finish(first.RunID, domain.AgentRunCompleted, "")
+	e.fixed(t, "head2")
+
+	second := e.reviewRound(t, mr, 2)
+	if second.Status == ReviewFailed || second.Model != "claude-opus-5-5" || second.Effort != "high" {
+		t.Fatalf("expected the next round on the task's model, got %+v", second)
+	}
+	if got, _ := e.svc.repo.GetReview(ctx, first.ID); got.Model != "retired" || got.Effort != "low" {
+		t.Fatalf("expected the finished round to keep its model, got %+v", got)
+	}
+}
+
+// failedReviewOnRetiredModel is a review whose run failed on a model devpad
+// has since stopped offering.
+func (e *env) failedReviewOnRetiredModel(t *testing.T, mr *MergeRequest) *Review {
+	t.Helper()
+	rv := e.startAgentReview(t, mr, AgentReviewInput{Model: "retired", Effort: "low"})
+	e.models["retired"] = true
+	e.runs.finish(rv.RunID, domain.AgentRunFailed, "the provider went away")
+	waitFor(t, "the review to fail", func() bool {
+		got, _ := e.svc.repo.GetReview(context.Background(), rv.ID)
+		return got.Status == ReviewFailed
+	})
+	return rv
+}
+
+func TestContinueReviewLeavesARetiredModel(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	rv := e.failedReviewOnRetiredModel(t, mr)
+
+	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, rv.ID, ContinueInput{}); err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	waitFor(t, "the continued run", func() bool { return len(e.runs.started()) == 2 })
+	if second := e.runs.started()[1]; second.Model != "claude-opus-5-5" {
+		t.Fatalf("expected the continued run on the task's model, got %q", second.Model)
+	}
+	if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.Model != "claude-opus-5-5" || got.Effort != "high" {
+		t.Fatalf("expected the review to name the model it goes on with, got %+v", got)
+	}
+}
+
+func TestContinueReviewWithNoModelLeftKeepsTheTaskBudget(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	rv := e.failedReviewOnRetiredModel(t, mr)
+	e.models["claude-opus-5-5"] = true
+
+	raised := 9.0
+	if _, err := e.svc.ContinueReview(ctx, e.owner, e.pid(), mr.ID, rv.ID, ContinueInput{TaskBudgetUSD: &raised}); !errors.Is(err, errNoModel) {
+		t.Fatalf("expected errNoModel, got %v", err)
+	}
+	if tk, _ := e.tasks.Get(ctx, e.owner, e.pid(), e.taskID); tk.BudgetUSD == raised {
+		t.Fatal("expected a refused continue to leave the task's budget alone")
 	}
 }
 

@@ -19,6 +19,7 @@ import type { SpentBudget } from '@/components/project/BudgetReached.vue'
 import { taskApi } from '@/api/tasks'
 import { branchActionError } from '@/components/project/branchErrors'
 import { useActiveProjectStore } from '@/stores/activeProject'
+import { useAiModelStore } from '@/stores/aiModels'
 import { STRATEGIES, authorName, dirName, errorText, plural, type Author, type Tone } from './format'
 
 const NOTICE_MS = 6000
@@ -73,6 +74,7 @@ export interface Check {
 // up its modal. The modal creates it and provides it to its children.
 export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number>) {
   const projectStore = useActiveProjectStore()
+  const aiModelStore = useAiModelStore()
 
   const mr = ref<MergeRequestDetail | null>(null)
   const diff = ref<RepoDiff | null>(null)
@@ -275,6 +277,12 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   })
 
   const latestAgentReview = computed(() => [...timelineReviews.value].reverse().find((r) => r.author === 'agent' && r.status !== 'pending' && r.model) ?? null)
+  // The model to name for a re-review, empty when the last review's can't be
+  // used any more and the server will pick another.
+  const rereviewModel = computed(() => {
+    const model = latestAgentReview.value?.model ?? ''
+    return model && aiModelStore.isModelAvailable(model) ? model : ''
+  })
   const totals = computed(() =>
     files.value.reduce((sum, f) => ({ additions: sum.additions + f.additions, deletions: sum.deletions + f.deletions }), {
       additions: 0,
@@ -942,6 +950,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     unpublishedCommits,
     workspaceDiverged,
     latestAgentReview,
+    rereviewModel,
     totals,
     hasDraft,
     orderedFiles,

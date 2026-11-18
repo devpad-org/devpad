@@ -7,7 +7,7 @@ import { useMergeRequest } from './useMergeRequest'
 // Offers to publish commits the project workspace has on the merge request's
 // branch, so addressing a review doesn't mean finding the Publish button in
 // Source Control.
-const { mr, busy, unpublishedCommits, workspaceDiverged, workspaceBranch, latestAgentReview, pendingAgentReview, taskWorking, publishWorkspaceCommits } = useMergeRequest()
+const { mr, busy, unpublishedCommits, workspaceDiverged, workspaceBranch, latestAgentReview, rereviewModel, pendingAgentReview, taskWorking, publishWorkspaceCommits } = useMergeRequest()
 
 const canRereview = computed(() => Boolean(latestAgentReview.value) && !pendingAgentReview.value && !taskWorking.value)
 </script>
@@ -30,7 +30,7 @@ const canRereview = computed(() => Boolean(latestAgentReview.value) && !pendingA
           v-if="canRereview"
           class="btn btn-secondary btn-sm"
           :disabled="busy"
-          :title="`Publish, then review the new commit with ${latestAgentReview?.model}`"
+          :title="rereviewModel ? `Publish, then review the new commit with ${rereviewModel}` : 'Publish, then review the new commit'"
           @click="publishWorkspaceCommits(true)"
         >
           Publish and re-review

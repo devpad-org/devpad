@@ -68,7 +68,7 @@ Each comment starts a thread that can be replied to and resolved. Resolved threa
 
 **Review** on a merge request opens your review: a summary, the line comments you've added to it, and a verdict, **Comment**, **Approve** or **Request changes**. On a task's merge request, requesting changes records your feedback on the task, and **Send the feedback to the task's agent now** sends it straight away; otherwise use **Send back to agent** later.
 
-A **review agent** reads the change in a sandbox of its own, leaves comments and a verdict, and resolves the threads the change addresses. Start one under **Agent review** in the sidebar, or let the project start one on each new merge request (**Review new merge requests automatically**, on by default). **Re-review** runs the last agent review again on the latest commit.
+A **review agent** reads the change in a sandbox of its own, leaves comments and a verdict, and resolves the threads the change addresses. Start one under **Agent review** in the sidebar, or let the project start one on each new merge request (**Review new merge requests automatically**, on by default). **Re-review** runs the last agent review again on the latest commit. If devpad no longer offers that review's model, the new review uses your default model for the agent, or else the task's.
 
 The review agent takes its instructions, `AGENTS.md` and [skills](/docs/tasks#skills), from the branch the change would merge into, at the commit it compares against, never from the change itself: a change can't tell its reviewer how to review it.
 
@@ -76,7 +76,7 @@ The review agent takes its instructions, `AGENTS.md` and [skills](/docs/tasks#sk
 
 On a task's merge request, a review can send the changes it requests to the task's agent and review the commits it answers with: tick **Send requested changes to the task's agent, and review its fixes**, as automatic reviews of task merge requests do. That goes on for up to three reviews. The third review's requested changes are recorded on the task but wait for you, and a review of yours ends the loop.
 
-A review spends from its own budget and, on a task's merge request, from the task's too. If a review stops because a budget ran out, **Raise and continue the review** resumes it where it stopped, in the same sandbox. See [Budgets](/docs/ai#budgets).
+A review spends from its own budget and, on a task's merge request, from the task's too. If a review stops because a budget ran out, **Raise and continue the review** resumes it where it stopped, in the same sandbox, on the same model unless devpad no longer offers it. See [Budgets](/docs/ai#budgets).
 
 ## Merging {#merging}
 
