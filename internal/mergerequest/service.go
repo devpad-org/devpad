@@ -1049,11 +1049,12 @@ func orDefault(value, fallback string) string {
 }
 
 // launchReview starts a pending review's sandbox and, once its services are
-// ready and the project's setup script has finished there, its agent run. The sandbox first waits
-// for a build of the project's environment in progress, then for a free
-// sandbox slot. The review is unlocked while any of them runs, so closing
-// or merging the merge request meanwhile is not held up; the run starts
-// only if the review is still pending on the same sandbox after.
+// ready and the project's setup script has finished there, its agent run.
+// The sandbox first waits for a build of the project's environment in
+// progress, then for a free sandbox slot. The review is unlocked while any
+// of them runs, so closing or merging the merge request meanwhile is not
+// held up; the run starts only if the review is still pending on the same
+// sandbox after.
 func (s *service) launchReview(ctx context.Context, reviewID int64) {
 	env, ok := s.awaitEnvironment(ctx, reviewID)
 	if !ok {
