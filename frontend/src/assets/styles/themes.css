@@ -634,6 +634,327 @@
   --term-bright-white: #414a58;
 }
 
+/* ── Nord Dark ──────────────────────────────────────────────────────────── */
+/* Nord's Polar Night surfaces, Snow Storm text and a Frost accent. The editor
+   and terminal sit on nord0 itself, with the panels stepping up towards nord2
+   around them. Nord's Aurora red, orange and purple, and its nord9 blue, are
+   too dark to read as small text on nord1, so the UI's hues lift them (in
+   OKLCH, keeping their hue), and green a little so it reads on its tint;
+   syntax and the terminal keep Nord's own colours
+   wherever they read on nord0, and the comment colour is Nord's brightened
+   #616e88 lifted to AA. */
+[data-theme='nord-dark'] {
+  color-scheme: dark;
+
+  /* Polar Night */
+  --bg-void: #2e3440;
+  --bg-base: #353c4a;
+  --bg-elevated: #3b4252;
+  --bg-raised: #434c5e;
+  --bg-hover: rgba(216, 222, 233, 0.06);
+  --bg-selected: rgba(136, 192, 208, 0.11);
+  --bg-overlay: rgba(25, 29, 36, 0.7);
+  --bg-neutral: rgba(143, 155, 179, 0.15);
+
+  --border-hairline: rgba(216, 222, 233, 0.07);
+  --border-subtle: rgba(216, 222, 233, 0.11);
+  --border-strong: rgba(216, 222, 233, 0.2);
+  --border-top-highlight: rgba(236, 239, 244, 0.06);
+
+  /* Snow Storm */
+  --text-primary: #e5e9f0;
+  --text-secondary: #ccd3df;
+  --text-tertiary: #b4becf;
+  --text-dim: #919caf;
+  --text-on-accent: #2e3440;
+  --text-decoration-muted: rgba(216, 222, 233, 0.2);
+
+  /* Aurora and Frost, as text: yellow and aqua are Nord's own. */
+  --hue-red: #f99ba2;
+  --hue-green: #adc797;
+  --hue-yellow: #ebcb8b;
+  --hue-blue: #92b3d3;
+  --hue-purple: #caa4c3;
+  --hue-aqua: #8fbcbb;
+  --hue-orange: #eea891;
+
+  /* nord8, the colour Nord is known by, a touch lighter so it still reads
+     on a selected row. */
+  --accent: #96cad9;
+  --accent-dim: #70aabb;
+  --accent-glow: rgba(136, 192, 208, 0.16);
+  --accent-border: rgba(136, 192, 208, 0.42);
+
+  --success: var(--hue-green);
+  --warning: var(--hue-yellow);
+  --error: var(--hue-red);
+  --attention: var(--hue-orange);
+  --error-bg: rgba(191, 97, 106, 0.09);
+  --error-border: rgba(191, 97, 106, 0.42);
+  --success-bg: rgba(163, 190, 140, 0.09);
+  --success-border: rgba(163, 190, 140, 0.32);
+  --warning-bg: rgba(235, 203, 139, 0.11);
+  --warning-border: rgba(235, 203, 139, 0.3);
+  --attention-bg: rgba(208, 135, 112, 0.09);
+  --attention-border: rgba(208, 135, 112, 0.38);
+
+  --fill-hover-mix: #eceff4;
+
+  --emblem-red: #bf616a;
+  --emblem-green: #a3be8c;
+  --emblem-yellow: #ebcb8b;
+  --emblem-blue: #81a1c1;
+  --emblem-purple: #b48ead;
+  --emblem-aqua: #8fbcbb;
+  --emblem-orange: #d08770;
+  --emblem-red-muted: #a04d56;
+  --emblem-green-muted: #7d9966;
+  --emblem-yellow-muted: #c9a865;
+  --emblem-blue-muted: #5e81ac;
+  --emblem-purple-muted: #8f6a89;
+  --emblem-aqua-muted: #5f9998;
+  --emblem-orange-muted: #b06a55;
+  --emblem-light: #eceff4;
+  --emblem-dark: #434c5e;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #0ca30c;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --series-other: #7b8598;
+
+  --shadow-strong: 0 16px 48px rgba(15, 18, 24, 0.55);
+  --shadow-popover: 0 4px 16px rgba(15, 18, 24, 0.45);
+  --spinner-track: rgba(216, 222, 233, 0.25);
+  --qr-bg: #eceff4;
+
+  --editor-bg: #2e3440;
+  --editor-fg: #d8dee9;
+  --editor-line-highlight: #3b4252b3;
+  --editor-selection: #3f4f66;
+  --editor-selection-inactive: #434c5eaa;
+  --editor-selection-highlight: #81a1c130;
+  --editor-line-number: #66738d;
+  --editor-line-number-active: #d8dee9;
+  --editor-cursor: #88c0d0;
+  --editor-indent-guide: #434c5eb3;
+  --editor-indent-guide-active: #5c677d;
+  --editor-bracket-match-bg: #81a1c126;
+  --editor-bracket-match-border: #81a1c180;
+  --editor-find-match: #88c0d066;
+  --editor-find-match-highlight: #88c0d02e;
+  --editor-diff-inserted: #a3be8c24;
+  --editor-diff-removed: #bf616a2e;
+  --editor-scrollbar: #4c566a80;
+  --editor-scrollbar-hover: #4c566ab3;
+  --editor-scrollbar-active: #616e88b3;
+
+  /* Nord's own syntax: Frost for the language, Aurora for values. */
+  --syntax-comment: #909eba;
+  --syntax-comment-doc: #a3b0c8;
+  --syntax-keyword: #81a1c1;
+  --syntax-operator: #81a1c1;
+  --syntax-storage: #81a1c1;
+  --syntax-type: #8fbcbb;
+  --syntax-string: #a3be8c;
+  --syntax-escape: #ebcb8b;
+  --syntax-number: #b892b1;
+  --syntax-function: #88c0d0;
+  --syntax-variable: #d8dee9;
+  --syntax-parameter: #c5cddb;
+  --syntax-language: #d48b74;
+  --syntax-tag: #81a1c1;
+  --syntax-tag-class: #8fbcbb;
+  --syntax-delimiter: #aab4c5;
+  --syntax-bracket: #81a1c1;
+  --syntax-curly: #b892b1;
+  --syntax-invalid: #e28189;
+
+  /* Nord's terminal palette. */
+  --terminal-bg: #2e3440;
+  --term-fg: #d8dee9;
+  --term-cursor: #88c0d0;
+  --term-selection: rgba(129, 161, 193, 0.3);
+  --term-black: #3b4252;
+  --term-red: #bf616a;
+  --term-green: #a3be8c;
+  --term-yellow: #ebcb8b;
+  --term-blue: #81a1c1;
+  --term-magenta: #b48ead;
+  --term-cyan: #88c0d0;
+  --term-white: #e5e9f0;
+  --term-bright-black: #66738d;
+  --term-bright-red: #bf616a;
+  --term-bright-green: #a3be8c;
+  --term-bright-yellow: #ebcb8b;
+  --term-bright-blue: #81a1c1;
+  --term-bright-magenta: #b48ead;
+  --term-bright-cyan: #8fbcbb;
+  --term-bright-white: #eceff4;
+}
+
+/* ── Nord Light ─────────────────────────────────────────────────────────── */
+/* Nord's Snow Storm as paper and Polar Night as ink. Nord's Frost and Aurora
+   are made for its dark surfaces and are far too pale for text here, so
+   every hue is a deeper shade of Nord's own (darkened in OKLCH, keeping its
+   hue): the accent is a deep nord10. Emblems keep Nord's colours as they
+   are, since they are only ever fills. */
+[data-theme='nord-light'] {
+  color-scheme: light;
+
+  /* Snow Storm */
+  --bg-void: #f5f7fa;
+  --bg-base: #eceff4;
+  --bg-elevated: #e5e9f0;
+  --bg-raised: #d8dee9;
+  --bg-hover: rgba(46, 52, 64, 0.06);
+  --bg-selected: rgba(94, 129, 172, 0.12);
+  --bg-overlay: rgba(46, 52, 64, 0.45);
+  --bg-neutral: rgba(76, 86, 106, 0.12);
+
+  --border-hairline: rgba(46, 52, 64, 0.09);
+  --border-subtle: rgba(46, 52, 64, 0.15);
+  --border-strong: rgba(46, 52, 64, 0.27);
+  --border-top-highlight: rgba(255, 255, 255, 0.6);
+
+  /* Polar Night */
+  --text-primary: #2e3440;
+  --text-secondary: #3b4252;
+  --text-tertiary: #4c566a;
+  --text-dim: #6c7891;
+  --text-on-accent: #ffffff;
+  --text-decoration-muted: rgba(46, 52, 64, 0.25);
+
+  --hue-red: #a2404d;
+  --hue-green: #4f6837;
+  --hue-yellow: #7a5c13;
+  --hue-blue: #3e6390;
+  --hue-purple: #825b7b;
+  --hue-aqua: #316f80;
+  --hue-orange: #944c36;
+
+  --accent: var(--hue-blue);
+  --accent-dim: #345580;
+  --accent-glow: rgba(94, 129, 172, 0.2);
+  --accent-border: rgba(68, 105, 151, 0.5);
+
+  --success: var(--hue-green);
+  --warning: var(--hue-yellow);
+  --error: var(--hue-red);
+  --attention: var(--hue-orange);
+  --error-bg: rgba(191, 97, 106, 0.1);
+  --error-border: rgba(171, 70, 83, 0.32);
+  --success-bg: rgba(163, 190, 140, 0.2);
+  --success-border: rgba(85, 111, 60, 0.32);
+  --warning-bg: rgba(235, 203, 139, 0.24);
+  --warning-border: rgba(130, 98, 21, 0.34);
+  --attention-bg: rgba(208, 135, 112, 0.13);
+  --attention-border: rgba(157, 82, 59, 0.32);
+
+  --fill-hover-mix: #000000;
+
+  --emblem-red: #bf616a;
+  --emblem-green: #a3be8c;
+  --emblem-yellow: #ebcb8b;
+  --emblem-blue: #81a1c1;
+  --emblem-purple: #b48ead;
+  --emblem-aqua: #8fbcbb;
+  --emblem-orange: #d08770;
+  --emblem-red-muted: #a04d56;
+  --emblem-green-muted: #7d9966;
+  --emblem-yellow-muted: #c9a865;
+  --emblem-blue-muted: #5e81ac;
+  --emblem-purple-muted: #8f6a89;
+  --emblem-aqua-muted: #5f9998;
+  --emblem-orange-muted: #b06a55;
+  --emblem-light: #f5f7fa;
+  --emblem-dark: #3b4252;
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --series-other: #9aa3b5;
+
+  --shadow-strong: 0 16px 48px rgba(46, 52, 64, 0.2);
+  --shadow-popover: 0 4px 16px rgba(46, 52, 64, 0.14);
+  --spinner-track: rgba(46, 52, 64, 0.18);
+  --qr-bg: #ffffff;
+
+  --editor-bg: #f5f7fa;
+  --editor-fg: #2e3440;
+  --editor-line-highlight: #e5e9f0b3;
+  --editor-selection: #cfdbea;
+  --editor-selection-inactive: #d8dee9aa;
+  --editor-selection-highlight: #5e81ac26;
+  --editor-line-number: #8a94a8;
+  --editor-line-number-active: #3b4252;
+  --editor-cursor: #5e81ac;
+  --editor-indent-guide: #d8dee9;
+  --editor-indent-guide-active: #b4becd;
+  --editor-bracket-match-bg: #5e81ac1f;
+  --editor-bracket-match-border: #5e81ac77;
+  --editor-find-match: #88c0d077;
+  --editor-find-match-highlight: #88c0d038;
+  --editor-diff-inserted: #a3be8c40;
+  --editor-diff-removed: #bf616a2b;
+  --editor-scrollbar: #4c566a33;
+  --editor-scrollbar-hover: #4c566a55;
+  --editor-scrollbar-active: #4c566a77;
+
+  /* Nord's syntax roles, in deeper shades of its own colours. */
+  --syntax-comment: #657089;
+  --syntax-comment-doc: #4c566a;
+  --syntax-keyword: #4b719f;
+  --syntax-operator: #4f7192;
+  --syntax-storage: #4b719f;
+  --syntax-type: #467676;
+  --syntax-string: #5b7642;
+  --syntax-escape: #8a6a1f;
+  --syntax-number: #896283;
+  --syntax-function: #316f80;
+  --syntax-variable: #2e3440;
+  --syntax-parameter: #3b4252;
+  --syntax-language: #a65a42;
+  --syntax-tag: #4b719f;
+  --syntax-tag-class: #467676;
+  --syntax-delimiter: #4c566a;
+  --syntax-bracket: #4f7192;
+  --syntax-curly: #896283;
+  --syntax-invalid: #b34d59;
+
+  /* Nord has no light terminal palette: this is its own, deepened for
+     paper, with black as the ink. */
+  --terminal-bg: #f5f7fa;
+  --term-fg: #2e3440;
+  --term-cursor: #5e81ac;
+  --term-selection: rgba(94, 129, 172, 0.25);
+  --term-black: #3b4252;
+  --term-red: #b34d59;
+  --term-green: #5b7642;
+  --term-yellow: #8a6a1f;
+  --term-blue: #4b719f;
+  --term-magenta: #896283;
+  --term-cyan: #316f80;
+  --term-white: #4c566a;
+  --term-bright-black: #6c7891;
+  --term-bright-red: #bf616a;
+  --term-bright-green: #7a965f;
+  --term-bright-yellow: #a8842c;
+  --term-bright-blue: #5e81ac;
+  --term-bright-magenta: #a07a99;
+  --term-bright-cyan: #4a8a9b;
+  --term-bright-white: #2e3440;
+}
+
 /* ── Derived tokens ─────────────────────────────────────────────────────── */
 /* A var() is resolved where it is declared, so these are declared again on
    every themed element rather than once on :root. */
