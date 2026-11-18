@@ -6,6 +6,7 @@ import DOMPurify from 'dompurify'
 // anchor named here exists, so keep each link a plain '/docs/...' string.
 export const DOC_LINKS = {
   gettingStarted: '/docs/getting-started',
+  projects: '/docs/projects',
   createProject: '/docs/projects#creating-a-project',
   standaloneWorkspaces: '/docs/projects#standalone-workspaces',
   environment: '/docs/projects#environment',

@@ -199,7 +199,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                   <span class="form-label">Default branch</span>
                   <span class="branch-chip"><MrIcon name="branch" :size="11" />{{ project.defaultBranch }}</span>
                 </div>
-                <p class="form-hint">Change the default and protected branches from Branches in the project panel.</p>
+                <p class="form-hint">Change the default and protected branches with Manage branches on the Project page.</p>
               </div>
             </section>
 

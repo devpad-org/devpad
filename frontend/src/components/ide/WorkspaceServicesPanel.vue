@@ -40,13 +40,13 @@ const notInProjectNotice = computed(() => {
   const names = notInProject.value
   if (!names.length) return ''
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
-  return `New sandboxes don't get ${list}: only the project's services, set in the Project panel, are copied to them.`
+  return `New sandboxes don't get ${list}: only the project's services, set on the Project page, are copied to them.`
 })
 
 function loadProjectServices() {
   const projectId = props.projectId ?? null
   if (projectId === null) return
-  // A failure only hides the notice; the Project panel says why.
+  // A failure only hides the notice; the Project page says why.
   store.fetchProjectServices(projectId).catch(() => {})
 }
 

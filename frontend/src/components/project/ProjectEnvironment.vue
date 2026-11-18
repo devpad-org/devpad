@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import DocLink from '@/components/DocLink.vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { projectApi, type ProjectEnvironment } from '@/api/projects'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import ConfirmModal from '@/components/ConfirmModal.vue'
+import ProjectCard from './ProjectCard.vue'
+import type { CardStatus } from './card'
 
 const POLL_INTERVAL_MS = 3000
 
@@ -12,7 +13,10 @@ const POLL_INTERVAL_MS = 3000
 const props = defineProps<{
   // The project workspace's status, or 'none' before it is created.
   workspaceStatus: string
+  step?: number
 }>()
+
+const emit = defineEmits<{ edit: [] }>()
 
 const store = useActiveProjectStore()
 
@@ -31,15 +35,17 @@ let seq = 0
 const building = computed(() => env.value?.build?.status === 'building')
 const hasWorkspace = computed(() => props.workspaceStatus !== 'none')
 
-const statusLabel = computed(() => {
+const hasEnvironment = computed(() => (store.project?.environment ?? '').trim() !== '')
+
+const status = computed<CardStatus>(() => {
   const e = env.value
-  if (!e) return ''
+  if (!e) return { label: '', tone: 'neutral' }
   const b = e.build
-  if (!b) return 'Not built yet'
+  if (!b) return hasEnvironment.value ? { label: 'Not built yet', tone: 'neutral' } : { label: 'Standard image', tone: 'neutral' }
   switch (b.status) {
-    case 'building': return 'Building…'
-    case 'succeeded': return e.current ? 'Built' : 'Out of date'
-    default: return b.error ? `Build failed: ${b.error}` : 'Build failed'
+    case 'building': return { label: 'Building…', tone: 'busy' }
+    case 'succeeded': return e.current ? { label: 'Built', tone: 'ok' } : { label: 'Out of date', tone: 'warn' }
+    default: return { label: 'Build failed', tone: 'error' }
   }
 })
 
@@ -128,19 +134,41 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="loaded && (env || error)" class="side-section">
-    <div class="side-section-title">Environment<DocLink topic="environment" label="Environments" /></div>
-    <template v-if="env?.build || store.project?.environment.trim()">
-      <p class="env-status" :class="env?.build ? `env-${env.build.status}` : ''">{{ statusLabel }}</p>
-      <p v-if="fallbackNote" class="env-note">{{ fallbackNote }}</p>
+  <ProjectCard
+    title="Environment"
+    doc="environment"
+    doc-label="Environments"
+    :step="step"
+    :status="loaded ? status.label : ''"
+    :tone="status.tone"
+  >
+    <template #icon>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+      </svg>
     </template>
-    <p v-else class="env-note">The project no longer has an environment.</p>
 
-    <template v-if="env?.workspaceStale && hasWorkspace">
-      <p class="env-note env-stale">Your workspace was made from {{ env.custom ? 'an older version of the environment' : 'a different image' }}.</p>
+    <template v-if="hasEnvironment">
+      <p class="card-lead">New workspaces are made from devpad's image with this on top:</p>
+      <pre class="card-code">{{ store.project?.environment.trim() }}</pre>
     </template>
+    <p v-else-if="env?.build" class="card-lead">The project no longer has an environment, so new workspaces get devpad's image as it is.</p>
+    <p v-else class="card-lead">
+      New workspaces get devpad's image as it is. To install what the project needs, add the body of a Dockerfile
+      (<code>RUN</code>, <code>ENV</code> and the like) in the project's settings.
+    </p>
 
-    <div class="env-actions">
+    <p v-if="env?.build?.status === 'failed' && env.build.error" class="card-error">{{ env.build.error }}</p>
+    <p v-if="fallbackNote" class="card-note">{{ fallbackNote }}</p>
+    <p v-if="env?.workspaceStale && hasWorkspace" class="card-warn">
+      Your workspace was made from {{ env.custom ? 'an older version of the environment' : 'a different image' }}.
+    </p>
+
+    <pre v-if="showLog && env?.build?.log" class="card-code card-log">{{ env.build.log }}</pre>
+    <p v-if="error" class="notice notice-error card-message">{{ error }}</p>
+    <p v-if="notice" class="notice notice-success card-message">{{ notice }}</p>
+
+    <template #actions>
       <button
         v-if="env?.build?.status === 'failed'"
         class="btn btn-secondary btn-sm"
@@ -161,10 +189,8 @@ onUnmounted(() => {
       <button v-if="env?.build?.log" class="btn btn-secondary btn-sm" @click="showLog = !showLog">
         {{ showLog ? 'Hide build log' : 'Show build log' }}
       </button>
-    </div>
-    <pre v-if="showLog && env?.build?.log" class="env-log">{{ env.build.log }}</pre>
-    <p v-if="error" class="notice notice-error env-message">{{ error }}</p>
-    <p v-if="notice" class="notice notice-success env-message">{{ notice }}</p>
+      <button class="btn btn-secondary btn-sm" @click="emit('edit')">{{ hasEnvironment ? 'Edit' : 'Add an environment' }}</button>
+    </template>
 
     <ConfirmModal
       :show="confirmRebuild"
@@ -176,64 +202,8 @@ onUnmounted(() => {
       @confirm="rebuildWorkspace"
       @cancel="confirmRebuild = false"
     />
-  </div>
+  </ProjectCard>
 </template>
 
 <style scoped src="./shared.css"></style>
-<style scoped src="./panel.css"></style>
-<style scoped>
-.env-status {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  overflow-wrap: anywhere;
-}
-
-.env-building {
-  color: var(--accent-amber);
-}
-
-.env-succeeded {
-  color: var(--accent-green);
-}
-
-.env-failed {
-  color: var(--accent-rose);
-}
-
-.env-note {
-  margin-top: var(--space-1);
-  font-size: 0.72rem;
-  color: var(--text-muted);
-}
-
-.env-stale {
-  color: var(--accent-amber);
-}
-
-.env-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-  margin-top: var(--space-2);
-}
-
-.env-log {
-  margin-top: var(--space-2);
-  max-height: 240px;
-  overflow: auto;
-  padding: var(--space-2);
-  background: var(--bg-primary);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-md);
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  line-height: 1.4;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.env-message {
-  margin: var(--space-2) 0 0;
-}
-</style>
+<style scoped src="./card.css"></style>

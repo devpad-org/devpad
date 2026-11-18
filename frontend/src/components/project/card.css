@@ -1,0 +1,62 @@
+/* What the project overview's cards put in their bodies. Each card includes
+ * this file as a scoped style, alongside shared.css for buttons and notices. */
+.card-lead {
+  color: var(--text-secondary);
+}
+
+.card-note {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+.card-note code,
+.card-lead code {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.card-warn {
+  color: var(--warning);
+}
+
+.card-error {
+  color: var(--error);
+}
+
+/* A script or Dockerfile as the project has it, or a run's output. */
+.card-code {
+  max-height: 9.5em;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-void);
+  border: 0.5px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.card-code.card-log {
+  max-height: 320px;
+}
+
+.card-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.card-message {
+  margin: 0;
+}
+
+.card-empty {
+  padding: var(--space-2) 0;
+  color: var(--text-tertiary);
+}

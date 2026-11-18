@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import DocLink from '@/components/DocLink.vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { projectApi, type WorkspaceSetup } from '@/api/projects'
 import { useActiveProjectStore } from '@/stores/activeProject'
+import ProjectCard from './ProjectCard.vue'
+import type { CardStatus } from './card'
 
 const POLL_INTERVAL_MS = 3000
 
@@ -11,7 +12,10 @@ const POLL_INTERVAL_MS = 3000
 const props = defineProps<{
   // The project workspace's status, or 'none' before it is created.
   workspaceStatus: string
+  step?: number
 }>()
+
+const emit = defineEmits<{ edit: [] }>()
 
 const store = useActiveProjectStore()
 
@@ -31,16 +35,30 @@ const workspaceRunning = computed(() => props.workspaceStatus === 'running')
 const changed = computed(() => setup.value !== null && setup.value.script !== script.value)
 const canRun = computed(() => hasScript.value && workspaceRunning.value && store.ready && !running.value && setup.value?.status !== 'running')
 
-const statusLabel = computed(() => {
+const status = computed<CardStatus>(() => {
   const s = setup.value
-  if (!s) return props.workspaceStatus === 'none' ? 'Runs when the workspace is created' : 'Not run'
+  if (!s) return hasScript.value ? { label: 'Not run', tone: 'neutral' } : { label: 'No script', tone: 'neutral' }
   switch (s.status) {
-    case 'pending': return workspaceRunning.value ? 'Waiting for the services to be ready…' : 'Runs once the workspace is started'
-    case 'running': return 'Running…'
-    case 'succeeded': return 'Succeeded'
-    default:
+    case 'pending': return { label: workspaceRunning.value ? 'Waiting…' : 'Pending', tone: 'busy' }
+    case 'running': return { label: 'Running…', tone: 'busy' }
+    case 'succeeded': return { label: 'Succeeded', tone: 'ok' }
+    default: return { label: 'Failed', tone: 'error' }
+  }
+})
+
+// What the status pill can't say.
+const detail = computed(() => {
+  const s = setup.value
+  if (!s) {
+    if (!hasScript.value) return ''
+    return props.workspaceStatus === 'none' ? 'Runs when the workspace is created.' : ''
+  }
+  switch (s.status) {
+    case 'pending': return workspaceRunning.value ? 'Waiting for the services to be ready…' : 'Runs once the workspace is started.'
+    case 'failed':
       if (s.error) return `Failed: ${s.error}`
-      return s.exitCode !== null ? `Failed with exit status ${s.exitCode}` : 'Failed'
+      return s.exitCode !== null ? `Failed with exit status ${s.exitCode}.` : ''
+    default: return ''
   }
 })
 
@@ -102,13 +120,38 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="loaded && (hasScript || setup)" class="side-section">
-    <div class="side-section-title">Setup<DocLink topic="setupScript" label="Setup scripts" /></div>
-    <p class="setup-status" :class="setup ? `setup-${setup.status}` : ''">{{ statusLabel }}</p>
-    <p v-if="changed" class="setup-note">The setup script has changed since this run.</p>
-    <p v-if="!hasScript && setup" class="setup-note">The project no longer has a setup script.</p>
+  <ProjectCard
+    title="Setup script"
+    doc="setupScript"
+    doc-label="Setup scripts"
+    :step="step"
+    :status="loaded ? status.label : ''"
+    :tone="status.tone"
+  >
+    <template #icon>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m4 17 6-6-6-6" />
+        <path d="M12 19h8" />
+      </svg>
+    </template>
 
-    <div class="setup-actions">
+    <template v-if="hasScript">
+      <p class="card-lead">Runs once in each new workspace, after its services are ready:</p>
+      <pre class="card-code">{{ script.trim() }}</pre>
+    </template>
+    <p v-else-if="setup" class="card-lead">The project no longer has a setup script.</p>
+    <p v-else class="card-lead">
+      A shell script that runs once in each new workspace and sandbox, such as installing dependencies or loading
+      a database, so agents start from a working checkout.
+    </p>
+
+    <p v-if="detail" :class="setup?.status === 'failed' ? 'card-error' : 'card-note'">{{ detail }}</p>
+    <p v-if="changed && hasScript" class="card-note">The setup script has changed since this run.</p>
+
+    <pre v-if="showOutput && setup?.output" class="card-code card-log">{{ setup.output }}</pre>
+    <p v-if="error" class="notice notice-error card-message">{{ error }}</p>
+
+    <template #actions>
       <button
         v-if="hasScript"
         class="btn btn-secondary btn-sm"
@@ -121,64 +164,10 @@ onUnmounted(() => {
       <button v-if="setup?.output" class="btn btn-secondary btn-sm" @click="showOutput = !showOutput">
         {{ showOutput ? 'Hide output' : 'Show output' }}
       </button>
-    </div>
-    <pre v-if="showOutput && setup?.output" class="setup-output">{{ setup.output }}</pre>
-    <p v-if="error" class="notice notice-error setup-error">{{ error }}</p>
-  </div>
+      <button class="btn btn-secondary btn-sm" @click="emit('edit')">{{ hasScript ? 'Edit' : 'Add a setup script' }}</button>
+    </template>
+  </ProjectCard>
 </template>
 
 <style scoped src="./shared.css"></style>
-<style scoped src="./panel.css"></style>
-<style scoped>
-.setup-status {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  overflow-wrap: anywhere;
-}
-
-.setup-pending,
-.setup-running {
-  color: var(--warning);
-}
-
-.setup-succeeded {
-  color: var(--success);
-}
-
-.setup-failed {
-  color: var(--error);
-}
-
-.setup-note {
-  margin-top: var(--space-1);
-  font-size: 0.72rem;
-  color: var(--text-tertiary);
-}
-
-.setup-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-  margin-top: var(--space-2);
-}
-
-.setup-output {
-  margin-top: var(--space-2);
-  max-height: 240px;
-  overflow: auto;
-  padding: var(--space-2);
-  background: var(--bg-base);
-  border: 0.5px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  line-height: 1.4;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.setup-error {
-  margin: var(--space-2) 0 0;
-}
-</style>
+<style scoped src="./card.css"></style>

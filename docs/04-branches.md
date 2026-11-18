@@ -11,7 +11,7 @@ The project's branches are those in its canonical repo: the ones you've publishe
 
 ## Protected branches {#protected-branches}
 
-The default branch is always protected, and you can protect others under **Branches** in the Project panel, such as `main` in a project that works on `develop`. A protected branch:
+The default branch is always protected, and you can protect others with **Manage branches** on the Project page, such as `main` in a project that works on `develop`. A protected branch:
 
 - changes only through a merge request: your workspace can't publish to it, and no agent can own it;
 - is what merge requests target, so features can merge into `develop` and releases from `develop` into `main`;
