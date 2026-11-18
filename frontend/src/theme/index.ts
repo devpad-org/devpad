@@ -15,6 +15,8 @@ export const THEMES = [
   { id: 'gruvbox-light', label: 'Gruvbox Light', description: 'The same warm palette on cream paper.' },
   { id: 'modern-dark', label: 'Modern Dark', description: 'Cool, neutral surfaces with a blue accent. The default.' },
   { id: 'modern-light', label: 'Modern Light', description: 'Clean and bright, with a blue accent.' },
+  { id: 'nord-dark', label: 'Nord Dark', description: 'Arctic Polar Night blues with a frosty accent.' },
+  { id: 'nord-light', label: 'Nord Light', description: 'Crisp Snow Storm whites with deep frost blues.' },
 ] as const satisfies readonly { id: string; label: string; description: string }[]
 
 export type ThemeId = (typeof THEMES)[number]['id']
