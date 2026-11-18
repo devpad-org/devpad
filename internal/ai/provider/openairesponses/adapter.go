@@ -54,13 +54,14 @@ type responsePayload struct {
 	Usage             *responseUsage     `json:"usage,omitempty"`
 }
 
-// responseUsage is a response's usage. input_tokens includes the cached
-// tokens counted in input_tokens_details.
+// responseUsage is a response's usage. input_tokens includes the tokens read
+// from and written to the cache counted in input_tokens_details.
 type responseUsage struct {
 	InputTokens        int64 `json:"input_tokens"`
 	OutputTokens       int64 `json:"output_tokens"`
 	InputTokensDetails struct {
-		CachedTokens int64 `json:"cached_tokens"`
+		CachedTokens     int64 `json:"cached_tokens"`
+		CacheWriteTokens int64 `json:"cache_write_tokens"`
 	} `json:"input_tokens_details"`
 }
 
@@ -104,38 +105,49 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 }
 
 func (a *Adapter) Models() []domain.Model {
-	gpt54Thinking := domain.ThinkingCapability{
-		Supported:        true,
-		EnabledByDefault: false,
-		CanDisable:       true,
-		SupportedEfforts: []string{"low", "medium", "high", "xhigh"},
-		DefaultEffort:    defaultReasoningEffort,
-	}
-	gpt55Thinking := domain.ThinkingCapability{
+	// GPT-6.2 models always reason: the API rejects the effort "none".
+	alwaysReasons := domain.ThinkingCapability{
 		Supported:        true,
 		EnabledByDefault: true,
-		CanDisable:       true,
-		SupportedEfforts: []string{"low", "medium", "high", "xhigh"},
+		CanDisable:       false,
+		SupportedEfforts: []string{"low", "medium", "high", "xhigh", "max"},
 		DefaultEffort:    defaultReasoningEffort,
 	}
+	reasonsByDefault := alwaysReasons
+	reasonsByDefault.CanDisable = true
 
 	// Prices are USD per million tokens from
-	// https://developers.openai.com/api/docs/pricing (October 2026). A prompt
-	// over 272K tokens is billed at the long-context prices.
-	gpt54Pricing := &domain.Pricing{
-		TokenPrices:          domain.TokenPrices{Input: 2.50, Output: 15, CacheRead: 0.25},
+	// https://developers.openai.com/api/docs/pricing (November 2026). A prompt
+	// over 272K tokens is billed at the long-context prices. CacheWrite is the
+	// price of the default 30-minute cache lifetime, the only one devpad uses.
+	astraPricing := &domain.Pricing{
+		TokenPrices:          domain.TokenPrices{Input: 8, Output: 40, CacheRead: 0.40, CacheWrite: 10},
 		LongContextThreshold: 272_000,
-		LongContext:          &domain.TokenPrices{Input: 5, Output: 22.50, CacheRead: 0.50},
+		LongContext:          &domain.TokenPrices{Input: 16, Output: 60, CacheRead: 0.80, CacheWrite: 20},
 	}
-	gpt55Pricing := &domain.Pricing{
-		TokenPrices:          domain.TokenPrices{Input: 5, Output: 30, CacheRead: 0.50},
+	solPricing := &domain.Pricing{
+		TokenPrices:          domain.TokenPrices{Input: 2, Output: 10, CacheRead: 0.10, CacheWrite: 2.50},
 		LongContextThreshold: 272_000,
-		LongContext:          &domain.TokenPrices{Input: 10, Output: 45, CacheRead: 1},
+		LongContext:          &domain.TokenPrices{Input: 4, Output: 15, CacheRead: 0.20, CacheWrite: 5},
+	}
+	terraPricing := &domain.Pricing{
+		TokenPrices:          domain.TokenPrices{Input: 1, Output: 5, CacheRead: 0.05, CacheWrite: 1.25},
+		LongContextThreshold: 272_000,
+		LongContext:          &domain.TokenPrices{Input: 2, Output: 7.50, CacheRead: 0.10, CacheWrite: 2.50},
+	}
+	lunaPricing := &domain.Pricing{
+		TokenPrices:          domain.TokenPrices{Input: 0.10, Output: 0.50, CacheRead: 0.01, CacheWrite: 0.125},
+		LongContextThreshold: 272_000,
+		LongContext:          &domain.TokenPrices{Input: 0.20, Output: 0.75, CacheRead: 0.02, CacheWrite: 0.25},
 	}
 
+	// Sol comes first: the IDE starts on the first model when nothing else
+	// picks one, and Astra costs four times as much.
 	return []domain.Model{
-		{ID: "gpt-5.4", Name: "GPT-5.4", ProviderID: providerID, Thinking: gpt54Thinking, Vision: true, Pricing: gpt54Pricing},
-		{ID: "gpt-5.5", Name: "GPT-5.5", ProviderID: providerID, Thinking: gpt55Thinking, Vision: true, Pricing: gpt55Pricing},
+		{ID: "gpt-6.2-sol", Name: "GPT-6.2 Sol", ProviderID: providerID, Thinking: alwaysReasons, Vision: true, Pricing: solPricing},
+		{ID: "gpt-6.2-astra", Name: "GPT-6.2 Astra", ProviderID: providerID, Thinking: alwaysReasons, Vision: true, Pricing: astraPricing},
+		{ID: "gpt-6.1-terra", Name: "GPT-6.1 Terra", ProviderID: providerID, Thinking: reasonsByDefault, Vision: true, Pricing: terraPricing},
+		{ID: "gpt-6-luna", Name: "GPT-6 Luna", ProviderID: providerID, Thinking: reasonsByDefault, Vision: true, Pricing: lunaPricing},
 	}
 }
 
@@ -151,10 +163,6 @@ func buildResponsesRequest(req aiprovider.StreamRequest, model domain.Model) map
 		"model":  req.Model,
 		"stream": true,
 		"store":  false,
-	}
-
-	if instructions := buildInstructions(req.Turns); instructions != "" {
-		body["instructions"] = instructions
 	}
 
 	if input := buildInput(req.Turns); len(input) > 0 {
@@ -177,7 +185,8 @@ func buildResponsesRequest(req aiprovider.StreamRequest, model domain.Model) map
 	return body
 }
 
-func buildInstructions(turns []domain.Turn) string {
+// systemPrompt joins the system turns into one prompt.
+func systemPrompt(turns []domain.Turn) string {
 	parts := make([]string, 0, len(turns))
 	for _, turn := range turns {
 		if turn.Role != domain.RoleSystem || turn.Text() == "" {
@@ -189,8 +198,18 @@ func buildInstructions(turns []domain.Turn) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// buildInput returns the request's input items. The system prompt is the first
+// of them, as a developer message, and not the top-level instructions: GPT-6.2
+// models read those after the input and bill them as uncached on every request.
 func buildInput(turns []domain.Turn) []any {
-	input := make([]any, 0, len(turns))
+	input := make([]any, 0, len(turns)+1)
+
+	if prompt := systemPrompt(turns); prompt != "" {
+		input = append(input, map[string]any{
+			"role":    "developer",
+			"content": prompt,
+		})
+	}
 
 	for _, turn := range turns {
 		if turn.Role == domain.RoleSystem {
@@ -700,18 +719,20 @@ func marshalReasoningState(items []json.RawMessage) json.RawMessage {
 	return raw
 }
 
-// emitResponseUsage sends what a finished response was billed for. Cached
-// input is billed at its own rate and OpenAI charges nothing extra to write
-// the cache.
+// emitResponseUsage sends what a finished response was billed for. Input read
+// from and written to the cache is billed at its own rates.
 func emitResponseUsage(ch chan<- domain.ProviderEvent, response *responsePayload) {
 	if response == nil || response.Usage == nil {
 		return
 	}
-	cached := min(response.Usage.InputTokensDetails.CachedTokens, response.Usage.InputTokens)
+	input := response.Usage.InputTokens
+	cached := min(response.Usage.InputTokensDetails.CachedTokens, input)
+	written := min(response.Usage.InputTokensDetails.CacheWriteTokens, input-cached)
 	ch <- domain.ProviderEvent{Usage: &domain.Usage{
-		InputTokens:     response.Usage.InputTokens - cached,
-		OutputTokens:    response.Usage.OutputTokens,
-		CacheReadTokens: cached,
+		InputTokens:      input - cached - written,
+		OutputTokens:     response.Usage.OutputTokens,
+		CacheReadTokens:  cached,
+		CacheWriteTokens: written,
 	}}
 }
 

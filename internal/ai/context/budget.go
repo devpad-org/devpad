@@ -8,7 +8,7 @@ const (
 
 	anthropicLongInputBudgetTokens  = 1000000
 	anthropicHaikuInputBudgetTokens = 200000
-	openAIReasoningInputTokens      = 1050000
+	openAIGPT6InputBudgetTokens     = 922000
 	long256KInputBudgetTokens       = 256000
 	mistralLarge4InputBudgetTokens  = 1000000
 	minimaxM3InputBudgetTokens      = 1000000
@@ -73,8 +73,8 @@ func anthropicInputBudget(model string) int {
 }
 
 func openAIInputBudget(model string) int {
-	if strings.Contains(model, "gpt-5") {
-		return openAIReasoningInputTokens
+	if strings.Contains(model, "gpt-6") {
+		return openAIGPT6InputBudgetTokens
 	}
 	return 128000
 }
@@ -112,9 +112,11 @@ func knownModelInputBudget(model string) (int, bool) {
 		"claude-sonnet-5-5",
 		"claude-haiku-5-5":
 		return anthropicLongInputBudgetTokens, true
-	case "gpt-5.4",
-		"gpt-5.5":
-		return openAIReasoningInputTokens, true
+	case "gpt-6.2-astra",
+		"gpt-6.2-sol",
+		"gpt-6.1-terra",
+		"gpt-6-luna":
+		return openAIGPT6InputBudgetTokens, true
 	case "mistral-small-latest",
 		"mistral-small-2603",
 		"mistral-medium-3-5",

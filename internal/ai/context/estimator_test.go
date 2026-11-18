@@ -134,8 +134,10 @@ func TestBudgetFor_ReturnsProviderModelDefaults(t *testing.T) {
 		{name: "anthropic sonnet 5.5 context", providerID: "anthropic", modelID: "claude-sonnet-5-5", wantBudget: 1000000},
 		{name: "anthropic haiku 5.5 context", providerID: "anthropic", modelID: "claude-haiku-5-5", wantBudget: 1000000},
 		{name: "anthropic older haiku context", providerID: "anthropic", modelID: "claude-haiku-4-5", wantBudget: 200000},
-		{name: "openai gpt 5.4 context", providerID: "openai", modelID: "gpt-5.4", wantBudget: 1050000},
-		{name: "openai gpt 5.5 context", providerID: "openai", modelID: "gpt-5.5", wantBudget: 1050000},
+		{name: "openai gpt 6.2 astra context", providerID: "openai", modelID: "gpt-6.2-astra", wantBudget: 922000},
+		{name: "openai gpt 6.2 sol context", providerID: "openai", modelID: "gpt-6.2-sol", wantBudget: 922000},
+		{name: "openai gpt 6.1 terra context", providerID: "openai", modelID: "gpt-6.1-terra", wantBudget: 922000},
+		{name: "openai gpt 6 luna context", providerID: "openai", modelID: "gpt-6-luna", wantBudget: 922000},
 		{name: "mistral small context", providerID: "mistral", modelID: "mistral-small-latest", wantBudget: 256000},
 		{name: "mistral older small context", providerID: "mistral", modelID: "mistral-small-2506", wantBudget: 128000},
 		{name: "mistral medium context", providerID: "mistral", modelID: "mistral-medium-3-5", wantBudget: 256000},
@@ -178,7 +180,7 @@ func TestEstimator_ToolResultContentDrivesBroadRunGrowth(t *testing.T) {
 	}
 	small := EstimateRequest(Request{
 		ProviderID: "openai",
-		ModelID:    "gpt-5.5",
+		ModelID:    "gpt-6.2-astra",
 		Turns: append(cloneTurns(baseTurns),
 			domain.NewToolResultTurn("call_1", "read_file", "package orchestrator\n", false),
 		),
@@ -186,7 +188,7 @@ func TestEstimator_ToolResultContentDrivesBroadRunGrowth(t *testing.T) {
 	largeResult := strings.Repeat("func example() { return }\n", 400)
 	large := EstimateRequest(Request{
 		ProviderID: "openai",
-		ModelID:    "gpt-5.5",
+		ModelID:    "gpt-6.2-astra",
 		Turns: append(cloneTurns(baseTurns),
 			domain.NewToolResultTurn("call_1", "read_file", largeResult, false),
 		),
@@ -199,7 +201,7 @@ func TestEstimator_ToolResultContentDrivesBroadRunGrowth(t *testing.T) {
 		t.Fatalf("large total tokens = %d, small = %d", large.TotalTokens, small.TotalTokens)
 	}
 
-	expectedDelta := EstimateText("openai", "gpt-5.5", largeResult) - EstimateText("openai", "gpt-5.5", "package orchestrator\n")
+	expectedDelta := EstimateText("openai", "gpt-6.2-astra", largeResult) - EstimateText("openai", "gpt-6.2-astra", "package orchestrator\n")
 	if gotDelta := large.ToolResultTokens - small.ToolResultTokens; gotDelta != expectedDelta {
 		t.Fatalf("tool result token delta = %d, want %d", gotDelta, expectedDelta)
 	}
