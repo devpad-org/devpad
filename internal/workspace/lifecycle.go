@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"strings"
 )
 
 // CreateSandbox creates a workspace that belongs to a project and owns one of
@@ -65,43 +66,72 @@ func (s *service) create(ctx context.Context, ws *Workspace) (*Workspace, error)
 	if err := s.repo.Create(ctx, ws); err != nil {
 		return nil, fmt.Errorf("creating workspace: %w", err)
 	}
+	// Undoing a failed create goes on when ctx is cancelled, which is what
+	// often failed it, so nothing is left behind.
+	cleanupCtx := context.WithoutCancel(ctx)
 
 	// Use the workspace ID for Docker resource names — stable and unique.
 	networkName := fmt.Sprintf("devpad-net-%d", ws.ID)
 	if err := s.container.CreateNetwork(ctx, networkName); err != nil {
-		_ = s.repo.Delete(ctx, ws.ID)
+		_ = s.repo.Delete(cleanupCtx, ws.ID)
 		return nil, fmt.Errorf("creating network: %w", err)
 	}
 
 	// When devpad runs in a container it must join the workspace network to
 	// reach the agent; on the host this is a no-op.
 	if err := s.container.EnsureSelfAttached(ctx, networkName); err != nil {
-		_ = s.container.RemoveNetwork(ctx, networkName)
-		_ = s.repo.Delete(ctx, ws.ID)
+		_ = s.container.RemoveNetwork(cleanupCtx, networkName)
+		_ = s.repo.Delete(cleanupCtx, ws.ID)
 		return nil, fmt.Errorf("joining workspace network: %w", err)
 	}
 
 	volumeName := fmt.Sprintf("devpad-vol-%d", ws.ID)
 	if err := s.container.CreateVolume(ctx, volumeName); err != nil {
-		_ = s.container.RemoveNetwork(ctx, networkName)
-		_ = s.repo.Delete(ctx, ws.ID)
+		_ = s.container.RemoveNetwork(cleanupCtx, networkName)
+		_ = s.repo.Delete(cleanupCtx, ws.ID)
 		return nil, fmt.Errorf("creating volume: %w", err)
+	}
+
+	// undo removes what was made so far: the services, then the volume,
+	// network and record.
+	undo := func() {
+		if s.sidecar != nil {
+			if err := s.sidecar.DeleteAll(cleanupCtx, ws.ID); err != nil {
+				log.Printf("workspace %d: removing services after a failed create: %v", ws.ID, err)
+			}
+		}
+		_ = s.container.RemoveVolume(cleanupCtx, volumeName)
+		_ = s.container.RemoveNetwork(cleanupCtx, networkName)
+		_ = s.repo.Delete(cleanupCtx, ws.ID)
+	}
+
+	// The project's services come first, so the container is made knowing
+	// how to reach them. A sandbox without them would leave its agent
+	// working against services that are not there, so it is not made; the
+	// project workspace is, and can get them by being rebuilt. They are
+	// started, not waited for: the project waits for them to be ready
+	// before the sandbox's setup script, outside the locks its callers
+	// hold while it is made.
+	if ws.ProjectID != 0 && s.sidecar != nil {
+		if err := s.sidecar.Provision(ctx, ws.ID, ws.ProjectID, networkName, true); err != nil {
+			if ws.IsSandbox() {
+				undo()
+				return nil, fmt.Errorf("starting the project's services: %w", err)
+			}
+			log.Printf("workspace %d: starting the project's services: %v", ws.ID, err)
+		}
 	}
 
 	containerEnv := s.containerEnv(ctx, ws.ID, agentToken, networkName)
 	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.Image, volumeName, networkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
 	if err != nil {
-		_ = s.container.RemoveVolume(ctx, volumeName)
-		_ = s.container.RemoveNetwork(ctx, networkName)
-		_ = s.repo.Delete(ctx, ws.ID)
+		undo()
 		return nil, fmt.Errorf("creating container: %w", err)
 	}
 
 	if err := s.container.Start(ctx, containerID); err != nil {
-		_ = s.container.Remove(ctx, containerID)
-		_ = s.container.RemoveVolume(ctx, volumeName)
-		_ = s.container.RemoveNetwork(ctx, networkName)
-		_ = s.repo.Delete(ctx, ws.ID)
+		_ = s.container.Remove(cleanupCtx, containerID)
+		undo()
 		return nil, fmt.Errorf("starting container: %w", err)
 	}
 
@@ -110,11 +140,9 @@ func (s *service) create(ctx context.Context, ws *Workspace) (*Workspace, error)
 	ws.VolumeName = volumeName
 	ws.NetworkName = networkName
 	if err := s.repo.Update(ctx, ws); err != nil {
-		_ = s.container.Stop(ctx, containerID)
-		_ = s.container.Remove(ctx, containerID)
-		_ = s.container.RemoveVolume(ctx, volumeName)
-		_ = s.container.RemoveNetwork(ctx, networkName)
-		_ = s.repo.Delete(ctx, ws.ID)
+		_ = s.container.Stop(cleanupCtx, containerID)
+		_ = s.container.Remove(cleanupCtx, containerID)
+		undo()
 		return nil, fmt.Errorf("updating workspace: %w", err)
 	}
 
@@ -137,8 +165,9 @@ func (s *service) containerEnv(ctx context.Context, workspaceID int64, agentToke
 		svcEnv, err := s.sidecar.EnvVars(ctx, workspaceID, networkName)
 		if err != nil {
 			log.Printf("workspace %d: failed to get sidecar env vars: %v", workspaceID, err)
-		} else {
+		} else if len(svcEnv) > 0 {
 			env = append(env, svcEnv...)
+			env = append(env, serviceVarsEnv+"="+strings.Join(envNames(svcEnv), ","))
 		}
 	}
 	return env
@@ -191,6 +220,7 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 	if err := s.repo.Delete(ctx, ws.ID); err != nil {
 		return fmt.Errorf("deleting workspace: %w", err)
 	}
+	s.forgetServiceEnvLock(ws.ID)
 	return nil
 }
 
@@ -277,8 +307,16 @@ func (s *service) start(ctx context.Context, ws *Workspace) (*Workspace, error) 
 		if err := s.sidecar.StartAll(ctx, ws.ID, ws.NetworkName); err != nil {
 			log.Printf("workspace %d: sidecar start failed: %v", ws.ID, err)
 		}
+		// Services added while it was stopped, or since its container was
+		// made, are not in the container's environment.
+		s.logSyncServiceEnv(ctx, ws)
 	}
 
+	if s.startHook != nil {
+		// The workspace has started whether or not its caller is still
+		// there to see it.
+		s.startHook.WorkspaceStarted(context.WithoutCancel(ctx), ws)
+	}
 	return ws, nil
 }
 
@@ -353,6 +391,9 @@ func (s *service) Restart(ctx context.Context, userID, workspaceID int64) (*Work
 	if err := s.ensureAgentUpdated(ctx, ws); err != nil {
 		log.Printf("workspace %d: agent update failed: %v", ws.ID, err)
 	}
+	// An agent that was just updated has none of the services' variables
+	// an older one may have been unable to keep.
+	s.logSyncServiceEnv(ctx, ws)
 
 	s.injectUserSSHKeys(ctx, ws)
 	return ws, nil

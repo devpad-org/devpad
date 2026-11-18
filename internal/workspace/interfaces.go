@@ -152,9 +152,32 @@ type ConversionService interface {
 	RestartConverted(ctx context.Context, userID, workspaceID int64) error
 }
 
+// ServiceEnvSyncer sends a running workspace's agent the variables of the
+// services it has, for the processes it starts from then on.
+type ServiceEnvSyncer interface {
+	SyncServiceEnv(ctx context.Context, userID, workspaceID int64) error
+}
+
+// ProjectServiceProvisioner gives a project workspace the services its
+// project has and it lacks.
+type ProjectServiceProvisioner interface {
+	ProvisionProjectServices(ctx context.Context, userID, workspaceID int64) error
+}
+
 // SidecarBinder injects the sidecar service lifecycle dependency.
 type SidecarBinder interface {
 	SetSidecarService(sidecar SidecarService)
+}
+
+// StartHook is told each time a workspace's container has started, once its
+// agent and services have been started with it.
+type StartHook interface {
+	WorkspaceStarted(ctx context.Context, ws *Workspace)
+}
+
+// StartHookBinder registers the StartHook.
+type StartHookBinder interface {
+	SetStartHook(h StartHook)
 }
 
 // Service is the full workspace capability set implemented by the concrete
@@ -175,7 +198,10 @@ type Service interface {
 	ProjectWorkspaceService
 	GitBridgeService
 	ConversionService
+	ServiceEnvSyncer
+	ProjectServiceProvisioner
 	SidecarBinder
+	StartHookBinder
 }
 
 // HandlerService is the workspace HTTP handler's required service surface.

@@ -125,6 +125,7 @@ func (m *commandSessionManager) Start(command, cwd string) (*commandSessionResul
 
 	cmd := exec.Command(commandShell, "-lc", command)
 	cmd.Dir = cwd
+	cmd.Env = processEnv()
 	cmd.SysProcAttr = commandSysProcAttr()
 	cmd.Stdout = session.output
 	cmd.Stderr = session.output

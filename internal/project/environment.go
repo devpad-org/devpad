@@ -236,13 +236,22 @@ func (s *service) environment(ctx context.Context, p *Project) (*Environment, er
 	return env, nil
 }
 
-// AwaitEnvironment waits for a build of the project's environment in
-// progress, then returns how the environment stands, or nil when the
-// project has none.
+// AwaitEnvironment waits for what a new sandbox of the project is made
+// from: a build of its environment in progress, and the images of its
+// services. It returns how the environment stands, or nil when the project
+// has none.
 func (s *service) AwaitEnvironment(ctx context.Context, userID, projectID int64) (*Environment, error) {
 	p, err := s.Get(ctx, userID, projectID)
 	if err != nil {
 		return nil, err
+	}
+	// Pulled here, before the caller locks anything, so making the sandbox
+	// under its locks does not wait for them. One that fails is pulled
+	// again then, which says why it cannot be.
+	if sidecars := s.sidecarServices(); sidecars != nil {
+		if err := sidecars.PullImages(ctx, p.ID); err != nil && ctx.Err() == nil {
+			log.Printf("project %d: pulling its services' images: %v", p.ID, err)
+		}
 	}
 	if !hasEnvironment(p) {
 		return nil, nil

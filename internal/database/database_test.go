@@ -72,6 +72,8 @@ func TestMigrateKeepsWorkspaceServicesWhenRebuildingTheirTable(t *testing.T) {
 
 	createPreWaitingUserAgentRunSchema(t, db)
 	markMigrationsAppliedBefore(t, db, "059_add_sqlserver_service_type")
+	// The schema predates projects, which later migrations read.
+	markMigrationsAppliedFrom(t, db, "063_project_services")
 	if _, err := db.Conn().Exec(`INSERT INTO users (id, username, email, password) VALUES (1, 'test', 'test@example.com', 'hashed')`); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}

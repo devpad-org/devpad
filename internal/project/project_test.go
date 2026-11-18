@@ -207,6 +207,12 @@ func (f *fakeContainers) CreateSidecar(context.Context, container.SidecarSpec) (
 
 func (f *fakeContainers) RemoveSidecar(context.Context, string) error { return nil }
 
+func (f *fakeContainers) SidecarHealth(context.Context, string) (container.SidecarHealth, error) {
+	return container.SidecarHealth{Running: true, Status: "healthy"}, nil
+}
+
+func (f *fakeContainers) PullImage(context.Context, string) error { return nil }
+
 func (f *fakeContainers) DaemonArch(context.Context) (string, error) {
 	return "amd64", nil
 }
@@ -512,7 +518,10 @@ func (f *fakeWorkspaces) Get(_ context.Context, userID, id int64) (*workspace.Wo
 	if ws.UserID != userID {
 		return nil, workspace.ErrForbidden
 	}
-	return ws, nil
+	// A copy, as a read of the database gives: callers read it unlocked
+	// while tests change the stored one.
+	clone := *ws
+	return &clone, nil
 }
 
 func (f *fakeWorkspaces) CreateSandbox(_ context.Context, userID int64, spec workspace.SandboxSpec) (*workspace.Workspace, error) {
@@ -671,6 +680,13 @@ func (f *fakeWorkspaces) setStatus(id int64, status workspace.Status) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.byID[id].Status = status
+}
+
+// command returns the command last started in a workspace.
+func (f *fakeWorkspaces) command(id int64) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.commands[id]
 }
 
 func (f *fakeWorkspaces) StartCommand(_ context.Context, _, id int64, command, _ string) (*agent.ManagedCommand, error) {
@@ -944,7 +960,9 @@ func TestCreateSandboxSeedsFromDefaultBranch(t *testing.T) {
 	if got := e.workspaces.seeds[ws.ID]; got != "main <- bundle-of-main" {
 		t.Fatalf("seed = %q", got)
 	}
-	if got := e.workspaces.commands[ws.ID]; got != "npm ci" {
+	// The script starts in the background, once the services are ready.
+	e.awaitSetup(t, p, ws)
+	if got := e.workspaces.command(ws.ID); got != "npm ci" {
 		t.Fatalf("setup command = %q", got)
 	}
 }

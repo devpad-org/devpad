@@ -511,3 +511,19 @@ func TestConvertHandlerListsCredentialsToStrip(t *testing.T) {
 		t.Fatalf("unexpected response %d: %s", rec.Code, rec.Body)
 	}
 }
+
+func TestConvertWorkspaceAdoptsItsServices(t *testing.T) {
+	e := setupTest(t)
+	adopter := &fakeSidecars{}
+	e.svc.SetSidecarServices(adopter)
+	ws := e.standalone()
+
+	result, err := e.convert(ws.ID, ConvertInput{RepoPath: ".", Name: "App"})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	want := []string{fmt.Sprintf("workspace %d project %d", ws.ID, result.Project.ID)}
+	if !slices.Equal(adopter.adopted, want) {
+		t.Fatalf("expected %v, got %v", want, adopter.adopted)
+	}
+}

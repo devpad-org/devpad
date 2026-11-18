@@ -34,6 +34,7 @@ const statusLabel = computed(() => {
   const s = setup.value
   if (!s) return props.workspaceStatus === 'none' ? 'Runs when the workspace is created' : 'Not run'
   switch (s.status) {
+    case 'pending': return workspaceRunning.value ? 'Waiting for the services to be ready…' : 'Runs once the workspace is started'
     case 'running': return 'Running…'
     case 'succeeded': return 'Succeeded'
     default:
@@ -77,7 +78,9 @@ async function run() {
 }
 
 function syncTimer() {
-  const polling = setup.value?.status === 'running'
+  // A pending run starts on its own once the workspace's services are ready.
+  const status = setup.value?.status
+  const polling = status === 'running' || (status === 'pending' && workspaceRunning.value)
   if (polling && timer === null) {
     timer = setInterval(() => {
       if (document.visibilityState === 'visible') void load()
@@ -88,7 +91,7 @@ function syncTimer() {
   }
 }
 
-watch(() => setup.value?.status, syncTimer)
+watch(() => [setup.value?.status, workspaceRunning.value], syncTimer)
 watch(() => [store.projectId, props.workspaceStatus], () => void load())
 
 onMounted(() => void load())
@@ -132,22 +135,23 @@ onUnmounted(() => {
   overflow-wrap: anywhere;
 }
 
+.setup-pending,
 .setup-running {
-  color: var(--accent-amber);
+  color: var(--warning);
 }
 
 .setup-succeeded {
-  color: var(--accent-green);
+  color: var(--success);
 }
 
 .setup-failed {
-  color: var(--accent-rose);
+  color: var(--error);
 }
 
 .setup-note {
   margin-top: var(--space-1);
   font-size: 0.72rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .setup-actions {
@@ -162,8 +166,8 @@ onUnmounted(() => {
   max-height: 240px;
   overflow: auto;
   padding: var(--space-2);
-  background: var(--bg-primary);
-  border: 0.5px solid var(--border-default);
+  background: var(--bg-base);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
   font-size: 0.7rem;

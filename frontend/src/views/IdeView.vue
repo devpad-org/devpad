@@ -1559,7 +1559,7 @@ const backLabel = computed(() => {
             :active="activeActivity === 'agents'"
             @checked-out="checkedOut"
           />
-          <ProjectPanel v-show="activeActivity === 'project'" :workspace-status="workspaceStatusLabel" />
+          <ProjectPanel v-show="activeActivity === 'project'" :workspace-status="workspaceStatusLabel" :workspace-id="workspace?.id ?? null" />
         </template>
       </aside>
       <div
@@ -1625,7 +1625,7 @@ const backLabel = computed(() => {
               />
             </div>
             <div v-show="activeActivity === 'services'" class="ide-surface-pane">
-              <WorkspaceServicesPanel :workspace-id="workspace?.id ?? 0" />
+              <WorkspaceServicesPanel :workspace-id="workspace?.id ?? 0" :project-id="isProjectMode ? projectId : null" />
             </div>
           </template>
           <div

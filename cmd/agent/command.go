@@ -52,6 +52,7 @@ func handleRunCommand(w http.ResponseWriter, r *http.Request) {
 func runShellCommand(ctx context.Context, command, workDir string) (commandResult, error) {
 	cmd := exec.CommandContext(ctx, commandShell, "-lc", command)
 	cmd.Dir = workDir
+	cmd.Env = processEnv()
 	cmd.SysProcAttr = commandSysProcAttr()
 	done := make(chan struct{})
 	go func() {

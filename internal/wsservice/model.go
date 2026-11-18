@@ -45,6 +45,18 @@ type LicenseAcceptance struct {
 	// it: the terms URL is a redirect whose target can change, so it alone
 	// does not say what was deployed.
 	Image string `json:"image"`
+	// TermsVersion is the version of the terms accepted (License.version).
+	// Acceptances recorded before terms had versions have none, and were
+	// of the first.
+	TermsVersion int `json:"termsVersion,omitempty"`
+}
+
+// termsVersion is the version of the terms the acceptance is of.
+func (a *LicenseAcceptance) termsVersion() int {
+	if a.TermsVersion == 0 {
+		return 1
+	}
+	return a.TermsVersion
 }
 
 // WorkspaceService represents a sidecar service attached to a workspace.
@@ -58,4 +70,16 @@ type WorkspaceService struct {
 	Config      string // JSON string of ServiceConfig
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+// ProjectService is a service every new workspace of a project gets its own
+// copy of: each new sandbox, and the project workspace when it is created or
+// rebuilt or the user asks for them. No two workspaces ever share one.
+type ProjectService struct {
+	ProjectID   int64
+	ServiceType ServiceType
+	// LicenseAcceptance is the user accepting the service's licence terms,
+	// for a service that has them; each copy is deployed under it.
+	LicenseAcceptance *LicenseAcceptance
+	CreatedAt         time.Time
 }

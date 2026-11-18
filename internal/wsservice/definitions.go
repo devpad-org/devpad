@@ -40,6 +40,12 @@ type definition struct {
 	// requiredArch, when set, is the only Docker daemon architecture the
 	// image supports.
 	requiredArch string
+	// healthcheck is the test Docker runs in the sidecar, in Docker's form,
+	// to tell when the service is ready: it accepts connections from the
+	// workspace with the configured credentials. Images that first start a
+	// local-only server to initialise their data must not pass while that
+	// one runs, so tests connect over the network where they can.
+	healthcheck func(cfg ServiceConfig) []string
 }
 
 // License describes terms a user must accept before devpad deploys a
@@ -52,6 +58,11 @@ type License struct {
 	URL  string `json:"url"`
 	// Notes say what accepting the terms means here.
 	Notes []string `json:"notes"`
+	// version numbers the terms, from 1. Raise it whenever what a user
+	// accepts changes, such as a new image under other terms or new terms
+	// behind the URL: copies a project deploys under an older acceptance
+	// are then refused until the user accepts again.
+	version int
 	// acceptEnv is what accepts the terms for the image. It is added to the
 	// container's environment only for a service whose config records a
 	// user accepting them, and never sent to the browser.
@@ -97,6 +108,11 @@ var definitions = map[ServiceType]definition{
 		connection: func(host string, cfg ServiceConfig) Connection {
 			return connectionURL(fmt.Sprintf("postgresql://%s:%s@%s:%d/%s", cfg.DefaultUser, cfg.DefaultPass, host, cfg.Port, cfg.DefaultDB))
 		},
+		// The image's first-start server listens only on its socket, so
+		// asking over TCP waits for the real one.
+		healthcheck: func(cfg ServiceConfig) []string {
+			return []string{"CMD", "pg_isready", "-h", "127.0.0.1", "-U", cfg.DefaultUser, "-d", cfg.DefaultDB}
+		},
 	},
 	ServiceMongoDB: {
 		defaults: ServiceConfig{Image: "mongo:8", Port: 27017, DefaultUser: "devpad", DefaultDB: "devpad"},
@@ -111,6 +127,11 @@ var definitions = map[ServiceType]definition{
 		connection: func(host string, cfg ServiceConfig) Connection {
 			// The user is a root user, so it authenticates against admin.
 			return connectionURL(fmt.Sprintf("mongodb://%s:%s@%s:%d/%s?authSource=admin", cfg.DefaultUser, cfg.DefaultPass, host, cfg.Port, cfg.DefaultDB))
+		},
+		// The image's first-start server listens only on loopback, so ask
+		// over the container's own address.
+		healthcheck: func(ServiceConfig) []string {
+			return []string{"CMD-SHELL", `mongosh --quiet --host "$(hostname -i)" --eval 'quit(db.adminCommand({ping: 1}).ok ? 0 : 1)'`}
 		},
 	},
 	ServiceMariaDB: {
@@ -127,6 +148,11 @@ var definitions = map[ServiceType]definition{
 		connection: func(host string, cfg ServiceConfig) Connection {
 			return connectionURL(fmt.Sprintf("mysql://%s:%s@%s:%d/%s", cfg.DefaultUser, cfg.DefaultPass, host, cfg.Port, cfg.DefaultDB))
 		},
+		// --connect fails while the first-start server runs without
+		// networking.
+		healthcheck: func(ServiceConfig) []string {
+			return []string{"CMD", "healthcheck.sh", "--connect", "--innodb_initialized"}
+		},
 	},
 	ServiceCouchDB: {
 		defaults: ServiceConfig{Image: "couchdb:3", Port: 5984, DefaultUser: "devpad", DefaultDB: "devpad"},
@@ -139,6 +165,9 @@ var definitions = map[ServiceType]definition{
 		},
 		connection: func(host string, cfg ServiceConfig) Connection {
 			return connectionURL(fmt.Sprintf("http://%s:%s@%s:%d/%s", cfg.DefaultUser, cfg.DefaultPass, host, cfg.Port, cfg.DefaultDB))
+		},
+		healthcheck: func(cfg ServiceConfig) []string {
+			return []string{"CMD", "curl", "-fs", fmt.Sprintf("http://127.0.0.1:%d/_up", cfg.Port)}
 		},
 	},
 	ServiceMeilisearch: {
@@ -167,6 +196,9 @@ var definitions = map[ServiceType]definition{
 		},
 		credentials: func(cfg ServiceConfig) []Credential {
 			return []Credential{{Label: "Master key", Value: cfg.DefaultPass}}
+		},
+		healthcheck: func(cfg ServiceConfig) []string {
+			return []string{"CMD", "curl", "-fs", fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Port)}
 		},
 	},
 	ServiceSQLServer: {
@@ -206,10 +238,17 @@ var definitions = map[ServiceType]definition{
 				"SQL Server sends usage data to Microsoft, which free editions cannot turn off.",
 			},
 			acceptEnv: []string{"ACCEPT_EULA=Y"},
+			version:   1,
 		},
 		// Microsoft publishes SQL Server images for x86-64 only, and
 		// supports them under emulation on no other architecture.
 		requiredArch: "amd64",
+		// Signing in as the workspace's login to its database waits for
+		// both, which SQL Server creates after it starts accepting
+		// connections.
+		healthcheck: func(ServiceConfig) []string {
+			return []string{"CMD-SHELL", `/opt/mssql-tools18/bin/sqlcmd -C -S 127.0.0.1 -U "$MSSQL_USER" -P "$MSSQL_PASSWORD" -d "$MSSQL_DB" -Q "SELECT 1" -b -l 5`}
+		},
 	},
 }
 

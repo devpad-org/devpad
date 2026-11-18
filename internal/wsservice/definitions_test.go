@@ -44,6 +44,12 @@ func TestEveryServiceDefinitionIsComplete(t *testing.T) {
 		if def.dataDir == "" {
 			t.Errorf("%s: no data directory", serviceType)
 		}
+		// Provision waits on it before a sandbox's setup runs.
+		if def.healthcheck == nil {
+			t.Errorf("%s: no health check", serviceType)
+		} else if hc := def.healthcheck(cfg); len(hc) < 2 || (hc[0] != "CMD" && hc[0] != "CMD-SHELL") {
+			t.Errorf("%s: health check must be in Docker's CMD or CMD-SHELL form, got %v", serviceType, hc)
+		}
 		if def.env == nil || len(def.env(cfg)) == 0 {
 			t.Errorf("%s: no container environment", serviceType)
 		}
@@ -231,5 +237,15 @@ func TestServiceCatalogMatchesFrontend(t *testing.T) {
 	sort.Strings(frontend)
 	if !slices.Equal(frontend, SupportedTypes()) {
 		t.Errorf("wsservice defines %v, but the frontend's serviceCatalog lists %v", SupportedTypes(), frontend)
+	}
+}
+
+// A licence's version starts at 1, which acceptances recorded before terms
+// had versions count as.
+func TestLicencesHaveAVersion(t *testing.T) {
+	for serviceType, def := range definitions {
+		if def.license != nil && def.license.version < 1 {
+			t.Errorf("%s: licence version %d, want 1 or more", serviceType, def.license.version)
+		}
 	}
 }

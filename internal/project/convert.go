@@ -356,6 +356,13 @@ func (s *service) finishAttached(ctx context.Context, p *Project, conv *Conversi
 		s.saveConversion(ctx, conv)
 	}
 	if ready {
+		// Before it is done, so a conversion resumed after a failure here
+		// adopts them then.
+		if sidecars := s.sidecarServices(); sidecars != nil {
+			if err := sidecars.AdoptWorkspaceServices(ctx, conv.WorkspaceID, p.ID); err != nil {
+				log.Printf("project %d: adopting workspace %d's services: %v", p.ID, conv.WorkspaceID, err)
+			}
+		}
 		conv.State = ConversionDone
 		s.saveConversion(ctx, conv)
 	}

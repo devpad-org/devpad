@@ -12,15 +12,32 @@ import (
 	"github.com/devpad-org/devpad/internal/workspace"
 )
 
+// WorkspaceAccess reads a user's workspace and tells its agent about the
+// services it has.
+type WorkspaceAccess interface {
+	workspace.AccessService
+	workspace.ServiceEnvSyncer
+}
+
 // Handler holds HTTP handlers for workspace service endpoints.
 type Handler struct {
 	service   Service
-	workspace workspace.AccessService
+	workspace WorkspaceAccess
 }
 
 // NewHandler creates a new workspace service Handler.
-func NewHandler(service Service, ws workspace.AccessService) *Handler {
+func NewHandler(service Service, ws WorkspaceAccess) *Handler {
 	return &Handler{service: service, workspace: ws}
+}
+
+// syncEnv gives a running workspace's new terminals and commands the
+// variables of the services it has now, which its container's environment
+// lacks for one added since the container was made. A failure leaves the
+// service working, reachable by the connection details the IDE shows.
+func (h *Handler) syncEnv(r *http.Request, userID, workspaceID int64) {
+	if err := h.workspace.SyncServiceEnv(r.Context(), userID, workspaceID); err != nil {
+		log.Printf("workspace %d: syncing service variables: %v", workspaceID, err)
+	}
 }
 
 // HandleList returns all services for a workspace.
@@ -102,6 +119,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 			log.Printf("service %d: auto-start failed: %v", svc.ID, err)
 		} else {
 			svc = started
+			h.syncEnv(r, user.ID, wsID)
 		}
 	}
 
@@ -144,6 +162,7 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
+	h.syncEnv(r, user.ID, wsID)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
@@ -189,6 +208,8 @@ func (h *Handler) HandleStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to start service")
 		return
 	}
+	// Starting it may have made its first container.
+	h.syncEnv(r, user.ID, wsID)
 
 	writeJSON(w, http.StatusOK, map[string]any{"service": serviceResponse(started)})
 }

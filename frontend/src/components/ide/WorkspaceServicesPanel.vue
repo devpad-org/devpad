@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
+import { ApiError } from '@/api/client'
 import { useServiceStore } from '@/stores/services'
 import type { WorkspaceService } from '@/api/services'
 import ConfirmModal from '@/components/ConfirmModal.vue'
@@ -8,6 +9,9 @@ import { serviceTypeLabel } from './serviceCatalog'
 
 const props = defineProps<{
   workspaceId: number
+  // The project, when this is its project workspace: its sandboxes get the
+  // project's services, which this workspace's may differ from.
+  projectId?: number | null
 }>()
 
 const store = useServiceStore()
@@ -17,6 +21,44 @@ const deleting = ref(false)
 const togglingId = ref<number | null>(null)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
+
+const adopting = ref(false)
+
+// This workspace's services that the project's sandboxes don't get.
+const notInProject = computed(() => {
+  const projectId = props.projectId ?? null
+  if (projectId === null || store.projectLoadedFor !== projectId || store.loadedFor !== props.workspaceId) return []
+  const project = new Set(store.projectServices.map((s) => s.serviceType))
+  return store.services.filter((s) => !project.has(s.serviceType)).map((s) => serviceTypeLabel(s.serviceType))
+})
+
+const notInProjectNotice = computed(() => {
+  const names = notInProject.value
+  if (!names.length) return ''
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  return `New sandboxes don't get ${list}: only the project's services, set in the Project panel, are copied to them.`
+})
+
+function loadProjectServices() {
+  const projectId = props.projectId ?? null
+  if (projectId === null) return
+  // A failure only hides the notice; the Project panel says why.
+  store.fetchProjectServices(projectId).catch(() => {})
+}
+
+async function adoptServices() {
+  const projectId = props.projectId ?? null
+  if (projectId === null || adopting.value) return
+  adopting.value = true
+  actionError.value = ''
+  try {
+    await store.adoptWorkspaceServices(projectId)
+  } catch (e) {
+    actionError.value = e instanceof ApiError && e.status < 500 ? e.message : 'Failed to add the services to the project'
+  } finally {
+    adopting.value = false
+  }
+}
 
 function refresh() {
   if (!props.workspaceId) return
@@ -67,8 +109,11 @@ async function handleDelete() {
 
 onMounted(() => {
   refresh()
+  loadProjectServices()
   pollTimer = setInterval(refresh, 10000)
 })
+
+watch(() => props.projectId, loadProjectServices)
 
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
@@ -114,16 +159,27 @@ onUnmounted(() => {
       <p>Select a database from the service catalog to deploy it into this workspace.</p>
     </div>
 
-    <div v-else class="services-grid">
-      <WorkspaceServiceCard
-        v-for="service in store.services"
-        :key="service.id"
-        :service="service"
-        :toggling="togglingId === service.id"
-        @toggle="toggleService"
-        @remove="confirmDelete"
-      />
-    </div>
+    <template v-else>
+      <div class="services-grid">
+        <WorkspaceServiceCard
+          v-for="service in store.services"
+          :key="service.id"
+          :service="service"
+          :toggling="togglingId === service.id"
+          @toggle="toggleService"
+          @remove="confirmDelete"
+        />
+      </div>
+      <p class="services-note">
+        Each service's connection details are in the environment of new terminals and commands, such as <code>POSTGRES_HOST</code>. Terminals opened before a service was added or removed still have the old ones.
+      </p>
+      <div v-if="notInProjectNotice" class="services-project-note">
+        <span class="services-project-note-text">{{ notInProjectNotice }}</span>
+        <button class="services-project-note-btn" :disabled="adopting" @click="adoptServices">
+          {{ adopting ? 'Adding…' : 'Give sandboxes a copy' }}
+        </button>
+      </div>
+    </template>
 
     <ConfirmModal
       :show="!!deleteTarget"
@@ -155,7 +211,7 @@ onUnmounted(() => {
   gap: var(--space-3);
   height: 38px;
   padding: 0 var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
   background: var(--ide-header-bg);
   flex-shrink: 0;
 }
@@ -181,7 +237,7 @@ onUnmounted(() => {
   padding: 0 6px;
   border-radius: 999px;
   background: var(--bg-raised);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.68rem;
   line-height: 18px;
   text-align: center;
@@ -205,7 +261,7 @@ onUnmounted(() => {
 
 .services-error {
   padding: var(--space-2) var(--space-6);
-  color: var(--accent-rose);
+  color: var(--error);
   background: var(--error-bg);
   border-bottom: 0.5px solid var(--error-border);
   font-size: 0.78rem;
@@ -220,7 +276,7 @@ onUnmounted(() => {
   justify-content: center;
   gap: var(--space-2);
   padding: var(--space-8);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   text-align: center;
 }
 
@@ -254,8 +310,8 @@ onUnmounted(() => {
 .services-spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid var(--border-default);
-  border-top-color: var(--accent-blue);
+  border: 2px solid var(--border-subtle);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -265,5 +321,55 @@ onUnmounted(() => {
   grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
   gap: var(--space-4);
   padding: var(--space-6);
+}
+
+.services-note {
+  margin: 0;
+  padding: 0 var(--space-6) var(--space-6);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.services-project-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0 var(--space-6) var(--space-6);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.services-project-note-text {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.services-project-note-btn {
+  flex-shrink: 0;
+  padding: 2px var(--space-2);
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  transition: all var(--transition-fast);
+}
+
+.services-project-note-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.services-project-note-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.services-note code {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
 }
 </style>

@@ -36,9 +36,11 @@ type Repository interface {
 	// PutSetup records a new setup run in a workspace, replacing the last.
 	PutSetup(ctx context.Context, st *Setup) error
 	// FinishSetup records how a run ended, unless a newer run replaced it.
+	// A pending run, which has no command yet, ends without starting.
 	FinishSetup(ctx context.Context, st *Setup) error
-	// RunningSetups lists the setup runs not yet recorded as ended.
-	RunningSetups(ctx context.Context) ([]*Setup, error)
+	// SetupsWithStatus lists the setup runs that stand at status, such as
+	// those pending or not yet recorded as ended.
+	SetupsWithStatus(ctx context.Context, status SetupStatus) ([]*Setup, error)
 	// SetEnvironmentImage records the last image a project's environment
 	// built. Update never writes it, so a build ending meanwhile is kept.
 	SetEnvironmentImage(ctx context.Context, projectID int64, image string) error
@@ -376,9 +378,9 @@ func (r *repository) PutSetup(ctx context.Context, st *Setup) error {
 func (r *repository) FinishSetup(ctx context.Context, st *Setup) error {
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE workspace_setups SET status = ?, exit_code = ?, output = ?, error = ?, finished_at = ?
-		 WHERE workspace_id = ? AND command_id = ? AND status = ?`,
+		 WHERE workspace_id = ? AND command_id = ? AND status IN (?, ?)`,
 		st.Status, nullableInt(st.ExitCode), st.Output, st.Error, nullableTime(st.FinishedAt),
-		st.WorkspaceID, st.CommandID, SetupRunning,
+		st.WorkspaceID, st.CommandID, SetupPending, SetupRunning,
 	)
 	if err != nil {
 		return fmt.Errorf("recording end of setup run: %w", err)
@@ -386,10 +388,10 @@ func (r *repository) FinishSetup(ctx context.Context, st *Setup) error {
 	return nil
 }
 
-func (r *repository) RunningSetups(ctx context.Context) ([]*Setup, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT `+setupColumns+` FROM workspace_setups WHERE status = ? ORDER BY workspace_id`, SetupRunning)
+func (r *repository) SetupsWithStatus(ctx context.Context, status SetupStatus) ([]*Setup, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+setupColumns+` FROM workspace_setups WHERE status = ? ORDER BY workspace_id`, status)
 	if err != nil {
-		return nil, fmt.Errorf("listing running setup runs: %w", err)
+		return nil, fmt.Errorf("listing %s setup runs: %w", status, err)
 	}
 	defer rows.Close()
 	var setups []*Setup

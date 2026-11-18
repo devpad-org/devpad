@@ -42,6 +42,14 @@ func (s *service) RebuildProjectContainer(ctx context.Context, userID, workspace
 	if _, err := rand.Read(suffix); err != nil {
 		return nil, fmt.Errorf("naming the new container: %w", err)
 	}
+	// Services added to the project since are made now, so the new
+	// container knows how to reach them; they run only while the workspace
+	// does.
+	if s.sidecar != nil {
+		if err := s.sidecar.Provision(ctx, ws.ID, ws.ProjectID, ws.NetworkName, ws.Status == StatusRunning); err != nil {
+			log.Printf("workspace %d: adding the project's services: %v", ws.ID, err)
+		}
+	}
 	env := s.containerEnv(ctx, ws.ID, ws.AgentToken, ws.NetworkName)
 	newID, err := s.container.Create(ctx, name+"-"+hex.EncodeToString(suffix), image, ws.VolumeName, ws.NetworkName, env, ws.MemoryLimit, ws.NanoCPUs)
 	if err != nil {

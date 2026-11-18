@@ -41,6 +41,8 @@ func (a *recordingAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	a.mu.Unlock()
 
 	switch r.URL.Path {
+	case "/api/env/services":
+		w.WriteHeader(http.StatusNoContent)
 	case "/api/command":
 		json.NewEncoder(w).Encode(map[string]any{"output": "", "exit_code": 0})
 	case "/api/repo/seed":
