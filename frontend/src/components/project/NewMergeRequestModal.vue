@@ -141,7 +141,7 @@ async function submit() {
           <p v-if="duplicate" class="notice notice-warning">
             <span class="mono">{{ source }}</span> already has an open merge request, !{{ duplicate.id }}.
           </p>
-          <p v-else class="form-hint pair-hint">Merge requests target protected branches. Set them from Branches in the project panel.</p>
+          <p v-else class="form-hint pair-hint">Merge requests target protected branches. Set them with Manage branches on the Project page.</p>
           <div class="form-group">
             <label class="form-label" for="new-mr-title">Title</label>
             <input id="new-mr-title" v-model="title" class="form-input" type="text" autocomplete="off" @input="markTitleEdited" />

@@ -24,7 +24,7 @@ import ProjectAgentsPanel from '@/components/project/ProjectAgentsPanel.vue'
 import ProjectInboxPanel from '@/components/project/ProjectInboxPanel.vue'
 import InboxPopover from '@/components/inbox/InboxPopover.vue'
 import ProjectMergeRequestTable from '@/components/project/ProjectMergeRequestTable.vue'
-import ProjectPanel from '@/components/project/ProjectPanel.vue'
+import ProjectOverview from '@/components/project/ProjectOverview.vue'
 import ProjectTaskTable from '@/components/project/ProjectTaskTable.vue'
 import TaskModal from '@/components/project/TaskModal.vue'
 import MergeRequestModal from '@/components/mergerequest/MergeRequestModal.vue'
@@ -131,12 +131,15 @@ const mobileRunsOpen = ref(false)
 // layout: a bottom tab bar of the project's lists, each shown full screen,
 // with the editor and the rest of the IDE under More.
 const mobileProject = computed(() => isMobile.value && isProjectMode.value)
-// The tasks and merge requests tables have surfaces of their own, like the
-// Git Graph, and take the side panel's room too; on a phone's project they
-// are its lists instead.
+// The tasks and merge requests tables and the project overview have
+// surfaces of their own, like the Git Graph, and take the side panel's room
+// too; on a phone's project they are its lists instead.
 const taskSurfaceVisible = computed(() => activeActivity.value === 'tasks' && !mobileProject.value)
 const mergeRequestSurfaceVisible = computed(() => activeActivity.value === 'merge-requests' && !mobileProject.value)
-const tableSurfaceVisible = computed(() => taskSurfaceVisible.value || mergeRequestSurfaceVisible.value)
+const projectSurfaceVisible = computed(() => activeActivity.value === 'project' && !mobileProject.value)
+const tableSurfaceVisible = computed(
+  () => taskSurfaceVisible.value || mergeRequestSurfaceVisible.value || projectSurfaceVisible.value,
+)
 // The editor sits behind the explorer and the other project panels.
 const editorSurfaceVisible = computed(
   () => activeActivity.value === 'explorer' || (isProjectActivity.value && !tableSurfaceVisible.value),
@@ -1559,7 +1562,13 @@ const backLabel = computed(() => {
             :active="activeActivity === 'agents'"
             @checked-out="checkedOut"
           />
-          <ProjectPanel v-show="activeActivity === 'project'" :workspace-status="workspaceStatusLabel" :workspace-id="workspace?.id ?? null" />
+          <ProjectOverview
+            v-if="mobileProject"
+            v-show="activeActivity === 'project'"
+            :workspace-status="workspaceStatusLabel"
+            :workspace-id="workspace?.id ?? null"
+            @navigate="selectActivity"
+          />
         </template>
       </aside>
       <div
@@ -1597,6 +1606,13 @@ const backLabel = computed(() => {
           </div>
           <div v-if="isProjectMode && !mobileProject" v-show="mergeRequestSurfaceVisible" class="ide-surface-pane">
             <ProjectMergeRequestTable />
+          </div>
+          <div v-if="isProjectMode && !mobileProject" v-show="projectSurfaceVisible" class="ide-surface-pane">
+            <ProjectOverview
+              :workspace-status="workspaceStatusLabel"
+              :workspace-id="workspace?.id ?? null"
+              @navigate="selectActivity"
+            />
           </div>
           <div v-show="editorSurfaceVisible" class="ide-surface-pane">
             <EditorPanel

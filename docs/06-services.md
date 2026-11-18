@@ -34,10 +34,10 @@ AI agents are told which variables exist, never their values, so a password does
 
 ## Project services {#project-services}
 
-A project's services, set in the **Services** section of the Project panel, are the ones every new workspace of the project gets: each task and review sandbox starts with its own empty copy of each, which stops and is deleted with the sandbox.
+A project's services, set in the **Services** card on the Project page, are the ones every new workspace of the project gets: each task and review sandbox starts with its own empty copy of each, which stops and is deleted with the sandbox.
 
 - Pick one from **Add a service…** and press **Add**. Adding a service to the project doesn't change workspaces that already exist.
-- Your project workspace gets the project's services when you [rebuild](/docs/projects#rebuilding) it. To add one without rebuilding, the Project panel says which of the project's services your workspace doesn't have yet and offers **Add to workspace**.
+- Your project workspace gets the project's services when you [rebuild](/docs/projects#rebuilding) it. To add one without rebuilding, the Services card says which of the project's services your workspace doesn't have yet and offers **Add to workspace**.
 - The other way round: if your project workspace has a service the project doesn't, **Workspace Services** offers **Give sandboxes a copy**, which adds it to the project.
 - Removing a service from the project only affects new workspaces: existing ones keep their copies.
 
@@ -45,7 +45,7 @@ A project's services, set in the **Services** section of the Project panel, are 
 
 Each service has a health check. A new workspace's [setup script](/docs/projects#setup-script) waits until every service passes it, for up to 4 minutes, so the script can create tables or load fixtures straight away.
 
-If a service doesn't get ready (it exits, stops, or never accepts connections), a task or review fails with a message saying which service and why; starting the task again retries. In your project workspace, the setup run is marked as failed, and you can run it again from the Project panel.
+If a service doesn't get ready (it exits, stops, or never accepts connections), a task or review fails with a message saying which service and why; starting the task again retries. In your project workspace, the setup run is marked as failed, and you can run it again from the Project page.
 
 ## Licence terms {#licence-terms}
 

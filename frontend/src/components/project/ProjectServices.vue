@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import DocLink from '@/components/DocLink.vue'
 import { computed, ref, watch } from 'vue'
 import { ApiError } from '@/api/client'
 import { projectServiceApi } from '@/api/services'
@@ -7,6 +6,8 @@ import { useActiveProjectStore } from '@/stores/activeProject'
 import { useServiceStore } from '@/stores/services'
 import ServiceLogo from '@/components/ide/ServiceLogo.vue'
 import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
+import ProjectCard from './ProjectCard.vue'
+import type { CardStatus } from './card'
 import { serviceCatalogItem, serviceCatalogOrder, serviceTypeLabel } from '@/components/ide/serviceCatalog'
 
 // The services each new sandbox gets its own copy of, and the project
@@ -16,6 +17,7 @@ const props = defineProps<{
   workspaceStatus: string
   // The project workspace, when there is one.
   workspaceId: number | null
+  step?: number
 }>()
 
 const store = useActiveProjectStore()
@@ -65,6 +67,12 @@ const missing = computed(() => {
   if (props.workspaceId === null || props.workspaceStatus === 'none' || serviceStore.loadedFor !== props.workspaceId) return []
   const have = new Set(serviceStore.services.map((s) => s.serviceType))
   return sorted.value.filter((s) => !have.has(s.serviceType)).map((s) => serviceTypeLabel(s.serviceType))
+})
+
+const status = computed<CardStatus>(() => {
+  if (missing.value.length) return { label: 'Workspace missing some', tone: 'warn' }
+  const n = sorted.value.length
+  return { label: n === 0 ? 'None' : `${n} ${n === 1 ? 'service' : 'services'}`, tone: n === 0 ? 'neutral' : 'ok' }
 })
 
 async function load() {
@@ -149,15 +157,34 @@ watch(() => [store.projectId, props.workspaceId, props.workspaceStatus], () => v
 </script>
 
 <template>
-  <div v-if="loaded" class="side-section">
-    <div class="side-section-title">Services<DocLink topic="projectServices" label="Project services" /></div>
+  <ProjectCard
+    title="Services"
+    doc="projectServices"
+    doc-label="Project services"
+    :step="step"
+    :status="loaded ? status.label : ''"
+    :tone="status.tone"
+  >
+    <template #icon>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <ellipse cx="12" cy="5" rx="9" ry="3" />
+        <path d="M3 5v14a9 3 0 0 0 18 0V5" />
+        <path d="M3 12a9 3 0 0 0 18 0" />
+      </svg>
+    </template>
+
+    <p class="card-lead">
+      {{ sorted.length
+        ? 'Each new workspace and sandbox gets its own empty copy, started before the setup script runs, which stops and goes with it.'
+        : 'None yet. Add the databases and search engines your code needs, and each new sandbox gets its own empty copy before the setup script runs.' }}
+    </p>
 
     <ul v-if="sorted.length" class="svc-list">
       <li v-for="svc in sorted" :key="svc.serviceType" class="svc-row">
         <ServiceLogo class="svc-logo" :type="svc.serviceType" />
         <span class="svc-name">{{ serviceTypeLabel(svc.serviceType) }}</span>
         <button
-          class="icon-btn svc-remove"
+          class="svc-remove"
           :disabled="removing !== null"
           :title="`Remove ${serviceTypeLabel(svc.serviceType)}; workspaces keep the copies they have`"
           :aria-label="`Remove ${serviceTypeLabel(svc.serviceType)}`"
@@ -170,36 +197,35 @@ watch(() => [store.projectId, props.workspaceId, props.workspaceStatus], () => v
         </button>
       </li>
     </ul>
-    <p class="svc-note">
-      {{ sorted.length
-        ? 'Each new sandbox gets its own copy, started empty before the setup script runs, and stops and goes with it.'
-        : 'None. Add the databases and search engines your code needs, and each new sandbox gets its own copy before the setup script runs.' }}
-    </p>
 
-    <template v-if="missing.length">
-      <p class="svc-note svc-missing">Your workspace doesn't have {{ missing.join(', ') }} yet.</p>
-      <div class="svc-actions">
-        <button
-          class="btn btn-secondary btn-sm"
-          :disabled="addingToWorkspace || !store.ready"
-          @click="addToWorkspace"
-        >
-          {{ addingToWorkspace ? 'Adding…' : 'Add to workspace' }}
-        </button>
-      </div>
-    </template>
+    <div v-if="missing.length" class="svc-missing">
+      <p class="card-warn">Your workspace doesn't have {{ missing.join(', ') }} yet.</p>
+      <button
+        class="btn btn-secondary btn-sm"
+        :disabled="addingToWorkspace || !store.ready"
+        @click="addToWorkspace"
+      >
+        {{ addingToWorkspace ? 'Adding…' : 'Add to workspace' }}
+      </button>
+    </div>
 
     <div v-if="addable.length" class="svc-add">
-      <SelectMenu
-        v-model="selected"
-        :options="addOptions"
-        title="Service to add"
-        placeholder="Add a service…"
-        variant="field"
-        :disabled="adding"
-      />
+      <div class="svc-add-row">
+        <SelectMenu
+          v-model="selected"
+          class="svc-select"
+          :options="addOptions"
+          title="Service to add"
+          placeholder="Add a service…"
+          variant="field"
+          :disabled="adding"
+        />
+        <button v-if="selectedEntry" class="btn btn-secondary btn-sm" :disabled="!canAdd" @click="add">
+          {{ adding ? 'Adding…' : 'Add' }}
+        </button>
+      </div>
       <template v-if="selectedEntry">
-        <p v-if="serviceCatalogItem(selectedEntry.type).description" class="svc-note">{{ serviceCatalogItem(selectedEntry.type).description }}</p>
+        <p v-if="serviceCatalogItem(selectedEntry.type).description" class="card-note">{{ serviceCatalogItem(selectedEntry.type).description }}</p>
         <div v-if="selectedEntry.license" class="svc-license">
           <ul>
             <li v-for="note in selectedEntry.license.notes" :key="note">{{ note }}</li>
@@ -213,79 +239,105 @@ watch(() => [store.projectId, props.workspaceId, props.workspaceStatus], () => v
             </span>
           </label>
         </div>
-        <div class="svc-actions">
-          <button class="btn btn-secondary btn-sm" :disabled="!canAdd" @click="add">
-            {{ adding ? 'Adding…' : 'Add' }}
-          </button>
-        </div>
       </template>
     </div>
 
-    <p v-if="error" class="notice notice-error svc-message">{{ error }}</p>
-    <p v-if="notice" class="notice notice-success svc-message">{{ notice }}</p>
-
-  </div>
+    <p v-if="error" class="notice notice-error card-message">{{ error }}</p>
+    <p v-if="notice" class="notice notice-success card-message">{{ notice }}</p>
+  </ProjectCard>
 </template>
 
 <style scoped src="./shared.css"></style>
-<style scoped src="./panel.css"></style>
+<style scoped src="./card.css"></style>
 <style scoped>
 .svc-list {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0 0 var(--space-1);
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .svc-row {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+  height: 30px;
+  padding: 0 var(--space-1) 0 var(--space-2);
+  background: var(--bg-elevated);
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-md);
   font-size: 0.78rem;
   color: var(--text-primary);
 }
 
 .svc-logo {
-  font-size: 0.9rem;
+  font-size: 0.95rem;
   flex-shrink: 0;
 }
 
 .svc-name {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .svc-remove {
-  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  transition: all var(--transition-fast);
 }
 
-.svc-note {
-  margin-top: var(--space-1);
-  font-size: 0.72rem;
-  line-height: 1.4;
-  color: var(--text-tertiary);
+.svc-remove:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--error);
+}
+
+.svc-remove:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .svc-missing {
-  color: var(--warning);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--warning-bg);
+  border: 0.5px solid var(--warning-border);
+  border-radius: var(--radius-md);
 }
 
 .svc-add {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  margin-top: var(--space-2);
+  gap: var(--space-2);
+  margin-top: auto;
+  padding-top: var(--space-2);
+}
+
+.svc-add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.svc-select {
+  flex: 1;
+  min-width: 0;
 }
 
 .svc-license {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  margin-top: var(--space-1);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   line-height: 1.4;
 }
 
@@ -312,14 +364,15 @@ watch(() => [store.projectId, props.workspaceId, props.workspaceStatus], () => v
   color: var(--accent);
 }
 
-.svc-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-  margin-top: var(--space-2);
-}
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts. */
+@media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  .svc-row {
+    height: 40px;
+  }
 
-.svc-message {
-  margin: var(--space-2) 0 0;
+  .svc-remove {
+    width: 36px;
+    height: 36px;
+  }
 }
 </style>

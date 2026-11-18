@@ -20,7 +20,7 @@ Press **New project** on the dashboard.
 | **Environment** | Optional Dockerfile lines for the project's image. See [Environment](#environment). |
 | **Setup script** | Optional commands to run in each new workspace. See [Setup script](#setup-script). |
 
-You can change everything but the default branch later with **Edit project** in the IDE's **Project** panel; the default and protected branches are set under **Branches** (see [Protected branches](/docs/branches#protected-branches)). **Delete project** in the same panel deletes the project, its workspace, its sandboxes and its repository: branches that weren't pushed upstream are lost.
+You can change everything but the default branch later with **Edit project** on the IDE's **Project** page; the default and protected branches are set with **Manage branches** (see [Protected branches](/docs/branches#protected-branches)). **Delete project**, at the bottom of the same page, deletes the project, its workspace, its sandboxes and its repository: branches that weren't pushed upstream are lost.
 
 ## The IDE {#the-ide}
 
@@ -32,7 +32,7 @@ Opening a project opens its IDE. The activity bar on the left switches between:
 - **Tasks**, **Merge requests** and **Agents**: the board, the project's merge requests, and the agents' runs.
 - **Workspace Info**: the container's status and processes, with **Restart** and **Stop**.
 - **Database Services**: the workspace's [services](/docs/services).
-- **Project**: the project's repository, upstream, environment, services and setup, and its settings.
+- **Project**: a page of its own with the project's open tasks, merge requests and sandboxes at a glance, its protected branches and upstream, and how new workspaces are made: its environment, services and setup script, in that order.
 
 The terminal is at the bottom. On a phone, the same panels are in the tab bar and its **More** menu.
 
@@ -53,12 +53,12 @@ A project's environment is the body of a Dockerfile, run as root on devpad's wor
 
 - `FROM`, `ADD` and `COPY` aren't allowed: devpad supplies the base image, and there are no files to copy. Download what you need with `RUN curl`.
 - Devpad builds it in the background whenever it changes. Builds run on a network of their own, limited to 4 GB of memory, 2 CPUs and 30 minutes.
-- The **Environment** section of the Project panel shows whether it's **Built**, **Building…**, **Out of date** or **Build failed**, with **Show build log**. **Build again** retries a failed build.
+- The **Environment** card on the Project page shows the Dockerfile lines and whether they're **Built**, **Building…**, **Out of date** or **Build failed**, with **Show build log**. **Build again** retries a failed build.
 - New workspaces get the last version that built, or devpad's plain image if none has.
 
 ## Rebuilding your workspace {#rebuilding}
 
-Changing the environment doesn't touch your running workspace. When it's out of date, the Environment section offers **Rebuild workspace**, which replaces its container with one made from the current environment.
+Changing the environment doesn't touch your running workspace. When it's out of date, the Environment card offers **Rebuild workspace**, which replaces its container with one made from the current environment.
 
 Everything in `/workspace` is kept, including uncommitted changes. Everything else is lost: packages you installed by hand, files in your home directory, and running processes. Rebuilding also gives your workspace any [project services](/docs/services#project-services) it doesn't have yet.
 
@@ -69,14 +69,14 @@ The setup script runs once in each newly made workspace, in `/workspace`, after 
 - It waits for the workspace's [services](/docs/services#readiness) to be ready, so it can create tables or load data.
 - Agents start once it finishes, and are told if it failed.
 - It can run for up to 30 minutes.
-- The **Setup** section of the Project panel shows your workspace's run (**Succeeded**, **Failed**, **Waiting for the services to be ready…**) with **Show output**, and **Run again** reruns it.
+- The **Setup script** card on the Project page shows the script and how your workspace's run went (**Succeeded**, **Failed**, or **Waiting…** for the services to be ready) with **Show output**, and **Run again** reruns it.
 
 ## Upstream {#upstream}
 
 A project's upstream is the repository on GitHub, GitLab or elsewhere that it was cloned from. Devpad reaches it from the project's repo container with your SSH key; workspaces never do.
 
-- **Syncing** fetches the upstream and fast-forwards the project's protected branches that are strictly behind it. It never creates, deletes or force-moves a branch. Sync with **Sync from upstream** in the Project panel's **Upstream** section, or with `git fetch origin` in your workspace; `git fetch devpad` syncs too when the last sync is over a minute old.
-- **Pushing** sends a protected branch upstream: tick **Push … upstream** when merging, or press **Push** on the branch in the Upstream section. Only protected branches are ever pushed.
+- **Syncing** fetches the upstream and fast-forwards the project's protected branches that are strictly behind it. It never creates, deletes or force-moves a branch. Sync with **Sync from upstream** in the **Protected branches** card on the Project page, or with `git fetch origin` in your workspace; `git fetch devpad` syncs too when the last sync is over a minute old.
+- **Pushing** sends a protected branch upstream: tick **Push … upstream** when merging, or press **Push** beside the branch in the Protected branches card. Only protected branches are ever pushed.
 - In your workspace, `origin` shows the upstream's branches as `origin/<branch>`. Pushing to it is refused: publish to `devpad` and let devpad push upstream.
 - If a protected branch has diverged from the upstream, merge `origin/<branch>` into a branch in your workspace and open a merge request into it.
 
