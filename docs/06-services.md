@@ -7,14 +7,16 @@ A service is a database or search engine running in its own container next to a 
 
 ## The catalog {#catalog}
 
-| Service | Port | Notes |
-|---|---|---|
-| PostgreSQL | 5432 | Relational database. |
-| MongoDB | 27017 | Document database with an admin-authenticated default database. |
-| MariaDB | 3306 | MySQL-compatible relational database. |
-| CouchDB | 5984 | HTTP document database. |
-| Meilisearch | 7700 | Full-text search engine with a workspace-local master key. |
-| SQL Server | 1433 | Microsoft SQL Server 2025, free Developer edition. Needs 2 GB of memory and an amd64 Docker host; [licence terms](#licence-terms) apply. |
+| Service | Version | Port | Notes |
+|---|---|---|---|
+| PostgreSQL | 17 | 5432 | Relational database. |
+| MongoDB | 8 | 27017 | Document database with an admin-authenticated default database. |
+| MariaDB | 11 | 3306 | MySQL-compatible relational database. |
+| CouchDB | 3 | 5984 | HTTP document database. |
+| Meilisearch | 1.45 | 7700 | Full-text search engine with a workspace-local master key. |
+| SQL Server | 2025 | 1433 | Free Developer edition. Needs 2 GB of memory and an amd64 Docker host; [licence terms](#licence-terms) apply. |
+
+Devpad sets each service's version, and you can't choose another. If your project needs a different one, run it yourself rather than through the catalog.
 
 A workspace has at most one service of each type. The user and database are `devpad`, and each copy gets a password of its own. Its data lives in a Docker volume that belongs to that copy alone.
 
@@ -27,6 +29,12 @@ Open **Database Services** from the IDE's activity bar (**Services** in the mobi
 ## Connection variables {#connection-variables}
 
 Every new terminal and command in the workspace gets each service's connection details as environment variables: `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE`, and the same with `MONGODB_`, `MARIADB_`, `COUCHDB_` and `SQLSERVER_`. Meilisearch gets `MEILISEARCH_HOST`, `MEILISEARCH_PORT`, `MEILISEARCH_URL`, `MEILISEARCH_MASTER_KEY`, `MEILISEARCH_API_KEY` and `MEILI_MASTER_KEY`.
+
+There is no variable holding a whole connection URL, so build one from these. Passwords are letters and digits, so they need no escaping:
+
+```
+postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DATABASE
+```
 
 When you add or remove a service, devpad updates the variables new terminals get straight away, without restarting the workspace. Terminals opened before the change still have the old values: open a new one. `DEVPAD_SERVICE_VARS` lists the names of every service variable the workspace's container was made with.
 

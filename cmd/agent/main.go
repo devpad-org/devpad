@@ -10,12 +10,17 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // Version is set at build time via -ldflags.
 var Version = "dev"
 
-const defaultPort = "9100"
+const (
+	defaultPort = "9100"
+	// loginPathTimeout bounds the sudo call that startup waits for.
+	loginPathTimeout = 10 * time.Second
+)
 
 var workspaceRoot = "/workspace"
 
@@ -34,6 +39,17 @@ func main() {
 	authToken := os.Getenv("AGENT_AUTH_TOKEN")
 	if authToken == "" {
 		log.Fatalf("AGENT_AUTH_TOKEN environment variable is required")
+	}
+
+	// Only inside a container: an agent run by hand must not change its
+	// host's login shells. It comes before serving, so that the first command
+	// finds it.
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), loginPathTimeout)
+		if err := installLoginPath(ctx); err != nil {
+			log.Printf("keeping the image's PATH in login shells: %v", err)
+		}
+		cancel()
 	}
 
 	// Start filesystem watcher

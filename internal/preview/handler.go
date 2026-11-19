@@ -100,6 +100,19 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Previews are same-site with each other, so the browser would send this
+	// preview's cookie with a request made by another workspace's page.
+	origin := r.Header.Get("Origin")
+	originWS, fromPreview := h.originWorkspace(origin)
+	if fromPreview && originWS != wsID {
+		http.Error(w, "previews of another workspace cannot reach this one", http.StatusForbidden)
+		return
+	}
+	if fromPreview && strings.HasPrefix(origin, "https://") && isPreflight(r) {
+		answerPreflight(w, r, origin)
+		return
+	}
+
 	// If a token is present, try to exchange it for a cookie.
 	if tokenStr := r.URL.Query().Get("token"); tokenStr != "" {
 		t, err := h.service.ValidateToken(r.Context(), tokenStr)
@@ -134,6 +147,42 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	h.proxyToContainer(w, r, wsID, port)
 }
 
+// originWorkspace returns the workspace whose preview an Origin header names.
+func (h *Handler) originWorkspace(origin string) (int64, bool) {
+	if origin == "" {
+		return 0, false
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return 0, false
+	}
+	wsID, _, err := h.parseSubdomain(u.Host)
+	return wsID, err == nil
+}
+
+func isPreflight(r *http.Request) bool {
+	return r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != ""
+}
+
+// answerPreflight lets one of a workspace's previews call another, such as a
+// frontend calling its API. Browsers send preflights without cookies, so
+// devpad answers them itself rather than let unauthenticated requests reach
+// the workspace. The app's own CORS headers still decide whether the page may
+// read the response.
+func answerPreflight(w http.ResponseWriter, r *http.Request, origin string) {
+	header := w.Header()
+	header.Set("Access-Control-Allow-Origin", origin)
+	header.Set("Access-Control-Allow-Credentials", "true")
+	header.Set("Access-Control-Allow-Methods", r.Header.Get("Access-Control-Request-Method"))
+	if requested := r.Header.Get("Access-Control-Request-Headers"); requested != "" {
+		header.Set("Access-Control-Allow-Headers", requested)
+	}
+	header.Add("Vary", "Origin")
+	header.Add("Vary", "Access-Control-Request-Method")
+	header.Add("Vary", "Access-Control-Request-Headers")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // setPreviewCookie sets the preview session cookie and redirects to the clean URL.
 func (h *Handler) setPreviewCookie(w http.ResponseWriter, r *http.Request, t *Token) {
 	cookieValue := h.signCookie(previewClaims{
@@ -147,7 +196,6 @@ func (h *Handler) setPreviewCookie(w http.ResponseWriter, r *http.Request, t *To
 		Name:     PreviewCookieName,
 		Value:    cookieValue,
 		Path:     "/",
-		Domain:   "." + h.previewDomain,
 		Expires:  time.Now().Add(PreviewSessionDuration),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
@@ -186,11 +234,16 @@ func (h *Handler) proxyToContainer(w http.ResponseWriter, r *http.Request, wsID 
 		Host:   agentAddr,
 	}
 
+	publicHost := r.Host
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+			// The app sees the agent's address as its host, so tell it the
+			// address the browser used.
+			req.Header.Set("X-Forwarded-Host", publicHost)
+			req.Header.Set("X-Forwarded-Proto", "https")
 			// Route through the agent's port proxy endpoint.
 			req.URL.Path = fmt.Sprintf("/proxy/%d%s", port, req.URL.Path)
 			// Remove the preview cookie so it doesn't leak into the container.
@@ -202,6 +255,7 @@ func (h *Handler) proxyToContainer(w http.ResponseWriter, r *http.Request, wsID 
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			sanitizeSetCookies(resp.Header)
+			rewriteRedirect(resp.Header, target.Host, publicHost)
 			return nil
 		},
 		// Flush immediately for streaming responses (SSE, chunked).
@@ -213,6 +267,21 @@ func (h *Handler) proxyToContainer(w http.ResponseWriter, r *http.Request, wsID 
 	}
 
 	proxy.ServeHTTP(w, r)
+}
+
+// rewriteRedirect points a redirect an app built from the host it saw, the
+// agent's address the browser cannot reach, back at the preview.
+func rewriteRedirect(h http.Header, agentHost, publicHost string) {
+	location := h.Get("Location")
+	if location == "" {
+		return
+	}
+	u, err := url.Parse(location)
+	if err != nil || u.Host != agentHost {
+		return
+	}
+	u.Scheme, u.Host = "https", publicHost
+	h.Set("Location", u.String())
 }
 
 // parseSubdomain extracts workspace ID and port from a hostname like "3-8080.preview.example.com".
