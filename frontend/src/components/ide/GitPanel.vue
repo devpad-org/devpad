@@ -77,7 +77,7 @@ const needsGitConfig = computed(() =>
 )
 
 // File watcher for event-driven refresh
-const { connect: connectWatcher, onEvent } = useFileWatcher(() => props.workspaceId)
+const { connect: connectWatcher, onEvent, onResync } = useFileWatcher(() => props.workspaceId)
 const {
   hostKey: sshHostKey,
   accepting: acceptingSshHostKey,
@@ -98,6 +98,7 @@ function debouncedRefresh() {
 onEvent(() => {
   debouncedRefresh()
 })
+onResync(debouncedRefresh)
 
 // --- Computed ---
 const stagedFiles = computed(() => (status.value?.files ?? []).filter((f) => f.staged))
@@ -681,7 +682,7 @@ onUnmounted(() => {
 
 <style scoped>
 .git-panel {
-  --ide-header-icon: var(--accent-purple);
+  --ide-header-icon: var(--hue-purple);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -695,7 +696,7 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-2);
   padding: 0 var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
   background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
@@ -743,7 +744,7 @@ onUnmounted(() => {
 }
 
 .git-icon-btn--danger:hover:not(:disabled) {
-  color: var(--accent-rose);
+  color: var(--error);
   background: var(--error-bg);
 }
 
@@ -757,7 +758,7 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--space-2);
   padding: 10px var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
   flex-shrink: 0;
 }
 
@@ -766,7 +767,7 @@ onUnmounted(() => {
   align-items: flex-start;
   gap: var(--space-2);
   padding: 6px 6px 6px 10px;
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-elevated);
   font-size: 0.72rem;
@@ -797,7 +798,7 @@ onUnmounted(() => {
 }
 
 .git-notice--info .git-notice-icon {
-  color: var(--accent-blue);
+  color: var(--hue-blue);
 }
 
 .git-notice-body {
@@ -835,7 +836,7 @@ onUnmounted(() => {
   height: 20px;
   flex-shrink: 0;
   border-radius: var(--radius-sm);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   transition: color var(--transition-fast), background var(--transition-fast);
 }
 
@@ -876,7 +877,7 @@ onUnmounted(() => {
   padding: 6px var(--space-2);
   background: var(--bg-void);
   color: var(--text-primary);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   font-family: var(--font-sans);
   font-size: 0.75rem;
@@ -885,7 +886,7 @@ onUnmounted(() => {
 }
 
 .git-input::placeholder {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .git-input:focus {
@@ -919,7 +920,7 @@ onUnmounted(() => {
   padding: 0 var(--space-3);
   font-size: 0.74rem;
   border-radius: var(--radius-md);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   color: var(--text-primary);
   background: var(--bg-raised);
   white-space: nowrap;
@@ -928,7 +929,7 @@ onUnmounted(() => {
 
 .git-btn:hover:not(:disabled) {
   background: var(--bg-hover);
-  border-color: var(--border-active);
+  border-color: var(--border-strong);
 }
 
 .git-btn:disabled {
@@ -967,7 +968,7 @@ onUnmounted(() => {
 .git-btn--commit:disabled {
   opacity: 1;
   background: var(--bg-raised);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .git-btn-count {
@@ -1032,13 +1033,13 @@ onUnmounted(() => {
 }
 
 .git-count--staged {
-  background: color-mix(in srgb, var(--accent-green) 16%, transparent);
-  color: var(--accent-green);
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+  color: var(--success);
 }
 
 .git-chevron {
   flex-shrink: 0;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   transition: transform var(--transition-fast);
 }
 
@@ -1096,25 +1097,25 @@ onUnmounted(() => {
   font-size: 0.7rem;
   font-weight: 600;
   text-align: center;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .st-modified {
-  color: var(--accent-amber);
+  color: var(--warning);
 }
 
 .st-added,
 .st-untracked {
-  color: var(--accent-green);
+  color: var(--success);
 }
 
 .st-deleted {
-  color: var(--accent-rose);
+  color: var(--error);
 }
 
 .st-renamed,
 .st-copied {
-  color: var(--accent-blue);
+  color: var(--hue-blue);
 }
 
 .git-file-name {
@@ -1137,7 +1138,7 @@ onUnmounted(() => {
   flex: 1;
   min-width: 0;
   font-size: 0.7rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1156,7 +1157,7 @@ onUnmounted(() => {
 .git-commit-card {
   margin: var(--space-3) var(--space-3) var(--space-1);
   padding: var(--space-2) 10px;
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-elevated);
 }
@@ -1172,14 +1173,14 @@ onUnmounted(() => {
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .git-hash {
   padding: 0 5px;
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
-  color: var(--accent-blue);
+  background: color-mix(in srgb, var(--hue-blue) 14%, transparent);
+  color: var(--hue-blue);
   font-size: 0.68rem;
   line-height: 18px;
 }
@@ -1217,7 +1218,7 @@ onUnmounted(() => {
 .git-commit-card-meta {
   margin-top: 2px;
   font-size: 0.68rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 /* Empty and clean states */
@@ -1243,8 +1244,8 @@ onUnmounted(() => {
   width: 44px;
   height: 44px;
   margin-bottom: var(--space-1);
-  background: color-mix(in srgb, var(--accent-purple) 14%, transparent);
-  color: var(--accent-purple);
+  background: color-mix(in srgb, var(--hue-purple) 14%, transparent);
+  color: var(--hue-purple);
 }
 
 .git-empty-title,
@@ -1259,7 +1260,7 @@ onUnmounted(() => {
   max-width: 240px;
   font-size: 0.72rem;
   line-height: 1.45;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .git-empty-text {
@@ -1276,14 +1277,14 @@ onUnmounted(() => {
   font-size: 0.66rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .git-clone-divider::before,
 .git-clone-divider::after {
   content: '';
   flex: 1;
-  border-top: 0.5px solid var(--border-default);
+  border-top: 0.5px solid var(--border-subtle);
 }
 
 .git-clone-form {
@@ -1320,13 +1321,13 @@ onUnmounted(() => {
   height: 36px;
   margin-bottom: 2px;
   background: var(--success-bg);
-  color: var(--accent-green);
+  color: var(--success);
 }
 
 .git-placeholder {
   padding: var(--space-4);
   text-align: center;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.74rem;
 }
 
