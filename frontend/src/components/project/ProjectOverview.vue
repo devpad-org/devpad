@@ -372,7 +372,6 @@ async function dismissConversion() {
   background: var(--bg-base);
   border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  box-shadow: inset 0 1px 0 var(--border-top-highlight);
   text-align: left;
   color: var(--text-primary);
 }

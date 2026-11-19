@@ -34,7 +34,6 @@
   --border-hairline: rgba(228, 231, 236, 0.07);
   --border-subtle: rgba(228, 231, 236, 0.11);
   --border-strong: rgba(228, 231, 236, 0.2);
-  --border-top-highlight: rgba(255, 255, 255, 0.06);
 
   --text-primary: #e4e7ec;
   --text-secondary: #b3b9c4;
@@ -184,7 +183,6 @@
   --border-hairline: rgba(235, 219, 178, 0.06);
   --border-subtle: rgba(235, 219, 178, 0.1);
   --border-strong: rgba(235, 219, 178, 0.18);
-  --border-top-highlight: rgba(251, 241, 199, 0.08);
 
   /* Text */
   --text-primary: #ebdbb2;
@@ -352,7 +350,6 @@
   --border-hairline: rgba(60, 56, 54, 0.1);
   --border-subtle: rgba(60, 56, 54, 0.17);
   --border-strong: rgba(60, 56, 54, 0.3);
-  --border-top-highlight: rgba(255, 255, 255, 0.45);
 
   --text-primary: #3c3836;
   --text-secondary: #504945;
@@ -502,7 +499,6 @@
   --border-hairline: rgba(26, 30, 38, 0.09);
   --border-subtle: rgba(26, 30, 38, 0.15);
   --border-strong: rgba(26, 30, 38, 0.27);
-  --border-top-highlight: rgba(255, 255, 255, 0.7);
 
   --text-primary: #1a1e26;
   --text-secondary: #414a58;
@@ -659,7 +655,6 @@
   --border-hairline: rgba(216, 222, 233, 0.07);
   --border-subtle: rgba(216, 222, 233, 0.11);
   --border-strong: rgba(216, 222, 233, 0.2);
-  --border-top-highlight: rgba(236, 239, 244, 0.06);
 
   /* Snow Storm */
   --text-primary: #e5e9f0;
@@ -819,7 +814,6 @@
   --border-hairline: rgba(46, 52, 64, 0.09);
   --border-subtle: rgba(46, 52, 64, 0.15);
   --border-strong: rgba(46, 52, 64, 0.27);
-  --border-top-highlight: rgba(255, 255, 255, 0.6);
 
   /* Polar Night */
   --text-primary: #2e3440;
