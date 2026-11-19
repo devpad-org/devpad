@@ -486,16 +486,21 @@ func (s *agentRunService) consumeRun(ctx context.Context, runID int64, stream <-
 					log.Printf("failed to record agent run %d usage: %v", runID, err)
 				}
 			}
-			if err := s.appendAndPublish(runID, event); err != nil {
+			stored, err := s.repo.AppendEvent(context.Background(), runID, event)
+			if err != nil {
 				log.Printf("failed to persist agent run %d event: %v", runID, err)
 				errorMessage = err.Error()
 				s.finishRun(runID, domain.AgentRunFailed, errorMessage)
 				return
 			}
 			if event.Done {
+				// Set the final status before viewers see the run end, so one
+				// that acts on it right away finds the run finished.
 				s.finishRun(runID, status, errorMessage)
+				s.broker.Publish(stored)
 				return
 			}
+			s.broker.Publish(stored)
 		case <-ctx.Done():
 			s.endCancelledRun(runID, ctx.Err())
 			return
@@ -524,20 +529,7 @@ func (s *agentRunService) endCancelledRun(runID int64, cause error) {
 // fails with domain.AgentRunInterruptedError, so its owner can tell it apart
 // from a real failure and continue it, and it keeps its transcript.
 func (s *agentRunService) interruptRun(runID int64) error {
-	if err := s.appendAndPublish(runID, domain.ClientEvent{ErrorMessage: runnerShutdownMessage}); err != nil {
-		return err
-	}
-	if err := s.appendAndPublish(runID, domain.ClientEvent{Done: true}); err != nil {
-		return err
-	}
-	if err := s.persistRunConversation(context.Background(), runID); err != nil {
-		log.Printf("failed to persist interrupted agent run %d conversation: %v", runID, err)
-	}
-	if err := s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunFailed, runnerShutdownMessage); err != nil {
-		return err
-	}
-	s.notifyFinished(runID)
-	return nil
+	return s.endRun(runID, domain.AgentRunFailed, runnerShutdownMessage, true)
 }
 
 func (s *agentRunService) ListAttention(ctx context.Context, userID int64) ([]AttentionItem, error) {
@@ -630,38 +622,46 @@ func (s *agentRunService) shouldPersistRunConversation(run *domain.AgentRun) boo
 }
 
 func (s *agentRunService) failRun(runID int64, message string) error {
-	if err := s.appendAndPublish(runID, domain.ClientEvent{ErrorMessage: message}); err != nil {
-		return err
-	}
-	if err := s.appendAndPublish(runID, domain.ClientEvent{Done: true}); err != nil {
-		return err
-	}
-	if err := s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunFailed, message); err != nil {
-		return err
-	}
-	s.notifyFinished(runID)
-	return nil
+	return s.endRun(runID, domain.AgentRunFailed, message, false)
 }
 
+// cancelRun persists the run's conversation for the same reason failed runs
+// do, and often with no browser attached at all: a run cancelled from the runs
+// panel or by a server shutdown has no SSE consumer to save it, and "Continue"
+// reloads the conversation from the database.
 func (s *agentRunService) cancelRun(runID int64, message string) error {
+	return s.endRun(runID, domain.AgentRunCancelled, message, true)
+}
+
+// endRun tells the run's viewers why it ended and sets its final status. The
+// status is set even if the events or the conversation cannot be saved, since
+// a run left active stays listed as active and, as a child run, counts against
+// its parent's limit until the server restarts. Like a run that finishes, the
+// status is set before viewers see the done event.
+func (s *agentRunService) endRun(runID int64, status domain.AgentRunStatus, message string, persistConversation bool) error {
+	var eventErr error
+	var done *domain.AgentRunEvent
 	if err := s.appendAndPublish(runID, domain.ClientEvent{ErrorMessage: message}); err != nil {
-		return err
+		eventErr = fmt.Errorf("recording end of run: %w", err)
+	} else if stored, err := s.repo.AppendEvent(context.Background(), runID, domain.ClientEvent{Done: true}); err != nil {
+		eventErr = fmt.Errorf("recording end of run: %w", err)
+	} else {
+		done = &stored
 	}
-	if err := s.appendAndPublish(runID, domain.ClientEvent{Done: true}); err != nil {
-		return err
+	if persistConversation {
+		if err := s.persistRunConversation(context.Background(), runID); err != nil {
+			log.Printf("failed to persist ended agent run %d conversation: %v", runID, err)
+		}
 	}
-	// Cancelled runs persist for the same reason failed ones do, and often with no browser
-	// attached at all: a run cancelled from the runs panel or by a server shutdown has no
-	// SSE consumer to save it, and "Continue" reloads the conversation from the database.
-	// A persistence failure must not stop the run from being marked cancelled.
-	if err := s.persistRunConversation(context.Background(), runID); err != nil {
-		log.Printf("failed to persist cancelled agent run %d conversation: %v", runID, err)
+	statusErr := s.repo.UpdateStatus(context.Background(), runID, status, message)
+	if done != nil {
+		s.broker.Publish(*done)
 	}
-	if err := s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunCancelled, message); err != nil {
-		return err
+	if statusErr != nil {
+		return errors.Join(eventErr, statusErr)
 	}
 	s.notifyFinished(runID)
-	return nil
+	return eventErr
 }
 
 func (s *agentRunService) appendAndPublish(runID int64, event domain.ClientEvent) error {
