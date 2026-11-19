@@ -3,6 +3,8 @@ package workspace
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -71,8 +73,143 @@ func TestSeedUsesChosenGitIdentity(t *testing.T) {
 	}
 	// The email was left empty, so it is still the account's.
 	want := "/api/repo/seed?base=main&branch=main&email=test%40test.com&name=Test+User"
-	if got := ra.paths(); len(got) != 1 || got[0] != want {
-		t.Fatalf("seed requests = %v, want %s", got, want)
+	if got := ra.paths(); len(got) == 0 || got[0] != want {
+		t.Fatalf("seed requests = %v, want %s first", got, want)
+	}
+}
+
+func TestSaveDuringSeedReachesTheRepo(t *testing.T) {
+	svc, ra := setupSandboxService(t)
+	ctx := context.Background()
+	ws, err := svc.CreateProjectWorkspace(ctx, 1, ProjectWorkspaceSpec{ProjectID: 7, Name: "proj"})
+	if err != nil {
+		t.Fatalf("create project workspace: %v", err)
+	}
+	ra.mu.Lock()
+	ra.onSeed = func() {
+		if err := svc.(*service).users.SetGitIdentity(ctx, 1, "Test User", "me@example.com"); err != nil {
+			t.Errorf("saving git identity: %v", err)
+		}
+		// The save's own sync finds the repo not seeded yet.
+		if updated, complete := svc.SyncGitIdentity(ctx, 1); updated != 0 || !complete {
+			t.Errorf("SyncGitIdentity during the seed = %d, %v; want 0, true", updated, complete)
+		}
+	}
+	ra.mu.Unlock()
+
+	if _, err := svc.SeedSandboxRepo(ctx, 1, ws.ID, "main", strings.NewReader("bundle")); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if n := gitActions(ra); n != 1 {
+		t.Fatalf("sent %d git actions, want 1", n)
+	}
+	if req := sentGitIdentity(t, ra); req.UserName != "Test User" || req.UserEmail != "me@example.com" {
+		t.Fatalf("sent %+v", req)
+	}
+}
+
+// cancelOnAgentWait cancels a start's context once the container is up and
+// devpad goes looking for its agent, as a caller leaving then would.
+type cancelOnAgentWait struct {
+	*mockContainerManager
+	cancel  context.CancelFunc
+	started bool
+}
+
+func (m *cancelOnAgentWait) Start(ctx context.Context, id string) error {
+	m.started = true
+	return m.mockContainerManager.Start(ctx, id)
+}
+
+func (m *cancelOnAgentWait) GetIP(ctx context.Context, id, network string) (string, error) {
+	if m.started {
+		m.cancel()
+	}
+	return m.mockContainerManager.GetIP(ctx, id, network)
+}
+
+func TestStartSyncsGitIdentityAfterCallerLeaves(t *testing.T) {
+	svc, ra := setupSandboxService(t)
+	background := context.Background()
+	ws := seededProjectWorkspace(t, svc, ra)
+	if _, err := svc.Stop(background, 1, ws.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	saveGitIdentity(t, svc, "Test User", "me@example.com")
+
+	ctx, cancel := context.WithCancel(background)
+	defer cancel()
+	s := svc.(*service)
+	s.container = &cancelOnAgentWait{mockContainerManager: s.container.(*mockContainerManager), cancel: cancel}
+
+	if _, err := svc.Start(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("the caller never left")
+	}
+	if n := gitActions(ra); n != 1 {
+		t.Fatalf("sent %d git actions, want 1", n)
+	}
+}
+
+func TestRestartConvertedSyncsGitIdentity(t *testing.T) {
+	svc, ca := setupConvertService(t)
+	ctx := context.Background()
+	ws, err := createLegacyWorkspace(ctx, svc, 1, "mine", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.AttachToProject(ctx, 1, ws.ID, 7, nil); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	saveGitIdentity(t, svc, "Test User", "me@example.com")
+	ca.reset()
+
+	if err := svc.RestartConverted(ctx, 1, ws.ID); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if !slices.Contains(ca.paths(), "/api/git/action") {
+		t.Fatalf("requests after the restart = %v, want a git action", ca.paths())
+	}
+}
+
+func TestSyncGitIdentityContainsAgentErrors(t *testing.T) {
+	hostile := "first line\nforged log line " + strings.Repeat("x", 10_000)
+	tests := []struct {
+		name   string
+		answer http.HandlerFunc
+	}{
+		{"failed action", func(w http.ResponseWriter, _ *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "error": hostile})
+		}},
+		{"error status", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]any{"error": hostile})
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, ra := setupSandboxService(t)
+			ctx := context.Background()
+			created := seededProjectWorkspace(t, svc, ra)
+			ws, err := svc.Get(ctx, 1, created.ID)
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			saveGitIdentity(t, svc, "Test User", "")
+			ra.mu.Lock()
+			ra.gitAction = tt.answer
+			ra.mu.Unlock()
+
+			err = svc.(*service).syncGitIdentity(ctx, ws)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if msg := err.Error(); strings.Contains(msg, "\n") || len(msg) > 2*maxFailureReason {
+				t.Fatalf("error is %d bytes, newline %v", len(msg), strings.Contains(msg, "\n"))
+			}
+		})
 	}
 }
 

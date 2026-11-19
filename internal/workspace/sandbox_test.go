@@ -23,6 +23,10 @@ type recordingAgent struct {
 	mu       sync.Mutex
 	requests []string
 	bodies   map[string]string
+	// onSeed, if set, runs while a seed is in progress; gitAction, if set,
+	// answers git actions.
+	onSeed    func()
+	gitAction http.HandlerFunc
 }
 
 func (a *recordingAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +42,7 @@ func (a *recordingAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	a.requests = append(a.requests, r.URL.Path+"?"+r.URL.RawQuery)
 	a.bodies[r.URL.Path] = string(body)
+	onSeed, gitAction := a.onSeed, a.gitAction
 	a.mu.Unlock()
 
 	switch r.URL.Path {
@@ -46,8 +51,15 @@ func (a *recordingAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/command":
 		json.NewEncoder(w).Encode(map[string]any{"output": "", "exit_code": 0})
 	case "/api/git/action":
+		if gitAction != nil {
+			gitAction(w, r)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{"success": true})
 	case "/api/repo/seed":
+		if onSeed != nil {
+			onSeed()
+		}
 		json.NewEncoder(w).Encode(map[string]string{"branch": r.URL.Query().Get("branch"), "sha": "abc"})
 	case "/api/repo/bundle":
 		w.Write([]byte("bundle:" + r.URL.Query().Get("branch")))

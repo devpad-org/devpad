@@ -88,11 +88,13 @@ func (s *service) syncGitIdentity(ctx context.Context, ws *Workspace) error {
 		UserName:  name,
 		UserEmail: email,
 	})
+	// What the agent answers is untrusted and these errors are logged, so
+	// its text is capped and quoted to keep it to one short line.
 	if err != nil {
-		return fmt.Errorf("setting the git identity: %w", err)
+		return fmt.Errorf("setting the git identity: %q", cleanReason(err.Error()))
 	}
 	if !result.Success {
-		return fmt.Errorf("setting the git identity: %s", result.Error)
+		return fmt.Errorf("setting the git identity: %q", cleanReason(result.Error))
 	}
 	return nil
 }

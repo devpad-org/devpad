@@ -289,8 +289,14 @@ func (s *service) start(ctx context.Context, ws *Workspace) (*Workspace, error) 
 		return nil, fmt.Errorf("updating workspace status: %w", err)
 	}
 
+	// The workspace has started whether or not its caller is still there to
+	// see it, and the start hook may resume an agent in it, so neither
+	// waiting for the agent nor giving it the git identity stops with the
+	// caller.
+	started := context.WithoutCancel(ctx)
+
 	// Wait for the agent to be ready before performing post-start actions.
-	if err := s.waitForAgent(ctx, ws); err != nil {
+	if err := s.waitForAgent(started, ws); err != nil {
 		log.Printf("workspace %d: agent not ready after start: %v", ws.ID, err)
 	}
 
@@ -314,12 +320,10 @@ func (s *service) start(ctx context.Context, ws *Workspace) (*Workspace, error) 
 
 	// Before the start hook, so an agent resumed by it commits as the user
 	// now wants.
-	s.logSyncGitIdentity(ctx, ws)
+	s.logSyncGitIdentity(started, ws)
 
 	if s.startHook != nil {
-		// The workspace has started whether or not its caller is still
-		// there to see it.
-		s.startHook.WorkspaceStarted(context.WithoutCancel(ctx), ws)
+		s.startHook.WorkspaceStarted(started, ws)
 	}
 	return ws, nil
 }

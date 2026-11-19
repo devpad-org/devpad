@@ -778,6 +778,38 @@ func TestService_GitIdentity(t *testing.T) {
 	}
 }
 
+// cancelAfterGitIdentity cancels the request's context once the identity is
+// stored, as a browser disconnecting then would.
+type cancelAfterGitIdentity struct {
+	auth.UserRepository
+	cancel context.CancelFunc
+}
+
+func (r *cancelAfterGitIdentity) SetGitIdentity(ctx context.Context, id int64, name, email string) error {
+	defer r.cancel()
+	return r.UserRepository.SetGitIdentity(ctx, id, name, email)
+}
+
+func TestService_SaveGitIdentitySyncsAfterDisconnect(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	syncer := &fakeGitSyncer{updated: 1, complete: true}
+	settingsSvc.SetGitIdentitySyncer(syncer)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := settingsSvc.(*service)
+	s.users = &cancelAfterGitIdentity{UserRepository: s.users, cancel: cancel}
+
+	saved, err := settingsSvc.SaveGitIdentity(ctx, user.ID, "Ada Lovelace", "")
+	if err != nil {
+		t.Fatalf("SaveGitIdentity: %v", err)
+	}
+	if saved.Name != "Ada Lovelace" || len(syncer.users) != 1 {
+		t.Fatalf("saved = %+v, synced users = %v", saved, syncer.users)
+	}
+}
+
 func TestHandler_GitIdentity(t *testing.T) {
 	settingsSvc, authSvc, _ := setupTestServices(t)
 	user := createTestUser(t, authSvc)

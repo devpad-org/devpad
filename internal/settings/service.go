@@ -272,15 +272,16 @@ func (s *service) SaveGitIdentity(ctx context.Context, userID int64, name, email
 	if err := s.users.SetGitIdentity(ctx, userID, name, email); err != nil {
 		return SavedGitIdentity{}, err
 	}
+	// The identity is saved, so finish applying it even if the browser stops
+	// waiting.
+	ctx = context.WithoutCancel(ctx)
 	identity, err := s.GetGitIdentity(ctx, userID)
 	if err != nil {
 		return SavedGitIdentity{}, err
 	}
 	saved := SavedGitIdentity{GitIdentity: identity}
 	if s.gitSyncer != nil {
-		// The identity is saved, so finish applying it even if the
-		// browser stops waiting.
-		updated, complete := s.gitSyncer.SyncGitIdentity(context.WithoutCancel(ctx), userID)
+		updated, complete := s.gitSyncer.SyncGitIdentity(ctx, userID)
 		saved.WorkspacesUpdated, saved.SyncIncomplete = updated, !complete
 		if !complete {
 			log.Printf("user %d: git identity did not reach every running workspace", userID)
