@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInstallLoginPathRestoresTheImagesPath(t *testing.T) {
@@ -35,6 +36,39 @@ func TestInstallLoginPathRestoresTheImagesPath(t *testing.T) {
 	}
 	if want := "/home/bin:" + imagePath; string(out) != want {
 		t.Fatalf("PATH = %q, want %q", out, want)
+	}
+}
+
+func TestInstallLoginPathGivesUpOnAStuckSudo(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write the script without sudo")
+	}
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep is not installed")
+	}
+	// Killing this sudo leaves its child holding stderr open.
+	bin := t.TempDir()
+	sudo := "#!/bin/sh\n" + sleep + " 5 &\nwait\n"
+	if err := os.WriteFile(filepath.Join(bin, "sudo"), []byte(sudo), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	readOnly := t.TempDir()
+	if err := os.Chmod(readOnly, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	loginPathFile = filepath.Join(readOnly, "00-devpad-path.sh")
+	t.Cleanup(func() { loginPathFile = "/etc/profile.d/00-devpad-path.sh" })
+	t.Setenv("PATH", bin)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := installLoginPath(ctx); err == nil {
+		t.Fatal("installLoginPath succeeded with a stuck sudo")
+	}
+	if elapsed := time.Since(start); elapsed >= 4*time.Second {
+		t.Fatalf("installLoginPath took %s, waiting for sudo's child", elapsed)
 	}
 }
 

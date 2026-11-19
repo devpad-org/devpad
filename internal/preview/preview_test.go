@@ -639,6 +639,7 @@ func TestSanitizeSetCookies(t *testing.T) {
 	h.Add("Set-Cookie", "__Host-devpad_session=tossed; Path=/; Secure")
 	h.Add("Set-Cookie", "__HOST-DEVPAD_PREVIEW=forged; Path=/; Secure")
 	h.Add("Set-Cookie", " __Host-devpad_preview =forged")
+	h.Add("Set-Cookie", "devpad_preview=forged; Domain=preview.example.com")
 
 	sanitizeSetCookies(h)
 

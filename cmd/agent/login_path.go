@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Commands and setup scripts run in a login shell, whose /etc/profile replaces
@@ -17,6 +18,10 @@ import (
 
 // loginPathFile is the script that restores the image's PATH.
 var loginPathFile = "/etc/profile.d/00-devpad-path.sh"
+
+// loginPathWaitDelay is how long a killed sudo's children may hold its stderr
+// open before startup stops waiting for them.
+const loginPathWaitDelay = time.Second
 
 // loginPathScript returns a script setting PATH to path.
 func loginPathScript(path string) []byte {
@@ -41,6 +46,7 @@ func installLoginPath(ctx context.Context) error {
 	}
 	cmd := exec.CommandContext(ctx, "sudo", "-n", "tee", loginPathFile)
 	cmd.Stdin = bytes.NewReader(script)
+	cmd.WaitDelay = loginPathWaitDelay
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

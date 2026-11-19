@@ -30,7 +30,7 @@ Open **Database Services** from the IDE's activity bar (**Services** in the mobi
 
 Every new terminal and command in the workspace gets each service's connection details as environment variables: `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE`, and the same with `MONGODB_`, `MARIADB_`, `COUCHDB_` and `SQLSERVER_`. Meilisearch gets `MEILISEARCH_HOST`, `MEILISEARCH_PORT`, `MEILISEARCH_URL`, `MEILISEARCH_MASTER_KEY`, `MEILISEARCH_API_KEY` and `MEILI_MASTER_KEY`.
 
-There is no variable holding a whole connection URL, so build one from these. Passwords are letters and digits, so they need no escaping:
+The databases have no variable holding a whole connection URL, so build one from these. Passwords are letters and digits, so they need no escaping:
 
 ```
 postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DATABASE
