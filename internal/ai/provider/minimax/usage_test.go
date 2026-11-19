@@ -47,7 +47,8 @@ func TestReadSSEStream_ReportsUsageWithCachedPromptSplitOut(t *testing.T) {
 }
 
 func TestReadSSEStream_ReportsUsageFromChunkWithoutChoices(t *testing.T) {
-	events := readSSEEvents("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":7}}\n\n")
+	events := readSSEEvents("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":7}}\n\n" +
+		"data: [DONE]\n\n")
 
 	if len(events) != 2 || events[0].Usage == nil || !events[1].Done {
 		t.Fatalf("expected usage then done, got %+v", events)

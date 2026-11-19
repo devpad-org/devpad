@@ -15,7 +15,7 @@ func TestReadSSEStream_ContentOnly(t *testing.T) {
 		"data: [DONE]\n\n"
 
 	ch := make(chan domain.ProviderEvent, 64)
-	go ReadSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+	go ReadSSEStream("Test", io.NopCloser(strings.NewReader(sse)), ch)
 
 	var events []domain.ProviderEvent
 	for e := range ch {
@@ -42,7 +42,7 @@ func TestReadSSEStream_ReasoningContent(t *testing.T) {
 		"data: [DONE]\n\n"
 
 	ch := make(chan domain.ProviderEvent, 64)
-	go ReadSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+	go ReadSSEStream("Test", io.NopCloser(strings.NewReader(sse)), ch)
 
 	var events []domain.ProviderEvent
 	for e := range ch {
@@ -68,7 +68,7 @@ func TestReadSSEStream_ContentThinkingChunks(t *testing.T) {
 		"data: [DONE]\n\n"
 
 	ch := make(chan domain.ProviderEvent, 64)
-	go ReadSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+	go ReadSSEStream("Test", io.NopCloser(strings.NewReader(sse)), ch)
 
 	var events []domain.ProviderEvent
 	for e := range ch {
@@ -97,7 +97,7 @@ func TestReadSSEStream_ToolCallAccumulation(t *testing.T) {
 		"data: [DONE]\n\n"
 
 	ch := make(chan domain.ProviderEvent, 64)
-	go ReadSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+	go ReadSSEStream("Test", io.NopCloser(strings.NewReader(sse)), ch)
 
 	var events []domain.ProviderEvent
 	for e := range ch {
@@ -136,7 +136,7 @@ func TestReadSSEStream_MultipleToolCalls(t *testing.T) {
 		"data: [DONE]\n\n"
 
 	ch := make(chan domain.ProviderEvent, 64)
-	go ReadSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+	go ReadSSEStream("Test", io.NopCloser(strings.NewReader(sse)), ch)
 
 	var events []domain.ProviderEvent
 	for e := range ch {
@@ -166,7 +166,7 @@ func TestReadSSEStream_LargeToolCallArgs(t *testing.T) {
 	sse := fmt.Sprintf("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_big\",\"type\":\"function\",\"function\":{\"name\":\"edit_file\",\"arguments\":\"%s\"}}]}}]}\n\ndata: [DONE]\n\n", escapedArgs)
 
 	ch := make(chan domain.ProviderEvent, 64)
-	go ReadSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+	go ReadSSEStream("Test", io.NopCloser(strings.NewReader(sse)), ch)
 
 	var events []domain.ProviderEvent
 	for e := range ch {
@@ -194,10 +194,11 @@ func TestReadSSEStream_LargeToolCallArgs(t *testing.T) {
 }
 
 func TestReadSSEStream_NoExplicitDone(t *testing.T) {
-	sse := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"edit_file\",\"arguments\":\"{\\\"path\\\":\\\"f.txt\\\",\\\"old_text\\\":\\\"a\\\",\\\"new_text\\\":\\\"b\\\"}\"}}]}}]}\n\n"
+	sse := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"edit_file\",\"arguments\":\"{\\\"path\\\":\\\"f.txt\\\",\\\"old_text\\\":\\\"a\\\",\\\"new_text\\\":\\\"b\\\"}\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
 
 	ch := make(chan domain.ProviderEvent, 64)
-	go ReadSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+	go ReadSSEStream("Test", io.NopCloser(strings.NewReader(sse)), ch)
 
 	var events []domain.ProviderEvent
 	for e := range ch {
@@ -212,5 +213,109 @@ func TestReadSSEStream_NoExplicitDone(t *testing.T) {
 	}
 	if !events[1].Done {
 		t.Error("expected Done event")
+	}
+}
+
+func TestReadSSEStream_ReportsFailures(t *testing.T) {
+	toolCallChunk := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"edit_file","arguments":"{\"path\":"}}]}}]}` + "\n\n"
+
+	tests := []struct {
+		name    string
+		sse     string
+		wantErr string
+	}{
+		{
+			name:    "cut off at the output token limit",
+			sse:     "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n",
+			wantErr: "Test stopped the response because it reached the output token limit",
+		},
+		{
+			name:    "stopped by the content filter",
+			sse:     "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\n",
+			wantErr: "Test stopped the response with its content filter",
+		},
+		{
+			name:    "error object mid-stream",
+			sse:     "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\ndata: {\"error\":{\"message\":\"overloaded\",\"type\":\"server_error\"}}\n\n",
+			wantErr: "Test returned an error: overloaded",
+		},
+		{
+			name:    "error string mid-stream",
+			sse:     "data: {\"error\":\"rate limited\"}\n\n",
+			wantErr: "Test returned an error: rate limited",
+		},
+		{
+			name:    "Mistral-style error object",
+			sse:     "data: {\"object\":\"error\",\"message\":\"invalid request\",\"type\":\"invalid_request_error\"}\n\n",
+			wantErr: "Test returned an error: invalid request",
+		},
+		{
+			name:    "unreadable event",
+			sse:     "data: {\"choices\":[{\"delta\":\n\n",
+			wantErr: "Test sent a response event that could not be read",
+		},
+		{
+			name:    "stream closes mid tool call",
+			sse:     toolCallChunk,
+			wantErr: "Test response stream ended before the response finished",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := collectSSEEvents(tt.sse)
+			last := events[len(events)-1]
+			if last.Err == nil || last.Err.Error() != tt.wantErr {
+				t.Fatalf("expected final error %q, got %+v", tt.wantErr, last)
+			}
+			for _, event := range events {
+				if event.Done {
+					t.Fatal("a failed stream must not report Done")
+				}
+				if len(event.ToolCalls) > 0 {
+					t.Fatal("a failed stream must not emit its tool calls")
+				}
+			}
+		})
+	}
+}
+
+func TestReadSSEStream_UsageOnlyChunkIsNotAnError(t *testing.T) {
+	sse := "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}\n\n" +
+		"data: [DONE]\n\n"
+
+	events := collectSSEEvents(sse)
+	for _, event := range events {
+		if event.Err != nil {
+			t.Fatalf("unexpected error event: %v", event.Err)
+		}
+	}
+	if !events[len(events)-1].Done {
+		t.Fatalf("expected final Done event, got %+v", events[len(events)-1])
+	}
+}
+
+func collectSSEEvents(sse string) []domain.ProviderEvent {
+	ch := make(chan domain.ProviderEvent, 64)
+	go ReadSSEStream("Test", io.NopCloser(strings.NewReader(sse)), ch)
+
+	var events []domain.ProviderEvent
+	for event := range ch {
+		events = append(events, event)
+	}
+	return events
+}
+
+func TestReadSSEStream_ReportsUsageOfATruncatedResponse(t *testing.T) {
+	events := collectSSEEvents("data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"},\"finish_reason\":\"length\"}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":7}}\n\n" +
+		"data: [DONE]\n\n")
+
+	if len(events) != 3 || events[1].Usage == nil || events[2].Err == nil {
+		t.Fatalf("expected text, usage, then an error, got %+v", events)
+	}
+	if events[1].Usage.OutputTokens != 7 {
+		t.Fatalf("expected the truncated response's output tokens, got %+v", *events[1].Usage)
 	}
 }

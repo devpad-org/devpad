@@ -3,6 +3,7 @@ package openairesponses
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -468,4 +469,43 @@ func collectEvents(stream <-chan domain.ProviderEvent) []domain.ProviderEvent {
 	}
 
 	return events
+}
+func TestReadResponsesStream_ReportsFailures(t *testing.T) {
+	const start = "data: {\"type\":\"response.created\",\"response\":{\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_123\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hel\"}\n\n"
+
+	tests := []struct {
+		name    string
+		sse     string
+		wantErr string
+	}{
+		{
+			name:    "stream closes before response.completed",
+			sse:     start,
+			wantErr: "OpenAI response stream ended before the response finished",
+		},
+		{
+			name:    "unreadable event",
+			sse:     start + "data: {\"type\":\"response.output_text.delta\",\n\n",
+			wantErr: "OpenAI sent a response event that could not be read",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ch := make(chan domain.ProviderEvent, 64)
+			go readResponsesStream(io.NopCloser(strings.NewReader(tt.sse)), ch)
+			events := collectEvents(ch)
+
+			last := events[len(events)-1]
+			if last.Err == nil || last.Err.Error() != tt.wantErr {
+				t.Fatalf("expected final error %q, got %+v", tt.wantErr, last)
+			}
+			for _, event := range events {
+				if event.Done {
+					t.Fatal("a failed stream must not report Done")
+				}
+			}
+		})
+	}
 }

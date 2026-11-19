@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -88,8 +87,9 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 
 		var event anthropicEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			log.Printf("error parsing anthropic event: %v", err)
-			continue
+			emitAnthropicUsage(ch, usage, iterations)
+			ch <- domain.ProviderEvent{Err: shared.MalformedEventError(providerName, data, err)}
+			return
 		}
 
 		switch event.Type {
@@ -216,30 +216,34 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 					iterations = event.Usage.Iterations
 				}
 			}
-			if event.Delta != nil && event.Delta.StopReason == "refusal" {
-				emitAnthropicUsage(ch, usage, iterations)
-				ch <- domain.ProviderEvent{Err: refusalError(event.Delta.StopDetails)}
-				return
+			// The stop reason comes with the final usage, so a response that
+			// did not finish normally can end here.
+			if event.Delta != nil {
+				if err := stopReasonError(event.Delta); err != nil {
+					emitAnthropicUsage(ch, usage, iterations)
+					ch <- domain.ProviderEvent{Err: err}
+					return
+				}
 			}
 
 		case "error":
-			if event.Error != nil {
-				emitAnthropicUsage(ch, usage, iterations)
+			emitAnthropicUsage(ch, usage, iterations)
+			if event.Error != nil && event.Error.Message != "" {
 				ch <- domain.ProviderEvent{Err: errors.New(event.Error.Message)}
 				return
 			}
+			ch <- domain.ProviderEvent{Err: shared.ProviderStreamError(providerName, "")}
+			return
 		}
 	}
 
 	emitAnthropicUsage(ch, usage, iterations)
 	if err := scanner.Err(); err != nil {
-		log.Printf("error reading anthropic stream: %v", err)
-		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
+		ch <- domain.ProviderEvent{Err: shared.ReadStreamError(providerName, err)}
+		return
 	}
-
-	emitAnthropicReasoningState(ch, layout)
-	emitAnthropicToolCalls(ch, toolCalls, toolCallArgs)
-	ch <- domain.ProviderEvent{Done: true}
+	// The stream closed before message_stop, so the response is incomplete.
+	ch <- domain.ProviderEvent{Err: shared.IncompleteStreamError(providerName)}
 }
 
 // emitAnthropicReasoningState sends the turn's layout when it holds thinking
@@ -403,6 +407,21 @@ type anthropicDelta struct {
 type anthropicStopDetails struct {
 	Category    string `json:"category,omitempty"`
 	Explanation string `json:"explanation,omitempty"`
+}
+
+// stopReasonError returns the error for a stop reason that means the response
+// did not finish normally, or nil when it did.
+func stopReasonError(delta *anthropicDelta) error {
+	switch delta.StopReason {
+	case "refusal":
+		return refusalError(delta.StopDetails)
+	case "max_tokens":
+		return fmt.Errorf("%s stopped the response because it reached the output token limit", providerName)
+	case "model_context_window_exceeded":
+		return fmt.Errorf("%s stopped the response because the conversation reached the model's context limit", providerName)
+	default:
+		return nil
+	}
 }
 
 func refusalError(details *anthropicStopDetails) error {
