@@ -220,7 +220,7 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 	if err := s.repo.Delete(ctx, ws.ID); err != nil {
 		return fmt.Errorf("deleting workspace: %w", err)
 	}
-	s.forgetServiceEnvLock(ws.ID)
+	s.forgetAgentSyncLock(ws.ID)
 	return nil
 }
 
@@ -312,6 +312,10 @@ func (s *service) start(ctx context.Context, ws *Workspace) (*Workspace, error) 
 		s.logSyncServiceEnv(ctx, ws)
 	}
 
+	// Before the start hook, so an agent resumed by it commits as the user
+	// now wants.
+	s.logSyncGitIdentity(ctx, ws)
+
 	if s.startHook != nil {
 		// The workspace has started whether or not its caller is still
 		// there to see it.
@@ -394,6 +398,7 @@ func (s *service) Restart(ctx context.Context, userID, workspaceID int64) (*Work
 	// An agent that was just updated has none of the services' variables
 	// an older one may have been unable to keep.
 	s.logSyncServiceEnv(ctx, ws)
+	s.logSyncGitIdentity(ctx, ws)
 
 	s.injectUserSSHKeys(ctx, ws)
 	return ws, nil

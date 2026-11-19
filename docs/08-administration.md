@@ -15,7 +15,7 @@ This page is for admins: it covers what only an admin can do in the app, and how
 - **Reset PW**: set a new password for a user.
 - **Delete**: delete a user and their workspaces and projects. You can't delete yourself.
 
-Passwords need at least 8 characters. A user's username and email become their git identity in workspaces, so neither may start with `-`.
+Passwords need at least 8 characters. A user's username and email are also their [Git identity](/docs/getting-started#git-identity) unless they set their own, so neither may start with `-`.
 
 ## Invites {#invites}
 

@@ -95,6 +95,7 @@ func (s *service) RebuildProjectContainer(ctx context.Context, userID, workspace
 	if err := s.ensureAgentUpdated(ctx, ws); err != nil {
 		log.Printf("workspace %d: agent update failed: %v", ws.ID, err)
 	}
+	s.logSyncGitIdentity(ctx, ws)
 	return ws, nil
 }
 

@@ -102,6 +102,7 @@ func New(cfg Config) (*Server, error) {
 
 	workspaceRepo := workspace.NewRepository(db.Conn())
 	workspaceService := workspace.NewService(workspaceRepo, containerManager, userRepo, cipher)
+	settingsService.SetGitIdentitySyncer(workspaceService)
 
 	// Workspace services layer (sidecars)
 	wsServiceRepo := wsservice.NewRepository(db.Conn())
@@ -415,7 +416,9 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, inviteHandler
 	mux.Handle("GET /api/settings/preferences", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGetPreferences)))
 	mux.Handle("PUT /api/settings/preferences", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleUpdatePreferences)))
 
-	// SSH key routes (authenticated users)
+	// Git identity and SSH key routes (authenticated users)
+	mux.Handle("GET /api/settings/git-identity", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGetGitIdentity)))
+	mux.Handle("PUT /api/settings/git-identity", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleUpdateGitIdentity)))
 	mux.Handle("GET /api/settings/ssh-key", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGetSSHKey)))
 	mux.Handle("POST /api/settings/ssh-key/generate", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGenerateSSHKey)))
 

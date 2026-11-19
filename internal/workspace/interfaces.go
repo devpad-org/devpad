@@ -164,6 +164,13 @@ type ProjectServiceProvisioner interface {
 	ProvisionProjectServices(ctx context.Context, userID, workspaceID int64) error
 }
 
+// GitIdentitySyncer applies a user's git identity to their running workspaces.
+type GitIdentitySyncer interface {
+	// SyncGitIdentity returns how many workspaces it updated, and whether
+	// it reached every one it should have.
+	SyncGitIdentity(ctx context.Context, userID int64) (updated int, complete bool)
+}
+
 // SidecarBinder injects the sidecar service lifecycle dependency.
 type SidecarBinder interface {
 	SetSidecarService(sidecar SidecarService)
@@ -199,6 +206,7 @@ type Service interface {
 	GitBridgeService
 	ConversionService
 	ServiceEnvSyncer
+	GitIdentitySyncer
 	ProjectServiceProvisioner
 	SidecarBinder
 	StartHookBinder

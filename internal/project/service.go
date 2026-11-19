@@ -1170,6 +1170,7 @@ func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeIn
 	if err != nil || user == nil {
 		return nil, fmt.Errorf("looking up user: %w", err)
 	}
+	name, email := user.GitIdentity()
 	c, err := s.repoAgent(ctx, p)
 	if err != nil {
 		return nil, err
@@ -1180,8 +1181,8 @@ func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeIn
 		Strategy:          in.Strategy,
 		Message:           in.Message,
 		ExpectedSourceSHA: in.ExpectedSourceSHA,
-		Name:              user.Username,
-		Email:             user.Email,
+		Name:              name,
+		Email:             email,
 	})
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 
 	"github.com/devpad-org/devpad/internal/auth"
@@ -31,16 +32,49 @@ type Service interface {
 	GetMFAStatus(ctx context.Context, userID int64) (enabled bool, err error)
 	GetSSHPublicKey(ctx context.Context, userID int64) (publicKey string, err error)
 	GenerateSSHKey(ctx context.Context, userID int64) (publicKey string, err error)
+	GetGitIdentity(ctx context.Context, userID int64) (GitIdentity, error)
+	// SaveGitIdentity records the name and email the user commits as, empty
+	// for their account's own, and applies them to their running project
+	// workspaces and sandboxes. The others get them when they next start.
+	SaveGitIdentity(ctx context.Context, userID int64, name, email string) (SavedGitIdentity, error)
+	// SetGitIdentitySyncer registers what applies a saved identity to
+	// running workspaces.
+	SetGitIdentitySyncer(syncer GitIdentitySyncer)
 	GetPreferences(ctx context.Context, userID int64) (UserPreferences, error)
 	// UpdatePreferences changes only the preferences the update sets and
 	// returns them all.
 	UpdatePreferences(ctx context.Context, userID int64, update PreferencesUpdate) (UserPreferences, error)
 }
 
+// GitIdentity is what a user commits as. Name and Email are their own choice,
+// empty when they use their account's, which come with it for the page to show.
+type GitIdentity struct {
+	Name         string `json:"name"`
+	Email        string `json:"email"`
+	AccountName  string `json:"accountName"`
+	AccountEmail string `json:"accountEmail"`
+}
+
+// SavedGitIdentity is a saved identity and how far it has reached.
+type SavedGitIdentity struct {
+	GitIdentity
+	// WorkspacesUpdated counts the running workspaces that now use it.
+	WorkspacesUpdated int `json:"workspacesUpdated"`
+	// SyncIncomplete is set when a running workspace could not be updated.
+	// It gets the identity when it next starts.
+	SyncIncomplete bool `json:"syncIncomplete"`
+}
+
+// GitIdentitySyncer applies a user's git identity to their running workspaces.
+type GitIdentitySyncer interface {
+	SyncGitIdentity(ctx context.Context, userID int64) (updated int, complete bool)
+}
+
 type service struct {
 	users       auth.UserRepository
 	preferences PreferencesRepository
 	cipher      *encrypt.Cipher
+	gitSyncer   GitIdentitySyncer
 }
 
 // NewService creates a new settings Service.
@@ -210,6 +244,49 @@ func (s *service) GenerateSSHKey(ctx context.Context, userID int64) (string, err
 	}
 
 	return publicKey, nil
+}
+
+func (s *service) SetGitIdentitySyncer(syncer GitIdentitySyncer) {
+	s.gitSyncer = syncer
+}
+
+func (s *service) GetGitIdentity(ctx context.Context, userID int64) (GitIdentity, error) {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return GitIdentity{}, fmt.Errorf("looking up user: %w", err)
+	}
+	if user == nil {
+		return GitIdentity{}, errors.New("user not found")
+	}
+	return GitIdentity{Name: user.GitName, Email: user.GitEmail, AccountName: user.Username, AccountEmail: user.Email}, nil
+}
+
+func (s *service) SaveGitIdentity(ctx context.Context, userID int64, name, email string) (SavedGitIdentity, error) {
+	name, email, err := auth.CleanGitIdentity(name, email)
+	if err != nil {
+		return SavedGitIdentity{}, err
+	}
+	if err := s.ensureUser(ctx, userID); err != nil {
+		return SavedGitIdentity{}, err
+	}
+	if err := s.users.SetGitIdentity(ctx, userID, name, email); err != nil {
+		return SavedGitIdentity{}, err
+	}
+	identity, err := s.GetGitIdentity(ctx, userID)
+	if err != nil {
+		return SavedGitIdentity{}, err
+	}
+	saved := SavedGitIdentity{GitIdentity: identity}
+	if s.gitSyncer != nil {
+		// The identity is saved, so finish applying it even if the
+		// browser stops waiting.
+		updated, complete := s.gitSyncer.SyncGitIdentity(context.WithoutCancel(ctx), userID)
+		saved.WorkspacesUpdated, saved.SyncIncomplete = updated, !complete
+		if !complete {
+			log.Printf("user %d: git identity did not reach every running workspace", userID)
+		}
+	}
+	return saved, nil
 }
 
 func (s *service) GetPreferences(ctx context.Context, userID int64) (UserPreferences, error) {

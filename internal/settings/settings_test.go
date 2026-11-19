@@ -41,6 +41,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 		totp_enabled BOOLEAN NOT NULL DEFAULT 0,
 		ssh_public_key TEXT NOT NULL DEFAULT '',
 		ssh_private_key TEXT NOT NULL DEFAULT '',
+		git_name TEXT NOT NULL DEFAULT '',
+		git_email TEXT NOT NULL DEFAULT '',
+		git_identity_saved BOOLEAN NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -717,5 +720,91 @@ func TestThemesMatchFrontend(t *testing.T) {
 	}
 	if string(def[1]) != DefaultTheme {
 		t.Errorf("settings.DefaultTheme = %q, but the frontend's DEFAULT_THEME is %q", DefaultTheme, def[1])
+	}
+}
+
+type fakeGitSyncer struct {
+	users    []int64
+	updated  int
+	complete bool
+}
+
+func (f *fakeGitSyncer) SyncGitIdentity(_ context.Context, userID int64) (int, bool) {
+	f.users = append(f.users, userID)
+	return f.updated, f.complete
+}
+
+func TestService_GitIdentity(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	ctx := context.Background()
+	syncer := &fakeGitSyncer{updated: 2, complete: true}
+	settingsSvc.SetGitIdentitySyncer(syncer)
+
+	got, err := settingsSvc.GetGitIdentity(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetGitIdentity: %v", err)
+	}
+	if want := (GitIdentity{AccountName: user.Username, AccountEmail: user.Email}); got != want {
+		t.Fatalf("before saving = %+v, want %+v", got, want)
+	}
+
+	saved, err := settingsSvc.SaveGitIdentity(ctx, user.ID, "  Ada Lovelace ", "ada@users.noreply.example.com")
+	if err != nil {
+		t.Fatalf("SaveGitIdentity: %v", err)
+	}
+	if saved.Name != "Ada Lovelace" || saved.Email != "ada@users.noreply.example.com" || saved.WorkspacesUpdated != 2 || saved.SyncIncomplete {
+		t.Fatalf("saved = %+v", saved)
+	}
+	if len(syncer.users) != 1 || syncer.users[0] != user.ID {
+		t.Fatalf("synced users = %v", syncer.users)
+	}
+
+	// A new SSH key rewrites the account's row and must not undo this.
+	if _, err := settingsSvc.GenerateSSHKey(ctx, user.ID); err != nil {
+		t.Fatalf("GenerateSSHKey: %v", err)
+	}
+	if got, err = settingsSvc.GetGitIdentity(ctx, user.ID); err != nil || got.Name != "Ada Lovelace" {
+		t.Fatalf("after a new SSH key = %+v, %v", got, err)
+	}
+
+	syncer.complete = false
+	saved, err = settingsSvc.SaveGitIdentity(ctx, user.ID, "", "")
+	if err != nil {
+		t.Fatalf("clearing: %v", err)
+	}
+	if saved.Name != "" || saved.Email != "" || !saved.SyncIncomplete {
+		t.Fatalf("after clearing = %+v", saved)
+	}
+}
+
+func TestHandler_GitIdentity(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	handler := NewHandler(settingsSvc)
+
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"name and email", `{"name":"Ada Lovelace","email":"ada@example.com"}`, http.StatusOK},
+		{"both empty", `{"name":"","email":""}`, http.StatusOK},
+		{"flag-like name", `{"name":"-x"}`, http.StatusBadRequest},
+		{"angle bracket in name", `{"name":"a<b"}`, http.StatusBadRequest},
+		{"name git would strip to nothing", `{"name":"..."}`, http.StatusBadRequest},
+		{"not an email", `{"email":"nope"}`, http.StatusBadRequest},
+		{"email with a space", `{"email":"a b@example.com"}`, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "/api/settings/git-identity", strings.NewReader(tt.body))
+			req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, user))
+			rec := httptest.NewRecorder()
+			handler.HandleUpdateGitIdentity(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
+			}
+		})
 	}
 }

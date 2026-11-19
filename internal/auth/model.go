@@ -13,8 +13,28 @@ type User struct {
 	TOTPEnabled   bool
 	SSHPublicKey  string
 	SSHPrivateKey string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// GitName and GitEmail are what the user chose to commit as; empty
+	// means their Username or Email (see GitIdentity).
+	GitName  string
+	GitEmail string
+	// GitIdentitySaved is set once the user has saved a git identity, even
+	// an empty one. Until then devpad leaves the identity in repos it has
+	// already seeded alone.
+	GitIdentitySaved bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+// GitIdentity returns the name and email the user's commits carry.
+func (u *User) GitIdentity() (name, email string) {
+	name, email = u.GitName, u.GitEmail
+	if name == "" {
+		name = u.Username
+	}
+	if email == "" {
+		email = u.Email
+	}
+	return name, email
 }
 
 // Session represents an active user session.

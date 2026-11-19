@@ -9,7 +9,7 @@ const groups = [
     label: 'Account',
     pages: [
       { name: 'settings-security', label: 'Security' },
-      { name: 'settings-ssh-key', label: 'SSH Key' },
+      { name: 'settings-git', label: 'Git' },
     ],
   },
   {

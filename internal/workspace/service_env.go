@@ -33,27 +33,28 @@ func envNames(env []string) []string {
 	return names
 }
 
-// serviceEnvLock returns the lock that serialises a workspace's syncs, so
-// an older list of variables never lands after a newer one.
-func (s *service) serviceEnvLock(workspaceID int64) *sync.Mutex {
-	s.serviceEnvMu.Lock()
-	defer s.serviceEnvMu.Unlock()
-	if s.serviceEnvLocks == nil {
-		s.serviceEnvLocks = make(map[int64]*sync.Mutex)
+// agentSyncLock returns the lock that serialises what devpad syncs to a
+// workspace's agent (its services' variables and the git identity), so an
+// older value never lands after a newer one.
+func (s *service) agentSyncLock(workspaceID int64) *sync.Mutex {
+	s.agentSyncMu.Lock()
+	defer s.agentSyncMu.Unlock()
+	if s.agentSyncLocks == nil {
+		s.agentSyncLocks = make(map[int64]*sync.Mutex)
 	}
-	mu, ok := s.serviceEnvLocks[workspaceID]
+	mu, ok := s.agentSyncLocks[workspaceID]
 	if !ok {
 		mu = &sync.Mutex{}
-		s.serviceEnvLocks[workspaceID] = mu
+		s.agentSyncLocks[workspaceID] = mu
 	}
 	return mu
 }
 
-// forgetServiceEnvLock drops a deleted workspace's sync lock.
-func (s *service) forgetServiceEnvLock(workspaceID int64) {
-	s.serviceEnvMu.Lock()
-	defer s.serviceEnvMu.Unlock()
-	delete(s.serviceEnvLocks, workspaceID)
+// forgetAgentSyncLock drops a deleted workspace's sync lock.
+func (s *service) forgetAgentSyncLock(workspaceID int64) {
+	s.agentSyncMu.Lock()
+	defer s.agentSyncMu.Unlock()
+	delete(s.agentSyncLocks, workspaceID)
 }
 
 // SyncServiceEnv sends a running workspace's agent the variables of the
@@ -74,7 +75,7 @@ func (s *service) syncServiceEnv(ctx context.Context, ws *Workspace) error {
 	if s.sidecar == nil {
 		return nil
 	}
-	mu := s.serviceEnvLock(ws.ID)
+	mu := s.agentSyncLock(ws.ID)
 	mu.Lock()
 	defer mu.Unlock()
 

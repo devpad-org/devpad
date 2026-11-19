@@ -39,6 +39,8 @@ var (
 	ErrEmailRequired    = validationError("email is required")
 	ErrUsernameInvalid  = validationError(fmt.Sprintf("username must be at most %d characters, must not start with '-', and must not contain '<', '>', or invisible or control characters other than plain spaces", MaxUsernameLength))
 	ErrEmailInvalid     = validationError("email must look like name@example.com, without spaces, '<', '>', or invisible characters")
+	ErrGitNameInvalid   = validationError(fmt.Sprintf("Git name must be at most %d characters, must not start with '-', must not contain '<', '>', or invisible or control characters other than plain spaces, and must have at least one letter or number", MaxUsernameLength))
+	ErrGitEmailInvalid  = validationError("Git email must look like name@example.com, without spaces, '<', '>', or invisible characters")
 )
 
 // ValidatePassword returns ErrPasswordTooShort or ErrPasswordTooLong when
@@ -55,9 +57,9 @@ func ValidatePassword(password string) error {
 }
 
 // CleanIdentity trims a username and email someone chose and checks them,
-// returning the trimmed values. Both become the user's git identity in
-// their workspaces, where the agent refuses a value starting with '-' and
-// git drops '<' and '>', so neither may have them.
+// returning the trimmed values. Both are the user's git identity in their
+// workspaces unless they choose another, where the agent refuses a value
+// starting with '-' and git drops '<' and '>', so neither may have them.
 func CleanIdentity(username, email string) (string, string, error) {
 	username, email = strings.TrimSpace(username), strings.TrimSpace(email)
 	switch {
@@ -71,6 +73,26 @@ func CleanIdentity(username, email string) (string, string, error) {
 		return "", "", ErrEmailInvalid
 	}
 	return username, email, nil
+}
+
+// CleanGitIdentity trims the name and email someone chose to commit as and
+// checks them by the same rules as a username and email, returning the
+// trimmed values. Either may be empty, which means the account's own.
+func CleanGitIdentity(name, email string) (string, string, error) {
+	name, email = strings.TrimSpace(name), strings.TrimSpace(email)
+	if name != "" && (!validUsername(name) || !strings.ContainsFunc(name, isGitNameChar)) {
+		return "", "", ErrGitNameInvalid
+	}
+	if email != "" && !validEmail(email) {
+		return "", "", ErrGitEmailInvalid
+	}
+	return name, email, nil
+}
+
+// isGitNameChar reports whether git keeps r in a name. Git strips these
+// from both ends and refuses to commit when nothing is left.
+func isGitNameChar(r rune) bool {
+	return r > ' ' && !strings.ContainsRune(".,:;<>\"\\'", r)
 }
 
 // hidden reports whether r is a control character or an invisible format
