@@ -302,6 +302,27 @@ func TestReadSSEStream_ReasoningSplitUsesCumulativeDeltas(t *testing.T) {
 	}
 }
 
+func TestReadSSEStream_ToolCallIDRepeatedOnEveryFragment(t *testing.T) {
+	sse := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"list_files\",\"arguments\":\"\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"arguments\":\"{\\\"max_depth\\\":\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"arguments\":\"2}\"}}]}}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	ch := make(chan domain.ProviderEvent, 8)
+	go readSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+
+	var calls []domain.ToolCall
+	for event := range ch {
+		calls = append(calls, event.ToolCalls...)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("got %d tool calls, want 1: %+v", len(calls), calls)
+	}
+	if calls[0].Function.Name != "list_files" || calls[0].Function.Arguments != `{"max_depth":2}` {
+		t.Errorf("call = %q %q, want list_files with its whole arguments", calls[0].Function.Name, calls[0].Function.Arguments)
+	}
+}
+
 func TestReadSSEStream_ToolCallsStillAccumulate(t *testing.T) {
 	sse := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a.txt\\\"\"}}]}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]}}]}\n\n" +

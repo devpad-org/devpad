@@ -259,8 +259,7 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
-	var toolCalls []domain.ToolCall
-	toolCallArgs := make(map[int]*strings.Builder)
+	var toolCalls shared.ToolCallAccumulator
 	var reasoningBuffer string
 	var contentBuffer string
 	var usage *chatUsage
@@ -274,7 +273,7 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
 			emitUsage(ch, usage)
-			emitToolCalls(ch, toolCalls, toolCallArgs)
+			toolCalls.Emit(ch)
 			ch <- domain.ProviderEvent{Done: true}
 			return
 		}
@@ -283,18 +282,10 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			Usage   *chatUsage `json:"usage"`
 			Choices []struct {
 				Delta struct {
-					Content          string            `json:"content"`
-					ReasoningDetails []reasoningDetail `json:"reasoning_details"`
-					ReasoningContent string            `json:"reasoning_content"`
-					ToolCalls        []struct {
-						Index    int    `json:"index"`
-						ID       string `json:"id"`
-						Type     string `json:"type"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					} `json:"tool_calls"`
+					Content          string                 `json:"content"`
+					ReasoningDetails []reasoningDetail      `json:"reasoning_details"`
+					ReasoningContent string                 `json:"reasoning_content"`
+					ToolCalls        []shared.ToolCallDelta `json:"tool_calls"`
 				} `json:"delta"`
 			} `json:"choices"`
 		}
@@ -331,34 +322,8 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			}
 		}
 
-		for _, toolCall := range choice.Delta.ToolCalls {
-			index := toolCall.Index
-			if toolCall.ID != "" {
-				for len(toolCalls) <= index {
-					toolCalls = append(toolCalls, domain.ToolCall{})
-				}
-
-				toolType := toolCall.Type
-				if toolType == "" {
-					toolType = "function"
-				}
-
-				toolCalls[index] = domain.ToolCall{
-					ID:   toolCall.ID,
-					Type: toolType,
-					Function: domain.ToolCallFunction{
-						Name: toolCall.Function.Name,
-					},
-				}
-				toolCallArgs[index] = &strings.Builder{}
-			}
-
-			if toolCall.Function.Arguments != "" {
-				if _, ok := toolCallArgs[index]; !ok {
-					toolCallArgs[index] = &strings.Builder{}
-				}
-				toolCallArgs[index].WriteString(toolCall.Function.Arguments)
-			}
+		for _, delta := range choice.Delta.ToolCalls {
+			toolCalls.Add(delta)
 		}
 	}
 
@@ -368,7 +333,7 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
 	}
 
-	emitToolCalls(ch, toolCalls, toolCallArgs)
+	toolCalls.Emit(ch)
 	ch <- domain.ProviderEvent{Done: true}
 }
 
@@ -448,21 +413,4 @@ func emitUsage(ch chan<- domain.ProviderEvent, usage *chatUsage) {
 		CachedTokens: usage.PromptTokensDetails.CachedTokens,
 		OutputTokens: usage.CompletionTokens,
 	}.Billed()}
-}
-
-func emitToolCalls(ch chan<- domain.ProviderEvent, toolCalls []domain.ToolCall, toolCallArgs map[int]*strings.Builder) {
-	if len(toolCalls) == 0 {
-		return
-	}
-
-	finalCalls := make([]domain.ToolCall, len(toolCalls))
-	copy(finalCalls, toolCalls)
-	for index, toolCall := range finalCalls {
-		if builder, ok := toolCallArgs[index]; ok {
-			toolCall.Function.Arguments = builder.String()
-			finalCalls[index] = toolCall
-		}
-	}
-
-	ch <- domain.ProviderEvent{ToolCalls: finalCalls}
 }
