@@ -47,7 +47,6 @@ defineProps<{
   background: var(--bg-base);
   border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  box-shadow: inset 0 1px 0 var(--border-top-highlight);
 }
 
 .pcard-head {
