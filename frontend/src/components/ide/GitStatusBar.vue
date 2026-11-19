@@ -17,7 +17,7 @@ const loading = ref(false)
 const error = ref('')
 const showRemotes = ref(false)
 
-const { connect: connectWatcher, disconnect: disconnectWatcher, onEvent } = useFileWatcher(
+const { connect: connectWatcher, disconnect: disconnectWatcher, onEvent, onResync } = useFileWatcher(
   () => props.workspaceId
 )
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -101,6 +101,7 @@ function openGitPanel() {
 onEvent(() => {
   debouncedRefresh()
 })
+onResync(debouncedRefresh)
 
 watch(
   () => props.workspaceId,
@@ -183,19 +184,6 @@ onUnmounted(() => {
         </svg>
         Remotes
       </button>
-
-      <button
-        type="button"
-        class="git-status-refresh"
-        :disabled="loading || !workspaceId"
-        title="Refresh git status"
-        @click="refresh(true)"
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading }" aria-hidden="true">
-          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
-          <path d="M21 3v5h-5" />
-        </svg>
-      </button>
     </div>
   </footer>
 
@@ -214,8 +202,8 @@ onUnmounted(() => {
   gap: 2px;
   min-height: 26px;
   padding: 0 var(--space-2);
-  background: color-mix(in srgb, var(--bg-surface) 88%, var(--bg-base));
-  border-top: 0.5px solid var(--border-default);
+  background: color-mix(in srgb, var(--bg-elevated) 88%, var(--bg-base));
+  border-top: 0.5px solid var(--border-subtle);
   color: var(--text-secondary);
   font-family: var(--font-sans);
   font-size: 0.72rem;
@@ -224,8 +212,7 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.git-status-item,
-.git-status-refresh {
+.git-status-item {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -241,8 +228,7 @@ onUnmounted(() => {
   transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
 }
 
-.git-status-item:hover,
-.git-status-refresh:hover:not(:disabled) {
+.git-status-item:hover {
   background: var(--bg-hover);
   border-color: var(--border-subtle);
   color: var(--text-primary);
@@ -262,14 +248,8 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--accent-rose);
+  color: var(--error);
   font-weight: 500;
-}
-
-.git-status-refresh {
-  width: 24px;
-  padding: 0;
-  color: var(--text-muted);
 }
 
 .git-status-end {
@@ -280,12 +260,7 @@ onUnmounted(() => {
 }
 
 .git-status-remotes {
-  color: var(--text-muted);
-}
-
-.git-status-refresh:disabled {
-  cursor: default;
-  opacity: 0.5;
+  color: var(--text-tertiary);
 }
 
 .status-dot {
@@ -296,22 +271,18 @@ onUnmounted(() => {
 }
 
 .tone-success {
-  color: var(--accent-green);
+  color: var(--success);
 }
 
 .tone-warning {
-  color: var(--accent-amber);
+  color: var(--warning);
 }
 
 .tone-error {
-  color: var(--accent-rose);
+  color: var(--error);
 }
 
 .tone-muted {
-  color: var(--text-muted);
-}
-
-.spinning {
-  animation: spin 0.8s linear infinite;
+  color: var(--text-tertiary);
 }
 </style>

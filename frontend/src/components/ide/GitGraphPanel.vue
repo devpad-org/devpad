@@ -49,6 +49,8 @@ const selectedHash = ref<string | null>(null)
 const loading = ref(false)
 const error = ref('')
 const actionLoading = ref(false)
+// The git action running, shown on its button.
+const runningAction = ref('')
 const showPullMenu = ref(false)
 const diff = ref<GitFileDiff | null>(null)
 const diffLoading = ref(false)
@@ -97,7 +99,7 @@ interface DiffBreadcrumb {
   variant: 'current' | 'previous'
 }
 
-const { connect: connectWatcher, disconnect: disconnectWatcher, onEvent } = useFileWatcher(
+const { connect: connectWatcher, disconnect: disconnectWatcher, onEvent, onResync } = useFileWatcher(
   () => props.workspaceId
 )
 const {
@@ -153,6 +155,7 @@ const graphSubtitle = computed(() => {
 async function doAction(action: string) {
   if (!props.workspaceId) return
   actionLoading.value = true
+  runningAction.value = action
   error.value = ''
   showPullMenu.value = false
   try {
@@ -168,6 +171,7 @@ async function doAction(action: string) {
     error.value = getErrorMessage(err)
   } finally {
     actionLoading.value = false
+    runningAction.value = ''
   }
 }
 
@@ -432,6 +436,7 @@ function formatTime(timestamp: string): string {
 onEvent(() => {
   debouncedRefresh()
 })
+onResync(debouncedRefresh)
 
 onMounted(() => {
   void loadPreferences()
@@ -552,7 +557,8 @@ onUnmounted(() => {
           :disabled="actionLoading || loading || !status?.isRepo"
           @click="doAction('push')"
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <span v-if="runningAction === 'push'" class="action-spinner" aria-hidden="true" />
+          <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 19V5M5 12l7-7 7 7" />
           </svg>
           Push
@@ -568,7 +574,8 @@ onUnmounted(() => {
               :disabled="actionLoading || loading || !status?.isRepo"
               @click="doAction('pull')"
             >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <span v-if="runningAction === 'pull' || runningAction === 'fetch'" class="action-spinner" aria-hidden="true" />
+              <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M12 5v14M5 12l7 7 7-7" />
               </svg>
               Pull
@@ -601,18 +608,6 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <button
-        v-if="!showingDiff"
-        class="refresh-btn"
-        type="button"
-        :disabled="loading || actionLoading || !workspaceId"
-        @click="refresh()"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading || actionLoading }" aria-hidden="true">
-          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
-          <path d="M21 3v5h-5" />
-        </svg>
-      </button>
     </header>
 
     <div v-if="showingDiff" class="diff-shell">

@@ -144,12 +144,6 @@ onUnmounted(() => {
           <span class="summary-dot" />{{ stoppedCount }} stopped
         </span>
       </span>
-      <button class="services-refresh" @click="refresh" title="Refresh workspace services" aria-label="Refresh workspace services">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
-          <path d="M21 3v5h-5" />
-        </svg>
-      </button>
     </header>
 
     <div v-if="actionError" class="services-error" role="alert">{{ actionError }}</div>
@@ -286,24 +280,6 @@ onUnmounted(() => {
 
 .summary-item.is-running .summary-dot {
   background: var(--success);
-}
-
-.services-refresh {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-left: auto;
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
-  color: var(--text-secondary);
-  border-radius: var(--radius-md);
-  transition: all var(--transition-fast);
-}
-
-.services-refresh:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
 }
 
 .services-error {

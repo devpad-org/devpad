@@ -91,25 +91,28 @@ onUnmounted(() => {
       <div class="info-header-actions">
         <button
           class="info-action"
+          :class="{ spinning: busy === 'restarting' }"
           :disabled="!!busy"
-          title="Restart the workspace's container"
+          :title="busy === 'restarting' ? 'Restarting…' : 'Restart the workspace\'s container'"
+          :aria-label="busy === 'restarting' ? 'Restarting' : 'Restart'"
           @click="confirming = 'restart'"
         >
-          {{ busy === 'restarting' ? 'Restarting…' : 'Restart' }}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+            <path d="M3 3v5h5" />
+          </svg>
         </button>
         <button
           v-if="canStop"
           class="info-action"
           :disabled="!!busy"
-          title="Stop the workspace's container"
+          :title="busy === 'stopping' ? 'Stopping…' : 'Stop the workspace\'s container'"
+          :aria-label="busy === 'stopping' ? 'Stopping' : 'Stop'"
           @click="confirming = 'stop'"
         >
-          {{ busy === 'stopping' ? 'Stopping…' : 'Stop' }}
-        </button>
-        <button class="info-refresh" @click="refresh" title="Refresh">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
-            <path d="M21 3v5h-5" />
+          <div v-if="busy === 'stopping'" class="info-spinner" />
+          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="14" height="14" x="5" y="5" rx="2" />
           </svg>
         </button>
       </div>
@@ -226,7 +229,7 @@ onUnmounted(() => {
 
 <style scoped>
 .info-panel {
-  --ide-header-icon: var(--accent-green);
+  --ide-header-icon: var(--success);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -239,7 +242,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
   background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
@@ -266,11 +269,13 @@ onUnmounted(() => {
 }
 
 .info-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
   height: 22px;
-  padding: 0 var(--space-2);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  font-size: 0.72rem;
   transition: all var(--transition-fast);
 }
 
@@ -285,20 +290,13 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
-.info-refresh {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  transition: all var(--transition-fast);
+.info-action.spinning svg {
+  animation: spin 0.8s linear infinite reverse;
 }
 
-.info-refresh:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+.info-action .info-spinner {
+  width: 12px;
+  height: 12px;
 }
 
 .info-loading {
@@ -306,22 +304,22 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-4) var(--space-3);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.8rem;
 }
 
 .info-spinner {
   width: 14px;
   height: 14px;
-  border: 2px solid var(--border-default);
-  border-top-color: var(--accent-blue);
+  border: 2px solid var(--border-subtle);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
 
 .info-error {
   padding: var(--space-3);
-  color: var(--accent-rose);
+  color: var(--error);
   font-size: 0.8rem;
 }
 
@@ -334,7 +332,7 @@ onUnmounted(() => {
 }
 
 .info-section + .info-section {
-  border-top: 0.5px solid var(--border-default);
+  border-top: 0.5px solid var(--border-subtle);
   margin-top: var(--space-1);
   padding-top: var(--space-3);
 }
@@ -344,7 +342,7 @@ onUnmounted(() => {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   margin-bottom: var(--space-2);
 }
 
@@ -395,16 +393,16 @@ onUnmounted(() => {
 }
 
 .info-bar-fill--cpu {
-  background: var(--accent-blue);
+  background: var(--hue-blue);
 }
 
 .info-bar-fill--mem {
-  background: var(--accent-purple);
+  background: var(--hue-purple);
 }
 
 .info-empty {
   padding: var(--space-4) var(--space-3);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.8rem;
   text-align: center;
 }
@@ -415,7 +413,7 @@ onUnmounted(() => {
   background: var(--warning-bg);
   border: 0.5px solid var(--warning-border);
   border-radius: var(--radius-sm);
-  color: var(--accent-amber);
+  color: var(--warning);
   font-size: 0.72rem;
   display: flex;
   align-items: center;
@@ -428,7 +426,7 @@ onUnmounted(() => {
   padding: 2px var(--space-2);
   border: 0.5px solid var(--warning-border);
   border-radius: var(--radius-sm);
-  color: var(--accent-amber);
+  color: var(--warning);
   font-size: 0.72rem;
   font-weight: 500;
   transition: background var(--transition-fast);
