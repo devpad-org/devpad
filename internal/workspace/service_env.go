@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 
 	"github.com/devpad-org/devpad/internal/agent"
 )
@@ -33,21 +32,28 @@ func envNames(env []string) []string {
 	return names
 }
 
-// agentSyncLock returns the lock that serialises what devpad syncs to a
+// lockAgentSync takes the lock that serialises what devpad syncs to a
 // workspace's agent (its services' variables and the git identity), so an
-// older value never lands after a newer one.
-func (s *service) agentSyncLock(workspaceID int64) *sync.Mutex {
+// older value never lands after a newer one. An agent can stall whoever holds
+// it, so waiting for it ends with ctx.
+func (s *service) lockAgentSync(ctx context.Context, workspaceID int64) (unlock func(), err error) {
 	s.agentSyncMu.Lock()
-	defer s.agentSyncMu.Unlock()
 	if s.agentSyncLocks == nil {
-		s.agentSyncLocks = make(map[int64]*sync.Mutex)
+		s.agentSyncLocks = make(map[int64]chan struct{})
 	}
-	mu, ok := s.agentSyncLocks[workspaceID]
+	lock, ok := s.agentSyncLocks[workspaceID]
 	if !ok {
-		mu = &sync.Mutex{}
-		s.agentSyncLocks[workspaceID] = mu
+		lock = make(chan struct{}, 1)
+		s.agentSyncLocks[workspaceID] = lock
 	}
-	return mu
+	s.agentSyncMu.Unlock()
+
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("waiting for another sync to workspace %d: %w", workspaceID, ctx.Err())
+	}
 }
 
 // forgetAgentSyncLock drops a deleted workspace's sync lock.
@@ -75,9 +81,11 @@ func (s *service) syncServiceEnv(ctx context.Context, ws *Workspace) error {
 	if s.sidecar == nil {
 		return nil
 	}
-	mu := s.agentSyncLock(ws.ID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock, err := s.lockAgentSync(ctx, ws.ID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	env, err := s.sidecar.EnvVars(ctx, ws.ID, ws.NetworkName)
 	if err != nil {

@@ -101,6 +101,9 @@ func (s *service) SeedSandboxRepo(ctx context.Context, userID, workspaceID int64
 		return nil, err
 	}
 	ws.RepoSeeded = true
+	// A save during the clone passed this repo by, as it wasn't seeded yet,
+	// and one from here on sees that it is.
+	s.logSyncGitIdentity(context.WithoutCancel(ctx), ws)
 	return seeded, nil
 }
 

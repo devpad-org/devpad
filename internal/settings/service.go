@@ -48,11 +48,14 @@ type Service interface {
 
 // GitIdentity is what a user commits as. Name and Email are their own choice,
 // empty when they use their account's, which come with it for the page to show.
+// Saved says whether they have saved one yet, even an empty one: until they
+// have, devpad leaves the identity in their repos alone.
 type GitIdentity struct {
 	Name         string `json:"name"`
 	Email        string `json:"email"`
 	AccountName  string `json:"accountName"`
 	AccountEmail string `json:"accountEmail"`
+	Saved        bool   `json:"saved"`
 }
 
 // SavedGitIdentity is a saved identity and how far it has reached.
@@ -258,7 +261,13 @@ func (s *service) GetGitIdentity(ctx context.Context, userID int64) (GitIdentity
 	if user == nil {
 		return GitIdentity{}, errors.New("user not found")
 	}
-	return GitIdentity{Name: user.GitName, Email: user.GitEmail, AccountName: user.Username, AccountEmail: user.Email}, nil
+	return GitIdentity{
+		Name:         user.GitName,
+		Email:        user.GitEmail,
+		AccountName:  user.Username,
+		AccountEmail: user.Email,
+		Saved:        user.GitIdentitySaved,
+	}, nil
 }
 
 func (s *service) SaveGitIdentity(ctx context.Context, userID int64, name, email string) (SavedGitIdentity, error) {
@@ -272,15 +281,16 @@ func (s *service) SaveGitIdentity(ctx context.Context, userID int64, name, email
 	if err := s.users.SetGitIdentity(ctx, userID, name, email); err != nil {
 		return SavedGitIdentity{}, err
 	}
+	// The identity is saved, so finish applying it even if the browser stops
+	// waiting.
+	ctx = context.WithoutCancel(ctx)
 	identity, err := s.GetGitIdentity(ctx, userID)
 	if err != nil {
 		return SavedGitIdentity{}, err
 	}
 	saved := SavedGitIdentity{GitIdentity: identity}
 	if s.gitSyncer != nil {
-		// The identity is saved, so finish applying it even if the
-		// browser stops waiting.
-		updated, complete := s.gitSyncer.SyncGitIdentity(context.WithoutCancel(ctx), userID)
+		updated, complete := s.gitSyncer.SyncGitIdentity(ctx, userID)
 		saved.WorkspacesUpdated, saved.SyncIncomplete = updated, !complete
 		if !complete {
 			log.Printf("user %d: git identity did not reach every running workspace", userID)

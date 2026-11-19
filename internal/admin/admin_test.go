@@ -56,10 +56,17 @@ func setupTestDB(t *testing.T) *sql.DB {
 // mockWorkspaceService is a minimal mock for workspace.AdminService used by admin tests.
 type mockWorkspaceService struct {
 	workspaces []*workspace.Workspace
+	// identitySyncs records whose git identity was synced.
+	identitySyncs []int64
 }
 
 func newMockWorkspaceService() *mockWorkspaceService {
 	return &mockWorkspaceService{}
+}
+
+func (m *mockWorkspaceService) SyncGitIdentity(_ context.Context, userID int64) (int, bool) {
+	m.identitySyncs = append(m.identitySyncs, userID)
+	return 0, true
 }
 
 func (m *mockWorkspaceService) ListAll(_ context.Context) ([]*workspace.Workspace, error) {
@@ -157,6 +164,46 @@ func TestService_UpdateUser(t *testing.T) {
 	}
 	if updated.Email != "new@test.com" {
 		t.Errorf("expected email 'new@test.com', got %q", updated.Email)
+	}
+}
+
+func TestService_UpdateUser_SyncsGitIdentityThatFollowsTheAccount(t *testing.T) {
+	const name, email = "admin", "admin@test.com"
+	tests := []struct {
+		name             string
+		saved            bool
+		gitName          string
+		gitEmail         string
+		newName          string
+		newEmail         string
+		wantIdentitySync bool
+	}{
+		{"email followed and changed", true, "Ada", "", name, "new@test.com", true},
+		{"username followed and changed", true, "", "ada@example.com", "renamed", email, true},
+		{"own values cover the change", true, "Ada", "ada@example.com", "renamed", "new@test.com", false},
+		{"nothing relevant changed", true, "", "", name, email, false},
+		{"never saved", false, "", "", "renamed", "new@test.com", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users := auth.NewUserRepository(setupTestDB(t))
+			workspaces := newMockWorkspaceService()
+			svc := NewService(users, workspaces)
+			ctx := context.Background()
+			user := seedAdmin(t, svc, ctx)
+			if tt.saved {
+				if err := users.SetGitIdentity(ctx, user.ID, tt.gitName, tt.gitEmail); err != nil {
+					t.Fatalf("saving git identity: %v", err)
+				}
+			}
+
+			if _, err := svc.UpdateUser(ctx, user.ID, tt.newName, tt.newEmail, true); err != nil {
+				t.Fatalf("UpdateUser: %v", err)
+			}
+			if got := len(workspaces.identitySyncs) == 1; got != tt.wantIdentitySync {
+				t.Fatalf("identity syncs = %v, want a sync: %v", workspaces.identitySyncs, tt.wantIdentitySync)
+			}
+		})
 	}
 }
 

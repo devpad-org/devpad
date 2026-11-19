@@ -40,9 +40,9 @@ type service struct {
 	rebuilding map[int64]bool
 
 	// agentSyncLocks serialise what devpad syncs to each workspace's agent
-	// (agentSyncLock).
+	// (lockAgentSync).
 	agentSyncMu    sync.Mutex
-	agentSyncLocks map[int64]*sync.Mutex
+	agentSyncLocks map[int64]chan struct{}
 }
 
 // NewService creates a new workspace Service.

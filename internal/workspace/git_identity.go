@@ -67,9 +67,11 @@ func (s *service) syncGitIdentity(ctx context.Context, ws *Workspace) error {
 	ctx, cancel := context.WithTimeout(ctx, gitIdentitySyncTimeout)
 	defer cancel()
 
-	mu := s.agentSyncLock(ws.ID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock, err := s.lockAgentSync(ctx, ws.ID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	user, err := s.users.GetByID(ctx, ws.UserID)
 	if err != nil {
@@ -88,11 +90,13 @@ func (s *service) syncGitIdentity(ctx context.Context, ws *Workspace) error {
 		UserName:  name,
 		UserEmail: email,
 	})
+	// What the agent answers is untrusted and these errors are logged, so
+	// its text is capped and quoted to keep it to one short line.
 	if err != nil {
-		return fmt.Errorf("setting the git identity: %w", err)
+		return fmt.Errorf("setting the git identity: %q", cleanReason(err.Error()))
 	}
 	if !result.Success {
-		return fmt.Errorf("setting the git identity: %s", result.Error)
+		return fmt.Errorf("setting the git identity: %q", cleanReason(result.Error))
 	}
 	return nil
 }

@@ -753,7 +753,7 @@ func TestService_GitIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveGitIdentity: %v", err)
 	}
-	if saved.Name != "Ada Lovelace" || saved.Email != "ada@users.noreply.example.com" || saved.WorkspacesUpdated != 2 || saved.SyncIncomplete {
+	if saved.Name != "Ada Lovelace" || saved.Email != "ada@users.noreply.example.com" || !saved.Saved || saved.WorkspacesUpdated != 2 || saved.SyncIncomplete {
 		t.Fatalf("saved = %+v", saved)
 	}
 	if len(syncer.users) != 1 || syncer.users[0] != user.ID {
@@ -764,7 +764,7 @@ func TestService_GitIdentity(t *testing.T) {
 	if _, err := settingsSvc.GenerateSSHKey(ctx, user.ID); err != nil {
 		t.Fatalf("GenerateSSHKey: %v", err)
 	}
-	if got, err = settingsSvc.GetGitIdentity(ctx, user.ID); err != nil || got.Name != "Ada Lovelace" {
+	if got, err = settingsSvc.GetGitIdentity(ctx, user.ID); err != nil || got.Name != "Ada Lovelace" || !got.Saved {
 		t.Fatalf("after a new SSH key = %+v, %v", got, err)
 	}
 
@@ -773,8 +773,40 @@ func TestService_GitIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clearing: %v", err)
 	}
-	if saved.Name != "" || saved.Email != "" || !saved.SyncIncomplete {
+	if saved.Name != "" || saved.Email != "" || !saved.Saved || !saved.SyncIncomplete {
 		t.Fatalf("after clearing = %+v", saved)
+	}
+}
+
+// cancelAfterGitIdentity cancels the request's context once the identity is
+// stored, as a browser disconnecting then would.
+type cancelAfterGitIdentity struct {
+	auth.UserRepository
+	cancel context.CancelFunc
+}
+
+func (r *cancelAfterGitIdentity) SetGitIdentity(ctx context.Context, id int64, name, email string) error {
+	defer r.cancel()
+	return r.UserRepository.SetGitIdentity(ctx, id, name, email)
+}
+
+func TestService_SaveGitIdentitySyncsAfterDisconnect(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	syncer := &fakeGitSyncer{updated: 1, complete: true}
+	settingsSvc.SetGitIdentitySyncer(syncer)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := settingsSvc.(*service)
+	s.users = &cancelAfterGitIdentity{UserRepository: s.users, cancel: cancel}
+
+	saved, err := settingsSvc.SaveGitIdentity(ctx, user.ID, "Ada Lovelace", "")
+	if err != nil {
+		t.Fatalf("SaveGitIdentity: %v", err)
+	}
+	if saved.Name != "Ada Lovelace" || len(syncer.users) != 1 {
+		t.Fatalf("saved = %+v, synced users = %v", saved, syncer.users)
 	}
 }
 

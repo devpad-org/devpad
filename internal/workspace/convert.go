@@ -317,5 +317,7 @@ func (s *service) RestartConverted(ctx context.Context, userID, workspaceID int6
 	if err := s.waitForAgent(ctx, ws); err != nil {
 		return fmt.Errorf("agent not ready after restart: %w", err)
 	}
+	// Its repo is now one whose identity devpad keeps.
+	s.logSyncGitIdentity(ctx, ws)
 	return nil
 }
