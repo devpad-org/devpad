@@ -30,7 +30,7 @@ Opening a project opens its IDE. The activity bar on the left switches between:
 - **Explorer**: the files in `/workspace`.
 - **Source Control**: changes, commits, branches, and [publishing](/docs/branches#publishing).
 - **Tasks**, **Merge requests** and **Agents**: the board, the project's merge requests, and the agents' runs.
-- **Workspace Info**: the container's status and processes, with **Restart** and **Stop**.
+- **Workspace Info**: the container's status and processes, with buttons to restart and stop it.
 - **Database Services**: the workspace's [services](/docs/services).
 - **Project**: a page of its own with the project's open tasks, merge requests and sandboxes at a glance, its protected branches and upstream, and how new workspaces are made: its environment, services and setup script, in that order.
 
