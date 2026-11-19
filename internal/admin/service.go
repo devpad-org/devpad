@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/workspace"
@@ -75,12 +76,22 @@ func (s *service) UpdateUser(ctx context.Context, id int64, username, email stri
 		return nil, ErrUserNotFound
 	}
 
+	oldName, oldEmail := user.GitIdentity()
 	user.Username = username
 	user.Email = email
 	user.IsAdmin = isAdmin
 
 	if err := s.users.Update(ctx, user); err != nil {
 		return nil, fmt.Errorf("updating user: %w", err)
+	}
+
+	// A saved identity with a field left empty follows the account, and the
+	// user's running workspaces should commit as their merges now will.
+	newName, newEmail := user.GitIdentity()
+	if user.GitIdentitySaved && (newName != oldName || newEmail != oldEmail) {
+		if _, complete := s.workspaces.SyncGitIdentity(context.WithoutCancel(ctx), id); !complete {
+			log.Printf("user %d: git identity did not reach every running workspace", id)
+		}
 	}
 
 	return user, nil

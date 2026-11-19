@@ -32,6 +32,7 @@ type RunChecker interface {
 type AdminService interface {
 	ListAll(ctx context.Context) ([]*Workspace, error)
 	UpdateResourceLimits(ctx context.Context, workspaceID, memoryLimit, nanoCPUs int64) (*Workspace, error)
+	GitIdentitySyncer
 }
 
 // FileContentService defines workspace file content operations.

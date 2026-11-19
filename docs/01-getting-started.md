@@ -31,6 +31,8 @@ They apply to:
 
 When you save, running project workspaces and sandboxes change straight away, and stopped ones change when they next start. This replaces any `user.name` or `user.email` you set by hand with `git config` in those repositories. Commits already made keep the identity they were made with. Workspaces made before projects keep their own.
 
+Until your first save, devpad leaves those settings alone, and saving with both fields empty applies your username and account email. From then on, devpad applies your identity again each time a project workspace or sandbox starts, restarts or is rebuilt, so a value you set by hand lasts only until then. If an admin changes your username or email and you left that field empty, your running workspaces change straight away.
+
 ## The dashboard {#dashboard}
 
 The dashboard lists your projects, most recently active first. Each card shows the project's upstream (or **local only**), its default branch, and what's going on: tasks in progress, agents running, open merge requests, and how many things **need you**, such as an agent waiting for an answer or a merge request to review.

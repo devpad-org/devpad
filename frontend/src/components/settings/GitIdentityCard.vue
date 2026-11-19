@@ -11,8 +11,12 @@ const saved = ref<GitIdentity | null>(null)
 const name = ref('')
 const email = ref('')
 
-const changed = computed(
-  () => !!saved.value && (name.value.trim() !== saved.value.name || email.value.trim() !== saved.value.email),
+// The first save counts even with nothing typed: it is what applies the
+// account's name and email to repos devpad has so far left alone.
+const canSave = computed(
+  () =>
+    !!saved.value &&
+    (!saved.value.saved || name.value.trim() !== saved.value.name || email.value.trim() !== saved.value.email),
 )
 
 function show(identity: GitIdentity) {
@@ -64,7 +68,8 @@ async function save() {
     </div>
     <p class="card-desc">
       The name and email on your commits, your agents' commits and your merges. Anything pushed upstream shows them.
-      Saving replaces any identity set by hand in your project workspaces and sandboxes.
+      Saving replaces any identity set by hand in your project workspaces and sandboxes, and they get it again each time
+      they start.
     </p>
 
     <div v-if="error" class="alert alert-error" role="alert">{{ error }}</div>
@@ -95,7 +100,7 @@ async function save() {
       </div>
       <div class="card-actions">
         <div class="card-buttons">
-          <button type="submit" class="btn-primary" :disabled="saving || !changed">
+          <button type="submit" class="btn-primary" :disabled="saving || !canSave">
             {{ saving ? 'Saving...' : 'Save' }}
           </button>
         </div>

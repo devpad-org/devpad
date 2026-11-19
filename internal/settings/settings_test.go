@@ -753,7 +753,7 @@ func TestService_GitIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveGitIdentity: %v", err)
 	}
-	if saved.Name != "Ada Lovelace" || saved.Email != "ada@users.noreply.example.com" || saved.WorkspacesUpdated != 2 || saved.SyncIncomplete {
+	if saved.Name != "Ada Lovelace" || saved.Email != "ada@users.noreply.example.com" || !saved.Saved || saved.WorkspacesUpdated != 2 || saved.SyncIncomplete {
 		t.Fatalf("saved = %+v", saved)
 	}
 	if len(syncer.users) != 1 || syncer.users[0] != user.ID {
@@ -764,7 +764,7 @@ func TestService_GitIdentity(t *testing.T) {
 	if _, err := settingsSvc.GenerateSSHKey(ctx, user.ID); err != nil {
 		t.Fatalf("GenerateSSHKey: %v", err)
 	}
-	if got, err = settingsSvc.GetGitIdentity(ctx, user.ID); err != nil || got.Name != "Ada Lovelace" {
+	if got, err = settingsSvc.GetGitIdentity(ctx, user.ID); err != nil || got.Name != "Ada Lovelace" || !got.Saved {
 		t.Fatalf("after a new SSH key = %+v, %v", got, err)
 	}
 
@@ -773,7 +773,7 @@ func TestService_GitIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clearing: %v", err)
 	}
-	if saved.Name != "" || saved.Email != "" || !saved.SyncIncomplete {
+	if saved.Name != "" || saved.Email != "" || !saved.Saved || !saved.SyncIncomplete {
 		t.Fatalf("after clearing = %+v", saved)
 	}
 }

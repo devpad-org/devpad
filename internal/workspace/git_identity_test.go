@@ -3,10 +3,12 @@ package workspace
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 )
@@ -171,6 +173,40 @@ func TestRestartConvertedSyncsGitIdentity(t *testing.T) {
 	}
 	if !slices.Contains(ca.paths(), "/api/git/action") {
 		t.Fatalf("requests after the restart = %v, want a git action", ca.paths())
+	}
+}
+
+func TestSyncGitIdentityStopsWaitingForTheLock(t *testing.T) {
+	svc, ra := setupSandboxService(t)
+	ctx := context.Background()
+	created := seededProjectWorkspace(t, svc, ra)
+	ws, err := svc.Get(ctx, 1, created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	saveGitIdentity(t, svc, "Test User", "")
+	s := svc.(*service)
+
+	// A sync stalled by its agent holds the lock.
+	unlock, err := s.lockAgentSync(ctx, ws.ID)
+	if err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	waiting, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if err := s.syncGitIdentity(waiting, ws); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("sync behind a held lock = %v, want the deadline", err)
+	}
+	if n := gitActions(ra); n != 0 {
+		t.Fatalf("sent %d git actions without the lock", n)
+	}
+
+	unlock()
+	if err := s.syncGitIdentity(ctx, ws); err != nil {
+		t.Fatalf("sync after the lock freed: %v", err)
+	}
+	if n := gitActions(ra); n != 1 {
+		t.Fatalf("sent %d git actions, want 1", n)
 	}
 }
 

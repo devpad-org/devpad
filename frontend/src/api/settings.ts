@@ -19,6 +19,8 @@ export interface GitIdentity {
   email: string
   accountName: string
   accountEmail: string
+  // Whether one has been saved yet, even an empty one.
+  saved: boolean
 }
 
 export interface SavedGitIdentity extends GitIdentity {
