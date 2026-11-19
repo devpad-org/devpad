@@ -13,8 +13,10 @@ import (
 
 const tokenTTL = 30 * time.Second
 
-// PreviewCookieName is the cookie set on the preview domain after token exchange.
-const PreviewCookieName = "devpad_preview"
+// PreviewCookieName is the cookie a preview's host sets after token exchange.
+// The __Host- prefix makes browsers keep it to that one host, so each preview
+// has a sign-in of its own that no other preview can replace.
+const PreviewCookieName = "__Host-devpad_preview"
 
 // PreviewSessionDuration is how long a preview cookie remains valid.
 const PreviewSessionDuration = 24 * time.Hour

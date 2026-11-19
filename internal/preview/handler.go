@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -100,6 +101,11 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if refusesCaller(r) {
+		http.Error(w, "this preview cannot be reached from that page", http.StatusForbidden)
+		return
+	}
+
 	// If a token is present, try to exchange it for a cookie.
 	if tokenStr := r.URL.Query().Get("token"); tokenStr != "" {
 		t, err := h.service.ValidateToken(r.Context(), tokenStr)
@@ -134,6 +140,33 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	h.proxyToContainer(w, r, wsID, port)
 }
 
+// refusesCaller reports whether a request came from a page on another origin.
+// Previews are same-site with each other, so SameSite doesn't keep their cookies
+// from such requests, and each preview stands alone, even from the workspace's
+// other ports: a frontend reaches its API through its dev server's proxy. Only
+// top-level navigations may cross, so links to a preview work. Clients without
+// fetch metadata are judged by Origin.
+func refusesCaller(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-site", "cross-site":
+		return !isTopLevelNavigation(r)
+	case "":
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return false
+		}
+		u, err := url.Parse(origin)
+		return err != nil || u.Host != r.Host
+	}
+	return false
+}
+
+func isTopLevelNavigation(r *http.Request) bool {
+	return r.Method == http.MethodGet &&
+		r.Header.Get("Sec-Fetch-Mode") == "navigate" &&
+		r.Header.Get("Sec-Fetch-Dest") == "document"
+}
+
 // setPreviewCookie sets the preview session cookie and redirects to the clean URL.
 func (h *Handler) setPreviewCookie(w http.ResponseWriter, r *http.Request, t *Token) {
 	cookieValue := h.signCookie(previewClaims{
@@ -147,7 +180,6 @@ func (h *Handler) setPreviewCookie(w http.ResponseWriter, r *http.Request, t *To
 		Name:     PreviewCookieName,
 		Value:    cookieValue,
 		Path:     "/",
-		Domain:   "." + h.previewDomain,
 		Expires:  time.Now().Add(PreviewSessionDuration),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
@@ -186,15 +218,20 @@ func (h *Handler) proxyToContainer(w http.ResponseWriter, r *http.Request, wsID 
 		Host:   agentAddr,
 	}
 
+	publicHost := r.Host
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+			// The app sees the agent's address as its host, so tell it the
+			// address the browser used.
+			req.Header.Set("X-Forwarded-Host", publicHost)
+			req.Header.Set("X-Forwarded-Proto", "https")
 			// Route through the agent's port proxy endpoint.
 			req.URL.Path = fmt.Sprintf("/proxy/%d%s", port, req.URL.Path)
-			// Remove the preview cookie so it doesn't leak into the container.
-			removeCookie(req, PreviewCookieName)
+			// Remove the preview cookies so they don't leak into the container.
+			removeCookies(req, PreviewCookieName, legacyPreviewCookieName)
 			// Authenticate with the agent.
 			if agentToken != "" {
 				req.Header.Set("X-Devpad-Agent-Token", agentToken)
@@ -202,6 +239,7 @@ func (h *Handler) proxyToContainer(w http.ResponseWriter, r *http.Request, wsID 
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			sanitizeSetCookies(resp.Header)
+			rewriteRedirect(resp.Header, target.Host, publicHost)
 			return nil
 		},
 		// Flush immediately for streaming responses (SSE, chunked).
@@ -213,6 +251,21 @@ func (h *Handler) proxyToContainer(w http.ResponseWriter, r *http.Request, wsID 
 	}
 
 	proxy.ServeHTTP(w, r)
+}
+
+// rewriteRedirect points a redirect an app built from the host it saw, the
+// agent's address the browser cannot reach, back at the preview.
+func rewriteRedirect(h http.Header, agentHost, publicHost string) {
+	location := h.Get("Location")
+	if location == "" {
+		return
+	}
+	u, err := url.Parse(location)
+	if err != nil || u.Host != agentHost {
+		return
+	}
+	u.Scheme, u.Host = "https", publicHost
+	h.Set("Location", u.String())
 }
 
 // parseSubdomain extracts workspace ID and port from a hostname like "3-8080.preview.example.com".
@@ -316,9 +369,14 @@ func (h *Handler) hmacVerify(data, signature string) bool {
 	return hmac.Equal([]byte(expected), []byte(signature))
 }
 
+// legacyPreviewCookieName is the cookie all previews once shared. It was set
+// for the whole preview domain, so browsers that still hold one send it to
+// every preview until it expires.
+const legacyPreviewCookieName = "devpad_preview"
+
 // reservedCookieNames are cookies devpad itself sets; a container may never
 // set them through the preview proxy.
-var reservedCookieNames = []string{"devpad_session", "__Host-devpad_session", PreviewCookieName}
+var reservedCookieNames = []string{"devpad_session", "__Host-devpad_session", PreviewCookieName, legacyPreviewCookieName}
 
 // sanitizeSetCookies makes every cookie a container sets host-only, by
 // dropping its Domain attribute, and drops cookies named like devpad's own.
@@ -359,12 +417,12 @@ func isReservedCookie(name string) bool {
 	return false
 }
 
-// removeCookie removes a named cookie from the request before proxying.
-func removeCookie(r *http.Request, name string) {
+// removeCookies removes the named cookies from the request before proxying.
+func removeCookies(r *http.Request, names ...string) {
 	cookies := r.Cookies()
 	r.Header.Del("Cookie")
 	for _, c := range cookies {
-		if c.Name != name {
+		if !slices.Contains(names, c.Name) {
 			r.AddCookie(c)
 		}
 	}

@@ -51,8 +51,10 @@ Your workspace has no SSH key and no direct access to the project's repo: devpad
 
 A project's environment is the body of a Dockerfile, run as root on devpad's workspace image (`FROM devpad-workspace:latest`). Use it for toolchains and system packages, such as `RUN apt-get install -y …` or a language runtime; install the project's own dependencies in the [setup script](#setup-script) instead.
 
+- The base image is Debian 13 with `bash`, `ca-certificates`, `curl`, `git`, `openssh-client`, `sudo`, `tmux` and `procps`. It has no Python, Node, `xz` or C compiler, so install what your project needs, including what its dependencies need to build.
 - `FROM`, `ADD` and `COPY` aren't allowed: devpad supplies the base image, and there are no files to copy. Download what you need with `RUN curl`.
-- Devpad builds it in the background whenever it changes. Builds run on a network of their own, limited to 4 GB of memory, 2 CPUs and 30 minutes.
+- `ENV` values, `PATH` included, reach terminals, commands, agents and the setup script.
+- Devpad builds it in the background whenever it changes. Builds can reach the internet, on a network of their own, and are limited to 4 GB of memory, 2 CPUs and 30 minutes.
 - The **Environment** card on the Project page shows the Dockerfile lines and whether they're **Built**, **Building…**, **Out of date** or **Build failed**, with **Show build log**. **Build again** retries a failed build.
 - New workspaces get the last version that built, or devpad's plain image if none has.
 
@@ -62,14 +64,18 @@ Changing the environment doesn't touch your running workspace. When it's out of 
 
 Everything in `/workspace` is kept, including uncommitted changes. Everything else is lost: packages you installed by hand, files in your home directory, and running processes. Rebuilding also gives your workspace any [project services](/docs/services#project-services) it doesn't have yet.
 
+Rebuilding doesn't run the [setup script](#setup-script). If your workspace needs it, press **Run setup** or **Run again** afterwards.
+
 ## Setup script {#setup-script}
 
 The setup script runs once in each newly made workspace, in `/workspace`, after the repo is checked out: in your project workspace and in every task and review sandbox. Use it for the project's dependencies (`npm ci`, `go mod download`) and anything else a fresh checkout needs.
 
+- It runs as the `devpad` user, who can use `sudo` without a password, in a `bash` login shell. It has the workspace's environment, including its [service variables](/docs/services#connection-variables), and can reach the internet.
+- It succeeds if its last command does. Start it with `set -e` to stop at the first failure.
 - It waits for the workspace's [services](/docs/services#readiness) to be ready, so it can create tables or load data.
 - Agents start once it finishes, and are told if it failed.
 - It can run for up to 30 minutes.
-- The **Setup script** card on the Project page shows the script and how your workspace's run went (**Succeeded**, **Failed**, or **Waiting…** for the services to be ready) with **Show output**, and **Run again** reruns it.
+- Saving a changed script or [rebuilding](#rebuilding) doesn't run it in a workspace that already exists. The **Setup script** card on the Project page shows the script and how your workspace's run went (**Succeeded**, **Failed**, or **Waiting…** for the services to be ready) with **Show output**. **Run setup**, or **Run again** after a first run, runs the current script, so write it to be safe to run twice.
 
 ## Upstream {#upstream}
 
@@ -84,9 +90,14 @@ You can add, change or remove the upstream with **Edit project**. Changing it fo
 
 ## Previews {#previews}
 
-To see a web app running in your workspace, press **Open preview in new tab** in the IDE's title bar (**Preview** in the phone's More menu), enter the port it listens on, and press **Open Preview**. Devpad opens it at its own address, `https://<workspace>-<port>.<preview domain>`, through a one-time link that signs the new tab in to that preview for 24 hours.
+To see a web app running in your workspace, press **Open preview in new tab** in the IDE's title bar (**Preview** in the phone's More menu), enter the port it listens on, and press **Open Preview**. Devpad opens it at its own address, `https://<workspace>-<port>.<preview domain>`, through a one-time link that signs your browser in to that preview for 24 hours. Each port is signed in separately, so you can keep several open at once.
 
-Previews need the server to be set up with a preview domain; ask your admin if they don't open. If the new tab doesn't appear, allow pop-ups for devpad.
+A preview is the way to reach a port from your browser: workspaces publish no ports, so `localhost` on your own machine isn't your workspace. Previews need the server to be set up with a preview domain; ask your admin if they don't open. If the new tab doesn't appear, allow pop-ups for devpad.
+
+- **Listening**: your app can listen on `127.0.0.1` or `0.0.0.0`. An app listening only on IPv6 can't be reached.
+- **Addresses**: your app sees an internal address as its host. Devpad sends the real one in `X-Forwarded-Host` and `X-Forwarded-Proto`, and corrects redirects to the internal address, but a full URL your app puts in a page is its own to get right.
+- **A frontend and an API on different ports**: open a preview of the frontend, and have its dev server proxy API calls to the API's port on `localhost` (`server.proxy` in Vite; other dev servers have an equivalent). The browser then sees one address, so you need no CORS settings and no second sign-in.
+- **Other previews**: each preview stands alone. A page in one can't call, embed or load anything from another, even one on another port of the same workspace. A link to one still opens.
 
 ## Standalone workspaces {#standalone-workspaces}
 
