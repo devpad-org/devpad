@@ -784,11 +784,13 @@ func TestWorkspaceExecutor_WaitForSubAgentsReportsTimeouts(t *testing.T) {
 
 	var payload struct {
 		Results []struct {
-			RunID    int64 `json:"runId"`
-			TimedOut bool  `json:"timedOut"`
+			RunID        int64 `json:"runId"`
+			TimedOut     bool  `json:"timedOut"`
+			StillRunning bool  `json:"stillRunning"`
 		} `json:"results"`
-		Completed int `json:"completed"`
-		TimedOut  int `json:"timedOut"`
+		Completed int    `json:"completed"`
+		TimedOut  int    `json:"timedOut"`
+		Message   string `json:"message"`
 	}
 	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
 		t.Fatalf("decoding wait result: %v", err)
@@ -796,8 +798,73 @@ func TestWorkspaceExecutor_WaitForSubAgentsReportsTimeouts(t *testing.T) {
 	if payload.Completed != 1 || payload.TimedOut != 1 {
 		t.Fatalf("unexpected timeout counts: %+v", payload)
 	}
-	if !payload.Results[1].TimedOut {
-		t.Fatalf("expected second result to be timed out: %+v", payload.Results)
+	if !payload.Results[1].TimedOut || !payload.Results[1].StillRunning {
+		t.Fatalf("expected second result to be timed out and still running: %+v", payload.Results)
+	}
+	if payload.Results[0].StillRunning {
+		t.Fatalf("expected finished child not to be still running: %+v", payload.Results[0])
+	}
+	for _, want := range []string{"1 still running", "#404", "wait_for_sub_agents again"} {
+		if !strings.Contains(payload.Message, want) {
+			t.Fatalf("expected message to contain %q, got %q", want, payload.Message)
+		}
+	}
+	if strings.Contains(payload.Message, "#303") {
+		t.Fatalf("expected message not to list the finished child, got %q", payload.Message)
+	}
+}
+
+func TestWorkspaceExecutor_SpawnSubAgentReportsChildStillRunning(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetChildAgentRunner(stubChildAgentRunner{
+		startFn: func(_ context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error) {
+			return &ChildAgentRun{ID: 303, ParentRunID: req.ParentRunID, WorkspaceID: req.WorkspaceID, Status: "queued"}, nil
+		},
+		waitFn: func(context.Context, int64, int64, int64) (*ChildAgentRunResult, error) {
+			return nil, context.DeadlineExceeded
+		},
+	})
+
+	req := toolReq(7, 9, "spawn_sub_agent", []byte(`{"prompt":"summarize auth","wait_for_result":true,"timeout_seconds":5}`))
+	req.CurrentRunID = 101
+	result := executor.ExecuteTool(context.Background(), req)
+	if result.IsError {
+		t.Fatalf("expected timeout payload, got %+v", result)
+	}
+
+	var payload struct {
+		TimedOut     bool   `json:"timedOut"`
+		StillRunning bool   `json:"stillRunning"`
+		Message      string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("decoding spawn result: %v", err)
+	}
+	if !payload.TimedOut || !payload.StillRunning {
+		t.Fatalf("expected child to be reported still running: %+v", payload)
+	}
+	if !strings.Contains(payload.Message, "wait_for_sub_agents") {
+		t.Fatalf("expected message to say how to collect the result, got %q", payload.Message)
+	}
+}
+
+func TestChildAgentWaitSeconds(t *testing.T) {
+	tests := []struct {
+		name   string
+		params map[string]any
+		want   int
+	}{
+		{name: "defaults to the maximum", params: map[string]any{}, want: 600},
+		{name: "keeps a shorter wait", params: map[string]any{"timeout_seconds": float64(30)}, want: 30},
+		{name: "caps a longer wait", params: map[string]any{"timeout_seconds": float64(3600)}, want: 600},
+		{name: "raises a zero wait", params: map[string]any{"timeout_seconds": float64(0)}, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := childAgentWaitSeconds(tt.params); got != tt.want {
+				t.Fatalf("childAgentWaitSeconds() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	childAgentDefaultWaitSeconds = 120
+	childAgentDefaultWaitSeconds = 600
 	childAgentMaxWaitSeconds     = 600
 	childAgentMaxWaitRunCount    = 20
 )
@@ -23,6 +23,8 @@ type subAgentWaitResult struct {
 	Summary  string `json:"summary,omitempty"`
 	Error    string `json:"error,omitempty"`
 	TimedOut bool   `json:"timedOut,omitempty"`
+	// StillRunning says the wait ended, not the child: it can be waited on again.
+	StillRunning bool `json:"stillRunning,omitempty"`
 }
 
 type availableAgentPayload struct {
@@ -148,7 +150,8 @@ func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequ
 		if waitErr != nil {
 			if errors.Is(waitErr, context.DeadlineExceeded) {
 				response["timedOut"] = true
-				response["message"] = fmt.Sprintf("Sub-agent run #%d is still running after %d seconds.", child.ID, timeoutSeconds)
+				response["stillRunning"] = true
+				response["message"] = fmt.Sprintf("Sub-agent run #%d is still running after %d seconds. Call wait_for_sub_agents with this run ID to collect its result.", child.ID, timeoutSeconds)
 				return marshalToolResponse("spawn_sub_agent", response)
 			}
 			return toolFailure("spawn_sub_agent", "Error waiting for sub-agent result: %v", waitErr)
@@ -223,7 +226,7 @@ func (e *WorkspaceExecutor) waitForSubAgents(ctx context.Context, req ExecutionR
 			result, waitErr := e.childRunner.WaitChildAgentRun(waitCtx, req.UserID, req.CurrentRunID, runID)
 			if waitErr != nil {
 				if errors.Is(waitErr, context.DeadlineExceeded) {
-					results[index] = subAgentWaitResult{RunID: runID, TimedOut: true}
+					results[index] = subAgentWaitResult{RunID: runID, TimedOut: true, StillRunning: true}
 					return
 				}
 				if errors.Is(waitErr, context.Canceled) && hasFirstErr() {
@@ -252,16 +255,35 @@ func (e *WorkspaceExecutor) waitForSubAgents(ctx context.Context, req ExecutionR
 		"completed": completed,
 		"failed":    failed,
 		"timedOut":  timedOut,
-		"message": fmt.Sprintf(
-			"Waited for %d sub-agent run(s): %d completed, %d failed, %d timed out.",
-			len(results),
-			completed,
-			failed,
-			timedOut,
-		),
+		"message":   subAgentWaitMessage(results, completed, failed, timedOut),
 	}
 
 	return marshalToolResponse("wait_for_sub_agents", response)
+}
+
+func subAgentWaitMessage(results []subAgentWaitResult, completed, failed, timedOut int) string {
+	message := fmt.Sprintf(
+		"Waited for %d sub-agent run(s): %d completed, %d failed, %d still running.",
+		len(results),
+		completed,
+		failed,
+		timedOut,
+	)
+	if timedOut == 0 {
+		return message
+	}
+
+	running := make([]string, 0, timedOut)
+	for _, result := range results {
+		if result.TimedOut {
+			running = append(running, fmt.Sprintf("#%d", result.RunID))
+		}
+	}
+	return fmt.Sprintf(
+		"%s Still working: %s. Call wait_for_sub_agents again with those run IDs to collect their results.",
+		message,
+		strings.Join(running, ", "),
+	)
 }
 
 func parseSubAgentRunIDs(params map[string]any) ([]int64, error) {
