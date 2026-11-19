@@ -45,6 +45,8 @@ func (a *recordingAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case "/api/command":
 		json.NewEncoder(w).Encode(map[string]any{"output": "", "exit_code": 0})
+	case "/api/git/action":
+		json.NewEncoder(w).Encode(map[string]any{"success": true})
 	case "/api/repo/seed":
 		json.NewEncoder(w).Encode(map[string]string{"branch": r.URL.Query().Get("branch"), "sha": "abc"})
 	case "/api/repo/bundle":

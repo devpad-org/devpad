@@ -142,9 +142,11 @@ DEVPAD_ENCRYPTION_KEY="your-64-char-hex-key" ./bin/devpad
 
 Make the key once and keep it: data encrypted with it cannot be read with any other key. If the key is lost or changed, each user must generate a new SSH key and enter their AI provider keys again in **Settings**.
 
-### SSH Keys
+### Git identity and SSH keys
 
-Each user can generate an ED25519 SSH key pair from the **Settings** page. The private key is encrypted and stored in the database; the public key is shown in the UI for users to copy to their Git hosting provider (GitHub, GitLab, Bitbucket).
+Each user can set the name and email their commits carry under **Settings > Git**; left empty, they are the account's username and email. Saving updates running project workspaces and sandboxes, and stopped ones when they next start.
+
+Each user can generate an ED25519 SSH key pair from the same page. The private key is encrypted and stored in the database; the public key is shown in the UI for users to copy to their Git hosting provider (GitHub, GitLab, Bitbucket).
 
 Work happens in projects. Each project has a canonical repo in its own container, one workspace for you, and sandboxes for its AI agents. None of a project's workspaces ever receive your SSH key: devpad moves commits between them and the canonical repo itself, and pushes upstream from the repo container with your key. A project without an upstream is a scratch project that starts from an empty repo.
 

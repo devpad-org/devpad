@@ -1265,6 +1265,16 @@ func TestMergeCommitsAsUserIntoDefaultBranch(t *testing.T) {
 	if got := e.repoAgent.merges; len(got) != 1 || got[0] != want {
 		t.Fatalf("merge request = %+v", got)
 	}
+	// A chosen git identity replaces the account's, one field at a time.
+	if _, err := e.db.Conn().Exec(`UPDATE users SET git_name = 'Owner Name', git_identity_saved = 1 WHERE id = ?`, e.userID); err != nil {
+		t.Fatalf("setting git identity: %v", err)
+	}
+	if _, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: "task/1"}); err != nil {
+		t.Fatalf("merge with a git identity: %v", err)
+	}
+	if got := e.repoAgent.merges[1]; got.Name != "Owner Name" || got.Email != "owner@example.com" {
+		t.Fatalf("merge identity = %q <%s>", got.Name, got.Email)
+	}
 	for _, source := range []string{"main", "", "-x"} {
 		if _, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: source}); !errors.Is(err, ErrInvalidInput) {
 			t.Fatalf("source %q: expected ErrInvalidInput, got %v", source, err)

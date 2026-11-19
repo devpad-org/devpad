@@ -91,7 +91,7 @@ func (s *service) SeedSandboxRepo(ctx context.Context, userID, workspaceID int64
 	}
 	var name, email string
 	if user, err := s.users.GetByID(ctx, ws.UserID); err == nil && user != nil {
-		name, email = user.Username, user.Email
+		name, email = user.GitIdentity()
 	}
 	seeded, err := c.RepoSeed(ctx, base, branch, name, email, bundle)
 	if err != nil {

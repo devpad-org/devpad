@@ -27,6 +27,7 @@ export const DOC_LINKS = {
   pricing: '/docs/ai#model-pricing',
   usage: '/docs/ai#usage',
   sshKey: '/docs/getting-started#ssh-key',
+  gitIdentity: '/docs/getting-started#git-identity',
   administration: '/docs/administration',
 } as const
 

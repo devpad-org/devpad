@@ -7,7 +7,7 @@ import InviteView from '@/views/InviteView.vue'
 import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import SecuritySettings from '@/components/settings/SecuritySettings.vue'
-import SSHKeySettings from '@/components/settings/SSHKeySettings.vue'
+import GitSettings from '@/components/settings/GitSettings.vue'
 import AppearanceSettings from '@/components/settings/AppearanceSettings.vue'
 import AIProviderKeys from '@/components/settings/AIProviderKeys.vue'
 import AIDefaultModels from '@/components/settings/AIDefaultModels.vue'
@@ -35,7 +35,8 @@ export const router = createRouter({
       children: [
         { path: '', name: 'settings', redirect: { name: 'settings-security' } },
         { path: 'security', name: 'settings-security', component: SecuritySettings },
-        { path: 'ssh-key', name: 'settings-ssh-key', component: SSHKeySettings },
+        { path: 'git', name: 'settings-git', component: GitSettings },
+        { path: 'ssh-key', redirect: { name: 'settings-git' } },
         { path: 'appearance', name: 'settings-appearance', component: AppearanceSettings },
         { path: 'ai/keys', name: 'settings-ai-keys', component: AIProviderKeys },
         { path: 'ai/models', name: 'settings-ai-models', component: AIDefaultModels },

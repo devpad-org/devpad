@@ -170,7 +170,7 @@ func (s *service) InitRepoFromContents(ctx context.Context, userID, workspaceID 
 	}
 	var name, email string
 	if user, err := s.users.GetByID(ctx, ws.UserID); err == nil && user != nil {
-		name, email = user.Username, user.Email
+		name, email = user.GitIdentity()
 	}
 	return c.RepoInitContents(ctx, branch, includeSensitive, name, email)
 }

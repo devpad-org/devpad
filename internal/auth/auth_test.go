@@ -31,6 +31,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 		totp_enabled BOOLEAN NOT NULL DEFAULT 0,
 		ssh_public_key TEXT NOT NULL DEFAULT '',
 		ssh_private_key TEXT NOT NULL DEFAULT '',
+		git_name TEXT NOT NULL DEFAULT '',
+		git_email TEXT NOT NULL DEFAULT '',
+		git_identity_saved BOOLEAN NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);

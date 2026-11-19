@@ -206,6 +206,53 @@ func (h *Handler) HandleGenerateSSHKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"publicKey": publicKey})
 }
 
+// HandleGetGitIdentity returns what the authenticated user commits as.
+func (h *Handler) HandleGetGitIdentity(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	identity, err := h.service.GetGitIdentity(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get Git identity")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, identity)
+}
+
+// HandleUpdateGitIdentity saves what the authenticated user commits as.
+func (h *Handler) HandleUpdateGitIdentity(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var req struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	saved, err := h.service.SaveGitIdentity(r.Context(), user.ID, req.Name, req.Email)
+	if err != nil {
+		if auth.IsValidationError(err) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to save Git identity")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, saved)
+}
+
 // HandleGetPreferences returns the authenticated user's UI preferences.
 func (h *Handler) HandleGetPreferences(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
