@@ -96,9 +96,8 @@ A preview is the way to reach a port from your browser: workspaces publish no po
 
 - **Listening**: your app can listen on `127.0.0.1` or `0.0.0.0`. An app listening only on IPv6 can't be reached.
 - **Addresses**: your app sees an internal address as its host. Devpad sends the real one in `X-Forwarded-Host` and `X-Forwarded-Proto`, and corrects redirects to the internal address, but a full URL your app puts in a page is its own to get right.
-- **A frontend and an API on different ports**: open a preview of each once, so your browser is signed in to both. Have the frontend call the API's preview address with credentials (`fetch(url, { credentials: 'include' })`), and have the API allow the frontend's preview address with credentials in its CORS settings. If a call gets a `401`, the API's sign-in has ended, after 24 hours or when devpad restarts: open its preview again.
-- **Images and scripts from another port**: devpad checks the `Referer` of these, so a page that hides it (`Referrer-Policy: no-referrer` or `same-origin`) has them refused. Such a page can load them with `crossorigin="use-credentials"` instead, if the other port's CORS settings allow it.
-- **Other workspaces**: a page in one workspace's preview can't call, embed or load anything from another workspace's previews. A link to one still opens.
+- **A frontend and an API on different ports**: open a preview of the frontend, and have its dev server proxy API calls to the API's port on `localhost` (`server.proxy` in Vite; other dev servers have an equivalent). The browser then sees one address, so you need no CORS settings and no second sign-in.
+- **Other previews**: each preview stands alone. A page in one can't call, embed or load anything from another, even one on another port of the same workspace. A link to one still opens.
 
 ## Standalone workspaces {#standalone-workspaces}
 

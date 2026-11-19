@@ -135,35 +135,24 @@ func TestPreviewCookieStaysOnItsHost(t *testing.T) {
 	}
 }
 
-func TestProxyRefusesPagesOfOtherWorkspaces(t *testing.T) {
-	rig := newProxyRig(t)
-	for _, method := range []string{"GET", "POST", "OPTIONS"} {
-		r := httptest.NewRequest(method, "https://1-8000.preview.example.com/api", nil)
-		r.Header.Set("Origin", "https://2-3000.preview.example.com")
-		r.Header.Set("Access-Control-Request-Method", "POST")
-		r.AddCookie(rig.cookieFor(1, 8000))
-		if w := rig.serve(r); w.Code != http.StatusForbidden {
-			t.Errorf("%s: status %d, want 403", method, w.Code)
-		}
-	}
-	if len(rig.requests) != 0 {
-		t.Fatalf("%d requests reached the workspace", len(rig.requests))
-	}
-}
+const (
+	ownOrigin     = "https://1-8000.preview.example.com"
+	siblingOrigin = "https://1-5173.preview.example.com"
+	foreignOrigin = "https://2-3000.preview.example.com"
+)
 
 // pageRequest is a request as a browser sends it for a page.
 type pageRequest struct {
-	name, method, origin, site, mode, dest, referer string
+	name, method, origin, site, mode, dest string
 }
 
 func (p pageRequest) build() *http.Request {
-	r := httptest.NewRequest(p.method, "https://1-8000.preview.example.com/api", nil)
+	r := httptest.NewRequest(p.method, ownOrigin+"/api", nil)
 	for name, value := range map[string]string{
 		"Origin":         p.origin,
 		"Sec-Fetch-Site": p.site,
 		"Sec-Fetch-Mode": p.mode,
 		"Sec-Fetch-Dest": p.dest,
-		"Referer":        p.referer,
 	} {
 		if value != "" {
 			r.Header.Set(name, value)
@@ -172,29 +161,33 @@ func (p pageRequest) build() *http.Request {
 	return r
 }
 
-const (
-	siblingPage = "https://1-5173.preview.example.com/"
-	foreignPage = "https://2-3000.preview.example.com/"
-)
-
-func TestProxyRefusesPagesThatDoNotNameTheirWorkspace(t *testing.T) {
+func TestProxyRefusesOtherPages(t *testing.T) {
 	for _, p := range []pageRequest{
-		{"fetch redirected across origins", "POST", "null", "same-site", "cors", "empty", foreignPage},
-		{"image", "GET", "", "same-site", "no-cors", "image", foreignPage},
-		{"script", "GET", "", "same-site", "no-cors", "script", foreignPage},
-		{"frame", "GET", "", "same-site", "navigate", "iframe", foreignPage},
-		{"image with its referrer hidden", "GET", "", "same-site", "no-cors", "image", ""},
-		{"form with its referrer hidden", "POST", "null", "same-site", "navigate", "document", ""},
-		{"image redirected through another site", "GET", "", "cross-site", "no-cors", "image", foreignPage},
-		{"null origin without fetch metadata", "POST", "null", "", "", "", foreignPage},
-		{"the app's own page", "GET", "https://devpad.example.com", "same-site", "cors", "empty", "https://devpad.example.com/"},
+		{"another workspace's fetch", "POST", foreignOrigin, "same-site", "cors", "empty"},
+		{"another port's fetch", "POST", siblingOrigin, "same-site", "cors", "empty"},
+		{"another port's preflight", "OPTIONS", siblingOrigin, "same-site", "cors", "empty"},
+		{"another port's no-cors POST", "POST", siblingOrigin, "same-site", "no-cors", "empty"},
+		{"fetch redirected across origins", "POST", "null", "same-site", "cors", "empty"},
+		{"image", "GET", "", "same-site", "no-cors", "image"},
+		{"script", "GET", "", "same-site", "no-cors", "script"},
+		{"frame", "GET", "", "same-site", "navigate", "iframe"},
+		{"form", "POST", "null", "same-site", "navigate", "document"},
+		{"image redirected through another site", "GET", "", "cross-site", "no-cors", "image"},
+		{"the app's own page", "GET", "https://devpad.example.com", "same-site", "cors", "empty"},
+		{"another workspace without fetch metadata", "POST", foreignOrigin, "", "", ""},
+		{"another port without fetch metadata", "OPTIONS", siblingOrigin, "", "", ""},
+		{"null origin without fetch metadata", "POST", "null", "", "", ""},
 	} {
 		t.Run(p.name, func(t *testing.T) {
 			rig := newProxyRig(t)
 			r := p.build()
 			r.AddCookie(rig.cookieFor(1, 8000))
-			if w := rig.serve(r); w.Code != http.StatusForbidden {
+			w := rig.serve(r)
+			if w.Code != http.StatusForbidden {
 				t.Errorf("status %d, want 403", w.Code)
+			}
+			if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+				t.Errorf("Access-Control-Allow-Origin = %q", got)
 			}
 			if len(rig.requests) != 0 {
 				t.Error("the request reached the workspace")
@@ -205,13 +198,15 @@ func TestProxyRefusesPagesThatDoNotNameTheirWorkspace(t *testing.T) {
 
 func TestProxyAllowsThePagesItShould(t *testing.T) {
 	for _, p := range []pageRequest{
-		{"the preview's own image", "GET", "", "same-origin", "no-cors", "image", "https://1-8000.preview.example.com/"},
-		{"a typed address", "GET", "", "none", "navigate", "document", ""},
-		{"a link from another workspace's preview", "GET", "", "same-site", "navigate", "document", foreignPage},
-		{"a link from another site", "GET", "", "cross-site", "navigate", "document", "https://example.org/"},
-		{"an image on a sibling preview", "GET", "", "same-site", "no-cors", "image", siblingPage},
-		{"a sibling's fetch redirected across origins", "POST", "null", "same-site", "cors", "empty", siblingPage},
-		{"a client without fetch metadata", "GET", "", "", "", "", ""},
+		{"the preview's own image", "GET", "", "same-origin", "no-cors", "image"},
+		{"the preview's own fetch", "POST", ownOrigin, "same-origin", "cors", "empty"},
+		// A page with Referrer-Policy: no-referrer sends this for its own forms.
+		{"the preview's own form with its referrer hidden", "POST", "null", "same-origin", "navigate", "document"},
+		{"a typed address", "GET", "", "none", "navigate", "document"},
+		{"a link from another preview", "GET", "", "same-site", "navigate", "document"},
+		{"a link from another site", "GET", "", "cross-site", "navigate", "document"},
+		{"a client without fetch metadata", "GET", "", "", "", ""},
+		{"its own origin without fetch metadata", "POST", ownOrigin, "", "", ""},
 	} {
 		t.Run(p.name, func(t *testing.T) {
 			rig := newProxyRig(t)
@@ -221,97 +216,6 @@ func TestProxyAllowsThePagesItShould(t *testing.T) {
 				t.Errorf("status %d, want 200", w.Code)
 			}
 		})
-	}
-}
-
-func TestProxyErrorsAreReadableByTheWorkspacesPreviews(t *testing.T) {
-	const origin = "https://1-5173.preview.example.com"
-	allowed := func(w *httptest.ResponseRecorder) string { return w.Header().Get("Access-Control-Allow-Origin") }
-	rig := newProxyRig(t)
-
-	unsigned := httptest.NewRequest("POST", "https://1-8000.preview.example.com/api", nil)
-	unsigned.Header.Set("Origin", origin)
-	w := rig.serve(unsigned)
-	if w.Code != http.StatusUnauthorized || allowed(w) != origin || w.Header().Get("Access-Control-Allow-Credentials") != "true" {
-		t.Errorf("no sign-in: status %d, allowed %q", w.Code, allowed(w))
-	}
-
-	elsewhere := httptest.NewRequest("POST", "https://1-8000.preview.example.com/api", nil)
-	elsewhere.Header.Set("Origin", "https://example.org")
-	if w := rig.serve(elsewhere); w.Code != http.StatusUnauthorized || allowed(w) != "" {
-		t.Errorf("another site: status %d, allowed %q", w.Code, allowed(w))
-	}
-
-	signedIn := httptest.NewRequest("POST", "https://1-8000.preview.example.com/api", nil)
-	signedIn.Header.Set("Origin", origin)
-	signedIn.AddCookie(rig.cookieFor(1, 8000))
-	if w := rig.serve(signedIn); w.Code != http.StatusOK || allowed(w) != "" {
-		t.Errorf("the app's response: status %d, allowed %q, want it left to the app", w.Code, allowed(w))
-	}
-
-	rig.agent.Close()
-	down := httptest.NewRequest("POST", "https://1-8000.preview.example.com/api", nil)
-	down.Header.Set("Origin", origin)
-	down.AddCookie(rig.cookieFor(1, 8000))
-	if w := rig.serve(down); w.Code != http.StatusBadGateway || allowed(w) != origin {
-		t.Errorf("agent down: status %d, allowed %q", w.Code, allowed(w))
-	}
-}
-
-func TestProxyLetsAWorkspacesPreviewsCallEachOther(t *testing.T) {
-	rig := newProxyRig(t)
-	const origin = "https://1-5173.preview.example.com"
-
-	preflight := httptest.NewRequest("OPTIONS", "https://1-8000.preview.example.com/api", nil)
-	preflight.Header.Set("Origin", origin)
-	preflight.Header.Set("Access-Control-Request-Method", "POST")
-	preflight.Header.Set("Access-Control-Request-Headers", "content-type")
-	w := rig.serve(preflight)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("preflight: status %d, want 204", w.Code)
-	}
-	for name, want := range map[string]string{
-		"Access-Control-Allow-Origin":      origin,
-		"Access-Control-Allow-Credentials": "true",
-		"Access-Control-Allow-Methods":     "POST",
-		"Access-Control-Allow-Headers":     "content-type",
-	} {
-		if got := w.Header().Get(name); got != want {
-			t.Errorf("%s = %q, want %q", name, got, want)
-		}
-	}
-	if len(rig.requests) != 0 {
-		t.Fatal("the unauthenticated preflight reached the workspace")
-	}
-
-	call := httptest.NewRequest("POST", "https://1-8000.preview.example.com/api", nil)
-	call.Header.Set("Origin", origin)
-	call.AddCookie(rig.cookieFor(1, 8000))
-	if w := rig.serve(call); w.Code != http.StatusOK {
-		t.Fatalf("call: status %d, want 200", w.Code)
-	}
-
-	unsigned := httptest.NewRequest("POST", "https://1-8000.preview.example.com/api", nil)
-	unsigned.Header.Set("Origin", origin)
-	if w := rig.serve(unsigned); w.Code != http.StatusUnauthorized {
-		t.Fatalf("call without its sign-in: status %d, want 401", w.Code)
-	}
-}
-
-func TestProxyAnswersNoPreflightFromElsewhere(t *testing.T) {
-	rig := newProxyRig(t)
-	for origin, want := range map[string]int{
-		"https://evil.example.org":          http.StatusUnauthorized,
-		"http://1-5173.preview.example.com": http.StatusUnauthorized,
-		"null":                              http.StatusForbidden,
-	} {
-		r := httptest.NewRequest("OPTIONS", "https://1-8000.preview.example.com/api", nil)
-		r.Header.Set("Origin", origin)
-		r.Header.Set("Access-Control-Request-Method", "POST")
-		w := rig.serve(r)
-		if w.Code != want || w.Header().Get("Access-Control-Allow-Origin") != "" {
-			t.Errorf("origin %q: status %d, allowed %q", origin, w.Code, w.Header().Get("Access-Control-Allow-Origin"))
-		}
 	}
 }
 

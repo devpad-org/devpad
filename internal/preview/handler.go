@@ -101,12 +101,8 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.refusesCaller(r, wsID) {
+	if refusesCaller(r) {
 		http.Error(w, "this preview cannot be reached from that page", http.StatusForbidden)
-		return
-	}
-	if origin := r.Header.Get("Origin"); isPreflight(r) && h.relationOf(origin, wsID) == pageSameWorkspace {
-		answerPreflight(w, r, origin)
 		return
 	}
 
@@ -125,126 +121,50 @@ func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	// Authenticate via preview cookie.
 	cookie, err := r.Cookie(PreviewCookieName)
 	if err != nil {
-		h.proxyError(w, r, wsID, "preview authentication required", http.StatusUnauthorized)
+		http.Error(w, "preview authentication required", http.StatusUnauthorized)
 		return
 	}
 
 	claims, err := h.validateCookie(cookie.Value)
 	if err != nil {
-		h.proxyError(w, r, wsID, "invalid preview session", http.StatusUnauthorized)
+		http.Error(w, "invalid preview session", http.StatusUnauthorized)
 		return
 	}
 
 	// Ensure cookie is scoped to this workspace+port.
 	if claims.workspaceID != wsID || claims.port != port {
-		h.proxyError(w, r, wsID, "preview session mismatch", http.StatusForbidden)
+		http.Error(w, "preview session mismatch", http.StatusForbidden)
 		return
 	}
 
 	h.proxyToContainer(w, r, wsID, port)
 }
 
-// pageRelation is how the page a URL names relates to a workspace's previews.
-type pageRelation int
-
-const (
-	pageElsewhere pageRelation = iota
-	pageSameWorkspace
-	pageOtherWorkspace
-)
-
-// relationOf places the page named by an Origin or Referer header. Only an
-// HTTPS page counts as the workspace's own, as previews are served over HTTPS.
-func (h *Handler) relationOf(pageURL string, wsID int64) pageRelation {
-	u, err := url.Parse(pageURL)
-	if err != nil {
-		return pageElsewhere
-	}
-	pageWS, _, err := h.parseSubdomain(u.Host)
-	switch {
-	case err != nil:
-		return pageElsewhere
-	case pageWS != wsID:
-		return pageOtherWorkspace
-	case u.Scheme == "https":
-		return pageSameWorkspace
-	default:
-		return pageElsewhere
-	}
-}
-
-// refusesCaller reports whether a request may have been made by a page outside
-// this workspace. Previews are same-site with each other, so the browser sends
-// this preview's cookie with requests from another workspace's page, and Origin
-// alone can't catch them: images, scripts and frames send none, and a fetch
-// redirected across origins sends "null". Such a request must show, by its
-// Referer, that it comes from this workspace, which a page can hide but not
-// forge. Top-level navigations stay allowed, so links to a preview work.
-func (h *Handler) refusesCaller(r *http.Request, wsID int64) bool {
-	origin := r.Header.Get("Origin")
-	switch h.relationOf(origin, wsID) {
-	case pageSameWorkspace:
-		return false
-	case pageOtherWorkspace:
-		return true
-	}
+// refusesCaller reports whether a request came from a page on another origin.
+// Previews are same-site with each other, so SameSite doesn't keep their cookies
+// from such requests, and each preview stands alone, even from the workspace's
+// other ports: a frontend reaches its API through its dev server's proxy. Only
+// top-level navigations may cross, so links to a preview work. Clients without
+// fetch metadata are judged by Origin.
+func refusesCaller(r *http.Request) bool {
 	switch r.Header.Get("Sec-Fetch-Site") {
 	case "same-site", "cross-site":
-		// Cross-site too: a redirect through another site can carry the cookie.
-	default:
-		if origin != "null" {
+		return !isTopLevelNavigation(r)
+	case "":
+		origin := r.Header.Get("Origin")
+		if origin == "" {
 			return false
 		}
+		u, err := url.Parse(origin)
+		return err != nil || u.Host != r.Host
 	}
-	if isTopLevelNavigation(r) {
-		return false
-	}
-	return h.relationOf(r.Header.Get("Referer"), wsID) != pageSameWorkspace
+	return false
 }
 
 func isTopLevelNavigation(r *http.Request) bool {
 	return r.Method == http.MethodGet &&
 		r.Header.Get("Sec-Fetch-Mode") == "navigate" &&
 		r.Header.Get("Sec-Fetch-Dest") == "document"
-}
-
-func isPreflight(r *http.Request) bool {
-	return r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != ""
-}
-
-// allowPage lets a page read a response and send credentials with its request.
-func allowPage(header http.Header, origin string) {
-	header.Set("Access-Control-Allow-Origin", origin)
-	header.Set("Access-Control-Allow-Credentials", "true")
-	header.Add("Vary", "Origin")
-}
-
-// proxyError writes an error of devpad's own. The workspace's other previews
-// may read it, so a frontend can tell that its API's sign-in has ended rather
-// than see a network failure. Responses from the app never get these headers:
-// its own CORS settings decide those.
-func (h *Handler) proxyError(w http.ResponseWriter, r *http.Request, wsID int64, message string, status int) {
-	if origin := r.Header.Get("Origin"); h.relationOf(origin, wsID) == pageSameWorkspace {
-		allowPage(w.Header(), origin)
-	}
-	http.Error(w, message, status)
-}
-
-// answerPreflight lets one of a workspace's previews call another, such as a
-// frontend calling its API. Browsers send preflights without cookies, so
-// devpad answers them itself rather than let unauthenticated requests reach
-// the workspace. The app's own CORS headers still decide whether the page may
-// read the response.
-func answerPreflight(w http.ResponseWriter, r *http.Request, origin string) {
-	header := w.Header()
-	allowPage(header, origin)
-	header.Set("Access-Control-Allow-Methods", r.Header.Get("Access-Control-Request-Method"))
-	if requested := r.Header.Get("Access-Control-Request-Headers"); requested != "" {
-		header.Set("Access-Control-Allow-Headers", requested)
-	}
-	header.Add("Vary", "Access-Control-Request-Method")
-	header.Add("Vary", "Access-Control-Request-Headers")
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // setPreviewCookie sets the preview session cookie and redirects to the clean URL.
@@ -281,15 +201,15 @@ func (h *Handler) proxyToContainer(w http.ResponseWriter, r *http.Request, wsID 
 	agentAddr, agentToken, err := h.service.ResolveContainerAddr(r.Context(), wsID)
 	if err != nil {
 		if errors.Is(err, workspace.ErrNotFound) {
-			h.proxyError(w, r, wsID, "workspace not found", http.StatusNotFound)
+			http.Error(w, "workspace not found", http.StatusNotFound)
 			return
 		}
 		if errors.Is(err, ErrWorkspaceDown) {
-			h.proxyError(w, r, wsID, "workspace is not running", http.StatusServiceUnavailable)
+			http.Error(w, "workspace is not running", http.StatusServiceUnavailable)
 			return
 		}
 		log.Printf("preview: resolve container error: %v", err)
-		h.proxyError(w, r, wsID, "preview backend unavailable", http.StatusBadGateway)
+		http.Error(w, "preview backend unavailable", http.StatusBadGateway)
 		return
 	}
 
@@ -326,7 +246,7 @@ func (h *Handler) proxyToContainer(w http.ResponseWriter, r *http.Request, wsID 
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("preview: proxy error for ws %d port %d: %v", wsID, port, err)
-			h.proxyError(w, r, wsID, "preview backend error", http.StatusBadGateway)
+			http.Error(w, "preview backend error", http.StatusBadGateway)
 		},
 	}
 
