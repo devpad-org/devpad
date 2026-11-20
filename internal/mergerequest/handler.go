@@ -392,6 +392,7 @@ func mergeRequestResponse(mr *MergeRequest) map[string]any {
 		"id":             mr.ID,
 		"projectId":      mr.ProjectID,
 		"taskId":         mr.TaskID,
+		"openedBy":       mr.OpenedBy,
 		"title":          mr.Title,
 		"description":    mr.Description,
 		"sourceBranch":   mr.SourceBranch,

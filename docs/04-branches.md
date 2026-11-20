@@ -54,7 +54,7 @@ A merge request asks to merge one branch into a protected branch. Open one:
 
 - from **Source Control**, with **Merge request** under the branch's card (**Publish and open** publishes it first);
 - from the **Merge requests** list, with **New merge request**: pick the branch to merge and the protected branch to merge it **Into**;
-- by asking the [assistant](/docs/tasks#the-assistant), which names the branch to merge into and waits for your approval;
+- by asking the [assistant](/docs/tasks#the-assistant), which names the branch to merge into and waits for your approval; the merge request's activity says the assistant opened it;
 - automatically, when a [task's agent](/docs/tasks#how-a-task-runs) finishes with new commits: devpad opens a merge request from the task's branch into the default branch.
 
 A branch has at most one open merge request. The source can itself be protected, as when releasing `develop` into `main`.

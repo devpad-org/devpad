@@ -173,7 +173,7 @@ type Tasks interface {
 type MergeRequests interface {
 	List(ctx context.Context, userID, projectID int64) ([]*mergerequest.MergeRequest, error)
 	Get(ctx context.Context, userID, projectID, mrID int64) (*mergerequest.Detail, error)
-	Create(ctx context.Context, userID, projectID int64, in mergerequest.CreateInput) (*mergerequest.MergeRequest, error)
+	AssistantCreate(ctx context.Context, userID, projectID int64, in mergerequest.CreateInput) (*mergerequest.MergeRequest, error)
 	AssistantComment(ctx context.Context, userID, projectID, mrID int64, in mergerequest.AgentCommentInput) (*mergerequest.Comment, error)
 }
 
@@ -302,10 +302,17 @@ type taskArgs struct {
 // an agent run, which costs money, or opens a merge request, which puts a
 // change up for merging and can start a review agent.
 func needsApproval(tool string, args taskArgs) bool {
-	switch tool {
-	case createTaskTool:
+	if tool == createTaskTool {
 		return args.Start
-	case startTaskTool, requestTaskChangesTool, createMRTool:
+	}
+	return mayNeedApproval(tool)
+}
+
+// mayNeedApproval reports whether some calls of a tool wait for the user,
+// before its arguments are read.
+func mayNeedApproval(tool string) bool {
+	switch tool {
+	case createTaskTool, startTaskTool, requestTaskChangesTool, createMRTool:
 		return true
 	default:
 		return false
@@ -313,9 +320,7 @@ func needsApproval(tool string, args taskArgs) bool {
 }
 
 func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool, error) {
-	switch req.ToolName {
-	case createTaskTool, startTaskTool, requestTaskChangesTool, createMRTool:
-	default:
+	if !mayNeedApproval(req.ToolName) {
 		return aitools.Approval{}, false, nil
 	}
 	// Outside a project workspace the call is refused without asking, so an
@@ -404,6 +409,11 @@ func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest
 		if strings.TrimSpace(in.Description) != "" {
 			details = append(details, textDetail("Description", in.Description))
 		}
+		// The merge request takes the project's copy of the branch, so the
+		// user should know what it leaves out before approving.
+		if ahead := p.unpublishedCommits(ctx, req, proj, in.SourceBranch); ahead > 0 {
+			details = append(details, domain.ApprovalDetail{Label: "Left out", Value: unpublishedLabel(ahead)})
+		}
 		summary := "Open a merge request in this project."
 		review := "Off for this project"
 		if proj.AutoReview {
@@ -432,6 +442,13 @@ func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest
 			Details: details,
 		}, true, nil
 	}
+}
+
+func unpublishedLabel(ahead int) string {
+	if ahead == 1 {
+		return "1 commit in your workspace that isn't published"
+	}
+	return fmt.Sprintf("%d commits in your workspace that aren't published", ahead)
 }
 
 // textDetail is model-written text, shown in full and set apart.
@@ -915,7 +932,7 @@ func (p *Provider) createMergeRequest(ctx context.Context, req aitools.Execution
 	if !req.Approved {
 		return toolError(req.ToolName, "opening a merge request needs the user's approval, which it did not get")
 	}
-	mr, err := p.mrs.Create(ctx, req.UserID, proj.ID, in)
+	mr, err := p.mrs.AssistantCreate(ctx, req.UserID, proj.ID, in)
 	switch {
 	case errors.Is(err, mergerequest.ErrInvalidInput), errors.Is(err, mergerequest.ErrInvalidState), errors.Is(err, project.ErrNotReady):
 		return toolError(req.ToolName, "%v", err)
@@ -928,13 +945,9 @@ func (p *Provider) createMergeRequest(ctx context.Context, req aitools.Execution
 		message += " The project reviews new merge requests automatically, so a review agent is starting on it."
 	}
 	result := map[string]any{"message": message, "mergeRequest": summarizeMR(mr)}
-	// Commits the workspace has not published are not in the merge request.
-	// The comparison is only a hint, so failing to make it changes nothing.
-	statusCtx, cancel := context.WithTimeout(ctx, branchStatusTimeout)
-	defer cancel()
-	if status, err := p.projects.WorkspaceBranchStatus(statusCtx, req.UserID, proj.ID, mr.SourceBranch); err == nil && status != nil && status.Ahead > 0 {
-		result["unpublishedCommits"] = status.Ahead
-		unpublished := fmt.Sprintf(" Your workspace has %d commit(s) on %s that the project does not, so they are not in it", status.Ahead, mr.SourceBranch)
+	if ahead := p.unpublishedCommits(ctx, req, proj, mr.SourceBranch); ahead > 0 {
+		result["unpublishedCommits"] = ahead
+		unpublished := fmt.Sprintf(" Your workspace has %d commit(s) on %s that the project does not, so they are not in it", ahead, mr.SourceBranch)
 		if proj.IsProtected(mr.SourceBranch) {
 			// A protected branch is never published: its commits arrive
 			// only through merge requests.
@@ -945,6 +958,19 @@ func (p *Provider) createMergeRequest(ctx context.Context, req aitools.Execution
 		result["message"] = message + unpublished
 	}
 	return toolResult(req.ToolName, result)
+}
+
+// unpublishedCommits counts the workspace's commits on branch that the
+// project's copy lacks, and so a merge request from it would leave out. The
+// count is only a hint, so failing to make it counts none.
+func (p *Provider) unpublishedCommits(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, branch string) int {
+	statusCtx, cancel := context.WithTimeout(ctx, branchStatusTimeout)
+	defer cancel()
+	status, err := p.projects.WorkspaceBranchStatus(statusCtx, req.UserID, proj.ID, branch)
+	if err != nil || status == nil {
+		return 0
+	}
+	return status.Ahead
 }
 
 func (p *Provider) comment(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) domain.ToolResultPart {

@@ -23,6 +23,9 @@ import (
 type Service interface {
 	List(ctx context.Context, userID, projectID int64) ([]*MergeRequest, error)
 	Create(ctx context.Context, userID, projectID int64, in CreateInput) (*MergeRequest, error)
+	// AssistantCreate opens a merge request for the assistant in the
+	// project's workspace, recorded as the assistant's.
+	AssistantCreate(ctx context.Context, userID, projectID int64, in CreateInput) (*MergeRequest, error)
 	Get(ctx context.Context, userID, projectID, mrID int64) (*Detail, error)
 	Diff(ctx context.Context, userID, projectID, mrID int64) (*agent.RepoDiff, error)
 	// Commits lists the commits the merge request proposes, newest first.
@@ -264,6 +267,17 @@ func (s *service) List(ctx context.Context, userID, projectID int64) ([]*MergeRe
 // such as one published from a sandbox by hand, into a protected branch.
 // The source can be protected too, as when develop is released into main.
 func (s *service) Create(ctx context.Context, userID, projectID int64, in CreateInput) (*MergeRequest, error) {
+	return s.create(ctx, userID, projectID, in, AuthorUser)
+}
+
+// AssistantCreate opens a merge request as Create does, recorded as opened
+// by the assistant in the project's workspace. The assistant asks the user
+// before calling it.
+func (s *service) AssistantCreate(ctx context.Context, userID, projectID int64, in CreateInput) (*MergeRequest, error) {
+	return s.create(ctx, userID, projectID, in, AuthorAssistant)
+}
+
+func (s *service) create(ctx context.Context, userID, projectID int64, in CreateInput, openedBy Author) (*MergeRequest, error) {
 	p, err := s.projects.Get(ctx, userID, projectID)
 	if err != nil {
 		return nil, err
@@ -283,7 +297,7 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 		return nil, invalid("sourceBranch must be a branch other than %s", target)
 	}
 	mr := &MergeRequest{
-		ProjectID: projectID, UserID: userID, Title: title, Description: in.Description,
+		ProjectID: projectID, UserID: userID, OpenedBy: openedBy, Title: title, Description: in.Description,
 		SourceBranch: in.SourceBranch, TargetBranch: target, Status: StatusOpen,
 	}
 	if err := s.openAtHead(ctx, mr); err != nil {
@@ -371,7 +385,7 @@ func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary 
 	}
 	if mr == nil {
 		mr = &MergeRequest{
-			ProjectID: t.ProjectID, UserID: t.UserID, TaskID: t.ID, Title: t.Title, Description: summary,
+			ProjectID: t.ProjectID, UserID: t.UserID, TaskID: t.ID, OpenedBy: AuthorTaskAgent, Title: t.Title, Description: summary,
 			SourceBranch: t.Branch, TargetBranch: p.DefaultBranch, Status: StatusOpen, HeadSHA: t.HeadSHA,
 		}
 		if err := s.repo.Create(ctx, mr); err != nil {

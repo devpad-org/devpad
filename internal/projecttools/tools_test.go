@@ -177,7 +177,7 @@ type fakeMRs struct {
 // published are the project's branches.
 var published = []string{"main", "develop", "feature/cart", "task/1", "task/2"}
 
-func (f *fakeMRs) Create(_ context.Context, _, projectID int64, in mergerequest.CreateInput) (*mergerequest.MergeRequest, error) {
+func (f *fakeMRs) AssistantCreate(_ context.Context, _, projectID int64, in mergerequest.CreateInput) (*mergerequest.MergeRequest, error) {
 	if !slices.Contains(published, in.SourceBranch) {
 		return nil, fmt.Errorf("%w: branch %q does not exist", mergerequest.ErrInvalidInput, in.SourceBranch)
 	}
@@ -866,8 +866,16 @@ func TestMergeRequestApprovalShowsWhatWillOpen(t *testing.T) {
 		t.Errorf("expected the card to say a review agent starts: %+v", got)
 	}
 	for _, d := range got.Details {
-		if d.Label == "Description" {
-			t.Errorf("an empty description needs no detail: %+v", got.Details)
+		if d.Label == "Description" || d.Label == "Left out" {
+			t.Errorf("an empty description and a fully published branch need no detail: %+v", got.Details)
 		}
+	}
+
+	// Commits the workspace hasn't published won't be in the merge request,
+	// and the user sees so before approving.
+	e.projects.ahead["feature/cart"] = 3
+	got = approval(`{"source_branch":"feature/cart","target_branch":"develop","title":"Cart"}`)
+	if !hasDetail(got, "Left out", "3 commits in your workspace that aren't published") {
+		t.Errorf("expected the unpublished commits on the card: %+v", got.Details)
 	}
 }

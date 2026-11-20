@@ -54,13 +54,16 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const mrColumns = `id, project_id, user_id, task_id, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, created_at, updated_at`
+const mrColumns = `id, project_id, user_id, task_id, opened_by, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, created_at, updated_at`
 
 func (r *repository) Create(ctx context.Context, mr *MergeRequest) error {
 	now := time.Now()
+	if mr.OpenedBy == "" {
+		mr.OpenedBy = AuthorUser
+	}
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO merge_requests (project_id, user_id, task_id, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		mr.ProjectID, mr.UserID, nullableID(mr.TaskID), mr.Title, mr.Description, mr.SourceBranch, mr.TargetBranch, mr.Status, mr.HeadSHA, mr.BaseSHA, mr.MergeSHA, mr.MergedAt, now, now,
+		`INSERT INTO merge_requests (project_id, user_id, task_id, opened_by, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		mr.ProjectID, mr.UserID, nullableID(mr.TaskID), mr.OpenedBy, mr.Title, mr.Description, mr.SourceBranch, mr.TargetBranch, mr.Status, mr.HeadSHA, mr.BaseSHA, mr.MergeSHA, mr.MergedAt, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting merge request: %w", err)
@@ -296,7 +299,7 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 	var mr MergeRequest
 	var taskID sql.NullInt64
 	var mergedAt sql.NullTime
-	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
+	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.OpenedBy, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}

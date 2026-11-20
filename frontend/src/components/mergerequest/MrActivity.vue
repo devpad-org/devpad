@@ -84,6 +84,7 @@ async function submitComment() {
           <span class="event-line">
             Opened from <span class="mono">{{ mr.sourceBranch }}</span>
             <template v-if="mr.taskId"> by task #{{ mr.taskId }}</template>
+            <template v-else-if="mr.openedBy === 'assistant'"> by the assistant</template>
             <template v-if="openedCommits.length"> with {{ plural(openedCommits.length, 'commit') }}</template>
             <span class="muted" :title="fullTime(mr.createdAt)"> &middot; {{ timeAgo(mr.createdAt) }}</span>
           </span>

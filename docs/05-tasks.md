@@ -53,7 +53,7 @@ Some of an agent's tool calls wait for you before they run:
 
 - any command that uses `sudo`;
 - starting a background agent (creating and starting a task, or starting one) and sending a task back to its agent;
-- the assistant opening a merge request: the card shows the branch, the branch it would merge into, and whether an automatic review would start.
+- the assistant opening a merge request: the card shows the branch, the branch it would merge into, whether an automatic review would start, and any commits in your workspace that aren't published and so would be left out.
 
 The call shows as a card with **Approve** and **Deny**, in the chat and in the inbox. An agent can also stop to ask you a question. Both appear in the **inbox** in the header, from every workspace and sandbox, so you can answer an agent without finding it first.
 
