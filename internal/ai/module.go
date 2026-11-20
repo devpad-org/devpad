@@ -76,7 +76,16 @@ func NewModule(db *sql.DB, workspaces Workspaces, keys app.KeyCipher) *Module {
 	approvalBroker := approval.NewMemoryBroker()
 	questionBroker := question.NewMemoryBroker()
 	toolCatalog := aitools.NewCatalog()
-	chatService := app.NewChatService(catalogService, toolCatalog, toolExecutor, approvalBroker, questionBroker, workspaces, attachmentService, usageService)
+	chatService := app.NewChatService(app.ChatServiceDeps{
+		Catalog:     catalogService,
+		ToolCatalog: toolCatalog,
+		Executor:    toolExecutor,
+		Approvals:   approvalBroker,
+		Questions:   questionBroker,
+		Workspaces:  workspaces,
+		Images:      attachmentService,
+		Usage:       usageService,
+	})
 	agentRuns := storage.NewAgentRunRepository(db)
 	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService).WithImageLoader(attachmentService)
 	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService, summaryModelService, agentRunService))

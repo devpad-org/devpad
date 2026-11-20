@@ -69,19 +69,32 @@ type providerChatBackend struct {
 	catalog CatalogService
 }
 
+// ChatServiceDeps are what a ChatService is made from.
+type ChatServiceDeps struct {
+	Catalog     CatalogService
+	ToolCatalog orchestrator.ToolCatalog
+	Executor    orchestrator.ToolExecutor
+	Approvals   approval.Broker
+	Questions   question.Broker
+	Workspaces  WorkspaceChecker
+	// Images loads the images turns refer to; nil sends turns as they are.
+	Images ImageLoader
+	// Usage records every provider request the chats make; nil records none.
+	Usage UsageRecorder
+}
+
 // NewChatService creates the app-level chat service for simple and agent
-// chat. images loads the images turns refer to; nil sends turns as they are.
-// usage records every provider request the chats make; nil records none.
-func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog, executor orchestrator.ToolExecutor, approvals approval.Broker, questions question.Broker, workspaces WorkspaceChecker, images ImageLoader, usage UsageRecorder) ChatService {
-	backend := &providerChatBackend{catalog: catalog}
+// chat.
+func NewChatService(d ChatServiceDeps) ChatService {
+	backend := &providerChatBackend{catalog: d.Catalog}
 
 	return &chatService{
-		catalog:    catalog,
+		catalog:    d.Catalog,
 		simple:     orchestrator.NewSimpleChatOrchestrator(backend),
-		agent:      orchestrator.NewAgentChatOrchestrator(backend, toolCatalog, executor, approvals, questions),
-		workspaces: workspaces,
-		images:     images,
-		usage:      usage,
+		agent:      orchestrator.NewAgentChatOrchestrator(backend, d.ToolCatalog, d.Executor, d.Approvals, d.Questions),
+		workspaces: d.Workspaces,
+		images:     d.Images,
+		usage:      d.Usage,
 	}
 }
 
