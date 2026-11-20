@@ -110,6 +110,18 @@ func TestBuildChatRequest_UsesReasoningSplitAndReasoningDetails(t *testing.T) {
 	}
 }
 
+func TestBuildChatRequest_SetsOutputLimit(t *testing.T) {
+	for _, model := range NewAdapter().Models() {
+		body := buildChatRequest(aiprovider.StreamRequest{
+			Model: model.ID,
+			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+		}, model)
+		if body.MaxCompletionTokens != maxCompletionTokens {
+			t.Fatalf("%s: expected max_completion_tokens %d, got %d", model.ID, maxCompletionTokens, body.MaxCompletionTokens)
+		}
+	}
+}
+
 func TestReasoningDetailsFromTurn_LeavesOutOtherProvidersState(t *testing.T) {
 	turn := domain.Turn{Role: domain.RoleAssistant, Parts: []domain.Part{{
 		Kind: domain.PartThinking,
