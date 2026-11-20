@@ -33,21 +33,37 @@ type Handler struct {
 	questions   question.Broker
 }
 
+// Services are the AI services a Handler serves.
+type Services struct {
+	Catalog       app.CatalogService
+	Agents        app.AgentService
+	AgentDefaults app.AgentDefaultsService
+	Budgets       app.BudgetDefaultsService
+	SummaryModel  app.SummaryModelService
+	Usage         app.UsageService
+	Chat          app.ChatService
+	Runs          app.AgentRunService
+	Conversations app.ConversationService
+	Attachments   app.AttachmentService
+	Approvals     approval.Broker
+	Questions     question.Broker
+}
+
 // NewHandler creates a new AI handler.
-func NewHandler(catalog app.CatalogService, agents app.AgentService, defaults app.AgentDefaultsService, budgets app.BudgetDefaultsService, summary app.SummaryModelService, usage app.UsageService, chat app.ChatService, runs app.AgentRunService, convService app.ConversationService, attachments app.AttachmentService, approvals approval.Broker, questions question.Broker) *Handler {
+func NewHandler(s Services) *Handler {
 	return &Handler{
-		catalog:     catalog,
-		agents:      agents,
-		defaults:    defaults,
-		budgets:     budgets,
-		summary:     summary,
-		usage:       usage,
-		chat:        chat,
-		runs:        runs,
-		convService: convService,
-		attachments: attachments,
-		approvals:   approvals,
-		questions:   questions,
+		catalog:     s.Catalog,
+		agents:      s.Agents,
+		defaults:    s.AgentDefaults,
+		budgets:     s.Budgets,
+		summary:     s.SummaryModel,
+		usage:       s.Usage,
+		chat:        s.Chat,
+		runs:        s.Runs,
+		convService: s.Conversations,
+		attachments: s.Attachments,
+		approvals:   s.Approvals,
+		questions:   s.Questions,
 	}
 }
 

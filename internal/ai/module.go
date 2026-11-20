@@ -94,10 +94,23 @@ func NewModule(db *sql.DB, workspaces Workspaces, keys app.KeyCipher) *Module {
 		AgentRunService:     agentRunService,
 		ConversationService: conversationService,
 		ToolExecutor:        toolExecutor,
-		Handler:             httptransport.NewHandler(catalogService, agentService, agentDefaultsService, budgetDefaultsService, summaryModelService, usageService, chatService, agentRunService, conversationService, attachmentService, approvalBroker, questionBroker),
-		runListeners:        agentRunService,
-		toolCatalog:         toolCatalog,
-		toolExecutor:        toolExecutor,
+		Handler: httptransport.NewHandler(httptransport.Services{
+			Catalog:       catalogService,
+			Agents:        agentService,
+			AgentDefaults: agentDefaultsService,
+			Budgets:       budgetDefaultsService,
+			SummaryModel:  summaryModelService,
+			Usage:         usageService,
+			Chat:          chatService,
+			Runs:          agentRunService,
+			Conversations: conversationService,
+			Attachments:   attachmentService,
+			Approvals:     approvalBroker,
+			Questions:     questionBroker,
+		}),
+		runListeners: agentRunService,
+		toolCatalog:  toolCatalog,
+		toolExecutor: toolExecutor,
 	}
 }
 
