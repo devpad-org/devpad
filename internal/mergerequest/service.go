@@ -1290,11 +1290,11 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 	if rv.Effort != "" {
 		thinking = &domain.ThinkingConfig{Effort: rv.Effort}
 	}
-	turns, err := s.continuedTurns(ctx, mr, rv)
+	prompt, err := s.continuedPrompt(ctx, mr, rv)
 	if err != nil {
 		return err
 	}
-	if turns == nil {
+	if prompt == "" {
 		history, err := s.reviewHistory(ctx, mr, rv)
 		if err != nil {
 			return err
@@ -1312,7 +1312,7 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 			return err
 		}
 		rv.ConversationID = conv.ID
-		turns = []domain.Turn{domain.NewTextTurn(domain.RoleUser, reviewPrompt(p, mr, t, rv, ws.Branch, diff, env, setup, history))}
+		prompt = reviewPrompt(p, mr, t, rv, ws.Branch, diff, env, setup, history)
 	}
 	run, err := s.runs.StartRun(ctx, app.StartAgentRunRequest{
 		UserID:         mr.UserID,
@@ -1320,7 +1320,7 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 		ConversationID: rv.ConversationID,
 		AgentID:        rv.AgentID,
 		Model:          rv.Model,
-		Turns:          turns,
+		Message:        domain.NewTextTurn(domain.RoleUser, prompt),
 		Thinking:       thinking,
 		Budget:         budget,
 	})
@@ -1337,12 +1337,12 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 	return nil
 }
 
-// continuedTurns is the transcript of a review continued after it stopped,
-// told why it stopped and to finish, or nil for a review starting afresh,
-// including one whose transcript cannot be read.
-func (s *service) continuedTurns(ctx context.Context, mr *MergeRequest, rv *Review) ([]domain.Turn, error) {
+// continuedPrompt tells a review continued after it stopped why it stopped
+// and to finish, in its own conversation. It is empty for a review starting
+// afresh, including one whose transcript cannot be read.
+func (s *service) continuedPrompt(ctx context.Context, mr *MergeRequest, rv *Review) (string, error) {
 	if rv.ConversationID == 0 {
-		return nil, nil
+		return "", nil
 	}
 	turns, err := s.conversations.GetTurns(ctx, rv.ConversationID, mr.UserID)
 	if err != nil || len(turns) == 0 {
@@ -1350,14 +1350,13 @@ func (s *service) continuedTurns(ctx context.Context, mr *MergeRequest, rv *Revi
 			log.Printf("review %d: loading conversation %d, starting afresh: %v", rv.ID, rv.ConversationID, err)
 		}
 		rv.ConversationID = 0
-		return nil, nil
+		return "", nil
 	}
 	reason := rv.Error
 	if reason == "" {
 		reason = "the server restarted"
 	}
-	prompt := fmt.Sprintf("Your review stopped before you submitted it: %s\n\nContinue the review where you left off. The comments, replies and resolutions you already made are saved on the merge request (%s lists them), so do not make them again. Finish by calling %s once.", reason, readCommentsTool, submitTool)
-	return domain.AppendUserText(turns, prompt), nil
+	return fmt.Sprintf("Your review stopped before you submitted it: %s\n\nContinue the review where you left off. The comments, replies and resolutions you already made are saved on the merge request (%s lists them), so do not make them again. Finish by calling %s once.", reason, readCommentsTool, submitTool), nil
 }
 
 // reviewBudget is an agent review's budget: its own limit, within its

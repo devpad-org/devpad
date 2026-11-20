@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -29,26 +30,41 @@ type AgentRunRepository interface {
 	ListRunsByStatus(ctx context.Context, userID int64, statuses ...domain.AgentRunStatus) ([]domain.AgentRun, error)
 }
 
-// StartAgentRunRequest contains all inputs needed to start a background run.
+// StartAgentRunRequest continues a saved conversation with a new user message.
 type StartAgentRunRequest struct {
 	UserID         int64
 	WorkspaceID    int64
 	ConversationID int64
-	ParentRunID    int64
 	AgentID        string
 	Model          string
-	Turns          []domain.Turn
-	Thinking       *domain.ThinkingConfig
-	// Budget stops the run once spent. Nil means no limit. A child of an
-	// active run with a budget shares that budget instead; a child of a
-	// finished run, such as the next reply in a conversation, keeps this one.
+	// Seed is the history a conversation with no turns yet starts from,
+	// before Message, such as the earlier rounds a task carries into a new
+	// conversation. A conversation that already has turns refuses it.
+	Seed []domain.Turn
+	// Message is the user's turn the run answers: text, images, or both.
+	Message  domain.Turn
+	Thinking *domain.ThinkingConfig
+	// Budget stops the run once spent. Nil means no limit.
 	Budget *domain.Budget
+}
+
+// StartChildAgentRunRequest starts a sub-agent run from its own prompt. The
+// conversation ID only links the run to its parent's conversation for display;
+// child runs never write to it. A child shares its parent's budget.
+type StartChildAgentRunRequest struct {
+	UserID         int64
+	WorkspaceID    int64
+	ConversationID int64
+	AgentID        string
+	Model          string
+	Prompt         string
+	Thinking       *domain.ThinkingConfig
 }
 
 // AgentRunService manages browser-independent AI agent execution.
 type AgentRunService interface {
 	StartRun(ctx context.Context, req StartAgentRunRequest) (*domain.AgentRun, error)
-	StartChildRun(ctx context.Context, parentRunID int64, req StartAgentRunRequest) (*domain.AgentRun, error)
+	StartChildRun(ctx context.Context, parentRunID int64, req StartChildAgentRunRequest) (*domain.AgentRun, error)
 	GetRun(ctx context.Context, userID, runID int64) (*domain.AgentRun, error)
 	ListRuns(ctx context.Context, userID, workspaceID int64) ([]domain.AgentRun, error)
 	ListEvents(ctx context.Context, userID, runID, afterSequence int64) ([]domain.AgentRunEvent, error)
@@ -90,6 +106,11 @@ type agentRunService struct {
 	// child runs it starts.
 	budgets map[int64]*domain.Budget
 
+	// startMu serializes claiming conversations so two requests cannot both
+	// find a conversation idle and start runs on it. It covers only storage
+	// calls; opening the model stream happens outside it.
+	startMu sync.Mutex
+
 	listenersMu sync.Mutex
 	listeners   []func(domain.AgentRun)
 }
@@ -115,8 +136,9 @@ func NewAgentRunService(ctx context.Context, repo AgentRunRepository, chat ChatS
 }
 
 // reconcileInterruptedRuns ends runs a previous server process left active.
-// Each keeps the transcript of what it did, rebuilt from its events, so it
-// can be continued.
+// Each keeps the steps it completed, which were saved as they completed, so
+// it can be continued; only a step the process stopped in the middle of is
+// lost.
 func (s *agentRunService) reconcileInterruptedRuns() {
 	ctx := context.Background()
 	runs, err := s.repo.ListRunsByStatus(ctx, 0, domain.AgentRunQueued, domain.AgentRunRunning, domain.AgentRunWaitingApproval, domain.AgentRunWaitingUser)
@@ -173,104 +195,247 @@ func (s *agentRunService) notifyFinished(runID int64) {
 	}
 }
 
+// StartRun continues a conversation with a new user message. The server is the
+// only writer of a conversation: it loads the saved history, appends the
+// message once the run has started, and saves each step of the run as it
+// completes, so the history never depends on a browser staying connected.
 func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest) (*domain.AgentRun, error) {
+	req.Message.Role = domain.RoleUser
 	if err := validateStartAgentRunRequest(req); err != nil {
 		return nil, err
 	}
-	if req.ParentRunID != 0 {
-		parent, err := s.getOwnedRun(ctx, req.UserID, req.ParentRunID)
-		if err != nil {
-			return nil, fmt.Errorf("validating parent run: %w", err)
-		}
-		if parent.WorkspaceID != req.WorkspaceID {
-			return nil, fmt.Errorf("parent run workspace mismatch: %w", domain.ErrAgentRunNotFound)
-		}
-		if err := s.ensureChildRunCapacity(ctx, req.UserID, req.WorkspaceID, req.ParentRunID); err != nil {
-			return nil, err
-		}
-		if budget := s.budgetForRun(req.ParentRunID); budget != nil {
-			req.Budget = budget
-		}
+	if s.conversations == nil {
+		return nil, fmt.Errorf("conversation storage is not configured")
 	}
-	agent, err := s.resolveAgent(ctx, req)
+	agent, err := s.resolveAgent(ctx, req.UserID, req.WorkspaceID, req.AgentID)
 	if err != nil {
 		return nil, fmt.Errorf("resolving agent: %w", err)
 	}
 	// A malformed image reference fails the run before anything is saved.
+	turns := append(cloneTurns(req.Seed), cloneTurns([]domain.Turn{req.Message})...)
 	if s.images != nil {
-		if req.Turns, err = s.images.Hydrate(ctx, req.UserID, req.Turns); err != nil {
+		if turns, err = s.images.Hydrate(ctx, req.UserID, turns); err != nil {
 			return nil, err
 		}
 	}
-	if req.ParentRunID == 0 && req.ConversationID > 0 && s.conversations != nil {
-		conv, err := s.conversations.GetConversation(ctx, req.ConversationID, req.UserID)
-		if err != nil {
-			return nil, fmt.Errorf("loading agent run conversation: %w", err)
-		}
-		// A transcript going on with another model, as when its model was
-		// retired, leaves behind what only the old model can read.
-		modelChanged := conv != nil && conv.Model != req.Model
-		if modelChanged {
-			req.Turns = domain.WithoutReasoningState(req.Turns)
-		}
-		if err := s.conversations.SaveTurns(ctx, req.ConversationID, req.UserID, cloneTurns(req.Turns)); err != nil {
-			return nil, fmt.Errorf("saving initial agent run conversation: %w", err)
-		}
-		// Recorded after the turns are saved, so a failure in between can only
-		// mean clearing them again.
-		if modelChanged {
-			if err := s.conversations.SetConversationModel(ctx, req.ConversationID, req.UserID, req.Model); err != nil {
-				return nil, fmt.Errorf("recording agent run conversation model: %w", err)
-			}
-		}
+	run, recorder, err := s.claimConversation(ctx, req, agent, turns)
+	if err != nil {
+		return nil, err
+	}
+	return s.launchRun(ctx, run, agent, recorder, req.Budget)
+}
+
+// claimConversation stores a queued run for the conversation if it has no
+// active run. The stored run is the claim: until it ends, no other run can
+// start on the conversation, so nothing else writes to its history while this
+// one starts. newTurns are the turns the run adds before it starts: the seed,
+// if any, and the user's message.
+func (s *agentRunService) claimConversation(ctx context.Context, req StartAgentRunRequest, agent *domain.Agent, newTurns []domain.Turn) (*domain.AgentRun, *conversationRecorder, error) {
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+
+	conv, err := s.conversations.GetConversation(ctx, req.ConversationID, req.UserID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading agent run conversation: %w", err)
+	}
+	if conv == nil || conv.WorkspaceID != req.WorkspaceID {
+		return nil, nil, domain.ErrConversationNotFound
+	}
+	if err := s.ensureConversationIdle(ctx, req.UserID, req.ConversationID); err != nil {
+		return nil, nil, err
+	}
+	history, repaired, err := s.loadConversationHistory(ctx, req.UserID, req.WorkspaceID, req.ConversationID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(req.Seed) > 0 && len(history) > 0 {
+		return nil, nil, fmt.Errorf("a conversation with turns cannot be seeded")
+	}
+	// A transcript going on with another model, as when its model was
+	// retired, leaves behind what only the old model can read.
+	modelChanged := conv.Model != req.Model
+	if modelChanged {
+		history = domain.WithoutReasoningState(history)
 	}
 
 	run := &domain.AgentRun{
-		ParentRunID:    req.ParentRunID,
 		UserID:         req.UserID,
 		WorkspaceID:    req.WorkspaceID,
 		ConversationID: req.ConversationID,
 		AgentID:        agent.ID,
 		Model:          req.Model,
 		Status:         domain.AgentRunQueued,
-		InputTurns:     cloneTurns(req.Turns),
+		InputTurns:     append(cloneTurns(history), cloneTurns(newTurns)...),
+		Thinking:       cloneThinking(req.Thinking),
+	}
+	if err := s.repo.CreateRun(ctx, run); err != nil {
+		return nil, nil, fmt.Errorf("creating agent run: %w", err)
+	}
+	recorder := &conversationRecorder{
+		conversations:  s.conversations,
+		conversationID: req.ConversationID,
+		userID:         req.UserID,
+		newTurns:       newTurns,
+	}
+	if repaired || modelChanged {
+		recorder.history = history
+	}
+	if modelChanged {
+		recorder.model = req.Model
+	}
+	return run, recorder, nil
+}
+
+// StartChildRun starts a sub-agent run for a tool call in a parent run. It
+// shares the parent's budget, if the parent has one.
+func (s *agentRunService) StartChildRun(ctx context.Context, parentRunID int64, req StartChildAgentRunRequest) (*domain.AgentRun, error) {
+	if parentRunID <= 0 {
+		return nil, domain.ErrAgentRunNotFound
+	}
+	if err := validateStartChildAgentRunRequest(req); err != nil {
+		return nil, err
+	}
+	parent, err := s.getOwnedRun(ctx, req.UserID, parentRunID)
+	if err != nil {
+		return nil, fmt.Errorf("validating parent run: %w", err)
+	}
+	if parent.WorkspaceID != req.WorkspaceID {
+		return nil, fmt.Errorf("parent run workspace mismatch: %w", domain.ErrAgentRunNotFound)
+	}
+	if err := s.ensureChildRunCapacity(ctx, req.UserID, req.WorkspaceID, parentRunID); err != nil {
+		return nil, err
+	}
+	agent, err := s.resolveAgent(ctx, req.UserID, req.WorkspaceID, req.AgentID)
+	if err != nil {
+		return nil, fmt.Errorf("resolving agent: %w", err)
+	}
+
+	run := &domain.AgentRun{
+		ParentRunID:    parentRunID,
+		UserID:         req.UserID,
+		WorkspaceID:    req.WorkspaceID,
+		ConversationID: req.ConversationID,
+		AgentID:        agent.ID,
+		Model:          req.Model,
+		Status:         domain.AgentRunQueued,
+		InputTurns:     []domain.Turn{domain.NewTextTurn(domain.RoleUser, req.Prompt)},
 		Thinking:       cloneThinking(req.Thinking),
 	}
 	if err := s.repo.CreateRun(ctx, run); err != nil {
 		return nil, fmt.Errorf("creating agent run: %w", err)
 	}
+	return s.launchRun(ctx, run, agent, nil, s.budgetForRun(parentRunID))
+}
 
+// launchRun starts a stored run in the background. A nil recorder means the
+// run's output is not saved to a conversation.
+func (s *agentRunService) launchRun(ctx context.Context, run *domain.AgentRun, agent *domain.Agent, recorder *conversationRecorder, budget *domain.Budget) (*domain.AgentRun, error) {
 	runCtx, cancel := context.WithCancel(s.rootCtx)
-	s.registerCancel(run.ID, cancel, req.Budget)
+	s.registerCancel(run.ID, cancel, budget)
 
 	stream, err := s.chat.StreamAgent(runCtx, AgentChatRequest{
-		UserID:         req.UserID,
-		WorkspaceID:    req.WorkspaceID,
+		UserID:         run.UserID,
+		WorkspaceID:    run.WorkspaceID,
 		CurrentRunID:   run.ID,
-		ConversationID: req.ConversationID,
-		Model:          req.Model,
-		Turns:          cloneTurns(req.Turns),
-		Thinking:       cloneThinking(req.Thinking),
+		ConversationID: run.ConversationID,
+		Model:          run.Model,
+		Turns:          cloneTurns(run.InputTurns),
+		Thinking:       cloneThinking(run.Thinking),
 		AgentPrompt:    agent.Instructions,
-		Budget:         req.Budget,
+		Budget:         budget,
 	})
 	if err != nil {
-		s.unregisterCancel(run.ID)
-		cancel()
-		if updateErr := s.failRun(run.ID, err.Error()); updateErr != nil {
-			log.Printf("failed to mark agent run %d failed: %v", run.ID, updateErr)
-		}
+		s.abortLaunch(run.ID, cancel, err.Error())
 		return nil, err
+	}
+	// Save the user's message only once the run has started, so a run that
+	// cannot start leaves the conversation as it was.
+	if err := recorder.start(); err != nil {
+		s.abortLaunch(run.ID, cancel, saveFailureMessage(err))
+		return nil, fmt.Errorf("saving user message: %w", err)
 	}
 
 	s.wg.Add(1)
-	go s.consumeRun(runCtx, run.ID, stream)
+	go s.consumeRun(runCtx, run.ID, recorder, stream)
 
 	created, err := s.repo.GetRun(ctx, run.ID)
 	if err != nil {
 		return nil, fmt.Errorf("loading created agent run: %w", err)
 	}
 	return created, nil
+}
+
+// abortLaunch stops a run that could not be started and marks it failed.
+func (s *agentRunService) abortLaunch(runID int64, cancel context.CancelFunc, message string) {
+	s.unregisterCancel(runID)
+	cancel()
+	if err := s.failRun(runID, message); err != nil {
+		log.Printf("failed to mark agent run %d failed: %v", runID, err)
+	}
+}
+
+// ensureConversationIdle rejects a second run on a conversation while one is
+// still active, since both would append to the same history. Sub-agent runs
+// are linked to their parent's conversation but never write to it.
+func (s *agentRunService) ensureConversationIdle(ctx context.Context, userID, conversationID int64) error {
+	runs, err := s.repo.ListRunsByStatus(ctx, userID, domain.AgentRunQueued, domain.AgentRunRunning, domain.AgentRunWaitingApproval, domain.AgentRunWaitingUser)
+	if err != nil {
+		return fmt.Errorf("checking active conversation runs: %w", err)
+	}
+	for _, run := range runs {
+		if run.ConversationID == conversationID && run.ParentRunID == 0 {
+			return domain.ErrConversationBusy
+		}
+	}
+	return nil
+}
+
+// loadConversationHistory returns the saved history, repaired if its tool
+// calls and results no longer pair up, and whether it was repaired. A repair
+// is saved with the run's first turns, once the run starts.
+func (s *agentRunService) loadConversationHistory(ctx context.Context, userID, workspaceID, conversationID int64) ([]domain.Turn, bool, error) {
+	turns, err := s.conversations.GetTurns(ctx, conversationID, userID)
+	if err != nil {
+		return nil, false, fmt.Errorf("loading conversation history: %w", err)
+	}
+	repaired, changed := repairToolPairing(turns, s.conversationToolCalls(ctx, userID, workspaceID, conversationID))
+	if !changed {
+		return turns, false, nil
+	}
+	log.Printf("repairing tool call pairing in conversation %d", conversationID)
+	return repaired, true, nil
+}
+
+// conversationToolCalls looks up tool calls by ID in the stored events of the
+// conversation's runs. The events are only read if a lookup is needed.
+func (s *agentRunService) conversationToolCalls(ctx context.Context, userID, workspaceID, conversationID int64) func(id string) (domain.ToolCall, bool) {
+	var calls map[string]domain.ToolCall
+	return func(id string) (domain.ToolCall, bool) {
+		if calls == nil {
+			calls = make(map[string]domain.ToolCall)
+			runs, err := s.repo.ListRuns(ctx, userID, workspaceID)
+			if err != nil {
+				log.Printf("listing runs to repair conversation %d: %v", conversationID, err)
+			}
+			for _, run := range runs {
+				if run.ConversationID != conversationID {
+					continue
+				}
+				events, err := s.repo.ListEvents(ctx, run.ID, 0)
+				if err != nil {
+					log.Printf("listing run %d events to repair conversation %d: %v", run.ID, conversationID, err)
+					continue
+				}
+				for _, event := range events {
+					for _, call := range event.Event.ToolCalls {
+						calls[call.ID] = cloneTranscriptToolCall(call)
+					}
+				}
+			}
+		}
+		call, ok := calls[id]
+		return call, ok
+	}
 }
 
 func (s *agentRunService) ensureChildRunCapacity(ctx context.Context, userID, workspaceID, parentRunID int64) error {
@@ -291,24 +456,16 @@ func (s *agentRunService) ensureChildRunCapacity(ctx context.Context, userID, wo
 	return nil
 }
 
-func (s *agentRunService) resolveAgent(ctx context.Context, req StartAgentRunRequest) (*domain.Agent, error) {
+func (s *agentRunService) resolveAgent(ctx context.Context, userID, workspaceID int64, agentID string) (*domain.Agent, error) {
 	if s.agents == nil {
 		agent := domain.DefaultAgent()
 		return &agent, nil
 	}
-	agent, err := s.agents.GetAgent(ctx, req.UserID, req.WorkspaceID, req.AgentID)
+	agent, err := s.agents.GetAgent(ctx, userID, workspaceID, agentID)
 	if err != nil {
 		return nil, err
 	}
 	return agent, nil
-}
-
-func (s *agentRunService) StartChildRun(ctx context.Context, parentRunID int64, req StartAgentRunRequest) (*domain.AgentRun, error) {
-	if parentRunID <= 0 {
-		return nil, domain.ErrAgentRunNotFound
-	}
-	req.ParentRunID = parentRunID
-	return s.StartRun(ctx, req)
 }
 
 func (s *agentRunService) GetRun(ctx context.Context, userID, runID int64) (*domain.AgentRun, error) {
@@ -342,48 +499,71 @@ func (s *agentRunService) SubscribeEvents(ctx context.Context, userID, runID, af
 		return nil, err
 	}
 
+	// Subscribe before replaying so no event falls between the two.
 	liveEvents, unsubscribe := s.broker.Subscribe(runID)
 	out := make(chan domain.AgentRunEvent)
 	go func() {
 		defer close(out)
-		defer unsubscribe()
 
 		lastSequence := afterSequence
-		replay, err := s.repo.ListEvents(ctx, runID, afterSequence)
-		if err != nil {
-			log.Printf("failed to replay agent run %d events: %v", runID, err)
-			return
-		}
-		for _, event := range replay {
-			if event.Sequence <= lastSequence {
-				continue
-			}
-			if !sendRunEvent(ctx, out, event) {
-				return
-			}
-			lastSequence = event.Sequence
-		}
-
 		for {
-			select {
-			case event, ok := <-liveEvents:
-				if !ok {
-					return
-				}
-				if event.Sequence <= lastSequence {
-					continue
-				}
-				if !sendRunEvent(ctx, out, event) {
-					return
-				}
-				lastSequence = event.Sequence
-			case <-ctx.Done():
+			sent, ok := s.replayRunEvents(ctx, out, runID, lastSequence)
+			if !ok {
+				unsubscribe()
 				return
 			}
+			lastSequence = sent
+
+			lagged := false
+			for !lagged {
+				select {
+				case event, open := <-liveEvents:
+					if !open {
+						// The broker dropped this subscriber for falling behind;
+						// resubscribe and catch up from the stored events.
+						lagged = true
+						continue
+					}
+					if event.Sequence <= lastSequence {
+						continue
+					}
+					if !sendRunEvent(ctx, out, event) {
+						unsubscribe()
+						return
+					}
+					lastSequence = event.Sequence
+				case <-ctx.Done():
+					unsubscribe()
+					return
+				}
+			}
+			unsubscribe()
+			liveEvents, unsubscribe = s.broker.Subscribe(runID)
 		}
 	}()
 
 	return out, nil
+}
+
+// replayRunEvents sends the stored events after afterSequence and returns the
+// last sequence sent. It reports false if the subscriber should stop.
+func (s *agentRunService) replayRunEvents(ctx context.Context, out chan<- domain.AgentRunEvent, runID, afterSequence int64) (int64, bool) {
+	events, err := s.repo.ListEvents(ctx, runID, afterSequence)
+	if err != nil {
+		log.Printf("failed to replay agent run %d events: %v", runID, err)
+		return afterSequence, false
+	}
+	lastSequence := afterSequence
+	for _, event := range events {
+		if event.Sequence <= lastSequence {
+			continue
+		}
+		if !sendRunEvent(ctx, out, event) {
+			return lastSequence, false
+		}
+		lastSequence = event.Sequence
+	}
+	return lastSequence, true
 }
 
 func (s *agentRunService) CancelRun(ctx context.Context, userID, runID int64) error {
@@ -424,7 +604,7 @@ func (s *agentRunService) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (s *agentRunService) consumeRun(ctx context.Context, runID int64, stream <-chan domain.ClientEvent) {
+func (s *agentRunService) consumeRun(ctx context.Context, runID int64, recorder *conversationRecorder, stream <-chan domain.ClientEvent) {
 	defer s.wg.Done()
 	defer s.unregisterCancel(runID)
 
@@ -442,8 +622,12 @@ func (s *agentRunService) consumeRun(ctx context.Context, runID int64, stream <-
 				// The orchestrator closes the stream when the run's context is
 				// cancelled, so a closed stream is not proof of completion.
 				if ctx.Err() != nil {
+					s.finishRecording(runID, recorder)
 					s.endCancelledRun(runID, ctx.Err())
 					return
+				}
+				if err := recorder.finish(); err != nil {
+					errorMessage = s.reportSaveFailure(runID, err)
 				}
 				s.finishRun(runID, status, errorMessage)
 				return
@@ -486,10 +670,22 @@ func (s *agentRunService) consumeRun(ctx context.Context, runID int64, stream <-
 					log.Printf("failed to record agent run %d usage: %v", runID, err)
 				}
 			}
+			if event.Done {
+				// The history is complete before the run is seen to end, so
+				// whatever acts on the end reads the whole of it.
+				err := recorder.record(event)
+				if err == nil {
+					err = recorder.finish()
+				}
+				if err != nil {
+					errorMessage = s.reportSaveFailure(runID, err)
+				}
+			}
 			stored, err := s.repo.AppendEvent(context.Background(), runID, event)
 			if err != nil {
 				log.Printf("failed to persist agent run %d event: %v", runID, err)
 				errorMessage = err.Error()
+				s.finishRecording(runID, recorder)
 				s.finishRun(runID, domain.AgentRunFailed, errorMessage)
 				return
 			}
@@ -501,7 +697,21 @@ func (s *agentRunService) consumeRun(ctx context.Context, runID int64, stream <-
 				return
 			}
 			s.broker.Publish(stored)
+			if err := recorder.record(event); err != nil {
+				// A step that cannot be saved would leave a gap in the
+				// history, so stop the run rather than go on without it.
+				if cancel, ok := s.cancelForRun(runID); ok {
+					cancel()
+				}
+				message := saveFailureMessage(err)
+				log.Printf("agent run %d: %s", runID, message)
+				if err := s.failRun(runID, message); err != nil {
+					log.Printf("failed to mark agent run %d failed: %v", runID, err)
+				}
+				return
+			}
 		case <-ctx.Done():
+			s.finishRecording(runID, recorder)
 			s.endCancelledRun(runID, ctx.Err())
 			return
 		}
@@ -529,7 +739,7 @@ func (s *agentRunService) endCancelledRun(runID int64, cause error) {
 // fails with domain.AgentRunInterruptedError, so its owner can tell it apart
 // from a real failure and continue it, and it keeps its transcript.
 func (s *agentRunService) interruptRun(runID int64) error {
-	return s.endRun(runID, domain.AgentRunFailed, runnerShutdownMessage, true)
+	return s.endRun(runID, domain.AgentRunFailed, runnerShutdownMessage)
 }
 
 func (s *agentRunService) ListAttention(ctx context.Context, userID int64) ([]AttentionItem, error) {
@@ -577,16 +787,6 @@ func (s *agentRunService) finishRun(runID int64, currentStatus domain.AgentRunSt
 	if errorMessage != "" || currentStatus == domain.AgentRunFailed {
 		status = domain.AgentRunFailed
 	}
-	// Failed runs persist their transcript too. A provider error such as a 429
-	// mid-conversation would otherwise discard the user's message and everything
-	// the agent had already done, leaving the next request with no history.
-	if err := s.persistRunConversation(context.Background(), runID); err != nil {
-		log.Printf("failed to persist agent run %d conversation: %v", runID, err)
-		if status == domain.AgentRunCompleted {
-			status = domain.AgentRunFailed
-			errorMessage = fmt.Sprintf("saving completed conversation transcript: %v", err)
-		}
-	}
 	if err := s.repo.UpdateStatus(context.Background(), runID, status, errorMessage); err != nil {
 		log.Printf("failed to finish agent run %d: %v", runID, err)
 		return
@@ -594,51 +794,44 @@ func (s *agentRunService) finishRun(runID int64, currentStatus domain.AgentRunSt
 	s.notifyFinished(runID)
 }
 
-func (s *agentRunService) persistRunConversation(ctx context.Context, runID int64) error {
-	run, err := s.repo.GetRun(ctx, runID)
-	if err != nil {
-		return fmt.Errorf("getting agent run: %w", err)
+// finishRecording saves what a run that is ending early did since its last
+// completed step. The run is already ending, so a failure is only logged.
+func (s *agentRunService) finishRecording(runID int64, recorder *conversationRecorder) {
+	if err := recorder.finish(); err != nil {
+		log.Printf("agent run %d: %s", runID, saveFailureMessage(err))
 	}
-	if run == nil {
-		return domain.ErrAgentRunNotFound
-	}
-	if !s.shouldPersistRunConversation(run) {
-		return nil
-	}
-
-	events, err := s.repo.ListEvents(ctx, runID, 0)
-	if err != nil {
-		return fmt.Errorf("listing agent run events: %w", err)
-	}
-	turns := buildAgentRunConversationTurns(run.InputTurns, events)
-	if err := s.conversations.SaveTurns(ctx, run.ConversationID, run.UserID, turns); err != nil {
-		return fmt.Errorf("saving conversation turns: %w", err)
-	}
-	return nil
 }
 
-func (s *agentRunService) shouldPersistRunConversation(run *domain.AgentRun) bool {
-	return s.conversations != nil && run != nil && run.ConversationID > 0 && run.ParentRunID == 0
+// reportSaveFailure tells the run's viewers that its last step could not be
+// saved and returns the message to fail the run with.
+func (s *agentRunService) reportSaveFailure(runID int64, err error) string {
+	message := saveFailureMessage(err)
+	log.Printf("agent run %d: %s", runID, message)
+	if err := s.appendAndPublish(runID, domain.ClientEvent{ErrorMessage: message}); err != nil {
+		log.Printf("failed to persist agent run %d event: %v", runID, err)
+	}
+	return message
+}
+
+func saveFailureMessage(err error) string {
+	return fmt.Sprintf("saving conversation history: %v", err)
 }
 
 func (s *agentRunService) failRun(runID int64, message string) error {
-	return s.endRun(runID, domain.AgentRunFailed, message, false)
+	return s.endRun(runID, domain.AgentRunFailed, message)
 }
 
-// cancelRun persists the run's conversation for the same reason failed runs
-// do, and often with no browser attached at all: a run cancelled from the runs
-// panel or by a server shutdown has no SSE consumer to save it, and "Continue"
-// reloads the conversation from the database.
 func (s *agentRunService) cancelRun(runID int64, message string) error {
-	return s.endRun(runID, domain.AgentRunCancelled, message, true)
+	return s.endRun(runID, domain.AgentRunCancelled, message)
 }
 
 // endRun tells the run's viewers why it ended and sets its final status. The
-// status is set even if the events or the conversation cannot be saved, since
-// a run left active stays listed as active and, as a child run, counts against
-// its parent's limit until the server restarts. Like a run that finishes, the
-// status is set before viewers see the done event.
-func (s *agentRunService) endRun(runID int64, status domain.AgentRunStatus, message string, persistConversation bool) error {
+// status is set even if the events cannot be saved, since a run left active
+// stays listed as active, keeps its conversation from taking another run and,
+// as a child run, counts against its parent's limit until the server
+// restarts. Like a run that finishes, the status is set before viewers see the
+// done event.
+func (s *agentRunService) endRun(runID int64, status domain.AgentRunStatus, message string) error {
 	var eventErr error
 	var done *domain.AgentRunEvent
 	if err := s.appendAndPublish(runID, domain.ClientEvent{ErrorMessage: message}); err != nil {
@@ -647,11 +840,6 @@ func (s *agentRunService) endRun(runID int64, status domain.AgentRunStatus, mess
 		eventErr = fmt.Errorf("recording end of run: %w", err)
 	} else {
 		done = &stored
-	}
-	if persistConversation {
-		if err := s.persistRunConversation(context.Background(), runID); err != nil {
-			log.Printf("failed to persist ended agent run %d conversation: %v", runID, err)
-		}
 	}
 	statusErr := s.repo.UpdateStatus(context.Background(), runID, status, message)
 	if done != nil {
@@ -729,13 +917,95 @@ func validateStartAgentRunRequest(req StartAgentRunRequest) error {
 		return fmt.Errorf("user ID is required")
 	case req.WorkspaceID <= 0:
 		return fmt.Errorf("workspace ID is required")
+	case req.ConversationID <= 0:
+		return fmt.Errorf("conversation ID is required")
 	case req.Model == "":
 		return fmt.Errorf("model is required")
-	case len(req.Turns) == 0:
-		return fmt.Errorf("turns are required")
+	case strings.TrimSpace(req.Message.Text()) == "" && len(req.Message.Images()) == 0:
+		return fmt.Errorf("message is required")
 	default:
 		return nil
 	}
+}
+
+func validateStartChildAgentRunRequest(req StartChildAgentRunRequest) error {
+	switch {
+	case req.UserID <= 0:
+		return fmt.Errorf("user ID is required")
+	case req.WorkspaceID <= 0:
+		return fmt.Errorf("workspace ID is required")
+	case req.Model == "":
+		return fmt.Errorf("model is required")
+	case strings.TrimSpace(req.Prompt) == "":
+		return fmt.Errorf("prompt is required")
+	default:
+		return nil
+	}
+}
+
+// conversationRecorder writes a run's turns to its conversation: the user's
+// message once the run starts, then each step as it completes, so a run that
+// fails, is cancelled, or outlives its browser still leaves a complete, valid
+// history behind. A nil recorder records nothing.
+type conversationRecorder struct {
+	conversations  ConversationService
+	conversationID int64
+	userID         int64
+	// newTurns are the seed, if any, and the user's message.
+	newTurns []domain.Turn
+	// history, when set, replaces the saved history when the run starts: it
+	// was repaired, or stripped of what another model left.
+	history []domain.Turn
+	// model, when set, is the model the conversation goes on with.
+	model      string
+	transcript runTranscript
+}
+
+// start saves the turns that begin the run.
+func (r *conversationRecorder) start() error {
+	if r == nil {
+		return nil
+	}
+	// Not the run's context: a cancelled run still saves what it did.
+	ctx := context.Background()
+	if r.history != nil {
+		turns := append(cloneTurns(r.history), r.newTurns...)
+		if err := r.conversations.ReplaceTurns(ctx, r.conversationID, r.userID, turns); err != nil {
+			return err
+		}
+	} else if err := r.conversations.AppendTurns(ctx, r.conversationID, r.userID, r.newTurns); err != nil {
+		return err
+	}
+	// Recorded after the turns are saved, so a failure in between can only
+	// mean stripping them again.
+	if r.model != "" {
+		if err := r.conversations.SetConversationModel(ctx, r.conversationID, r.userID, r.model); err != nil {
+			return fmt.Errorf("recording the conversation's model: %w", err)
+		}
+	}
+	return nil
+}
+
+func (r *conversationRecorder) record(event domain.ClientEvent) error {
+	if r == nil {
+		return nil
+	}
+	return r.append(r.transcript.add(event))
+}
+
+// finish saves whatever the run produced after its last completed step.
+func (r *conversationRecorder) finish() error {
+	if r == nil {
+		return nil
+	}
+	return r.append(r.transcript.flush())
+}
+
+func (r *conversationRecorder) append(turns []domain.Turn) error {
+	if len(turns) == 0 {
+		return nil
+	}
+	return r.conversations.AppendTurns(context.Background(), r.conversationID, r.userID, turns)
 }
 
 func sendRunEvent(ctx context.Context, out chan<- domain.AgentRunEvent, event domain.AgentRunEvent) bool {
@@ -834,18 +1104,24 @@ func (b *memoryAgentEventBroker) Subscribe(runID int64) (<-chan domain.AgentRunE
 }
 
 func (b *memoryAgentEventBroker) Publish(event domain.AgentRunEvent) {
+	// Sends never block, so holding the lock is cheap, and it keeps a channel
+	// from being closed while another publish is sending on it.
 	b.mu.Lock()
-	subscribers := make([]chan domain.AgentRunEvent, 0, len(b.subscribers[event.RunID]))
-	for ch := range b.subscribers[event.RunID] {
-		subscribers = append(subscribers, ch)
-	}
-	b.mu.Unlock()
+	defer b.mu.Unlock()
 
-	for _, ch := range subscribers {
+	subscribers := b.subscribers[event.RunID]
+	for ch := range subscribers {
 		select {
 		case ch <- event:
 		default:
+			// The subscriber fell behind. Disconnect it instead of silently
+			// skipping the event; it catches up from the stored events.
+			delete(subscribers, ch)
+			close(ch)
 		}
+	}
+	if len(subscribers) == 0 {
+		delete(b.subscribers, event.RunID)
 	}
 }
 

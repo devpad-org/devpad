@@ -21,7 +21,7 @@ func (s fakeAgentRunService) StartRun(context.Context, app.StartAgentRunRequest)
 	return nil, nil
 }
 
-func (s fakeAgentRunService) StartChildRun(context.Context, int64, app.StartAgentRunRequest) (*domain.AgentRun, error) {
+func (s fakeAgentRunService) StartChildRun(context.Context, int64, app.StartChildAgentRunRequest) (*domain.AgentRun, error) {
 	return nil, nil
 }
 

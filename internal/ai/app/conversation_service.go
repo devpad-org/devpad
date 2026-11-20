@@ -15,11 +15,15 @@ type ConversationRepository interface {
 	ListConversations(ctx context.Context, userID, workspaceID int64) ([]domain.Conversation, error)
 	UpdateConversation(ctx context.Context, id, userID int64, title, model string) error
 	DeleteConversation(ctx context.Context, id, userID int64) error
-	SaveTurns(ctx context.Context, conversationID int64, turns []domain.Turn) error
+	AppendTurns(ctx context.Context, conversationID int64, turns []domain.Turn) error
+	ReplaceTurns(ctx context.Context, conversationID int64, turns []domain.Turn) error
 	GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error)
 }
 
 // ConversationService defines business logic for managing chat conversations.
+// The server is the only writer of a conversation's turns, and it only appends
+// to them; ReplaceTurns exists only to repair a history that was saved broken
+// and to strip what one model left for another that cannot read it.
 type ConversationService interface {
 	CreateConversation(ctx context.Context, userID, workspaceID int64, model string) (*domain.Conversation, error)
 	ListConversations(ctx context.Context, userID, workspaceID int64) ([]domain.Conversation, error)
@@ -28,7 +32,8 @@ type ConversationService interface {
 	// SetConversationModel records the model the conversation's transcript
 	// now goes on with.
 	SetConversationModel(ctx context.Context, id, userID int64, model string) error
-	SaveTurns(ctx context.Context, conversationID, userID int64, turns []domain.Turn) error
+	AppendTurns(ctx context.Context, conversationID, userID int64, turns []domain.Turn) error
+	ReplaceTurns(ctx context.Context, conversationID, userID int64, turns []domain.Turn) error
 	GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error)
 }
 
@@ -96,15 +101,42 @@ func (s *conversationService) SetConversationModel(ctx context.Context, id, user
 	return nil
 }
 
-func (s *conversationService) SaveTurns(ctx context.Context, conversationID, userID int64, turns []domain.Turn) error {
+func (s *conversationService) AppendTurns(ctx context.Context, conversationID, userID int64, turns []domain.Turn) error {
+	conv, err := s.ownedConversation(ctx, conversationID, userID)
+	if err != nil {
+		return err
+	}
+	if err := s.convRepo.AppendTurns(ctx, conversationID, turns); err != nil {
+		return fmt.Errorf("appending turns: %w", err)
+	}
+	return s.touchConversation(ctx, conv, userID, turns)
+}
+
+func (s *conversationService) ReplaceTurns(ctx context.Context, conversationID, userID int64, turns []domain.Turn) error {
+	conv, err := s.ownedConversation(ctx, conversationID, userID)
+	if err != nil {
+		return err
+	}
+	if err := s.convRepo.ReplaceTurns(ctx, conversationID, turns); err != nil {
+		return fmt.Errorf("replacing turns: %w", err)
+	}
+	return s.touchConversation(ctx, conv, userID, turns)
+}
+
+func (s *conversationService) ownedConversation(ctx context.Context, conversationID, userID int64) (*domain.Conversation, error) {
 	conv, err := s.convRepo.GetConversation(ctx, conversationID, userID)
 	if err != nil {
-		return fmt.Errorf("validating conversation ownership: %w", err)
+		return nil, fmt.Errorf("validating conversation ownership: %w", err)
 	}
 	if conv == nil {
-		return domain.ErrConversationNotFound
+		return nil, domain.ErrConversationNotFound
 	}
+	return conv, nil
+}
 
+// touchConversation bumps the conversation's update time and titles it after
+// its first user message if it has no title yet.
+func (s *conversationService) touchConversation(ctx context.Context, conv *domain.Conversation, userID int64, turns []domain.Turn) error {
 	newTitle := conv.Title
 	if newTitle == "" {
 		for _, turn := range turns {
@@ -123,11 +155,7 @@ func (s *conversationService) SaveTurns(ctx context.Context, conversationID, use
 		}
 	}
 
-	if err := s.convRepo.SaveTurns(ctx, conversationID, turns); err != nil {
-		return fmt.Errorf("saving turns: %w", err)
-	}
-
-	if err := s.convRepo.UpdateConversation(ctx, conversationID, userID, newTitle, conv.Model); err != nil {
+	if err := s.convRepo.UpdateConversation(ctx, conv.ID, userID, newTitle, conv.Model); err != nil {
 		return fmt.Errorf("updating conversation metadata: %w", err)
 	}
 

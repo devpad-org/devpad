@@ -13,6 +13,7 @@ var (
 	ErrThinkingEffortInvalid          = errors.New("invalid thinking effort")
 	ErrThinkingEffortRequiresThinking = errors.New("thinking effort requires thinking to be enabled")
 	ErrConversationNotFound           = errors.New("conversation not found")
+	ErrConversationBusy               = errors.New("conversation already has an active agent run")
 	ErrAgentRunNotFound               = errors.New("agent run not found")
 	ErrAgentRunNotActive              = errors.New("agent run is not active")
 	ErrAgentNotFound                  = errors.New("AI agent not found")

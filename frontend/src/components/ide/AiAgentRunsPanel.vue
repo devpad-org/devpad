@@ -61,11 +61,27 @@ const runListItems = computed<RunListItem[]>(() => {
   const children = new Map<number, AgentRun[]>()
   const roots: AgentRun[] = []
 
+  // Sub-agent runs sit under the run that spawned them. Later runs in a
+  // conversation sit under the conversation's first run.
+  const firstRunByConversation = new Map<number, AgentRun>()
   for (const run of workspaceRuns.value) {
-    if (run.parentRunId && byId.has(run.parentRunId)) {
-      const siblings = children.get(run.parentRunId) ?? []
+    if (run.parentRunId || !run.conversationId) continue
+    const first = firstRunByConversation.get(run.conversationId)
+    if (!first || run.id < first.id) firstRunByConversation.set(run.conversationId, run)
+  }
+  const parentIdFor = (run: AgentRun): number | undefined => {
+    if (run.parentRunId) return run.parentRunId
+    if (!run.conversationId) return undefined
+    const first = firstRunByConversation.get(run.conversationId)
+    return first && first.id !== run.id ? first.id : undefined
+  }
+
+  for (const run of workspaceRuns.value) {
+    const parentId = parentIdFor(run)
+    if (parentId && byId.has(parentId)) {
+      const siblings = children.get(parentId) ?? []
       siblings.push(run)
-      children.set(run.parentRunId, siblings)
+      children.set(parentId, siblings)
     } else {
       roots.push(run)
     }

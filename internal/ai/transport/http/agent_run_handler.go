@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/devpad-org/devpad/internal/ai/app"
@@ -13,7 +14,9 @@ import (
 	"github.com/devpad-org/devpad/internal/auth"
 )
 
-// HandleCreateAgentRun starts a browser-independent agent run.
+// HandleCreateAgentRun continues a conversation with a new user message in a
+// browser-independent agent run. The server loads and saves the conversation
+// itself; the browser only sends the new message.
 func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
@@ -40,16 +43,19 @@ func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "model is required")
 		return
 	}
-	if len(req.Turns) == 0 {
-		writeError(w, http.StatusBadRequest, "turns are required")
+	if strings.TrimSpace(req.Message) == "" && len(req.Images) == 0 {
+		writeError(w, http.StatusBadRequest, "message is required")
 		return
 	}
 	if req.WorkspaceID <= 0 {
 		writeError(w, http.StatusBadRequest, "workspaceId is required")
 		return
 	}
+	if req.ConversationID <= 0 {
+		writeError(w, http.StatusBadRequest, "conversationId is required")
+		return
+	}
 
-	// A child of an active run with a budget shares that budget instead.
 	budget, err := h.assistantBudget(r.Context(), user.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to look up the assistant's budget")
@@ -59,10 +65,9 @@ func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 		UserID:         user.ID,
 		WorkspaceID:    req.WorkspaceID,
 		ConversationID: req.ConversationID,
-		ParentRunID:    req.ParentRunID,
 		AgentID:        req.AgentID,
 		Model:          model,
-		Turns:          ToDomainTurns(req.Turns),
+		Message:        req.MessageTurn(),
 		Thinking:       thinking,
 		Budget:         budget,
 	})
@@ -259,6 +264,10 @@ func (h *Handler) writeAgentRunError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "agent run not found")
 	case errors.Is(err, domain.ErrAgentRunNotActive):
 		writeError(w, http.StatusConflict, "agent run is not active")
+	case errors.Is(err, domain.ErrConversationNotFound):
+		writeError(w, http.StatusNotFound, "conversation not found")
+	case errors.Is(err, domain.ErrConversationBusy):
+		writeError(w, http.StatusConflict, "this conversation already has an active agent run")
 	case errors.Is(err, domain.ErrAgentNotFound):
 		writeError(w, http.StatusNotFound, "agent not found")
 	case errors.Is(err, domain.ErrModelNotFound):

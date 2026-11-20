@@ -56,6 +56,8 @@ Your project workspace has no SSH key either. Its `devpad` and `origin` remotes 
 
 Every AI run, whether the assistant answering you, a task's agent or a review, is the same loop: the server sends the conversation to the model with your key, the model asks for tool calls, and the server runs them in the run's workspace (or on the host, for tools like the task board that only devpad can answer). A run stops when it's done, when its budget is spent, or after 500 model requests. See [AI settings and usage](/docs/ai).
 
+Runs go on without your browser, and the server saves each conversation as the run goes, one step at a time. Closing the tab, losing your connection, cancelling a run or a run failing all keep what it had done, and your next message picks up from there. A conversation answers one message at a time: while a run is working in it, another message to it is refused until the run ends.
+
 The tools a run gets depend on where it runs: the assistant in your project workspace can see the board and create tasks, a review agent gets review tools, and so on. A run's instructions include the project's `AGENTS.md` and [skills](/docs/tasks#skills); a review takes both from the branch the change would merge into, so the change under review can't tell its reviewer how to review it.
 
 ## Environments {#environments}
