@@ -1,4 +1,4 @@
-.PHONY: all build clean dev frontend backend install-frontend test agent workspace-image
+.PHONY: all build clean dev frontend backend install-frontend test fmt fmt-check agent workspace-image
 
 # Version derived from git — short commit hash, or "dev" if not in a git repo.
 VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
@@ -50,10 +50,21 @@ dev-frontend:
 dev-backend:
 	go run .
 
-# Run unit tests with coverage
-test:
+# Run unit tests with coverage, after checking formatting
+test: fmt-check
 	go test -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
+
+# Format every tracked Go file
+fmt:
+	gofmt -w $$(git ls-files '*.go')
+
+# Fail when a tracked Go file is not gofmt-formatted
+fmt-check:
+	@unformatted=$$(gofmt -l $$(git ls-files '*.go')); \
+	if [ -n "$$unformatted" ]; then \
+		echo "These files need gofmt (run make fmt):"; echo "$$unformatted"; exit 1; \
+	fi
 
 # Clean build artifacts
 clean:
