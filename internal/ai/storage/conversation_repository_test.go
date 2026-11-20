@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -76,5 +78,48 @@ func TestConversationRepository_AppendAndReplaceTurns(t *testing.T) {
 	}
 	if len(turns) != 2 || turns[0].Text() != "start over" || turns[1].Text() != "ok" {
 		t.Fatalf("unexpected turns after replace: %+v", turns)
+	}
+}
+
+func TestConversationRepository_RoundTripsEveryPartField(t *testing.T) {
+	db, err := appdb.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	ctx := context.Background()
+	userID := insertAgentRunTestUser(t, db)
+	workspaceID := insertAgentRunTestWorkspace(t, db, userID)
+	repo := NewConversationRepository(db.Conn())
+	conv := &domain.Conversation{UserID: userID, WorkspaceID: workspaceID, Model: "claude-opus-5-5"}
+	if err := repo.CreateConversation(ctx, conv); err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	thinking := domain.ThinkingPart{Text: "hmm", State: json.RawMessage(`[{"type":"thinking","signature":"sig"}]`)}
+	call := domain.ToolCall{ID: "call-1", ItemID: "fc_1", Type: "function", Function: domain.ToolCallFunction{Name: "run", Arguments: `{"cmd":"go test"}`}}
+	result := domain.ToolResultPart{ToolCallID: "call-1", Name: "run", Content: "FAIL", IsError: true}
+	want := []domain.Turn{
+		{Role: domain.RoleAssistant, Parts: []domain.Part{
+			{Kind: domain.PartThinking, Thinking: &thinking},
+			{Kind: domain.PartText, Text: "Running the tests."},
+			{Kind: domain.PartToolCall, ToolCall: &call},
+		}},
+		domain.NewToolResultTurnFromPart(result),
+	}
+	if err := repo.AppendTurns(ctx, conv.ID, want); err != nil {
+		t.Fatalf("append turns: %v", err)
+	}
+
+	got, err := repo.GetTurns(ctx, conv.ID, userID)
+	if err != nil {
+		t.Fatalf("get turns: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("turns did not round-trip:\n got %#v\nwant %#v", got, want)
 	}
 }
