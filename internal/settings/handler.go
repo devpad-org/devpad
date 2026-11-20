@@ -40,8 +40,8 @@ func (h *Handler) HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.NewPassword) < 8 {
-		writeError(w, http.StatusBadRequest, "new password must be at least 8 characters")
+	if err := auth.ValidatePassword(req.NewPassword); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -206,6 +206,53 @@ func (h *Handler) HandleGenerateSSHKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"publicKey": publicKey})
 }
 
+// HandleGetGitIdentity returns what the authenticated user commits as.
+func (h *Handler) HandleGetGitIdentity(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	identity, err := h.service.GetGitIdentity(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get Git identity")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, identity)
+}
+
+// HandleUpdateGitIdentity saves what the authenticated user commits as.
+func (h *Handler) HandleUpdateGitIdentity(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var req struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	saved, err := h.service.SaveGitIdentity(r.Context(), user.ID, req.Name, req.Email)
+	if err != nil {
+		if auth.IsValidationError(err) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to save Git identity")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, saved)
+}
+
 // HandleGetPreferences returns the authenticated user's UI preferences.
 func (h *Handler) HandleGetPreferences(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
@@ -224,6 +271,8 @@ func (h *Handler) HandleGetPreferences(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleUpdatePreferences updates the authenticated user's UI preferences.
+// Only the preferences in the request change, so one page saving its own
+// preference never overwrites another's, even when both save at once.
 func (h *Handler) HandleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
@@ -232,21 +281,23 @@ func (h *Handler) HandleUpdatePreferences(w http.ResponseWriter, r *http.Request
 	}
 
 	var req struct {
-		DiffViewSideBySide *bool `json:"diffViewSideBySide"`
+		DiffViewSideBySide *bool   `json:"diffViewSideBySide"`
+		Theme              *string `json:"theme"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.DiffViewSideBySide == nil {
-		writeError(w, http.StatusBadRequest, "diffViewSideBySide is required")
-		return
-	}
 
-	preferences, err := h.service.UpdatePreferences(r.Context(), user.ID, UserPreferences{
-		DiffViewSideBySide: *req.DiffViewSideBySide,
+	preferences, err := h.service.UpdatePreferences(r.Context(), user.ID, PreferencesUpdate{
+		DiffViewSideBySide: req.DiffViewSideBySide,
+		Theme:              req.Theme,
 	})
 	if err != nil {
+		if errors.Is(err, ErrNoPreferenceChange) || errors.Is(err, ErrUnknownTheme) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to update preferences")
 		return
 	}

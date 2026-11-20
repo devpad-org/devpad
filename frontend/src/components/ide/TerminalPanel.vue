@@ -3,7 +3,9 @@ import { computed, ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { gruvboxTerminalTheme, terminalFontFamily } from '@/theme/gruvbox'
+import { currentTheme, terminalFontFamily, terminalTheme } from '@/theme'
+import { useServiceStore } from '@/stores/services'
+import { serviceTypeLabel } from '@/components/ide/serviceCatalog'
 
 const props = defineProps<{
   workspaceId: number
@@ -23,6 +25,68 @@ const terminalStatus = computed(() => {
   if (reconnecting.value) return 'Reconnecting'
   return 'Disconnected'
 })
+
+const serviceStore = useServiceStore()
+
+// The services the workspace had when this shell started, null until known.
+// A process keeps the environment it started with, so a service added since
+// is reachable only from a new shell.
+const shellServices = ref<Set<number> | null>(null)
+
+const missingServices = computed(() => {
+  const known = shellServices.value
+  if (!known || !connected.value || serviceStore.loadedFor !== props.workspaceId) return []
+  return serviceStore.services.filter((s) => s.status === 'running' && !known.has(s.id))
+})
+
+const missingNotice = computed(() => {
+  const names = missingServices.value.map((s) => serviceTypeLabel(s.serviceType))
+  if (!names.length) return ''
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  return names.length === 1
+    ? `This shell started before ${list} was added, so it doesn't have its connection variables.`
+    : `This shell started before ${list} were added, so it doesn't have their connection variables.`
+})
+
+function snapshotShellServices() {
+  shellServices.value = new Set(serviceStore.services.map((s) => s.id))
+}
+
+// noteShellServices records the services a shell that just started has,
+// loading them first if the IDE hasn't.
+function noteShellServices() {
+  shellServices.value = null
+  if (serviceStore.loadedFor === props.workspaceId) {
+    snapshotShellServices()
+  } else {
+    void serviceStore.fetchServices(props.workspaceId)
+  }
+}
+
+watch(() => serviceStore.loadedFor, (id) => {
+  if (shellServices.value === null && connected.value && id === props.workspaceId) snapshotShellServices()
+})
+
+function dismissMissing() {
+  const known = new Set(shellServices.value ?? [])
+  for (const s of missingServices.value) known.add(s.id)
+  shellServices.value = known
+}
+
+// newShell ends this shell, and whatever runs in it, for a new one with
+// the workspace's current services in its environment.
+function newShell() {
+  const old = ws
+  ws = null
+  connected.value = false
+  shellServices.value = null
+  old?.close()
+  clearReconnectTimer()
+  reconnecting.value = false
+  reconnectAttempt = 0
+  terminal?.write('\r\n\x1b[32m[Started a new shell]\x1b[0m\r\n')
+  connectSocket()
+}
 
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
@@ -49,7 +113,10 @@ function connect() {
     fontWeight: '400',
     fontWeightBold: '700',
     letterSpacing: 0,
-    theme: gruvboxTerminalTheme,
+    theme: terminalTheme(),
+    // Programs pick ANSI colours without knowing the background; xterm
+    // nudges any that would be hard to read on it.
+    minimumContrastRatio: 4.5,
   })
 
   fitAddon = new FitAddon()
@@ -102,6 +169,7 @@ function connectSocket() {
     }
     reconnectAttempt = 0
     sendResize()
+    noteShellServices()
   }
 
   socket.onmessage = (event) => {
@@ -124,6 +192,7 @@ function connectSocket() {
 
     ws = null
     connected.value = false
+    shellServices.value = null
     if (closing) return
 
     terminal?.write('\r\n\x1b[31m[Terminal disconnected]\x1b[0m\r\n')
@@ -181,6 +250,10 @@ onBeforeUnmount(() => {
   disconnect()
 })
 
+watch(currentTheme, () => {
+  if (terminal) terminal.options.theme = terminalTheme()
+})
+
 watch(() => props.workspaceId, () => {
   disconnect()
   connect()
@@ -221,6 +294,22 @@ watch(() => props.minimized, (isMinimized) => {
         </button>
       </div>
     </div>
+    <div v-if="missingNotice && !minimized" class="terminal-notice" role="status">
+      <span class="terminal-notice-text">{{ missingNotice }}</span>
+      <button
+        class="terminal-notice-btn"
+        title="Ends this shell and anything running in it, and starts a new one"
+        @click="newShell"
+      >
+        New shell
+      </button>
+      <button class="terminal-notice-dismiss" aria-label="Dismiss" title="Dismiss" @click="dismissMissing">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6 6 18" />
+          <path d="m6 6 12 12" />
+        </svg>
+      </button>
+    </div>
     <div v-show="!minimized" class="terminal-body" ref="terminalRef" />
     <div v-if="error && !minimized" class="terminal-error">{{ error }}</div>
   </div>
@@ -239,8 +328,8 @@ watch(() => props.minimized, (isMinimized) => {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-1) var(--space-3);
-  background: var(--bg-surface);
-  border-bottom: 0.5px solid var(--border-default);
+  background: var(--bg-elevated);
+  border-bottom: 0.5px solid var(--border-subtle);
   flex-shrink: 0;
 }
 
@@ -266,22 +355,22 @@ watch(() => props.minimized, (isMinimized) => {
   align-items: center;
   gap: 4px;
   font-size: 0.72rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .terminal-status .status-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--accent-rose);
+  background: var(--error);
 }
 
 .terminal-status.connected .status-dot {
-  background: var(--accent-green);
+  background: var(--success);
 }
 
 .terminal-status.reconnecting .status-dot {
-  background: var(--accent-amber);
+  background: var(--warning);
 }
 
 .terminal-toggle-btn {
@@ -291,11 +380,60 @@ watch(() => props.minimized, (isMinimized) => {
   width: 22px;
   height: 22px;
   border-radius: var(--radius-sm);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   transition: all var(--transition-fast);
 }
 
 .terminal-toggle-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.terminal-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  background: var(--warning-bg);
+  border-bottom: 0.5px solid var(--warning-border);
+  flex-shrink: 0;
+}
+
+.terminal-notice-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.terminal-notice-btn {
+  flex-shrink: 0;
+  padding: 2px var(--space-2);
+  border: 0.5px solid var(--warning-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  transition: background var(--transition-fast);
+}
+
+.terminal-notice-btn:hover {
+  background: var(--bg-hover);
+}
+
+.terminal-notice-dismiss {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  transition: all var(--transition-fast);
+}
+
+.terminal-notice-dismiss:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
@@ -337,7 +475,7 @@ watch(() => props.minimized, (isMinimized) => {
 
 .terminal-error {
   padding: var(--space-1) var(--space-3);
-  color: var(--accent-rose);
+  color: var(--error);
   font-size: 0.7rem;
   background: var(--error-bg);
   border-top: 0.5px solid var(--error-border);

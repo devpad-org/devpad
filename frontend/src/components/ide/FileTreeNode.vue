@@ -299,7 +299,7 @@ function focusInput(e: { el: HTMLElement }) {
 
 .tree-file.selected {
   background: var(--accent-glow);
-  color: var(--accent-blue);
+  color: var(--accent);
 }
 
 .dir-icon {
@@ -331,5 +331,11 @@ function focusInput(e: { el: HTMLElement }) {
 
 .tree-file.selected .tree-label {
   color: var(--accent-blue);
+}
+
+@media (hover: none) {
+  .tree-actions {
+    opacity: 1;
+  }
 }
 </style>

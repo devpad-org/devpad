@@ -35,21 +35,6 @@ func (s *service) ListAll(ctx context.Context) ([]*Workspace, error) {
 	return workspaces, nil
 }
 
-func (s *service) Update(ctx context.Context, userID, workspaceID int64, name, description string) (*Workspace, error) {
-	ws, err := s.Get(ctx, userID, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-
-	ws.Name = name
-	ws.Description = description
-
-	if err := s.repo.Update(ctx, ws); err != nil {
-		return nil, fmt.Errorf("updating workspace: %w", err)
-	}
-	return ws, nil
-}
-
 func (s *service) SetDefaultAgent(ctx context.Context, userID, workspaceID int64, agentID string) (*Workspace, error) {
 	agentID = defaultAgentID(agentID)
 	updatedDefault, err := s.repo.SetDefaultAgentID(ctx, userID, workspaceID, agentID)
@@ -80,6 +65,13 @@ func (s *service) SetDefaultAgent(ctx context.Context, userID, workspaceID int64
 }
 
 func (s *service) UpdateResourceLimits(ctx context.Context, workspaceID, memoryLimit, nanoCPUs int64) (*Workspace, error) {
+	// The update writes the whole record, so it must not race a rebuild
+	// replacing the container.
+	done, err := s.beginLifecycle(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
 	ws, err := s.repo.GetByID(ctx, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("getting workspace: %w", err)

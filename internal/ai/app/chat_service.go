@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/devpad-org/devpad/internal/ai/approval"
+	"github.com/devpad-org/devpad/internal/ai/attachment"
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	"github.com/devpad-org/devpad/internal/ai/orchestrator"
 	aiprovider "github.com/devpad-org/devpad/internal/ai/provider"
@@ -13,10 +14,19 @@ import (
 
 // SimpleChatRequest contains the inputs for non-agent chat.
 type SimpleChatRequest struct {
-	UserID   int64
+	UserID int64
+	// WorkspaceID is the workspace the chat is for, if any, so its usage is
+	// counted under the workspace's project.
+	WorkspaceID int64
+	// RunID is the agent run the chat is part of, if any, such as one a
+	// tool call of the run makes, so its usage is counted under the run.
+	RunID    int64
 	Model    string
 	Turns    []domain.Turn
 	Thinking *domain.ThinkingConfig
+	// Budget, which may be nil, is spent by the chat and refuses it when it
+	// is already spent.
+	Budget *domain.Budget
 }
 
 // AgentChatRequest contains the inputs for tool-enabled agent chat.
@@ -29,11 +39,15 @@ type AgentChatRequest struct {
 	Turns          []domain.Turn
 	Thinking       *domain.ThinkingConfig
 	AgentPrompt    string
+	// Budget stops the run once spent. Nil means no limit.
+	Budget *domain.Budget
 }
 
-// WorkspaceInstructionSource reads project-local agent instructions.
-type WorkspaceInstructionSource interface {
-	Instructions(ctx context.Context, userID, workspaceID int64) (string, error)
+// WorkspaceChecker refuses a run in a workspace the user does not own or
+// that is not running. Tools check again call by call, but only after the
+// run has started paying for model requests.
+type WorkspaceChecker interface {
+	CheckRunning(ctx context.Context, userID, workspaceID int64) error
 }
 
 // ChatService owns the app-level chat entry points.
@@ -43,61 +57,92 @@ type ChatService interface {
 }
 
 type chatService struct {
-	simple                *orchestrator.SimpleChatOrchestrator
-	agent                 orchestrator.AgentChatOrchestrator
-	workspaceInstructions WorkspaceInstructionSource
+	catalog    CatalogService
+	simple     *orchestrator.SimpleChatOrchestrator
+	agent      orchestrator.AgentChatOrchestrator
+	workspaces WorkspaceChecker
+	images     ImageLoader
+	usage      UsageRecorder
 }
 
 type providerChatBackend struct {
 	catalog CatalogService
 }
 
-// NewChatService creates the app-level chat service for simple and agent chat.
-func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog, executor orchestrator.ToolExecutor, approvals approval.Broker, questions question.Broker, workspaceInstructions WorkspaceInstructionSource) ChatService {
+// NewChatService creates the app-level chat service for simple and agent
+// chat. images loads the images turns refer to; nil sends turns as they are.
+// usage records every provider request the chats make; nil records none.
+func NewChatService(catalog CatalogService, toolCatalog orchestrator.ToolCatalog, executor orchestrator.ToolExecutor, approvals approval.Broker, questions question.Broker, workspaces WorkspaceChecker, images ImageLoader, usage UsageRecorder) ChatService {
 	backend := &providerChatBackend{catalog: catalog}
 
 	return &chatService{
-		simple:                orchestrator.NewSimpleChatOrchestrator(backend),
-		agent:                 orchestrator.NewAgentChatOrchestrator(backend, toolCatalog, executor, approvals, questions),
-		workspaceInstructions: workspaceInstructions,
+		catalog:    catalog,
+		simple:     orchestrator.NewSimpleChatOrchestrator(backend),
+		agent:      orchestrator.NewAgentChatOrchestrator(backend, toolCatalog, executor, approvals, questions),
+		workspaces: workspaces,
+		images:     images,
+		usage:      usage,
 	}
 }
 
 func (s *chatService) StreamSimple(ctx context.Context, req SimpleChatRequest) (<-chan domain.ClientEvent, error) {
+	turns, err := s.hydrate(ctx, req.UserID, req.Turns)
+	if err != nil {
+		return nil, err
+	}
 	return s.simple.Stream(ctx, domain.ChatRequest{
+		UserID:   req.UserID,
 		Model:    req.Model,
-		Turns:    req.Turns,
+		Turns:    turns,
 		Thinking: req.Thinking,
-	})
+	}, req.Budget, usageRecorderFor(s.usage, domain.UsageRecord{
+		UserID:      req.UserID,
+		WorkspaceID: req.WorkspaceID,
+		RunID:       req.RunID,
+		Model:       req.Model,
+	}))
 }
 
 func (s *chatService) StreamAgent(ctx context.Context, req AgentChatRequest) (<-chan domain.ClientEvent, error) {
-	workspaceInstructions, err := s.resolveWorkspaceInstructions(ctx, req.UserID, req.WorkspaceID)
+	if err := s.workspaces.CheckRunning(ctx, req.UserID, req.WorkspaceID); err != nil {
+		return nil, fmt.Errorf("checking the run's workspace: %w", err)
+	}
+	// A user without a key for the model's provider is refused before the
+	// run starts, not by its first request. Each request checks again, so
+	// removing the key stops the run.
+	if _, err := s.catalog.ResolveChatTarget(ctx, req.UserID, req.Model); err != nil {
+		return nil, err
+	}
+	turns, err := s.hydrate(ctx, req.UserID, req.Turns)
 	if err != nil {
 		return nil, err
 	}
 	return s.agent.Stream(ctx, orchestrator.AgentChatRequest{
-		UserID:                req.UserID,
-		WorkspaceID:           req.WorkspaceID,
-		CurrentRunID:          req.CurrentRunID,
-		ConversationID:        req.ConversationID,
-		Model:                 req.Model,
-		Turns:                 req.Turns,
-		Thinking:              req.Thinking,
-		AgentPrompt:           req.AgentPrompt,
-		WorkspaceInstructions: workspaceInstructions,
+		UserID:         req.UserID,
+		WorkspaceID:    req.WorkspaceID,
+		CurrentRunID:   req.CurrentRunID,
+		ConversationID: req.ConversationID,
+		Model:          req.Model,
+		Turns:          turns,
+		Thinking:       req.Thinking,
+		AgentPrompt:    req.AgentPrompt,
+		Budget:         req.Budget,
+		RecordUsage: usageRecorderFor(s.usage, domain.UsageRecord{
+			UserID:      req.UserID,
+			WorkspaceID: req.WorkspaceID,
+			RunID:       req.CurrentRunID,
+			Model:       req.Model,
+		}),
 	})
 }
 
-func (s *chatService) resolveWorkspaceInstructions(ctx context.Context, userID, workspaceID int64) (string, error) {
-	if s.workspaceInstructions == nil {
-		return "", nil
+// hydrate loads the images the turns refer to, once per run: the turns are
+// resent on every model request the run makes.
+func (s *chatService) hydrate(ctx context.Context, userID int64, turns []domain.Turn) ([]domain.Turn, error) {
+	if s.images == nil {
+		return turns, nil
 	}
-	instructions, err := s.workspaceInstructions.Instructions(ctx, userID, workspaceID)
-	if err != nil {
-		return "", fmt.Errorf("loading workspace instructions: %w", err)
-	}
-	return instructions, nil
+	return s.images.Hydrate(ctx, userID, turns)
 }
 
 func (s *providerChatBackend) ChatStream(ctx context.Context, req domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
@@ -109,14 +154,14 @@ func (s *providerChatBackend) ChatStream(ctx context.Context, req domain.ChatReq
 		return nil, err
 	}
 
-	target, err := s.catalog.ResolveChatTarget(ctx, req.Model)
+	target, err := s.catalog.ResolveChatTarget(ctx, req.UserID, req.Model)
 	if err != nil {
 		return nil, err
 	}
 
 	return target.Adapter.Stream(ctx, target.Creds, aiprovider.StreamRequest{
 		Model:       req.Model,
-		Turns:       req.Turns,
+		Turns:       attachment.ForModel(model, req.Turns),
 		Thinking:    req.Thinking,
 		WorkspaceID: req.WorkspaceID,
 		Tools:       req.Tools,

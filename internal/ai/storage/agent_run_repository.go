@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -65,7 +66,8 @@ func (r *AgentRunRepository) CreateRun(ctx context.Context, run *domain.AgentRun
 func (r *AgentRunRepository) GetRun(ctx context.Context, id int64) (*domain.AgentRun, error) {
 	row := r.db.QueryRowContext(ctx,
 		`SELECT id, parent_run_id, user_id, workspace_id, conversation_id, agent_id, model, status, error,
-		        input_turns, thinking, created_at, updated_at, started_at, completed_at
+		        input_turns, thinking, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd,
+		        created_at, updated_at, started_at, completed_at
 		 FROM ai_agent_runs
 		 WHERE id = ?`,
 		id,
@@ -84,7 +86,8 @@ func (r *AgentRunRepository) GetRun(ctx context.Context, id int64) (*domain.Agen
 func (r *AgentRunRepository) ListRuns(ctx context.Context, userID, workspaceID int64) ([]domain.AgentRun, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, parent_run_id, user_id, workspace_id, conversation_id, agent_id, model, status, error,
-		        input_turns, thinking, created_at, updated_at, started_at, completed_at
+		        input_turns, thinking, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd,
+		        created_at, updated_at, started_at, completed_at
 		 FROM ai_agent_runs
 		 WHERE user_id = ? AND workspace_id = ?
 		 ORDER BY created_at DESC, id DESC`,
@@ -101,6 +104,45 @@ func (r *AgentRunRepository) ListRuns(ctx context.Context, userID, workspaceID i
 		run, err := scanAgentRun(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scanning agent run list item: %w", err)
+		}
+		runs = append(runs, *run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating agent runs: %w", err)
+	}
+	return runs, nil
+}
+
+// ListRunsByStatus returns runs in any of the statuses, oldest first. A zero
+// userID lists every user's runs.
+func (r *AgentRunRepository) ListRunsByStatus(ctx context.Context, userID int64, statuses ...domain.AgentRunStatus) ([]domain.AgentRun, error) {
+	if len(statuses) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(statuses)+1)
+	for _, status := range statuses {
+		args = append(args, string(status))
+	}
+	query := `SELECT id, parent_run_id, user_id, workspace_id, conversation_id, agent_id, model, status, error,
+	                 input_turns, thinking, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd,
+	                 created_at, updated_at, started_at, completed_at
+	          FROM ai_agent_runs
+	          WHERE status IN (?` + strings.Repeat(", ?", len(statuses)-1) + `)`
+	if userID != 0 {
+		query += ` AND user_id = ?`
+		args = append(args, userID)
+	}
+	rows, err := r.db.QueryContext(ctx, query+` ORDER BY created_at ASC, id ASC`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying agent runs by status: %w", err)
+	}
+	defer rows.Close()
+
+	runs := make([]domain.AgentRun, 0)
+	for rows.Next() {
+		run, err := scanAgentRun(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning agent run: %w", err)
 		}
 		runs = append(runs, *run)
 	}
@@ -232,6 +274,44 @@ func (r *AgentRunRepository) UpdateStatus(ctx context.Context, runID int64, stat
 	return nil
 }
 
+// AddUsage adds one provider request's usage to the run's totals. A request
+// without a cost leaves the run's cost as it was.
+func (r *AgentRunRepository) AddUsage(ctx context.Context, runID int64, usage domain.Usage) error {
+	var cost any
+	if usage.CostUSD != nil {
+		cost = *usage.CostUSD
+	}
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE ai_agent_runs
+		 SET input_tokens = input_tokens + ?,
+		     output_tokens = output_tokens + ?,
+		     cache_read_tokens = cache_read_tokens + ?,
+		     cache_write_tokens = cache_write_tokens + ?,
+		     cost_usd = CASE WHEN ? IS NULL THEN cost_usd ELSE COALESCE(cost_usd, 0) + ? END,
+		     updated_at = ?
+		 WHERE id = ?`,
+		usage.InputTokens,
+		usage.OutputTokens,
+		usage.CacheReadTokens,
+		usage.CacheWriteTokens,
+		cost,
+		cost,
+		time.Now().UTC(),
+		runID,
+	)
+	if err != nil {
+		return fmt.Errorf("adding agent run usage: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking updated agent run count: %w", err)
+	}
+	if count == 0 {
+		return domain.ErrAgentRunNotFound
+	}
+	return nil
+}
+
 func (r *AgentRunRepository) MarkActiveRunsFailed(ctx context.Context, message string) error {
 	now := time.Now().UTC()
 	_, err := r.db.ExecContext(ctx,
@@ -265,6 +345,7 @@ func scanAgentRun(scanner agentRunScanner) (*domain.AgentRun, error) {
 		status         string
 		inputTurns     string
 		thinking       string
+		costUSD        sql.NullFloat64
 		startedAt      sql.NullTime
 		completedAt    sql.NullTime
 	)
@@ -281,6 +362,11 @@ func scanAgentRun(scanner agentRunScanner) (*domain.AgentRun, error) {
 		&run.Error,
 		&inputTurns,
 		&thinking,
+		&run.Usage.InputTokens,
+		&run.Usage.OutputTokens,
+		&run.Usage.CacheReadTokens,
+		&run.Usage.CacheWriteTokens,
+		&costUSD,
 		&run.CreatedAt,
 		&run.UpdatedAt,
 		&startedAt,
@@ -308,6 +394,9 @@ func scanAgentRun(scanner agentRunScanner) (*domain.AgentRun, error) {
 		}
 		run.Thinking = &cfg
 	}
+	if costUSD.Valid {
+		run.Usage.CostUSD = &costUSD.Float64
+	}
 	if startedAt.Valid {
 		run.StartedAt = &startedAt.Time
 	}
@@ -332,6 +421,13 @@ func scanAgentRunEvent(scanner agentRunEventScanner) (domain.AgentRunEvent, erro
 	}
 	if err := json.Unmarshal([]byte(eventJSON), &event.Event); err != nil {
 		return domain.AgentRunEvent{}, fmt.Errorf("unmarshalling agent run event: %w", err)
+	}
+	// An event without reasoning state is stored as "ReasoningState":null,
+	// which unmarshals to the literal null rather than an empty state. Read
+	// as state, it would start a new round at every event when the run's
+	// transcript is rebuilt, parting tool results from their calls.
+	if string(event.Event.ReasoningState) == "null" {
+		event.Event.ReasoningState = nil
 	}
 	return event, nil
 }

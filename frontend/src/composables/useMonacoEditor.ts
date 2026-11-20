@@ -1,31 +1,45 @@
-import { ref, shallowRef, reactive, computed, onBeforeUnmount, watch, type Ref } from 'vue'
+import { ref, shallowRef, reactive, computed, onBeforeUnmount, watch, toValue, type Ref, type MaybeRefOrGetter } from 'vue'
 import type * as MonacoType from 'monaco-editor'
-import { gruvboxMonacoTheme } from '@/theme/gruvbox'
+import { DEVPAD_MONACO_THEME, registerDevpadTheme } from '@/theme'
+import EditorWorker from 'monaco-editor/editor/editor.worker?worker'
+import CssWorker from 'monaco-editor/language/css/css.worker?worker'
+import HtmlWorker from 'monaco-editor/language/html/html.worker?worker'
+import JsonWorker from 'monaco-editor/language/json/json.worker?worker'
+import TsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
 
 let monaco: typeof MonacoType | null = null
 let monacoPromise: Promise<typeof MonacoType> | null = null
 
+function getMonacoWorker(_workerId: string, label: string): Worker {
+  switch (label) {
+    case 'css':
+    case 'scss':
+    case 'less':
+      return new CssWorker()
+    case 'html':
+    case 'handlebars':
+    case 'razor':
+      return new HtmlWorker()
+    case 'json':
+      return new JsonWorker()
+    case 'typescript':
+    case 'javascript':
+      return new TsWorker()
+    default:
+      return new EditorWorker()
+  }
+}
+
 export async function loadMonaco(): Promise<typeof MonacoType> {
   if (monaco) return monaco
   if (!monacoPromise) {
+    self.MonacoEnvironment = { getWorker: getMonacoWorker }
     monacoPromise = import('monaco-editor').then((m) => {
       monaco = m
       return m
     })
   }
   return monacoPromise
-}
-
-export const DEVPAD_MONACO_THEME = 'devpad-gruvbox'
-
-// Register Devpad editor theme once
-let themeRegistered = false
-
-export function registerDevpadTheme(m: typeof MonacoType) {
-  if (themeRegistered) return
-  themeRegistered = true
-
-  m.editor.defineTheme(DEVPAD_MONACO_THEME, gruvboxMonacoTheme)
 }
 
 /** Map file extensions to Monaco language IDs */
@@ -86,6 +100,7 @@ export function useMonacoEditor(
   container: Ref<HTMLElement | null>,
   options?: {
     readOnly?: boolean
+    minimap?: MaybeRefOrGetter<boolean>
   },
 ) {
   const editorInstance = shallowRef<MonacoType.editor.IStandaloneCodeEditor | null>(null)
@@ -122,7 +137,7 @@ export function useMonacoEditor(
       readOnly: options?.readOnly ?? false,
       automaticLayout: true,
       minimap: {
-        enabled: true,
+        enabled: toValue(options?.minimap ?? true),
         scale: 1,
         showSlider: 'mouseover',
         renderCharacters: false,
@@ -243,6 +258,14 @@ export function useMonacoEditor(
     }
   }
 
+  /** Replace an open file's content, such as after a branch switch, and mark it clean */
+  function reloadFile(filePath: string, content: string) {
+    const model = models.get(filePath)
+    if (!model) return
+    if (model.getValue() !== content) model.setValue(content)
+    markClean(filePath)
+  }
+
   function isFileDirty(filePath: string): boolean {
     return dirtyFiles.has(filePath)
   }
@@ -285,6 +308,11 @@ export function useMonacoEditor(
     }
   })
 
+  watch(
+    () => toValue(options?.minimap ?? true),
+    (enabled) => editorInstance.value?.updateOptions({ minimap: { enabled } }),
+  )
+
   onBeforeUnmount(() => {
     dispose()
   })
@@ -298,6 +326,7 @@ export function useMonacoEditor(
     setContent,
     switchToFile,
     closeFile,
+    reloadFile,
     isFileDirty,
     markClean,
     getContent,

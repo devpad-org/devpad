@@ -3,13 +3,20 @@ package settings
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/encrypt"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/pquerna/otp/totp"
@@ -34,6 +41,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 		totp_enabled BOOLEAN NOT NULL DEFAULT 0,
 		ssh_public_key TEXT NOT NULL DEFAULT '',
 		ssh_private_key TEXT NOT NULL DEFAULT '',
+		git_name TEXT NOT NULL DEFAULT '',
+		git_email TEXT NOT NULL DEFAULT '',
+		git_identity_saved BOOLEAN NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -47,6 +57,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 	CREATE TABLE user_preferences (
 		user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
 		diff_view_side_by_side BOOLEAN NOT NULL DEFAULT 1,
+		theme TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`
@@ -280,6 +291,7 @@ func TestHandler_ChangePassword(t *testing.T) {
 	}{
 		{"empty body", `{}`, http.StatusBadRequest},
 		{"short password", `{"currentPassword":"password123","newPassword":"short"}`, http.StatusBadRequest},
+		{"long password", `{"currentPassword":"password123","newPassword":"` + strings.Repeat("x", 73) + `"}`, http.StatusBadRequest},
 		{"wrong current", `{"currentPassword":"wrong","newPassword":"newpassword123"}`, http.StatusUnauthorized},
 		{"success", `{"currentPassword":"password123","newPassword":"newpassword123"}`, http.StatusOK},
 	}
@@ -357,7 +369,7 @@ func TestService_UserPreferences_DefaultAndUpdate(t *testing.T) {
 		t.Fatal("expected side-by-side diff view to be enabled by default")
 	}
 
-	updated, err := settingsSvc.UpdatePreferences(ctx, user.ID, UserPreferences{DiffViewSideBySide: false})
+	updated, err := settingsSvc.UpdatePreferences(ctx, user.ID, PreferencesUpdate{DiffViewSideBySide: new(false)})
 	if err != nil {
 		t.Fatalf("updating preferences: %v", err)
 	}
@@ -405,6 +417,56 @@ func TestHandler_UserPreferences(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"diffViewSideBySide":false`) {
 		t.Errorf("expected updated inline preference, got: %s", rec.Body.String())
+	}
+}
+
+func TestHandler_UserPreferences_Theme(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	handler := NewHandler(settingsSvc)
+
+	put := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/settings/preferences", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, user))
+		rec := httptest.NewRecorder()
+		handler.HandleUpdatePreferences(rec, req)
+		return rec
+	}
+
+	preferences, err := settingsSvc.GetPreferences(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("getting default preferences: %v", err)
+	}
+	if preferences.Theme != DefaultTheme {
+		t.Fatalf("default theme = %q, want %q", preferences.Theme, DefaultTheme)
+	}
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		want       UserPreferences
+	}{
+		{"theme alone keeps the diff view", `{"theme":"modern-light"}`, http.StatusOK, UserPreferences{DiffViewSideBySide: true, Theme: "modern-light"}},
+		{"diff view alone keeps the theme", `{"diffViewSideBySide":false}`, http.StatusOK, UserPreferences{DiffViewSideBySide: false, Theme: "modern-light"}},
+		{"both", `{"diffViewSideBySide":true,"theme":"gruvbox-light"}`, http.StatusOK, UserPreferences{DiffViewSideBySide: true, Theme: "gruvbox-light"}},
+		{"unknown theme", `{"theme":"solarized"}`, http.StatusBadRequest, UserPreferences{DiffViewSideBySide: true, Theme: "gruvbox-light"}},
+		{"nothing to update", `{}`, http.StatusBadRequest, UserPreferences{DiffViewSideBySide: true, Theme: "gruvbox-light"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if rec := put(tt.body); rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			got, err := settingsSvc.GetPreferences(context.Background(), user.ID)
+			if err != nil {
+				t.Fatalf("getting preferences: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("preferences = %+v, want %+v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -515,5 +577,266 @@ func TestHandler_GetSSHKey_Unauthenticated(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected status 401, got %d", rec.Code)
+	}
+}
+
+// The theme preference against the real schema: every migration applied, as
+// on a server that had preferences before themes existed.
+func TestPreferencesRepository_ThemeOnMigratedSchema(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "devpad.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	if _, err := db.Conn().Exec(`INSERT INTO users (id, username, email, password) VALUES (1, 'test', 'test@example.com', 'hashed')`); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	// A row written before the theme column existed gets the default.
+	if _, err := db.Conn().Exec(`INSERT INTO user_preferences (user_id, diff_view_side_by_side) VALUES (1, 0)`); err != nil {
+		t.Fatalf("insert preferences: %v", err)
+	}
+
+	repo := NewPreferencesRepository(db.Conn())
+	ctx := context.Background()
+
+	got, err := repo.Get(ctx, 1)
+	if err != nil {
+		t.Fatalf("getting preferences: %v", err)
+	}
+	if want := (UserPreferences{DiffViewSideBySide: false, Theme: DefaultTheme}); got != want {
+		t.Fatalf("preferences = %+v, want %+v", got, want)
+	}
+
+	// Saving another preference, as the first save or a later one, stores no
+	// theme, so a user who never chose one keeps following the default.
+	if _, err := db.Conn().Exec(`INSERT INTO users (id, username, email, password) VALUES (2, 'new', 'new@example.com', 'hashed')`); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	for _, userID := range []int64{1, 2} {
+		updated, err := repo.Update(ctx, userID, PreferencesUpdate{DiffViewSideBySide: new(true)})
+		if err != nil {
+			t.Fatalf("updating user %d: %v", userID, err)
+		}
+		if updated.Theme != DefaultTheme {
+			t.Fatalf("user %d: returned theme = %q, want %q", userID, updated.Theme, DefaultTheme)
+		}
+		var stored sql.NullString
+		if err := db.Conn().QueryRow(`SELECT theme FROM user_preferences WHERE user_id = ?`, userID).Scan(&stored); err != nil {
+			t.Fatalf("user %d: reading stored theme: %v", userID, err)
+		}
+		if stored.Valid {
+			t.Fatalf("user %d: stored theme = %q, want NULL", userID, stored.String)
+		}
+	}
+
+	for _, theme := range Themes {
+		if _, err := repo.Update(ctx, 1, PreferencesUpdate{Theme: &theme}); err != nil {
+			t.Fatalf("updating to %s: %v", theme, err)
+		}
+		got, err := repo.Get(ctx, 1)
+		if err != nil {
+			t.Fatalf("getting preferences: %v", err)
+		}
+		if got.Theme != theme {
+			t.Fatalf("theme = %q, want %q", got.Theme, theme)
+		}
+	}
+}
+
+// Two pages saving different preferences at once both keep their change: a
+// save never writes back another preference it read before the other saved.
+func TestHandler_UserPreferences_ConcurrentUpdatesKeepBoth(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "devpad.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	userRepo := auth.NewUserRepository(db.Conn())
+	authSvc := auth.NewService(userRepo, auth.NewSessionRepository(db.Conn()))
+	user := createTestUser(t, authSvc)
+	handler := NewHandler(NewService(userRepo, NewPreferencesRepository(db.Conn()), nil))
+
+	put := func(body string) {
+		req := httptest.NewRequest(http.MethodPut, "/api/settings/preferences", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, user))
+		rec := httptest.NewRecorder()
+		handler.HandleUpdatePreferences(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("PUT %s: status %d: %s", body, rec.Code, rec.Body.String())
+		}
+	}
+
+	for round := range 50 {
+		put(`{"diffViewSideBySide":true,"theme":"gruvbox-dark"}`)
+
+		var wg sync.WaitGroup
+		wg.Go(func() { put(`{"theme":"modern-light"}`) })
+		wg.Go(func() { put(`{"diffViewSideBySide":false}`) })
+		wg.Wait()
+
+		req := httptest.NewRequest(http.MethodGet, "/api/settings/preferences", nil)
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, user))
+		rec := httptest.NewRecorder()
+		handler.HandleGetPreferences(rec, req)
+		var got UserPreferences
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decoding preferences: %v", err)
+		}
+		if want := (UserPreferences{DiffViewSideBySide: false, Theme: "modern-light"}); got != want {
+			t.Fatalf("round %d: preferences = %+v, want %+v", round, got, want)
+		}
+	}
+}
+
+// The server accepts exactly the themes the frontend offers, with the same
+// default: a theme the picker shows but the server refuses would snap back on
+// every click.
+func TestThemesMatchFrontend(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "frontend", "src", "theme", "index.ts"))
+	if err != nil {
+		t.Fatalf("reading the frontend's themes: %v", err)
+	}
+	block := regexp.MustCompile(`(?s)export const THEMES = \[(.*?)\n\]`).FindSubmatch(source)
+	if block == nil {
+		t.Fatal("cannot find THEMES in frontend/src/theme/index.ts")
+	}
+	var frontend []string
+	for _, m := range regexp.MustCompile(`\bid: '([\w-]+)'`).FindAllSubmatch(block[1], -1) {
+		frontend = append(frontend, string(m[1]))
+	}
+	if !slices.Equal(frontend, Themes) {
+		t.Errorf("settings.Themes = %v, but the frontend's THEMES are %v", Themes, frontend)
+	}
+
+	def := regexp.MustCompile(`export const DEFAULT_THEME: ThemeId = '([\w-]+)'`).FindSubmatch(source)
+	if def == nil {
+		t.Fatal("cannot find DEFAULT_THEME in frontend/src/theme/index.ts")
+	}
+	if string(def[1]) != DefaultTheme {
+		t.Errorf("settings.DefaultTheme = %q, but the frontend's DEFAULT_THEME is %q", DefaultTheme, def[1])
+	}
+}
+
+type fakeGitSyncer struct {
+	users    []int64
+	updated  int
+	complete bool
+}
+
+func (f *fakeGitSyncer) SyncGitIdentity(_ context.Context, userID int64) (int, bool) {
+	f.users = append(f.users, userID)
+	return f.updated, f.complete
+}
+
+func TestService_GitIdentity(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	ctx := context.Background()
+	syncer := &fakeGitSyncer{updated: 2, complete: true}
+	settingsSvc.SetGitIdentitySyncer(syncer)
+
+	got, err := settingsSvc.GetGitIdentity(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetGitIdentity: %v", err)
+	}
+	if want := (GitIdentity{AccountName: user.Username, AccountEmail: user.Email}); got != want {
+		t.Fatalf("before saving = %+v, want %+v", got, want)
+	}
+
+	saved, err := settingsSvc.SaveGitIdentity(ctx, user.ID, "  Ada Lovelace ", "ada@users.noreply.example.com")
+	if err != nil {
+		t.Fatalf("SaveGitIdentity: %v", err)
+	}
+	if saved.Name != "Ada Lovelace" || saved.Email != "ada@users.noreply.example.com" || !saved.Saved || saved.WorkspacesUpdated != 2 || saved.SyncIncomplete {
+		t.Fatalf("saved = %+v", saved)
+	}
+	if len(syncer.users) != 1 || syncer.users[0] != user.ID {
+		t.Fatalf("synced users = %v", syncer.users)
+	}
+
+	// A new SSH key rewrites the account's row and must not undo this.
+	if _, err := settingsSvc.GenerateSSHKey(ctx, user.ID); err != nil {
+		t.Fatalf("GenerateSSHKey: %v", err)
+	}
+	if got, err = settingsSvc.GetGitIdentity(ctx, user.ID); err != nil || got.Name != "Ada Lovelace" || !got.Saved {
+		t.Fatalf("after a new SSH key = %+v, %v", got, err)
+	}
+
+	syncer.complete = false
+	saved, err = settingsSvc.SaveGitIdentity(ctx, user.ID, "", "")
+	if err != nil {
+		t.Fatalf("clearing: %v", err)
+	}
+	if saved.Name != "" || saved.Email != "" || !saved.Saved || !saved.SyncIncomplete {
+		t.Fatalf("after clearing = %+v", saved)
+	}
+}
+
+// cancelAfterGitIdentity cancels the request's context once the identity is
+// stored, as a browser disconnecting then would.
+type cancelAfterGitIdentity struct {
+	auth.UserRepository
+	cancel context.CancelFunc
+}
+
+func (r *cancelAfterGitIdentity) SetGitIdentity(ctx context.Context, id int64, name, email string) error {
+	defer r.cancel()
+	return r.UserRepository.SetGitIdentity(ctx, id, name, email)
+}
+
+func TestService_SaveGitIdentitySyncsAfterDisconnect(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	syncer := &fakeGitSyncer{updated: 1, complete: true}
+	settingsSvc.SetGitIdentitySyncer(syncer)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := settingsSvc.(*service)
+	s.users = &cancelAfterGitIdentity{UserRepository: s.users, cancel: cancel}
+
+	saved, err := settingsSvc.SaveGitIdentity(ctx, user.ID, "Ada Lovelace", "")
+	if err != nil {
+		t.Fatalf("SaveGitIdentity: %v", err)
+	}
+	if saved.Name != "Ada Lovelace" || len(syncer.users) != 1 {
+		t.Fatalf("saved = %+v, synced users = %v", saved, syncer.users)
+	}
+}
+
+func TestHandler_GitIdentity(t *testing.T) {
+	settingsSvc, authSvc, _ := setupTestServices(t)
+	user := createTestUser(t, authSvc)
+	handler := NewHandler(settingsSvc)
+
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"name and email", `{"name":"Ada Lovelace","email":"ada@example.com"}`, http.StatusOK},
+		{"both empty", `{"name":"","email":""}`, http.StatusOK},
+		{"flag-like name", `{"name":"-x"}`, http.StatusBadRequest},
+		{"angle bracket in name", `{"name":"a<b"}`, http.StatusBadRequest},
+		{"name git would strip to nothing", `{"name":"..."}`, http.StatusBadRequest},
+		{"not an email", `{"email":"nope"}`, http.StatusBadRequest},
+		{"email with a space", `{"email":"a b@example.com"}`, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "/api/settings/git-identity", strings.NewReader(tt.body))
+			req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, user))
+			rec := httptest.NewRecorder()
+			handler.HandleUpdateGitIdentity(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
+			}
+		})
 	}
 }

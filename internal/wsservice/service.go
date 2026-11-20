@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/container"
 )
@@ -16,11 +19,33 @@ var (
 	ErrNotFound      = errors.New("service not found")
 	ErrDuplicateType = errors.New("workspace already has a service of this type")
 	ErrInvalidType   = errors.New("unsupported service type")
+	// ErrLicenseNotAccepted is returned when a service with licence terms
+	// is created without the user accepting them, or would get a container
+	// without a record of their acceptance.
+	ErrLicenseNotAccepted = errors.New("the service's licence terms were not accepted")
+	// ErrUnsupportedArch is returned when the Docker daemon's architecture
+	// cannot run a service's image.
+	ErrUnsupportedArch = errors.New("the service's image does not support this Docker host's architecture")
+	// ErrLicenseOutdated is returned when a project's service would get a
+	// copy under licence terms that have changed since the user accepted
+	// them.
+	ErrLicenseOutdated = errors.New("the service's licence terms have changed since they were accepted")
 )
+
+// CreateOptions carries who is creating a service and what they agreed to.
+type CreateOptions struct {
+	UserID int64
+	// AcceptLicense is the user's acceptance of the service's licence
+	// terms, required for a service that has them (see Catalog).
+	AcceptLicense bool
+}
 
 // Service defines workspace service business logic.
 type Service interface {
-	Create(ctx context.Context, workspaceID int64, serviceType ServiceType) (*WorkspaceService, error)
+	Create(ctx context.Context, workspaceID int64, serviceType ServiceType, opts CreateOptions) (*WorkspaceService, error)
+	// Catalog lists every service type a workspace can deploy, sorted, with
+	// its licence terms and whether this Docker host can run it.
+	Catalog(ctx context.Context) []CatalogEntry
 	List(ctx context.Context, workspaceID int64) ([]*WorkspaceService, error)
 	Get(ctx context.Context, id int64) (*WorkspaceService, error)
 	Delete(ctx context.Context, id int64) error
@@ -37,21 +62,124 @@ type Service interface {
 
 	// EnvVars returns connection info env vars for all services in a workspace.
 	EnvVars(ctx context.Context, workspaceID int64, networkName string) ([]string, error)
+
+	// ProjectServices lists the services each new workspace of a project
+	// gets its own copy of.
+	ProjectServices(ctx context.Context, projectID int64) ([]*ProjectService, error)
+	// AddProjectService adds a service to a project's list. Workspaces that
+	// already exist are not changed; the project workspace gets it when it
+	// is rebuilt or the user adds the project's services to it (Provision).
+	AddProjectService(ctx context.Context, projectID int64, serviceType ServiceType, opts CreateOptions) (*ProjectService, error)
+	// RemoveProjectService removes a service from a project's list. The
+	// copies workspaces already have stay until they are deleted.
+	RemoveProjectService(ctx context.Context, projectID int64, serviceType ServiceType) error
+	// Provision gives a workspace of a project its own copy of each of the
+	// project's services it does not have yet. With start, it starts them;
+	// otherwise it only creates their containers, so that a workspace
+	// container made next is given their connection details.
+	Provision(ctx context.Context, workspaceID, projectID int64, networkName string, start bool) error
+	// AwaitReady waits until each running service of a workspace passes its
+	// health check.
+	AwaitReady(ctx context.Context, workspaceID int64) error
+	// PullImages pulls the images of a project's services that are not
+	// local yet, so that giving a workspace its copies does not wait for
+	// them.
+	PullImages(ctx context.Context, projectID int64) error
+	// AdoptWorkspaceServices adds the services a workspace has to its
+	// project's list, for a workspace that became a project's workspace.
+	AdoptWorkspaceServices(ctx context.Context, workspaceID, projectID int64) error
 }
+
+// AwaitReady waits up to readyTimeout for a workspace's services to be
+// ready, checking every readyPoll. That is as long as Docker checks a new
+// sidecar often; the longest wait is for SQL Server's first start.
+const (
+	defaultReadyTimeout = container.SidecarHealthStartPeriod
+	defaultReadyPoll    = time.Second
+)
+
+// errReadyTimeout is why AwaitReady gave up waiting.
+var errReadyTimeout = errors.New("services not ready in time")
+
+// errServiceStopped is why AwaitReady stopped waiting for a service that is
+// no longer running.
+var errServiceStopped = errors.New("is not running")
 
 type service struct {
 	repo      Repository
 	container container.Manager
+	now       func() time.Time
+
+	readyTimeout time.Duration
+	readyPoll    time.Duration
+
+	// arch caches the Docker daemon's architecture once read.
+	archMu sync.Mutex
+	arch   string
 }
 
 // NewService creates a new workspace service Service.
 func NewService(repo Repository, cm container.Manager) Service {
-	return &service{repo: repo, container: cm}
+	return &service{
+		repo:         repo,
+		container:    cm,
+		now:          time.Now,
+		readyTimeout: defaultReadyTimeout,
+		readyPoll:    defaultReadyPoll,
+	}
 }
 
-func (s *service) Create(ctx context.Context, workspaceID int64, serviceType ServiceType) (*WorkspaceService, error) {
-	if !ValidServiceType(serviceType) {
+func (s *service) Create(ctx context.Context, workspaceID int64, serviceType ServiceType, opts CreateOptions) (*WorkspaceService, error) {
+	acceptance, err := s.checkDeployable(ctx, serviceType, opts)
+	if err != nil {
+		return nil, err
+	}
+	return s.create(ctx, workspaceID, serviceType, acceptance)
+}
+
+// checkDeployable refuses a service devpad cannot deploy for the user: an
+// unknown type, one this Docker host cannot run, or one whose licence terms
+// they did not accept. It returns their acceptance for a service that has
+// terms.
+func (s *service) checkDeployable(ctx context.Context, serviceType ServiceType, opts CreateOptions) (*LicenseAcceptance, error) {
+	def, ok := lookupDefinition(serviceType)
+	if !ok {
 		return nil, ErrInvalidType
+	}
+	if err := s.checkArch(ctx, serviceType, def); err != nil {
+		return nil, err
+	}
+	if def.license == nil {
+		return nil, nil
+	}
+	if !opts.AcceptLicense {
+		return nil, ErrLicenseNotAccepted
+	}
+	return &LicenseAcceptance{
+		UserID:       opts.UserID,
+		AcceptedAt:   s.now().UTC(),
+		TermsURL:     def.license.URL,
+		Image:        def.defaults.Image,
+		TermsVersion: def.license.version,
+	}, nil
+}
+
+// create adds a stopped service of serviceType to a workspace, with a new
+// password and volume, deployed under acceptance when it has licence terms.
+// An acceptance of terms older than the service's current ones, kept by a
+// project, is refused.
+func (s *service) create(ctx context.Context, workspaceID int64, serviceType ServiceType, acceptance *LicenseAcceptance) (*WorkspaceService, error) {
+	def, ok := lookupDefinition(serviceType)
+	if !ok {
+		return nil, ErrInvalidType
+	}
+	if def.license != nil {
+		if acceptance == nil {
+			return nil, ErrLicenseNotAccepted
+		}
+		if acceptance.termsVersion() != def.license.version {
+			return nil, ErrLicenseOutdated
+		}
 	}
 
 	// Check for duplicate service type on this workspace.
@@ -65,15 +193,19 @@ func (s *service) Create(ctx context.Context, workspaceID int64, serviceType Ser
 		}
 	}
 
-	cfg := DefaultConfigs[serviceType]
+	cfg := def.defaults
 	cfg.DefaultPass = generatePassword(24)
+	if def.license != nil {
+		a := *acceptance
+		cfg.LicenseAcceptance = &a
+	}
 	configJSON, _ := json.Marshal(cfg)
 
+	// The record comes first: the database refuses a second service of the
+	// type that a request at the same time slipped past the check above,
+	// before anything is done to the volume, which is named by the type and
+	// so would be the other service's.
 	volumeName := fmt.Sprintf("devpad-svc-%d-%s", workspaceID, serviceType)
-	if err := s.container.CreateVolume(ctx, volumeName); err != nil {
-		return nil, fmt.Errorf("creating service volume: %w", err)
-	}
-
 	svc := &WorkspaceService{
 		WorkspaceID: workspaceID,
 		ServiceType: serviceType,
@@ -82,10 +214,77 @@ func (s *service) Create(ctx context.Context, workspaceID int64, serviceType Ser
 		Config:      string(configJSON),
 	}
 	if err := s.repo.Create(ctx, svc); err != nil {
-		_ = s.container.RemoveVolume(ctx, volumeName)
+		if errors.Is(err, ErrDuplicateType) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("creating service record: %w", err)
 	}
+	if err := s.container.CreateVolume(ctx, volumeName); err != nil {
+		if delErr := s.repo.Delete(context.WithoutCancel(ctx), svc.ID); delErr != nil {
+			log.Printf("service %d: removing its record after its volume failed: %v", svc.ID, delErr)
+		}
+		return nil, fmt.Errorf("creating service volume: %w", err)
+	}
 	return svc, nil
+}
+
+// checkArch refuses a service whose image the Docker daemon cannot run.
+func (s *service) checkArch(ctx context.Context, serviceType ServiceType, def definition) error {
+	want := def.requiredArch
+	if want == "" {
+		return nil
+	}
+	arch, err := s.daemonArch(ctx)
+	if err != nil {
+		return fmt.Errorf("checking docker architecture: %w", err)
+	}
+	if arch != want {
+		return fmt.Errorf("%w: %s needs %s, the Docker host is %s", ErrUnsupportedArch, serviceType, want, arch)
+	}
+	return nil
+}
+
+// daemonArch returns the Docker daemon's architecture, asking Docker only
+// until it answers: the architecture cannot change while devpad runs.
+func (s *service) daemonArch(ctx context.Context) (string, error) {
+	s.archMu.Lock()
+	defer s.archMu.Unlock()
+	if s.arch != "" {
+		return s.arch, nil
+	}
+	arch, err := s.container.DaemonArch(ctx)
+	if err != nil {
+		return "", err
+	}
+	s.arch = arch
+	return arch, nil
+}
+
+func (s *service) Catalog(ctx context.Context) []CatalogEntry {
+	catalog := make([]CatalogEntry, 0, len(definitions))
+	var arch string
+	archKnown := true
+	for _, t := range SupportedTypes() {
+		serviceType := ServiceType(t)
+		def := definitions[serviceType]
+		entry := CatalogEntry{Type: serviceType, License: def.catalogLicense()}
+		// Docker is asked only when some service needs a particular
+		// architecture. If it cannot say, Create refuses with the reason.
+		if def.requiredArch != "" && archKnown {
+			if arch == "" {
+				var err error
+				if arch, err = s.daemonArch(ctx); err != nil {
+					log.Printf("checking docker architecture: %v", err)
+					archKnown = false
+				}
+			}
+			if archKnown && arch != def.requiredArch {
+				entry.Unavailable = fmt.Sprintf("needs an %s Docker host; this one is %s", def.requiredArch, arch)
+			}
+		}
+		catalog = append(catalog, entry)
+	}
+	return catalog
 }
 
 func (s *service) List(ctx context.Context, workspaceID int64) ([]*WorkspaceService, error) {
@@ -116,7 +315,7 @@ func (s *service) Delete(ctx context.Context, id int64) error {
 	// Stop and remove the container if running.
 	if svc.ContainerID != "" {
 		_ = s.container.Stop(ctx, svc.ContainerID)
-		if err := s.container.Remove(ctx, svc.ContainerID); err != nil {
+		if err := s.container.RemoveSidecar(ctx, svc.ContainerID); err != nil {
 			log.Printf("service %d: failed to remove container: %v", svc.ID, err)
 		}
 	}
@@ -183,7 +382,10 @@ func (s *service) EnvVars(ctx context.Context, workspaceID int64, networkName st
 
 	var envs []string
 	for _, svc := range services {
-		if svc.Status != StatusRunning || svc.ContainerID == "" {
+		// A container's environment is fixed for its life, so it names
+		// every service the workspace may use, stopped ones too: a service
+		// started later is then reachable without a new container.
+		if svc.ContainerID == "" {
 			continue
 		}
 
@@ -196,7 +398,11 @@ func (s *service) EnvVars(ctx context.Context, workspaceID int64, networkName st
 		// within the shared network.
 		host := sidecarContainerName(workspaceID, svc.ServiceType)
 
-		envs = append(envs, serviceConnectionEnv(svc.ServiceType, host, cfg)...)
+		def, ok := lookupDefinition(svc.ServiceType)
+		if !ok {
+			continue
+		}
+		envs = append(envs, def.connectionVars(svc.ServiceType, host, cfg)...)
 	}
 	return envs, nil
 }
@@ -227,21 +433,8 @@ func (s *service) startOne(ctx context.Context, svc *WorkspaceService, networkNa
 	if svc.Status == StatusRunning {
 		return nil
 	}
-
-	var cfg ServiceConfig
-	if err := json.Unmarshal([]byte(svc.Config), &cfg); err != nil {
-		return fmt.Errorf("parsing service config: %w", err)
-	}
-
-	// If no container exists yet, create one.
-	if svc.ContainerID == "" {
-		env := sidecarEnv(svc.ServiceType, cfg)
-		name := sidecarContainerName(svc.WorkspaceID, svc.ServiceType)
-		containerID, err := s.container.CreateSidecar(ctx, name, cfg.Image, svc.VolumeName, networkName, env, cfg.Port)
-		if err != nil {
-			return fmt.Errorf("creating sidecar container: %w", err)
-		}
-		svc.ContainerID = containerID
+	if err := s.ensureContainer(ctx, svc, networkName); err != nil {
+		return err
 	}
 
 	if err := s.container.Start(ctx, svc.ContainerID); err != nil {
@@ -254,6 +447,46 @@ func (s *service) startOne(ctx context.Context, svc *WorkspaceService, networkNa
 	}
 
 	log.Printf("workspace %d: started %s service", svc.WorkspaceID, svc.ServiceType)
+	return nil
+}
+
+// ensureContainer creates the service's container if it has none yet.
+func (s *service) ensureContainer(ctx context.Context, svc *WorkspaceService, networkName string) error {
+	if svc.ContainerID != "" {
+		return nil
+	}
+	var cfg ServiceConfig
+	if err := json.Unmarshal([]byte(svc.Config), &cfg); err != nil {
+		return fmt.Errorf("parsing service config: %w", err)
+	}
+	def, ok := lookupDefinition(svc.ServiceType)
+	if !ok {
+		return ErrInvalidType
+	}
+	env, err := def.containerEnv(cfg)
+	if err != nil {
+		return err
+	}
+	var healthcheck []string
+	if def.healthcheck != nil {
+		healthcheck = def.healthcheck(cfg)
+	}
+	containerID, err := s.container.CreateSidecar(ctx, container.SidecarSpec{
+		Name:        sidecarContainerName(svc.WorkspaceID, svc.ServiceType),
+		Image:       cfg.Image,
+		Network:     networkName,
+		Env:         env,
+		Volume:      svc.VolumeName,
+		DataDir:     def.dataDir,
+		Healthcheck: healthcheck,
+	})
+	if err != nil {
+		return fmt.Errorf("creating sidecar container: %w", err)
+	}
+	svc.ContainerID = containerID
+	if err := s.repo.Update(ctx, svc); err != nil {
+		return fmt.Errorf("recording sidecar container: %w", err)
+	}
 	return nil
 }
 
@@ -275,14 +508,206 @@ func (s *service) stopOne(ctx context.Context, svc *WorkspaceService) error {
 	return nil
 }
 
-// generatePassword returns a cryptographically random alphanumeric string of
-// the given length.
-func generatePassword(length int) string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, length)
-	for i := range b {
-		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
-		b[i] = alphabet[n.Int64()]
+func (s *service) ProjectServices(ctx context.Context, projectID int64) ([]*ProjectService, error) {
+	return s.repo.ListProjectServices(ctx, projectID)
+}
+
+func (s *service) AddProjectService(ctx context.Context, projectID int64, serviceType ServiceType, opts CreateOptions) (*ProjectService, error) {
+	acceptance, err := s.checkDeployable(ctx, serviceType, opts)
+	if err != nil {
+		return nil, err
 	}
-	return string(b)
+	ps := &ProjectService{ProjectID: projectID, ServiceType: serviceType, LicenseAcceptance: acceptance}
+	if err := s.repo.AddProjectService(ctx, ps); err != nil {
+		return nil, err
+	}
+	return ps, nil
+}
+
+func (s *service) RemoveProjectService(ctx context.Context, projectID int64, serviceType ServiceType) error {
+	return s.repo.RemoveProjectService(ctx, projectID, serviceType)
+}
+
+func (s *service) Provision(ctx context.Context, workspaceID, projectID int64, networkName string, start bool) error {
+	wanted, err := s.repo.ListProjectServices(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	existing, err := s.repo.ListByWorkspaceID(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("listing services: %w", err)
+	}
+	have := make(map[ServiceType]bool, len(existing))
+	for _, svc := range existing {
+		have[svc.ServiceType] = true
+	}
+
+	for _, ps := range wanted {
+		if have[ps.ServiceType] {
+			continue
+		}
+		def, ok := lookupDefinition(ps.ServiceType)
+		if !ok {
+			return fmt.Errorf("the project's %s service: %w", ps.ServiceType, ErrInvalidType)
+		}
+		if err := s.checkArch(ctx, ps.ServiceType, def); err != nil {
+			return fmt.Errorf("the project's %s service: %w", ps.ServiceType, err)
+		}
+		svc, err := s.create(ctx, workspaceID, ps.ServiceType, ps.LicenseAcceptance)
+		if errors.Is(err, ErrDuplicateType) {
+			// Added since the list was read, by whoever else is deploying
+			// it; that one makes its container.
+			continue
+		}
+		if errors.Is(err, ErrLicenseOutdated) {
+			// Adding the service again is how the user accepts the new terms.
+			return fmt.Errorf("adding the project's %s service: %w; remove it from the project's services and add it again to accept the new terms", ps.ServiceType, err)
+		}
+		if err != nil {
+			return fmt.Errorf("adding the project's %s service: %w", ps.ServiceType, err)
+		}
+		if start {
+			err = s.startOne(ctx, svc, networkName)
+		} else {
+			err = s.ensureContainer(ctx, svc, networkName)
+		}
+		if err != nil {
+			return fmt.Errorf("deploying the project's %s service: %w", ps.ServiceType, err)
+		}
+	}
+	return nil
+}
+
+func (s *service) AwaitReady(ctx context.Context, workspaceID int64) error {
+	services, err := s.repo.ListByWorkspaceID(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("listing services: %w", err)
+	}
+	// One deadline for them all: they were started together, so they get
+	// ready side by side and this waits about as long as the slowest.
+	ctx, cancel := context.WithTimeoutCause(ctx, s.readyTimeout, errReadyTimeout)
+	defer cancel()
+	for _, svc := range services {
+		if svc.Status != StatusRunning || svc.ContainerID == "" {
+			continue
+		}
+		if err := s.awaitReady(ctx, svc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// awaitReady waits until a started service's health check passes. A
+// service whose container has no health check is ready once it runs. One
+// that Docker restarts meanwhile exited, which a service that starts well
+// never does, and one that stopped will not get ready, so neither is
+// waited for.
+func (s *service) awaitReady(ctx context.Context, svc *WorkspaceService) error {
+	ticker := time.NewTicker(s.readyPoll)
+	defer ticker.Stop()
+	restarts := -1
+	for {
+		h, err := s.container.SidecarHealth(ctx, svc.ContainerID)
+		switch {
+		case err != nil:
+			if ctx.Err() == nil {
+				return fmt.Errorf("checking the %s service: %w", svc.ServiceType, err)
+			}
+		case restarts >= 0 && h.RestartCount > restarts:
+			return fmt.Errorf("the %s service stopped while starting, with exit code %d", svc.ServiceType, h.ExitCode)
+		case !h.Running:
+			// Docker reports one it is about to restart as running, so this
+			// one was stopped, such as with its workspace, and will not get
+			// ready by waiting.
+			return fmt.Errorf("the %s service %w", svc.ServiceType, errServiceStopped)
+		default:
+			restarts = h.RestartCount
+			switch h.Status {
+			case "healthy", "none":
+				return nil
+			case "unhealthy":
+				return fmt.Errorf("the %s service started but is not accepting connections", svc.ServiceType)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			if errors.Is(context.Cause(ctx), errReadyTimeout) {
+				return fmt.Errorf("the %s service was not ready after %s", svc.ServiceType, s.readyTimeout)
+			}
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *service) PullImages(ctx context.Context, projectID int64) error {
+	services, err := s.repo.ListProjectServices(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, ps := range services {
+		def, ok := lookupDefinition(ps.ServiceType)
+		if !ok {
+			continue
+		}
+		// Provision refuses one this host cannot run, and says why.
+		if s.checkArch(ctx, ps.ServiceType, def) != nil {
+			continue
+		}
+		if err := s.container.PullImage(ctx, def.defaults.Image); err != nil {
+			errs = append(errs, fmt.Errorf("the %s service: %w", ps.ServiceType, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (s *service) AdoptWorkspaceServices(ctx context.Context, workspaceID, projectID int64) error {
+	services, err := s.repo.ListByWorkspaceID(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("listing services: %w", err)
+	}
+	for _, svc := range services {
+		var cfg ServiceConfig
+		if err := json.Unmarshal([]byte(svc.Config), &cfg); err != nil {
+			return fmt.Errorf("parsing the %s service's config: %w", svc.ServiceType, err)
+		}
+		ps := &ProjectService{ProjectID: projectID, ServiceType: svc.ServiceType, LicenseAcceptance: cfg.LicenseAcceptance}
+		if err := s.repo.AddProjectService(ctx, ps); err != nil && !errors.Is(err, ErrDuplicateType) {
+			return err
+		}
+	}
+	return nil
+}
+
+// generatePassword returns a cryptographically random alphanumeric string of
+// the given length, with at least one lower-case letter, upper-case letter
+// and digit: SQL Server refuses to start with a password drawing on fewer
+// than three character classes. Alphanumeric keeps it safe in connection
+// URLs.
+func generatePassword(length int) string {
+	const (
+		lower = "abcdefghijklmnopqrstuvwxyz"
+		upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		digit = "0123456789"
+	)
+	for {
+		b := make([]byte, length)
+		for i := range b {
+			b[i] = randomByte(lower + upper + digit)
+		}
+		p := string(b)
+		if strings.ContainsAny(p, lower) && strings.ContainsAny(p, upper) && strings.ContainsAny(p, digit) {
+			return p
+		}
+	}
+}
+
+func randomByte(alphabet string) byte {
+	n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+	return alphabet[n.Int64()]
 }

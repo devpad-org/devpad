@@ -47,3 +47,5 @@ temp/
 
 # Claude
 .claude/
+# Local notes
+ISSUES.md

@@ -7,18 +7,33 @@ import (
 	"time"
 )
 
-const cookieName = "devpad_session"
+const (
+	cookieName     = "devpad_session"
+	hostCookieName = "__Host-devpad_session"
+)
+
+// SessionCookieName is the session cookie's name. Over HTTPS it carries the
+// __Host- prefix: browsers refuse such a cookie unless it is Secure, has
+// Path=/ and no Domain, so a preview subdomain cannot set one that the app
+// would read in place of the real session (cookie tossing).
+func SessionCookieName(secure bool) string {
+	if secure {
+		return hostCookieName
+	}
+	return cookieName
+}
 
 // Handler holds HTTP handlers for authentication endpoints.
 type Handler struct {
 	service      Service
 	secureCookie bool
+	cookieName   string
 }
 
 // NewHandler creates a new auth Handler.
 // secureCookie should be true when the server is running over HTTPS.
 func NewHandler(service Service, secureCookie bool) *Handler {
-	return &Handler{service: service, secureCookie: secureCookie}
+	return &Handler{service: service, secureCookie: secureCookie, cookieName: SessionCookieName(secureCookie)}
 }
 
 // HandleSetupCheck returns whether initial setup is needed.
@@ -43,17 +58,17 @@ func (h *Handler) HandleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Username == "" || req.Email == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "username, email, and password are required")
+	username, email, err := CleanIdentity(req.Username, req.Email)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := ValidatePassword(req.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	if len(req.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
-		return
-	}
-
-	user, err := h.service.Setup(r.Context(), req.Username, req.Email, req.Password)
+	user, err := h.service.Setup(r.Context(), username, email, req.Password)
 	if err != nil {
 		if errors.Is(err, ErrSetupCompleted) {
 			writeError(w, http.StatusConflict, "setup already completed")
@@ -122,21 +137,39 @@ func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// signedInUser returns the user whose valid session cookie r carries, or nil.
+// It is for public routes, which the auth middleware doesn't run on.
+func (h *Handler) signedInUser(r *http.Request) *User {
+	cookie, err := r.Cookie(h.cookieName)
+	if err != nil {
+		return nil
+	}
+	user, err := h.service.ValidateSession(r.Context(), cookie.Value)
+	if err != nil {
+		return nil
+	}
+	return user
+}
+
 func (h *Handler) setSessionCookie(w http.ResponseWriter, session *Session) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
+		Name:     h.cookieName,
 		Value:    session.Token,
 		Path:     "/",
 		Expires:  session.ExpiresAt,
 		HttpOnly: true,
 		Secure:   h.secureCookie,
-		SameSite: http.SameSiteLaxMode,
+		// Strict costs nothing for this SPA: the HTML is public and every
+		// authenticated call is a same-site fetch made after the page loads.
+		// It does not stop sibling subdomains (they are the same site); the
+		// server's same-origin guard covers those.
+		SameSite: http.SameSiteStrictMode,
 	})
 }
 
 // HandleLogout destroys the current session.
 func (h *Handler) HandleLogout(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(cookieName)
+	cookie, err := r.Cookie(h.cookieName)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
@@ -145,13 +178,13 @@ func (h *Handler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	_ = h.service.Logout(r.Context(), cookie.Value)
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
+		Name:     h.cookieName,
 		Value:    "",
 		Path:     "/",
 		Expires:  time.Unix(0, 0),
 		HttpOnly: true,
 		Secure:   h.secureCookie,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

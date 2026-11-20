@@ -1,22 +1,94 @@
 package tools
 
 import (
+	"cmp"
+	"context"
 	"encoding/json"
+	"errors"
+	"slices"
+	"strings"
+	"sync"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
 // Catalog exposes the current tool definitions and system prompt.
-type Catalog struct{}
+type Catalog struct {
+	mu        sync.RWMutex
+	providers []ToolProvider
+	scopes    ScopeResolver
+}
+
+// errNoScopes reports providers added without a way to tell them what a
+// run is. Runs fail rather than reach a provider that cannot tell.
+var errNoScopes = errors.New("tool providers are set up without a run scope resolver")
 
 // NewCatalog creates a new tool catalog.
 func NewCatalog() *Catalog {
 	return &Catalog{}
 }
 
+// AddProvider adds workspace-specific tools to the catalog.
+func (c *Catalog) AddProvider(p ToolProvider) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.providers = append(c.providers, p)
+}
+
+// SetScopeResolver sets what tells providers what a run's workspace is.
+func (c *Catalog) SetScopeResolver(r ScopeResolver) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.scopes = r
+}
+
 // Definitions returns the tool definitions available to the AI agent.
 func (c *Catalog) Definitions() []domain.ToolDefinition {
 	return AgentTools()
+}
+
+// Scope resolves the scope of a run in the workspace. Without providers
+// there is nothing to resolve it for.
+func (c *Catalog) Scope(ctx context.Context, userID, workspaceID int64) (Scope, error) {
+	c.mu.RLock()
+	providers, scopes := c.providers, c.scopes
+	c.mu.RUnlock()
+	return resolveScope(ctx, scopes, len(providers) > 0, userID, workspaceID)
+}
+
+// resolveScope resolves a scope for providers, failing when there are
+// providers but no resolver.
+func resolveScope(ctx context.Context, scopes ScopeResolver, hasProviders bool, userID, workspaceID int64) (Scope, error) {
+	if !hasProviders {
+		return Scope{UserID: userID, WorkspaceID: workspaceID}, nil
+	}
+	if scopes == nil {
+		return Scope{}, errNoScopes
+	}
+	return scopes.Resolve(ctx, userID, workspaceID)
+}
+
+// For returns the built-in tools plus those the providers offer a run in
+// scope, and the context they add to its system prompt.
+func (c *Catalog) For(ctx context.Context, scope Scope) ([]domain.ToolDefinition, string) {
+	c.mu.RLock()
+	providers := c.providers
+	c.mu.RUnlock()
+	defs := AgentTools()
+	var contributions []Contribution
+	for _, p := range providers {
+		contribution := p.Contribute(ctx, scope)
+		defs = append(defs, contribution.Tools...)
+		if contribution.Prompt = strings.TrimSpace(contribution.Prompt); contribution.Prompt != "" {
+			contributions = append(contributions, contribution)
+		}
+	}
+	slices.SortStableFunc(contributions, func(a, b Contribution) int { return cmp.Compare(a.Rank, b.Rank) })
+	sections := make([]string, len(contributions))
+	for i, c := range contributions {
+		sections[i] = c.Prompt
+	}
+	return defs, strings.Join(sections, "\n\n")
 }
 
 // SystemPrompt returns the system prompt for the AI agent.
@@ -31,7 +103,7 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "read_file",
-				Description: "Read the contents of a file in the project. Results are truncated for large files; use read_file_lines for targeted sections.",
+				Description: "Read the contents of a file in the project. Results are truncated for large files; use read_file_lines for targeted sections. Reading a PNG, JPEG, GIF or WebP image returns the image itself, so you can look at screenshots and other pictures.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative path from the project root, e.g. src/main.ts"}},"required":["path"]}`),
 			},
 		},
@@ -152,7 +224,7 @@ func AgentTools() []domain.ToolDefinition {
 			Function: domain.ToolFunction{
 				Name:        "spawn_sub_agent",
 				Description: "Start a child AI agent run for an independent subtask. The child appears nested under this run in the Agent Runs sidebar. Use agent_id from list_available_agents to assign the best purpose-built agent. Use wait_for_result only when you need this single child's final answer before continuing; otherwise keep the returned runId and call wait_for_sub_agents later.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"Complete instructions for the child agent, including all necessary context, scope, and expected output."},"agent_id":{"type":"string","description":"Optional agent ID from list_available_agents. Defaults to the baked-in default agent."},"model":{"type":"string","description":"Optional model ID. Defaults to the current model."},"wait_for_result":{"type":"boolean","description":"When true, wait for the child run to finish and return its final text in the summary field. Defaults to false."},"timeout_seconds":{"type":"integer","description":"Maximum seconds to wait when wait_for_result is true. Defaults to 120 and is capped at 600."}},"required":["prompt"]}`),
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"Complete instructions for the child agent, including all necessary context, scope, and expected output."},"agent_id":{"type":"string","description":"Optional agent ID from list_available_agents. Defaults to the built-in coding agent."},"model":{"type":"string","description":"Optional model ID. Defaults to the model the user set for the agent, else the current model."},"wait_for_result":{"type":"boolean","description":"When true, wait for the child run to finish and return its final text in the summary field. Defaults to false."},"timeout_seconds":{"type":"integer","description":"Maximum seconds to wait when wait_for_result is true. Defaults to 600, which is also the maximum."}},"required":["prompt"]}`),
 			},
 		},
 		{
@@ -167,14 +239,15 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "wait_for_sub_agents",
-				Description: "Wait for one or more previously spawned child AI agent runs from this parent run. Use this after spawning multiple sub-agents in parallel; pass their runIds and the tool returns ordered results with status, summary, error, and timedOut fields.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"run_ids":{"type":"array","description":"Child agent run IDs returned by spawn_sub_agent. Results are returned in the same order; pass one ID as a one-item array when waiting for a single child.","items":{"type":"integer"},"minItems":1,"maxItems":20},"timeout_seconds":{"type":"integer","description":"Maximum seconds to wait for all requested child runs. Defaults to 120 and is capped at 600."}},"required":["run_ids"]}`),
+				Description: "Wait for one or more previously spawned child AI agent runs from this parent run. Use this after spawning multiple sub-agents in parallel; pass their runIds and the tool returns ordered results with status, summary, error, timedOut, and stillRunning fields. A child marked stillRunning has not failed: it keeps working after the wait ends, so call this tool again to collect its result rather than redoing its work.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"run_ids":{"type":"array","description":"Child agent run IDs returned by spawn_sub_agent. Results are returned in the same order; pass one ID as a one-item array when waiting for a single child.","items":{"type":"integer"},"minItems":1,"maxItems":20},"timeout_seconds":{"type":"integer","description":"Maximum seconds to wait for all requested child runs. Defaults to 600, which is also the maximum."}},"required":["run_ids"]}`),
 			},
 		},
 	}
 }
 
-// AgentSystemPrompt is the current system prompt for the built-in coding agent.
+// AgentSystemPrompt is the base system prompt shared by every agent; the
+// selected agent's instructions are appended to it.
 const AgentSystemPrompt = `You are an expert AI coding assistant integrated into Devpad, a web-based IDE. You have access to the user's project files through tools.
 
 When helping the user:
@@ -205,6 +278,7 @@ Sub-agents:
 - Make each sub-agent prompt self-contained: include the goal, relevant constraints, and the expected result.
 - By default the tool returns a child run ID immediately. Set wait_for_result=true when you need the child's answer before continuing; the result will include a summary field with the child's final response.
 - For parallel fan-out/fan-in work, call spawn_sub_agent multiple times with wait_for_result=false, keep the returned runIds, then call wait_for_sub_agents with those runIds when you need all child results.
+- A wait can end before a child does. A child reported as stillRunning has not failed and keeps working, so wait for it again instead of redoing its work or starting another child for it.
 
 Format your responses using Markdown for readability:
 - Use **bold** for emphasis and key terms.

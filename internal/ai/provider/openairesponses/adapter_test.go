@@ -3,6 +3,7 @@ package openairesponses
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,17 +27,18 @@ func TestAdapterMetadata(t *testing.T) {
 	}
 
 	models := adapter.Models()
-	if len(models) != 2 {
-		t.Fatalf("expected 2 models, got %d", len(models))
+	if len(models) != 4 {
+		t.Fatalf("expected 4 models, got %d", len(models))
 	}
 
 	expected := []struct {
-		id               string
-		enabledByDefault bool
-		defaultEffort    string
+		id         string
+		canDisable bool
 	}{
-		{id: "gpt-5.4", enabledByDefault: false, defaultEffort: defaultReasoningEffort},
-		{id: "gpt-5.5", enabledByDefault: true, defaultEffort: "medium"},
+		{id: "gpt-6.2-sol", canDisable: false},
+		{id: "gpt-6.2-astra", canDisable: false},
+		{id: "gpt-6.1-terra", canDisable: true},
+		{id: "gpt-6-luna", canDisable: true},
 	}
 	for index, expectedModel := range expected {
 		if models[index].ID != expectedModel.id {
@@ -48,24 +50,24 @@ func TestAdapterMetadata(t *testing.T) {
 		if !models[index].Thinking.Supported {
 			t.Fatalf("expected model %q to support thinking", models[index].ID)
 		}
-		if models[index].Thinking.EnabledByDefault != expectedModel.enabledByDefault {
-			t.Fatalf("expected model %q thinking enabled by default to be %v, got %v", models[index].ID, expectedModel.enabledByDefault, models[index].Thinking.EnabledByDefault)
+		if !models[index].Thinking.EnabledByDefault {
+			t.Fatalf("expected model %q to think by default", models[index].ID)
 		}
-		if !models[index].Thinking.SupportsEffortSelection() {
-			t.Fatalf("expected model %q to expose selectable effort levels", models[index].ID)
+		if !models[index].Thinking.SupportsEffort("max") {
+			t.Fatalf("expected model %q to offer max effort", models[index].ID)
 		}
-		if models[index].Thinking.DefaultEffort != expectedModel.defaultEffort {
-			t.Fatalf("expected model %q default effort to be %q, got %q", models[index].ID, expectedModel.defaultEffort, models[index].Thinking.DefaultEffort)
+		if models[index].Thinking.DefaultEffort != defaultReasoningEffort {
+			t.Fatalf("expected model %q default effort to be %q, got %q", models[index].ID, defaultReasoningEffort, models[index].Thinking.DefaultEffort)
 		}
-		if !models[index].Thinking.CanDisable {
-			t.Fatalf("expected model %q thinking to be disableable", models[index].ID)
+		if models[index].Thinking.CanDisable != expectedModel.canDisable {
+			t.Fatalf("expected model %q can disable thinking to be %v", models[index].ID, expectedModel.canDisable)
 		}
 	}
 }
 
 func TestBuildResponsesRequest_SystemAndToolMapping(t *testing.T) {
 	req := aiprovider.StreamRequest{
-		Model: "gpt-5.4",
+		Model: "gpt-6.2-sol",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleSystem, "You are concise."),
 			domain.NewTextTurn(domain.RoleSystem, "Use tools when needed."),
@@ -83,10 +85,10 @@ func TestBuildResponsesRequest_SystemAndToolMapping(t *testing.T) {
 
 	body := buildResponsesRequest(req, NewAdapter().Models()[0])
 
-	if body["instructions"] != "You are concise.\n\nUse tools when needed." {
-		t.Fatalf("unexpected instructions: %v", body["instructions"])
+	if _, ok := body["instructions"]; ok {
+		t.Fatalf("expected no top-level instructions, got %v", body["instructions"])
 	}
-	if body["model"] != "gpt-5.4" {
+	if body["model"] != "gpt-6.2-sol" {
 		t.Fatalf("unexpected model: %v", body["model"])
 	}
 	if body["stream"] != true {
@@ -97,12 +99,16 @@ func TestBuildResponsesRequest_SystemAndToolMapping(t *testing.T) {
 	}
 
 	input := body["input"].([]any)
-	if len(input) != 1 {
-		t.Fatalf("expected 1 input item, got %d", len(input))
+	if len(input) != 2 {
+		t.Fatalf("expected 2 input items, got %d", len(input))
 	}
 	first := input[0].(map[string]any)
-	if first["role"] != "user" || first["content"] != "hello" {
-		t.Fatalf("unexpected input item: %+v", first)
+	if first["role"] != "developer" || first["content"] != "You are concise.\n\nUse tools when needed." {
+		t.Fatalf("expected the system prompt as the first input item, got %+v", first)
+	}
+	second := input[1].(map[string]any)
+	if second["role"] != "user" || second["content"] != "hello" {
+		t.Fatalf("unexpected input item: %+v", second)
 	}
 
 	tools := body["tools"].([]map[string]any)
@@ -119,19 +125,38 @@ func TestBuildResponsesRequest_SystemAndToolMapping(t *testing.T) {
 		t.Fatalf("expected strict=false, got %v", tools[0]["strict"])
 	}
 
-	if _, ok := body["include"]; ok {
-		t.Fatal("expected include to be omitted when thinking is not enabled")
+	if reasoning := body["reasoning"].(map[string]any); reasoning["effort"] != defaultReasoningEffort {
+		t.Fatalf("expected the default reasoning effort, got %v", reasoning["effort"])
 	}
+	if include := body["include"].([]string); len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("expected encrypted reasoning to be included, got %v", include)
+	}
+}
 
-	if _, ok := body["reasoning"]; ok {
-		t.Fatal("expected reasoning config to be omitted when thinking is not enabled")
+func TestBuildInput_LeavesOutOtherProvidersReasoningState(t *testing.T) {
+	for name, state := range map[string]string{
+		"anthropic": `[{"type":"thinking","thinking":"hm","signature":"sig"},{"type":"devpad_text_ref","bytes":5}]`,
+		"minimax":   `[{"type":"reasoning.text","id":"reasoning-text-1","text":"hm"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := buildInput([]domain.Turn{{
+				Role: domain.RoleAssistant,
+				Parts: []domain.Part{
+					{Kind: domain.PartThinking, Thinking: &domain.ThinkingPart{State: json.RawMessage(state)}},
+					{Kind: domain.PartText, Text: "Hello"},
+				},
+			}})
+			if len(input) != 1 || input[0].(map[string]any)["content"] != "Hello" {
+				t.Fatalf("expected only the assistant's message, got %+v", input)
+			}
+		})
 	}
 }
 
 func TestBuildResponsesRequest_AssistantToolHistoryAndReasoningState(t *testing.T) {
 	reasoningState := json.RawMessage(`[{"id":"rs_123","type":"reasoning","summary":[],"encrypted_content":"enc"}]`)
 	req := aiprovider.StreamRequest{
-		Model: "gpt-5.4",
+		Model: "gpt-6.2-sol",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleUser, "Check the weather."),
 			{
@@ -189,7 +214,7 @@ func TestBuildResponsesRequest_AssistantToolHistoryAndReasoningState(t *testing.
 func TestBuildResponsesRequest_ThinkingEnabled(t *testing.T) {
 	enabled := true
 	body := buildResponsesRequest(aiprovider.StreamRequest{
-		Model:    "gpt-5.5",
+		Model:    "gpt-6.2-astra",
 		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 		Thinking: &domain.ThinkingConfig{Enabled: &enabled},
 	}, NewAdapter().Models()[1])
@@ -211,27 +236,40 @@ func TestBuildResponsesRequest_ThinkingEnabled(t *testing.T) {
 func TestBuildResponsesRequest_ThinkingEffortSelection(t *testing.T) {
 	enabled := true
 	body := buildResponsesRequest(aiprovider.StreamRequest{
-		Model:    "gpt-5.4",
+		Model:    "gpt-6.2-sol",
 		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
-		Thinking: &domain.ThinkingConfig{Enabled: &enabled, Effort: "high"},
+		Thinking: &domain.ThinkingConfig{Enabled: &enabled, Effort: "max"},
 	}, NewAdapter().Models()[0])
 
 	reasoning := body["reasoning"].(map[string]any)
-	if reasoning["effort"] != "high" {
-		t.Fatalf("expected reasoning effort high, got %v", reasoning["effort"])
+	if reasoning["effort"] != "max" {
+		t.Fatalf("expected reasoning effort max, got %v", reasoning["effort"])
 	}
 	if reasoning["summary"] != "auto" {
 		t.Fatalf("expected reasoning summary auto, got %v", reasoning["summary"])
 	}
 }
 
-func TestBuildResponsesRequest_ThinkingDisabled(t *testing.T) {
+func TestBuildResponsesRequest_NeverDisablesThinkingOnGPT62(t *testing.T) {
 	disabled := false
 	body := buildResponsesRequest(aiprovider.StreamRequest{
-		Model:    "gpt-5.5",
+		Model:    "gpt-6.2-astra",
 		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 		Thinking: &domain.ThinkingConfig{Enabled: &disabled},
 	}, NewAdapter().Models()[1])
+
+	if reasoning, ok := body["reasoning"]; ok {
+		t.Fatalf("expected no reasoning config, since the API rejects effort none, got %v", reasoning)
+	}
+}
+
+func TestBuildResponsesRequest_ThinkingDisabled(t *testing.T) {
+	disabled := false
+	body := buildResponsesRequest(aiprovider.StreamRequest{
+		Model:    "gpt-6.1-terra",
+		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+		Thinking: &domain.ThinkingConfig{Enabled: &disabled},
+	}, NewAdapter().Models()[2])
 
 	reasoning := body["reasoning"].(map[string]any)
 	if reasoning["effort"] != disabledReasoningEffort {
@@ -270,7 +308,7 @@ func TestAdapterStreamTextAndDone(t *testing.T) {
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "gpt-5.5",
+		Model: "gpt-6.2-astra",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err != nil {
@@ -284,8 +322,8 @@ func TestAdapterStreamTextAndDone(t *testing.T) {
 	if acceptHeader != "text/event-stream" {
 		t.Fatalf("expected SSE accept header, got %q", acceptHeader)
 	}
-	if requestBody["model"] != "gpt-5.5" {
-		t.Fatalf("expected model gpt-5.5 in request, got %v", requestBody["model"])
+	if requestBody["model"] != "gpt-6.2-astra" {
+		t.Fatalf("expected model gpt-6.2-astra in request, got %v", requestBody["model"])
 	}
 	if len(events) < 3 {
 		t.Fatalf("expected content/content/done events, got %d", len(events))
@@ -320,7 +358,7 @@ func TestAdapterStreamReasoningAndToolCalls(t *testing.T) {
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "gpt-5.4",
+		Model: "gpt-6.2-sol",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "weather in Paris")},
 	})
 	if err != nil {
@@ -384,7 +422,7 @@ func TestAdapterErrorHandling(t *testing.T) {
 	adapter.client = server.Client()
 
 	_, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "bad-key"}, aiprovider.StreamRequest{
-		Model: "gpt-5.4",
+		Model: "gpt-6.2-sol",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err == nil {
@@ -413,7 +451,7 @@ func TestAdapterContextCancellation(t *testing.T) {
 	cancel()
 
 	_, err := adapter.Stream(ctx, aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "gpt-5.4",
+		Model: "gpt-6.2-sol",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err == nil {
@@ -431,4 +469,43 @@ func collectEvents(stream <-chan domain.ProviderEvent) []domain.ProviderEvent {
 	}
 
 	return events
+}
+func TestReadResponsesStream_ReportsFailures(t *testing.T) {
+	const start = "data: {\"type\":\"response.created\",\"response\":{\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_123\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hel\"}\n\n"
+
+	tests := []struct {
+		name    string
+		sse     string
+		wantErr string
+	}{
+		{
+			name:    "stream closes before response.completed",
+			sse:     start,
+			wantErr: "OpenAI response stream ended before the response finished",
+		},
+		{
+			name:    "unreadable event",
+			sse:     start + "data: {\"type\":\"response.output_text.delta\",\n\n",
+			wantErr: "OpenAI sent a response event that could not be read",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ch := make(chan domain.ProviderEvent, 64)
+			go readResponsesStream(io.NopCloser(strings.NewReader(tt.sse)), ch)
+			events := collectEvents(ch)
+
+			last := events[len(events)-1]
+			if last.Err == nil || last.Err.Error() != tt.wantErr {
+				t.Fatalf("expected final error %q, got %+v", tt.wantErr, last)
+			}
+			for _, event := range events {
+				if event.Done {
+					t.Fatal("a failed stream must not report Done")
+				}
+			}
+		})
+	}
 }

@@ -1,87 +1,11 @@
+/* Colours live in themes.css; these tokens are the same in every theme. */
 :root {
-  /* Gruvbox dark palette */
-  --gruvbox-bg0-hard: #1d2021;
-  --gruvbox-bg0: #282828;
-  --gruvbox-bg0-soft: #32302f;
-  --gruvbox-bg1: #3c3836;
-  --gruvbox-bg2: #504945;
-  --gruvbox-bg3: #665c54;
-  --gruvbox-bg4: #7c6f64;
-  --gruvbox-fg0: #fbf1c7;
-  --gruvbox-fg1: #ebdbb2;
-  --gruvbox-fg2: #d5c4a1;
-  --gruvbox-fg3: #bdae93;
-  --gruvbox-fg4: #a89984;
-  --gruvbox-gray: #928374;
-  --gruvbox-red: #fb4934;
-  --gruvbox-green: #b8bb26;
-  --gruvbox-yellow: #fabd2f;
-  --gruvbox-blue: #83a598;
-  --gruvbox-purple: #d3869b;
-  --gruvbox-aqua: #8ec07c;
-  --gruvbox-orange: #fe8019;
-
-  /* Surfaces */
-  --bg-void: var(--gruvbox-bg0-hard);
-  --bg-base: var(--gruvbox-bg0);
-  --bg-elevated: var(--gruvbox-bg0-soft);
-  --bg-raised: var(--gruvbox-bg1);
-  --bg-hover: rgba(235, 219, 178, 0.07);
-  --bg-selected: rgba(250, 189, 47, 0.13);
-  --bg-overlay: rgba(29, 32, 33, 0.74);
-  --bg-neutral: rgba(168, 153, 132, 0.13);
-  --ide-surface-bg: var(--bg-void);
-  --ide-panel-bg: var(--bg-base);
-  --ide-header-bg: var(--bg-elevated);
-  --ide-header-icon: var(--accent);
   --ide-header-title-size: 0.76rem;
-
-  /* Borders */
-  --border-hairline: rgba(235, 219, 178, 0.06);
-  --border-subtle: rgba(235, 219, 178, 0.1);
-  --border-strong: rgba(235, 219, 178, 0.18);
-  --border-top-highlight: rgba(251, 241, 199, 0.08);
-
-  /* Text */
-  --text-primary: var(--gruvbox-fg1);
-  --text-secondary: var(--gruvbox-fg3);
-  --text-tertiary: var(--gruvbox-fg4);
-  --text-dim: var(--gruvbox-bg4);
-  --text-on-accent: var(--gruvbox-bg0-hard);
-  --text-decoration-muted: rgba(235, 219, 178, 0.18);
-
-  /* Accent */
-  --accent: var(--gruvbox-yellow);
-  --accent-dim: #d79921;
-  --accent-glow: rgba(250, 189, 47, 0.14);
-  --accent-border: rgba(250, 189, 47, 0.34);
-
-  /* Semantic */
-  --success: var(--gruvbox-green);
-  --warning: var(--gruvbox-yellow);
-  --error: var(--gruvbox-red);
-
-  /* Semantic tints — for filled backgrounds and borders */
-  --error-bg: rgba(251, 73, 52, 0.12);
-  --error-border: rgba(251, 73, 52, 0.28);
-  --success-bg: rgba(184, 187, 38, 0.12);
-  --success-border: rgba(184, 187, 38, 0.28);
-  --warning-bg: rgba(250, 189, 47, 0.12);
-  --warning-border: rgba(250, 189, 47, 0.28);
-
-  /* Effects */
-  --shadow-strong: 0 16px 48px rgba(29, 32, 33, 0.55);
-  --shadow-popover: 0 4px 16px rgba(29, 32, 33, 0.48);
-  --spinner-track: rgba(235, 219, 178, 0.3);
-  --qr-bg: var(--gruvbox-fg0);
 
   /* Typography */
   --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'Geist Mono', 'JetBrains Mono', Menlo, monospace;
   --font-terminal: ui-monospace, 'SFMono-Regular', Menlo, Monaco, 'Cascadia Mono', 'DejaVu Sans Mono', 'Liberation Mono', Consolas, 'Courier New', monospace;
-
-  /* Terminal */
-  --terminal-bg: var(--gruvbox-bg0-hard);
 
   /* Spacing */
   --space-1: 4px;
@@ -92,6 +16,10 @@
   --space-6: 24px;
   --space-8: 32px;
 
+  /* The project's bottom tab bar on a phone, above the safe-area inset that
+     #app already pads. */
+  --mobile-tabbar-height: 56px;
+
   /* Radius */
   --radius-sm: 3px;
   --radius-md: 5px;
@@ -101,21 +29,6 @@
   /* Transitions */
   --transition-fast: 150ms ease;
   --transition-normal: 200ms ease;
-
-  /* Backward-compat aliases — resolve to new tokens */
-  --bg-primary: var(--bg-base);
-  --bg-secondary: var(--bg-void);
-  --bg-tertiary: var(--bg-elevated);
-  --bg-surface: var(--bg-elevated);
-  --bg-surface-alt: var(--bg-raised);
-  --accent-blue: var(--gruvbox-blue);
-  --accent-purple: var(--gruvbox-purple);
-  --accent-green: var(--success);
-  --accent-amber: var(--warning);
-  --accent-rose: var(--error);
-  --text-muted: var(--text-tertiary);
-  --border-default: var(--border-subtle);
-  --border-active: var(--border-strong);
 }
 
 *,
@@ -141,8 +54,10 @@ body {
 
 #app {
   height: 100%;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
 a {
@@ -152,10 +67,16 @@ a {
 }
 
 a:hover {
-  color: color-mix(in srgb, var(--accent) 80%, var(--gruvbox-fg0));
+  color: color-mix(in srgb, var(--accent) 80%, var(--fill-hover-mix));
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 button {
+  -webkit-tap-highlight-color: transparent;
   font-family: inherit;
   cursor: pointer;
   border: none;
@@ -171,6 +92,13 @@ pre {
 :focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--accent-glow), 0 0 0 1px var(--accent-border);
+}
+
+/* Text fields show focus with their own border colour; the yellow ring on top
+   of a blue border reads as a gradient. :where keeps this as weak as the rule
+   above, so a field that styles its own focus shadow still gets it. */
+:where(input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']), textarea, select):focus-visible {
+  box-shadow: none;
 }
 
 ::selection {
@@ -193,4 +121,64 @@ pre {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
+}
+
+/* Shared spinner rotation; components reference it as `animation: spin ...`. */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/*
+ * Shared modal overlay. Auto margins center the dialog when it fits and let the
+ * overlay scroll from the top when it doesn't (e.g. a short phone viewport).
+ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  padding: var(--space-4);
+  overflow-y: auto;
+  background: var(--bg-overlay);
+}
+
+.modal-overlay > .modal {
+  margin: auto;
+}
+
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts. On a phone a dialog is a
+   full-screen sheet; short confirmations stay centred. The extra `body` beats
+   each dialog's own scoped sizing. */
+@media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  /* The overlay is fixed, so #app's safe-area padding doesn't reach it. */
+  .modal-overlay:has(> .modal:not([role='alertdialog'])) {
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  /* Without the auto margin the overlay's flex row would stretch the sheet to
+     exactly its height, and a dialog's own `overflow: hidden` would clip what
+     runs past the screen instead of letting the overlay scroll to it. */
+  body .modal-overlay > .modal:not([role='alertdialog']) {
+    align-self: flex-start;
+    width: 100%;
+    max-width: none;
+    min-height: 100%;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+  }
+
+  body .modal-overlay .modal-close {
+    min-width: 40px;
+    min-height: 40px;
+  }
+}
+
+/* Touch devices: iOS zooms the page when focusing a field under 16px. */
+@media (pointer: coarse) {
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
 }

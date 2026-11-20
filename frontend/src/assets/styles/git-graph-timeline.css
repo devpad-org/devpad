@@ -135,8 +135,7 @@
   background: radial-gradient(circle, var(--accent-glow), transparent 72%);
 }
 
-.graph-loader,
-.spinning {
+.graph-loader {
   animation: spin 0.8s linear infinite;
 }
 
@@ -147,10 +146,6 @@
 
 .graph-empty p {
   max-width: 420px;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
 }
 
 /* Ghost / uncommitted working-tree row */

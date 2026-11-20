@@ -9,13 +9,12 @@ import (
 
 // LifecycleService defines workspace lifecycle and CRUD operations.
 type LifecycleService interface {
-	Create(ctx context.Context, userID int64, name, description string) (*Workspace, error)
 	List(ctx context.Context, userID int64) ([]*Workspace, error)
-	Update(ctx context.Context, userID, workspaceID int64, name, description string) (*Workspace, error)
 	SetDefaultAgent(ctx context.Context, userID, workspaceID int64, agentID string) (*Workspace, error)
 	Delete(ctx context.Context, userID, workspaceID int64) error
 	Start(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
 	Stop(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
+	Restart(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
 }
 
 // AccessService checks workspace access and ownership.
@@ -23,10 +22,17 @@ type AccessService interface {
 	Get(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
 }
 
+// RunChecker checks a workspace can take an agent run.
+type RunChecker interface {
+	// CheckRunning fails unless the workspace is the user's and running.
+	CheckRunning(ctx context.Context, userID, workspaceID int64) error
+}
+
 // AdminService defines workspace operations used by admin workflows.
 type AdminService interface {
 	ListAll(ctx context.Context) ([]*Workspace, error)
 	UpdateResourceLimits(ctx context.Context, workspaceID, memoryLimit, nanoCPUs int64) (*Workspace, error)
+	GitIdentitySyncer
 }
 
 // FileContentService defines workspace file content operations.
@@ -99,9 +105,87 @@ type InfoService interface {
 	Info(ctx context.Context, userID, workspaceID int64) (*WorkspaceInfo, error)
 }
 
+// SandboxService defines project sandbox creation and branch transfer. The
+// project service uses it to seed sandboxes and collect their work.
+type SandboxService interface {
+	CreateSandbox(ctx context.Context, userID int64, spec SandboxSpec) (*Workspace, error)
+	ListByProject(ctx context.Context, userID, projectID int64) ([]*Workspace, error)
+	SeedSandboxRepo(ctx context.Context, userID, workspaceID int64, base string, bundle io.Reader) (*agent.RepoBranch, error)
+	BundleSandboxBranch(ctx context.Context, userID, workspaceID int64) (branch string, bundle io.ReadCloser, err error)
+	FetchSandboxBase(ctx context.Context, userID, workspaceID int64, branch string, bundle io.Reader) (*agent.RepoBranch, error)
+	StartSandbox(ctx context.Context, userID, workspaceID int64) (*Workspace, error)
+}
+
+// ProjectWorkspaceService defines a project's own interactive workspace and
+// the branch transfers devpad drives for it. Seeding and base refreshes go
+// through SandboxService, which serves both.
+type ProjectWorkspaceService interface {
+	CreateProjectWorkspace(ctx context.Context, userID int64, spec ProjectWorkspaceSpec) (*Workspace, error)
+	CheckoutProjectBranch(ctx context.Context, userID, workspaceID int64, branch string, bundle io.Reader) (*agent.RepoCheckout, error)
+	BundleProjectBranch(ctx context.Context, userID, workspaceID int64, branch string) (io.ReadCloser, error)
+	ProjectBranchStatus(ctx context.Context, userID, workspaceID int64, branch string) (*agent.RepoBranchStatus, error)
+	FetchProjectBranches(ctx context.Context, userID, workspaceID int64, branches []string, bundle io.Reader) ([]agent.RepoBranch, error)
+	// FetchProjectUpstreamBranches refreshes origin/<branch> in a project
+	// workspace for each branch, from one bundle of the upstream's copies.
+	FetchProjectUpstreamBranches(ctx context.Context, userID, workspaceID int64, branches []string, bundle io.Reader) ([]agent.RepoBranch, error)
+	// RebuildProjectContainer replaces the workspace's container with one
+	// made from image, keeping /workspace.
+	RebuildProjectContainer(ctx context.Context, userID, workspaceID int64, image string) (*Workspace, error)
+}
+
+// GitBridgeService carries git-remote-devpad's requests out of a project
+// workspace for devpad to answer. Only a project's own workspace is served.
+type GitBridgeService interface {
+	GitBridgeAgent(ctx context.Context, userID, workspaceID int64) (*Workspace, GitBridgeAgent, error)
+}
+
+// ConversionService turns a standalone workspace into a project's
+// workspace. The project service drives it: it reads the workspace's repos,
+// moves their branches into a new canonical repo, then attaches the
+// workspace to the project.
+type ConversionService interface {
+	DiscoverRepos(ctx context.Context, userID, workspaceID int64) (*agent.RepoDiscovery, error)
+	BeginConversion(ctx context.Context, userID, workspaceID int64) (release func(), err error)
+	InitRepoFromContents(ctx context.Context, userID, workspaceID int64, branch string, includeSensitive bool) (*agent.RepoContentsInit, error)
+	UndoInitRepoFromContents(ctx context.Context, userID, workspaceID int64, sha string) error
+	BundleAllBranches(ctx context.Context, userID, workspaceID int64, dir string) (io.ReadCloser, error)
+	AttachToProject(ctx context.Context, userID, workspaceID, projectID int64, strip []string) (*AttachResult, error)
+	RestartConverted(ctx context.Context, userID, workspaceID int64) error
+}
+
+// ServiceEnvSyncer sends a running workspace's agent the variables of the
+// services it has, for the processes it starts from then on.
+type ServiceEnvSyncer interface {
+	SyncServiceEnv(ctx context.Context, userID, workspaceID int64) error
+}
+
+// ProjectServiceProvisioner gives a project workspace the services its
+// project has and it lacks.
+type ProjectServiceProvisioner interface {
+	ProvisionProjectServices(ctx context.Context, userID, workspaceID int64) error
+}
+
+// GitIdentitySyncer applies a user's git identity to their running workspaces.
+type GitIdentitySyncer interface {
+	// SyncGitIdentity returns how many workspaces it updated, and whether
+	// it reached every one it should have.
+	SyncGitIdentity(ctx context.Context, userID int64) (updated int, complete bool)
+}
+
 // SidecarBinder injects the sidecar service lifecycle dependency.
 type SidecarBinder interface {
 	SetSidecarService(sidecar SidecarService)
+}
+
+// StartHook is told each time a workspace's container has started, once its
+// agent and services have been started with it.
+type StartHook interface {
+	WorkspaceStarted(ctx context.Context, ws *Workspace)
+}
+
+// StartHookBinder registers the StartHook.
+type StartHookBinder interface {
+	SetStartHook(h StartHook)
 }
 
 // Service is the full workspace capability set implemented by the concrete
@@ -110,6 +194,7 @@ type SidecarBinder interface {
 type Service interface {
 	LifecycleService
 	AccessService
+	RunChecker
 	AdminService
 	FileService
 	CommandService
@@ -117,7 +202,15 @@ type Service interface {
 	GitService
 	AgentResolver
 	InfoService
+	SandboxService
+	ProjectWorkspaceService
+	GitBridgeService
+	ConversionService
+	ServiceEnvSyncer
+	GitIdentitySyncer
+	ProjectServiceProvisioner
 	SidecarBinder
+	StartHookBinder
 }
 
 // HandlerService is the workspace HTTP handler's required service surface.

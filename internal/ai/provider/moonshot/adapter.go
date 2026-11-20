@@ -3,6 +3,7 @@ package moonshot
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	aiprovider "github.com/devpad-org/devpad/internal/ai/provider"
@@ -13,7 +14,24 @@ const (
 	providerID   = "moonshot"
 	providerName = "Moonshot AI"
 	baseURL      = "https://api.moonshot.ai/v1"
+
+	k3ModelID     = "kimi-k3"
+	k31ProModelID = "kimi-k3.1-pro"
+
+	// K3-series models always reason, at the effort set by a top-level
+	// reasoning_effort field.
+	defaultReasoningEffort = "max"
 )
+
+// k3Thinking is the reasoning every K3-series model has: always on, with
+// low, high or max effort.
+var k3Thinking = domain.ThinkingCapability{
+	Supported:        true,
+	EnabledByDefault: true,
+	CanDisable:       false,
+	SupportedEfforts: []string{"low", "high", "max"},
+	DefaultEffort:    defaultReasoningEffort,
+}
 
 // Adapter streams chat completions from Moonshot's Kimi API.
 type Adapter struct {
@@ -22,24 +40,26 @@ type Adapter struct {
 }
 
 type chatRequest struct {
-	Model    string                  `json:"model"`
-	Messages []message               `json:"messages"`
-	Stream   bool                    `json:"stream"`
-	Tools    []domain.ToolDefinition `json:"tools,omitempty"`
-	Thinking *thinking               `json:"thinking,omitempty"`
+	Model           string                  `json:"model"`
+	Messages        []message               `json:"messages"`
+	Stream          bool                    `json:"stream"`
+	Tools           []domain.ToolDefinition `json:"tools,omitempty"`
+	ReasoningEffort string                  `json:"reasoning_effort,omitempty"`
+	StreamOptions   *streamOptions          `json:"stream_options,omitempty"`
+}
+
+// streamOptions asks for the request's usage in a final chunk, which Moonshot
+// leaves out of the stream by default.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type message struct {
 	Role             string            `json:"role"`
-	Content          string            `json:"content"`
+	Content          any               `json:"content"` // a string, or content parts with images
 	ToolCalls        []domain.ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string            `json:"tool_call_id,omitempty"`
 	ReasoningContent *string           `json:"reasoning_content,omitempty"`
-}
-
-type thinking struct {
-	Type string `json:"type"`
-	Keep string `json:"keep,omitempty"`
 }
 
 // NewAdapter creates a new Moonshot adapter.
@@ -58,26 +78,26 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 }
 
 func (a *Adapter) Models() []domain.Model {
+	// Prices are USD per million tokens from
+	// https://platform.kimi.ai/docs/pricing/chat (November 2026). Caching is
+	// automatic with a 5-minute TTL, and K3-series models bill cache writes at
+	// the 5-minute rate.
 	return []domain.Model{
 		{
-			ID:         "kimi-k2.7-code",
-			Name:       "Kimi K2.7 Code",
+			ID:         k31ProModelID,
+			Name:       "Kimi K3.1 Pro",
 			ProviderID: providerID,
-			Thinking: domain.ThinkingCapability{
-				Supported:        true,
-				EnabledByDefault: true,
-				CanDisable:       false,
-			},
+			Vision:     true,
+			Thinking:   k3Thinking,
+			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 2, Output: 10, CacheRead: 0.20, CacheWrite: 2}},
 		},
 		{
-			ID:         "kimi-k2.6",
-			Name:       "Kimi K2.6",
+			ID:         k3ModelID,
+			Name:       "Kimi K3",
 			ProviderID: providerID,
-			Thinking: domain.ThinkingCapability{
-				Supported:        true,
-				EnabledByDefault: true,
-				CanDisable:       true,
-			},
+			Vision:     true,
+			Thinking:   k3Thinking,
+			Pricing:    &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 3, Output: 15, CacheRead: 0.30, CacheWrite: 3}},
 		},
 	}
 }
@@ -85,16 +105,29 @@ func (a *Adapter) Models() []domain.Model {
 func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req aiprovider.StreamRequest) (<-chan domain.ProviderEvent, error) {
 	model, _ := domain.ModelByID(a.Models(), req.Model)
 	body := buildChatRequest(req, model)
-	return shared.StartStreamRequest(ctx, a.client, a.baseURL+"/chat/completions", creds.APIKey, providerID, body, shared.ReadSSEStream)
+	return shared.StartStreamRequest(ctx, a.client, a.baseURL+"/chat/completions", creds.APIKey, providerID, body, shared.ChatStreamDecoder(providerName))
 }
 
 func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequest {
 	thinkingEnabled := domain.ThinkingEnabledForRequest(model, domain.ChatRequest{Model: req.Model, Turns: req.Turns, Thinking: req.Thinking})
+	// Models that cannot turn thinking off always expect their reasoning
+	// history back; K3-series models degrade badly without it.
+	preserveReasoning := model.Thinking.Supported && (thinkingEnabled || !model.Thinking.CanDisable)
 	messages := make([]message, 0, len(req.Turns))
+	// Images tools returned go in a user message after the run of tool
+	// messages, which must directly follow the assistant's tool calls.
+	var toolImages []domain.ToolResultPart
+	flushToolImages := func() {
+		if content, ok := shared.ToolImagesContent(toolImages, shared.ImageURLObject); ok {
+			messages = append(messages, message{Role: "user", Content: content})
+		}
+		toolImages = nil
+	}
 	for _, turn := range req.Turns {
 		if turn.Role == domain.RoleUser {
 			toolResults := turn.ToolResults()
 			if len(toolResults) > 0 {
+				toolImages = append(toolImages, toolResults...)
 				for _, result := range toolResults {
 					messages = append(messages, message{
 						Role:       "tool",
@@ -109,14 +142,15 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 			}
 		}
 
+		flushToolImages()
 		moonshotMsg := message{
 			Role:      string(turn.Role),
-			Content:   turn.Text(),
+			Content:   shared.ChatContent(turn.Text(), turn.Images(), shared.ImageURLObject),
 			ToolCalls: turn.ToolCalls(),
 		}
 
 		thinkingText := turn.ThinkingText()
-		if thinkingEnabled {
+		if preserveReasoning {
 			switch {
 			case thinkingText != "":
 				reasoningContent := thinkingText
@@ -129,25 +163,31 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 
 		messages = append(messages, moonshotMsg)
 	}
+	flushToolImages()
 
 	body := chatRequest{
-		Model:    req.Model,
-		Messages: messages,
-		Stream:   true,
-		Tools:    req.Tools,
+		Model:         req.Model,
+		Messages:      messages,
+		Stream:        true,
+		Tools:         req.Tools,
+		StreamOptions: &streamOptions{IncludeUsage: true},
 	}
 	if model.Thinking.Supported {
-		cfg := &thinking{}
-		if thinkingEnabled {
-			cfg.Type = "enabled"
-			cfg.Keep = "all"
-		} else if model.Thinking.CanDisable {
-			cfg.Type = "disabled"
-		}
-		if cfg.Type != "" {
-			body.Thinking = cfg
-		}
+		body.ReasoningEffort = requestedReasoningEffort(model, req.Thinking)
 	}
 
 	return body
+}
+
+func requestedReasoningEffort(model domain.Model, thinkingCfg *domain.ThinkingConfig) string {
+	if thinkingCfg != nil {
+		if effort := strings.TrimSpace(thinkingCfg.Effort); effort != "" {
+			return effort
+		}
+	}
+	if model.Thinking.DefaultEffort != "" {
+		return model.Thinking.DefaultEffort
+	}
+
+	return defaultReasoningEffort
 }

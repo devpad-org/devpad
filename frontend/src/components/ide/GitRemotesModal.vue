@@ -396,16 +396,6 @@ async function saveRename(oldName: string) {
 </template>
 
 <style scoped>
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
 .modal {
   background: var(--bg-surface);
   border: 0.5px solid var(--border-default);
@@ -486,10 +476,6 @@ async function saveRename(oldName: string) {
   border-top-color: var(--accent-blue);
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
 }
 
 /* Empty state */
@@ -753,12 +739,12 @@ async function saveRename(oldName: string) {
 }
 
 .btn-confirm {
-  background: var(--accent-blue);
-  color: var(--bg-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
 }
 
 .btn-confirm:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
 }
 
 /* Transitions */
@@ -783,5 +769,11 @@ async function saveRename(oldName: string) {
 
 .remotes-modal-leave-to .modal {
   transform: scale(0.95);
+}
+
+@media (hover: none) {
+  .remote-actions {
+    opacity: 1;
+  }
 }
 </style>

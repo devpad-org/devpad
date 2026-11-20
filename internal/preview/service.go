@@ -13,8 +13,10 @@ import (
 
 const tokenTTL = 30 * time.Second
 
-// PreviewCookieName is the cookie set on the preview domain after token exchange.
-const PreviewCookieName = "devpad_preview"
+// PreviewCookieName is the cookie a preview's host sets after token exchange.
+// The __Host- prefix makes browsers keep it to that one host, so each preview
+// has a sign-in of its own that no other preview can replace.
+const PreviewCookieName = "__Host-devpad_preview"
 
 // PreviewSessionDuration is how long a preview cookie remains valid.
 const PreviewSessionDuration = 24 * time.Hour
@@ -107,6 +109,12 @@ func (s *service) ResolveContainerAddr(ctx context.Context, workspaceID int64) (
 	}
 	if ws.ContainerID == "" || ws.Status != workspace.StatusRunning {
 		return "", "", ErrWorkspaceDown
+	}
+
+	// Previews are proxied to the container IP, so devpad must be on the
+	// workspace network. No-op when devpad runs on the host.
+	if err := s.container.EnsureSelfAttached(ctx, ws.NetworkName); err != nil {
+		return "", "", fmt.Errorf("joining workspace network: %w", err)
 	}
 
 	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)

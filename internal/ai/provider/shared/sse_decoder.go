@@ -3,24 +3,49 @@ package shared
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"io"
-	"log"
 	"strings"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
+// chatUsage is a chat completion's usage. prompt_tokens includes the cached
+// tokens and, where the provider reports them, the tokens written to its
+// cache. Moonshot also reports cached_tokens at the top level.
+type chatUsage struct {
+	PromptTokens        int64 `json:"prompt_tokens"`
+	CompletionTokens    int64 `json:"completion_tokens"`
+	CachedTokens        int64 `json:"cached_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens     int64 `json:"cached_tokens"`
+		CacheWriteTokens int64 `json:"cache_write_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// ChatStreamDecoder returns a decoder for an OpenAI-compatible chat completions
+// stream. provider names the provider in the errors the decoder reports.
+func ChatStreamDecoder(provider string) StreamDecoder {
+	return func(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
+		ReadSSEStream(provider, body, ch)
+	}
+}
+
 // ReadSSEStream reads an OpenAI-compatible SSE stream and emits normalized events.
-func ReadSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
+// A stream that is cut off, rejected, or unreadable ends with an error event
+// instead of Done, after the usage reported so far.
+func ReadSSEStream(provider string, body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	defer close(ch)
 	defer body.Close()
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
-	var toolCalls []domain.ToolCall
-	toolCallArgs := make(map[int]*strings.Builder)
+	var toolCalls ToolCallAccumulator
+	var usage *chatUsage
+	finished := false
+	// A finish reason that means the response is unusable. Reading goes on,
+	// since the usage it was billed for arrives after it.
+	var failure error
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -29,33 +54,45 @@ func ReadSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		}
 
 		data := strings.TrimPrefix(line, "data: ")
+		if data == "" {
+			continue
+		}
 		if data == "[DONE]" {
-			emitToolCalls(ch, toolCalls, toolCallArgs)
+			emitUsage(ch, usage)
+			if failure != nil {
+				ch <- domain.ProviderEvent{Err: failure}
+				return
+			}
+			toolCalls.Emit(ch)
 			ch <- domain.ProviderEvent{Done: true}
 			return
 		}
 
 		var chunk struct {
+			Usage   *chatUsage `json:"usage"`
 			Choices []struct {
 				Delta struct {
 					ReasoningContent string          `json:"reasoning_content"`
 					Content          json.RawMessage `json:"content"`
-					ToolCalls        []struct {
-						Index    int    `json:"index"`
-						ID       string `json:"id"`
-						Type     string `json:"type"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					} `json:"tool_calls"`
+					ToolCalls        []ToolCallDelta `json:"tool_calls"`
 				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
+			emitUsage(ch, usage)
+			ch <- domain.ProviderEvent{Err: MalformedEventError(provider, data, err)}
+			return
+		}
+		if chunk.Usage != nil {
+			usage = chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
+			if message, ok := ChatStreamErrorMessage([]byte(data)); ok {
+				emitUsage(ch, usage)
+				ch <- domain.ProviderEvent{Err: ProviderStreamError(provider, message)}
+				return
+			}
 			continue
 		}
 
@@ -77,62 +114,53 @@ func ReadSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			ch <- domain.ProviderEvent{TextDelta: textDelta}
 		}
 
-		for _, toolCall := range choice.Delta.ToolCalls {
-			index := toolCall.Index
-			if toolCall.ID != "" {
-				for len(toolCalls) <= index {
-					toolCalls = append(toolCalls, domain.ToolCall{})
-				}
+		for _, delta := range choice.Delta.ToolCalls {
+			toolCalls.Add(delta)
+		}
 
-				toolType := toolCall.Type
-				if toolType == "" {
-					toolType = "function"
-				}
-
-				toolCalls[index] = domain.ToolCall{
-					ID:   toolCall.ID,
-					Type: toolType,
-					Function: domain.ToolCallFunction{
-						Name: toolCall.Function.Name,
-					},
-				}
-				toolCallArgs[index] = &strings.Builder{}
-			}
-
-			if toolCall.Function.Arguments != "" {
-				if _, ok := toolCallArgs[index]; !ok {
-					toolCallArgs[index] = &strings.Builder{}
-				}
-				toolCallArgs[index].WriteString(toolCall.Function.Arguments)
+		if choice.FinishReason != "" {
+			if err := FinishReasonError(provider, choice.FinishReason); err != nil {
+				failure = err
+			} else {
+				finished = true
 			}
 		}
 	}
 
+	emitUsage(ch, usage)
 	if err := scanner.Err(); err != nil {
-		log.Printf("error reading SSE stream: %v", err)
-		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
+		ch <- domain.ProviderEvent{Err: ReadStreamError(provider, err)}
+		return
+	}
+	if failure != nil {
+		ch <- domain.ProviderEvent{Err: failure}
+		return
+	}
+	if !finished {
+		ch <- domain.ProviderEvent{Err: IncompleteStreamError(provider)}
 		return
 	}
 
-	emitToolCalls(ch, toolCalls, toolCallArgs)
+	toolCalls.Emit(ch)
 	ch <- domain.ProviderEvent{Done: true}
 }
 
-func emitToolCalls(ch chan<- domain.ProviderEvent, toolCalls []domain.ToolCall, toolCallArgs map[int]*strings.Builder) {
-	if len(toolCalls) == 0 {
+// emitUsage sends what the request was billed for, before any error or the
+// end of the stream.
+func emitUsage(ch chan<- domain.ProviderEvent, usage *chatUsage) {
+	if usage == nil {
 		return
 	}
-
-	finalCalls := make([]domain.ToolCall, len(toolCalls))
-	copy(finalCalls, toolCalls)
-	for index, toolCall := range finalCalls {
-		if builder, ok := toolCallArgs[index]; ok {
-			toolCall.Function.Arguments = builder.String()
-			finalCalls[index] = toolCall
-		}
+	cached := usage.PromptTokensDetails.CachedTokens
+	if cached == 0 {
+		cached = usage.CachedTokens
 	}
-
-	ch <- domain.ProviderEvent{ToolCalls: finalCalls}
+	ch <- domain.ProviderEvent{Usage: ReportedUsage{
+		PromptTokens:     usage.PromptTokens,
+		CachedTokens:     cached,
+		CacheWriteTokens: usage.PromptTokensDetails.CacheWriteTokens,
+		OutputTokens:     usage.CompletionTokens,
+	}.Billed()}
 }
 
 type contentChunk struct {

@@ -79,16 +79,6 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
 .modal {
   background: var(--bg-surface);
   border: 0.5px solid var(--border-default);
@@ -123,7 +113,7 @@ const emit = defineEmits<{
 
 .modal-icon.default {
   background: var(--accent-glow);
-  color: var(--accent-blue);
+  color: var(--accent);
 }
 
 .modal-title {
@@ -174,16 +164,16 @@ const emit = defineEmits<{
 }
 
 .btn-confirm.danger:hover {
-  background: color-mix(in srgb, var(--accent-rose) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent-rose) 85%, var(--fill-hover-mix));
 }
 
 .btn-confirm.default {
-  background: var(--accent-blue);
-  color: var(--bg-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
 }
 
 .btn-confirm.default:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
 }
 
 .btn:disabled {
@@ -204,12 +194,6 @@ const emit = defineEmits<{
   border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 /* Transition */

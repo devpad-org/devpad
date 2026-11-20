@@ -34,6 +34,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 		totp_enabled BOOLEAN NOT NULL DEFAULT 0,
 		ssh_public_key TEXT NOT NULL DEFAULT '',
 		ssh_private_key TEXT NOT NULL DEFAULT '',
+		git_name TEXT NOT NULL DEFAULT '',
+		git_email TEXT NOT NULL DEFAULT '',
+		git_identity_saved BOOLEAN NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -53,10 +56,17 @@ func setupTestDB(t *testing.T) *sql.DB {
 // mockWorkspaceService is a minimal mock for workspace.AdminService used by admin tests.
 type mockWorkspaceService struct {
 	workspaces []*workspace.Workspace
+	// identitySyncs records whose git identity was synced.
+	identitySyncs []int64
 }
 
 func newMockWorkspaceService() *mockWorkspaceService {
 	return &mockWorkspaceService{}
+}
+
+func (m *mockWorkspaceService) SyncGitIdentity(_ context.Context, userID int64) (int, bool) {
+	m.identitySyncs = append(m.identitySyncs, userID)
+	return 0, true
 }
 
 func (m *mockWorkspaceService) ListAll(_ context.Context) ([]*workspace.Workspace, error) {
@@ -154,6 +164,46 @@ func TestService_UpdateUser(t *testing.T) {
 	}
 	if updated.Email != "new@test.com" {
 		t.Errorf("expected email 'new@test.com', got %q", updated.Email)
+	}
+}
+
+func TestService_UpdateUser_SyncsGitIdentityThatFollowsTheAccount(t *testing.T) {
+	const name, email = "admin", "admin@test.com"
+	tests := []struct {
+		name             string
+		saved            bool
+		gitName          string
+		gitEmail         string
+		newName          string
+		newEmail         string
+		wantIdentitySync bool
+	}{
+		{"email followed and changed", true, "Ada", "", name, "new@test.com", true},
+		{"username followed and changed", true, "", "ada@example.com", "renamed", email, true},
+		{"own values cover the change", true, "Ada", "ada@example.com", "renamed", "new@test.com", false},
+		{"nothing relevant changed", true, "", "", name, email, false},
+		{"never saved", false, "", "", "renamed", "new@test.com", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users := auth.NewUserRepository(setupTestDB(t))
+			workspaces := newMockWorkspaceService()
+			svc := NewService(users, workspaces)
+			ctx := context.Background()
+			user := seedAdmin(t, svc, ctx)
+			if tt.saved {
+				if err := users.SetGitIdentity(ctx, user.ID, tt.gitName, tt.gitEmail); err != nil {
+					t.Fatalf("saving git identity: %v", err)
+				}
+			}
+
+			if _, err := svc.UpdateUser(ctx, user.ID, tt.newName, tt.newEmail, true); err != nil {
+				t.Fatalf("UpdateUser: %v", err)
+			}
+			if got := len(workspaces.identitySyncs) == 1; got != tt.wantIdentitySync {
+				t.Fatalf("identity syncs = %v, want a sync: %v", workspaces.identitySyncs, tt.wantIdentitySync)
+			}
+		})
 	}
 }
 
@@ -299,6 +349,9 @@ func TestHandler_CreateUser_Validation(t *testing.T) {
 		{"empty body", `{}`, http.StatusBadRequest},
 		{"missing password", `{"username":"a","email":"a@b.com"}`, http.StatusBadRequest},
 		{"short password", `{"username":"a","email":"a@b.com","password":"short"}`, http.StatusBadRequest},
+		{"long password", `{"username":"a","email":"a@b.com","password":"` + strings.Repeat("x", 73) + `"}`, http.StatusBadRequest},
+		{"username like a flag", `{"username":"-a","email":"a@b.com","password":"password123"}`, http.StatusBadRequest},
+		{"invalid email", `{"username":"a","email":"a.b.com","password":"password123"}`, http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {
@@ -311,6 +364,60 @@ func TestHandler_CreateUser_Validation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandler_UpdateUser_Validation(t *testing.T) {
+	handler, svc, _ := setupTestHandler(t)
+	ctx := context.Background()
+	admin := seedAdmin(t, svc, ctx)
+	alice, err := svc.CreateUser(ctx, "alice", "alice@test.com", "password123", false)
+	if err != nil {
+		t.Fatalf("creating alice: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		body   string
+		status int
+	}{
+		{"blank username", `{"username":" ","email":"alice@test.com"}`, http.StatusBadRequest},
+		{"username like a flag", `{"username":"-alice","email":"alice@test.com"}`, http.StatusBadRequest},
+		{"invalid email", `{"username":"alice","email":"alice"}`, http.StatusBadRequest},
+		{"taken username", `{"username":"admin","email":"alice@test.com"}`, http.StatusConflict},
+		{"taken email", `{"username":"alice","email":"admin@test.com"}`, http.StatusConflict},
+		{"trimmed", `{"username":" alicia ","email":" alicia@test.com "}`, http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "/api/admin/users/"+fmt.Sprint(alice.ID), strings.NewReader(tt.body))
+			req.SetPathValue("id", fmt.Sprint(alice.ID))
+			req = withAdminContext(req, admin)
+			rec := httptest.NewRecorder()
+			handler.HandleUpdateUser(rec, req)
+			if rec.Code != tt.status {
+				t.Errorf("expected status %d, got %d: %s", tt.status, rec.Code, rec.Body.String())
+			}
+		})
+	}
+	if got, want := identityOf(t, svc, alice.ID), "alicia alicia@test.com"; got != want {
+		t.Errorf("after the trimmed update: got %q, want %q", got, want)
+	}
+}
+
+// identityOf returns the user's username and email, separated by a space.
+func identityOf(t *testing.T, svc Service, id int64) string {
+	t.Helper()
+	users, err := svc.ListUsers(context.Background())
+	if err != nil {
+		t.Fatalf("listing users: %v", err)
+	}
+	for _, u := range users {
+		if u.ID == id {
+			return u.Username + " " + u.Email
+		}
+	}
+	t.Fatalf("user %d not found", id)
+	return ""
 }
 
 func TestHandler_DeleteUser_SelfProtection(t *testing.T) {

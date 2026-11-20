@@ -1,13 +1,13 @@
 .git-graph-panel {
-  --ide-header-icon: var(--accent-purple);
-  --graph-primary: var(--accent-blue);
-  --graph-secondary: var(--accent-purple);
-  --graph-tertiary: var(--accent-green);
+  --ide-header-icon: var(--hue-purple);
+  --graph-primary: var(--hue-blue);
+  --graph-secondary: var(--hue-purple);
+  --graph-tertiary: var(--success);
   --graph-lane-0: var(--graph-primary);
   --graph-lane-1: var(--graph-secondary);
   --graph-lane-2: var(--graph-tertiary);
-  --graph-lane-3: var(--accent-amber);
-  --graph-lane-4: var(--accent-rose);
+  --graph-lane-3: var(--warning);
+  --graph-lane-4: var(--error);
   --graph-lane-5: color-mix(in srgb, var(--graph-primary) 62%, var(--graph-secondary));
   height: 100%;
   overflow: hidden;
@@ -22,14 +22,13 @@
   gap: var(--space-3);
   height: 38px;
   padding: 0 var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
   background: var(--ide-header-bg);
   flex-shrink: 0;
 }
 
 .graph-title,
 .graph-stats,
-.refresh-btn,
 .commit-topline,
 .commit-meta {
   display: flex;
@@ -63,13 +62,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   padding-left: var(--space-2);
-  border-left: 0.5px solid var(--border-default);
+  border-left: 0.5px solid var(--border-subtle);
   color: var(--text-secondary);
 }
 
 .graph-stats {
   margin-left: auto;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .graph-stats span {
@@ -116,8 +115,8 @@
   height: 16px;
   padding: 0 4px;
   border-radius: 8px;
-  background: var(--accent-blue);
-  color: var(--bg-void);
+  background: var(--hue-blue);
+  color: var(--text-on-accent);
   font-size: 0.65rem;
   font-weight: 600;
   line-height: 16px;
@@ -143,7 +142,7 @@
   padding: 2px 10px;
   border: 0.5px solid var(--border-strong);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-blue) 10%, var(--bg-raised));
+  background: color-mix(in srgb, var(--hue-blue) 10%, var(--bg-raised));
   font-family: var(--font-mono);
   font-size: 0.72rem;
   line-height: 1.4;
@@ -156,7 +155,7 @@
 }
 
 .diff-path-pill--current {
-  border-color: color-mix(in srgb, var(--accent-blue) 34%, var(--border-strong));
+  border-color: color-mix(in srgb, var(--hue-blue) 34%, var(--border-strong));
   color: var(--text-primary);
 }
 
@@ -165,7 +164,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .diff-path-file {
@@ -179,19 +178,19 @@
 
 .diff-path-separator {
   flex-shrink: 0;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .diff-path-arrow {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .diff-layout-toggle[aria-pressed="true"] {
-  color: var(--accent-blue);
-  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .diff-layout-error {
@@ -199,7 +198,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--accent-rose);
+  color: var(--error);
   font-family: var(--font-mono);
   font-size: 0.7rem;
 }
@@ -246,7 +245,7 @@
   z-index: 50;
   min-width: 130px;
   background: var(--bg-elevated);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-popover);
   overflow: hidden;
@@ -269,23 +268,13 @@
   background: var(--bg-hover);
 }
 
-.refresh-btn {
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-md);
-  color: var(--text-muted);
-  transition: color var(--transition-fast), background var(--transition-fast);
-}
-
-.refresh-btn:hover:not(:disabled) {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.refresh-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
+.action-spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 
 .graph-shell {

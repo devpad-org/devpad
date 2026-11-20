@@ -2,6 +2,8 @@ package httptransport
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -169,6 +171,35 @@ func TestFromDomainTurns(t *testing.T) {
 	}
 }
 
+func TestFromDomainTurnsIncludesDisplayText(t *testing.T) {
+	typed := domain.NewTextTurn(domain.RoleUser, "Initialize this repository.")
+	typed.DisplayText = "/init"
+	dtos := FromDomainTurns([]domain.Turn{typed, domain.NewTextTurn(domain.RoleUser, "thanks")})
+
+	if dtos[0].DisplayText != "/init" || dtos[0].Parts[0].Text != "Initialize this repository." {
+		t.Fatalf("expected both the text and what was typed, got %+v", dtos[0])
+	}
+	encoded, err := json.Marshal(dtos[1])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "displayText") {
+		t.Fatalf("expected displayText to be omitted when empty, got %s", encoded)
+	}
+}
+
+func TestFromDomainTurnsEncodesEmptyPartsAsArray(t *testing.T) {
+	dtos := FromDomainTurns([]domain.Turn{{Role: domain.RoleAssistant}})
+
+	encoded, err := json.Marshal(dtos)
+	if err != nil {
+		t.Fatalf("marshal turn DTOs: %v", err)
+	}
+	if got, want := string(encoded), `[{"role":"assistant","parts":[]}]`; got != want {
+		t.Fatalf("expected %s, got %s", want, got)
+	}
+}
+
 func TestFromClientEvent(t *testing.T) {
 	event := domain.ClientEvent{
 		TextDelta:      "hello",
@@ -329,6 +360,15 @@ func TestAgentRunPromptPreview(t *testing.T) {
 			want: "next real prompt",
 		},
 		{
+			name: "prefers what the user typed",
+			turns: []domain.Turn{{
+				Role:        domain.RoleUser,
+				Parts:       []domain.Part{{Kind: domain.PartText, Text: "Initialize this repository for future AI coding agents."}},
+				DisplayText: "/init",
+			}},
+			want: "/init",
+		},
+		{
 			name:  "truncates long prompt",
 			turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, longPrompt)},
 			want:  "Please implement this very important feature with enough detail to exceed the preview limit so the run list remains com…",
@@ -347,5 +387,74 @@ func TestAgentRunPromptPreview(t *testing.T) {
 				t.Fatalf("expected %q, got %q", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestFromAgentRunSummaryIncludesUsage(t *testing.T) {
+	if dto := FromAgentRunSummary(&domain.AgentRun{ID: 1}); dto.Usage != nil {
+		t.Fatalf("expected no usage for a run without any, got %+v", dto.Usage)
+	}
+
+	cost := 0.42
+	dto := FromAgentRunSummary(&domain.AgentRun{ID: 1, Usage: domain.Usage{InputTokens: 10, OutputTokens: 2, CostUSD: &cost}})
+	raw, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal run: %v", err)
+	}
+	var decoded struct {
+		Usage map[string]any `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal run: %v", err)
+	}
+	if decoded.Usage["inputTokens"] != float64(10) || decoded.Usage["outputTokens"] != float64(2) || decoded.Usage["costUsd"] != 0.42 {
+		t.Fatalf("unexpected usage JSON: %s", raw)
+	}
+}
+
+func TestImagePartsRoundTripAsReferences(t *testing.T) {
+	ref := ImageRefDTO{AttachmentID: 5, MediaType: "image/png", Width: 30, Height: 20}
+	dtos := []TurnDTO{
+		{Role: "user", Parts: []PartDTO{{Kind: "image", Image: &ref}, {Kind: "text", Text: "look"}}},
+		{Role: "user", Parts: []PartDTO{{Kind: "tool_result", ToolResult: &ToolResultDTO{ToolCallID: "c", Name: "read_file", Content: "Image", Images: []ImageRefDTO{ref}}}}},
+	}
+
+	turns := ToDomainTurns(dtos)
+	if image := turns[0].Parts[0].Image; image == nil || image.AttachmentID != 5 || image.Width != 30 {
+		t.Fatalf("unexpected image part: %+v", turns[0].Parts[0])
+	}
+	if images := turns[1].ToolResult().Images; len(images) != 1 || images[0].AttachmentID != 5 {
+		t.Fatalf("unexpected tool result images: %+v", images)
+	}
+	if back := FromDomainTurns(turns); !reflect.DeepEqual(back, dtos) {
+		t.Fatalf("round trip = %#v, want %#v", back, dtos)
+	}
+}
+
+func TestImageDataIsNeverSerialized(t *testing.T) {
+	image := domain.ImagePart{AttachmentID: 5, MediaType: "image/png", Width: 1, Height: 1, Data: []byte("SECRET-PIXELS")}
+	// Run events and input turns are stored as JSON of the domain types.
+	for name, value := range map[string]any{
+		"event": domain.ClientEvent{ToolResult: &domain.ToolResultPart{ToolCallID: "c", Images: []domain.ImagePart{image}}},
+		"turns": []domain.Turn{{Role: domain.RoleUser, Parts: []domain.Part{domain.NewImagePart(image)}}},
+		"sse":   FromClientEvent(domain.ClientEvent{ToolResult: &domain.ToolResultPart{ToolCallID: "c", Images: []domain.ImagePart{image}}}),
+	} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("%s: encode: %v", name, err)
+		}
+		if strings.Contains(string(encoded), "SECRET-PIXELS") || strings.Contains(string(encoded), "U0VDUkVU") {
+			t.Fatalf("%s: image data serialized: %s", name, encoded)
+		}
+		if !strings.Contains(string(encoded), "5") {
+			t.Fatalf("%s: expected the attachment reference: %s", name, encoded)
+		}
+	}
+}
+
+func TestAgentRunPromptPreviewNamesAnImageOnlyPrompt(t *testing.T) {
+	turns := []domain.Turn{{Role: domain.RoleUser, Parts: []domain.Part{domain.NewImagePart(domain.ImagePart{AttachmentID: 1})}}}
+	if got := AgentRunPromptPreview(turns); got != "Image" {
+		t.Fatalf("preview = %q, want Image", got)
 	}
 }

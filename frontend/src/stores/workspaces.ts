@@ -6,37 +6,20 @@ export type TransitionState = 'starting' | 'stopping'
 
 export const useWorkspaceStore = defineStore('workspaces', () => {
   const workspaces = ref<Workspace[]>([])
-  const loading = ref(false)
   const error = ref<string | null>(null)
   const transitioning = reactive(new Map<number, TransitionState>())
 
+  // A failed fetch keeps the last list and reports the error until a fetch
+  // succeeds, so background polls don't flicker the page.
   async function fetchWorkspaces() {
-    loading.value = true
-    error.value = null
     try {
       const response = await workspaceApi.list()
       workspaces.value = response.workspaces
+      error.value = null
     } catch (e) {
-      error.value = 'Failed to load workspaces'
+      error.value = e instanceof Error ? e.message : 'Failed to load workspaces'
       throw e
-    } finally {
-      loading.value = false
     }
-  }
-
-  async function createWorkspace(name: string, description: string) {
-    const response = await workspaceApi.create(name, description)
-    workspaces.value.unshift(response.workspace)
-    return response.workspace
-  }
-
-  async function updateWorkspace(id: number, name: string, description: string) {
-    const response = await workspaceApi.update(id, name, description)
-    const index = workspaces.value.findIndex((w) => w.id === id)
-    if (index !== -1) {
-      workspaces.value[index] = response.workspace
-    }
-    return response.workspace
   }
 
   async function setDefaultAgent(id: number, agentId: string) {
@@ -83,12 +66,9 @@ export const useWorkspaceStore = defineStore('workspaces', () => {
 
   return {
     workspaces,
-    loading,
     error,
     transitioning,
     fetchWorkspaces,
-    createWorkspace,
-    updateWorkspace,
     setDefaultAgent,
     deleteWorkspace,
     startWorkspace,

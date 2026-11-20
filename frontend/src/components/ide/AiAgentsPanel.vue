@@ -59,7 +59,7 @@ function openCreateModal(): void {
 }
 
 function openEditModal(agent: AIAgent): void {
-  if (agent.isDefault) return
+  if (agent.isBuiltIn) return
   editingAgent.value = agent
   form.name = agent.name
   form.purpose = agent.purpose
@@ -94,7 +94,7 @@ async function saveAgent(): Promise<void> {
 }
 
 async function deleteEditingAgent(): Promise<void> {
-  if (!editingAgent.value || editingAgent.value.isDefault || saving.value) return
+  if (!editingAgent.value || editingAgent.value.isBuiltIn || saving.value) return
   saving.value = true
   const deleted = await store.deleteAgent(editingAgent.value.id)
   saving.value = false
@@ -147,7 +147,7 @@ async function deleteEditingAgent(): Promise<void> {
             <span class="agent-card-title">{{ agent.name }}</span>
             <span class="agent-card-purpose">{{ agent.purpose || 'Custom Devpad agent' }}</span>
             <span class="agent-card-scope">
-              {{ agent.id === props.defaultAgentId ? 'Default' : agent.isDefault ? 'Baked in' : agent.isGlobal ? 'Global' : 'Workspace' }}
+              {{ agent.id === props.defaultAgentId ? 'Default' : agent.isBuiltIn ? 'Built in' : agent.isGlobal ? 'Global' : 'Workspace' }}
             </span>
           </span>
         </button>
@@ -165,7 +165,7 @@ async function deleteEditingAgent(): Promise<void> {
           </svg>
         </button>
         <button
-          v-if="!agent.isDefault"
+          v-if="!agent.isBuiltIn"
           type="button"
           class="agent-edit"
           title="Edit agent"
@@ -180,8 +180,8 @@ async function deleteEditingAgent(): Promise<void> {
     </div>
 
     <Teleport to="body">
-      <div v-if="modalOpen" class="agent-modal-backdrop" @click.self="closeModal">
-        <form class="agent-modal" @submit.prevent="saveAgent">
+      <div v-if="modalOpen" class="modal-overlay" @click.self="closeModal">
+        <form class="modal agent-modal" @submit.prevent="saveAgent">
           <header class="agent-modal-header">
             <h3>{{ modalTitle }}</h3>
             <button type="button" class="agent-modal-close" @click="closeModal">×</button>
@@ -409,17 +409,6 @@ async function deleteEditingAgent(): Promise<void> {
   height: 24px;
 }
 
-.agent-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-4);
-  background: var(--bg-overlay);
-}
-
 .agent-modal {
   display: grid;
   gap: var(--space-3);
@@ -508,7 +497,7 @@ async function deleteEditingAgent(): Promise<void> {
 .agent-primary-btn {
   border: 0.5px solid var(--accent-border);
   background: var(--accent);
-  color: var(--bg-base);
+  color: var(--text-on-accent);
 }
 
 .agent-secondary-btn {

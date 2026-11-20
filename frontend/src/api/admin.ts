@@ -21,6 +21,20 @@ export interface AdminWorkspace {
   updatedAt: string
 }
 
+export interface AdminInvite {
+  id: number
+  isAdmin: boolean
+  invitedBy: string
+  expiresAt: string
+  createdAt: string
+  expired: boolean
+}
+
+/** A new invite carries its token this once; the server keeps only a hash. */
+export interface CreatedInvite extends AdminInvite {
+  token: string
+}
+
 interface UsersResponse {
   users: AdminUser[]
 }
@@ -56,6 +70,18 @@ export const adminApi = {
 
   deleteUser(id: number): Promise<void> {
     return apiClient.delete(`/api/admin/users/${id}`)
+  },
+
+  listInvites(): Promise<{ invites: AdminInvite[] }> {
+    return apiClient.get<{ invites: AdminInvite[] }>('/api/admin/invites')
+  },
+
+  createInvite(data: { isAdmin: boolean; validDays: number }): Promise<{ invite: CreatedInvite }> {
+    return apiClient.post<{ invite: CreatedInvite }>('/api/admin/invites', data)
+  },
+
+  revokeInvite(id: number): Promise<void> {
+    return apiClient.delete(`/api/admin/invites/${id}`)
   },
 
   listWorkspaces(): Promise<WorkspacesResponse> {

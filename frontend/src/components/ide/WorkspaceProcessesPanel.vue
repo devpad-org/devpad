@@ -119,12 +119,6 @@ onUnmounted(stopPolling)
         <span class="process-subtitle">Workspace container</span>
         <span v-if="processes.length > 0" class="process-count">{{ processes.length }}</span>
       </div>
-      <button class="refresh-btn" :disabled="loading" title="Refresh processes" aria-label="Refresh processes" @click="refresh">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ spinning: loading }" aria-hidden="true">
-          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
-          <path d="M21 3v5h-5" />
-        </svg>
-      </button>
     </header>
 
     <div v-if="error" class="process-error">{{ error }}</div>
@@ -188,7 +182,7 @@ onUnmounted(stopPolling)
 
 <style scoped>
 .process-panel {
-  --ide-header-icon: var(--accent-green);
+  --ide-header-icon: var(--success);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -203,7 +197,7 @@ onUnmounted(stopPolling)
   gap: var(--space-3);
   height: 38px;
   padding: 0 var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
   background: var(--ide-header-bg);
   flex-shrink: 0;
 }
@@ -232,7 +226,7 @@ onUnmounted(stopPolling)
   min-width: 0;
   overflow: hidden;
   padding-left: var(--space-2);
-  border-left: 0.5px solid var(--border-default);
+  border-left: 0.5px solid var(--border-subtle);
   color: var(--text-secondary);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -245,37 +239,11 @@ onUnmounted(stopPolling)
   border: 0.5px solid var(--border-subtle);
   border-radius: 999px;
   background: var(--bg-raised);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-size: 0.68rem;
   line-height: 17px;
   text-align: center;
-}
-
-.refresh-btn {
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  transition: all var(--transition-fast);
-}
-
-.refresh-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
-  color: var(--text-secondary);
-}
-
-.refresh-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.refresh-btn .spinning {
-  animation: spin 0.8s linear infinite;
 }
 
 .process-error {
@@ -305,10 +273,6 @@ onUnmounted(stopPolling)
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
 }
 
 .process-table-wrap {
@@ -377,7 +341,7 @@ onUnmounted(stopPolling)
 }
 
 .kill-btn:hover:not(:disabled) {
-  color: var(--accent-rose);
+  color: var(--error);
   background: var(--error-bg);
 }
 
@@ -385,7 +349,6 @@ onUnmounted(stopPolling)
   animation: spin 0.8s linear infinite;
 }
 
-.refresh-btn:disabled,
 .kill-btn:disabled {
   cursor: not-allowed;
   opacity: 0.4;

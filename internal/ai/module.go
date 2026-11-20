@@ -26,17 +26,35 @@ import (
 type Module struct {
 	CatalogService      app.CatalogService
 	AgentService        app.AgentService
+	AgentDefaults       app.AgentDefaultsService
+	BudgetDefaults      app.BudgetDefaultsService
+	Usage               app.UsageService
 	ChatService         app.ChatService
 	AgentRunService     app.AgentRunService
 	ConversationService app.ConversationService
 	ToolExecutor        aitools.Executor
 	Handler             *httptransport.Handler
+
+	runListeners interface {
+		OnRunFinished(fn func(domain.AgentRun))
+	}
+	toolCatalog  *aitools.Catalog
+	toolExecutor *aitools.WorkspaceExecutor
+}
+
+// Workspaces is the workspace surface the AI module needs.
+type Workspaces interface {
+	aitools.WorkspaceOps
+	app.WorkspaceChecker
 }
 
 // NewModule assembles the AI subpackages behind the root composition facade.
-func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
-	providerConfigs := storage.NewProviderConfigRepository(db)
+// keys seals users' provider keys at rest.
+func NewModule(db *sql.DB, workspaces Workspaces, keys app.KeyCipher) *Module {
+	providerKeys := storage.NewProviderKeyRepository(db)
+	userSettings := storage.NewUserAISettingsRepository(db)
 	conversations := storage.NewConversationRepository(db)
+	attachmentService := app.NewAttachmentService(storage.NewAttachmentRepository(db))
 	agents := storage.NewAgentRepository(db)
 	registry := aiprovider.NewRegistry(
 		anthropic.NewAdapter(),
@@ -46,28 +64,62 @@ func NewModule(db *sql.DB, workspaceOps aitools.WorkspaceOps) *Module {
 		openairesponses.NewAdapter(),
 	)
 
-	catalogService := app.NewCatalogService(providerConfigs, registry)
+	catalogService := app.NewCatalogService(providerKeys, keys, registry)
 	agentService := app.NewAgentService(agents)
+	agentDefaultsService := app.NewAgentDefaultsService(storage.NewAgentDefaultsRepository(db), catalogService)
+	budgetDefaultsService := app.NewBudgetDefaultsService(userSettings)
+	summaryModelService := app.NewSummaryModelService(userSettings, catalogService)
 	conversationService := app.NewConversationService(conversations)
-	toolExecutor := aitools.NewWorkspaceExecutor(workspaceOps)
+	usageService := app.NewUsageService(storage.NewUsageRepository(db), catalogService)
+	toolExecutor := aitools.NewWorkspaceExecutor(workspaces)
+	toolExecutor.SetImageStore(attachmentService)
 	approvalBroker := approval.NewMemoryBroker()
 	questionBroker := question.NewMemoryBroker()
-	chatService := app.NewChatService(catalogService, aitools.NewCatalog(), toolExecutor, approvalBroker, questionBroker, app.NewAGENTSInstructionSource(workspaceOps))
-	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService))
+	toolCatalog := aitools.NewCatalog()
+	chatService := app.NewChatService(catalogService, toolCatalog, toolExecutor, approvalBroker, questionBroker, workspaces, attachmentService, usageService)
 	agentRuns := storage.NewAgentRunRepository(db)
-	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService)
+	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService).WithImageLoader(attachmentService)
+	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService, summaryModelService, agentRunService))
 	toolExecutor.SetChildAgentRunner(childAgentRunStarter{runs: agentRunService})
 	toolExecutor.SetAgentLister(agentService)
+	toolExecutor.SetAgentDefaults(agentDefaultsService)
 
 	return &Module{
 		CatalogService:      catalogService,
 		AgentService:        agentService,
+		AgentDefaults:       agentDefaultsService,
+		BudgetDefaults:      budgetDefaultsService,
+		Usage:               usageService,
 		ChatService:         chatService,
 		AgentRunService:     agentRunService,
 		ConversationService: conversationService,
 		ToolExecutor:        toolExecutor,
-		Handler:             httptransport.NewHandler(catalogService, agentService, chatService, agentRunService, conversationService, approvalBroker, questionBroker),
+		Handler:             httptransport.NewHandler(catalogService, agentService, agentDefaultsService, budgetDefaultsService, summaryModelService, usageService, chatService, agentRunService, conversationService, attachmentService, approvalBroker, questionBroker),
+		runListeners:        agentRunService,
+		toolCatalog:         toolCatalog,
+		toolExecutor:        toolExecutor,
 	}
+}
+
+// AddToolProvider offers a provider's tools to runs in the workspaces it
+// chooses and routes their calls to it.
+func (m *Module) AddToolProvider(p aitools.ToolProvider) {
+	m.toolCatalog.AddProvider(p)
+	m.toolExecutor.AddProvider(p)
+}
+
+// SetScopeResolver sets what tells providers what a run's workspace is.
+// Until it is set, runs fail once a provider is added, rather than reach a
+// provider that cannot tell a review sandbox from any other workspace.
+func (m *Module) SetScopeResolver(r aitools.ScopeResolver) {
+	m.toolCatalog.SetScopeResolver(r)
+	m.toolExecutor.SetScopeResolver(r)
+}
+
+// OnAgentRunFinished registers fn to be called with a run's final state each
+// time an agent run completes, fails, or is cancelled. fn must return quickly.
+func (m *Module) OnAgentRunFinished(fn func(domain.AgentRun)) {
+	m.runListeners.OnRunFinished(fn)
 }
 
 type childAgentRunStarter struct {
@@ -75,13 +127,13 @@ type childAgentRunStarter struct {
 }
 
 func (s childAgentRunStarter) StartChildAgentRun(ctx context.Context, req aitools.ChildAgentRunRequest) (*aitools.ChildAgentRun, error) {
-	run, err := s.runs.StartChildRun(ctx, req.ParentRunID, app.StartAgentRunRequest{
+	run, err := s.runs.StartChildRun(ctx, req.ParentRunID, app.StartChildAgentRunRequest{
 		UserID:         req.UserID,
 		WorkspaceID:    req.WorkspaceID,
 		ConversationID: req.ConversationID,
 		Model:          req.Model,
 		AgentID:        req.AgentID,
-		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, req.Prompt)},
+		Prompt:         req.Prompt,
 		Thinking:       req.Thinking,
 	})
 	if err != nil {

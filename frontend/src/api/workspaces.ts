@@ -7,6 +7,13 @@ export interface Workspace {
   status: 'creating' | 'running' | 'stopped'
   containerId: string
   defaultAgentId: string
+  // Sandboxes belong to a project and own one branch of it. An interactive
+  // workspace with a project is that project's workspace and owns no branch;
+  // one without a project is standalone, left from before projects, and can
+  // only be converted or deleted.
+  projectId?: number
+  kind?: 'interactive' | 'task' | 'review'
+  branch?: string
   createdAt: string
   updatedAt: string
 }
@@ -84,14 +91,6 @@ export const workspaceApi = {
     return apiClient.get<WorkspaceResponse>(`/api/workspaces/${id}`)
   },
 
-  create(name: string, description: string): Promise<WorkspaceResponse> {
-    return apiClient.post<WorkspaceResponse>('/api/workspaces', { name, description })
-  },
-
-  update(id: number, name: string, description: string): Promise<WorkspaceResponse> {
-    return apiClient.put<WorkspaceResponse>(`/api/workspaces/${id}`, { name, description })
-  },
-
   setDefaultAgent(id: number, agentId: string): Promise<WorkspaceResponse> {
     return apiClient.put<WorkspaceResponse>(`/api/workspaces/${id}/default-agent`, { agentId })
   },
@@ -106,6 +105,11 @@ export const workspaceApi = {
 
   stop(id: number): Promise<WorkspaceResponse> {
     return apiClient.post<WorkspaceResponse>(`/api/workspaces/${id}/stop`, {})
+  },
+
+  // Restarts the container, updating its agent; a stopped workspace starts.
+  restart(id: number): Promise<WorkspaceResponse> {
+    return apiClient.post<WorkspaceResponse>(`/api/workspaces/${id}/restart`, {})
   },
 
   listFiles(id: number, path: string, options: ListFilesOptions = {}): Promise<FileListResponse> {

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -51,6 +50,18 @@ type responsePayload struct {
 	Error             *responseError     `json:"error,omitempty"`
 	IncompleteDetails *incompleteDetails `json:"incomplete_details,omitempty"`
 	Output            []json.RawMessage  `json:"output,omitempty"`
+	Usage             *responseUsage     `json:"usage,omitempty"`
+}
+
+// responseUsage is a response's usage. input_tokens includes the tokens read
+// from and written to the cache counted in input_tokens_details.
+type responseUsage struct {
+	InputTokens        int64 `json:"input_tokens"`
+	OutputTokens       int64 `json:"output_tokens"`
+	InputTokensDetails struct {
+		CachedTokens     int64 `json:"cached_tokens"`
+		CacheWriteTokens int64 `json:"cache_write_tokens"`
+	} `json:"input_tokens_details"`
 }
 
 type responseError struct {
@@ -93,24 +104,49 @@ func (a *Adapter) Protocol() aiprovider.Protocol {
 }
 
 func (a *Adapter) Models() []domain.Model {
-	gpt54Thinking := domain.ThinkingCapability{
-		Supported:        true,
-		EnabledByDefault: false,
-		CanDisable:       true,
-		SupportedEfforts: []string{"low", "medium", "high", "xhigh"},
-		DefaultEffort:    defaultReasoningEffort,
-	}
-	gpt55Thinking := domain.ThinkingCapability{
+	// GPT-6.2 models always reason: the API rejects the effort "none".
+	alwaysReasons := domain.ThinkingCapability{
 		Supported:        true,
 		EnabledByDefault: true,
-		CanDisable:       true,
-		SupportedEfforts: []string{"low", "medium", "high", "xhigh"},
+		CanDisable:       false,
+		SupportedEfforts: []string{"low", "medium", "high", "xhigh", "max"},
 		DefaultEffort:    defaultReasoningEffort,
 	}
+	reasonsByDefault := alwaysReasons
+	reasonsByDefault.CanDisable = true
 
+	// Prices are USD per million tokens from
+	// https://developers.openai.com/api/docs/pricing (November 2026). A prompt
+	// over 272K tokens is billed at the long-context prices. CacheWrite is the
+	// price of the default 30-minute cache lifetime, the only one devpad uses.
+	astraPricing := &domain.Pricing{
+		TokenPrices:          domain.TokenPrices{Input: 8, Output: 40, CacheRead: 0.40, CacheWrite: 10},
+		LongContextThreshold: 272_000,
+		LongContext:          &domain.TokenPrices{Input: 16, Output: 60, CacheRead: 0.80, CacheWrite: 20},
+	}
+	solPricing := &domain.Pricing{
+		TokenPrices:          domain.TokenPrices{Input: 2, Output: 10, CacheRead: 0.10, CacheWrite: 2.50},
+		LongContextThreshold: 272_000,
+		LongContext:          &domain.TokenPrices{Input: 4, Output: 15, CacheRead: 0.20, CacheWrite: 5},
+	}
+	terraPricing := &domain.Pricing{
+		TokenPrices:          domain.TokenPrices{Input: 1, Output: 5, CacheRead: 0.05, CacheWrite: 1.25},
+		LongContextThreshold: 272_000,
+		LongContext:          &domain.TokenPrices{Input: 2, Output: 7.50, CacheRead: 0.10, CacheWrite: 2.50},
+	}
+	lunaPricing := &domain.Pricing{
+		TokenPrices:          domain.TokenPrices{Input: 0.10, Output: 0.50, CacheRead: 0.01, CacheWrite: 0.125},
+		LongContextThreshold: 272_000,
+		LongContext:          &domain.TokenPrices{Input: 0.20, Output: 0.75, CacheRead: 0.02, CacheWrite: 0.25},
+	}
+
+	// Sol comes first: the IDE starts on the first model when nothing else
+	// picks one, and Astra costs four times as much.
 	return []domain.Model{
-		{ID: "gpt-5.4", Name: "GPT-5.4", ProviderID: providerID, Thinking: gpt54Thinking},
-		{ID: "gpt-5.5", Name: "GPT-5.5", ProviderID: providerID, Thinking: gpt55Thinking},
+		{ID: "gpt-6.2-sol", Name: "GPT-6.2 Sol", ProviderID: providerID, Thinking: alwaysReasons, Vision: true, Pricing: solPricing},
+		{ID: "gpt-6.2-astra", Name: "GPT-6.2 Astra", ProviderID: providerID, Thinking: alwaysReasons, Vision: true, Pricing: astraPricing},
+		{ID: "gpt-6.1-terra", Name: "GPT-6.1 Terra", ProviderID: providerID, Thinking: reasonsByDefault, Vision: true, Pricing: terraPricing},
+		{ID: "gpt-6-luna", Name: "GPT-6 Luna", ProviderID: providerID, Thinking: reasonsByDefault, Vision: true, Pricing: lunaPricing},
 	}
 }
 
@@ -126,10 +162,6 @@ func buildResponsesRequest(req aiprovider.StreamRequest, model domain.Model) map
 		"model":  req.Model,
 		"stream": true,
 		"store":  false,
-	}
-
-	if instructions := buildInstructions(req.Turns); instructions != "" {
-		body["instructions"] = instructions
 	}
 
 	if input := buildInput(req.Turns); len(input) > 0 {
@@ -152,7 +184,8 @@ func buildResponsesRequest(req aiprovider.StreamRequest, model domain.Model) map
 	return body
 }
 
-func buildInstructions(turns []domain.Turn) string {
+// systemPrompt joins the system turns into one prompt.
+func systemPrompt(turns []domain.Turn) string {
 	parts := make([]string, 0, len(turns))
 	for _, turn := range turns {
 		if turn.Role != domain.RoleSystem || turn.Text() == "" {
@@ -164,8 +197,18 @@ func buildInstructions(turns []domain.Turn) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// buildInput returns the request's input items. The system prompt is the first
+// of them, as a developer message, and not the top-level instructions: GPT-6.2
+// models read those after the input and bill them as uncached on every request.
 func buildInput(turns []domain.Turn) []any {
-	input := make([]any, 0, len(turns))
+	input := make([]any, 0, len(turns)+1)
+
+	if prompt := systemPrompt(turns); prompt != "" {
+		input = append(input, map[string]any{
+			"role":    "developer",
+			"content": prompt,
+		})
+	}
 
 	for _, turn := range turns {
 		if turn.Role == domain.RoleSystem {
@@ -208,7 +251,7 @@ func buildInput(turns []domain.Turn) []any {
 					input = append(input, map[string]any{
 						"type":    "function_call_output",
 						"call_id": result.ToolCallID,
-						"output":  result.Content,
+						"output":  toolOutput(result),
 					})
 				}
 				if text := turn.Text(); text != "" {
@@ -217,6 +260,18 @@ func buildInput(turns []domain.Turn) []any {
 						"content": text,
 					})
 				}
+			} else if images := turn.Images(); len(images) > 0 {
+				content := make([]map[string]any, 0, len(images)+1)
+				for _, image := range images {
+					content = append(content, inputImage(image))
+				}
+				if text := turn.Text(); text != "" {
+					content = append(content, map[string]any{"type": "input_text", "text": text})
+				}
+				input = append(input, map[string]any{
+					"role":    "user",
+					"content": content,
+				})
 			} else if text := turn.Text(); text != "" {
 				input = append(input, map[string]any{
 					"role":    "user",
@@ -229,26 +284,50 @@ func buildInput(turns []domain.Turn) []any {
 	return input
 }
 
+// toolOutput returns a function call's output: its text, or with images,
+// the text and images as content parts.
+func toolOutput(result domain.ToolResultPart) any {
+	if len(result.Images) == 0 {
+		return result.Content
+	}
+	output := make([]map[string]any, 0, len(result.Images)+1)
+	if result.Content != "" {
+		output = append(output, map[string]any{"type": "input_text", "text": result.Content})
+	}
+	for _, image := range result.Images {
+		output = append(output, inputImage(image))
+	}
+	return output
+}
+
+func inputImage(image domain.ImagePart) map[string]any {
+	return map[string]any{
+		"type":      "input_image",
+		"image_url": shared.DataURL(image),
+		"detail":    "auto",
+	}
+}
+
+// appendReasoningItems adds a turn's reasoning items to the input. The turn may
+// have come from another provider, whose state the API would refuse, so only
+// reasoning items go.
 func appendReasoningItems(input *[]any, raw json.RawMessage) {
 	if len(raw) == 0 {
 		return
 	}
 
-	var items []json.RawMessage
-	if err := json.Unmarshal(raw, &items); err == nil && len(items) > 0 {
-		for _, item := range items {
-			var parsed map[string]any
-			if err := json.Unmarshal(item, &parsed); err != nil {
-				continue
-			}
-			*input = append(*input, parsed)
+	var items []map[string]any
+	if err := json.Unmarshal(raw, &items); err != nil {
+		var item map[string]any
+		if err := json.Unmarshal(raw, &item); err != nil {
+			return
 		}
-		return
+		items = []map[string]any{item}
 	}
-
-	var item map[string]any
-	if err := json.Unmarshal(raw, &item); err == nil && len(item) > 0 {
-		*input = append(*input, item)
+	for _, item := range items {
+		if item["type"] == "reasoning" {
+			*input = append(*input, item)
+		}
 	}
 }
 
@@ -358,7 +437,8 @@ func readResponsesStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 
 		var event streamEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			return true
+			ch <- domain.ProviderEvent{Err: shared.MalformedEventError(providerName, data, err)}
+			return false
 		}
 
 		switch event.Type {
@@ -399,6 +479,7 @@ func readResponsesStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 				}
 			}
 		case "response.completed":
+			emitResponseUsage(ch, event.Response)
 			captureResponseOutput(event.Response, toolCallsByIndex, toolCallsByItemID)
 			if state := marshalReasoningState(reasoningItems); len(state) > 0 {
 				ch <- domain.ProviderEvent{ReasoningState: state}
@@ -407,6 +488,7 @@ func readResponsesStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			ch <- domain.ProviderEvent{Done: true}
 			return false
 		case "response.failed":
+			emitResponseUsage(ch, event.Response)
 			message := responseErrorMessage(event.Response)
 			if message == "" {
 				message = "OpenAI response failed"
@@ -414,6 +496,7 @@ func readResponsesStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			ch <- domain.ProviderEvent{Err: errors.New(message)}
 			return false
 		case "response.incomplete":
+			emitResponseUsage(ch, event.Response)
 			message := responseIncompleteMessage(event.Response)
 			if message == "" {
 				message = "OpenAI response incomplete"
@@ -448,13 +531,11 @@ func readResponsesStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Printf("error reading OpenAI Responses stream: %v", err)
-		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
+		ch <- domain.ProviderEvent{Err: shared.ReadStreamError(providerName, err)}
 		return
 	}
-
-	emitResponseToolCalls(ch, toolCallsByIndex)
-	ch <- domain.ProviderEvent{Done: true}
+	// The stream closed before response.completed, so the response is incomplete.
+	ch <- domain.ProviderEvent{Err: shared.IncompleteStreamError(providerName)}
 }
 
 func registerToolCall(event streamEvent, byIndex map[int]*pendingToolCall, byItemID map[string]*pendingToolCall) {
@@ -634,6 +715,19 @@ func marshalReasoningState(items []json.RawMessage) json.RawMessage {
 	}
 
 	return raw
+}
+
+// emitResponseUsage sends what a finished response was billed for.
+func emitResponseUsage(ch chan<- domain.ProviderEvent, response *responsePayload) {
+	if response == nil || response.Usage == nil {
+		return
+	}
+	ch <- domain.ProviderEvent{Usage: shared.ReportedUsage{
+		PromptTokens:     response.Usage.InputTokens,
+		CachedTokens:     response.Usage.InputTokensDetails.CachedTokens,
+		CacheWriteTokens: response.Usage.InputTokensDetails.CacheWriteTokens,
+		OutputTokens:     response.Usage.OutputTokens,
+	}.Billed()}
 }
 
 func responseErrorMessage(response *responsePayload) string {

@@ -1,14 +1,24 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { aiApi, type AIModel, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
+import { aiApi, attachmentUrl, type AISkill, type ChatImage, type ChatMessage, type StreamEvent, type PlanStep, type ToolResult, type ApprovalDetail, type ApprovalRequest, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
-import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
+import { useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
+import { useAiModelStore } from '@/stores/aiModels'
+import { defaultAIModel, defaultThinkingEffort, isBuiltInAgentId, thinkingEffortLabel } from '@/utils/aiModels'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import AiToolGroup from '@/components/ide/AiToolGroup.vue'
 import AiThinkingSection from '@/components/ide/AiThinkingSection.vue'
 import AiMessageCopyButton from '@/components/ide/AiMessageCopyButton.vue'
 import AiQuestionCard from '@/components/ide/AiQuestionCard.vue'
+import AiImageAttachments, { storedImageItems, type ImageAttachmentItem } from '@/components/ide/AiImageAttachments.vue'
+import ApprovalDetails from '@/components/ide/ApprovalDetails.vue'
+import type { BranchChange } from '@/components/ide/ideShell'
+import HandoffModal from '@/components/project/HandoffModal.vue'
+import type { Task } from '@/api/tasks'
+import { useActiveProjectStore } from '@/stores/activeProject'
+import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
 import {
   hasToolResult,
   planStepsFromToolArgs,
@@ -22,11 +32,15 @@ const props = defineProps<{
   workspaceId: number
   selectedAgentId: string
   focusedRunId?: number | null
+  // Set in a project's own workspace, where a conversation can be handed off
+  // to a background task.
+  projectId?: number | null
 }>()
 
 const emit = defineEmits<{
   (e: 'clear-focused-run'): void
   (e: 'select-agent', agentId: string): void
+  (e: 'branch-changed', kind: BranchChange): void
 }>()
 
 interface TextSegment {
@@ -41,7 +55,10 @@ interface ToolSegment extends ToolDisplaySegment {
 interface ApprovalSegment {
   type: 'approval'
   id: string
+  // Set for actions other than sudo commands, such as starting an agent.
+  title?: string
   command: string
+  details?: ApprovalDetail[]
   status: 'pending' | ApprovalResult['status']
   error?: string
 }
@@ -74,23 +91,46 @@ interface DisplayMessage {
   role: 'user' | 'assistant'
   content: string
   segments: MessageSegment[]
+  // Images the user attached to the message.
+  images?: ChatImage[]
 }
+
+// An image in the composer: uploading until image is set, or failed with error.
+interface PendingImage {
+  key: string
+  previewUrl: string
+  image?: ChatImage
+  error?: string
+}
+
+// The most images one message may carry, and the largest file the server takes.
+const maxImagesPerMessage = 10
+const maxImageBytes = 10 * 1024 * 1024
 
 interface SlashCommand {
   name: string
   description: string
-  prompt: string
+  // What may follow the name; only skills take anything.
+  argumentHint?: string
+  // The request sent for the command and what the user typed after it.
+  prompt: (args: string) => string
+  // Whether text may follow the name.
+  takesArguments?: boolean
 }
+
+// How long the workspace's skills are reused before the slash menu reads
+// them again, so a skill just added shows up without a reload.
+const skillsRefreshMs = 10_000
 
 const conversationStore = useConversationStore()
 const agentRunStore = useAgentRunStore()
 const aiAgentStore = useAiAgentStore()
-const DEFAULT_AI_MODEL_ID = 'mistral-medium-3-5'
+const aiModelStore = useAiModelStore()
 const slashCommands: SlashCommand[] = [
   {
     name: '/init',
     description: 'Create or update AGENTS.md with project instructions',
-    prompt: `Initialize this repository for future AI coding agents by creating or updating AGENTS.md at the workspace root.
+    prompt: () => `Initialize this repository for future AI coding agents by creating or updating AGENTS.md at the workspace root.
 
 Inspect the repository structure, README, package or build configuration, and any existing AGENTS.md first. Then write a concise AGENTS.md that captures:
 - Project overview and architecture
@@ -101,23 +141,51 @@ Inspect the repository structure, README, package or build configuration, and an
 If AGENTS.md already exists, preserve useful guidance and update stale or missing sections instead of replacing it blindly. Keep the file specific to this repository, avoid inventing commands, and briefly summarize what changed after writing it.`,
   },
 ]
+const skills = ref<AISkill[]>([])
+let skillsFetchedAt = 0
+// The workspace's skills, after the built-in commands, which a skill of the
+// same name does not replace. The model loads the skill itself, so its
+// instructions stay in the conversation for the turns after.
+const allSlashCommands = computed<SlashCommand[]>(() => [
+  ...slashCommands,
+  ...skills.value
+    .filter((skill) => skill.userInvocable && !slashCommands.some((command) => command.name === `/${skill.name}`))
+    .map((skill) => ({
+      name: `/${skill.name}`,
+      description: skill.description,
+      argumentHint: skill.argumentHint,
+      takesArguments: true,
+      prompt: (args: string) => {
+        const request = `Use the skill \`${skill.name}\`: load it with load_skill, then follow its instructions.`
+        return args ? `${request}\n\nArguments: ${args}` : request
+      },
+    })),
+])
 const activeConversationId = ref<number | null>(null)
 
+// messages is only what the panel displays. The server owns the conversation:
+// it loads the history for each run and saves everything the run produces.
 const messages = ref<DisplayMessage[]>([])
-// rawMessages tracks the full API message history including role:"tool" messages.
-// It is the source of truth for saving; messages is the source of truth for rendering.
-const rawMessages = ref<ChatMessage[]>([])
 
 const inputValue = ref('')
+const pendingImages = ref<PendingImage[]>([])
+const imageNotice = ref('')
+const imageInput = ref<HTMLInputElement | null>(null)
+const draggingImages = ref(false)
+let pendingImageSeq = 0
 const chatBody = ref<HTMLElement | null>(null)
-const models = ref<AIModel[]>([])
+const models = computed(() => aiModelStore.models)
 const selectedModel = ref('')
+
+const projectStore = useActiveProjectStore()
+const showHandoff = ref(false)
+// The tasks this chat was handed off to, newest last.
+const handedOff = ref<Task[]>([])
 const thinkingPreferences = ref<Record<string, boolean>>({})
 const thinkingEffortPreferences = ref<Record<string, string>>({})
 const streaming = ref(false)
 const abortController = ref<AbortController | null>(null)
 const activeAgentRunId = ref<number | null>(null)
-const continuationParentRunId = ref<number | null>(null)
 const inputFocused = ref(false)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const planExpanded = ref(false)
@@ -132,6 +200,29 @@ const focusedRunContextSize = ref<ContextSize | null>(null)
 const autoScrollEnabled = ref(true)
 
 const currentModel = computed(() => models.value.find((model) => model.id === selectedModel.value) ?? null)
+const canAttachImages = computed(() => currentModel.value?.vision === true)
+const imagesUploading = computed(() => pendingImages.value.some((pending) => !pending.image && !pending.error))
+const pendingImageItems = computed<ImageAttachmentItem[]>(() =>
+  pendingImages.value.map((pending) => ({
+    key: pending.key,
+    src: pending.previewUrl,
+    href: pending.image ? attachmentUrl(pending.image.attachmentId) : undefined,
+    status: pending.error ? 'error' : pending.image ? undefined : 'uploading',
+    error: pending.error,
+  })),
+)
+// Pending images the selected model can't take, and uploads that failed,
+// block sending, rather than being dropped without the user knowing.
+const pendingImagesBlocked = computed(() => pendingImages.value.length > 0 && !canAttachImages.value)
+const pendingImagesFailed = computed(() => pendingImages.value.some((pending) => pending.error))
+const canSend = computed(() =>
+  (inputValue.value.trim() !== '' || pendingImages.value.some((pending) => pending.image)) &&
+  !imagesUploading.value &&
+  !pendingImagesBlocked.value &&
+  !pendingImagesFailed.value,
+)
+// The model and effort the user set for the selected agent, if it is built in.
+const currentAgentDefaults = computed(() => aiModelStore.agentDefaults[props.selectedAgentId])
 
 const viewingFocusedRun = computed(() => props.focusedRunId !== null && props.focusedRunId !== undefined)
 
@@ -180,6 +271,18 @@ const canSelectThinkingEffort = computed(() => {
   return Boolean(model?.thinking.supported && (model.thinking.supportedEfforts?.length ?? 0) > 0)
 })
 
+const agentOptions = computed<SelectMenuOption[]>(() =>
+  aiAgentStore.agents.map((agent) => ({ value: agent.id, label: agent.name, description: agent.purpose || undefined })),
+)
+
+const modelOptions = computed<SelectMenuOption[]>(() =>
+  models.value.map((model) => ({ value: model.id, label: model.name, description: model.providerName })),
+)
+
+const thinkingEffortOptions = computed<SelectMenuOption[]>(() =>
+  (currentModel.value?.thinking.supportedEfforts ?? []).map((effort) => ({ value: effort, label: thinkingEffortLabel(effort) })),
+)
+
 const thinkingEnabled = computed(() => {
   const model = currentModel.value
   if (!model?.thinking.supported) {
@@ -194,14 +297,6 @@ const thinkingEnabled = computed(() => {
   return model.thinking.enabledByDefault
 })
 
-function defaultThinkingEffort(model: AIModel): string {
-  return model.thinking.defaultEffort ?? model.thinking.supportedEfforts?.[0] ?? ''
-}
-
-function defaultAIModel(availableModels: AIModel[]): AIModel | undefined {
-  return availableModels.find((model) => model.id === DEFAULT_AI_MODEL_ID) ?? availableModels[0]
-}
-
 const thinkingEffort = computed<string>({
   get() {
     const model = currentModel.value
@@ -209,7 +304,7 @@ const thinkingEffort = computed<string>({
       return ''
     }
 
-    return thinkingEffortPreferences.value[model.id] ?? defaultThinkingEffort(model)
+    return thinkingEffortPreferences.value[model.id] ?? defaultThinkingEffort(model, currentAgentDefaults.value)
   },
   set(value: string) {
     const model = currentModel.value
@@ -235,7 +330,7 @@ const thinkingRequest = computed(() => {
   }
 
   if (thinkingEnabled.value && canSelectThinkingEffort.value) {
-    request.effort = thinkingEffort.value || defaultThinkingEffort(model)
+    request.effort = thinkingEffort.value || defaultThinkingEffort(model, currentAgentDefaults.value)
   }
 
   return request
@@ -246,16 +341,38 @@ const slashCommandOptions = computed(() => {
   if (!value.startsWith('/') || /\s/.test(value)) {
     return []
   }
-  return slashCommands.filter((command) => command.name.startsWith(value))
+  return allSlashCommands.value.filter((command) => command.name.startsWith(value))
 })
 
-function resolveSlashCommand(text: string): SlashCommand | undefined {
+const slashMenuOpen = computed(() => inputValue.value.trimStart().startsWith('/'))
+
+watch(slashMenuOpen, (open) => {
+  if (open && Date.now() - skillsFetchedAt > skillsRefreshMs) void fetchSkills()
+})
+
+async function fetchSkills() {
+  if (props.workspaceId <= 0) return
+  skillsFetchedAt = Date.now()
+  try {
+    const { skills: found } = await aiApi.listSkills(props.workspaceId)
+    skills.value = found
+  } catch {
+    // Without its skills the menu still has the built-in commands.
+  }
+}
+
+// resolveSlashCommand matches a message to a command, and returns the text
+// after its name.
+function resolveSlashCommand(text: string): { command: SlashCommand; args: string } | undefined {
   const value = text.trim()
-  return slashCommands.find((command) => command.name === value)
+  const [name = ''] = value.split(/\s/, 1)
+  const command = allSlashCommands.value.find((candidate) => candidate.name === name)
+  if (!command || (name !== value && !command.takesArguments)) return undefined
+  return { command, args: value.slice(name.length).trim() }
 }
 
 function applySlashCommand(command: SlashCommand) {
-  inputValue.value = command.name
+  inputValue.value = command.argumentHint ? `${command.name} ` : command.name
   void nextTick(() => {
     autoResize()
     inputEl.value?.focus()
@@ -285,49 +402,38 @@ function toggleThinking() {
   }
 }
 
-function thinkingEffortLabel(effort: string): string {
-  switch (effort) {
-    case 'none':
-      return 'None'
-    case 'low':
-      return 'Low'
-    case 'medium':
-      return 'Medium'
-    case 'high':
-      return 'High'
-    case 'xhigh':
-      return 'Extra high'
-    default:
-      return effort
-  }
-}
-
-function handleAgentSelectorChange(event: Event) {
-  const agentId = (event.target as HTMLSelectElement).value
+function selectAgent(agentId: string) {
   aiAgentStore.setSelectedAgent(agentId)
   emit('select-agent', agentId)
 }
 
 onMounted(async () => {
-  try {
-    const res = await aiApi.listModels()
-    models.value = res.models.filter((m) => m.configured)
-    const defaultModel = defaultAIModel(models.value)
-    if (defaultModel) {
-      selectedModel.value = defaultModel.id
-    }
-  } catch {
-    // models will remain empty
+  await aiModelStore.fetchModels()
+  const defaultModel = defaultAIModel(models.value, currentAgentDefaults.value)
+  if (defaultModel) {
+    selectedModel.value = defaultModel.id
   }
   // Fetch conversation metadata for internal thread tracking (non-blocking).
   conversationStore.fetchConversations(props.workspaceId)
   aiAgentStore.fetchAgents(props.workspaceId)
+  void fetchSkills()
 })
 
 onUnmounted(() => {
   cancelFocusedRunEventStream()
   if (scrollRaf !== null) cancelAnimationFrame(scrollRaf)
   if (fetchRunsDebounceTimer !== null) clearTimeout(fetchRunsDebounceTimer)
+  clearPendingImages()
+})
+
+// Switching to a built-in agent moves to its default model: the one the user
+// set for it, else devpad's. Custom agents keep the model in use.
+watch(() => props.selectedAgentId, (agentId) => {
+  if (!isBuiltInAgentId(agentId)) return
+  const model = defaultAIModel(models.value, currentAgentDefaults.value)
+  if (model) {
+    selectedModel.value = model.id
+  }
 })
 
 watch(() => props.focusedRunId, (runId) => {
@@ -414,17 +520,21 @@ function findApprovalSegment(segments: MessageSegment[], id: string): ApprovalSe
   return segments.find((seg): seg is ApprovalSegment => seg.type === 'approval' && seg.id === id)
 }
 
-function applyApprovalRequired(segments: MessageSegment[], id: string, command: string): void {
-  const existing = findApprovalSegment(segments, id)
+function applyApprovalRequired(segments: MessageSegment[], request: ApprovalRequest): void {
+  const existing = findApprovalSegment(segments, request.id)
   if (existing) {
-    existing.command = command
+    existing.command = request.command
+    existing.title = request.title
+    existing.details = request.details
     return
   }
 
   segments.push({
     type: 'approval',
-    id,
-    command,
+    id: request.id,
+    title: request.title,
+    command: request.command,
+    details: request.details,
     status: 'pending',
   })
 }
@@ -433,6 +543,8 @@ function applyApprovalResolved(segments: MessageSegment[], result: ApprovalResul
   const existing = findApprovalSegment(segments, result.id)
   if (existing) {
     existing.command = result.command || existing.command
+    existing.title = result.title || existing.title
+    existing.details = result.details ?? existing.details
     existing.status = result.status
     existing.error = undefined
     return
@@ -441,7 +553,9 @@ function applyApprovalResolved(segments: MessageSegment[], result: ApprovalResul
   segments.push({
     type: 'approval',
     id: result.id,
+    title: result.title,
     command: result.command,
+    details: result.details,
     status: result.status,
   })
 }
@@ -625,10 +739,12 @@ function reconstructAssistantDisplay(rawMsgs: ChatMessage[], start: number, end:
 
     if (msg.tool_calls && msg.tool_calls.length > 0) {
       const toolResults = new Map<string, string>()
+      const toolImages = new Map<string, ChatImage[]>()
       for (let j = i + 1; j < end && rawMsgs[j].role === 'tool'; j++) {
         const toolCallID = rawMsgs[j].tool_call_id
         if (toolCallID) {
           toolResults.set(toolCallID, rawMsgs[j].content)
+          if (rawMsgs[j].images?.length) toolImages.set(toolCallID, rawMsgs[j].images!)
         }
       }
 
@@ -651,6 +767,7 @@ function reconstructAssistantDisplay(rawMsgs: ChatMessage[], start: number, end:
           name: tc.function.name,
           args: tc.function.arguments,
           result: toolResults.get(tc.id),
+          images: toolImages.get(tc.id),
         })
       }
     }
@@ -667,7 +784,7 @@ function reconstructDisplayMessages(rawMsgs: ChatMessage[]): DisplayMessage[] {
   for (let i = 0; i < rawMsgs.length;) {
     const msg = rawMsgs[i]
     if (msg.role === 'user') {
-      display.push({ role: 'user', content: msg.content, segments: [] })
+      display.push({ role: 'user', content: msg.content, segments: [], images: msg.images })
       i++
       continue
     }
@@ -694,6 +811,7 @@ function cloneDisplayMessages(source: DisplayMessage[]): DisplayMessage[] {
     role: msg.role,
     content: msg.content,
     segments: msg.segments.map(cloneMessageSegment),
+    images: msg.images,
   }))
 }
 
@@ -702,9 +820,9 @@ function cloneMessageSegment(seg: MessageSegment): MessageSegment {
     case 'text':
       return { type: 'text', content: seg.content }
     case 'tool':
-      return { type: 'tool', toolCallId: seg.toolCallId, name: seg.name, args: seg.args, result: seg.result }
+      return { type: 'tool', toolCallId: seg.toolCallId, name: seg.name, args: seg.args, result: seg.result, images: seg.images }
     case 'approval':
-      return { type: 'approval', id: seg.id, command: seg.command, status: seg.status, error: seg.error }
+      return { type: 'approval', id: seg.id, title: seg.title, command: seg.command, details: seg.details, status: seg.status, error: seg.error }
     case 'question':
       return {
         type: 'question',
@@ -837,12 +955,13 @@ function applyFocusedRunEvent(event: StreamEvent) {
     )
     if (toolSeg) {
       toolSeg.result = toolResult.content
+      toolSeg.images = toolResult.images
     }
     refreshRunsAfterSubAgentTool(toolResult)
   }
 
   if (event.approvalRequired) {
-    applyApprovalRequired(msg.segments, event.approvalRequired.id, event.approvalRequired.command)
+    applyApprovalRequired(msg.segments, event.approvalRequired)
     refreshRunForEvent(event)
   }
 
@@ -919,42 +1038,94 @@ function isAbortError(err: unknown): boolean {
 }
 
 async function loadConversation(convId: number) {
+  // Handoff notes belong to the conversation they came from.
+  handedOff.value = []
   const res = await aiApi.getMessages(convId)
-  rawMessages.value = res.messages
   messages.value = reconstructDisplayMessages(res.messages)
   activeConversationId.value = convId
-  continuationParentRunId.value = findContinuationParentRunId(convId)
   conversationStore.setActive(convId)
   await nextTick()
   scrollToBottom({ force: true })
 }
 
-async function saveCurrentConversation() {
-  // If no messages to save, skip.
-  if (rawMessages.value.length === 0) return
-
-  // Create a conversation on first save for this session.
-  if (activeConversationId.value === null) {
-    try {
-      const conv = await conversationStore.createConversation(props.workspaceId, selectedModel.value)
-      activeConversationId.value = conv.id
-      conversationStore.setActive(conv.id)
-    } catch {
-      // Could not create conversation — skip save to avoid losing chat flow.
-      return
+function addImageFiles(files: File[]) {
+  const imageFiles = files.filter((file) => file.type.startsWith('image/'))
+  if (imageFiles.length === 0) return
+  imageNotice.value = ''
+  if (!canAttachImages.value) {
+    imageNotice.value = `${currentModel.value?.name ?? 'This model'} can't view images.`
+    return
+  }
+  const room = maxImagesPerMessage - pendingImages.value.length
+  if (imageFiles.length > room) {
+    imageNotice.value = `A message can carry at most ${maxImagesPerMessage} images.`
+  }
+  for (const file of imageFiles.slice(0, Math.max(room, 0))) {
+    const pending: PendingImage = { key: `pending-${++pendingImageSeq}`, previewUrl: URL.createObjectURL(file) }
+    pendingImages.value.push(pending)
+    if (file.size > maxImageBytes) {
+      pending.error = 'Images can be at most 10 MB'
+      continue
     }
+    aiApi.uploadAttachment(file).then(
+      (image) => updatePendingImage(pending.key, { image }),
+      (err: Error) => updatePendingImage(pending.key, { error: err.message || 'Upload failed' }),
+    )
   }
+}
 
-  const convId = activeConversationId.value
-  if (convId === null) return
+function updatePendingImage(key: string, update: Partial<PendingImage>) {
+  // The image may have been removed while it uploaded.
+  const pending = pendingImages.value.find((candidate) => candidate.key === key)
+  if (pending) Object.assign(pending, update)
+}
 
-  try {
-    await aiApi.saveMessages(convId, rawMessages.value)
-    // Refresh the conversation list so the title/updatedAt updates are reflected.
-    conversationStore.fetchConversations(props.workspaceId)
-  } catch (err) {
-    console.error('Failed to save conversation messages:', err)
-  }
+function removePendingImage(key: string) {
+  const index = pendingImages.value.findIndex((pending) => pending.key === key)
+  if (index === -1) return
+  URL.revokeObjectURL(pendingImages.value[index].previewUrl)
+  pendingImages.value.splice(index, 1)
+  imageNotice.value = ''
+}
+
+function clearPendingImages() {
+  for (const pending of pendingImages.value) URL.revokeObjectURL(pending.previewUrl)
+  pendingImages.value = []
+  imageNotice.value = ''
+}
+
+function onComposerPaste(event: ClipboardEvent) {
+  const files = Array.from(event.clipboardData?.files ?? [])
+  if (!files.some((file) => file.type.startsWith('image/'))) return
+  // Copying an image from a page can bring its text along; keep pasting
+  // that as usual.
+  if (!event.clipboardData?.getData('text/plain')) event.preventDefault()
+  addImageFiles(files)
+}
+
+function onComposerDragOver(event: DragEvent) {
+  if (!event.dataTransfer?.types.includes('Files') || streaming.value) return
+  event.preventDefault()
+  event.dataTransfer.dropEffect = 'copy'
+  draggingImages.value = true
+}
+
+function onComposerDrop(event: DragEvent) {
+  draggingImages.value = false
+  if (!event.dataTransfer?.files.length || streaming.value) return
+  event.preventDefault()
+  addImageFiles(Array.from(event.dataTransfer.files))
+}
+
+function openImagePicker() {
+  if (!imageInput.value) return
+  imageInput.value.value = ''
+  imageInput.value.click()
+}
+
+function onImagesPicked(event: Event) {
+  const input = event.target as HTMLInputElement
+  addImageFiles(Array.from(input.files ?? []))
 }
 
 async function ensureActiveConversation(): Promise<number | null> {
@@ -975,16 +1146,16 @@ async function ensureActiveConversation(): Promise<number | null> {
 
 async function sendMessage() {
   const text = inputValue.value.trim()
-  if (!text || streaming.value) return
+  if (!canSend.value || streaming.value) return
+  const images = pendingImages.value.flatMap((pending) => (pending.image ? [pending.image] : []))
   const slashCommand = resolveSlashCommand(text)
-  const displayText = slashCommand?.name ?? text
-  const requestText = slashCommand?.prompt ?? text
+  const requestText = slashCommand ? slashCommand.command.prompt(slashCommand.args) : text
 
   if (!selectedModel.value) {
     messages.value.push({
       role: 'assistant',
-      content: 'No AI model is configured. Ask an admin to set up an AI provider in Settings.',
-      segments: [{ type: 'text', content: 'No AI model is configured. Ask an admin to set up an AI provider in Settings.' }],
+      content: 'No AI model is configured. Add an API key for an AI provider in Settings.',
+      segments: [{ type: 'text', content: 'No AI model is configured. Add an API key for an AI provider in Settings.' }],
     })
     await nextTick()
     scrollToBottom({ force: true })
@@ -1003,15 +1174,16 @@ async function sendMessage() {
     return
   }
 
-  // Push user message to display and raw arrays.
-  messages.value.push({ role: 'user', content: displayText, segments: [] })
-  rawMessages.value.push({ role: 'user', content: displayText })
+  messages.value.push({ role: 'user', content: text, segments: [], images: images.length > 0 ? images : undefined })
   inputValue.value = ''
+  clearPendingImages()
   resetInputHeight()
 
-  // Add empty assistant message for streaming.
+  // Add empty assistant message for streaming. Keep a reference to it rather
+  // than its index: loading another conversation replaces messages while this
+  // stream may still be delivering events.
   messages.value.push({ role: 'assistant', content: '', segments: [] })
-  const assistantIdx = messages.value.length - 1
+  const assistantMsg = messages.value[messages.value.length - 1]
 
   await nextTick()
   scrollToBottom({ force: true })
@@ -1021,37 +1193,17 @@ async function sendMessage() {
   abortController.value = controller
   activeContextSize.value = null
 
-  // Build the API payload from rawMessages (excludes the empty assistant placeholder).
-  const chatMessages: ChatMessage[] = rawMessages.value.slice()
-  if (slashCommand && chatMessages.length > 0) {
-    chatMessages[chatMessages.length - 1] = { role: 'user', content: requestText }
-  }
-
-  // Each LLM iteration is tracked as a "round" so we can reconstruct the correct
-  // interleaved assistant/tool message sequence for rawMessages on completion.
-  interface Round {
-    content: string
-    reasoningContent: string
-    thinkingState: unknown
-    toolCalls: ToolCall[]
-    toolResults: ChatMessage[]
-  }
-  const rounds: Round[] = [{ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] }]
-  let streamFailed = false
-  let createdRun: AgentRun | null = null
-  const parentRunId = continuationParentRunId.value
-
   try {
     const created = await aiApi.createAgentRun(
       selectedModel.value,
-      chatMessages,
+      requestText,
+      images,
       props.workspaceId,
       conversationId,
       thinkingRequest.value,
-      parentRunId ?? undefined,
       props.selectedAgentId,
+      slashCommand ? text : undefined,
     )
-    createdRun = created.run
     agentRunStore.upsertRun(created.run)
     activeAgentRunId.value = created.run.id
 
@@ -1063,9 +1215,8 @@ async function sendMessage() {
         }
 
         if (event.error) {
-          streamFailed = true
-          messages.value[assistantIdx].content += `\n\nError: ${event.error}`
-          const segs = messages.value[assistantIdx].segments
+          assistantMsg.content += `\n\nError: ${event.error}`
+          const segs = assistantMsg.segments
           const last = segs[segs.length - 1]
           if (last && last.type === 'text') {
             last.content += `\n\nError: ${event.error}`
@@ -1075,36 +1226,18 @@ async function sendMessage() {
         }
 
         if (event.reasoningContent) {
-          // Reasoning before content marks the start of a new LLM round after tool results.
-          if (rounds[rounds.length - 1].toolResults.length > 0) {
-            rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
-          }
-          const segs = messages.value[assistantIdx].segments
+          const segs = assistantMsg.segments
           const lastSeg = segs[segs.length - 1]
           if (lastSeg && lastSeg.type === 'thinking') {
             lastSeg.content += event.reasoningContent
           } else {
             segs.push({ type: 'thinking', content: event.reasoningContent })
           }
-          rounds[rounds.length - 1].reasoningContent += event.reasoningContent
-        }
-
-        if (event.thinkingState !== undefined) {
-          // ThinkingState before content also signals a new round when tool results are present.
-          if (rounds[rounds.length - 1].toolResults.length > 0) {
-            rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
-          }
-          rounds[rounds.length - 1].thinkingState = event.thinkingState
         }
 
         if (event.content) {
-          // A content event after tool results signals the start of a new LLM round.
-          if (rounds[rounds.length - 1].toolResults.length > 0) {
-            rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
-          }
-          rounds[rounds.length - 1].content += event.content
-          messages.value[assistantIdx].content += event.content
-          const segs = messages.value[assistantIdx].segments
+          assistantMsg.content += event.content
+          const segs = assistantMsg.segments
           const last = segs[segs.length - 1]
           if (last && last.type === 'text') {
             last.content += event.content
@@ -1114,16 +1247,9 @@ async function sendMessage() {
         }
 
         if (event.toolCalls) {
-          // The server sends all tool calls for one LLM iteration in a single event
-          // before executing any of them. If there are prior tool results in the current
-          // round, this batch belongs to the next iteration — start a fresh round.
-          if (rounds[rounds.length - 1].toolResults.length > 0) {
-            rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
-          }
           for (const tc of event.toolCalls) {
-            rounds[rounds.length - 1].toolCalls.push({ id: tc.id, itemId: tc.itemId, type: tc.type, function: { name: tc.name, arguments: tc.arguments } })
             if (!shouldRenderToolCall(tc.name)) continue
-            messages.value[assistantIdx].segments.push({
+            assistantMsg.segments.push({
               type: 'tool',
               toolCallId: tc.id,
               name: tc.name,
@@ -1134,43 +1260,39 @@ async function sendMessage() {
 
         const toolResult = event.toolResult
         if (toolResult) {
-          const segs = messages.value[assistantIdx].segments
+          const segs = assistantMsg.segments
           const toolSeg = segs.find(
             (s): s is ToolSegment => s.type === 'tool' && s.toolCallId === toolResult.toolCallId && !hasToolResult(s)
           )
           if (toolSeg) {
             toolSeg.result = toolResult.content
+            toolSeg.images = toolResult.images
           }
-          rounds[rounds.length - 1].toolResults.push({
-            role: 'tool',
-            content: toolResult.content,
-            tool_call_id: toolResult.toolCallId,
-          })
           refreshRunsAfterSubAgentTool(toolResult)
         }
 
         if (event.approvalRequired) {
-          applyApprovalRequired(messages.value[assistantIdx].segments, event.approvalRequired.id, event.approvalRequired.command)
+          applyApprovalRequired(assistantMsg.segments, event.approvalRequired)
           refreshRunForEvent(event)
         }
 
         if (event.approvalResolved) {
-          applyApprovalResolved(messages.value[assistantIdx].segments, event.approvalResolved)
+          applyApprovalResolved(assistantMsg.segments, event.approvalResolved)
           refreshRunForEvent(event)
         }
 
         if (event.questionRequired) {
-          applyQuestionRequired(messages.value[assistantIdx].segments, event.questionRequired)
+          applyQuestionRequired(assistantMsg.segments, event.questionRequired)
           refreshRunForEvent(event)
         }
 
         if (event.questionResolved) {
-          applyQuestionResolved(messages.value[assistantIdx].segments, event.questionResolved)
+          applyQuestionResolved(assistantMsg.segments, event.questionResolved)
           refreshRunForEvent(event)
         }
 
         if (event.plan) {
-          upsertPlanSegment(messages.value[assistantIdx].segments, event.plan)
+          upsertPlanSegment(assistantMsg.segments, event.plan)
         }
         scrollToBottom()
       },
@@ -1178,30 +1300,12 @@ async function sendMessage() {
       controller.signal,
     )
   } catch (err: any) {
-    streamFailed = true
-    if (err.name !== 'AbortError') {
-      messages.value[assistantIdx].content =
-        messages.value[assistantIdx].content || `Error: ${err.message}`
+    // Aborting only detaches this panel from the SSE stream; the run keeps going
+    // server-side and saves its own output.
+    if (!isAbortError(err)) {
+      assistantMsg.content = assistantMsg.content || `Error: ${err.message}`
     }
   } finally {
-    if (!streamFailed) {
-      // Flush each LLM round to rawMessages: assistant message followed by its tool results.
-      // This preserves the exact interleaved structure the provider saw across iterations.
-      for (const round of rounds) {
-        const assistantRaw: ChatMessage = { role: 'assistant', content: round.content }
-        if (round.reasoningContent) assistantRaw.reasoning_content = round.reasoningContent
-        if (round.thinkingState !== undefined) assistantRaw.thinking_state = round.thinkingState
-        if (round.toolCalls.length > 0) assistantRaw.tool_calls = round.toolCalls
-        rawMessages.value.push(assistantRaw)
-        for (const toolMsg of round.toolResults) rawMessages.value.push(toolMsg)
-      }
-    } else {
-      // Revert the user message pushed at the start — don't persist incomplete turns.
-      if (rawMessages.value.length > 0 && rawMessages.value[rawMessages.value.length - 1].role === 'user') {
-        rawMessages.value.pop()
-      }
-    }
-
     streaming.value = false
     abortController.value = null
     const completedRunId = activeAgentRunId.value
@@ -1209,16 +1313,10 @@ async function sendMessage() {
     await nextTick()
     scrollToBottom()
 
-    // Auto-save on clean completion. Await it before refreshing the run status so that
-    // the "Continue" button only becomes available after the conversation is persisted.
-    if (!streamFailed) {
-      await saveCurrentConversation().catch((err) => {
-        console.error('Auto-save failed:', err)
-      })
-      if (createdRun) {
-        continuationParentRunId.value = rootRunIdFor(createdRun)
-      }
-    }
+    // The run may have titled the conversation or moved it to the top.
+    conversationStore.fetchConversations(props.workspaceId).catch((err) => {
+      console.error('Failed to refresh conversations:', err)
+    })
 
     if (completedRunId !== null) {
       agentRunStore.refreshRun(completedRunId).catch((err) => {
@@ -1240,6 +1338,27 @@ function stopStreaming() {
   abortController.value?.abort()
 }
 
+// The conversation goes to a background agent once it has something in it and
+// no run is writing to it, so the agent gets all of it.
+const canHandOff = computed(() =>
+  Boolean(props.projectId) && activeConversationId.value !== null && messages.value.length > 0 && !streaming.value,
+)
+
+const handoffTitle = computed(() => {
+  const first = messages.value.find((m) => m.role === 'user')?.content ?? ''
+  const line = first.split('\n').find((l) => l.trim()) ?? ''
+  return line.trim().slice(0, 80)
+})
+
+function handedOffTask(task: Task) {
+  showHandoff.value = false
+  handedOff.value = [...handedOff.value, task]
+}
+
+function openTask(id: number) {
+  projectStore.selectedTaskId = id
+}
+
 function newChat() {
   if (streaming.value) {
     // Disconnect from the SSE stream without cancelling the backend run.
@@ -1248,11 +1367,11 @@ function newChat() {
     abortController.value?.abort()
   }
   messages.value = []
-  rawMessages.value = []
+  handedOff.value = []
   inputValue.value = ''
+  clearPendingImages()
   planExpanded.value = false
   activeAgentRunId.value = null
-  continuationParentRunId.value = null
   activeContextSize.value = null
   focusedRunContextSize.value = null
   autoScrollEnabled.value = true
@@ -1261,48 +1380,13 @@ function newChat() {
   conversationStore.setActive(null)
 }
 
-function findContinuationParentRunId(conversationId: number): number | null {
-  const runs = agentRunStore.runs
-    .filter((run) => run.workspaceId === props.workspaceId && run.conversationId === conversationId)
-    .sort(compareRunsByUpdatedAt)
-  const latest = runs[0]
-  return latest ? rootRunIdFor(latest) : null
-}
-
-function rootRunIdFor(run: AgentRun): number {
-  let current = run
-  const seen = new Set<number>()
-
-  while (current.parentRunId && !seen.has(current.id)) {
-    seen.add(current.id)
-    const parent = agentRunStore.runs.find((candidate) => candidate.id === current.parentRunId)
-    if (!parent) return current.parentRunId
-    current = parent
-  }
-
-  return current.id
-}
-
-function compareRunsByUpdatedAt(a: AgentRun, b: AgentRun): number {
-  return runTime(b.updatedAt, b.createdAt) - runTime(a.updatedAt, a.createdAt) || b.id - a.id
-}
-
-function runTime(updatedAt: string, createdAt: string): number {
-  const updated = new Date(updatedAt).getTime()
-  if (Number.isFinite(updated)) return updated
-  const created = new Date(createdAt).getTime()
-  return Number.isFinite(created) ? created : 0
-}
-
 async function continueFocusedRunConversation() {
   const conversationId = focusedRun.value?.conversationId
   if (!conversationId) return
 
   try {
-    const parentRunId = rootRunIdFor(focusedRun.value)
     const focusedTranscript = cloneDisplayMessages(focusedRunMessages.value)
     await loadConversation(conversationId)
-    continuationParentRunId.value = parentRunId
     if (focusedTranscript.length > 0) {
       messages.value = focusedTranscript
     }
@@ -1436,6 +1520,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
           </svg>
         </span>
         <span class="agent-title">{{ focusedRunTitle }}</span>
+        <DocLink topic="assistant" label="The assistant" />
       </div>
       <div v-if="viewingFocusedRun" class="agent-header-actions">
         <span class="focused-run-status" :class="{ active: focusedRunActive }">
@@ -1475,6 +1560,16 @@ function scrollToBottom(options: { force?: boolean } = {}) {
         >
           {{ contextSizeLabel(displayedContextSize) }}
         </span>
+        <button
+          v-if="projectId"
+          class="continue-run-btn"
+          type="button"
+          :disabled="!canHandOff"
+          :title="canHandOff ? 'Hand this conversation to a background agent as a task' : 'Available once the conversation has messages and no run is active'"
+          @click="showHandoff = true"
+        >
+          Continue in background
+        </button>
         <button class="new-chat-btn" title="New Chat" @click="newChat">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 5v14" />
@@ -1487,7 +1582,14 @@ function scrollToBottom(options: { force?: boolean } = {}) {
     <div ref="chatBody" class="agent-body" @scroll="handleChatScroll">
       <div v-if="viewingFocusedRun" class="run-focus-banner">
         <span class="run-focus-label">Focused background run</span>
-        <span v-if="focusedRun?.model" class="run-focus-meta">{{ focusedRun.model }}</span>
+        <span v-if="focusedRun?.model" class="run-focus-meta">
+          {{ focusedRun.model }}
+          <span
+            v-if="!aiModelStore.isModelAvailable(focusedRun.model)"
+            class="model-unavailable"
+            title="This model is no longer available."
+          >(unavailable)</span>
+        </span>
       </div>
       <div v-if="focusedRunError" class="run-focus-error">
         {{ focusedRunError }}
@@ -1541,14 +1643,20 @@ function scrollToBottom(options: { force?: boolean } = {}) {
           <template v-for="(item, si) in messageRenderItems(msg)" :key="`${item.type}-${si}`">
             <AiThinkingSection v-if="item.type === 'thinking'" :content="(item as ThinkingSegment).content" />
             <AiToolGroup v-else-if="item.type === 'tool-group'" :group="item as ToolGroupDisplay" />
-            <div v-else-if="item.type === 'approval'" class="approval-prompt">
+            <div
+              v-else-if="item.type === 'approval'"
+              class="approval-prompt"
+              :class="{ pending: (item as ApprovalSegment).status === 'pending' }"
+            >
               <div class="approval-header">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" />
                 </svg>
-                <span class="approval-title">sudo command requires approval</span>
+                <span class="approval-title">{{ (item as ApprovalSegment).title || 'sudo command requires approval' }}</span>
               </div>
-              <code class="approval-command">{{ (item as ApprovalSegment).command }}</code>
+              <p v-if="(item as ApprovalSegment).title" class="approval-summary">{{ (item as ApprovalSegment).command }}</p>
+              <code v-else class="approval-command">{{ (item as ApprovalSegment).command }}</code>
+              <ApprovalDetails v-if="(item as ApprovalSegment).details?.length" :details="(item as ApprovalSegment).details!" />
               <div v-if="(item as ApprovalSegment).status === 'pending'" class="approval-actions">
                 <button class="approval-btn approve" @click="handleApproval(item as ApprovalSegment, true)">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1618,7 +1726,8 @@ function scrollToBottom(options: { force?: boolean } = {}) {
           :class="{ 'has-copy-action': messageMarkdown(msg) }"
         >
           <AiMessageCopyButton v-if="messageMarkdown(msg)" :markdown="messageMarkdown(msg)" />
-          <span class="msg-plain-text">{{ msg.content }}</span>
+          <AiImageAttachments v-if="msg.images?.length" class="msg-images" :items="storedImageItems(msg.images)" />
+          <span v-if="msg.content" class="msg-plain-text">{{ msg.content }}</span>
         </div>
       </div>
     </div>
@@ -1679,7 +1788,17 @@ function scrollToBottom(options: { force?: boolean } = {}) {
     </div>
 
     <div v-else class="agent-input-area">
-      <div class="input-shell" :class="{ focused: inputFocused }">
+      <div v-for="task in handedOff" :key="task.id" class="handoff-note">
+        <span>Handed off to task #{{ task.id }}: {{ task.title }}</span>
+        <button type="button" class="handoff-link" @click="openTask(task.id)">Open task</button>
+      </div>
+      <div
+        class="input-shell"
+        :class="{ focused: inputFocused, dragging: draggingImages }"
+        @dragover="onComposerDragOver"
+        @dragleave="draggingImages = false"
+        @drop="onComposerDrop"
+      >
         <div v-if="slashCommandOptions.length > 0" class="slash-command-menu">
           <button
             v-for="command in slashCommandOptions"
@@ -1688,9 +1807,26 @@ function scrollToBottom(options: { force?: boolean } = {}) {
             class="slash-command-option"
             @mousedown.prevent="applySlashCommand(command)"
           >
-            <span class="slash-command-name">{{ command.name }}</span>
+            <span class="slash-command-name">
+              {{ command.name }}<span v-if="command.argumentHint" class="slash-command-hint"> {{ command.argumentHint }}</span>
+            </span>
             <span class="slash-command-description">{{ command.description }}</span>
           </button>
+        </div>
+        <div v-if="pendingImages.length > 0 || imageNotice" class="composer-images">
+          <AiImageAttachments
+            v-if="pendingImages.length > 0"
+            :items="pendingImageItems"
+            removable
+            @remove="removePendingImage"
+          />
+          <span v-if="pendingImagesBlocked" class="composer-image-notice">
+            {{ currentModel?.name ?? 'This model' }} can't view images. Pick another model or remove them.
+          </span>
+          <span v-else-if="pendingImagesFailed" class="composer-image-notice">
+            An image failed to upload. Remove it to send the message.
+          </span>
+          <span v-else-if="imageNotice" class="composer-image-notice">{{ imageNotice }}</span>
         </div>
         <div class="input-container" @click="inputEl?.focus()">
           <textarea
@@ -1700,6 +1836,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
             rows="1"
             :disabled="streaming"
             @keydown.enter.exact.prevent="sendMessage"
+            @paste="onComposerPaste"
             @focus="inputFocused = true"
             @blur="inputFocused = false"
             @input="autoResize"
@@ -1710,7 +1847,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
               <rect x="6" y="6" width="12" height="12" rx="2" />
             </svg>
           </button>
-          <button v-else class="agent-send" :class="{ active: inputValue.trim() }" @click="sendMessage" title="Send">
+          <button v-else class="agent-send" :class="{ active: canSend }" @click="sendMessage" title="Send">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
               <path d="m22 2-7 20-4-9-9-4Z" />
               <path d="M22 2 11 13" />
@@ -1718,20 +1855,44 @@ function scrollToBottom(options: { force?: boolean } = {}) {
           </button>
         </div>
         <div class="input-toolbar">
+          <button
+            type="button"
+            class="attach-image-btn"
+            :disabled="!canAttachImages || streaming"
+            :title="canAttachImages ? 'Attach images (or paste or drop them)' : `${currentModel?.name ?? 'This model'} can't view images`"
+            aria-label="Attach images"
+            @click="openImagePicker"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="9" cy="9" r="2" />
+              <path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21" />
+            </svg>
+          </button>
+          <input
+            ref="imageInput"
+            class="image-input"
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            @change="onImagesPicked"
+          />
           <template v-if="models.length > 0">
-            <select
-              :value="props.selectedAgentId"
-              class="model-selector agent-selector"
-              title="Select AI agent"
-              @change="handleAgentSelectorChange"
-            >
-              <option v-for="agent in aiAgentStore.agents" :key="agent.id" :value="agent.id">
-                {{ agent.name }}
-              </option>
-            </select>
-            <select v-model="selectedModel" class="model-selector">
-              <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
-            </select>
+            <SelectMenu
+              class="toolbar-select toolbar-select--agent"
+              :model-value="props.selectedAgentId"
+              :options="agentOptions"
+              title="Agent"
+              placement="above"
+              @update:model-value="selectAgent"
+            />
+            <SelectMenu
+              v-model="selectedModel"
+              class="toolbar-select toolbar-select--model"
+              :options="modelOptions"
+              title="Model"
+              placement="above"
+            />
             <button
               v-if="canToggleThinking"
               type="button"
@@ -1744,21 +1905,34 @@ function scrollToBottom(options: { force?: boolean } = {}) {
               <span class="thinking-toggle-label">Thinking</span>
               <span class="thinking-toggle-state">{{ thinkingEnabled ? 'On' : 'Off' }}</span>
             </button>
-            <select
+            <SelectMenu
               v-if="canSelectThinkingEffort && thinkingEnabled"
               v-model="thinkingEffort"
-              class="model-selector thinking-effort-selector"
-              title="Select reasoning level"
-            >
-              <option v-for="effort in currentModel?.thinking.supportedEfforts ?? []" :key="effort" :value="effort">
-                {{ thinkingEffortLabel(effort) }}
-              </option>
-            </select>
+              class="toolbar-select toolbar-select--effort"
+              :options="thinkingEffortOptions"
+              title="Reasoning effort"
+              prefix="Effort"
+              placement="above"
+            />
           </template>
           <span v-else class="agent-badge">No Models</span>
         </div>
       </div>
     </div>
+
+    <HandoffModal
+      v-if="projectId && activeConversationId !== null"
+      :show="showHandoff"
+      :project-id="projectId"
+      :workspace-id="workspaceId"
+      :conversation-id="activeConversationId"
+      :default-title="handoffTitle"
+      :default-model="selectedModel"
+      :default-effort="thinkingEffort"
+      @close="showHandoff = false"
+      @created="handedOffTask"
+      @branch-changed="(kind) => emit('branch-changed', kind)"
+    />
   </div>
 </template>
 
@@ -1775,6 +1949,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-2);
   padding: 0 var(--space-3);
   border-bottom: 0.5px solid var(--border-default);
   background: var(--ide-header-bg);
@@ -1786,6 +1961,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .agent-avatar {
@@ -1798,6 +1974,9 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 }
 
 .agent-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--ide-header-title-size);
   font-weight: 600;
   color: var(--text-primary);
@@ -1805,6 +1984,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 
 .agent-header-actions {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: var(--space-2, 8px);
 }
@@ -1925,34 +2105,18 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   border-color: var(--accent-border);
 }
 
-.model-selector {
-  font-size: 0.75rem;
-  min-height: 23px;
-  padding: 2px 26px 2px 8px;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--bg-raised) 70%, var(--bg-elevated));
-  border: 0.5px solid var(--border-default);
-  color: var(--text-secondary);
-  outline: none;
-  cursor: pointer;
-  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
-}
-
-.thinking-effort-selector {
-  min-width: 126px;
-}
-
-.model-selector:focus {
-  border-color: var(--accent-border);
-  color: var(--text-primary);
+.toolbar-select--agent,
+.toolbar-select--model {
+  max-width: 14rem;
 }
 
 .thinking-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 23px;
+  min-height: 24px;
   padding: 2px 8px;
+  line-height: 1.3;
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--bg-raised) 70%, var(--bg-elevated));
   border: 0.5px solid var(--border-default);
@@ -2053,6 +2217,11 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   white-space: nowrap;
 }
 
+.model-unavailable {
+  color: var(--accent-amber);
+  font-family: var(--font-sans);
+}
+
 .run-focus-error {
   padding: var(--space-2) var(--space-3);
   border: 0.5px solid var(--error-border);
@@ -2079,7 +2248,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 
 .msg-assistant .msg-avatar {
   background: var(--accent);
-  color: var(--bg-base);
+  color: var(--text-on-accent);
 }
 
 .msg-user .msg-avatar {
@@ -2151,6 +2320,10 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   white-space: pre-wrap;
 }
 
+.msg-images + .msg-plain-text {
+  margin-top: var(--space-2);
+}
+
 .msg-assistant .msg-content {
   background: var(--bg-elevated);
   border-color: var(--border-hairline);
@@ -2214,6 +2387,49 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
+.input-shell.dragging {
+  border-color: var(--accent);
+  border-style: dashed;
+}
+
+.composer-images {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 12px 0;
+}
+
+.composer-image-notice {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.attach-image-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  color: var(--text-tertiary);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.attach-image-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.attach-image-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.image-input {
+  display: none;
+}
+
 .slash-command-menu {
   display: flex;
   flex-direction: column;
@@ -2244,6 +2460,10 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   font-family: var(--font-mono);
   font-size: 0.78rem;
   color: var(--accent);
+}
+
+.slash-command-hint {
+  color: var(--text-muted);
 }
 
 .slash-command-description {
@@ -2313,7 +2533,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 
 .agent-send.active {
   background: var(--accent);
-  color: var(--bg-base);
+  color: var(--text-on-accent);
   border-color: var(--accent-border);
 }
 
@@ -2323,7 +2543,7 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 
 .agent-stop {
   background: var(--warning) !important;
-  color: var(--bg-base) !important;
+  color: var(--text-on-accent) !important;
   border-color: var(--warning-border) !important;
 }
 
@@ -2454,20 +2674,30 @@ function scrollToBottom(options: { force?: boolean } = {}) {
 
 /* Sudo approval prompt */
 .approval-prompt {
-  background: var(--warning-bg);
-  border: 0.5px solid var(--warning-border);
+  background: color-mix(in srgb, var(--bg-void) 24%, transparent);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   padding: 10px 12px;
   margin: 6px 0;
+}
+
+/* Attention colors only while the approval is waiting on the user. */
+.approval-prompt.pending {
+  background: var(--attention-bg);
+  border-color: var(--attention-border);
 }
 
 .approval-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--accent-amber);
+  color: var(--text-secondary);
   font-size: 0.75rem;
   font-weight: 600;
+}
+
+.approval-prompt.pending .approval-header {
+  color: var(--attention);
 }
 
 .approval-title {
@@ -2486,6 +2716,46 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   font-size: 0.72rem;
   color: var(--text-primary);
   word-break: break-all;
+}
+
+.handoff-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: 6px 10px;
+  border: 0.5px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-glow);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+}
+
+.handoff-note span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.handoff-link {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.handoff-link:hover {
+  text-decoration: underline;
+}
+
+.approval-summary {
+  margin: 8px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
 }
 
 .approval-actions {
@@ -2776,9 +3046,99 @@ function scrollToBottom(options: { force?: boolean } = {}) {
   font-style: italic;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
+@media (hover: none) {
+  .msg-copy-btn {
+    opacity: 1;
+  }
+}
+
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts. The textarea stays at the
+   global 16px touch size (anything smaller makes iOS zoom on focus), so the
+   rest of the composer is tightened around it. */
+@media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  .agent-input-area {
+    padding: var(--space-2);
+  }
+
+  .input-container {
+    gap: var(--space-2);
+    min-height: 0;
+    padding: 8px 8px 8px 14px;
+  }
+
+  .agent-input {
+    line-height: 1.375;
+    min-height: 36px;
+    padding: 7px 0;
+  }
+
+  .agent-send {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-lg);
+  }
+
+  .agent-send svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  /* One swipeable row of chips instead of wrapping onto several lines. */
+  .input-toolbar {
+    flex-wrap: nowrap;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 6px 8px;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+  }
+
+  .input-toolbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .input-toolbar > * {
+    flex-shrink: 0;
+  }
+
+  .toolbar-select--agent,
+  .toolbar-select--model {
+    flex-shrink: 1;
+    min-width: 5.5rem;
+    max-width: 11rem;
+  }
+
+  .thinking-toggle {
+    min-height: 30px;
+    padding: 4px 10px;
+    border-radius: var(--radius-lg);
+    font-size: 0.86rem;
+  }
+
+  .thinking-toggle-state {
+    font-size: 0.78rem;
+  }
+
+  .slash-command-option {
+    min-height: 44px;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .slash-command-name,
+  .slash-command-description {
+    font-size: 0.9rem;
+  }
+
+  /* Approving is the action a phone is most often picked up for. */
+  .approval-actions {
+    gap: var(--space-2);
+  }
+
+  .approval-btn {
+    flex: 1;
+    justify-content: center;
+    min-height: 44px;
+    font-size: 0.85rem;
   }
 }
 </style>

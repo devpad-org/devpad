@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, reactive, watch, nextTick, onUnmounted } from 'vue'
+import { computed, ref, reactive, watch, nextTick, onUnmounted } from 'vue'
 import { workspaceApi } from '@/api/workspaces'
 import { useMonacoEditor } from '@/composables/useMonacoEditor'
-
+import { useIsMobile } from '@/composables/useMediaQuery'
+// A tab is an open workspace file; its id is the file's path.
 interface Tab {
-  path: string
+  id: string
   name: string
 }
 
@@ -21,10 +22,13 @@ const emit = defineEmits<{
 const openTabs = reactive<Tab[]>([])
 const activeTab = ref<string | null>(null)
 
+const activeIsFile = computed(() => openTabs.some((t) => t.id === activeTab.value))
+
 const editorContainer = ref<HTMLElement | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const saving = ref(false)
+const isMobile = useIsMobile()
 
 const {
   editor,
@@ -33,47 +37,60 @@ const {
   setContent,
   switchToFile,
   closeFile,
+  reloadFile,
   isFileDirty,
   markClean,
   getContent,
   getFileContent,
   getDirtyFiles,
-} = useMonacoEditor(editorContainer)
+} = useMonacoEditor(editorContainer, { minimap: () => !isMobile.value })
 
 function tabName(path: string): string {
   return path.split('/').pop() ?? path
 }
 
-function selectTab(path: string) {
-  if (activeTab.value === path) return
-  activeTab.value = path
-  switchToFile(path)
-  emit('activeChange', path)
+// Activates a tab and tells the parent which file is showing.
+function activate(tab: Tab) {
+  activeTab.value = tab.id
+  error.value = null
+  switchToFile(tab.id)
+  emit('activeChange', tab.id)
 }
 
-function closeTab(path: string, event?: MouseEvent) {
-  event?.stopPropagation()
+function selectTab(id: string) {
+  // Clicking the active tab again clears a failed file load.
+  if (activeTab.value === id && !error.value) return
+  const tab = openTabs.find((t) => t.id === id)
+  if (tab) activate(tab)
+}
 
-  const idx = openTabs.findIndex((t) => t.path === path)
+// Removes a tab, moving to an adjacent one if it was showing.
+function removeTab(id: string) {
+  const idx = openTabs.findIndex((t) => t.id === id)
   if (idx === -1) return
 
   openTabs.splice(idx, 1)
-  closeFile(path)
+  closeFile(id)
 
-  if (activeTab.value === path) {
+  if (activeTab.value === id) {
     // Switch to an adjacent tab, preferring the one to the left
     const nextTab = openTabs[Math.min(idx, openTabs.length - 1)] ?? null
-    activeTab.value = nextTab?.path ?? null
-
     if (nextTab) {
-      switchToFile(nextTab.path)
+      activate(nextTab)
+    } else {
+      activeTab.value = null
+      emit('activeChange', null)
     }
-    emit('activeChange', activeTab.value)
   }
 }
 
+function closeTab(tab: Tab, event?: MouseEvent) {
+  event?.stopPropagation()
+  removeTab(tab.id)
+}
+
 async function saveActiveFile() {
-  if (!activeTab.value || !isDirty.value || saving.value) return
+  if (!activeTab.value || !activeIsFile.value || !isDirty.value || saving.value) return
   saving.value = true
   try {
     const content = getContent()
@@ -105,10 +122,27 @@ async function saveAllFiles() {
   }
 }
 
+// Re-reads every open file from disk, dropping unsaved edits, such as after
+// the workspace switched branches. Files that no longer exist are closed.
+async function reloadFiles() {
+  const files = openTabs.map((t) => t.id)
+  await Promise.all(files.map(async (path) => {
+    try {
+      const content = await workspaceApi.readFile(props.workspaceId, path)
+      reloadFile(path, content)
+    } catch {
+      removeTab(path)
+    }
+  }))
+}
+
+const activeFileDirty = computed(() => activeIsFile.value && isDirty.value)
+
 defineExpose({
   saveActiveFile,
   saveAllFiles,
-  isDirty,
+  reloadFiles,
+  isDirty: activeFileDirty,
   hasDirtyFiles,
 })
 
@@ -128,7 +162,7 @@ watch(() => props.filePath, async (newPath) => {
   if (!newPath) return
 
   // If already open, just switch to it
-  const existing = openTabs.find((t) => t.path === newPath)
+  const existing = openTabs.find((t) => t.id === newPath)
   if (existing) {
     selectTab(newPath)
     return
@@ -145,7 +179,7 @@ watch(() => props.filePath, async (newPath) => {
   try {
     const content = await workspaceApi.readFile(props.workspaceId, newPath, signal)
     if (signal.aborted) return
-    openTabs.push({ path: newPath, name: tabName(newPath) })
+    openTabs.push({ id: newPath, name: tabName(newPath) })
     activeTab.value = newPath
     await nextTick()
     setContent(content, newPath)
@@ -171,19 +205,19 @@ onUnmounted(() => {
     <div class="editor-tabs">
       <div
         v-for="tab in openTabs"
-        :key="tab.path"
+        :key="tab.id"
         class="editor-tab"
-        :class="{ active: tab.path === activeTab }"
-        @click="selectTab(tab.path)"
+        :class="{ active: tab.id === activeTab }"
+        @click="selectTab(tab.id)"
       >
         <span class="tab-icon">
-          <span v-if="isFileDirty(tab.path)" class="dot-modified" />
+          <span v-if="isFileDirty(tab.id)" class="dot-modified" />
         </span>
         <span class="tab-name">{{ tab.name }}</span>
         <button
           class="tab-close"
           title="Close"
-          @click="closeTab(tab.path, $event)"
+          @click="closeTab(tab, $event)"
         >×</button>
       </div>
       <div v-if="openTabs.length === 0" class="editor-tab-empty" />
@@ -191,7 +225,7 @@ onUnmounted(() => {
 
     <!-- Monaco editor container -->
     <div
-      v-show="activeTab && !loading && !error"
+      v-show="activeIsFile && !loading && !error"
       ref="editorContainer"
       class="editor-container"
     />

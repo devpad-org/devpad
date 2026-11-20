@@ -94,9 +94,11 @@ func RunAdapterContract(t *testing.T, contract AdapterContract) {
 		}
 	})
 
+	// Uses a client error because 429 and 5xx are retried with backoff; retry
+	// behaviour itself is covered in internal/ai/provider/shared.
 	t.Run("error_propagation", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "upstream failure", http.StatusInternalServerError)
+			http.Error(w, "upstream failure", http.StatusBadRequest)
 		}))
 		defer server.Close()
 

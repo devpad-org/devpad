@@ -33,7 +33,7 @@ func TestEstimator_AccountsForRepresentativeAgentTranscript(t *testing.T) {
 	enabled := true
 	req := Request{
 		ProviderID: "anthropic",
-		ModelID:    "claude-sonnet-4-6",
+		ModelID:    "claude-sonnet-5-5",
 		Thinking:   &domain.ThinkingConfig{Enabled: &enabled, Effort: "medium"},
 		Tools: []domain.ToolDefinition{{
 			Type: "function",
@@ -108,7 +108,7 @@ func TestEstimator_AccountsForRepresentativeAgentTranscript(t *testing.T) {
 
 func TestEstimateChatRequest_UsesResolvedModelProvider(t *testing.T) {
 	estimate := EstimateChatRequest(domain.Model{
-		ID:         "claude-sonnet-4-6",
+		ID:         "claude-sonnet-5-5",
 		ProviderID: "anthropic",
 	}, domain.ChatRequest{
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
@@ -117,8 +117,8 @@ func TestEstimateChatRequest_UsesResolvedModelProvider(t *testing.T) {
 	if estimate.ProviderID != "anthropic" {
 		t.Fatalf("ProviderID = %q, want anthropic", estimate.ProviderID)
 	}
-	if estimate.ModelID != "claude-sonnet-4-6" {
-		t.Fatalf("ModelID = %q, want claude-sonnet-4-6", estimate.ModelID)
+	if estimate.ModelID != "claude-sonnet-5-5" {
+		t.Fatalf("ModelID = %q, want claude-sonnet-5-5", estimate.ModelID)
 	}
 	assertPositive(t, "total tokens", estimate.TotalTokens)
 }
@@ -130,19 +130,23 @@ func TestBudgetFor_ReturnsProviderModelDefaults(t *testing.T) {
 		modelID    string
 		wantBudget int
 	}{
-		{name: "anthropic opus long context", providerID: "anthropic", modelID: "claude-opus-4-7", wantBudget: 1000000},
-		{name: "anthropic sonnet long context", providerID: "anthropic", modelID: "claude-sonnet-4-6", wantBudget: 1000000},
-		{name: "anthropic haiku context", providerID: "anthropic", modelID: "claude-haiku-4-5", wantBudget: 200000},
-		{name: "openai gpt 5.4 context", providerID: "openai", modelID: "gpt-5.4", wantBudget: 1050000},
-		{name: "openai gpt 5.5 context", providerID: "openai", modelID: "gpt-5.5", wantBudget: 1050000},
-		{name: "mistral devstral context", providerID: "mistral", modelID: "devstral-medium-latest", wantBudget: 256000},
+		{name: "anthropic opus 5.5 context", providerID: "anthropic", modelID: "claude-opus-5-5", wantBudget: 1000000},
+		{name: "anthropic sonnet 5.5 context", providerID: "anthropic", modelID: "claude-sonnet-5-5", wantBudget: 1000000},
+		{name: "anthropic haiku 5.5 context", providerID: "anthropic", modelID: "claude-haiku-5-5", wantBudget: 1000000},
+		{name: "anthropic older haiku context", providerID: "anthropic", modelID: "claude-haiku-4-5", wantBudget: 200000},
+		{name: "openai gpt 6.2 astra context", providerID: "openai", modelID: "gpt-6.2-astra", wantBudget: 922000},
+		{name: "openai gpt 6.2 sol context", providerID: "openai", modelID: "gpt-6.2-sol", wantBudget: 922000},
+		{name: "openai gpt 6.1 terra context", providerID: "openai", modelID: "gpt-6.1-terra", wantBudget: 922000},
+		{name: "openai gpt 6 luna context", providerID: "openai", modelID: "gpt-6-luna", wantBudget: 922000},
 		{name: "mistral small context", providerID: "mistral", modelID: "mistral-small-latest", wantBudget: 256000},
 		{name: "mistral older small context", providerID: "mistral", modelID: "mistral-small-2506", wantBudget: 128000},
 		{name: "mistral medium context", providerID: "mistral", modelID: "mistral-medium-3-5", wantBudget: 256000},
-		{name: "mistral large context", providerID: "mistral", modelID: "mistral-large-latest", wantBudget: 256000},
-		{name: "moonshot kimi context", providerID: "moonshot", modelID: "kimi-k2.6", wantBudget: 256000},
+		{name: "mistral large 3 context", providerID: "mistral", modelID: "mistral-large-2512", wantBudget: 256000},
+		{name: "mistral large 4 context", providerID: "mistral", modelID: "mistral-large-4-0", wantBudget: 1000000},
+		{name: "moonshot kimi k3 context", providerID: "moonshot", modelID: "kimi-k3", wantBudget: 1000000},
+		{name: "moonshot kimi k3.1 pro context", providerID: "moonshot", modelID: "kimi-k3.1-pro", wantBudget: 1000000},
+		{name: "minimax m3.1 flash context", providerID: "minimax", modelID: "MiniMax-M3.1-Flash", wantBudget: 1000000},
 		{name: "minimax m3 context", providerID: "minimax", modelID: "MiniMax-M3", wantBudget: 1000000},
-		{name: "minimax m2.7 context", providerID: "minimax", modelID: "MiniMax-M2.7", wantBudget: 204800},
 		{name: "unknown conservative fallback", providerID: "unknown", modelID: "custom", wantBudget: 25000},
 	}
 
@@ -176,7 +180,7 @@ func TestEstimator_ToolResultContentDrivesBroadRunGrowth(t *testing.T) {
 	}
 	small := EstimateRequest(Request{
 		ProviderID: "openai",
-		ModelID:    "gpt-5.5",
+		ModelID:    "gpt-6.2-astra",
 		Turns: append(cloneTurns(baseTurns),
 			domain.NewToolResultTurn("call_1", "read_file", "package orchestrator\n", false),
 		),
@@ -184,7 +188,7 @@ func TestEstimator_ToolResultContentDrivesBroadRunGrowth(t *testing.T) {
 	largeResult := strings.Repeat("func example() { return }\n", 400)
 	large := EstimateRequest(Request{
 		ProviderID: "openai",
-		ModelID:    "gpt-5.5",
+		ModelID:    "gpt-6.2-astra",
 		Turns: append(cloneTurns(baseTurns),
 			domain.NewToolResultTurn("call_1", "read_file", largeResult, false),
 		),
@@ -197,7 +201,7 @@ func TestEstimator_ToolResultContentDrivesBroadRunGrowth(t *testing.T) {
 		t.Fatalf("large total tokens = %d, small = %d", large.TotalTokens, small.TotalTokens)
 	}
 
-	expectedDelta := EstimateText("openai", "gpt-5.5", largeResult) - EstimateText("openai", "gpt-5.5", "package orchestrator\n")
+	expectedDelta := EstimateText("openai", "gpt-6.2-astra", largeResult) - EstimateText("openai", "gpt-6.2-astra", "package orchestrator\n")
 	if gotDelta := large.ToolResultTokens - small.ToolResultTokens; gotDelta != expectedDelta {
 		t.Fatalf("tool result token delta = %d, want %d", gotDelta, expectedDelta)
 	}
@@ -206,7 +210,7 @@ func TestEstimator_ToolResultContentDrivesBroadRunGrowth(t *testing.T) {
 func TestEstimator_ThinkingStateBlocksAreCounted(t *testing.T) {
 	withoutThinking := EstimateRequest(Request{
 		ProviderID: "anthropic",
-		ModelID:    "claude-haiku-4-5",
+		ModelID:    "claude-haiku-5-5",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleUser, "Continue."),
 			domain.NewTextTurn(domain.RoleAssistant, "Done."),
@@ -214,7 +218,7 @@ func TestEstimator_ThinkingStateBlocksAreCounted(t *testing.T) {
 	})
 	withThinking := EstimateRequest(Request{
 		ProviderID: "anthropic",
-		ModelID:    "claude-haiku-4-5",
+		ModelID:    "claude-haiku-5-5",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleUser, "Continue."),
 			{

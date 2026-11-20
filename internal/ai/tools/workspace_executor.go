@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"unicode/utf8"
+	"sync"
 
 	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/ai/attachment"
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
@@ -37,7 +38,13 @@ type WorkspaceExecutor struct {
 	ws          WorkspaceOps
 	childRunner ChildAgentRunner
 	agentLister AgentLister
+	defaults    AgentDefaults
 	summarizer  FileSummarizer
+	images      ImageStore
+
+	providersMu sync.RWMutex
+	providers   []ToolProvider
+	scopes      ScopeResolver
 }
 
 // NewWorkspaceExecutor creates an Executor backed by workspace operations.
@@ -55,9 +62,83 @@ func (e *WorkspaceExecutor) SetAgentLister(lister AgentLister) {
 	e.agentLister = lister
 }
 
+// SetAgentDefaults wires users' agent defaults, which child runs use
+// when spawn_sub_agent names no model.
+func (e *WorkspaceExecutor) SetAgentDefaults(defaults AgentDefaults) {
+	e.defaults = defaults
+}
+
+// AddProvider routes calls for a provider's workspace-specific tools.
+func (e *WorkspaceExecutor) AddProvider(p ToolProvider) {
+	e.providersMu.Lock()
+	defer e.providersMu.Unlock()
+	e.providers = append(e.providers, p)
+}
+
+// SetScopeResolver sets what tells providers what a call's workspace is.
+func (e *WorkspaceExecutor) SetScopeResolver(r ScopeResolver) {
+	e.providersMu.Lock()
+	defer e.providersMu.Unlock()
+	e.scopes = r
+}
+
+// builtinTools names the tools the executor runs itself, which no provider
+// sees.
+var builtinTools = sync.OnceValue(func() map[string]bool {
+	names := map[string]bool{}
+	for _, d := range AgentTools() {
+		names[d.Function.Name] = true
+	}
+	return names
+})
+
+// providerCall returns the providers, and the call with its scope resolved
+// for them. Built-in tools reach no provider and resolve nothing.
+func (e *WorkspaceExecutor) providerCall(ctx context.Context, req ExecutionRequest) ([]ToolProvider, ExecutionRequest, error) {
+	e.providersMu.RLock()
+	providers, scopes := e.providers, e.scopes
+	e.providersMu.RUnlock()
+	if len(providers) == 0 || builtinTools()[req.ToolName] {
+		return nil, req, nil
+	}
+	scope, err := resolveScope(ctx, scopes, true, req.UserID, req.WorkspaceID)
+	if err != nil {
+		return nil, req, err
+	}
+	req.Scope = scope
+	return providers, req, nil
+}
+
+// SetImageStore wires the store read_file keeps the images it opens in.
+// Without one, image files are read as text.
+func (e *WorkspaceExecutor) SetImageStore(images ImageStore) {
+	e.images = images
+}
+
 // SetFileSummarizer wires the AI summarizer used by summarize_file.
 func (e *WorkspaceExecutor) SetFileSummarizer(summarizer FileSummarizer) {
 	e.summarizer = summarizer
+}
+
+// ApprovalFor reports whether a provider requires the user's approval
+// before the call runs.
+func (e *WorkspaceExecutor) ApprovalFor(ctx context.Context, req ExecutionRequest) (Approval, bool, error) {
+	providers, req, err := e.providerCall(ctx, req)
+	if err != nil {
+		return Approval{}, false, fmt.Errorf("resolving the run's scope: %w", err)
+	}
+	for _, p := range providers {
+		if gate, ok := p.(ApprovalGate); ok {
+			approval, needed, err := gate.ApprovalFor(ctx, req)
+			if err != nil {
+				return Approval{}, false, err
+			}
+			if needed {
+				return approval, true, nil
+			}
+		}
+	}
+	return Approval{}, false, nil
 }
 
 func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionRequest) domain.ToolResultPart {
@@ -68,9 +149,9 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 
 	switch req.ToolName {
 	case "read_file":
-		return e.readFile(ctx, req.UserID, req.WorkspaceID, params)
+		return e.readFile(ctx, req, params)
 	case "summarize_file":
-		return e.summarizeFile(ctx, req.UserID, req.WorkspaceID, params)
+		return e.summarizeFile(ctx, req, params)
 	case "write_file":
 		return e.writeFile(ctx, req.UserID, req.WorkspaceID, params)
 	case "list_files":
@@ -102,21 +183,47 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 	case "wait_for_sub_agents":
 		return e.waitForSubAgents(ctx, req, params)
 	default:
+		providers, req, err := e.providerCall(ctx, req)
+		if err != nil {
+			return toolFailure(req.ToolName, "Error: could not tell what this workspace is, so the call did not run: %v", err)
+		}
+		for _, p := range providers {
+			if result, ok := p.ExecuteTool(ctx, req); ok {
+				return result
+			}
+		}
 		return toolFailure(req.ToolName, "unknown tool: %s", req.ToolName)
 	}
 }
 
-func (e *WorkspaceExecutor) readFile(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
+func (e *WorkspaceExecutor) readFile(ctx context.Context, req ExecutionRequest, params map[string]any) domain.ToolResultPart {
 	path, _ := params["path"].(string)
 	if path == "" {
 		return toolFailure("read_file", "Error: path is required")
 	}
-	data, err := e.ws.ReadFile(ctx, userID, workspaceID, path)
+	data, err := e.ws.ReadFile(ctx, req.UserID, req.WorkspaceID, path)
 	if err != nil {
 		return toolFailure("read_file", "Error: %v", err)
 	}
+	if width, height, ok := attachment.Probe(data); ok && e.images != nil {
+		if !req.Vision {
+			return toolSuccess("read_file", fmt.Sprintf("%s is a %d×%d image. This model can't view images, so it isn't shown.", path, width, height))
+		}
+		return e.readImage(ctx, req, path, data)
+	}
 
 	return toolSuccess("read_file", truncateToolText(string(data), maxToolTextBytes, truncationNoticeFormat))
+}
+
+// readImage returns an image file as an image the model can look at.
+func (e *WorkspaceExecutor) readImage(ctx context.Context, req ExecutionRequest, path string, data []byte) domain.ToolResultPart {
+	image, err := e.images.StoreToolImage(ctx, req.UserID, req.ConversationID, req.CurrentRunID, data)
+	if err != nil {
+		return toolFailure("read_file", "Error: %s is an image that can't be shown: %v", path, err)
+	}
+	result := toolSuccess("read_file", fmt.Sprintf("Image %s (%d×%d) is attached.", path, image.Width, image.Height))
+	result.Images = []domain.ImagePart{image}
+	return result
 }
 
 func (e *WorkspaceExecutor) writeFile(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
@@ -306,11 +413,7 @@ func truncateToolText(content string, maxBytes int, noticeFormat string) string 
 		return content
 	}
 
-	truncated := content[:maxBytes]
-	for !utf8.ValidString(truncated) && len(truncated) > 0 {
-		truncated = truncated[:len(truncated)-1]
-	}
-	return truncated + fmt.Sprintf(noticeFormat, maxBytes)
+	return domain.CutText(content, maxBytes) + fmt.Sprintf(noticeFormat, maxBytes)
 }
 
 func cloneThinking(thinking *domain.ThinkingConfig) *domain.ThinkingConfig {

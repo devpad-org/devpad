@@ -20,7 +20,7 @@ func main() {
 	httpRedirectPort := flag.Int("http-redirect-port", 0, "Port for HTTP→HTTPS redirect server (env: DEVPAD_HTTP_REDIRECT_PORT, requires --domain)")
 	dbPath := flag.String("db-path", "", "Path to the SQLite database file (env: DEVPAD_DB_PATH, default: devpad.db)")
 	previewDomain := flag.String("preview-domain", "", "Domain for workspace previews, e.g. preview.example.com (env: DEVPAD_PREVIEW_DOMAIN)")
-	encryptionKey := flag.String("encryption-key", "", "Hex-encoded 32-byte key for encrypting secrets (env: DEVPAD_ENCRYPTION_KEY)")
+	encryptionKey := flag.String("encryption-key", "", "Hex-encoded 32-byte key for encrypting secrets, required: make one with openssl rand -hex 32 and keep it (env: DEVPAD_ENCRYPTION_KEY)")
 	flag.Parse()
 
 	// Environment variable fallbacks (flags take precedence).

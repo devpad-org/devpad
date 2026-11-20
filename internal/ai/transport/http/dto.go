@@ -22,13 +22,31 @@ type ChatRequestDTO struct {
 
 // CreateAgentRunRequestDTO is the frontend request contract for background agent runs.
 type CreateAgentRunRequestDTO struct {
-	Model          string       `json:"model"`
-	AgentID        string       `json:"agentId,omitempty"`
-	Turns          []TurnDTO    `json:"turns"`
+	Model   string `json:"model"`
+	AgentID string `json:"agentId,omitempty"`
+	// Message and Images are the user's new message; the server holds the
+	// conversation's history.
+	Message string        `json:"message"`
+	Images  []ImageRefDTO `json:"images,omitempty"`
+	// DisplayText is what the user typed, when Message is something else,
+	// such as a slash command expanded into its prompt.
+	DisplayText    string       `json:"displayText,omitempty"`
 	Thinking       *ThinkingDTO `json:"thinking,omitempty"`
 	WorkspaceID    int64        `json:"workspaceId,omitempty"`
 	ConversationID int64        `json:"conversationId,omitempty"`
-	ParentRunID    int64        `json:"parentRunId,omitempty"`
+}
+
+// MessageTurn is the user's turn the request sends. Images go first: models
+// read a picture best before the question about it.
+func (r CreateAgentRunRequestDTO) MessageTurn() domain.Turn {
+	turn := domain.Turn{Role: domain.RoleUser, DisplayText: r.DisplayText}
+	for _, image := range r.Images {
+		turn.Parts = append(turn.Parts, domain.NewImagePart(toDomainImage(image)))
+	}
+	if r.Message != "" {
+		turn.Parts = append(turn.Parts, domain.Part{Kind: domain.PartText, Text: r.Message})
+	}
+	return turn
 }
 
 // ThinkingDTO controls thinking mode over the transport boundary.
@@ -41,6 +59,9 @@ type ThinkingDTO struct {
 type TurnDTO struct {
 	Role  string    `json:"role"`
 	Parts []PartDTO `json:"parts"`
+	// DisplayText is what the user typed, when the model was sent the text
+	// in Parts instead. It is only for showing the turn.
+	DisplayText string `json:"displayText,omitempty"`
 }
 
 // PartDTO carries one normalized piece of a turn.
@@ -50,6 +71,15 @@ type PartDTO struct {
 	Thinking   *ThinkingPartDTO `json:"thinking,omitempty"`
 	ToolCall   *ToolCallDTO     `json:"toolCall,omitempty"`
 	ToolResult *ToolResultDTO   `json:"toolResult,omitempty"`
+	Image      *ImageRefDTO     `json:"image,omitempty"`
+}
+
+// ImageRefDTO refers to a stored image attachment.
+type ImageRefDTO struct {
+	AttachmentID int64  `json:"attachmentId"`
+	MediaType    string `json:"mediaType"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
 }
 
 // ThinkingPartDTO carries the reasoning text and opaque provider state.
@@ -68,10 +98,11 @@ type ToolCallDTO struct {
 
 // ToolResultDTO is the transport representation of a tool execution result.
 type ToolResultDTO struct {
-	ToolCallID string `json:"toolCallId"`
-	Name       string `json:"name"`
-	Content    string `json:"content"`
-	IsError    bool   `json:"isError,omitempty"`
+	ToolCallID string        `json:"toolCallId"`
+	Name       string        `json:"name"`
+	Content    string        `json:"content"`
+	IsError    bool          `json:"isError,omitempty"`
+	Images     []ImageRefDTO `json:"images,omitempty"`
 }
 
 // StreamEventDTO is the stable SSE payload sent to the frontend.
@@ -89,6 +120,7 @@ type StreamEventDTO struct {
 	QuestionResolved *QuestionResultDTO   `json:"questionResolved,omitempty"`
 	Plan             []PlanStepDTO        `json:"plan,omitempty"`
 	ContextSize      *ContextSizeDTO      `json:"contextSize,omitempty"`
+	Usage            *UsageDTO            `json:"usage,omitempty"`
 	Done             bool                 `json:"done,omitempty"`
 	Error            string               `json:"error,omitempty"`
 }
@@ -106,6 +138,7 @@ type AgentRunDTO struct {
 	Status         string     `json:"status"`
 	Error          string     `json:"error,omitempty"`
 	InputTurns     []TurnDTO  `json:"inputTurns,omitempty"`
+	Usage          *UsageDTO  `json:"usage,omitempty"`
 	CreatedAt      time.Time  `json:"createdAt"`
 	UpdatedAt      time.Time  `json:"updatedAt"`
 	StartedAt      *time.Time `json:"startedAt,omitempty"`
@@ -123,23 +156,48 @@ type StreamToolCallDTO struct {
 
 // StreamToolResultDTO is sent over SSE after tool execution.
 type StreamToolResultDTO struct {
-	ToolCallID string `json:"toolCallId"`
-	Name       string `json:"name"`
-	Content    string `json:"content"`
-	IsError    bool   `json:"isError,omitempty"`
+	ToolCallID string        `json:"toolCallId"`
+	Name       string        `json:"name"`
+	Content    string        `json:"content"`
+	IsError    bool          `json:"isError,omitempty"`
+	Images     []ImageRefDTO `json:"images,omitempty"`
 }
 
 // ApprovalRequestDTO asks the client to approve a command.
 type ApprovalRequestDTO struct {
-	ID      string `json:"id"`
-	Command string `json:"command"`
+	ID      string              `json:"id"`
+	Title   string              `json:"title,omitempty"`
+	Command string              `json:"command"`
+	Details []ApprovalDetailDTO `json:"details,omitempty"`
 }
 
 // ApprovalResultDTO reports the outcome of a previous approval request.
 type ApprovalResultDTO struct {
-	ID      string `json:"id"`
-	Command string `json:"command"`
-	Status  string `json:"status"`
+	ID      string              `json:"id"`
+	Title   string              `json:"title,omitempty"`
+	Command string              `json:"command"`
+	Details []ApprovalDetailDTO `json:"details,omitempty"`
+	Status  string              `json:"status"`
+}
+
+// ApprovalDetailDTO is one fact about an action awaiting approval. Text
+// marks a value the model wrote, to be shown verbatim and set apart.
+type ApprovalDetailDTO struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+	Text  bool   `json:"text,omitempty"`
+}
+
+// FromApprovalDetails converts approval details for the client.
+func FromApprovalDetails(details []domain.ApprovalDetail) []ApprovalDetailDTO {
+	if len(details) == 0 {
+		return nil
+	}
+	out := make([]ApprovalDetailDTO, len(details))
+	for i, d := range details {
+		out[i] = ApprovalDetailDTO{Label: d.Label, Value: d.Value, Text: d.Text}
+	}
+	return out
 }
 
 // QuestionRequestDTO asks the frontend to collect answers from the user.
@@ -198,6 +256,31 @@ type ContextSizeDTO struct {
 	PercentageUsed             float64 `json:"percentageUsed"`
 	WarningThresholdPercentage int     `json:"warningThresholdPercentage"`
 	Warning                    bool    `json:"warning"`
+}
+
+// UsageDTO is the tokens provider requests were billed for and, when the
+// model's prices are known, their cost in USD.
+type UsageDTO struct {
+	InputTokens      int64    `json:"inputTokens"`
+	OutputTokens     int64    `json:"outputTokens"`
+	CacheReadTokens  int64    `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int64    `json:"cacheWriteTokens,omitempty"`
+	CostUSD          *float64 `json:"costUsd,omitempty"`
+}
+
+// FromUsage converts usage into its transport shape, or nil when there is
+// none to report.
+func FromUsage(usage domain.Usage) *UsageDTO {
+	if usage == (domain.Usage{}) {
+		return nil
+	}
+	return &UsageDTO{
+		InputTokens:      usage.InputTokens,
+		OutputTokens:     usage.OutputTokens,
+		CacheReadTokens:  usage.CacheReadTokens,
+		CacheWriteTokens: usage.CacheWriteTokens,
+		CostUSD:          usage.CostUSD,
+	}
 }
 
 // ToDomainThinking maps a transport thinking config into the domain shape.
@@ -264,18 +347,68 @@ func toDomainPart(dto PartDTO) domain.Part {
 				Name:       dto.ToolResult.Name,
 				Content:    dto.ToolResult.Content,
 				IsError:    dto.ToolResult.IsError,
+				Images:     toDomainImages(dto.ToolResult.Images),
 			},
 		}
+	case domain.PartImage:
+		if dto.Image == nil {
+			return domain.Part{Kind: domain.PartImage}
+		}
+		return domain.NewImagePart(toDomainImage(*dto.Image))
 	default:
 		return domain.Part{Kind: domain.PartKind(dto.Kind), Text: dto.Text}
 	}
+}
+
+// toDomainImage takes only the reference: the image's type and size come
+// from the stored attachment once a run loads it.
+func toDomainImage(dto ImageRefDTO) domain.ImagePart {
+	return domain.ImagePart{
+		AttachmentID: dto.AttachmentID,
+		MediaType:    dto.MediaType,
+		Width:        dto.Width,
+		Height:       dto.Height,
+	}
+}
+
+func toDomainImages(dtos []ImageRefDTO) []domain.ImagePart {
+	if len(dtos) == 0 {
+		return nil
+	}
+	images := make([]domain.ImagePart, 0, len(dtos))
+	for _, dto := range dtos {
+		images = append(images, toDomainImage(dto))
+	}
+	return images
+}
+
+func fromDomainImage(image domain.ImagePart) ImageRefDTO {
+	return ImageRefDTO{
+		AttachmentID: image.AttachmentID,
+		MediaType:    image.MediaType,
+		Width:        image.Width,
+		Height:       image.Height,
+	}
+}
+
+func fromDomainImages(images []domain.ImagePart) []ImageRefDTO {
+	if len(images) == 0 {
+		return nil
+	}
+	dtos := make([]ImageRefDTO, 0, len(images))
+	for _, image := range images {
+		dtos = append(dtos, fromDomainImage(image))
+	}
+	return dtos
 }
 
 // FromDomainTurns converts normalized turns back into the stable transport shape.
 func FromDomainTurns(turns []domain.Turn) []TurnDTO {
 	dtos := make([]TurnDTO, 0, len(turns))
 	for _, turn := range turns {
-		dto := TurnDTO{Role: string(turn.Role)}
+		// A turn with no parts must still encode as an empty array, not null:
+		// the frontend iterates parts directly.
+		dto := TurnDTO{Role: string(turn.Role), Parts: make([]PartDTO, 0, len(turn.Parts)), DisplayText: turn.DisplayText}
 		for _, part := range turn.Parts {
 			dto.Parts = append(dto.Parts, fromDomainPart(part))
 		}
@@ -316,7 +449,15 @@ func fromDomainPart(part domain.Part) PartDTO {
 				Name:       part.ToolResult.Name,
 				Content:    part.ToolResult.Content,
 				IsError:    part.ToolResult.IsError,
+				Images:     fromDomainImages(part.ToolResult.Images),
 			}
+		}
+		return dto
+	case domain.PartImage:
+		dto := PartDTO{Kind: "image"}
+		if part.Image != nil {
+			image := fromDomainImage(*part.Image)
+			dto.Image = &image
 		}
 		return dto
 	default:
@@ -352,18 +493,23 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 			Name:       event.ToolResult.Name,
 			Content:    event.ToolResult.Content,
 			IsError:    event.ToolResult.IsError,
+			Images:     fromDomainImages(event.ToolResult.Images),
 		}
 	}
 	if event.Approval != nil {
 		dto.ApprovalRequired = &ApprovalRequestDTO{
 			ID:      event.Approval.ID,
+			Title:   event.Approval.Title,
 			Command: event.Approval.Command,
+			Details: FromApprovalDetails(event.Approval.Details),
 		}
 	}
 	if event.ApprovalResult != nil {
 		dto.ApprovalResolved = &ApprovalResultDTO{
 			ID:      event.ApprovalResult.ID,
+			Title:   event.ApprovalResult.Title,
 			Command: event.ApprovalResult.Command,
+			Details: FromApprovalDetails(event.ApprovalResult.Details),
 			Status:  event.ApprovalResult.Status,
 		}
 	}
@@ -392,6 +538,9 @@ func FromClientEvent(event domain.ClientEvent) StreamEventDTO {
 			WarningThresholdPercentage: event.ContextSize.WarningThresholdPercentage,
 			Warning:                    event.ContextSize.Warning,
 		}
+	}
+	if event.Usage != nil {
+		dto.Usage = FromUsage(*event.Usage)
 	}
 
 	return dto
@@ -484,6 +633,7 @@ func fromAgentRun(run *domain.AgentRun, includeInputTurns bool) AgentRunDTO {
 		Model:          run.Model,
 		Status:         string(run.Status),
 		Error:          run.Error,
+		Usage:          FromUsage(run.Usage),
 		CreatedAt:      run.CreatedAt,
 		UpdatedAt:      run.UpdatedAt,
 		StartedAt:      run.StartedAt,
@@ -504,7 +654,10 @@ func AgentRunPromptPreview(turns []domain.Turn) string {
 		if turn.Role != domain.RoleUser {
 			continue
 		}
-		preview := strings.Join(strings.Fields(turn.Text()), " ")
+		preview := strings.Join(strings.Fields(turn.DisplayedText()), " ")
+		if preview == "" && len(turn.Images()) > 0 {
+			preview = "Image"
+		}
 		if preview == "" {
 			continue
 		}

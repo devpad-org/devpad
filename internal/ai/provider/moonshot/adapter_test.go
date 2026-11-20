@@ -22,9 +22,9 @@ func TestAdapterContract(t *testing.T) {
 		ExpectedProviderID:   "moonshot",
 		ExpectedProviderName: "Moonshot AI",
 		ExpectedProtocol:     aiprovider.ProtocolOpenAIChat,
-		ExpectedModelIDs:     []string{"kimi-k2.7-code", "kimi-k2.6"},
+		ExpectedModelIDs:     []string{"kimi-k3.1-pro", "kimi-k3"},
 		Request: aiprovider.StreamRequest{
-			Model: "kimi-k2.6",
+			Model: "kimi-k3",
 			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 		},
 	})
@@ -39,17 +39,64 @@ func modelByID(t *testing.T, id string) domain.Model {
 	return model
 }
 
-func TestBuildChatRequest_PreservesReasoningContentWhenThinkingEnabled(t *testing.T) {
-	model := modelByID(t, "kimi-k2.6")
+// k3SeriesModelIDs are the models that always reason and take their effort
+// in a top-level reasoning_effort field.
+var k3SeriesModelIDs = []string{"kimi-k3.1-pro", "kimi-k3"}
+
+// K3-series models always reason, at the effort in a top-level
+// reasoning_effort field.
+func TestBuildChatRequest_K3SendsReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name       string
+		thinking   *domain.ThinkingConfig
+		wantEffort string
+	}{
+		{name: "defaults to max", thinking: nil, wantEffort: "max"},
+		{name: "honours requested effort", thinking: &domain.ThinkingConfig{Effort: "low"}, wantEffort: "low"},
+		{name: "stays enabled when disabling is requested", thinking: &domain.ThinkingConfig{Enabled: boolPtr(false)}, wantEffort: "max"},
+	}
+
+	for _, modelID := range k3SeriesModelIDs {
+		model := modelByID(t, modelID)
+		for _, tt := range tests {
+			t.Run(modelID+"/"+tt.name, func(t *testing.T) {
+				req := aiprovider.StreamRequest{
+					Model:    modelID,
+					Thinking: tt.thinking,
+					Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
+				}
+
+				body := buildChatRequest(req, model)
+
+				if body.ReasoningEffort != tt.wantEffort {
+					t.Fatalf("expected reasoning_effort %q, got %q", tt.wantEffort, body.ReasoningEffort)
+				}
+			})
+		}
+	}
+}
+
+// K3-series models require their reasoning history back on every turn, even
+// when a caller asks to turn thinking off.
+func TestBuildChatRequest_K3PreservesReasoningWhenThinkingDisableRequested(t *testing.T) {
+	for _, modelID := range k3SeriesModelIDs {
+		t.Run(modelID, func(t *testing.T) {
+			assertPreservesReasoningWhenThinkingDisableRequested(t, modelByID(t, modelID))
+		})
+	}
+}
+
+func assertPreservesReasoningWhenThinkingDisableRequested(t *testing.T, model domain.Model) {
+	t.Helper()
 	req := aiprovider.StreamRequest{
-		Model:    "kimi-k2.6",
-		Thinking: &domain.ThinkingConfig{Enabled: boolPtr(true)},
+		Model:    model.ID,
+		Thinking: &domain.ThinkingConfig{Enabled: boolPtr(false)},
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleUser, "Inspect the repo"),
 			{
 				Role: domain.RoleAssistant,
 				Parts: []domain.Part{
-					{Kind: domain.PartThinking, Thinking: &domain.ThinkingPart{Text: "Need to inspect README before editing."}},
+					{Kind: domain.PartThinking, Thinking: &domain.ThinkingPart{Text: "Check README first."}},
 					{Kind: domain.PartToolCall, ToolCall: &domain.ToolCall{
 						ID:   "call_1",
 						Type: "function",
@@ -60,74 +107,54 @@ func TestBuildChatRequest_PreservesReasoningContentWhenThinkingEnabled(t *testin
 					}},
 				},
 			},
-			domain.NewToolResultTurn("call_1", "read_file", "# Devpad", false),
 		},
 	}
 
 	body := buildChatRequest(req, model)
 
-	if len(body.Messages) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(body.Messages))
-	}
-	if body.Thinking == nil {
-		t.Fatal("expected thinking configuration")
-	}
-	if body.Thinking.Type != "enabled" {
-		t.Fatalf("expected thinking enabled, got %q", body.Thinking.Type)
-	}
-	if body.Thinking.Keep != "all" {
-		t.Fatalf("expected keep=all, got %q", body.Thinking.Keep)
-	}
-	if body.Messages[0].ReasoningContent != nil {
-		t.Fatal("expected user message to omit reasoning_content")
+	if len(body.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(body.Messages))
 	}
 	if body.Messages[1].ReasoningContent == nil {
-		t.Fatal("expected assistant tool-call message to include reasoning_content")
+		t.Fatal("expected assistant message to keep reasoning_content")
 	}
-	if *body.Messages[1].ReasoningContent != "Need to inspect README before editing." {
+	if *body.Messages[1].ReasoningContent != "Check README first." {
 		t.Fatalf("expected preserved reasoning_content, got %q", *body.Messages[1].ReasoningContent)
-	}
-	if body.Messages[2].ReasoningContent != nil {
-		t.Fatal("expected tool result message to omit reasoning_content")
-	}
-}
-
-func TestBuildChatRequest_DisablesThinkingWhenRequested(t *testing.T) {
-	model := modelByID(t, "kimi-k2.6")
-	req := aiprovider.StreamRequest{
-		Model:    "kimi-k2.6",
-		Thinking: &domain.ThinkingConfig{Enabled: boolPtr(false)},
-		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
-	}
-
-	body := buildChatRequest(req, model)
-
-	if body.Thinking == nil {
-		t.Fatal("expected thinking configuration")
-	}
-	if body.Thinking.Type != "disabled" {
-		t.Fatalf("expected thinking disabled, got %q", body.Thinking.Type)
-	}
-	if body.Thinking.Keep != "" {
-		t.Fatalf("expected keep to be omitted when thinking is disabled, got %q", body.Thinking.Keep)
-	}
-}
-
-// kimi-k2.7-code requires thinking; it must never emit a "disabled" config even
-// if a caller asks to turn thinking off.
-func TestBuildChatRequest_K27CodeKeepsThinkingEnabled(t *testing.T) {
-	model := modelByID(t, "kimi-k2.7-code")
-	req := aiprovider.StreamRequest{
-		Model:    "kimi-k2.7-code",
-		Thinking: &domain.ThinkingConfig{Enabled: boolPtr(false)},
-		Turns:    []domain.Turn{domain.NewTextTurn(domain.RoleUser, "Hello")},
-	}
-
-	body := buildChatRequest(req, model)
-
-	if body.Thinking != nil && body.Thinking.Type == "disabled" {
-		t.Fatal("kimi-k2.7-code must not send a disabled thinking config")
 	}
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+func TestBuildChatRequest_AsksForStreamUsage(t *testing.T) {
+	model, _ := domain.ModelByID(NewAdapter().Models(), "kimi-k3")
+	body := buildChatRequest(aiprovider.StreamRequest{
+		Model: "kimi-k3",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+	}, model)
+
+	if body.StreamOptions == nil || !body.StreamOptions.IncludeUsage {
+		t.Fatalf("expected stream_options.include_usage, got %+v", body.StreamOptions)
+	}
+}
+
+// Prices from https://platform.kimi.ai/docs/pricing/chat (November 2026).
+func TestAdapterModelPrices(t *testing.T) {
+	tests := map[string]domain.TokenPrices{
+		"kimi-k3.1-pro": {Input: 2, Output: 10, CacheRead: 0.20, CacheWrite: 2},
+		"kimi-k3":       {Input: 3, Output: 15, CacheRead: 0.30, CacheWrite: 3},
+	}
+	for id, want := range tests {
+		model := modelByID(t, id)
+		if model.Pricing == nil || model.Pricing.TokenPrices != want {
+			t.Fatalf("model %s prices = %+v, want %+v", id, model.Pricing, want)
+		}
+	}
+}
+
+func TestAdapterModelsArePriced(t *testing.T) {
+	for _, model := range NewAdapter().Models() {
+		if model.Pricing == nil || model.Pricing.Input <= 0 || model.Pricing.Output <= 0 {
+			t.Fatalf("model %s has no prices", model.ID)
+		}
+	}
+}

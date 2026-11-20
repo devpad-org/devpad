@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
@@ -39,7 +42,7 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cmd := exec.Command(shell)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = processEnv("TERM=xterm-256color")
 	cmd.Dir = workspaceRoot
 
 	ptmx, err := pty.Start(cmd)
@@ -48,18 +51,21 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 		conn.WriteMessage(websocket.TextMessage, []byte("Failed to start terminal\r\n"))
 		return
 	}
-	defer func() {
-		ptmx.Close()
-		cmd.Process.Kill()
+	exited := make(chan struct{})
+	go func() {
 		cmd.Wait()
+		close(exited)
 	}()
 
-	var wg sync.WaitGroup
+	// The session ends when either side does: the socket closing (a new
+	// shell, a closed tab) or the shell exiting.
+	var once sync.Once
+	ended := make(chan struct{})
+	end := func() { once.Do(func() { close(ended) }) }
 
 	// PTY stdout → WebSocket
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer end()
 		buf := make([]byte, 4096)
 		for {
 			n, err := ptmx.Read(buf)
@@ -69,7 +75,7 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if err != nil {
-				if err != io.EOF {
+				if err != io.EOF && !errors.Is(err, syscall.EIO) && !errors.Is(err, os.ErrClosed) {
 					log.Printf("pty read: %v", err)
 				}
 				return
@@ -78,9 +84,8 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// WebSocket → PTY stdin
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer end()
 		for {
 			msgType, msg, err := conn.ReadMessage()
 			if err != nil {
@@ -105,5 +110,32 @@ func handleTerminal(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	wg.Wait()
+	<-ended
+	hangUp(cmd, exited)
+	conn.Close()
+	ptmx.Close()
+}
+
+// shellHangupGrace is how long a shell has to end after its terminal hangs
+// up before it is killed.
+const shellHangupGrace = 2 * time.Second
+
+// hangUp ends a terminal's shell as closing a real terminal would: SIGHUP to
+// its process group (pty.Start makes the shell a session leader), which a
+// shell passes on to its jobs, then SIGKILL if it is still running after a
+// grace period. Waiting on the PTY alone is not enough: a read blocked on
+// it holds it open, so an idle shell would never see the hangup.
+func hangUp(cmd *exec.Cmd, exited <-chan struct{}) {
+	select {
+	case <-exited:
+		return
+	default:
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGHUP)
+	select {
+	case <-exited:
+	case <-time.After(shellHangupGrace):
+		_ = cmd.Process.Kill()
+		<-exited
+	}
 }

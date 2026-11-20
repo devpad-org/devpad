@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/devpad-org/devpad/internal/ai/app"
@@ -13,7 +14,9 @@ import (
 	"github.com/devpad-org/devpad/internal/auth"
 )
 
-// HandleCreateAgentRun starts a browser-independent agent run.
+// HandleCreateAgentRun continues a conversation with a new user message in a
+// browser-independent agent run. The server loads and saves the conversation
+// itself; the browser only sends the new message.
 func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
@@ -31,28 +34,42 @@ func (h *Handler) HandleCreateAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Model == "" {
+	model, thinking, err := h.withAgentDefaults(r.Context(), user.ID, req.AgentID, req.Model, ToDomainThinking(req.Thinking))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to look up the agent's default model")
+		return
+	}
+	if model == "" {
 		writeError(w, http.StatusBadRequest, "model is required")
 		return
 	}
-	if len(req.Turns) == 0 {
-		writeError(w, http.StatusBadRequest, "turns are required")
+	if strings.TrimSpace(req.Message) == "" && len(req.Images) == 0 {
+		writeError(w, http.StatusBadRequest, "message is required")
 		return
 	}
 	if req.WorkspaceID <= 0 {
 		writeError(w, http.StatusBadRequest, "workspaceId is required")
 		return
 	}
+	if req.ConversationID <= 0 {
+		writeError(w, http.StatusBadRequest, "conversationId is required")
+		return
+	}
 
+	budget, err := h.assistantBudget(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to look up the assistant's budget")
+		return
+	}
 	run, err := h.runs.StartRun(r.Context(), app.StartAgentRunRequest{
 		UserID:         user.ID,
 		WorkspaceID:    req.WorkspaceID,
 		ConversationID: req.ConversationID,
-		ParentRunID:    req.ParentRunID,
 		AgentID:        req.AgentID,
-		Model:          req.Model,
-		Turns:          ToDomainTurns(req.Turns),
-		Thinking:       ToDomainThinking(req.Thinking),
+		Model:          model,
+		Message:        req.MessageTurn(),
+		Thinking:       thinking,
+		Budget:         budget,
 	})
 	if err != nil {
 		h.writeAgentRunError(w, err)
@@ -91,6 +108,40 @@ func (h *Handler) HandleListAgentRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"runs": runDTOs})
+}
+
+// HandleListAttention returns the user's runs, in any workspace, that are
+// waiting for an approval or an answer.
+func (h *Handler) HandleListAttention(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	if h.runs == nil {
+		writeError(w, http.StatusServiceUnavailable, "agent runner is not available")
+		return
+	}
+	items, err := h.runs.ListAttention(r.Context(), user.ID)
+	if err != nil {
+		h.writeAgentRunError(w, err)
+		return
+	}
+	type attentionDTO struct {
+		Run      AgentRunDTO         `json:"run"`
+		Approval *ApprovalRequestDTO `json:"approval,omitempty"`
+		Question *QuestionRequestDTO `json:"question,omitempty"`
+	}
+	out := make([]attentionDTO, 0, len(items))
+	for _, item := range items {
+		item := item
+		dto := attentionDTO{Run: FromAgentRunSummary(&item.Run), Question: FromQuestionRequest(item.Question)}
+		if item.Approval != nil {
+			dto.Approval = &ApprovalRequestDTO{ID: item.Approval.ID, Title: item.Approval.Title, Command: item.Approval.Command, Details: FromApprovalDetails(item.Approval.Details)}
+		}
+		out = append(out, dto)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
 // HandleGetAgentRun returns metadata for a background agent run owned by the user.
@@ -213,15 +264,17 @@ func (h *Handler) writeAgentRunError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "agent run not found")
 	case errors.Is(err, domain.ErrAgentRunNotActive):
 		writeError(w, http.StatusConflict, "agent run is not active")
+	case errors.Is(err, domain.ErrConversationNotFound):
+		writeError(w, http.StatusNotFound, "conversation not found")
+	case errors.Is(err, domain.ErrConversationBusy):
+		writeError(w, http.StatusConflict, "this conversation already has an active agent run")
 	case errors.Is(err, domain.ErrAgentNotFound):
 		writeError(w, http.StatusNotFound, "agent not found")
 	case errors.Is(err, domain.ErrModelNotFound):
 		writeError(w, http.StatusBadRequest, "model not found")
-	case errors.Is(err, domain.ErrProviderNotEnabled):
-		writeError(w, http.StatusBadRequest, "AI provider is not enabled")
-	case errors.Is(err, domain.ErrNoAPIKey):
-		writeError(w, http.StatusBadRequest, "no API key configured for this provider")
-	case errors.Is(err, domain.ErrThinkingNotSupported), errors.Is(err, domain.ErrThinkingCannotBeDisabled):
+	case errors.Is(err, domain.ErrNoAPIKey), errors.Is(err, domain.ErrAPIKeyUnreadable):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, domain.ErrThinkingNotSupported), errors.Is(err, domain.ErrThinkingCannotBeDisabled), isAttachmentError(err):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		log.Printf("agent run error: %v", err)

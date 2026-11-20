@@ -14,6 +14,8 @@ type ThinkingConfig struct {
 
 // ChatRequest is the input for a chat completion.
 type ChatRequest struct {
+	// UserID is whose provider key the request is sent with.
+	UserID      int64            `json:"-"`
 	Model       string           `json:"model"`
 	Turns       []Turn           `json:"turns"`
 	Thinking    *ThinkingConfig  `json:"thinking,omitempty"`
@@ -70,8 +72,13 @@ func validateThinkingEffort(model Model, thinking *ThinkingConfig) error {
 	if thinking == nil {
 		return nil
 	}
+	return ValidateThinkingEffort(model, thinking.Effort)
+}
 
-	effort := strings.TrimSpace(thinking.Effort)
+// ValidateThinkingEffort checks that the model supports the effort. An empty
+// effort, meaning the model's default, is always valid.
+func ValidateThinkingEffort(model Model, effort string) error {
+	effort = strings.TrimSpace(effort)
 	if effort == "" {
 		return nil
 	}

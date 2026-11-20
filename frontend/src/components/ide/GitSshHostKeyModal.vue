@@ -68,23 +68,13 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: color-mix(in srgb, var(--bg-secondary) 70%, transparent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
 .modal {
   background: var(--bg-surface);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 480px;
-  box-shadow: 0 16px 48px color-mix(in srgb, var(--bg-secondary) 70%, transparent);
+  box-shadow: var(--shadow-strong);
   overflow: hidden;
 }
 
@@ -104,7 +94,7 @@ const emit = defineEmits<{
   border-radius: 50%;
   flex-shrink: 0;
   background: var(--accent-glow);
-  color: var(--accent-blue);
+  color: var(--accent);
 }
 
 .modal-title {
@@ -192,12 +182,12 @@ const emit = defineEmits<{
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  background: var(--accent-blue);
-  color: var(--bg-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
 }
 
 .btn-confirm:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--text-primary));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
 }
 
 .btn:disabled {
@@ -212,12 +202,6 @@ const emit = defineEmits<{
   border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .ssh-key-modal-enter-active,

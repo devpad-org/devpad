@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DocLink from '@/components/DocLink.vue'
 import { nextTick, ref, watch } from 'vue'
 
 const props = defineProps<{
@@ -55,7 +56,7 @@ function handleSubmit() {
                 <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
               </svg>
             </div>
-            <h2 class="modal-title">Open Preview in New Tab</h2>
+            <h2 class="modal-title">Open Preview in New Tab<DocLink topic="previews" label="Previews" /></h2>
           </div>
 
           <form class="modal-body" @submit.prevent="handleSubmit">
@@ -98,16 +99,6 @@ function handleSubmit() {
 </template>
 
 <style scoped>
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
 .modal {
   background: var(--bg-surface);
   border: 0.5px solid var(--border-default);
@@ -134,7 +125,7 @@ function handleSubmit() {
   border-radius: 50%;
   flex-shrink: 0;
   background: var(--accent-glow);
-  color: var(--accent-blue);
+  color: var(--accent);
 }
 
 .modal-title {
@@ -225,12 +216,12 @@ function handleSubmit() {
 }
 
 .btn-confirm {
-  background: var(--accent-blue);
-  color: var(--bg-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
 }
 
 .btn-confirm:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
 }
 
 .btn:disabled {
@@ -245,12 +236,6 @@ function handleSubmit() {
   border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .preview-modal-enter-active,

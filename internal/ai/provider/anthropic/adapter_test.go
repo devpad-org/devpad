@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -30,25 +31,39 @@ func TestAnthropicAdapter_Metadata(t *testing.T) {
 		t.Fatalf("expected 3 models, got %d", len(models))
 	}
 
+	allEfforts := []string{"low", "medium", "high", "xhigh", "max"}
 	expectedModels := []struct {
-		id            string
-		name          string
-		efforts       []string
-		defaultEffort string
+		id               string
+		name             string
+		enabledByDefault bool
+		canDisable       bool
+		efforts          []string
+		defaultEffort    string
 	}{
 		{
-			id:            "claude-opus-4-7",
-			name:          "Claude Opus 4.7",
-			efforts:       []string{"low", "medium", "high", "xhigh", "max"},
-			defaultEffort: "xhigh",
+			id:               "claude-opus-5-5",
+			name:             "Claude Opus 5.5",
+			enabledByDefault: true,
+			canDisable:       false,
+			efforts:          allEfforts,
+			defaultEffort:    "medium",
 		},
 		{
-			id:            "claude-sonnet-4-6",
-			name:          "Claude Sonnet 4.6",
-			efforts:       []string{"low", "medium", "high", "max"},
-			defaultEffort: "medium",
+			id:               "claude-sonnet-5-5",
+			name:             "Claude Sonnet 5.5",
+			enabledByDefault: true,
+			canDisable:       true,
+			efforts:          allEfforts,
+			defaultEffort:    "medium",
 		},
-		{id: "claude-haiku-4-5", name: "Claude Haiku 4.5"},
+		{
+			id:               "claude-haiku-5-5",
+			name:             "Claude Haiku 5.5",
+			enabledByDefault: true,
+			canDisable:       true,
+			efforts:          allEfforts,
+			defaultEffort:    "medium",
+		},
 	}
 	for i, expected := range expectedModels {
 		if models[i].ID != expected.id {
@@ -63,11 +78,11 @@ func TestAnthropicAdapter_Metadata(t *testing.T) {
 		if !models[i].Thinking.Supported {
 			t.Fatalf("expected model %d thinking to be supported", i)
 		}
-		if models[i].Thinking.EnabledByDefault {
-			t.Fatalf("expected model %d thinking to be disabled by default", i)
+		if models[i].Thinking.EnabledByDefault != expected.enabledByDefault {
+			t.Fatalf("expected model %d thinking enabledByDefault %v, got %v", i, expected.enabledByDefault, models[i].Thinking.EnabledByDefault)
 		}
-		if !models[i].Thinking.CanDisable {
-			t.Fatalf("expected model %d thinking to be disableable", i)
+		if models[i].Thinking.CanDisable != expected.canDisable {
+			t.Fatalf("expected model %d thinking canDisable %v, got %v", i, expected.canDisable, models[i].Thinking.CanDisable)
 		}
 		if !slices.Equal(models[i].Thinking.SupportedEfforts, expected.efforts) {
 			t.Fatalf("expected model %d efforts to be %v, got %v", i, expected.efforts, models[i].Thinking.SupportedEfforts)
@@ -75,6 +90,172 @@ func TestAnthropicAdapter_Metadata(t *testing.T) {
 		if models[i].Thinking.DefaultEffort != expected.defaultEffort {
 			t.Fatalf("expected model %d default effort to be %q, got %q", i, expected.defaultEffort, models[i].Thinking.DefaultEffort)
 		}
+	}
+}
+
+func TestAnthropicAdapter_StreamSendsBetasForClaude55(t *testing.T) {
+	tests := []struct {
+		model    string
+		wantBeta string
+	}{
+		{model: "claude-opus-5-5", wantBeta: "server-side-fallback-2026-07-01,thinking-binding-controls-2026-08-01"},
+		{model: "claude-sonnet-5-5", wantBeta: "server-side-fallback-2026-07-01,thinking-binding-controls-2026-08-01"},
+		{model: "claude-haiku-5-5", wantBeta: "thinking-binding-controls-2026-08-01"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			var betaHeader string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				betaHeader = r.Header.Get("anthropic-beta")
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n"))
+			}))
+			defer server.Close()
+
+			adapter := NewAdapter()
+			adapter.baseURL = server.URL
+			adapter.client = server.Client()
+
+			stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
+				Model: tt.model,
+				Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+			})
+			if err != nil {
+				t.Fatalf("unexpected stream error: %v", err)
+			}
+			collectEvents(stream)
+
+			if betaHeader != tt.wantBeta {
+				t.Fatalf("expected anthropic-beta %q, got %q", tt.wantBeta, betaHeader)
+			}
+		})
+	}
+}
+
+func TestAnthropicAdapter_StreamRefusal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		response := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-5-5"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"bio","explanation":null}}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`
+		_, _ = w.Write([]byte(response))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter()
+	adapter.baseURL = server.URL
+	adapter.client = server.Client()
+
+	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
+		Model: "claude-opus-5-5",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+
+	events := collectEvents(stream)
+	last := events[len(events)-1]
+	if last.Err == nil {
+		t.Fatalf("expected refusal error, got %+v", last)
+	}
+	if !strings.Contains(last.Err.Error(), "declined") || !strings.Contains(last.Err.Error(), "bio") {
+		t.Fatalf("expected refusal error naming the category, got %q", last.Err.Error())
+	}
+}
+
+func TestAnthropicAdapter_StreamFallbackDropsBlocksBeforeBoundary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		response := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-5-5"}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-declined"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_declined","name":"read_file"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"fallback","from":{"model":"claude-opus-5-5"},"to":{"model":"claude-opus-5"}}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2}
+
+event: content_block_start
+data: {"type":"content_block_start","index":3,"content_block":{"type":"thinking"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"signature_delta","signature":"sig-fallback"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":3}
+
+event: content_block_start
+data: {"type":"content_block_start","index":4,"content_block":{"type":"tool_use","id":"toolu_fallback","name":"read_file"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"a.go\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":4}
+
+event: message_stop
+data: {"type":"message_stop"}
+`
+		_, _ = w.Write([]byte(response))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter()
+	adapter.baseURL = server.URL
+	adapter.client = server.Client()
+
+	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
+		Model: "claude-opus-5-5",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+
+	var reasoningState string
+	var toolCalls []domain.ToolCall
+	for _, event := range collectEvents(stream) {
+		if event.Err != nil {
+			t.Fatalf("unexpected stream event error: %v", event.Err)
+		}
+		if len(event.ReasoningState) > 0 {
+			reasoningState = string(event.ReasoningState)
+		}
+		if len(event.ToolCalls) > 0 {
+			toolCalls = event.ToolCalls
+		}
+	}
+
+	if strings.Contains(reasoningState, "sig-declined") || !strings.Contains(reasoningState, "sig-fallback") {
+		t.Fatalf("expected only the fallback model's thinking block, got %s", reasoningState)
+	}
+	if len(toolCalls) != 1 || toolCalls[0].ID != "toolu_fallback" {
+		t.Fatalf("expected only the fallback model's tool call, got %+v", toolCalls)
+	}
+	if toolCalls[0].Function.Arguments != `{"path":"a.go"}` {
+		t.Fatalf("expected fallback tool arguments, got %q", toolCalls[0].Function.Arguments)
 	}
 }
 
@@ -88,7 +269,7 @@ func TestAnthropicAdapter_StreamTextContent(t *testing.T) {
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		response := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-7"}}
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-5-5"}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
@@ -114,7 +295,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err != nil {
@@ -144,11 +325,53 @@ data: {"type":"message_stop"}
 	}
 }
 
+func TestAnthropicAdapter_RetriesOverloadedAPI(t *testing.T) {
+	var calls int64
+	var retryAuth, retryVersion atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt64(&calls, 1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(529)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`))
+			return
+		}
+		retryAuth.Store(r.Header.Get("x-api-key"))
+		retryVersion.Store(r.Header.Get("anthropic-version"))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: message_stop
+data: {"type":"message_stop"}
+`))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter()
+	adapter.baseURL = server.URL
+	adapter.client = server.Client()
+
+	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
+		Model: "claude-opus-5-5",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("expected the overloaded request to be retried, got %v", err)
+	}
+	collectEvents(stream)
+	if got := atomic.LoadInt64(&calls); got != 2 {
+		t.Fatalf("expected 2 attempts, got %d", got)
+	}
+	if got := retryAuth.Load(); got != "test-key" {
+		t.Fatalf("expected x-api-key on the retried attempt, got %v", got)
+	}
+	if got := retryVersion.Load(); got != "2023-06-01" {
+		t.Fatalf("expected anthropic-version on the retried attempt, got %v", got)
+	}
+}
+
 func TestAnthropicAdapter_StreamThinkingContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		response := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6"}}
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5-5"}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}
@@ -180,7 +403,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-sonnet-4-6",
+		Model: "claude-sonnet-5-5",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 	if err != nil {
@@ -204,7 +427,7 @@ func TestAnthropicAdapter_StreamToolUse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		response := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-7"}}
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-5-5"}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_123","name":"get_weather"}}
@@ -230,7 +453,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "what's the weather")},
 		Tools: []domain.ToolDefinition{
 			{
@@ -271,7 +494,7 @@ func TestAnthropicAdapter_StreamMultipleToolUsesAsSingleEvent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		response := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-7"}}
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-5-5"}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file"}}
@@ -303,7 +526,7 @@ data: {"type":"message_stop"}
 	adapter.client = server.Client()
 
 	stream, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "test-key"}, aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "read two files")},
 	})
 	if err != nil {
@@ -336,7 +559,7 @@ func TestAnthropicAdapter_ErrorHandling(t *testing.T) {
 	adapter.client = server.Client()
 
 	_, err := adapter.Stream(context.Background(), aiprovider.Credentials{APIKey: "bad-key"}, aiprovider.StreamRequest{
-		Model: "claude-opus-4-7",
+		Model: "claude-opus-5-5",
 		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
 	})
 

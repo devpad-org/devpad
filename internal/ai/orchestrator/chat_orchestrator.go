@@ -15,6 +15,15 @@ type ChatService interface {
 	FindModel(modelID string) (domain.Model, error)
 }
 
+// WorkspaceToolCatalog is a ToolCatalog whose tools, and the context it adds
+// to the system prompt, depend on the workspace a run is in.
+type WorkspaceToolCatalog interface {
+	// Scope resolves what the run's workspace is.
+	Scope(ctx context.Context, userID, workspaceID int64) (aitools.Scope, error)
+	// For returns the run's tools and the context for its system prompt.
+	For(ctx context.Context, scope aitools.Scope) ([]domain.ToolDefinition, string)
+}
+
 // ToolCatalog exposes the built-in agent prompt and tool definitions.
 type ToolCatalog interface {
 	SystemPrompt() string
@@ -26,17 +35,28 @@ type ToolExecutor interface {
 	ExecuteTool(ctx context.Context, req aitools.ExecutionRequest) domain.ToolResultPart
 }
 
+// ApprovalChecker is a ToolExecutor whose tools can need the user's
+// approval for reasons other than sudo, such as starting another agent.
+type ApprovalChecker interface {
+	ApprovalFor(ctx context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool, error)
+}
+
 // AgentChatRequest contains the inputs needed to run the agent loop.
 type AgentChatRequest struct {
-	UserID                int64
-	WorkspaceID           int64
-	CurrentRunID          int64
-	ConversationID        int64
-	Model                 string
-	Turns                 []domain.Turn
-	Thinking              *domain.ThinkingConfig
-	AgentPrompt           string
-	WorkspaceInstructions string
+	UserID         int64
+	WorkspaceID    int64
+	CurrentRunID   int64
+	ConversationID int64
+	Model          string
+	Turns          []domain.Turn
+	Thinking       *domain.ThinkingConfig
+	AgentPrompt    string
+	// Budget, shared with the run's sub-agents, stops the run once spent.
+	// Nil means no limit.
+	Budget *domain.Budget
+	// RecordUsage, which may be nil, is told what each provider request was
+	// billed for, priced when the model's prices are known.
+	RecordUsage func(domain.Usage)
 }
 
 // AgentChatOrchestrator owns the agent runtime state machine outside HTTP transport.

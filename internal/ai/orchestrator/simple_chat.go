@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
@@ -16,12 +17,24 @@ func NewSimpleChatOrchestrator(service ChatService) *SimpleChatOrchestrator {
 	return &SimpleChatOrchestrator{service: service}
 }
 
-// Stream delegates directly to the provider-backed chat service.
-func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequest) (<-chan domain.ClientEvent, error) {
+// Stream delegates directly to the provider-backed chat service, pricing
+// each request's usage when the model's prices are known. budget, which may
+// be nil, is spent by the request, which is refused when it is already
+// spent. recordUsage, which may be nil, is told what each request was billed
+// for.
+func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequest, budget *domain.Budget, recordUsage func(domain.Usage)) (<-chan domain.ClientEvent, error) {
+	model, err := o.service.FindModel(req.Model)
+	if err != nil {
+		return nil, err
+	}
+	if budget.Exhausted() {
+		return nil, errors.New(budget.ExhaustedMessage())
+	}
 	stream, err := o.service.ChatStream(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	meter := usageMeter{model: model, budget: budget, record: recordUsage}
 
 	out := make(chan domain.ClientEvent)
 	go func() {
@@ -33,11 +46,16 @@ func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequ
 					return
 				}
 
+				var usage *domain.Usage
+				if event.Usage != nil {
+					usage = meter.meter(*event.Usage)
+				}
 				clientEvent := domain.ClientEvent{
 					TextDelta:      event.TextDelta,
 					ReasoningDelta: event.ReasoningDelta,
 					ReasoningState: domain.CloneRawMessage(event.ReasoningState),
 					ToolCalls:      append([]domain.ToolCall(nil), event.ToolCalls...),
+					Usage:          usage,
 					Done:           event.Done,
 				}
 				if event.Err != nil {
@@ -45,9 +63,11 @@ func (o *SimpleChatOrchestrator) Stream(ctx context.Context, req domain.ChatRequ
 				}
 
 				if !emitEvent(ctx, out, clientEvent) {
+					meter.drain(stream)
 					return
 				}
 			case <-ctx.Done():
+				meter.drain(stream)
 				return
 			}
 		}

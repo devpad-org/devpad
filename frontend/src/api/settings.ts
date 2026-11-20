@@ -13,8 +13,27 @@ export interface SSHKeyResponse {
   publicKey: string
 }
 
+// What the user commits as. An empty name or email means the account's own.
+export interface GitIdentity {
+  name: string
+  email: string
+  accountName: string
+  accountEmail: string
+  // Whether one has been saved yet, even an empty one.
+  saved: boolean
+}
+
+export interface SavedGitIdentity extends GitIdentity {
+  // Running workspaces now using it.
+  workspacesUpdated: number
+  // A running workspace couldn't be updated; it will be when it next starts.
+  syncIncomplete: boolean
+}
+
 export interface UserPreferences {
   diffViewSideBySide: boolean
+  // A theme id from @/theme.
+  theme: string
 }
 
 export const settingsApi = {
@@ -46,11 +65,20 @@ export const settingsApi = {
     return apiClient.post<SSHKeyResponse>('/api/settings/ssh-key/generate', {})
   },
 
+  getGitIdentity(): Promise<GitIdentity> {
+    return apiClient.get<GitIdentity>('/api/settings/git-identity')
+  },
+
+  saveGitIdentity(name: string, email: string): Promise<SavedGitIdentity> {
+    return apiClient.put<SavedGitIdentity>('/api/settings/git-identity', { name, email })
+  },
+
   getPreferences(): Promise<UserPreferences> {
     return apiClient.get<UserPreferences>('/api/settings/preferences')
   },
 
-  updatePreferences(preferences: UserPreferences): Promise<UserPreferences> {
+  // Changes only the preferences given and returns them all.
+  updatePreferences(preferences: Partial<UserPreferences>): Promise<UserPreferences> {
     return apiClient.put<UserPreferences>('/api/settings/preferences', preferences)
   },
 }

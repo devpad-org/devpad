@@ -106,7 +106,7 @@ function statusLabel(status: 'pending' | UserQuestionResult['status']): string {
 </script>
 
 <template>
-  <div class="question-card">
+  <div class="question-card" :class="{ pending: status === 'pending' }">
     <div class="question-card-header">
       <span class="question-card-icon">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -194,10 +194,16 @@ function statusLabel(status: 'pending' | UserQuestionResult['status']): string {
   gap: var(--space-3);
   margin: 8px 0;
   padding: 12px;
-  border: 0.5px solid var(--accent-border);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg-raised) 82%, var(--bg-elevated));
+}
+
+/* Attention colors only while the question is waiting on the user. */
+.question-card.pending {
+  border-color: var(--attention-border);
   background:
-    radial-gradient(circle at top left, var(--accent-glow), transparent 44%),
+    radial-gradient(circle at top left, var(--attention-bg), transparent 44%),
     color-mix(in srgb, var(--bg-raised) 82%, var(--bg-elevated));
 }
 
@@ -214,10 +220,16 @@ function statusLabel(status: 'pending' | UserQuestionResult['status']): string {
   width: 26px;
   height: 26px;
   flex-shrink: 0;
-  border: 0.5px solid var(--accent-border);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  background: var(--accent-glow);
-  color: var(--accent);
+  background: var(--bg-neutral);
+  color: var(--text-muted);
+}
+
+.question-card.pending .question-card-icon {
+  border-color: var(--attention-border);
+  background: var(--attention-bg);
+  color: var(--attention);
 }
 
 .question-card-heading {
@@ -361,7 +373,7 @@ function statusLabel(status: 'pending' | UserQuestionResult['status']): string {
   border: 0.5px solid var(--accent-border);
   border-radius: var(--radius-md);
   background: var(--accent);
-  color: var(--bg-base);
+  color: var(--text-on-accent);
   font-size: 0.75rem;
   font-weight: 700;
   transition: opacity var(--transition-fast), transform var(--transition-fast), background var(--transition-fast);
@@ -411,5 +423,20 @@ function statusLabel(status: 'pending' | UserQuestionResult['status']): string {
 .question-error {
   color: var(--accent-rose);
   font-size: 0.72rem;
+}
+
+/* Matches MOBILE_MEDIA_QUERY in useMediaQuery.ts: touch-sized choices. */
+@media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
+  .question-option {
+    min-height: 44px;
+    padding: var(--space-2) var(--space-3);
+    font-size: 0.85rem;
+  }
+
+  .question-submit {
+    flex: 1;
+    min-height: 44px;
+    font-size: 0.85rem;
+  }
 }
 </style>

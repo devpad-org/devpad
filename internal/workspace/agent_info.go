@@ -11,6 +11,31 @@ import (
 	"github.com/devpad-org/devpad/internal/container"
 )
 
+// containerIP resolves a workspace container's IP on its private network,
+// making sure devpad can actually route to that network first. Attaching is a
+// no-op when devpad runs on the host and cached when it runs in a container.
+func (s *service) containerIP(ctx context.Context, ws *Workspace) (string, error) {
+	if err := s.container.EnsureSelfAttached(ctx, ws.NetworkName); err != nil {
+		return "", fmt.Errorf("joining workspace network: %w", err)
+	}
+	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
+	if err != nil {
+		return "", fmt.Errorf("getting container IP: %w", err)
+	}
+	return ip, nil
+}
+
+func (s *service) CheckRunning(ctx context.Context, userID, workspaceID int64) error {
+	ws, err := s.Get(ctx, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	if ws.ContainerID == "" || ws.Status != StatusRunning {
+		return ErrNotRunning
+	}
+	return nil
+}
+
 func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*agent.Client, error) {
 	ws, err := s.Get(ctx, userID, workspaceID)
 	if err != nil {
@@ -19,9 +44,9 @@ func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*age
 	if ws.ContainerID == "" || ws.Status != StatusRunning {
 		return nil, ErrNotRunning
 	}
-	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
+	ip, err := s.containerIP(ctx, ws)
 	if err != nil {
-		return nil, fmt.Errorf("getting container IP: %w", err)
+		return nil, err
 	}
 	return agent.NewClient(ip, s.agentPort, ws.AgentToken), nil
 }
@@ -30,9 +55,9 @@ func (s *service) getAgent(ctx context.Context, userID, workspaceID int64) (*age
 // to accept requests. It uses a 30-second timeout to avoid hanging forever if
 // the container is broken.
 func (s *service) waitForAgent(ctx context.Context, ws *Workspace) error {
-	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
+	ip, err := s.containerIP(ctx, ws)
 	if err != nil {
-		return fmt.Errorf("getting container IP: %w", err)
+		return err
 	}
 	c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
 
@@ -47,34 +72,11 @@ func (s *service) waitForAgent(ctx context.Context, ws *Workspace) error {
 
 // ensureAgentUpdated checks whether the in-container agent is running the
 // expected version and, if not, copies the embedded binary into the container
-// and restarts it. An empty or unreachable version response is treated as
-// outdated (the agent predates the /api/version endpoint).
+// and restarts it.
 func (s *service) ensureAgentUpdated(ctx context.Context, ws *Workspace) error {
-	if ws.ContainerID == "" {
-		return nil
-	}
-
-	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
-	if err != nil {
-		return fmt.Errorf("getting container IP for update check: %w", err)
-	}
-
-	c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
-	remoteVersion, err := c.Version(ctx)
-	if err != nil {
-		// Agent is unreachable or too old to respond — treat as needing update.
-		log.Printf("workspace %d: agent version check failed (%v), updating agent", ws.ID, err)
-		remoteVersion = ""
-	}
-
-	if remoteVersion == agentbin.Version {
-		return nil
-	}
-
-	log.Printf("workspace %d: updating agent from %q to %q", ws.ID, remoteVersion, agentbin.Version)
-
-	if err := s.container.CopyFileToContainer(ctx, ws.ContainerID, "usr/local/bin/devpad-agent", agentbin.Binary, 0755); err != nil {
-		return fmt.Errorf("copying agent binary to container: %w", err)
+	installed, err := s.installAgentIfOutdated(ctx, ws)
+	if err != nil || !installed {
+		return err
 	}
 
 	if err := s.container.Restart(ctx, ws.ContainerID); err != nil {
@@ -90,6 +92,41 @@ func (s *service) ensureAgentUpdated(ctx context.Context, ws *Workspace) error {
 	return nil
 }
 
+// installAgentIfOutdated copies the embedded agent binary into the container
+// when the running agent is not the expected version, reporting whether it
+// did. The new agent runs from the container's next restart. An empty or
+// unreachable version response is treated as outdated (the agent predates
+// the /api/version endpoint).
+func (s *service) installAgentIfOutdated(ctx context.Context, ws *Workspace) (bool, error) {
+	if ws.ContainerID == "" {
+		return false, nil
+	}
+
+	ip, err := s.containerIP(ctx, ws)
+	if err != nil {
+		return false, fmt.Errorf("resolving container address for update check: %w", err)
+	}
+
+	c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
+	remoteVersion, err := c.Version(ctx)
+	if err != nil {
+		// Agent is unreachable or too old to respond — treat as needing update.
+		log.Printf("workspace %d: agent version check failed (%v), updating agent", ws.ID, err)
+		remoteVersion = ""
+	}
+
+	if remoteVersion == agentbin.Version {
+		return false, nil
+	}
+
+	log.Printf("workspace %d: updating agent from %q to %q", ws.ID, remoteVersion, agentbin.Version)
+
+	if err := s.container.CopyFileToContainer(ctx, ws.ContainerID, "usr/local/bin/devpad-agent", agentbin.Binary, 0755); err != nil {
+		return false, fmt.Errorf("copying agent binary to container: %w", err)
+	}
+	return true, nil
+}
+
 func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (string, string, error) {
 	ws, err := s.Get(ctx, userID, workspaceID)
 	if err != nil {
@@ -98,9 +135,9 @@ func (s *service) AgentAddr(ctx context.Context, userID, workspaceID int64) (str
 	if ws.ContainerID == "" || ws.Status != StatusRunning {
 		return "", "", ErrNotRunning
 	}
-	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
+	ip, err := s.containerIP(ctx, ws)
 	if err != nil {
-		return "", "", fmt.Errorf("getting container IP: %w", err)
+		return "", "", err
 	}
 	return fmt.Sprintf("%s:%d", ip, s.agentPort), ws.AgentToken, nil
 }
@@ -126,7 +163,7 @@ func (s *service) Info(ctx context.Context, userID, workspaceID int64) (*Workspa
 	}
 
 	// Fetch agent version
-	ip, err := s.container.GetIP(ctx, ws.ContainerID, ws.NetworkName)
+	ip, err := s.containerIP(ctx, ws)
 	if err == nil {
 		c := agent.NewClient(ip, s.agentPort, ws.AgentToken)
 		if v, verr := c.Version(ctx); verr == nil {

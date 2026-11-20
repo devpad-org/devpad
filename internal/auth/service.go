@@ -12,6 +12,12 @@ import (
 
 const sessionDuration = 7 * 24 * time.Hour
 
+// newSession starts a session for userID, lasting sessionDuration on the
+// wall clock. Every sign-in makes its session here.
+func newSession(userID int64) *Session {
+	return &Session{UserID: userID, ExpiresAt: time.Now().Add(sessionDuration)}
+}
+
 var (
 	ErrInvalidCredentials = errors.New("invalid username or password")
 	ErrUserExists         = errors.New("username or email already exists")
@@ -97,11 +103,7 @@ func (s *service) Login(ctx context.Context, username, password, totpCode string
 		}
 	}
 
-	session := &Session{
-		UserID:    user.ID,
-		ExpiresAt: time.Now().Add(sessionDuration),
-	}
-
+	session := newSession(user.ID)
 	if err := s.sessions.Create(ctx, session); err != nil {
 		return nil, fmt.Errorf("creating session: %w", err)
 	}

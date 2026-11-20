@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,20 +20,36 @@ import (
 
 type stubCatalogService struct{}
 
-func (stubCatalogService) ListModels(context.Context) ([]domain.ModelInfo, error) {
+func (stubCatalogService) ListModels(context.Context, int64) ([]domain.ModelInfo, error) {
 	return nil, nil
 }
 
-func (stubCatalogService) ListProviders(context.Context) ([]app.ProviderInfo, error) {
+func (stubCatalogService) ListProviders(context.Context, int64) ([]app.ProviderInfo, error) {
 	return nil, nil
 }
 
-func (stubCatalogService) UpdateProvider(context.Context, string, string, bool) error {
+func (stubCatalogService) SetProviderKey(context.Context, int64, string, string) error {
 	return nil
 }
 
-func (stubCatalogService) ResolveChatTarget(context.Context, string) (app.ResolvedTarget, error) {
+func (stubCatalogService) RemoveProviderKey(context.Context, int64, string) error {
+	return nil
+}
+
+func (stubCatalogService) ResolveChatTarget(context.Context, int64, string) (app.ResolvedTarget, error) {
 	return app.ResolvedTarget{}, nil
+}
+
+func (stubCatalogService) CheapestConfiguredModel(context.Context, int64) (domain.Model, error) {
+	return domain.Model{}, nil
+}
+
+// testUserID is the signed-in user of requests made with asTestUser, the
+// only user the stub agent defaults have any for.
+const testUserID int64 = 11
+
+func asTestUser(req *http.Request) *http.Request {
+	return req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: testUserID}))
 }
 
 func (stubCatalogService) FindModel(string) (domain.Model, error) {
@@ -68,6 +85,14 @@ type stubAgentRunService struct {
 	listRunsFn        func(ctx context.Context, userID, workspaceID int64) ([]domain.AgentRun, error)
 	subscribeEventsFn func(ctx context.Context, userID, runID, afterSequence int64) (<-chan domain.AgentRunEvent, error)
 	cancelRunFn       func(ctx context.Context, userID, runID int64) error
+	listAttentionFn   func(ctx context.Context, userID int64) ([]app.AttentionItem, error)
+}
+
+func (s stubAgentRunService) ListAttention(ctx context.Context, userID int64) ([]app.AttentionItem, error) {
+	if s.listAttentionFn != nil {
+		return s.listAttentionFn(ctx, userID)
+	}
+	return nil, nil
 }
 
 func (s stubAgentRunService) StartRun(ctx context.Context, req app.StartAgentRunRequest) (*domain.AgentRun, error) {
@@ -77,9 +102,8 @@ func (s stubAgentRunService) StartRun(ctx context.Context, req app.StartAgentRun
 	return &domain.AgentRun{ID: 1, UserID: req.UserID, WorkspaceID: req.WorkspaceID, Model: req.Model, Status: domain.AgentRunQueued, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
 }
 
-func (s stubAgentRunService) StartChildRun(ctx context.Context, parentRunID int64, req app.StartAgentRunRequest) (*domain.AgentRun, error) {
-	req.ParentRunID = parentRunID
-	return s.StartRun(ctx, req)
+func (s stubAgentRunService) StartChildRun(_ context.Context, parentRunID int64, req app.StartChildAgentRunRequest) (*domain.AgentRun, error) {
+	return &domain.AgentRun{ID: 2, ParentRunID: parentRunID, UserID: req.UserID, WorkspaceID: req.WorkspaceID, Model: req.Model, Status: domain.AgentRunQueued, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
 }
 
 func (s stubAgentRunService) GetRun(ctx context.Context, userID, runID int64) (*domain.AgentRun, error) {
@@ -212,6 +236,9 @@ func TestHandleChat_UsesAppChatService(t *testing.T) {
 		if req.Model != "gpt-5.4" {
 			t.Fatalf("expected model gpt-5.4, got %q", req.Model)
 		}
+		if req.WorkspaceID != 5 {
+			t.Fatalf("expected workspace id 5, got %d", req.WorkspaceID)
+		}
 		if len(req.Turns) != 1 || req.Turns[0].Text() != "hello" {
 			t.Fatalf("unexpected turns: %+v", req.Turns)
 		}
@@ -223,7 +250,7 @@ func TestHandleChat_UsesAppChatService(t *testing.T) {
 	}}
 
 	h := &Handler{catalog: stubCatalogService{}, chat: chat}
-	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","turns":[{"role":"user","parts":[{"kind":"text","text":"hello"}]}]}`))
+	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":5,"turns":[{"role":"user","parts":[{"kind":"text","text":"hello"}]}]}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/chat", body)
 	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 7}))
 	w := httptest.NewRecorder()
@@ -261,7 +288,7 @@ func TestHandleAgentChat_UsesAppChatService(t *testing.T) {
 	h := &Handler{catalog: stubCatalogService{}, chat: chat}
 	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":42,"turns":[{"role":"user","parts":[{"kind":"text","text":"hello"}]}]}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/agent", body)
-	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 11}))
+	req = asTestUser(req)
 	w := httptest.NewRecorder()
 
 	h.HandleAgentChat(w, req)
@@ -287,15 +314,18 @@ func TestHandleCreateAgentRun_StartsBackgroundRun(t *testing.T) {
 		if req.ConversationID != 77 {
 			t.Fatalf("expected conversation id 77, got %d", req.ConversationID)
 		}
-		if req.ParentRunID != 9 {
-			t.Fatalf("expected parent run id 9, got %d", req.ParentRunID)
+		if req.Message.Role != domain.RoleUser || req.Message.Text() != "hello" || req.Message.DisplayText != "/hello" {
+			t.Fatalf("expected the user's message hello, typed as /hello, got %+v", req.Message)
+		}
+		// The image goes before the text it is asked about.
+		if parts := req.Message.Parts; len(parts) != 2 || parts[0].Kind != domain.PartImage || parts[0].Image.AttachmentID != 5 {
+			t.Fatalf("expected the attached image first, got %+v", parts)
 		}
 		if req.Model != "gpt-5.4" {
 			t.Fatalf("expected model gpt-5.4, got %q", req.Model)
 		}
 		return &domain.AgentRun{
 			ID:             123,
-			ParentRunID:    req.ParentRunID,
 			UserID:         req.UserID,
 			WorkspaceID:    req.WorkspaceID,
 			ConversationID: req.ConversationID,
@@ -307,9 +337,9 @@ func TestHandleCreateAgentRun_StartsBackgroundRun(t *testing.T) {
 	}}
 
 	h := &Handler{runs: runs}
-	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":42,"conversationId":77,"parentRunId":9,"turns":[{"role":"user","parts":[{"kind":"text","text":"hello"}]}]}`))
+	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":42,"conversationId":77,"message":"hello","displayText":"/hello","images":[{"attachmentId":5}]}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/agent/runs", body)
-	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 11}))
+	req = asTestUser(req)
 	w := httptest.NewRecorder()
 
 	h.HandleCreateAgentRun(w, req)
@@ -322,6 +352,52 @@ func TestHandleCreateAgentRun_StartsBackgroundRun(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"id":123`) {
 		t.Fatalf("expected run response, got %s", w.Body.String())
+	}
+}
+
+func TestHandleCreateAgentRun_ValidatesRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"missing message", `{"model":"gpt-5.4","workspaceId":42,"conversationId":77}`, "message is required"},
+		{"blank message", `{"model":"gpt-5.4","workspaceId":42,"conversationId":77,"message":"  "}`, "message is required"},
+		{"missing conversation", `{"model":"gpt-5.4","workspaceId":42,"message":"hello"}`, "conversationId is required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runs := stubAgentRunService{startRunFn: func(context.Context, app.StartAgentRunRequest) (*domain.AgentRun, error) {
+				t.Fatal("expected the request to be rejected before starting a run")
+				return nil, nil
+			}}
+			h := &Handler{runs: runs}
+			req := httptest.NewRequest(http.MethodPost, "/api/ai/agent/runs", strings.NewReader(tt.body))
+			req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 11}))
+			w := httptest.NewRecorder()
+
+			h.HandleCreateAgentRun(w, req)
+
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), tt.want) {
+				t.Fatalf("expected 400 %q, got %d %s", tt.want, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleCreateAgentRun_RejectsBusyConversation(t *testing.T) {
+	runs := stubAgentRunService{startRunFn: func(context.Context, app.StartAgentRunRequest) (*domain.AgentRun, error) {
+		return nil, domain.ErrConversationBusy
+	}}
+	h := &Handler{runs: runs}
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/agent/runs", strings.NewReader(`{"model":"gpt-5.4","workspaceId":42,"conversationId":77,"message":"hello"}`))
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 11}))
+	w := httptest.NewRecorder()
+
+	h.HandleCreateAgentRun(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -391,5 +467,232 @@ func TestHandleAgentRunEvents_ReplaysRunEvents(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, `"sequence":2`) || !strings.Contains(body, `"content":"hello"`) || !strings.Contains(body, `"sequence":3`) || !strings.Contains(body, `"done":true`) {
 		t.Fatalf("unexpected SSE body: %s", body)
+	}
+}
+
+func TestHandleListAttention_ReturnsPendingPrompts(t *testing.T) {
+	runs := stubAgentRunService{listAttentionFn: func(_ context.Context, userID int64) ([]app.AttentionItem, error) {
+		if userID != 5 {
+			t.Fatalf("expected user id 5, got %d", userID)
+		}
+		return []app.AttentionItem{
+			{Run: domain.AgentRun{ID: 1, WorkspaceID: 9, Status: domain.AgentRunWaitingApproval}, Approval: &domain.ApprovalRequest{ID: "a1", Command: "sudo reboot"}},
+			{Run: domain.AgentRun{ID: 2, WorkspaceID: 9, Status: domain.AgentRunWaitingUser}, Question: &domain.UserQuestionRequest{ID: "q1", Title: "Which DB?"}},
+		}, nil
+	}}
+	h := &Handler{runs: runs}
+	req := httptest.NewRequest(http.MethodGet, "/api/ai/agent/attention", nil)
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 5}))
+	w := httptest.NewRecorder()
+	h.HandleListAttention(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body)
+	}
+	var body struct {
+		Items []struct {
+			Run      AgentRunDTO         `json:"run"`
+			Approval *ApprovalRequestDTO `json:"approval"`
+			Question *QuestionRequestDTO `json:"question"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(body.Items) != 2 || body.Items[0].Approval == nil || body.Items[0].Approval.Command != "sudo reboot" || body.Items[0].Question != nil ||
+		body.Items[1].Question == nil || body.Items[1].Question.Title != "Which DB?" || body.Items[1].Approval != nil {
+		t.Fatalf("unexpected items: %s", w.Body)
+	}
+}
+
+type stubAgentDefaultsService struct {
+	defaults map[string]domain.AgentDefaults
+	listErr  error
+	setFn    func(domain.AgentDefaults) (*domain.AgentDefaults, error)
+}
+
+func (s stubAgentDefaultsService) ListAgentDefaults(_ context.Context, userID int64) (map[string]domain.AgentDefaults, error) {
+	if userID != testUserID {
+		return map[string]domain.AgentDefaults{}, s.listErr
+	}
+	return s.defaults, s.listErr
+}
+
+func (s stubAgentDefaultsService) DefaultsFor(_ context.Context, userID int64, agentID, effort string) (*domain.AgentDefaults, error) {
+	if userID != testUserID {
+		return nil, nil
+	}
+	d, ok := s.defaults[agentID]
+	if !ok {
+		return nil, nil
+	}
+	if effort != "" {
+		d.Effort = effort
+	}
+	return &d, nil
+}
+
+func (s stubAgentDefaultsService) SetAgentDefaults(_ context.Context, userID int64, d domain.AgentDefaults) (*domain.AgentDefaults, error) {
+	if userID != testUserID {
+		return nil, errors.New("defaults set for the wrong user")
+	}
+	return s.setFn(d)
+}
+
+func TestHandleListModels_IncludesAgentDefaults(t *testing.T) {
+	h := &Handler{catalog: stubCatalogService{}, defaults: stubAgentDefaultsService{defaults: map[string]domain.AgentDefaults{
+		domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "gpt-5.4", Effort: "high"},
+	}}}
+	w := httptest.NewRecorder()
+
+	h.HandleListModels(w, asTestUser(httptest.NewRequest(http.MethodGet, "/api/ai/models", nil)))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `"agentDefaults":{"review":{"agentId":"review","model":"gpt-5.4","effort":"high"}}`) {
+		t.Fatalf("expected review defaults, got %s", w.Body.String())
+	}
+}
+
+func TestHandleListAgentDefaults_ListsEveryBuiltInAgent(t *testing.T) {
+	h := &Handler{defaults: stubAgentDefaultsService{defaults: map[string]domain.AgentDefaults{
+		domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "gpt-5.4"},
+	}}}
+	w := httptest.NewRecorder()
+
+	h.HandleListAgentDefaults(w, asTestUser(httptest.NewRequest(http.MethodGet, "/api/ai/agent-defaults", nil)))
+
+	var resp struct {
+		Agents []agentDefaultsDTO `json:"agents"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Agents) != len(domain.BuiltInAgents()) {
+		t.Fatalf("expected every built-in agent, got %+v", resp.Agents)
+	}
+	if resp.Agents[0].AgentID != domain.CodingAgentID || resp.Agents[0].Model != "" {
+		t.Fatalf("expected the coding agent first without defaults, got %+v", resp.Agents[0])
+	}
+	if resp.Agents[1].AgentID != domain.ReviewAgentID || resp.Agents[1].Model != "gpt-5.4" || resp.Agents[1].Name == "" {
+		t.Fatalf("expected the review agent's defaults, got %+v", resp.Agents[1])
+	}
+}
+
+func TestHandleSetAgentDefaults(t *testing.T) {
+	tests := []struct {
+		name    string
+		agentID string
+		setErr  error
+		want    int
+	}{
+		{"saves", domain.ReviewAgentID, nil, http.StatusOK},
+		{"custom agent", "12", nil, http.StatusNotFound},
+		{"unknown model", domain.ReviewAgentID, domain.ErrModelNotFound, http.StatusBadRequest},
+		{"bad effort", domain.ReviewAgentID, domain.ErrThinkingEffortInvalid, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &Handler{defaults: stubAgentDefaultsService{setFn: func(d domain.AgentDefaults) (*domain.AgentDefaults, error) {
+				if d.AgentID != tt.agentID || d.Model != "gpt-5.4" || d.Effort != "low" {
+					t.Fatalf("unexpected defaults %+v", d)
+				}
+				if tt.setErr != nil {
+					return nil, tt.setErr
+				}
+				return &d, nil
+			}}}
+			req := asTestUser(httptest.NewRequest(http.MethodPut, "/api/ai/agent-defaults/"+tt.agentID, strings.NewReader(`{"model":"gpt-5.4","effort":"low"}`)))
+			req.SetPathValue("id", tt.agentID)
+			w := httptest.NewRecorder()
+
+			h.HandleSetAgentDefaults(w, req)
+
+			if w.Code != tt.want {
+				t.Fatalf("expected %d, got %d: %s", tt.want, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// Losing the user's defaults must not take the model list down with them.
+func TestHandleListModels_ListsModelsWhenDefaultsFail(t *testing.T) {
+	h := &Handler{catalog: stubCatalogService{}, defaults: stubAgentDefaultsService{listErr: errors.New("disk I/O error")}}
+	w := httptest.NewRecorder()
+
+	h.HandleListModels(w, asTestUser(httptest.NewRequest(http.MethodGet, "/api/ai/models", nil)))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `"agentDefaults":{}`) {
+		t.Fatalf("expected empty defaults, got %s", w.Body.String())
+	}
+}
+
+// A run of a built-in agent without a model runs the user's default; one
+// without either fails as before.
+func TestHandleCreateAgentRun_UsesTheAgentsDefaults(t *testing.T) {
+	var got app.StartAgentRunRequest
+	runs := stubAgentRunService{startRunFn: func(_ context.Context, req app.StartAgentRunRequest) (*domain.AgentRun, error) {
+		got = req
+		return &domain.AgentRun{ID: 1, Model: req.Model, Status: domain.AgentRunRunning}, nil
+	}}
+	h := &Handler{runs: runs, defaults: stubAgentDefaultsService{defaults: map[string]domain.AgentDefaults{
+		domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "user-review", Effort: "low"},
+	}}}
+	post := func(body string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/ai/agent/runs", strings.NewReader(body))
+		req = asTestUser(req)
+		w := httptest.NewRecorder()
+		h.HandleCreateAgentRun(w, req)
+		return w.Code
+	}
+	message := `"workspaceId":42,"conversationId":77,"message":"hi"`
+
+	if code := post(`{"agentId":"review",` + message + `}`); code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", code)
+	}
+	if got.Model != "user-review" || got.Thinking == nil || got.Thinking.Effort != "low" {
+		t.Fatalf("expected the review agent's defaults, got %+v %+v", got, got.Thinking)
+	}
+	if code := post(`{"agentId":"review","thinking":{"enabled":false},` + message + `}`); code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", code)
+	}
+	if got.Thinking == nil || got.Thinking.Enabled == nil || *got.Thinking.Enabled || got.Thinking.Effort != "" {
+		t.Fatalf("expected thinking kept off, got %+v", got.Thinking)
+	}
+	if code := post(`{"agentId":"default",` + message + `}`); code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an agent without defaults, got %d", code)
+	}
+}
+
+type stubUsageService struct {
+	app.UsageService
+	got *domain.UsageQuery
+}
+
+func (s stubUsageService) Report(_ context.Context, q domain.UsageQuery) (*domain.UsageReport, error) {
+	*s.got = q
+	return &domain.UsageReport{}, nil
+}
+
+// Each user sees only their own usage, admins included, whatever scope
+// they ask for.
+func TestHandleUsageReport_ReportsOnlyTheUsersOwnUsage(t *testing.T) {
+	var got domain.UsageQuery
+	h := &Handler{usage: stubUsageService{got: &got}}
+	req := httptest.NewRequest(http.MethodGet, "/api/ai/usage?period=day&from=2026-11-01&to=2026-11-16&scope=all", nil)
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 4, IsAdmin: true}))
+	w := httptest.NewRecorder()
+
+	h.HandleUsageReport(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body)
+	}
+	if got.UserID != 4 {
+		t.Fatalf("expected the admin's own usage, got user %d", got.UserID)
 	}
 }

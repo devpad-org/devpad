@@ -2,8 +2,14 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
+
+	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/auth"
+	"github.com/devpad-org/devpad/internal/encrypt"
 )
 
 // knownHosts contains SSH host keys for common Git hosting providers.
@@ -32,25 +38,37 @@ func (s *service) injectSSHKeys(ctx context.Context, ws *Workspace) error {
 		return nil
 	}
 
-	privateKey, err := s.cipher.Decrypt(user.SSHPrivateKey)
-	if err != nil {
-		return fmt.Errorf("decrypting SSH private key: %w", err)
-	}
-
 	c, err := s.getAgent(ctx, ws.UserID, ws.ID)
 	if err != nil {
 		return fmt.Errorf("getting agent client: %w", err)
 	}
 
-	commands := []struct {
-		desc string
-		cmd  string
-	}{
-		{"creating .ssh directory", "mkdir -p ~/.ssh && chmod 700 ~/.ssh"},
-		{"writing private key", fmt.Sprintf("cat > ~/.ssh/id_ed25519 << 'DEVPAD_SSH_EOF'\n%sDEVPAD_SSH_EOF\nchmod 600 ~/.ssh/id_ed25519", privateKey)},
-		{"writing public key", fmt.Sprintf("cat > ~/.ssh/id_ed25519.pub << 'DEVPAD_SSH_EOF'\n%sDEVPAD_SSH_EOF\nchmod 644 ~/.ssh/id_ed25519.pub", user.SSHPublicKey)},
-		{"writing known_hosts", fmt.Sprintf("cat > ~/.ssh/known_hosts << 'DEVPAD_SSH_EOF'\n%sDEVPAD_SSH_EOF\nchmod 644 ~/.ssh/known_hosts", knownHosts)},
-		{"writing ssh config", fmt.Sprintf("cat > ~/.ssh/config << 'DEVPAD_SSH_EOF'\n%sDEVPAD_SSH_EOF\nchmod 644 ~/.ssh/config", sshConfig)},
+	if err := WriteSSHKeys(ctx, c, user, s.cipher); err != nil {
+		return err
+	}
+	log.Printf("workspace %d: SSH keys injected", ws.ID)
+	return nil
+}
+
+// WriteSSHKeys writes the user's SSH identity, known_hosts, and ssh config
+// into the container behind c. It does nothing if the user has no key. Only
+// call it for containers that never run untrusted code.
+func WriteSSHKeys(ctx context.Context, c *agent.Client, user *auth.User, cipher *encrypt.Cipher) error {
+	if user == nil || user.SSHPrivateKey == "" {
+		return nil
+	}
+	files, err := sshFiles(user, cipher)
+	if err != nil {
+		return err
+	}
+
+	type command struct{ desc, cmd string }
+	commands := []command{{"creating .ssh directory", "mkdir -p ~/.ssh && chmod 700 ~/.ssh"}}
+	for _, f := range files {
+		commands = append(commands, command{
+			"writing " + f.name,
+			fmt.Sprintf("cat > ~/.ssh/%s << 'DEVPAD_SSH_EOF'\n%sDEVPAD_SSH_EOF\nchmod %s ~/.ssh/%s", f.name, f.content, f.mode, f.name),
+		})
 	}
 
 	for _, cmd := range commands {
@@ -62,7 +80,51 @@ func (s *service) injectSSHKeys(ctx context.Context, ws *Workspace) error {
 			return fmt.Errorf("%s: exit code %d: %s", cmd.desc, result.ExitCode, result.Error)
 		}
 	}
-
-	log.Printf("workspace %d: SSH keys injected", ws.ID)
 	return nil
+}
+
+// sshFile is a file WriteSSHKeys writes into ~/.ssh.
+type sshFile struct {
+	name    string
+	content string
+	mode    string
+}
+
+// sshFiles returns what WriteSSHKeys writes for a user with a key.
+func sshFiles(user *auth.User, cipher *encrypt.Cipher) ([]sshFile, error) {
+	privateKey, err := cipher.Decrypt(user.SSHPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("decrypting SSH private key: %w", err)
+	}
+	return []sshFile{
+		{"id_ed25519", privateKey, "600"},
+		{"id_ed25519.pub", user.SSHPublicKey, "644"},
+		{"known_hosts", knownHosts, "644"},
+		{"config", sshConfig, "644"},
+	}, nil
+}
+
+// managedSSHFiles lists the files WriteSSHKeys writes, hashed so known_hosts
+// and config are only removed where they still hold exactly that. Devpad's
+// key pair is always removed whatever it holds, so it is listed even when
+// the user has no key on record.
+func managedSSHFiles(user *auth.User, cipher *encrypt.Cipher) ([]agent.ManagedSSHFile, error) {
+	files := []sshFile{
+		{name: "id_ed25519"},
+		{name: "id_ed25519.pub"},
+		{name: "known_hosts", content: knownHosts},
+		{name: "config", content: sshConfig},
+	}
+	if user != nil && user.SSHPrivateKey != "" {
+		var err error
+		if files, err = sshFiles(user, cipher); err != nil {
+			return nil, err
+		}
+	}
+	managed := make([]agent.ManagedSSHFile, 0, len(files))
+	for _, f := range files {
+		sum := sha256.Sum256([]byte(f.content))
+		managed = append(managed, agent.ManagedSSHFile{Name: f.name, SHA256: hex.EncodeToString(sum[:])})
+	}
+	return managed, nil
 }

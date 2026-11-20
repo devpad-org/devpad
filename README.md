@@ -2,14 +2,19 @@
 
 A web-based IDE that connects to Docker-based workspaces.
 
+Once it's running, **Docs** in the app's header explains how to use devpad and how it works. The pages are the Markdown files in [`docs/`](docs/).
+
 ## Quick Start
 
 ```bash
 # Build
 make build
 
+# Make an encryption key once and keep it (see Encryption below)
+openssl rand -hex 32
+
 # Run in development mode (HTTP on port 8080)
-./bin/devpad
+DEVPAD_ENCRYPTION_KEY="your-64-char-hex-key" ./bin/devpad
 ```
 
 ## Configuration
@@ -26,9 +31,25 @@ Devpad is configured via command-line flags and/or environment variables. Flags 
 | `--http-redirect-port` | `DEVPAD_HTTP_REDIRECT_PORT` | — | Port for HTTP→HTTPS redirect server. Requires `--domain` |
 | `--db-path` | `DEVPAD_DB_PATH` | `devpad.db` | Path to the SQLite database file |
 | `--preview-domain` | `DEVPAD_PREVIEW_DOMAIN` | — | Domain for workspace previews (e.g. `preview.example.com`) |
-| `--encryption-key` | `DEVPAD_ENCRYPTION_KEY` | — | Hex-encoded 32-byte key for encrypting secrets (SSH private keys). Auto-generated if not set |
+| `--encryption-key` | `DEVPAD_ENCRYPTION_KEY` | — | Hex-encoded 32-byte key for encrypting secrets (SSH private keys and AI provider keys). **Required**: devpad will not start without one |
+| — | `DEVPAD_CONTAINER_ID` | autodetected | ID or name of devpad's own container. Only needed when devpad runs in a container and cannot detect it (see below) |
+
+### Running devpad in a container
+
+Each workspace gets its own Docker bridge network, and devpad reaches the
+in-container agent over that network. Docker isolates bridge networks from one
+another, so when devpad itself runs in a container it joins each workspace
+network on demand — otherwise every agent request fails with an i/o timeout.
+
+This needs devpad to know its own container, which it detects from `/proc` or
+its hostname. If detection fails, devpad logs a warning at workspace start; set
+`DEVPAD_CONTAINER_ID` to the container's ID or name (`devpad` in the bundled
+`docker-compose.yml`). Running devpad directly on the host needs no
+configuration — it already routes to workspace networks.
 
 ### Examples
+
+The examples assume `DEVPAD_ENCRYPTION_KEY` is set in the environment.
 
 **Development** — plain HTTP on the default port:
 
@@ -90,6 +111,12 @@ When `--domain` is set, Devpad automatically obtains and renews TLS certificates
 
 You need a Cloudflare API token with **Zone → DNS → Edit** permissions for the zone(s) containing your domain and preview domain. Create one at [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens).
 
+### Preview domain isolation
+
+Workspace previews serve whatever the workspace (and the AI agents in it) puts on a port, so devpad treats them as hostile pages. It refuses requests to the app from any other origin, stops the app from being framed, strips `Domain` from cookies previews set, and names its session cookie `__Host-devpad_session` so a preview cannot shadow it. Setting `--preview-domain` makes session cookies `Secure`, so devpad must then be served over HTTPS (previews already require it).
+
+The strongest setup puts previews on a **separate registrable domain** from the app, for example `--domain devpad.example.com --preview-domain example-preview.net`. Browsers then treat previews as cross-site rather than as siblings of the app, which closes these attacks at the browser level as well. `--domain` may not be the preview domain or a subdomain of it.
+
 > **Tip:** On Linux, to bind ports 80/443 without root:
 > ```bash
 > sudo setcap cap_net_bind_service=+ep ./bin/devpad
@@ -97,7 +124,7 @@ You need a Cloudflare API token with **Zone → DNS → Edit** permissions for t
 
 ### Encryption Key
 
-Devpad encrypts sensitive data at rest (SSH private keys) using AES-256-GCM. An encryption key is required for production use.
+Devpad encrypts sensitive data at rest (SSH private keys and AI provider keys) using AES-256-GCM, and will not start without an encryption key.
 
 Generate a key:
 
@@ -113,13 +140,26 @@ Then pass it via flag or environment variable:
 DEVPAD_ENCRYPTION_KEY="your-64-char-hex-key" ./bin/devpad
 ```
 
-If no key is configured, Devpad generates an ephemeral key on startup and logs it. **Save this key** — without it, previously encrypted data (SSH private keys) cannot be decrypted after a restart.
+Make the key once and keep it: data encrypted with it cannot be read with any other key. If the key is lost or changed, each user must generate a new SSH key and enter their AI provider keys again in **Settings**.
 
-### SSH Keys
+### Git identity and SSH keys
 
-Each user can generate an ED25519 SSH key pair from the **Settings** page. The private key is encrypted and stored in the database; the public key is shown in the UI for users to copy to their Git hosting provider (GitHub, GitLab, Bitbucket).
+Each user can set the name and email their commits carry under **Settings > Git**; left empty, they are the account's username and email. Saving updates running project workspaces and sandboxes, and stopped ones when they next start.
 
-When a workspace starts, Devpad automatically injects the user's SSH key, a `known_hosts` file for common Git hosts, and an SSH config into the container at `~/.ssh/`. This enables `git push`/`pull` over SSH without any manual setup inside workspaces.
+Each user can generate an ED25519 SSH key pair from the same page. The private key is encrypted and stored in the database; the public key is shown in the UI for users to copy to their Git hosting provider (GitHub, GitLab, Bitbucket).
+
+Work happens in projects. Each project has a canonical repo in its own container, one workspace for you, and sandboxes for its AI agents. None of a project's workspaces ever receive your SSH key: devpad moves commits between them and the canonical repo itself, and pushes upstream from the repo container with your key. A project without an upstream is a scratch project that starts from an empty repo.
+
+In a project workspace's terminal, `git fetch devpad` brings in the project's branches as `devpad/<branch>`, and `git push devpad <branch>` publishes a branch just like the Publish button: never the default branch (that only changes through a merge request), never a branch an agent's sandbox owns, and only as a fast-forward. The IDE assistant can push the same way, and the IDE shows every push.
+
+Workspaces made before projects existed still start with your SSH key, a `known_hosts` file for common Git hosts, and an SSH config injected at `~/.ssh/`. Devpad no longer creates such workspaces; convert each one into a project from the home page, or delete it.
+
+- **Repo at the workspace root, or no repo yet:** the workspace is converted in place and becomes the project's workspace. Devpad removes its SSH key, strips the other credentials it finds (with your consent), restarts the container and rotates your key, since an AI may have read the old one. Add the new public key to your Git host and remove the old one.
+- **Repo in a subdirectory:** its branches seed a new project with a fresh workspace. The original workspace is left as it was, credentials and key included, and your key is not rotated. Delete it once you've moved what you need.
+
+### Skills
+
+Agents use the skills a project keeps in its repo, in the [Agent Skills](https://agentskills.io) format: a directory per skill under `.devpad/skills/` or `.claude/skills/` (a skill in `.devpad/skills/` wins over one of the same name), each with a `SKILL.md` whose frontmatter gives its `description`. Every run sees the skills' names and descriptions and loads one when a task calls for it; type `/<name>` in the assistant to start one yourself. Skills only add instructions: `allowed-tools` is ignored, and so is anything else that would let an agent do more than it already can. A review agent takes its skills, and its `AGENTS.md`, from the branch the change would merge into, never from the change it is reviewing.
 
 ## License
 

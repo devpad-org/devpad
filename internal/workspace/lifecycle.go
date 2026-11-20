@@ -6,9 +6,49 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"strings"
 )
 
-func (s *service) Create(ctx context.Context, userID int64, name, description string) (*Workspace, error) {
+// CreateSandbox creates a workspace that belongs to a project and owns one of
+// its branches. The repo is seeded separately via SeedSandboxRepo.
+func (s *service) CreateSandbox(ctx context.Context, userID int64, spec SandboxSpec) (*Workspace, error) {
+	if spec.ProjectID == 0 {
+		return nil, fmt.Errorf("sandbox requires a project")
+	}
+	if spec.Kind == KindInteractive || !spec.Kind.Valid() {
+		return nil, fmt.Errorf("invalid sandbox kind %q", spec.Kind)
+	}
+	if spec.Branch == "" {
+		return nil, fmt.Errorf("sandbox requires a branch")
+	}
+	return s.create(ctx, &Workspace{
+		UserID:      userID,
+		Name:        spec.Name,
+		Description: spec.Description,
+		ProjectID:   spec.ProjectID,
+		Kind:        spec.Kind,
+		Branch:      spec.Branch,
+		Image:       spec.Image,
+	})
+}
+
+// CreateProjectWorkspace creates a project's own interactive workspace. It
+// owns no branch; its repo is seeded separately via SeedSandboxRepo.
+func (s *service) CreateProjectWorkspace(ctx context.Context, userID int64, spec ProjectWorkspaceSpec) (*Workspace, error) {
+	if spec.ProjectID == 0 {
+		return nil, fmt.Errorf("project workspace requires a project")
+	}
+	return s.create(ctx, &Workspace{
+		UserID:      userID,
+		Name:        spec.Name,
+		Description: spec.Description,
+		ProjectID:   spec.ProjectID,
+		Kind:        KindInteractive,
+		Image:       spec.Image,
+	})
+}
+
+func (s *service) create(ctx context.Context, ws *Workspace) (*Workspace, error) {
 	// Generate a cryptographically random token for agent authentication.
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -19,61 +59,79 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 	// Insert the workspace record first to obtain a stable ID for naming
 	// Docker resources. This decouples container/volume names from the
 	// user-facing workspace name (which may contain spaces or be renamed).
-	ws := &Workspace{
-		UserID:      userID,
-		Name:        name,
-		Description: description,
-		Status:      StatusCreating,
-		AgentToken:  agentToken,
-		MemoryLimit: DefaultMemoryLimit,
-		NanoCPUs:    DefaultNanoCPUs,
-	}
+	ws.Status = StatusCreating
+	ws.AgentToken = agentToken
+	ws.MemoryLimit = DefaultMemoryLimit
+	ws.NanoCPUs = DefaultNanoCPUs
 	if err := s.repo.Create(ctx, ws); err != nil {
 		return nil, fmt.Errorf("creating workspace: %w", err)
 	}
+	// Undoing a failed create goes on when ctx is cancelled, which is what
+	// often failed it, so nothing is left behind.
+	cleanupCtx := context.WithoutCancel(ctx)
 
 	// Use the workspace ID for Docker resource names — stable and unique.
 	networkName := fmt.Sprintf("devpad-net-%d", ws.ID)
 	if err := s.container.CreateNetwork(ctx, networkName); err != nil {
-		_ = s.repo.Delete(ctx, ws.ID)
+		_ = s.repo.Delete(cleanupCtx, ws.ID)
 		return nil, fmt.Errorf("creating network: %w", err)
+	}
+
+	// When devpad runs in a container it must join the workspace network to
+	// reach the agent; on the host this is a no-op.
+	if err := s.container.EnsureSelfAttached(ctx, networkName); err != nil {
+		_ = s.container.RemoveNetwork(cleanupCtx, networkName)
+		_ = s.repo.Delete(cleanupCtx, ws.ID)
+		return nil, fmt.Errorf("joining workspace network: %w", err)
 	}
 
 	volumeName := fmt.Sprintf("devpad-vol-%d", ws.ID)
 	if err := s.container.CreateVolume(ctx, volumeName); err != nil {
-		_ = s.container.RemoveNetwork(ctx, networkName)
-		_ = s.repo.Delete(ctx, ws.ID)
+		_ = s.container.RemoveNetwork(cleanupCtx, networkName)
+		_ = s.repo.Delete(cleanupCtx, ws.ID)
 		return nil, fmt.Errorf("creating volume: %w", err)
 	}
 
-	containerEnv := []string{
-		fmt.Sprintf("AGENT_AUTH_TOKEN=%s", agentToken),
+	// undo removes what was made so far: the services, then the volume,
+	// network and record.
+	undo := func() {
+		if s.sidecar != nil {
+			if err := s.sidecar.DeleteAll(cleanupCtx, ws.ID); err != nil {
+				log.Printf("workspace %d: removing services after a failed create: %v", ws.ID, err)
+			}
+		}
+		_ = s.container.RemoveVolume(cleanupCtx, volumeName)
+		_ = s.container.RemoveNetwork(cleanupCtx, networkName)
+		_ = s.repo.Delete(cleanupCtx, ws.ID)
 	}
 
-	// Inject sidecar service env vars (connection info) if any
-	// services are already attached.
-	if s.sidecar != nil {
-		svcEnv, err := s.sidecar.EnvVars(ctx, ws.ID, networkName)
-		if err != nil {
-			log.Printf("workspace %d: failed to get sidecar env vars: %v", ws.ID, err)
-		} else {
-			containerEnv = append(containerEnv, svcEnv...)
+	// The project's services come first, so the container is made knowing
+	// how to reach them. A sandbox without them would leave its agent
+	// working against services that are not there, so it is not made; the
+	// project workspace is, and can get them by being rebuilt. They are
+	// started, not waited for: the project waits for them to be ready
+	// before the sandbox's setup script, outside the locks its callers
+	// hold while it is made.
+	if ws.ProjectID != 0 && s.sidecar != nil {
+		if err := s.sidecar.Provision(ctx, ws.ID, ws.ProjectID, networkName, true); err != nil {
+			if ws.IsSandbox() {
+				undo()
+				return nil, fmt.Errorf("starting the project's services: %w", err)
+			}
+			log.Printf("workspace %d: starting the project's services: %v", ws.ID, err)
 		}
 	}
 
-	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), volumeName, networkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
+	containerEnv := s.containerEnv(ctx, ws.ID, agentToken, networkName)
+	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.Image, volumeName, networkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
 	if err != nil {
-		_ = s.container.RemoveVolume(ctx, volumeName)
-		_ = s.container.RemoveNetwork(ctx, networkName)
-		_ = s.repo.Delete(ctx, ws.ID)
+		undo()
 		return nil, fmt.Errorf("creating container: %w", err)
 	}
 
 	if err := s.container.Start(ctx, containerID); err != nil {
-		_ = s.container.Remove(ctx, containerID)
-		_ = s.container.RemoveVolume(ctx, volumeName)
-		_ = s.container.RemoveNetwork(ctx, networkName)
-		_ = s.repo.Delete(ctx, ws.ID)
+		_ = s.container.Remove(cleanupCtx, containerID)
+		undo()
 		return nil, fmt.Errorf("starting container: %w", err)
 	}
 
@@ -82,11 +140,9 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 	ws.VolumeName = volumeName
 	ws.NetworkName = networkName
 	if err := s.repo.Update(ctx, ws); err != nil {
-		_ = s.container.Stop(ctx, containerID)
-		_ = s.container.Remove(ctx, containerID)
-		_ = s.container.RemoveVolume(ctx, volumeName)
-		_ = s.container.RemoveNetwork(ctx, networkName)
-		_ = s.repo.Delete(ctx, ws.ID)
+		_ = s.container.Stop(cleanupCtx, containerID)
+		_ = s.container.Remove(cleanupCtx, containerID)
+		undo()
 		return nil, fmt.Errorf("updating workspace: %w", err)
 	}
 
@@ -95,12 +151,26 @@ func (s *service) Create(ctx context.Context, userID int64, name, description st
 		log.Printf("workspace %d: agent not ready after create: %v", ws.ID, err)
 	}
 
-	// Inject SSH keys if the user has them configured. Best-effort.
-	if err := s.injectSSHKeys(ctx, ws); err != nil {
-		log.Printf("workspace %d: SSH key injection failed: %v", ws.ID, err)
-	}
+	s.injectUserSSHKeys(ctx, ws)
 
 	return ws, nil
+}
+
+// containerEnv is the environment a workspace's container starts with: the
+// agent's token and, if any services are already attached, how to reach
+// them.
+func (s *service) containerEnv(ctx context.Context, workspaceID int64, agentToken, networkName string) []string {
+	env := []string{fmt.Sprintf("AGENT_AUTH_TOKEN=%s", agentToken)}
+	if s.sidecar != nil {
+		svcEnv, err := s.sidecar.EnvVars(ctx, workspaceID, networkName)
+		if err != nil {
+			log.Printf("workspace %d: failed to get sidecar env vars: %v", workspaceID, err)
+		} else if len(svcEnv) > 0 {
+			env = append(env, svcEnv...)
+			env = append(env, serviceVarsEnv+"="+strings.Join(envNames(svcEnv), ","))
+		}
+	}
+	return env
 }
 
 func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
@@ -108,6 +178,11 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 	if err != nil {
 		return err
 	}
+	done, err := s.beginLifecycle(ws.ID)
+	if err != nil {
+		return err
+	}
+	defer done()
 
 	// Remove the Docker container
 	if ws.ContainerID != "" {
@@ -131,8 +206,12 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 		}
 	}
 
-	// Remove the workspace network
+	// Remove the workspace network. Docker refuses to remove a network that
+	// still has endpoints, so drop devpad's own attachment first.
 	if ws.NetworkName != "" {
+		if err := s.container.DetachSelf(ctx, ws.NetworkName); err != nil {
+			log.Printf("workspace %d: detaching devpad from network failed: %v", ws.ID, err)
+		}
 		if err := s.container.RemoveNetwork(ctx, ws.NetworkName); err != nil {
 			return fmt.Errorf("removing network: %w", err)
 		}
@@ -141,14 +220,48 @@ func (s *service) Delete(ctx context.Context, userID, workspaceID int64) error {
 	if err := s.repo.Delete(ctx, ws.ID); err != nil {
 		return fmt.Errorf("deleting workspace: %w", err)
 	}
+	s.forgetAgentSyncLock(ws.ID)
 	return nil
 }
 
+// Start starts a project or standalone workspace. Sandboxes start through
+// StartSandbox, so their project can count them.
 func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Workspace, error) {
 	ws, err := s.Get(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
+	if ws.IsSandbox() {
+		return nil, ErrSandboxStart
+	}
+	done, err := s.beginLifecycle(ws.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	return s.start(ctx, ws)
+}
+
+// StartSandbox starts a sandbox. The caller has counted it against its
+// project's sandbox limit.
+func (s *service) StartSandbox(ctx context.Context, userID, workspaceID int64) (*Workspace, error) {
+	ws, err := s.Get(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if !ws.IsSandbox() {
+		return nil, fmt.Errorf("starting workspace %d: it is not a sandbox", ws.ID)
+	}
+	done, err := s.beginLifecycle(ws.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	return s.start(ctx, ws)
+}
+
+// start starts a workspace's container under the caller's lifecycle hold.
+func (s *service) start(ctx context.Context, ws *Workspace) (*Workspace, error) {
 	if ws.Status == StatusRunning {
 		return ws, nil
 	}
@@ -176,8 +289,14 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 		return nil, fmt.Errorf("updating workspace status: %w", err)
 	}
 
+	// The workspace has started whether or not its caller is still there to
+	// see it, and the start hook may resume an agent in it, so neither
+	// waiting for the agent nor giving it the git identity stops with the
+	// caller.
+	started := context.WithoutCancel(ctx)
+
 	// Wait for the agent to be ready before performing post-start actions.
-	if err := s.waitForAgent(ctx, ws); err != nil {
+	if err := s.waitForAgent(started, ws); err != nil {
 		log.Printf("workspace %d: agent not ready after start: %v", ws.ID, err)
 	}
 
@@ -187,18 +306,25 @@ func (s *service) Start(ctx context.Context, userID, workspaceID int64) (*Worksp
 		log.Printf("workspace %d: agent update failed: %v", ws.ID, err)
 	}
 
-	// Inject SSH keys if the user has them configured. Best-effort.
-	if err := s.injectSSHKeys(ctx, ws); err != nil {
-		log.Printf("workspace %d: SSH key injection failed: %v", ws.ID, err)
-	}
+	s.injectUserSSHKeys(ctx, ws)
 
 	// Start attached sidecar services. Best-effort.
 	if s.sidecar != nil {
 		if err := s.sidecar.StartAll(ctx, ws.ID, ws.NetworkName); err != nil {
 			log.Printf("workspace %d: sidecar start failed: %v", ws.ID, err)
 		}
+		// Services added while it was stopped, or since its container was
+		// made, are not in the container's environment.
+		s.logSyncServiceEnv(ctx, ws)
 	}
 
+	// Before the start hook, so an agent resumed by it commits as the user
+	// now wants.
+	s.logSyncGitIdentity(started, ws)
+
+	if s.startHook != nil {
+		s.startHook.WorkspaceStarted(started, ws)
+	}
 	return ws, nil
 }
 
@@ -207,6 +333,12 @@ func (s *service) Stop(ctx context.Context, userID, workspaceID int64) (*Workspa
 	if err != nil {
 		return nil, err
 	}
+	// Stopping mid-conversion would leave devpad unable to undo its work.
+	done, err := s.beginLifecycle(ws.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
 	if ws.Status == StatusStopped {
 		return ws, nil
 	}
@@ -229,4 +361,61 @@ func (s *service) Stop(ctx context.Context, userID, workspaceID int64) (*Workspa
 		return nil, fmt.Errorf("updating workspace status: %w", err)
 	}
 	return ws, nil
+}
+
+// Restart restarts a running workspace's container, installing the current
+// agent first if it is outdated, so one restart brings it up to date.
+// Terminals and running processes restart with it; the volume and attached
+// services are untouched. A stopped workspace is refused rather than
+// started, so a sandbox cannot start this way.
+func (s *service) Restart(ctx context.Context, userID, workspaceID int64) (*Workspace, error) {
+	ws, err := s.Get(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	done, err := s.beginLifecycle(ws.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	if ws.Status != StatusRunning {
+		return nil, ErrNotRunning
+	}
+	if ws.ContainerID == "" {
+		return nil, fmt.Errorf("workspace has no container")
+	}
+
+	// Best-effort: an agent that can't be replaced now still restarts, and
+	// the check after the restart tries again.
+	if _, err := s.installAgentIfOutdated(ctx, ws); err != nil {
+		log.Printf("workspace %d: agent update before restart failed: %v", ws.ID, err)
+	}
+	if err := s.container.Restart(ctx, ws.ContainerID); err != nil {
+		return nil, fmt.Errorf("restarting container: %w", err)
+	}
+	if err := s.waitForAgent(ctx, ws); err != nil {
+		log.Printf("workspace %d: agent not ready after restart: %v", ws.ID, err)
+	}
+	if err := s.ensureAgentUpdated(ctx, ws); err != nil {
+		log.Printf("workspace %d: agent update failed: %v", ws.ID, err)
+	}
+	// An agent that was just updated has none of the services' variables
+	// an older one may have been unable to keep.
+	s.logSyncServiceEnv(ctx, ws)
+	s.logSyncGitIdentity(ctx, ws)
+
+	s.injectUserSSHKeys(ctx, ws)
+	return ws, nil
+}
+
+// injectUserSSHKeys injects the user's SSH keys if they have them configured.
+// Sandboxes and project workspaces never get them, so an agent cannot push
+// anywhere on the user's behalf. Best-effort.
+func (s *service) injectUserSSHKeys(ctx context.Context, ws *Workspace) {
+	if !ws.ReceivesUserCredentials() {
+		return
+	}
+	if err := s.injectSSHKeys(ctx, ws); err != nil {
+		log.Printf("workspace %d: SSH key injection failed: %v", ws.ID, err)
+	}
 }

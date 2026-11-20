@@ -31,7 +31,7 @@ const uploadTargetDirectory = ref('/workspace')
 const uploading = ref(false)
 
 // Filesystem watcher
-const { connect: connectWatcher, onEvent } = useFileWatcher(() => props.workspaceId)
+const { connect: connectWatcher, onEvent, onResync } = useFileWatcher(() => props.workspaceId)
 
 // Debounce directory refreshes to avoid flooding on rapid changes
 let refreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -50,6 +50,8 @@ onEvent((event: FsEvent) => {
   const parentPath = event.path.substring(0, event.path.lastIndexOf('/')) || '/workspace'
   debouncedRefreshDir(parentPath)
 })
+
+onResync(() => void refreshTree())
 
 onMounted(async () => {
   await loadRootDirectory()
@@ -476,7 +478,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
 
 <style scoped>
 .file-explorer {
-  --ide-header-icon: var(--accent-blue);
+  --ide-header-icon: var(--hue-blue);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -489,7 +491,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
   background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
@@ -549,9 +551,9 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
   align-items: flex-start;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
-  color: var(--accent-rose);
-  background: var(--bg-surface);
+  border-bottom: 0.5px solid var(--border-subtle);
+  color: var(--error);
+  background: var(--bg-elevated);
   font-size: 0.72rem;
   line-height: 1.35;
 }
@@ -568,11 +570,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
 }
 
 .header-btn.spinning svg {
-  animation: spin-refresh 0.6s linear infinite;
-}
-
-@keyframes spin-refresh {
-  to { transform: rotate(360deg); }
+  animation: spin 0.6s linear infinite;
 }
 
 .tree-item {
@@ -595,9 +593,9 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
   flex: 1;
   min-width: 0;
   padding: 1px 4px;
-  border: 0.5px solid var(--accent-blue);
+  border: 0.5px solid var(--accent);
   border-radius: 3px;
-  background: var(--bg-primary);
+  background: var(--bg-base);
   color: var(--text-primary);
   font-size: 0.8rem;
   font-family: var(--font-sans);
@@ -622,7 +620,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
 }
 
 .explorer-empty-icon {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   opacity: 0.4;
   margin-bottom: var(--space-1);
 }
@@ -635,7 +633,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
 
 .explorer-empty-hint {
   font-size: 0.72rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   line-height: 1.4;
 }
 
@@ -654,7 +652,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
   font-weight: 500;
   color: var(--text-secondary);
   background: var(--bg-hover);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: all var(--transition-fast);
@@ -662,7 +660,7 @@ import ConfirmModal from '@/components/ConfirmModal.vue'
 
 .explorer-empty-btn:hover {
   color: var(--text-primary);
-  background: var(--bg-tertiary);
-  border-color: var(--accent-blue);
+  background: var(--bg-elevated);
+  border-color: var(--accent);
 }
 </style>

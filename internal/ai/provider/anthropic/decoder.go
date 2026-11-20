@@ -2,51 +2,42 @@ package anthropic
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
+	"github.com/devpad-org/devpad/internal/ai/provider/shared"
 )
 
 // startAnthropicStream initiates an Anthropic Messages API streaming request.
-func startAnthropicStream(ctx context.Context, client *http.Client, url, apiKey string, payload map[string]any) (<-chan domain.ProviderEvent, error) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshalling request: %w", err)
+func startAnthropicStream(ctx context.Context, client *http.Client, url, apiKey string, payload map[string]any, betas []string) (<-chan domain.ProviderEvent, error) {
+	headers := http.Header{}
+	headers.Set("x-api-key", apiKey)
+	headers.Set("anthropic-version", apiVersion)
+	if len(betas) > 0 {
+		headers.Set("anthropic-beta", strings.Join(betas, ","))
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", apiKey)
-	httpReq.Header.Set("anthropic-version", apiVersion)
-	httpReq.Header.Set("Accept", "text/event-stream")
-
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("%s API error (status %d): %s", providerID, resp.StatusCode, string(respBody))
-	}
-
-	ch := make(chan domain.ProviderEvent, 64)
-	go readAnthropicStream(resp.Body, ch)
-	return ch, nil
+	return shared.StartStreamRequestWithHeaders(ctx, client, url, headers, providerID, payload, readAnthropicStream)
 }
+
+// The reasoning state saved with an assistant turn is a JSON array of the
+// turn's content blocks in the order the model produced them. Thinking blocks
+// are stored in full; text and tool_use blocks are stored as references to the
+// turn's own text and tool calls, so they aren't duplicated. Replaying the turn
+// in its original order keeps the thinking blocks valid on models that bind
+// them to the conversation.
+const (
+	// layoutTextRefType marks a text block holding the next "bytes" bytes of
+	// the turn's text.
+	layoutTextRefType = "devpad_text_ref"
+	// layoutToolUseRefType marks the tool_use block for the tool call "id".
+	layoutToolUseRefType = "devpad_tool_use_ref"
+)
 
 type pendingThinkingBlock struct {
 	blockType string // "thinking" or "redacted_thinking"
@@ -66,7 +57,10 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	var toolCalls []domain.ToolCall
 	toolCallArgs := make(map[int]*strings.Builder)
 	pendingThinking := make(map[int]*pendingThinkingBlock)
-	var completedThinkingBlocks []map[string]any
+	pendingTextBytes := make(map[int]int)
+	var layout []map[string]any
+	var usage *domain.Usage
+	var iterations []anthropicIteration
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -77,11 +71,8 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		if strings.HasPrefix(line, "event: ") {
 			eventType := strings.TrimPrefix(line, "event: ")
 			if eventType == "message_stop" {
-				if len(completedThinkingBlocks) > 0 {
-					if raw, err := json.Marshal(completedThinkingBlocks); err == nil {
-						ch <- domain.ProviderEvent{ReasoningState: raw}
-					}
-				}
+				emitAnthropicUsage(ch, usage, iterations)
+				emitAnthropicReasoningState(ch, layout)
 				emitAnthropicToolCalls(ch, toolCalls, toolCallArgs)
 				ch <- domain.ProviderEvent{Done: true}
 				return
@@ -96,16 +87,36 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 
 		var event anthropicEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			log.Printf("error parsing anthropic event: %v", err)
-			continue
+			emitAnthropicUsage(ch, usage, iterations)
+			ch <- domain.ProviderEvent{Err: shared.MalformedEventError(providerName, data, err)}
+			return
 		}
 
 		switch event.Type {
+		case "message_start":
+			if event.Message != nil && event.Message.Usage != nil {
+				usage = mergeAnthropicUsage(usage, event.Message.Usage)
+				if len(event.Message.Usage.Iterations) > 0 {
+					iterations = event.Message.Usage.Iterations
+				}
+			}
+
 		case "content_block_start":
 			if event.ContentBlock == nil || event.Index == nil {
 				continue
 			}
 			switch event.ContentBlock.Type {
+			case "fallback":
+				// A safety classifier declined the request part-way and a
+				// fallback model continues on the same stream. Thinking and
+				// tool_use blocks before the boundary must not be echoed back
+				// or executed; streamed text is kept as continuation context.
+				toolCalls = nil
+				clear(toolCallArgs)
+				clear(pendingThinking)
+				layout = textRefsOnly(layout)
+			case "text":
+				pendingTextBytes[*event.Index] = 0
 			case "thinking":
 				pendingThinking[*event.Index] = &pendingThinkingBlock{blockType: "thinking"}
 			case "redacted_thinking":
@@ -136,6 +147,11 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			case "text_delta":
 				if event.Delta.Text != "" {
 					ch <- domain.ProviderEvent{TextDelta: event.Delta.Text}
+					if event.Index != nil {
+						if _, ok := pendingTextBytes[*event.Index]; ok {
+							pendingTextBytes[*event.Index] += len(event.Delta.Text)
+						}
+					}
 				}
 			case "thinking_delta":
 				if event.Delta.Thinking != "" {
@@ -165,7 +181,17 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 			if event.Index == nil {
 				continue
 			}
-			if block, ok := pendingThinking[*event.Index]; ok {
+			index := *event.Index
+			if n, ok := pendingTextBytes[index]; ok {
+				if n > 0 {
+					layout = append(layout, map[string]any{"type": layoutTextRefType, "bytes": n})
+				}
+				delete(pendingTextBytes, index)
+			}
+			if _, ok := toolCallArgs[index]; ok && index < len(toolCalls) && toolCalls[index].ID != "" {
+				layout = append(layout, map[string]any{"type": layoutToolUseRefType, "id": toolCalls[index].ID})
+			}
+			if block, ok := pendingThinking[index]; ok {
 				var thinkingBlock map[string]any
 				if block.blockType == "redacted_thinking" {
 					thinkingBlock = map[string]any{
@@ -179,30 +205,122 @@ func readAnthropicStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 						"signature": block.signature,
 					}
 				}
-				completedThinkingBlocks = append(completedThinkingBlocks, thinkingBlock)
-				delete(pendingThinking, *event.Index)
+				layout = append(layout, thinkingBlock)
+				delete(pendingThinking, index)
+			}
+
+		case "message_delta":
+			if event.Usage != nil {
+				usage = mergeAnthropicUsage(usage, event.Usage)
+				if len(event.Usage.Iterations) > 0 {
+					iterations = event.Usage.Iterations
+				}
+			}
+			// The stop reason comes with the final usage, so a response that
+			// did not finish normally can end here.
+			if event.Delta != nil {
+				if err := stopReasonError(event.Delta); err != nil {
+					emitAnthropicUsage(ch, usage, iterations)
+					ch <- domain.ProviderEvent{Err: err}
+					return
+				}
 			}
 
 		case "error":
-			if event.Error != nil {
+			emitAnthropicUsage(ch, usage, iterations)
+			if event.Error != nil && event.Error.Message != "" {
 				ch <- domain.ProviderEvent{Err: errors.New(event.Error.Message)}
 				return
 			}
+			ch <- domain.ProviderEvent{Err: shared.ProviderStreamError(providerName, "")}
+			return
 		}
 	}
 
+	emitAnthropicUsage(ch, usage, iterations)
 	if err := scanner.Err(); err != nil {
-		log.Printf("error reading anthropic stream: %v", err)
-		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
+		ch <- domain.ProviderEvent{Err: shared.ReadStreamError(providerName, err)}
+		return
 	}
+	// The stream closed before message_stop, so the response is incomplete.
+	ch <- domain.ProviderEvent{Err: shared.IncompleteStreamError(providerName)}
+}
 
-	if len(completedThinkingBlocks) > 0 {
-		if raw, err := json.Marshal(completedThinkingBlocks); err == nil {
-			ch <- domain.ProviderEvent{ReasoningState: raw}
+// emitAnthropicReasoningState sends the turn's layout when it holds thinking
+// blocks; without them there is nothing to replay.
+func emitAnthropicReasoningState(ch chan<- domain.ProviderEvent, layout []map[string]any) {
+	hasThinking := false
+	for _, block := range layout {
+		if block["type"] == "thinking" || block["type"] == "redacted_thinking" {
+			hasThinking = true
+			break
 		}
 	}
-	emitAnthropicToolCalls(ch, toolCalls, toolCallArgs)
-	ch <- domain.ProviderEvent{Done: true}
+	if !hasThinking {
+		return
+	}
+	if raw, err := json.Marshal(layout); err == nil {
+		ch <- domain.ProviderEvent{ReasoningState: raw}
+	}
+}
+
+// mergeAnthropicUsage folds a usage report into the request's usage so far.
+// message_start reports the prompt and message_delta the running totals, so
+// each count the report carries replaces the one before it.
+func mergeAnthropicUsage(usage *domain.Usage, report *anthropicUsage) *domain.Usage {
+	if usage == nil {
+		usage = &domain.Usage{}
+	}
+	if report.InputTokens > 0 {
+		usage.InputTokens = report.InputTokens
+	}
+	if report.OutputTokens > 0 {
+		usage.OutputTokens = report.OutputTokens
+	}
+	if report.CacheReadInputTokens > 0 {
+		usage.CacheReadTokens = report.CacheReadInputTokens
+	}
+	if report.CacheCreationInputTokens > 0 {
+		usage.CacheWriteTokens = report.CacheCreationInputTokens
+	}
+	return usage
+}
+
+// emitAnthropicUsage sends what the request was billed for, before any error
+// or the end of the stream, so a request that fails part-way still counts.
+// A request that ran more than once, such as on a fallback model after a
+// refusal, is sent as each attempt, with the model that ran it.
+func emitAnthropicUsage(ch chan<- domain.ProviderEvent, usage *domain.Usage, iterations []anthropicIteration) {
+	if len(iterations) > 0 {
+		for _, it := range iterations {
+			ch <- domain.ProviderEvent{Usage: &domain.Usage{
+				InputTokens:      it.InputTokens,
+				OutputTokens:     it.OutputTokens,
+				CacheReadTokens:  it.CacheReadInputTokens,
+				CacheWriteTokens: it.CacheCreationInputTokens,
+				Model:            it.Model,
+			}}
+		}
+		return
+	}
+	if usage == nil {
+		return
+	}
+	reported := *usage
+	ch <- domain.ProviderEvent{Usage: &reported}
+}
+
+// textRefsOnly keeps the text written before a fallback boundary, which the
+// fallback model continues from; earlier thinking and tool_use blocks are
+// discarded.
+func textRefsOnly(layout []map[string]any) []map[string]any {
+	var kept []map[string]any
+	for _, block := range layout {
+		if block["type"] == layoutTextRefType {
+			kept = append(kept, block)
+		}
+	}
+	return kept
 }
 
 func emitAnthropicToolCalls(ch chan<- domain.ProviderEvent, toolCalls []domain.ToolCall, toolCallArgs map[int]*strings.Builder) {
@@ -235,6 +353,34 @@ type anthropicEvent struct {
 	ContentBlock *anthropicContent `json:"content_block,omitempty"`
 	Delta        *anthropicDelta   `json:"delta,omitempty"`
 	Error        *anthropicError   `json:"error,omitempty"`
+	Message      *anthropicMessage `json:"message,omitempty"` // message_start
+	Usage        *anthropicUsage   `json:"usage,omitempty"`   // message_delta
+}
+
+type anthropicMessage struct {
+	Usage *anthropicUsage `json:"usage,omitempty"`
+}
+
+// anthropicUsage is a usage report. input_tokens excludes the cache reads and
+// writes counted beside it.
+type anthropicUsage struct {
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	// Iterations is each attempt at a request that ran more than once, such
+	// as on a fallback model after a refusal, each billed at the prices of
+	// the model that ran it. The counts beside it are the last attempt's.
+	Iterations []anthropicIteration `json:"iterations,omitempty"`
+}
+
+// anthropicIteration is one attempt at a request.
+type anthropicIteration struct {
+	Model                    string `json:"model"`
+	InputTokens              int64  `json:"input_tokens"`
+	OutputTokens             int64  `json:"output_tokens"`
+	CacheCreationInputTokens int64  `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64  `json:"cache_read_input_tokens"`
 }
 
 type anthropicContent struct {
@@ -254,6 +400,39 @@ type anthropicDelta struct {
 	Signature   string `json:"signature,omitempty"`
 	PartialJSON string `json:"partial_json,omitempty"`
 	StopReason  string `json:"stop_reason,omitempty"`
+	// StopDetails is only populated when StopReason is "refusal".
+	StopDetails *anthropicStopDetails `json:"stop_details,omitempty"`
+}
+
+type anthropicStopDetails struct {
+	Category    string `json:"category,omitempty"`
+	Explanation string `json:"explanation,omitempty"`
+}
+
+// stopReasonError returns the error for a stop reason that means the response
+// did not finish normally, or nil when it did.
+func stopReasonError(delta *anthropicDelta) error {
+	switch delta.StopReason {
+	case "refusal":
+		return refusalError(delta.StopDetails)
+	case "max_tokens":
+		return fmt.Errorf("%s stopped the response because it reached the output token limit", providerName)
+	case "model_context_window_exceeded":
+		return fmt.Errorf("%s stopped the response because the conversation reached the model's context limit", providerName)
+	default:
+		return nil
+	}
+}
+
+func refusalError(details *anthropicStopDetails) error {
+	msg := "Claude declined to respond to this request"
+	if details != nil && details.Category != "" {
+		msg += fmt.Sprintf(" (category: %s)", details.Category)
+	}
+	if details != nil && details.Explanation != "" {
+		msg += ": " + details.Explanation
+	}
+	return errors.New(msg)
 }
 
 type anthropicError struct {

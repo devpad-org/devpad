@@ -1,0 +1,323 @@
+package workspace
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"slices"
+	"strings"
+
+	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/agentbin"
+)
+
+var (
+	// ErrNotStandalone refuses converting a workspace that already belongs
+	// to a project.
+	ErrNotStandalone = errors.New("workspace already belongs to a project")
+	// ErrConverting refuses a second conversion, or deleting, stopping or
+	// starting the workspace, while it is being converted into a project.
+	ErrConverting = errors.New("workspace is being converted into a project")
+	// ErrLifecycleBusy refuses converting a workspace while it is being
+	// started, stopped or deleted.
+	ErrLifecycleBusy = errors.New("workspace is being started, stopped or deleted; try again when it settles")
+	// ErrRebuilding refuses starting, stopping or deleting a workspace while
+	// its container is being replaced.
+	ErrRebuilding = errors.New("workspace is being rebuilt; try again when it is back")
+	// ErrAgentOutdated refuses converting a workspace whose running agent
+	// predates the conversion endpoints; restarting it updates the agent.
+	ErrAgentOutdated = errors.New("the workspace's agent is out of date; restart the workspace and try again")
+	// ErrCredentialsPresent refuses making a workspace a project's workspace
+	// while it holds credentials the user has not agreed to strip.
+	ErrCredentialsPresent = errors.New("the workspace holds credentials")
+)
+
+// CredentialsError stops a workspace becoming a project's workspace: Items
+// were found without the user's consent to strip them, and Failed were
+// agreed to but could not be stripped.
+type CredentialsError struct {
+	Items  []agent.CredentialItem
+	Failed []CredentialFailure
+}
+
+// CredentialFailure is a credential that could not be stripped, with why.
+type CredentialFailure struct {
+	agent.CredentialItem
+	Reason string `json:"reason"`
+}
+
+// maxFailureReason caps a reason from the workspace's agent, which is
+// untrusted, before it is logged or shown.
+const maxFailureReason = 300
+
+func (e *CredentialsError) Error() string {
+	var parts []string
+	if len(e.Items) > 0 {
+		where := make([]string, 0, len(e.Items))
+		for _, item := range e.Items {
+			where = append(where, item.Location)
+		}
+		parts = append(parts, "that must be stripped first: "+strings.Join(where, "; "))
+	}
+	if len(e.Failed) > 0 {
+		where := make([]string, 0, len(e.Failed))
+		for _, f := range e.Failed {
+			where = append(where, f.Location)
+		}
+		parts = append(parts, "that could not be stripped: "+strings.Join(where, "; "))
+	}
+	return fmt.Sprintf("%s %s", ErrCredentialsPresent, strings.Join(parts, ", and "))
+}
+
+func (e *CredentialsError) Unwrap() error { return ErrCredentialsPresent }
+
+// AttachResult reports what was taken out of a workspace that became a
+// project's workspace.
+type AttachResult struct {
+	SSH      *agent.SSHCleanup
+	Stripped []agent.CredentialItem
+}
+
+// standaloneAgent returns a running standalone workspace and its agent
+// client, refusing an agent too old to have the conversion endpoints.
+func (s *service) standaloneAgent(ctx context.Context, userID, workspaceID int64) (*Workspace, *agent.Client, error) {
+	ws, err := s.Get(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !ws.ReceivesUserCredentials() {
+		return nil, nil, ErrNotStandalone
+	}
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if version, err := c.Version(ctx); err != nil || version != agentbin.Version {
+		return nil, nil, ErrAgentOutdated
+	}
+	return ws, c, nil
+}
+
+// DiscoverRepos lists the git repos in a standalone workspace, or previews a
+// repo made from its files when it has none.
+func (s *service) DiscoverRepos(ctx context.Context, userID, workspaceID int64) (*agent.RepoDiscovery, error) {
+	_, c, err := s.standaloneAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoDiscover(ctx)
+}
+
+// BeginConversion marks a running standalone workspace as being converted,
+// so it cannot be converted twice at once or deleted meanwhile. The caller
+// must call release when done.
+func (s *service) BeginConversion(ctx context.Context, userID, workspaceID int64) (release func(), err error) {
+	if _, _, err := s.standaloneAgent(ctx, userID, workspaceID); err != nil {
+		return nil, err
+	}
+	s.convertMu.Lock()
+	defer s.convertMu.Unlock()
+	if s.converting == nil {
+		s.converting = make(map[int64]bool)
+	}
+	if s.converting[workspaceID] {
+		return nil, ErrConverting
+	}
+	if s.busy[workspaceID] > 0 {
+		return nil, ErrLifecycleBusy
+	}
+	s.converting[workspaceID] = true
+	return func() {
+		s.convertMu.Lock()
+		defer s.convertMu.Unlock()
+		delete(s.converting, workspaceID)
+	}, nil
+}
+
+// beginLifecycle marks a start, stop or delete of a workspace in flight,
+// refusing it while the workspace is being converted; BeginConversion
+// refuses while one is in flight. The caller must call done.
+func (s *service) beginLifecycle(workspaceID int64) (done func(), err error) {
+	s.convertMu.Lock()
+	defer s.convertMu.Unlock()
+	if s.converting[workspaceID] {
+		return nil, ErrConverting
+	}
+	if s.rebuilding[workspaceID] {
+		return nil, ErrRebuilding
+	}
+	if s.busy == nil {
+		s.busy = make(map[int64]int)
+	}
+	s.busy[workspaceID]++
+	return func() {
+		s.convertMu.Lock()
+		defer s.convertMu.Unlock()
+		if s.busy[workspaceID]--; s.busy[workspaceID] <= 0 {
+			delete(s.busy, workspaceID)
+		}
+	}, nil
+}
+
+// InitRepoFromContents makes a repo at /workspace from the files in a
+// standalone workspace, committing as the user.
+func (s *service) InitRepoFromContents(ctx context.Context, userID, workspaceID int64, branch string, includeSensitive bool) (*agent.RepoContentsInit, error) {
+	ws, c, err := s.standaloneAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	var name, email string
+	if user, err := s.users.GetByID(ctx, ws.UserID); err == nil && user != nil {
+		name, email = user.GitIdentity()
+	}
+	return c.RepoInitContents(ctx, branch, includeSensitive, name, email)
+}
+
+// UndoInitRepoFromContents removes a repo made by InitRepoFromContents if it
+// still holds only the commit sha.
+func (s *service) UndoInitRepoFromContents(ctx context.Context, userID, workspaceID int64, sha string) error {
+	_, c, err := s.standaloneAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	return c.RepoUndoInitContents(ctx, sha)
+}
+
+// BundleAllBranches streams a bundle of every branch and tag of the repo at
+// dir in a standalone workspace. The bundle is untrusted; the caller must
+// close it.
+func (s *service) BundleAllBranches(ctx context.Context, userID, workspaceID int64, dir string) (io.ReadCloser, error) {
+	_, c, err := s.standaloneAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoBundleAll(ctx, dir)
+}
+
+// AttachToProject makes a standalone workspace the project's workspace, with
+// its repo already in place. A project workspace holds no credentials, so it
+// first strips the ones the user agreed to (strip names them by ID), and
+// refuses if any credential is left; then it removes the SSH files devpad put
+// in the container: always devpad's key pair, and known_hosts and config
+// where they still hold what devpad wrote. If anything fails once the SSH
+// files are being removed, devpad's keys are put back, since the workspace
+// stays standalone. Stripped credentials stay stripped either way.
+//
+// The agent strips and removes from inside the workspace, which an AI may
+// control, so devpad cannot verify any of it. That is why a conversion also
+// rotates the user's key and tells them to revoke what was stripped: those
+// stay safe however this went.
+func (s *service) AttachToProject(ctx context.Context, userID, workspaceID, projectID int64, strip []string) (*AttachResult, error) {
+	if projectID == 0 {
+		return nil, fmt.Errorf("attaching workspace: no project")
+	}
+	ws, c, err := s.standaloneAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	stripped, err := c.StripCredentials(ctx, strip)
+	if err != nil {
+		return nil, fmt.Errorf("stripping credentials: %w", err)
+	}
+	if credErr := leftCredentials(stripped, strip); credErr != nil {
+		for _, f := range credErr.Failed {
+			log.Printf("workspace %d: could not strip %s: %s", ws.ID, f.Location, f.Reason)
+		}
+		return nil, credErr
+	}
+
+	user, err := s.users.GetByID(ctx, ws.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("looking up user: %w", err)
+	}
+	files, err := managedSSHFiles(user, s.cipher)
+	if err != nil {
+		return nil, err
+	}
+	// From here the keys may be partly gone, so any failure puts them back.
+	restoreKeys := func() {
+		if injectErr := s.injectSSHKeys(context.WithoutCancel(ctx), ws); injectErr != nil {
+			log.Printf("workspace %d: restoring SSH keys after a failed conversion: %v", ws.ID, injectErr)
+		}
+	}
+	cleanup, err := c.SSHRemoveManaged(ctx, files)
+	if err != nil {
+		restoreKeys()
+		return nil, fmt.Errorf("removing SSH keys: %w", err)
+	}
+
+	attached, err := s.repo.AttachToProject(ctx, ws.ID, projectID)
+	if err == nil && !attached {
+		err = ErrNotStandalone
+	}
+	if err != nil {
+		restoreKeys()
+		return nil, fmt.Errorf("attaching workspace to project: %w", err)
+	}
+	return &AttachResult{SSH: cleanup, Stripped: stripped.Stripped}, nil
+}
+
+// leftCredentials returns what stops attaching after a strip: credentials
+// still there that were not agreed to, and ones agreed to that could not be
+// stripped. Reasons come from the workspace, so they are capped and have
+// URL credentials removed before anyone logs or sees them.
+func leftCredentials(result *agent.CredentialStrip, consented []string) *CredentialsError {
+	credErr := &CredentialsError{}
+	failed := map[string]bool{}
+	for _, f := range result.Failed {
+		failed[f.ID] = true
+		credErr.Failed = append(credErr.Failed, CredentialFailure{CredentialItem: f.CredentialItem, Reason: cleanReason(f.Reason)})
+	}
+	for _, item := range result.Remaining {
+		switch {
+		case failed[item.ID]:
+		case slices.Contains(consented, item.ID):
+			credErr.Failed = append(credErr.Failed, CredentialFailure{CredentialItem: item, Reason: "still there after stripping"})
+		default:
+			credErr.Items = append(credErr.Items, item)
+		}
+	}
+	if len(credErr.Items) == 0 && len(credErr.Failed) == 0 {
+		return nil
+	}
+	return credErr
+}
+
+func cleanReason(reason string) string {
+	reason = agent.RedactURLCredentials(strings.TrimSpace(reason))
+	if len(reason) > maxFailureReason {
+		reason = reason[:maxFailureReason] + "..."
+	}
+	if reason == "" {
+		reason = "no reason given"
+	}
+	return reason
+}
+
+// RestartConverted restarts the container of a workspace that has just
+// become a project's workspace, ending every process started while it held
+// credentials, such as an ssh-agent with the key loaded. Terminals and
+// running commands restart with it; the volume is untouched.
+func (s *service) RestartConverted(ctx context.Context, userID, workspaceID int64) error {
+	ws, err := s.Get(ctx, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	if ws.ReceivesUserCredentials() {
+		return fmt.Errorf("restarting workspace %d: it is not a project workspace", ws.ID)
+	}
+	if ws.ContainerID == "" {
+		return fmt.Errorf("workspace has no container")
+	}
+	if err := s.container.Restart(ctx, ws.ContainerID); err != nil {
+		return fmt.Errorf("restarting container: %w", err)
+	}
+	if err := s.waitForAgent(ctx, ws); err != nil {
+		return fmt.Errorf("agent not ready after restart: %w", err)
+	}
+	// Its repo is now one whose identity devpad keeps.
+	s.logSyncGitIdentity(ctx, ws)
+	return nil
+}

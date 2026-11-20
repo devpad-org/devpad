@@ -3,9 +3,20 @@ import { useAuthStore } from '@/stores/auth'
 import HomeView from '@/views/HomeView.vue'
 import LoginView from '@/views/LoginView.vue'
 import SetupView from '@/views/SetupView.vue'
+import InviteView from '@/views/InviteView.vue'
 import AdminView from '@/views/AdminView.vue'
 import SettingsView from '@/views/SettingsView.vue'
-const IdeView = () => import('@/views/IdeView.vue')
+import SecuritySettings from '@/components/settings/SecuritySettings.vue'
+import GitSettings from '@/components/settings/GitSettings.vue'
+import AppearanceSettings from '@/components/settings/AppearanceSettings.vue'
+import AIProviderKeys from '@/components/settings/AIProviderKeys.vue'
+import AIDefaultModels from '@/components/settings/AIDefaultModels.vue'
+import AIBudgets from '@/components/settings/AIBudgets.vue'
+import AIModelPricing from '@/components/settings/AIModelPricing.vue'
+import InboxView from '@/views/InboxView.vue'
+import UsageView from '@/views/UsageView.vue'
+import DocsView from '@/views/DocsView.vue'
+import { ideView } from './views'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -16,10 +27,63 @@ export const router = createRouter({
       component: HomeView,
       meta: { requiresAuth: true },
     },
+    // Settings is a sidebar of pages, each with its own URL.
     {
       path: '/settings',
-      name: 'settings',
       component: SettingsView,
+      meta: { requiresAuth: true },
+      children: [
+        { path: '', name: 'settings', redirect: { name: 'settings-security' } },
+        { path: 'security', name: 'settings-security', component: SecuritySettings },
+        { path: 'git', name: 'settings-git', component: GitSettings },
+        { path: 'ssh-key', redirect: { name: 'settings-git' } },
+        { path: 'appearance', name: 'settings-appearance', component: AppearanceSettings },
+        { path: 'ai/keys', name: 'settings-ai-keys', component: AIProviderKeys },
+        { path: 'ai/models', name: 'settings-ai-models', component: AIDefaultModels },
+        { path: 'ai/budgets', name: 'settings-ai-budgets', component: AIBudgets },
+        { path: 'ai/pricing', name: 'settings-ai-pricing', component: AIModelPricing },
+      ],
+    },
+    // The launcher at / lists projects.
+    {
+      path: '/projects',
+      name: 'projects',
+      redirect: { name: 'home' },
+    },
+    // A project opens as its IDE: project panels plus the project workspace.
+    {
+      path: '/projects/:id',
+      name: 'project',
+      component: ideView.load,
+      meta: { requiresAuth: true, hideChrome: true },
+    },
+    // Merge requests open in a modal over their project.
+    {
+      path: '/projects/:id/merge-requests/:mrId',
+      name: 'merge-request',
+      redirect: (to) => {
+        const mrId = Number(to.params.mrId)
+        if (!Number.isInteger(mrId) || mrId < 1) return { name: 'project', params: { id: to.params.id } }
+        return { name: 'project', params: { id: to.params.id }, query: { ...to.query, mr: String(mrId) } }
+      },
+    },
+    {
+      path: '/inbox',
+      name: 'inbox',
+      component: InboxView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/usage',
+      name: 'usage',
+      component: UsageView,
+      meta: { requiresAuth: true },
+    },
+    // The documentation: /docs opens its first page.
+    {
+      path: '/docs/:slug?',
+      name: 'docs',
+      component: DocsView,
       meta: { requiresAuth: true },
     },
     {
@@ -34,6 +98,14 @@ export const router = createRouter({
       component: SetupView,
       meta: { guest: true },
     },
+    // An invite link: /invite#<token>. The page itself tells someone signed in
+    // to sign out first, so it is neither guest-only nor behind auth.
+    {
+      path: '/invite',
+      name: 'invite',
+      component: InviteView,
+      meta: { hideChrome: true },
+    },
     {
       path: '/admin',
       name: 'admin',
@@ -43,7 +115,7 @@ export const router = createRouter({
     {
       path: '/workspace/:id',
       name: 'ide',
-      component: IdeView,
+      component: ideView.load,
       meta: { requiresAuth: true, hideChrome: true },
     },
   ],

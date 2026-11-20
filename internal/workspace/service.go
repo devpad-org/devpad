@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/auth"
@@ -14,6 +15,10 @@ var (
 	ErrForbidden            = errors.New("access denied")
 	ErrNotRunning           = errors.New("workspace is not running")
 	ErrDefaultAgentNotFound = errors.New("default agent not found")
+
+	// ErrSandboxStart refuses starting a sandbox outside its project, which
+	// counts it against the project's sandbox limit.
+	ErrSandboxStart = errors.New("a sandbox can only be started from its project")
 )
 
 type service struct {
@@ -23,6 +28,21 @@ type service struct {
 	cipher    *encrypt.Cipher
 	agentPort int
 	sidecar   SidecarService
+	startHook StartHook
+
+	// converting holds the workspaces being converted into a project, and
+	// busy counts the starts, stops and deletes in flight for each; one
+	// excludes the other. rebuilding holds the project workspaces whose
+	// container is being replaced, which excludes both.
+	convertMu  sync.Mutex
+	converting map[int64]bool
+	busy       map[int64]int
+	rebuilding map[int64]bool
+
+	// agentSyncLocks serialise what devpad syncs to each workspace's agent
+	// (lockAgentSync).
+	agentSyncMu    sync.Mutex
+	agentSyncLocks map[int64]chan struct{}
 }
 
 // NewService creates a new workspace Service.
@@ -32,4 +52,8 @@ func NewService(repo Repository, cm container.Manager, users auth.UserRepository
 
 func (s *service) SetSidecarService(sidecar SidecarService) {
 	s.sidecar = sidecar
+}
+
+func (s *service) SetStartHook(h StartHook) {
+	s.startHook = h
 }

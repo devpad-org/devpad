@@ -3,18 +3,18 @@ import { ref, computed, onMounted, watch } from 'vue'
 import type { Workspace } from '@/api/workspaces'
 import { serviceApi, type WorkspaceService } from '@/api/services'
 import { useWorkspaceStore } from '@/stores/workspaces'
-import { serviceTypeIcon } from '@/components/ide/serviceCatalog'
+import ServiceLogo from '@/components/ide/ServiceLogo.vue'
 
 const props = defineProps<{
   workspace: Workspace
 }>()
 
 const emit = defineEmits<{
-  edit: [workspace: Workspace]
   delete: [workspace: Workspace]
   open: [workspace: Workspace]
   start: [workspace: Workspace]
   stop: [workspace: Workspace]
+  convert: [workspace: Workspace]
 }>()
 
 const store = useWorkspaceStore()
@@ -102,7 +102,7 @@ function formatDate(dateStr: string) {
           ]"
           :title="`${svc.serviceType} — ${svc.status}`"
         >
-          <span class="service-badge-icon">{{ serviceTypeIcon(svc.serviceType) }}</span>
+          <ServiceLogo class="service-badge-icon" :type="svc.serviceType" />
           <svg v-if="svc.status === 'stopped' && workspace.status === 'running' && loadingServices" class="badge-spinner" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
           </svg>
@@ -176,10 +176,13 @@ function formatDate(dateStr: string) {
             <line x1="12" x2="12" y1="2" y2="12" />
           </svg>
         </button>
-        <button class="action-btn" title="Edit" @click="$emit('edit', workspace)">
+        <button class="action-btn" title="Convert to project" aria-label="Convert to project" @click="$emit('convert', workspace)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
-            <path d="m15 5 4 4" />
+            <circle cx="6" cy="6" r="2" />
+            <circle cx="6" cy="18" r="2" />
+            <circle cx="18" cy="12" r="2" />
+            <path d="M6 8v8" />
+            <path d="M8 6h4a4 4 0 0 1 4 4v0" />
           </svg>
         </button>
         <button class="action-btn action-danger" title="Delete" @click="$emit('delete', workspace)">
@@ -308,6 +311,8 @@ function formatDate(dateStr: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
   padding-top: var(--space-3);
   border-top: 0.5px solid var(--border-default);
 }
@@ -337,12 +342,12 @@ function formatDate(dateStr: string) {
 }
 
 .btn-open {
-  background: var(--accent-blue);
-  color: var(--bg-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
 }
 
 .btn-open:hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, var(--gruvbox-fg0));
+  background: color-mix(in srgb, var(--accent) 85%, var(--fill-hover-mix));
 }
 
 .btn-start {
@@ -393,10 +398,6 @@ function formatDate(dateStr: string) {
 
 .spinner {
   animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
 }
 
 /* Divider between primary and secondary actions */
@@ -452,27 +453,22 @@ function formatDate(dateStr: string) {
 
 .service-badge-icon {
   font-size: 0.75rem;
-  line-height: 1;
 }
 
 .service-badge-dot {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--text-muted);
+  background: var(--text-tertiary);
 }
 
 .service-running .service-badge-dot {
-  background: var(--accent-green);
-  box-shadow: 0 0 4px var(--accent-green);
+  background: var(--success);
+  box-shadow: 0 0 4px var(--success);
 }
 
 .badge-spinner {
-  animation: badge-spin 1s linear infinite;
-  color: var(--accent-amber);
-}
-
-@keyframes badge-spin {
-  to { transform: rotate(360deg); }
+  animation: spin 1s linear infinite;
+  color: var(--warning);
 }
 </style>

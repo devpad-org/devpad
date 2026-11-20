@@ -17,9 +17,17 @@ import (
 	"github.com/devpad-org/devpad/internal/container"
 	"github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/dockerfile"
+	"github.com/devpad-org/devpad/internal/docs"
 	"github.com/devpad-org/devpad/internal/encrypt"
+	"github.com/devpad-org/devpad/internal/gitbridge"
+	"github.com/devpad-org/devpad/internal/mergerequest"
 	"github.com/devpad-org/devpad/internal/preview"
+	"github.com/devpad-org/devpad/internal/project"
+	"github.com/devpad-org/devpad/internal/projecttools"
+	"github.com/devpad-org/devpad/internal/runscope"
 	"github.com/devpad-org/devpad/internal/settings"
+	"github.com/devpad-org/devpad/internal/skills"
+	"github.com/devpad-org/devpad/internal/task"
 	"github.com/devpad-org/devpad/internal/workspace"
 	"github.com/devpad-org/devpad/internal/wsservice"
 	"github.com/devpad-org/devpad/web"
@@ -33,10 +41,26 @@ type Server struct {
 	cfg            Config
 	cleanupCancel  context.CancelFunc
 	aiShutdown     func(context.Context) error
+	taskShutdown   func(context.Context) error
+	mrShutdown     func(context.Context) error
+	// gitBridgeStop stops polling project workspaces for git requests.
+	gitBridgeStop func()
 }
 
 // New creates a new Server with the given configuration.
 func New(cfg Config) (*Server, error) {
+	if err := validateDomains(cfg); err != nil {
+		return nil, err
+	}
+
+	// Encryption cipher for secrets (SSH private keys and AI provider keys).
+	// Devpad never makes one up: secrets sealed with a key that is gone
+	// with the process could not be read after a restart.
+	cipher, err := newCipher(cfg.EncryptionKey)
+	if err != nil {
+		return nil, err
+	}
+
 	db, err := database.Open(cfg.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
@@ -46,27 +70,18 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
-	// Encryption cipher for secrets (SSH private keys).
-	if cfg.EncryptionKey == "" {
-		key, err := encrypt.GenerateKey()
-		if err != nil {
-			return nil, fmt.Errorf("generating encryption key: %w", err)
-		}
-		cfg.EncryptionKey = key
-		log.Printf("WARNING: No encryption key configured. Generated ephemeral key. SSH keys encrypted with this key will be lost on restart. Use 'openssl rand -hex 32' to generate a persistent key and set DEVPAD_ENCRYPTION_KEY.")
-	}
-	cipher, err := encrypt.NewCipher(cfg.EncryptionKey)
-	if err != nil {
-		return nil, fmt.Errorf("creating encryption cipher: %w", err)
-	}
-
 	// Auth layer
 	userRepo := auth.NewUserRepository(db.Conn())
 	sessionRepo := auth.NewSessionRepository(db.Conn())
 	authService := auth.NewService(userRepo, sessionRepo)
-	secureCookie := cfg.Domain != ""
+	secureCookie := secureCookies(cfg)
+	if secureCookie && cfg.Domain == "" {
+		log.Printf("--preview-domain is set, so session cookies are Secure (%s): devpad must be served over HTTPS, as previews already require", auth.SessionCookieName(true))
+	}
 	authHandler := auth.NewHandler(authService, secureCookie)
-	authMiddleware := auth.NewMiddleware(authService)
+	authMiddleware := auth.NewMiddleware(authService, secureCookie)
+	inviteService := auth.NewInviteService(auth.NewInviteRepository(db.Conn()), sessionRepo)
+	inviteHandler := auth.NewInviteHandler(inviteService, authHandler)
 
 	// Settings layer
 	preferencesRepo := settings.NewPreferencesRepository(db.Conn())
@@ -87,6 +102,7 @@ func New(cfg Config) (*Server, error) {
 
 	workspaceRepo := workspace.NewRepository(db.Conn())
 	workspaceService := workspace.NewService(workspaceRepo, containerManager, userRepo, cipher)
+	settingsService.SetGitIdentitySyncer(workspaceService)
 
 	// Workspace services layer (sidecars)
 	wsServiceRepo := wsservice.NewRepository(db.Conn())
@@ -97,27 +113,79 @@ func New(cfg Config) (*Server, error) {
 	adminService := admin.NewService(userRepo, workspaceService)
 	adminHandler := admin.NewHandler(adminService)
 
-	// Build allowed WebSocket origins from configuration.
-	var wsOrigins []string
-	if cfg.Domain != "" {
-		scheme := "https"
-		origin := scheme + "://" + cfg.Domain
-		if cfg.Port != 443 {
-			origin = fmt.Sprintf("%s://%s:%d", scheme, cfg.Domain, cfg.Port)
-		}
-		wsOrigins = append(wsOrigins, origin)
-	} else {
-		// Development mode: allow localhost on the configured port.
-		wsOrigins = append(wsOrigins,
-			fmt.Sprintf("http://localhost:%d", cfg.Port),
-			fmt.Sprintf("http://127.0.0.1:%d", cfg.Port),
-		)
-	}
-	workspaceHandler := workspace.NewHandler(workspaceService, wsOrigins)
+	origins := appOrigins(cfg)
+	workspaceHandler := workspace.NewHandler(workspaceService, origins)
 	wsServiceHandler := wsservice.NewHandler(wsServiceService, workspaceService)
 
+	// Project layer (canonical repos and the sandboxes seeded from them)
+	projectRepo := project.NewRepository(db.Conn())
+	projectService := project.NewService(projectRepo, containerManager, workspaceService, userRepo, cipher, settingsService)
+	projectHandler := project.NewHandler(projectService)
+	projectService.SetSidecarServices(wsServiceService)
+	workspaceService.SetStartHook(projectService)
+	projectServicesHandler := wsservice.NewProjectHandler(wsServiceService, projectService, workspaceService)
+
 	// AI layer
-	aiModule := ai.NewModule(db.Conn(), workspaceService)
+	aiModule := ai.NewModule(db.Conn(), workspaceService, cipher)
+
+	// Task layer (agents implementing tasks in project sandboxes)
+	taskService := task.NewService(task.NewRepository(db.Conn()), projectService, workspaceService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults, aiModule.BudgetDefaults)
+	aiModule.OnAgentRunFinished(taskService.RunFinished)
+	taskHandler := task.NewHandler(taskService)
+
+	// Merge request layer (reviews by users and review agents, and merging)
+	mrService := mergerequest.NewService(mergerequest.NewRepository(db.Conn()), projectService, workspaceService, taskService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults, aiModule.BudgetDefaults, aiModule.CatalogService)
+	taskService.SetReviewHook(mrService)
+	projectService.SetPublishHook(mrService)
+	projectService.AddBranchGuard(mrService)
+	projectService.AddBranchGuard(taskService)
+	aiModule.OnAgentRunFinished(mrService.RunFinished)
+
+	// What each run's workspace is, which every tool provider is told. It is
+	// set before any provider is added and before reconciling restarts runs.
+	scopes := runscope.New(workspaceService, mrService)
+	aiModule.SetScopeResolver(scopes)
+
+	// AGENTS.md and the project's skills, and load_skill. Review agents read
+	// them from the branch the change would merge into.
+	skillsProvider := skills.NewProvider(workspaceService, projectService)
+	skillsHandler := skills.NewHandler(skillsProvider, scopes)
+	aiModule.AddToolProvider(skillsProvider)
+
+	aiModule.AddToolProvider(mrService)
+	mrHandler := mergerequest.NewHandler(mrService)
+
+	// Which services the run's workspace has and how to reach them.
+	aiModule.AddToolProvider(wsservice.NewPromptProvider(wsServiceService))
+
+	// git push and fetch through the devpad remote in a project's workspace.
+	gitBridge := gitbridge.New(workspaceService, projectService)
+	projectService.SetUpstreamHook(gitBridge)
+	gitBridgeHandler := gitbridge.NewHandler(gitBridge)
+	gitBridgeCtx, gitBridgeCancel := context.WithCancel(context.Background())
+	gitBridgeDone := make(chan struct{})
+	go func() {
+		gitBridge.Run(gitBridgeCtx)
+		close(gitBridgeDone)
+	}()
+
+	// The assistant in a project's workspace sees the board and hands work to
+	// task agents.
+	aiModule.AddToolProvider(projecttools.NewProvider(workspaceService, projectService, taskService, mrService, aiModule.AgentDefaults))
+
+	// devpad's own documentation, for the assistant to answer questions
+	// about devpad from.
+	aiModule.AddToolProvider(docs.NewProvider(userRepo))
+
+	if err := projectService.Reconcile(context.Background()); err != nil {
+		log.Printf("finishing interrupted workspace conversions: %v", err)
+	}
+	if err := taskService.Reconcile(context.Background()); err != nil {
+		log.Printf("reconciling in-progress tasks: %v", err)
+	}
+	if err := mrService.Reconcile(context.Background()); err != nil {
+		log.Printf("reconciling pending reviews: %v", err)
+	}
 
 	// Preview layer
 	previewRepo := preview.NewRepository(db.Conn())
@@ -128,16 +196,11 @@ func New(cfg Config) (*Server, error) {
 	authRateLimiter := auth.NewRateLimiter(rate.Limit(5), 10)
 
 	mux := http.NewServeMux()
-	registerRoutes(mux, authHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, aiModule.Handler, previewHandler)
+	registerRoutes(mux, authHandler, inviteHandler, authMiddleware, authRateLimiter, adminHandler, settingsHandler, workspaceHandler, wsServiceHandler, projectServicesHandler, projectHandler, taskHandler, mrHandler, gitBridgeHandler, skillsHandler, aiModule.Handler, previewHandler)
 
-	// Wrap the mux with host-based routing to intercept preview subdomain requests.
-	handler := hostRouter(mux, previewHandler, cfg.PreviewDomain)
+	handler := buildHandler(mux, http.HandlerFunc(previewHandler.HandleProxy), cfg)
 
-	// Apply per-route body size limits to prevent memory exhaustion.
-	// Conversation message saves get 10MB; everything else gets 1MB.
-	handler = requestBodyLimit(handler)
-
-	// Start periodic cleanup of expired sessions and preview tokens.
+	// Start periodic cleanup of expired sessions, preview tokens and invites.
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
@@ -150,6 +213,9 @@ func New(cfg Config) (*Server, error) {
 				}
 				if err := previewRepo.DeleteExpired(cleanupCtx); err != nil {
 					log.Printf("preview token cleanup: %v", err)
+				}
+				if err := inviteService.PurgeExpired(cleanupCtx); err != nil {
+					log.Printf("invite cleanup: %v", err)
 				}
 			case <-cleanupCtx.Done():
 				return
@@ -171,6 +237,12 @@ func New(cfg Config) (*Server, error) {
 		cfg:           cfg,
 		cleanupCancel: cleanupCancel,
 		aiShutdown:    aiModule.Shutdown,
+		taskShutdown:  taskService.Shutdown,
+		mrShutdown:    mrService.Shutdown,
+		gitBridgeStop: func() {
+			gitBridgeCancel()
+			<-gitBridgeDone
+		},
 	}
 
 	return s, nil
@@ -248,6 +320,21 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.cleanupCancel != nil {
 		s.cleanupCancel()
 	}
+	if s.gitBridgeStop != nil {
+		s.gitBridgeStop()
+	}
+	// Stop the task orchestrator first so runs cancelled by the AI shutdown
+	// are left for Reconcile instead of failing their tasks.
+	if s.taskShutdown != nil {
+		if err := s.taskShutdown(ctx); err != nil {
+			return fmt.Errorf("task shutdown: %w", err)
+		}
+	}
+	if s.mrShutdown != nil {
+		if err := s.mrShutdown(ctx); err != nil {
+			return fmt.Errorf("merge request shutdown: %w", err)
+		}
+	}
 	if s.aiShutdown != nil {
 		if err := s.aiShutdown(ctx); err != nil {
 			return fmt.Errorf("AI shutdown: %w", err)
@@ -286,22 +373,34 @@ type aiRouteHandler interface {
 	HandleGetAgentRun(http.ResponseWriter, *http.Request)
 	HandleAgentRunEvents(http.ResponseWriter, *http.Request)
 	HandleCancelAgentRun(http.ResponseWriter, *http.Request)
+	HandleListAttention(http.ResponseWriter, *http.Request)
 	HandleListConversations(http.ResponseWriter, *http.Request)
 	HandleCreateConversation(http.ResponseWriter, *http.Request)
 	HandleDeleteConversation(http.ResponseWriter, *http.Request)
 	HandleGetMessages(http.ResponseWriter, *http.Request)
-	HandleSaveMessages(http.ResponseWriter, *http.Request)
+	HandleUploadAttachment(http.ResponseWriter, *http.Request)
+	HandleGetAttachment(http.ResponseWriter, *http.Request)
 	HandleListProviders(http.ResponseWriter, *http.Request)
-	HandleUpdateProvider(http.ResponseWriter, *http.Request)
+	HandleSetProviderKey(http.ResponseWriter, *http.Request)
+	HandleRemoveProviderKey(http.ResponseWriter, *http.Request)
+	HandleListAgentDefaults(http.ResponseWriter, *http.Request)
+	HandleSetAgentDefaults(http.ResponseWriter, *http.Request)
+	HandleGetBudgetDefaults(http.ResponseWriter, *http.Request)
+	HandleSetBudgetDefaults(http.ResponseWriter, *http.Request)
+	HandleGetSummaryModel(http.ResponseWriter, *http.Request)
+	HandleSetSummaryModel(http.ResponseWriter, *http.Request)
+	HandleUsageReport(http.ResponseWriter, *http.Request)
 }
 
 // registerRoutes sets up all HTTP routes.
-func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
+func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, inviteHandler *auth.InviteHandler, authMiddleware *auth.Middleware, authRateLimiter *auth.RateLimiter, adminHandler *admin.Handler, settingsHandler *settings.Handler, workspaceHandler *workspace.Handler, wsServiceHandler *wsservice.Handler, projectServicesHandler *wsservice.ProjectHandler, projectHandler *project.Handler, taskHandler *task.Handler, mrHandler *mergerequest.Handler, gitBridgeHandler *gitbridge.Handler, skillsHandler *skills.Handler, aiHandler aiRouteHandler, previewHandler *preview.Handler) {
 	// Public API routes
 	mux.HandleFunc("GET /api/health", handleHealth)
 	mux.HandleFunc("GET /api/auth/setup", authHandler.HandleSetupCheck)
 	mux.Handle("POST /api/auth/setup", authRateLimiter.LimitFunc(authHandler.HandleSetup))
 	mux.Handle("POST /api/auth/login", authRateLimiter.LimitFunc(authHandler.HandleLogin))
+	mux.Handle("POST /api/auth/invites/check", authRateLimiter.LimitFunc(inviteHandler.HandleCheck))
+	mux.Handle("POST /api/auth/invites/accept", authRateLimiter.LimitFunc(inviteHandler.HandleAccept))
 	mux.HandleFunc("POST /api/auth/logout", authHandler.HandleLogout)
 
 	// Protected API routes
@@ -316,7 +415,9 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("GET /api/settings/preferences", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGetPreferences)))
 	mux.Handle("PUT /api/settings/preferences", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleUpdatePreferences)))
 
-	// SSH key routes (authenticated users)
+	// Git identity and SSH key routes (authenticated users)
+	mux.Handle("GET /api/settings/git-identity", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGetGitIdentity)))
+	mux.Handle("PUT /api/settings/git-identity", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleUpdateGitIdentity)))
 	mux.Handle("GET /api/settings/ssh-key", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGetSSHKey)))
 	mux.Handle("POST /api/settings/ssh-key/generate", authMiddleware.RequireAuth(http.HandlerFunc(settingsHandler.HandleGenerateSSHKey)))
 
@@ -326,6 +427,9 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("PUT /api/admin/users/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleUpdateUser)))
 	mux.Handle("POST /api/admin/users/{id}/reset-password", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleResetPassword)))
 	mux.Handle("DELETE /api/admin/users/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleDeleteUser)))
+	mux.Handle("GET /api/admin/invites", authMiddleware.RequireAdmin(http.HandlerFunc(inviteHandler.HandleList)))
+	mux.Handle("POST /api/admin/invites", authMiddleware.RequireAdmin(http.HandlerFunc(inviteHandler.HandleCreate)))
+	mux.Handle("DELETE /api/admin/invites/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(inviteHandler.HandleRevoke)))
 
 	// Admin workspace routes
 	mux.Handle("GET /api/admin/workspaces", authMiddleware.RequireAdmin(http.HandlerFunc(adminHandler.HandleListWorkspaces)))
@@ -333,14 +437,19 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 
 	// Workspace API routes
 	mux.Handle("GET /api/workspaces", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleList)))
-	mux.Handle("POST /api/workspaces", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleCreate)))
 	mux.Handle("GET /api/workspaces/{id}", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleGet)))
-	mux.Handle("PUT /api/workspaces/{id}", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleUpdate)))
 	mux.Handle("PUT /api/workspaces/{id}/default-agent", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleSetDefaultAgent)))
 	mux.Handle("DELETE /api/workspaces/{id}", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleDelete)))
 	mux.Handle("POST /api/workspaces/{id}/start", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleStart)))
 	mux.Handle("POST /api/workspaces/{id}/stop", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleStop)))
+	mux.Handle("POST /api/workspaces/{id}/restart", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleRestart)))
 	mux.Handle("GET /api/workspaces/{id}/info", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleInfo)))
+	mux.Handle("GET /api/workspaces/{id}/skills", authMiddleware.RequireAuth(http.HandlerFunc(skillsHandler.HandleList)))
+
+	// Documentation
+	docsHandler := docs.NewHandler()
+	mux.Handle("GET /api/docs", authMiddleware.RequireAuth(http.HandlerFunc(docsHandler.HandleList)))
+	mux.Handle("GET /api/docs/{slug}", authMiddleware.RequireAuth(http.HandlerFunc(docsHandler.HandleGet)))
 	mux.Handle("GET /api/workspaces/{id}/processes", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleListProcesses)))
 	mux.Handle("POST /api/workspaces/{id}/processes/{pid}/kill", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleKillProcess)))
 	mux.Handle("GET /api/workspaces/{id}/terminal", authMiddleware.RequireAuth(http.HandlerFunc(workspaceHandler.HandleTerminal)))
@@ -376,6 +485,72 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("POST /api/workspaces/{id}/services/{serviceId}/stop", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleStop)))
 	mux.Handle("DELETE /api/workspaces/{id}/services/{serviceId}", authMiddleware.RequireAuth(http.HandlerFunc(wsServiceHandler.HandleDelete)))
 
+	// Project routes
+	mux.Handle("GET /api/projects", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleList)))
+	mux.Handle("GET /api/projects/overview", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleOverview)))
+	mux.Handle("POST /api/projects", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleCreate)))
+	mux.Handle("GET /api/projects/{id}", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleGet)))
+	mux.Handle("PUT /api/projects/{id}", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleUpdate)))
+	mux.Handle("DELETE /api/projects/{id}", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDelete)))
+	mux.Handle("GET /api/projects/{id}/branches", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleBranches)))
+	mux.Handle("PUT /api/projects/{id}/branches", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleSetBranches)))
+	mux.Handle("DELETE /api/projects/{id}/branches/{branch...}", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDeleteBranch)))
+	mux.Handle("GET /api/projects/{id}/sandboxes", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleListSandboxes)))
+	mux.Handle("POST /api/projects/{id}/sandboxes", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleCreateSandbox)))
+	mux.Handle("POST /api/projects/{id}/sandboxes/{workspaceId}/publish", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandlePublishSandbox)))
+	mux.Handle("POST /api/projects/{id}/sandboxes/{workspaceId}/start", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleStartSandbox)))
+	mux.Handle("GET /api/projects/{id}/compare", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleCompare)))
+	mux.Handle("GET /api/projects/{id}/diff", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDiff)))
+	mux.Handle("GET /api/projects/{id}/file", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleFile)))
+	mux.Handle("POST /api/projects/{id}/push", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandlePush)))
+	mux.Handle("GET /api/projects/{id}/upstream", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleUpstreamStatus)))
+	mux.Handle("PUT /api/projects/{id}/upstream", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleSetUpstream)))
+	mux.Handle("POST /api/projects/{id}/upstream/sync", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleSyncUpstream)))
+	mux.Handle("GET /api/projects/{id}/workspace", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleGetWorkspace)))
+	mux.Handle("POST /api/projects/{id}/workspace", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleOpenWorkspace)))
+	mux.Handle("POST /api/projects/{id}/workspace/checkout", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleCheckoutWorkspaceBranch)))
+	mux.Handle("POST /api/projects/{id}/workspace/publish", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandlePublishWorkspaceBranch)))
+	mux.Handle("POST /api/projects/{id}/workspace/sync", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleSyncWorkspace)))
+	mux.Handle("GET /api/projects/{id}/workspace/branch-status", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleWorkspaceBranchStatus)))
+	mux.Handle("GET /api/projects/{id}/workspace/setup", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleWorkspaceSetup)))
+	mux.Handle("POST /api/projects/{id}/workspace/setup", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleRunWorkspaceSetup)))
+	mux.Handle("POST /api/projects/{id}/workspace/rebuild", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleRebuildWorkspace)))
+	mux.Handle("GET /api/projects/{id}/environment", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleEnvironment)))
+	mux.Handle("POST /api/projects/{id}/environment/build", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleBuildEnvironment)))
+	mux.Handle("GET /api/projects/{id}/services", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleList)))
+	mux.Handle("POST /api/projects/{id}/services", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleAdd)))
+	mux.Handle("DELETE /api/projects/{id}/services/{type}", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleRemove)))
+	mux.Handle("POST /api/projects/{id}/services/adopt", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleAdopt)))
+	mux.Handle("POST /api/projects/{id}/workspace/services", authMiddleware.RequireAuth(http.HandlerFunc(projectServicesHandler.HandleAddToWorkspace)))
+	mux.Handle("GET /api/projects/{id}/git-activity", authMiddleware.RequireAuth(http.HandlerFunc(gitBridgeHandler.HandleActivity)))
+	mux.Handle("GET /api/workspaces/{id}/conversion", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDiscoverConversion)))
+	mux.Handle("POST /api/workspaces/{id}/convert", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleConvertWorkspace)))
+	mux.Handle("GET /api/projects/{id}/conversion", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleConversionNotice)))
+	mux.Handle("POST /api/projects/{id}/conversion/dismiss", authMiddleware.RequireAuth(http.HandlerFunc(projectHandler.HandleDismissConversionNotice)))
+	mux.Handle("GET /api/projects/{id}/tasks", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleList)))
+	mux.Handle("POST /api/projects/{id}/tasks", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleCreate)))
+	mux.Handle("POST /api/projects/{id}/tasks/handoff", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleHandoff)))
+	mux.Handle("GET /api/projects/{id}/tasks/{taskId}", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleGet)))
+	mux.Handle("PUT /api/projects/{id}/tasks/{taskId}", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleUpdate)))
+	mux.Handle("PUT /api/projects/{id}/tasks/{taskId}/budget", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleSetBudget)))
+	mux.Handle("DELETE /api/projects/{id}/tasks/{taskId}", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleDelete)))
+	mux.Handle("POST /api/projects/{id}/tasks/{taskId}/start", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleStart)))
+	mux.Handle("POST /api/projects/{id}/tasks/{taskId}/cancel", authMiddleware.RequireAuth(http.HandlerFunc(taskHandler.HandleCancel)))
+	mux.Handle("GET /api/projects/{id}/merge-requests", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleList)))
+	mux.Handle("POST /api/projects/{id}/merge-requests", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleCreate)))
+	mux.Handle("GET /api/projects/{id}/merge-requests/{mrId}", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleGet)))
+	mux.Handle("GET /api/projects/{id}/merge-requests/{mrId}/diff", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleDiff)))
+	mux.Handle("GET /api/projects/{id}/merge-requests/{mrId}/commits", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleCommits)))
+	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/reviews", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleReview)))
+	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/comments", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleComment)))
+	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/comments/{commentId}/resolve", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleResolveThread)))
+	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/agent-reviews", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleAgentReview)))
+	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/agent-reviews/{reviewId}/continue", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleContinueReview)))
+	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/merge", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleMerge)))
+	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/close", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleClose)))
+	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/resolve-conflicts", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleResolveConflicts)))
+	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/send-back", authMiddleware.RequireAuth(http.HandlerFunc(mrHandler.HandleSendBack)))
+
 	// AI API routes
 	mux.Handle("GET /api/ai/models", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListModels)))
 	mux.Handle("GET /api/ai/agents", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListAgents)))
@@ -391,17 +566,32 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, authMiddlewar
 	mux.Handle("GET /api/ai/agent/runs/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetAgentRun)))
 	mux.Handle("GET /api/ai/agent/runs/{id}/events", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleAgentRunEvents)))
 	mux.Handle("POST /api/ai/agent/runs/{id}/cancel", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleCancelAgentRun)))
+	mux.Handle("GET /api/ai/agent/attention", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListAttention)))
+	mux.Handle("GET /api/ai/usage", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleUsageReport)))
 
 	// AI conversation history routes
 	mux.Handle("GET /api/ai/conversations", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListConversations)))
 	mux.Handle("POST /api/ai/conversations", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleCreateConversation)))
 	mux.Handle("DELETE /api/ai/conversations/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleDeleteConversation)))
 	mux.Handle("GET /api/ai/conversations/{id}/messages", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetMessages)))
-	mux.Handle("PUT /api/ai/conversations/{id}/messages", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleSaveMessages)))
+	mux.Handle("POST /api/ai/attachments", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleUploadAttachment)))
+	mux.Handle("GET /api/ai/attachments/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetAttachment)))
 
-	// AI admin routes
-	mux.Handle("GET /api/ai/providers", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleListProviders)))
-	mux.Handle("PUT /api/ai/providers/{id}", authMiddleware.RequireAdmin(http.HandlerFunc(aiHandler.HandleUpdateProvider)))
+	// Each user's own AI settings: provider keys, agent defaults, budgets
+	// and the summary model.
+	mux.Handle("GET /api/ai/providers", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListProviders)))
+	mux.Handle("PUT /api/ai/providers/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleSetProviderKey)))
+	mux.Handle("DELETE /api/ai/providers/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleRemoveProviderKey)))
+	mux.Handle("GET /api/ai/agent-defaults", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleListAgentDefaults)))
+	mux.Handle("PUT /api/ai/agent-defaults/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleSetAgentDefaults)))
+	mux.Handle("GET /api/ai/budgets", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetBudgetDefaults)))
+	mux.Handle("PUT /api/ai/budgets", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleSetBudgetDefaults)))
+	mux.Handle("GET /api/ai/summary-model", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetSummaryModel)))
+	mux.Handle("PUT /api/ai/summary-model", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleSetSummaryModel)))
+
+	// Unknown API paths get a JSON 404 rather than the SPA, so a client
+	// calling a removed or mistyped endpoint sees a real error.
+	mux.HandleFunc("/api/", handleAPINotFound)
 
 	// Serve embedded frontend for all other routes
 	mux.Handle("/", web.Handler())
@@ -413,20 +603,88 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `{"status":"ok"}`)
 }
 
+func handleAPINotFound(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	fmt.Fprint(w, `{"error":"not found"}`)
+}
+
+// buildHandler wraps the app mux with the same-origin guard and frame
+// headers, routes preview subdomain requests to the preview proxy so they
+// never reach the app, and applies per-route body size limits to prevent
+// memory exhaustion.
+func buildHandler(appMux, previewHandler http.Handler, cfg Config) http.Handler {
+	app := denyFraming(sameOriginGuard(appMux, appOrigins(cfg)))
+	return requestBodyLimit(hostRouter(app, previewHandler, cfg.PreviewDomain))
+}
+
+// secureCookies reports whether session cookies must be Secure. A preview
+// domain forces it: previews already require HTTPS (their cookie is Secure),
+// and only a Secure cookie can carry the __Host- prefix that stops previews
+// tossing a session cookie onto the app.
+func secureCookies(cfg Config) bool {
+	return cfg.Domain != "" || cfg.PreviewDomain != ""
+}
+
+// validateDomains refuses a preview domain that would swallow the app's own
+// host: the host router sends every host under the preview domain to the
+// preview proxy, so the app would be unreachable.
+func validateDomains(cfg Config) error {
+	if cfg.Domain == "" || cfg.PreviewDomain == "" {
+		return nil
+	}
+	domain := strings.ToLower(strings.TrimSuffix(cfg.Domain, "."))
+	preview := strings.ToLower(strings.TrimSuffix(cfg.PreviewDomain, "."))
+	if domain == preview || strings.HasSuffix(domain, "."+preview) {
+		return fmt.Errorf("--domain %q must not be the preview domain %q or a subdomain of it: every host under the preview domain is served as a workspace preview", cfg.Domain, cfg.PreviewDomain)
+	}
+	return nil
+}
+
+// newCipher builds the cipher secrets are sealed with from the configured
+// key, which is required: devpad will not start without one rather than
+// seal secrets with a key that is lost when it stops.
+func newCipher(key string) (*encrypt.Cipher, error) {
+	if key == "" {
+		return nil, fmt.Errorf("an encryption key is required: set --encryption-key or DEVPAD_ENCRYPTION_KEY to a key made once with 'openssl rand -hex 32' and keep it, since SSH and AI provider keys sealed with it cannot be read with any other")
+	}
+	cipher, err := encrypt.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("invalid encryption key: %w", err)
+	}
+	return cipher, nil
+}
+
+// denyFraming stops other pages, previews included, from framing the app. A
+// framed app would load with the user's session and its own requests pass the
+// same-origin guard, so a preview could overlay it and trick the user into
+// clicking Merge or Approve.
+func denyFraming(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // hostRouter returns a handler that routes preview subdomain requests to the
-// preview proxy and everything else to the main application mux.
-func hostRouter(appMux http.Handler, previewHandler *preview.Handler, previewDomain string) http.Handler {
+// preview proxy and everything else to the main application mux. The preview
+// domain itself counts as a preview host, so the app and its API are never
+// served on any host under it.
+func hostRouter(appMux http.Handler, previewHandler http.Handler, previewDomain string) http.Handler {
 	if previewDomain == "" {
 		return appMux
 	}
+	previewDomain = strings.ToLower(strings.TrimSuffix(previewDomain, "."))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		// Strip port if present.
 		if idx := strings.LastIndex(host, ":"); idx != -1 {
 			host = host[:idx]
 		}
-		if strings.HasSuffix(host, "."+previewDomain) {
-			previewHandler.HandleProxy(w, r)
+		host = strings.ToLower(strings.TrimSuffix(host, "."))
+		if host == previewDomain || strings.HasSuffix(host, "."+previewDomain) {
+			previewHandler.ServeHTTP(w, r)
 			return
 		}
 		appMux.ServeHTTP(w, r)
@@ -434,7 +692,8 @@ func hostRouter(appMux http.Handler, previewHandler *preview.Handler, previewDom
 }
 
 // requestBodyLimit applies body size limits: 10MB for conversation message saves,
-// 10MB plus multipart overhead for workspace file uploads, and 1MB for all other endpoints.
+// 10MB plus multipart overhead for workspace file uploads and AI image
+// attachments, and 1MB for all other endpoints.
 func requestBodyLimit(next http.Handler) http.Handler {
 	const defaultLimit = int64(1 << 20)
 	const largeBodyLimit = int64(10 << 20)
@@ -445,7 +704,7 @@ func requestBodyLimit(next http.Handler) http.Handler {
 			if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/ai/conversations/") {
 				limit = largeBodyLimit
 			}
-			if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/workspaces/") && strings.HasSuffix(r.URL.Path, "/file/upload") {
+			if isMultipartUpload(r) {
 				limit = largeBodyLimit + multipartOverheadLimit
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, limit)

@@ -6,6 +6,14 @@ type Model struct {
 	Name       string             `json:"name"`
 	ProviderID string             `json:"providerId"`
 	Thinking   ThinkingCapability `json:"thinking"`
+	// Vision reports whether the model accepts images as input.
+	Vision bool `json:"vision"`
+	// Pricing is nil when the model's prices are not known.
+	Pricing *Pricing `json:"pricing,omitempty"`
+	// FallbackPricing holds, by model ID, the prices of the models the
+	// provider may run this model's requests on instead, such as after a
+	// refusal. Those requests are billed at their own model's prices.
+	FallbackPricing map[string]Pricing `json:"-"`
 }
 
 // ThinkingCapability describes whether a model supports reasoning/thinking mode.

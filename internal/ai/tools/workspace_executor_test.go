@@ -1,10 +1,13 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"strings"
 	"testing"
 
@@ -561,6 +564,54 @@ func TestWorkspaceExecutor_SpawnSubAgentStartsChildRun(t *testing.T) {
 	}
 }
 
+type stubAgentDefaults map[string]domain.AgentDefaults
+
+func (s stubAgentDefaults) DefaultsFor(_ context.Context, _ int64, agentID, _ string) (*domain.AgentDefaults, error) {
+	if d, ok := s[agentID]; ok {
+		return &d, nil
+	}
+	return nil, nil
+}
+
+// A child without a model runs the user's default for its agent with that
+// effort. Only a child on the parent's model takes the parent's thinking.
+func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
+	var got []ChildAgentRunRequest
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetAgentDefaults(stubAgentDefaults{domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "user-review", Effort: "low"}})
+	executor.SetChildAgentRunner(stubChildAgentRunner{startFn: func(_ context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error) {
+		got = append(got, req)
+		return &ChildAgentRun{ID: int64(len(got)), AgentID: req.AgentID, Model: req.Model, Status: "queued"}, nil
+	}})
+
+	for _, args := range []string{
+		`{"prompt":"review","agent_id":"review"}`,
+		`{"prompt":"review","agent_id":"review","model":"picked"}`,
+		`{"prompt":"code"}`,
+		`{"prompt":"code","model":"parent-model"}`,
+	} {
+		req := toolReq(7, 9, "spawn_sub_agent", []byte(args))
+		req.CurrentRunID = 101
+		req.Model = "parent-model"
+		req.Thinking = &domain.ThinkingConfig{Effort: "max"}
+		if result := executor.ExecuteTool(context.Background(), req); result.IsError {
+			t.Fatalf("%s: expected spawn success, got %+v", args, result)
+		}
+	}
+
+	if got[0].Model != "user-review" || got[0].Thinking == nil || got[0].Thinking.Effort != "low" {
+		t.Errorf("expected the review agent's defaults, got %+v %+v", got[0], got[0].Thinking)
+	}
+	if got[1].Model != "picked" || got[1].Thinking != nil {
+		t.Errorf("expected the picked model without the parent's thinking, got %+v %+v", got[1], got[1].Thinking)
+	}
+	for _, child := range got[2:] {
+		if child.Model != "parent-model" || child.Thinking == nil || child.Thinking.Effort != "max" {
+			t.Errorf("expected the parent's model and thinking, got %+v %+v", child, child.Thinking)
+		}
+	}
+}
+
 func TestWorkspaceExecutor_ListAvailableAgentsReturnsScopedCatalog(t *testing.T) {
 	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
 	executor.SetAgentLister(stubAgentLister{listFn: func(_ context.Context, userID, workspaceID int64) ([]domain.Agent, error) {
@@ -733,11 +784,13 @@ func TestWorkspaceExecutor_WaitForSubAgentsReportsTimeouts(t *testing.T) {
 
 	var payload struct {
 		Results []struct {
-			RunID    int64 `json:"runId"`
-			TimedOut bool  `json:"timedOut"`
+			RunID        int64 `json:"runId"`
+			TimedOut     bool  `json:"timedOut"`
+			StillRunning bool  `json:"stillRunning"`
 		} `json:"results"`
-		Completed int `json:"completed"`
-		TimedOut  int `json:"timedOut"`
+		Completed int    `json:"completed"`
+		TimedOut  int    `json:"timedOut"`
+		Message   string `json:"message"`
 	}
 	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
 		t.Fatalf("decoding wait result: %v", err)
@@ -745,8 +798,73 @@ func TestWorkspaceExecutor_WaitForSubAgentsReportsTimeouts(t *testing.T) {
 	if payload.Completed != 1 || payload.TimedOut != 1 {
 		t.Fatalf("unexpected timeout counts: %+v", payload)
 	}
-	if !payload.Results[1].TimedOut {
-		t.Fatalf("expected second result to be timed out: %+v", payload.Results)
+	if !payload.Results[1].TimedOut || !payload.Results[1].StillRunning {
+		t.Fatalf("expected second result to be timed out and still running: %+v", payload.Results)
+	}
+	if payload.Results[0].StillRunning {
+		t.Fatalf("expected finished child not to be still running: %+v", payload.Results[0])
+	}
+	for _, want := range []string{"1 still running", "#404", "wait_for_sub_agents again"} {
+		if !strings.Contains(payload.Message, want) {
+			t.Fatalf("expected message to contain %q, got %q", want, payload.Message)
+		}
+	}
+	if strings.Contains(payload.Message, "#303") {
+		t.Fatalf("expected message not to list the finished child, got %q", payload.Message)
+	}
+}
+
+func TestWorkspaceExecutor_SpawnSubAgentReportsChildStillRunning(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetChildAgentRunner(stubChildAgentRunner{
+		startFn: func(_ context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error) {
+			return &ChildAgentRun{ID: 303, ParentRunID: req.ParentRunID, WorkspaceID: req.WorkspaceID, Status: "queued"}, nil
+		},
+		waitFn: func(context.Context, int64, int64, int64) (*ChildAgentRunResult, error) {
+			return nil, context.DeadlineExceeded
+		},
+	})
+
+	req := toolReq(7, 9, "spawn_sub_agent", []byte(`{"prompt":"summarize auth","wait_for_result":true,"timeout_seconds":5}`))
+	req.CurrentRunID = 101
+	result := executor.ExecuteTool(context.Background(), req)
+	if result.IsError {
+		t.Fatalf("expected timeout payload, got %+v", result)
+	}
+
+	var payload struct {
+		TimedOut     bool   `json:"timedOut"`
+		StillRunning bool   `json:"stillRunning"`
+		Message      string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("decoding spawn result: %v", err)
+	}
+	if !payload.TimedOut || !payload.StillRunning {
+		t.Fatalf("expected child to be reported still running: %+v", payload)
+	}
+	if !strings.Contains(payload.Message, "wait_for_sub_agents") {
+		t.Fatalf("expected message to say how to collect the result, got %q", payload.Message)
+	}
+}
+
+func TestChildAgentWaitSeconds(t *testing.T) {
+	tests := []struct {
+		name   string
+		params map[string]any
+		want   int
+	}{
+		{name: "defaults to the maximum", params: map[string]any{}, want: 600},
+		{name: "keeps a shorter wait", params: map[string]any{"timeout_seconds": float64(30)}, want: 30},
+		{name: "caps a longer wait", params: map[string]any{"timeout_seconds": float64(3600)}, want: 600},
+		{name: "raises a zero wait", params: map[string]any{"timeout_seconds": float64(0)}, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := childAgentWaitSeconds(tt.params); got != tt.want {
+				t.Fatalf("childAgentWaitSeconds() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -769,5 +887,83 @@ func toolReq(userID, workspaceID int64, toolName string, args []byte) ExecutionR
 		WorkspaceID: workspaceID,
 		ToolName:    toolName,
 		Arguments:   args,
+	}
+}
+
+type recordingImageStore struct {
+	data                          []byte
+	userID, conversationID, runID int64
+}
+
+func (s *recordingImageStore) StoreToolImage(_ context.Context, userID, conversationID, runID int64, data []byte) (domain.ImagePart, error) {
+	s.data, s.userID, s.conversationID, s.runID = data, userID, conversationID, runID
+	return domain.ImagePart{AttachmentID: 42, MediaType: "image/png", Width: 2, Height: 1, Data: []byte("normalized")}, nil
+}
+
+func TestWorkspaceExecutor_ReadFileReturnsImages(t *testing.T) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 1))); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
+		return buf.Bytes(), nil
+	}})
+	store := &recordingImageStore{}
+	executor.SetImageStore(store)
+
+	req := toolReq(1, 2, "read_file", []byte(`{"path":"shot.png"}`))
+	req.ConversationID = 3
+	req.CurrentRunID = 4
+	req.Vision = true
+	result := executor.ExecuteTool(context.Background(), req)
+
+	if result.IsError || len(result.Images) != 1 || result.Images[0].AttachmentID != 42 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if !strings.Contains(result.Content, "shot.png (2×1)") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+	if !bytes.Equal(store.data, buf.Bytes()) || store.userID != 1 || store.conversationID != 3 || store.runID != 4 {
+		t.Fatalf("unexpected stored image: %+v", store)
+	}
+}
+
+func TestWorkspaceExecutor_ReadFileKeepsNoImageForModelsWithoutVision(t *testing.T) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 3, 2))); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
+		return buf.Bytes(), nil
+	}})
+	store := &recordingImageStore{}
+	executor.SetImageStore(store)
+
+	result := executor.ExecuteTool(context.Background(), toolReq(1, 2, "read_file", []byte(`{"path":"shot.png"}`)))
+	if result.IsError || len(result.Images) != 0 || store.data != nil {
+		t.Fatalf("unexpected result: %+v (stored %d bytes)", result, len(store.data))
+	}
+	if !strings.Contains(result.Content, "shot.png is a 3×2 image") || !strings.Contains(result.Content, "can't view images") {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+}
+
+func TestWorkspaceExecutor_ReadFileReadsTextWithAnImageStore(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
+		return []byte("package main\n"), nil
+	}})
+	store := &recordingImageStore{}
+	executor.SetImageStore(store)
+
+	result := executor.ExecuteTool(context.Background(), toolReq(1, 2, "read_file", []byte(`{"path":"main.go"}`)))
+	if result.Content != "package main\n" || len(result.Images) != 0 || store.data != nil {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestTruncateToolTextCutsOnACharacter(t *testing.T) {
+	content := "\xff" + strings.Repeat("x", 7) + "€"
+	if got := truncateToolText(content, 10, "[cut to %d]"); got != "\xff"+strings.Repeat("x", 7)+"[cut to 10]" {
+		t.Fatalf("expected the cut just before the split character, got %q", got)
 	}
 }

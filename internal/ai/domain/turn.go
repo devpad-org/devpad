@@ -19,12 +19,17 @@ const (
 	PartThinking   PartKind = "thinking"
 	PartToolCall   PartKind = "tool_call"
 	PartToolResult PartKind = "tool_result"
+	PartImage      PartKind = "image"
 )
 
 // Turn is the provider-agnostic internal representation of a chat exchange.
 type Turn struct {
 	Role  Role
 	Parts []Part
+	// DisplayText is what the user typed when it differs from the text the
+	// model is sent, such as a slash command expanded into its prompt.
+	// Providers never see it.
+	DisplayText string
 }
 
 // Part stores one normalized piece of a turn.
@@ -34,6 +39,7 @@ type Part struct {
 	Thinking   *ThinkingPart   // PartThinking
 	ToolCall   *ToolCall       // PartToolCall
 	ToolResult *ToolResultPart // PartToolResult
+	Image      *ImagePart      // PartImage
 }
 
 // ThinkingPart holds reasoning output with an opaque provider state for round-trip.
@@ -51,6 +57,39 @@ type ToolResultPart struct {
 	Name       string
 	Content    string
 	IsError    bool
+	// Images are pictures the tool returned alongside Content, such as an
+	// image file read_file opened.
+	Images []ImagePart
+}
+
+// ImagePart refers to a stored image attachment. Turns carry only the
+// reference: Size and Data are filled from the attachment store when a run
+// starts, Data only for the images its requests will carry, and neither is
+// serialized, so transcripts saved as JSON stay small.
+type ImagePart struct {
+	AttachmentID int64
+	MediaType    string
+	Width        int
+	Height       int
+	// Size is the stored image's size in bytes, which decides how much of a
+	// request it takes. Like Data it is loaded from the store, never taken
+	// from a client: 0 means the image has not been found.
+	Size int    `json:"-"`
+	Data []byte `json:"-"`
+}
+
+// NewImagePart creates an image part for the given attachment reference.
+func NewImagePart(image ImagePart) Part {
+	return Part{Kind: PartImage, Image: &image}
+}
+
+// CloneImages returns an owned copy of the image references, sharing Data,
+// which is never modified once loaded.
+func CloneImages(images []ImagePart) []ImagePart {
+	if len(images) == 0 {
+		return nil
+	}
+	return append([]ImagePart(nil), images...)
 }
 
 // NewTextTurn creates a turn with a single text part when text is present.
@@ -62,19 +101,51 @@ func NewTextTurn(role Role, text string) Turn {
 	return turn
 }
 
+// WithoutReasoningState returns a copy of turns fit for a model other than the
+// one that wrote them. Reasoning state and the provider's item IDs for tool
+// calls belong to that model, and a provider can refuse them from another, so
+// they go. The reasoning's text stays.
+func WithoutReasoningState(turns []Turn) []Turn {
+	out := make([]Turn, len(turns))
+	for i, turn := range turns {
+		parts := make([]Part, 0, len(turn.Parts))
+		for _, part := range turn.Parts {
+			if part.Thinking != nil {
+				if part.Thinking.Text == "" {
+					continue
+				}
+				part.Thinking = &ThinkingPart{Text: part.Thinking.Text}
+			}
+			if part.ToolCall != nil {
+				toolCall := *part.ToolCall
+				toolCall.ItemID = ""
+				part.ToolCall = &toolCall
+			}
+			parts = append(parts, part)
+		}
+		turn.Parts = parts
+		out[i] = turn
+	}
+	return out
+}
+
 // NewToolResultTurn creates a user turn with a single tool-result part.
 func NewToolResultTurn(toolCallID, name, content string, isError bool) Turn {
+	return NewToolResultTurnFromPart(ToolResultPart{
+		ToolCallID: toolCallID,
+		Name:       name,
+		Content:    content,
+		IsError:    isError,
+	})
+}
+
+// NewToolResultTurnFromPart creates a user turn holding the given tool result,
+// images included.
+func NewToolResultTurnFromPart(result ToolResultPart) Turn {
+	result.Images = CloneImages(result.Images)
 	return Turn{
-		Role: RoleUser,
-		Parts: []Part{{
-			Kind: PartToolResult,
-			ToolResult: &ToolResultPart{
-				ToolCallID: toolCallID,
-				Name:       name,
-				Content:    content,
-				IsError:    isError,
-			},
-		}},
+		Role:  RoleUser,
+		Parts: []Part{{Kind: PartToolResult, ToolResult: &result}},
 	}
 }
 
@@ -87,6 +158,43 @@ func (t Turn) Text() string {
 		}
 	}
 	return text
+}
+
+// DisplayedText returns the text to show people for the turn: what the user
+// typed if it differs from what the model was sent, otherwise its text.
+func (t Turn) DisplayedText() string {
+	if t.DisplayText != "" {
+		return t.DisplayText
+	}
+	return t.Text()
+}
+
+// Images returns the image parts attached to the turn.
+func (t Turn) Images() []ImagePart {
+	var images []ImagePart
+	for _, part := range t.Parts {
+		if part.Kind == PartImage && part.Image != nil {
+			images = append(images, *part.Image)
+		}
+	}
+	return images
+}
+
+// EachImage calls fn with each image the turns carry, attached or returned
+// by a tool, in order.
+func EachImage(turns []Turn, fn func(ImagePart)) {
+	for _, turn := range turns {
+		for _, part := range turn.Parts {
+			switch {
+			case part.Kind == PartImage && part.Image != nil:
+				fn(*part.Image)
+			case part.Kind == PartToolResult && part.ToolResult != nil:
+				for _, image := range part.ToolResult.Images {
+					fn(image)
+				}
+			}
+		}
+	}
 }
 
 // ThinkingText returns the aggregated thinking content for the turn.

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/devpad-org/devpad/internal/database"
 )
 
 // UserRepository defines data access for users.
@@ -14,8 +16,26 @@ type UserRepository interface {
 	GetByID(ctx context.Context, id int64) (*User, error)
 	Count(ctx context.Context) (int, error)
 	List(ctx context.Context) ([]*User, error)
+	// Update writes the account's fields. It leaves the git identity alone,
+	// which only SetGitIdentity changes, so a password change or new SSH key
+	// made at the same moment cannot undo a saved identity.
 	Update(ctx context.Context, user *User) error
+	// SetGitIdentity records the name and email the user chose to commit
+	// as, either of which may be empty.
+	SetGitIdentity(ctx context.Context, id int64, name, email string) error
 	Delete(ctx context.Context, id int64) error
+}
+
+const userColumns = `id, username, email, password, is_admin, totp_secret, totp_enabled, ssh_public_key, ssh_private_key, git_name, git_email, git_identity_saved, created_at, updated_at`
+
+// scanUser reads a row of userColumns.
+func scanUser(row interface{ Scan(dest ...any) error }) (*User, error) {
+	u := &User{}
+	err := row.Scan(&u.ID, &u.Username, &u.Email, &u.Password, &u.IsAdmin, &u.TOTPSecret, &u.TOTPEnabled, &u.SSHPublicKey, &u.SSHPrivateKey, &u.GitName, &u.GitEmail, &u.GitIdentitySaved, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
 }
 
 type userRepository struct {
@@ -28,12 +48,26 @@ func NewUserRepository(db *sql.DB) UserRepository {
 }
 
 func (r *userRepository) Create(ctx context.Context, user *User) error {
+	return insertUser(ctx, r.db, user)
+}
+
+// execer is what insertUser needs from a *sql.DB or a *sql.Tx.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// insertUser adds user and fills in its ID and timestamps. A username or
+// email that is already taken comes back as ErrUserExists.
+func insertUser(ctx context.Context, db execer, user *User) error {
 	now := time.Now()
-	result, err := r.db.ExecContext(ctx,
+	result, err := db.ExecContext(ctx,
 		`INSERT INTO users (username, email, password, is_admin, totp_secret, totp_enabled, ssh_public_key, ssh_private_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		user.Username, user.Email, user.Password, user.IsAdmin, user.TOTPSecret, user.TOTPEnabled, user.SSHPublicKey, user.SSHPrivateKey, now, now,
 	)
 	if err != nil {
+		if database.IsUniqueViolation(err) {
+			return fmt.Errorf("inserting user: %w", ErrUserExists)
+		}
 		return fmt.Errorf("inserting user: %w", err)
 	}
 
@@ -49,11 +83,10 @@ func (r *userRepository) Create(ctx context.Context, user *User) error {
 }
 
 func (r *userRepository) GetByUsername(ctx context.Context, username string) (*User, error) {
-	user := &User{}
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, username, email, password, is_admin, totp_secret, totp_enabled, ssh_public_key, ssh_private_key, created_at, updated_at FROM users WHERE username = ?`,
+	user, err := scanUser(r.db.QueryRowContext(ctx,
+		`SELECT `+userColumns+` FROM users WHERE username = ?`,
 		username,
-	).Scan(&user.ID, &user.Username, &user.Email, &user.Password, &user.IsAdmin, &user.TOTPSecret, &user.TOTPEnabled, &user.SSHPublicKey, &user.SSHPrivateKey, &user.CreatedAt, &user.UpdatedAt)
+	))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -64,11 +97,10 @@ func (r *userRepository) GetByUsername(ctx context.Context, username string) (*U
 }
 
 func (r *userRepository) GetByID(ctx context.Context, id int64) (*User, error) {
-	user := &User{}
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, username, email, password, is_admin, totp_secret, totp_enabled, ssh_public_key, ssh_private_key, created_at, updated_at FROM users WHERE id = ?`,
+	user, err := scanUser(r.db.QueryRowContext(ctx,
+		`SELECT `+userColumns+` FROM users WHERE id = ?`,
 		id,
-	).Scan(&user.ID, &user.Username, &user.Email, &user.Password, &user.IsAdmin, &user.TOTPSecret, &user.TOTPEnabled, &user.SSHPublicKey, &user.SSHPrivateKey, &user.CreatedAt, &user.UpdatedAt)
+	))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -89,7 +121,7 @@ func (r *userRepository) Count(ctx context.Context) (int, error) {
 
 func (r *userRepository) List(ctx context.Context) ([]*User, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, username, email, password, is_admin, totp_secret, totp_enabled, ssh_public_key, ssh_private_key, created_at, updated_at FROM users ORDER BY id`)
+		`SELECT `+userColumns+` FROM users ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
 	}
@@ -97,8 +129,8 @@ func (r *userRepository) List(ctx context.Context) ([]*User, error) {
 
 	var users []*User
 	for rows.Next() {
-		u := &User{}
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Password, &u.IsAdmin, &u.TOTPSecret, &u.TOTPEnabled, &u.SSHPublicKey, &u.SSHPrivateKey, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		u, err := scanUser(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scanning user row: %w", err)
 		}
 		users = append(users, u)
@@ -113,9 +145,23 @@ func (r *userRepository) Update(ctx context.Context, user *User) error {
 		user.Username, user.Email, user.Password, user.IsAdmin, user.TOTPSecret, user.TOTPEnabled, user.SSHPublicKey, user.SSHPrivateKey, now, user.ID,
 	)
 	if err != nil {
+		if database.IsUniqueViolation(err) {
+			return fmt.Errorf("updating user: %w", ErrUserExists)
+		}
 		return fmt.Errorf("updating user: %w", err)
 	}
 	user.UpdatedAt = now
+	return nil
+}
+
+func (r *userRepository) SetGitIdentity(ctx context.Context, id int64, name, email string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE users SET git_name = ?, git_email = ?, git_identity_saved = 1, updated_at = ? WHERE id = ?`,
+		name, email, time.Now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("setting git identity: %w", err)
+	}
 	return nil
 }
 

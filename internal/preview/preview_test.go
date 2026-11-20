@@ -20,7 +20,7 @@ import (
 // mockContainerManager is a test double for container.Manager.
 type mockContainerManager struct{}
 
-func (m *mockContainerManager) Create(_ context.Context, _, _, _ string, _ []string, _, _ int64) (string, error) {
+func (m *mockContainerManager) Create(_ context.Context, _, _, _, _ string, _ []string, _, _ int64) (string, error) {
 	return "mock-container", nil
 }
 func (m *mockContainerManager) Start(_ context.Context, _ string) error   { return nil }
@@ -42,6 +42,8 @@ func (m *mockContainerManager) Stats(_ context.Context, _ string) (*container.Co
 func (m *mockContainerManager) CreateNetwork(_ context.Context, _ string) error       { return nil }
 func (m *mockContainerManager) RemoveNetwork(_ context.Context, _ string) error       { return nil }
 func (m *mockContainerManager) ConnectToNetwork(_ context.Context, _, _ string) error { return nil }
+func (m *mockContainerManager) EnsureSelfAttached(_ context.Context, _ string) error  { return nil }
+func (m *mockContainerManager) DetachSelf(_ context.Context, _ string) error          { return nil }
 func (m *mockContainerManager) CreateVolume(_ context.Context, _ string) error        { return nil }
 func (m *mockContainerManager) RemoveVolume(_ context.Context, _ string) error        { return nil }
 func (m *mockContainerManager) Exec(_ context.Context, _ string, _ []string) (string, error) {
@@ -56,11 +58,32 @@ func (m *mockContainerManager) ExecResize(_ context.Context, _ string, _, _ uint
 func (m *mockContainerManager) CopyFileToContainer(_ context.Context, _, _ string, _ []byte, _ int64) error {
 	return nil
 }
+func (m *mockContainerManager) Rename(context.Context, string, string) error { return nil }
+func (m *mockContainerManager) BuildProjectImage(context.Context, string, []byte, container.BuildOptions) (string, error) {
+	return "", nil
+}
+func (m *mockContainerManager) ImageID(context.Context, string) (string, error) { return "", nil }
+func (m *mockContainerManager) ListImages(context.Context, string) ([]container.ImageInfo, error) {
+	return nil, nil
+}
+func (m *mockContainerManager) RemoveImage(context.Context, string) error { return nil }
 func (m *mockContainerManager) BuildImage(_ context.Context, _ []byte, _ []byte, _ string) error {
 	return nil
 }
-func (m *mockContainerManager) CreateSidecar(_ context.Context, _, _, _, _ string, _ []string, _ int) (string, error) {
+func (m *mockContainerManager) CreateSidecar(context.Context, container.SidecarSpec) (string, error) {
 	return "sidecar-id", nil
+}
+
+func (m *mockContainerManager) RemoveSidecar(context.Context, string) error { return nil }
+
+func (m *mockContainerManager) SidecarHealth(context.Context, string) (container.SidecarHealth, error) {
+	return container.SidecarHealth{Running: true, Status: "healthy"}, nil
+}
+
+func (m *mockContainerManager) PullImage(context.Context, string) error { return nil }
+
+func (m *mockContainerManager) DaemonArch(context.Context) (string, error) {
+	return "amd64", nil
 }
 
 func setupTestDB(t *testing.T) *sql.DB {
@@ -82,6 +105,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 		totp_enabled BOOLEAN NOT NULL DEFAULT 0,
 		ssh_public_key TEXT NOT NULL DEFAULT '',
 		ssh_private_key TEXT NOT NULL DEFAULT '',
+		git_name TEXT NOT NULL DEFAULT '',
+		git_email TEXT NOT NULL DEFAULT '',
+		git_identity_saved BOOLEAN NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -98,6 +124,11 @@ func setupTestDB(t *testing.T) *sql.DB {
 		default_agent_id TEXT NOT NULL DEFAULT 'default',
 		memory_limit INTEGER NOT NULL DEFAULT 2147483648,
 		nano_cpus INTEGER NOT NULL DEFAULT 2000000000,
+		project_id INTEGER,
+		kind TEXT NOT NULL DEFAULT 'interactive',
+		branch TEXT NOT NULL DEFAULT '',
+		repo_seeded INTEGER NOT NULL DEFAULT 0,
+		container_image TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -596,5 +627,49 @@ func TestRepository_DeleteExpired(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("expected 0 tokens, got %d", count)
+	}
+}
+
+func TestSanitizeSetCookies(t *testing.T) {
+	h := http.Header{}
+	h.Add("Set-Cookie", "app=1; Domain=example.com; Path=/; Secure")
+	h.Add("Set-Cookie", "theme=dark; domain=.preview.example.com")
+	h.Add("Set-Cookie", "plain=2; Path=/x; HttpOnly")
+	h.Add("Set-Cookie", "devpad_session=tossed; Domain=example.com; Path=/api")
+	h.Add("Set-Cookie", "__Host-devpad_session=tossed; Path=/; Secure")
+	h.Add("Set-Cookie", "__HOST-DEVPAD_PREVIEW=forged; Path=/; Secure")
+	h.Add("Set-Cookie", " __Host-devpad_preview =forged")
+	h.Add("Set-Cookie", "devpad_preview=forged; Domain=preview.example.com")
+
+	sanitizeSetCookies(h)
+
+	got := h.Values("Set-Cookie")
+	want := []string{
+		"app=1; Path=/; Secure",
+		"theme=dark",
+		"plain=2; Path=/x; HttpOnly",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Set-Cookie = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Set-Cookie[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	for _, line := range got {
+		c, err := http.ParseSetCookie(line)
+		if err != nil {
+			t.Fatalf("parsing %q: %v", line, err)
+		}
+		if c.Domain != "" {
+			t.Fatalf("%q still has a Domain", line)
+		}
+	}
+
+	empty := http.Header{}
+	sanitizeSetCookies(empty)
+	if _, ok := empty["Set-Cookie"]; ok {
+		t.Fatal("sanitizing no cookies must not add a header")
 	}
 }

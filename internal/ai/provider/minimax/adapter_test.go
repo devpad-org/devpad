@@ -25,7 +25,7 @@ func TestAdapterContract(t *testing.T) {
 		ExpectedProviderID:   "minimax",
 		ExpectedProviderName: "MiniMax",
 		ExpectedProtocol:     aiprovider.ProtocolOpenAIChat,
-		ExpectedModelIDs:     []string{"MiniMax-M3", "MiniMax-M2.7"},
+		ExpectedModelIDs:     []string{"MiniMax-M3.1-Flash", "MiniMax-M3"},
 		Request: aiprovider.StreamRequest{
 			Model: "MiniMax-M3",
 			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
@@ -44,13 +44,13 @@ func TestBuildChatRequest_UsesReasoningSplitAndReasoningDetails(t *testing.T) {
 		}
 	]`)
 
-	model, ok := domain.ModelByID(NewAdapter().Models(), "MiniMax-M2.7")
+	model, ok := domain.ModelByID(NewAdapter().Models(), "MiniMax-M3")
 	if !ok {
-		t.Fatal("expected MiniMax-M2.7 model")
+		t.Fatal("expected MiniMax-M3 model")
 	}
 
 	req := aiprovider.StreamRequest{
-		Model: "MiniMax-M2.7",
+		Model: "MiniMax-M3",
 		Turns: []domain.Turn{
 			domain.NewTextTurn(domain.RoleUser, "Check the repo."),
 			{
@@ -83,9 +83,6 @@ func TestBuildChatRequest_UsesReasoningSplitAndReasoningDetails(t *testing.T) {
 	if !body.ReasoningSplit {
 		t.Fatal("expected reasoning_split to be enabled for MiniMax")
 	}
-	if body.Thinking != nil {
-		t.Fatalf("expected MiniMax M2.7 to omit thinking configuration, got %+v", body.Thinking)
-	}
 	if len(body.Messages) != 3 {
 		t.Fatalf("expected 3 messages, got %d", len(body.Messages))
 	}
@@ -110,6 +107,33 @@ func TestBuildChatRequest_UsesReasoningSplitAndReasoningDetails(t *testing.T) {
 	}
 	if body.Messages[1].ToolCalls[0].Function.Name != "read_file" {
 		t.Fatalf("expected tool call name read_file, got %q", body.Messages[1].ToolCalls[0].Function.Name)
+	}
+}
+
+func TestBuildChatRequest_SetsOutputLimit(t *testing.T) {
+	for _, model := range NewAdapter().Models() {
+		body := buildChatRequest(aiprovider.StreamRequest{
+			Model: model.ID,
+			Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+		}, model)
+		if body.MaxCompletionTokens != maxCompletionTokens {
+			t.Fatalf("%s: expected max_completion_tokens %d, got %d", model.ID, maxCompletionTokens, body.MaxCompletionTokens)
+		}
+	}
+}
+
+func TestReasoningDetailsFromTurn_LeavesOutOtherProvidersState(t *testing.T) {
+	turn := domain.Turn{Role: domain.RoleAssistant, Parts: []domain.Part{{
+		Kind: domain.PartThinking,
+		Thinking: &domain.ThinkingPart{
+			Text:  "Check the files.",
+			State: json.RawMessage(`[{"id":"rs_1","type":"reasoning","summary":[],"encrypted_content":"enc"}]`),
+		},
+	}}}
+
+	details := reasoningDetailsFromTurn(turn)
+	if len(details) != 1 || details[0].Type != "reasoning.text" || details[0].Text != "Check the files." {
+		t.Fatalf("expected a detail built from the reasoning's text, got %+v", details)
 	}
 }
 
@@ -158,6 +182,101 @@ func TestBuildChatRequest_M3DisabledThinking(t *testing.T) {
 	}
 }
 
+func TestBuildChatRequest_M31FlashUsesReasoningContentAndEffort(t *testing.T) {
+	model, ok := domain.ModelByID(NewAdapter().Models(), "MiniMax-M3.1-Flash")
+	if !ok {
+		t.Fatal("expected MiniMax-M3.1-Flash model")
+	}
+	if model.Thinking.CanDisable {
+		t.Fatal("expected MiniMax M3.1 Flash thinking to be always on")
+	}
+
+	req := aiprovider.StreamRequest{
+		Model: "MiniMax-M3.1-Flash",
+		Turns: []domain.Turn{
+			domain.NewTextTurn(domain.RoleUser, "Check the repo."),
+			{
+				Role: domain.RoleAssistant,
+				Parts: []domain.Part{
+					{Kind: domain.PartThinking, Thinking: &domain.ThinkingPart{Text: "Inspect files first."}},
+					{Kind: domain.PartText, Text: "Looking now."},
+				},
+			},
+			domain.NewTextTurn(domain.RoleUser, "Thanks."),
+		},
+	}
+
+	body := buildChatRequest(req, model)
+
+	if !body.ReasoningSplit {
+		t.Fatal("expected reasoning_split to be enabled for MiniMax M3.1 Flash")
+	}
+	if body.Thinking == nil || body.Thinking.Type != "adaptive" {
+		t.Fatalf("expected adaptive thinking, got %+v", body.Thinking)
+	}
+	if body.ReasoningEffort != "high" {
+		t.Fatalf("expected default reasoning_effort high, got %q", body.ReasoningEffort)
+	}
+	if body.Messages[1].ReasoningContent != "Inspect files first." {
+		t.Fatalf("expected assistant reasoning_content to be preserved, got %q", body.Messages[1].ReasoningContent)
+	}
+	if len(body.Messages[1].ReasoningDetails) != 0 {
+		t.Fatal("expected MiniMax M3.1 Flash to omit reasoning_details")
+	}
+
+	req.Thinking = &domain.ThinkingConfig{Effort: "low"}
+	if effort := buildChatRequest(req, model).ReasoningEffort; effort != "low" {
+		t.Fatalf("expected requested reasoning_effort low, got %q", effort)
+	}
+}
+
+func TestBuildChatRequest_M3OmitsReasoningEffort(t *testing.T) {
+	model, ok := domain.ModelByID(NewAdapter().Models(), "MiniMax-M3")
+	if !ok {
+		t.Fatal("expected MiniMax-M3 model")
+	}
+
+	body := buildChatRequest(aiprovider.StreamRequest{
+		Model: "MiniMax-M3",
+		Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "hello")},
+	}, model)
+
+	if body.ReasoningEffort != "" {
+		t.Fatalf("expected MiniMax M3 to omit reasoning_effort, got %q", body.ReasoningEffort)
+	}
+}
+
+func TestReadSSEStream_ReasoningContentUsesIncrementalDeltas(t *testing.T) {
+	sse := "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Plan\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Plan more\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	ch := make(chan domain.ProviderEvent, 64)
+	go readSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+
+	var events []domain.ProviderEvent
+	for event := range ch {
+		events = append(events, event)
+	}
+
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events, got %d", len(events))
+	}
+	if events[0].ReasoningDelta != "Plan" {
+		t.Fatalf("expected first reasoning fragment Plan, got %q", events[0].ReasoningDelta)
+	}
+	if events[1].ReasoningDelta != "Plan more" {
+		t.Fatalf("expected second reasoning fragment to pass through unchanged, got %q", events[1].ReasoningDelta)
+	}
+	if events[2].TextDelta != "Hello" {
+		t.Fatalf("expected content delta Hello, got %q", events[2].TextDelta)
+	}
+	if !events[3].Done {
+		t.Fatal("expected final Done event")
+	}
+}
+
 func TestReadSSEStream_ReasoningSplitUsesCumulativeDeltas(t *testing.T) {
 	sse := "data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"id\":\"reasoning-text-1\",\"format\":\"MiniMax-response-v1\",\"index\":0,\"text\":\"Plan\"}]}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"id\":\"reasoning-text-1\",\"format\":\"MiniMax-response-v1\",\"index\":0,\"text\":\"Plan more\"}],\"content\":\"Hello\"}}]}\n\n" +
@@ -195,6 +314,27 @@ func TestReadSSEStream_ReasoningSplitUsesCumulativeDeltas(t *testing.T) {
 	}
 }
 
+func TestReadSSEStream_ToolCallIDRepeatedOnEveryFragment(t *testing.T) {
+	sse := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"list_files\",\"arguments\":\"\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"arguments\":\"{\\\"max_depth\\\":\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"arguments\":\"2}\"}}]}}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	ch := make(chan domain.ProviderEvent, 8)
+	go readSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+
+	var calls []domain.ToolCall
+	for event := range ch {
+		calls = append(calls, event.ToolCalls...)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("got %d tool calls, want 1: %+v", len(calls), calls)
+	}
+	if calls[0].Function.Name != "list_files" || calls[0].Function.Arguments != `{"max_depth":2}` {
+		t.Errorf("call = %q %q, want list_files with its whole arguments", calls[0].Function.Name, calls[0].Function.Arguments)
+	}
+}
+
 func TestReadSSEStream_ToolCallsStillAccumulate(t *testing.T) {
 	sse := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a.txt\\\"\"}}]}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]}}]}\n\n" +
@@ -219,6 +359,82 @@ func TestReadSSEStream_ToolCallsStillAccumulate(t *testing.T) {
 	}
 	if !events[1].Done {
 		t.Fatal("expected final Done event")
+	}
+}
+
+func TestReadSSEStream_ReportsFailures(t *testing.T) {
+	toolCallChunk := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":"}}]}}]}` + "\n\n"
+
+	tests := []struct {
+		name    string
+		sse     string
+		wantErr string
+	}{
+		{
+			name:    "cut off at the output token limit",
+			sse:     toolCallChunk + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n",
+			wantErr: "MiniMax stopped the response because it reached the output token limit",
+		},
+		{
+			name:    "base_resp error",
+			sse:     toolCallChunk + "data: {\"choices\":[],\"base_resp\":{\"status_code\":1002,\"status_msg\":\"rate limit exceeded\"}}\n\n",
+			wantErr: "MiniMax returned an error: rate limit exceeded",
+		},
+		{
+			name:    "stream closes mid tool call",
+			sse:     toolCallChunk,
+			wantErr: "MiniMax response stream ended before the response finished",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ch := make(chan domain.ProviderEvent, 64)
+			go readSSEStream(io.NopCloser(strings.NewReader(tt.sse)), ch)
+
+			var events []domain.ProviderEvent
+			for event := range ch {
+				events = append(events, event)
+			}
+
+			last := events[len(events)-1]
+			if last.Err == nil || last.Err.Error() != tt.wantErr {
+				t.Fatalf("expected final error %q, got %+v", tt.wantErr, last)
+			}
+			for _, event := range events {
+				if event.Done || len(event.ToolCalls) > 0 {
+					t.Fatalf("a failed stream must not report Done or tool calls, got %+v", event)
+				}
+			}
+		})
+	}
+}
+
+func TestReadSSEStream_SuccessfulBaseRespIsNotAnError(t *testing.T) {
+	sse := "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}],\"base_resp\":{\"status_code\":0,\"status_msg\":\"\"}}\n\n"
+
+	ch := make(chan domain.ProviderEvent, 64)
+	go readSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+
+	var events []domain.ProviderEvent
+	for event := range ch {
+		events = append(events, event)
+	}
+	if !events[len(events)-1].Done {
+		t.Fatalf("expected final Done event, got %+v", events[len(events)-1])
+	}
+}
+
+func TestReadSSEStream_ReportsUsageOfATruncatedResponse(t *testing.T) {
+	events := readSSEEvents("data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"},\"finish_reason\":\"length\"}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":7}}\n\n" +
+		"data: [DONE]\n\n")
+
+	if len(events) != 3 || events[1].Usage == nil || events[2].Err == nil {
+		t.Fatalf("expected text, usage, then an error, got %+v", events)
+	}
+	if events[1].Usage.OutputTokens != 7 {
+		t.Fatalf("expected the truncated response's output tokens, got %+v", *events[1].Usage)
 	}
 }
 

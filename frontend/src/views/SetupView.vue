@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { passwordProblem } from '@/utils/password'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -21,8 +22,9 @@ async function handleSubmit() {
     return
   }
 
-  if (password.value.length < 8) {
-    error.value = 'Password must be at least 8 characters'
+  const problem = passwordProblem(password.value)
+  if (problem) {
+    error.value = problem
     return
   }
 
@@ -108,12 +110,13 @@ async function handleSubmit() {
 <style scoped>
 .setup-page {
   display: flex;
-  align-items: center;
   justify-content: center;
-  height: 100%;
+  min-height: 100%;
+  padding: var(--space-4);
 }
 
 .setup-form {
+  margin: auto 0;
   width: 100%;
   max-width: 420px;
   padding: var(--space-8);
@@ -195,7 +198,7 @@ async function handleSubmit() {
   padding: var(--space-2) var(--space-4);
   margin-top: var(--space-2);
   background: var(--accent);
-  color: var(--bg-base);
+  color: var(--text-on-accent);
   font-weight: 500;
   font-size: 0.85rem;
   border-radius: var(--radius-lg);
@@ -209,5 +212,11 @@ async function handleSubmit() {
 .btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+@media (max-width: 480px) {
+  .setup-form {
+    padding: var(--space-6) var(--space-4);
+  }
 }
 </style>

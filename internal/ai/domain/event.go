@@ -8,8 +8,12 @@ type ProviderEvent struct {
 	ReasoningDelta string
 	ReasoningState json.RawMessage
 	ToolCalls      []ToolCall
-	Done           bool
-	Err            error
+	// Usage is sent before the stream ends, when the provider reports it:
+	// once, or once for each model that ran the request, such as one that
+	// refused and the fallback model that answered.
+	Usage *Usage
+	Done  bool
+	Err   error
 }
 
 // ClientEvent is the normalized event emitted by the orchestrator.
@@ -25,6 +29,7 @@ type ClientEvent struct {
 	QuestionResult *UserQuestionResult
 	Plan           []PlanStep
 	ContextSize    *ContextSize
+	Usage          *Usage // what one provider request was billed for
 	Done           bool
 	ErrorMessage   string
 }
@@ -44,17 +49,32 @@ type StreamEvent struct {
 	Error            string           `json:"error,omitempty"`
 }
 
-// ApprovalRequest is sent to the frontend when a command needs user approval before execution.
+// ApprovalRequest is sent to the frontend when a tool call needs user
+// approval before execution. Title names what is being approved and Command
+// describes it; an empty Title means Command is a sudo shell command.
 type ApprovalRequest struct {
-	ID      string `json:"id"`
-	Command string `json:"command"`
+	ID      string           `json:"id"`
+	Title   string           `json:"title,omitempty"`
+	Command string           `json:"command"`
+	Details []ApprovalDetail `json:"details,omitempty"`
+}
+
+// ApprovalDetail is one fact about an action awaiting approval. Text marks
+// a value the model wrote, such as a task's instructions, which the client
+// shows verbatim and set apart from the server's own wording.
+type ApprovalDetail struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+	Text  bool   `json:"text,omitempty"`
 }
 
 // ApprovalResult is sent after a pending approval has been resolved.
 type ApprovalResult struct {
-	ID      string `json:"id"`
-	Command string `json:"command"`
-	Status  string `json:"status"`
+	ID      string           `json:"id"`
+	Title   string           `json:"title,omitempty"`
+	Command string           `json:"command"`
+	Details []ApprovalDetail `json:"details,omitempty"`
+	Status  string           `json:"status"`
 }
 
 // CloneRawMessage returns an owned copy of the raw JSON payload.

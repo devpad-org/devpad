@@ -11,10 +11,19 @@ export function useFileWatcher(workspaceId: () => number) {
   const connected = ref(false)
   let ws: WebSocket | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  // Set when the socket dropped on its own: whatever changed until it is
+  // back sent no events, so listeners reload once it reconnects.
+  let missedEvents = false
   const listeners: Array<(event: FsEvent) => void> = []
+  const resyncListeners: Array<() => void> = []
 
   function connect() {
-    disconnect()
+    missedEvents = false
+    open()
+  }
+
+  function open() {
+    close()
 
     const id = workspaceId()
     if (!id) return
@@ -25,6 +34,11 @@ export function useFileWatcher(workspaceId: () => number) {
 
     ws.onopen = () => {
       connected.value = true
+      if (!missedEvents) return
+      missedEvents = false
+      for (const listener of resyncListeners) {
+        listener()
+      }
     }
 
     ws.onmessage = (event) => {
@@ -44,12 +58,13 @@ export function useFileWatcher(workspaceId: () => number) {
 
     ws.onclose = () => {
       connected.value = false
+      missedEvents = true
       // Reconnect after a delay
-      reconnectTimer = setTimeout(() => connect(), 3000)
+      reconnectTimer = setTimeout(open, 3000)
     }
   }
 
-  function disconnect() {
+  function close() {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
@@ -62,13 +77,24 @@ export function useFileWatcher(workspaceId: () => number) {
     connected.value = false
   }
 
+  function disconnect() {
+    missedEvents = false
+    close()
+  }
+
   function onEvent(listener: (event: FsEvent) => void) {
     listeners.push(listener)
+  }
+
+  // Called when the watcher reconnects after losing its connection, since
+  // changes made meanwhile sent no events.
+  function onResync(listener: () => void) {
+    resyncListeners.push(listener)
   }
 
   onBeforeUnmount(() => {
     disconnect()
   })
 
-  return { connected, connect, disconnect, onEvent }
+  return { connected, connect, disconnect, onEvent, onResync }
 }

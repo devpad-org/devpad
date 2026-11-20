@@ -17,6 +17,25 @@ export interface AIModel {
   providerName: string
   configured: boolean
   thinking: ThinkingCapability
+  // Whether the model accepts images.
+  vision: boolean
+  // Absent when devpad doesn't know the model's prices.
+  pricing?: ModelPricing
+}
+
+// USD per million tokens.
+export interface TokenPrices {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
+
+export interface ModelPricing extends TokenPrices {
+  // longContext replaces the standard prices for a request whose prompt is
+  // over longContextThreshold tokens.
+  longContextThreshold?: number
+  longContext?: TokenPrices
 }
 
 export interface ThinkingCapability {
@@ -46,17 +65,93 @@ export interface AgentRun {
   status: AgentRunStatus
   error?: string
   inputMessages?: ChatMessage[]
+  usage?: Usage
   createdAt: string
   updatedAt: string
   startedAt?: string
   completedAt?: string
 }
 
+// A provider and whether the user has a key for it. keyUnreadable marks a
+// saved key the server can no longer decrypt, which must be entered again.
 export interface AIProvider {
   id: string
   name: string
-  enabled: boolean
   hasApiKey: boolean
+  keyUnreadable?: boolean
+}
+
+// The model and reasoning effort the user set for a built-in agent. An empty
+// effort means the model's default.
+export interface AgentDefaults {
+  model: string
+  effort?: string
+}
+
+// A built-in agent with the defaults the user set for it, as Settings edits them. An
+// empty model means devpad's own default.
+export interface BuiltInAgentDefaults {
+  agentId: string
+  name: string
+  purpose: string
+  model: string
+  effort: string
+}
+
+// What the user's agents may spend, in USD. Zero means no limit.
+// A new task starts with taskUsd as its budget, which its agent and the
+// reviews of its merge request spend from; reviewUsd covers one review agent
+// and assistantUsd one reply of the assistant.
+export interface BudgetDefaults {
+  taskUsd: number
+  reviewUsd: number
+  assistantUsd: number
+}
+
+export type UsagePeriod = 'day' | 'week' | 'month'
+
+// Adds up provider requests. costUsd covers only the priced ones;
+// unpricedRequests counts those whose model had no known prices.
+export interface UsageTotals {
+  requests: number
+  unpricedRequests: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  costUsd: number
+}
+
+// Project id 0 stands for requests made outside any project.
+export interface UsageProject {
+  id: number
+  name: string
+  deleted: boolean
+}
+
+export interface UsageReportRow extends UsageTotals {
+  period: string
+  projectId: number
+  model: string
+}
+
+// What provider requests cost in each period, by project and model.
+// periods lists the first day (YYYY-MM-DD) of every period in the range;
+// projects and models come most costly first.
+export interface UsageReport {
+  period: UsagePeriod
+  periods: string[]
+  projects: UsageProject[]
+  models: { id: string; name: string }[]
+  rows: UsageReportRow[]
+}
+
+export interface UsageQuery {
+  period: UsagePeriod
+  // YYYY-MM-DD, both included, counted in tz.
+  from: string
+  to: string
+  tz: string
 }
 
 export interface AIAgent {
@@ -68,8 +163,22 @@ export interface AIAgent {
   instructions: string
   isGlobal: boolean
   isDefault: boolean
+  isBuiltIn: boolean
   createdAt: string
   updatedAt: string
+}
+
+// A skill the workspace's project keeps, under .devpad/skills/ or
+// .claude/skills/.
+export interface AISkill {
+  name: string
+  description: string
+  // What may follow the name, such as [issue-number].
+  argumentHint?: string
+  // False for a skill only the user starts, which the model is not told of.
+  modelInvocable: boolean
+  // False for a skill left out of the slash commands.
+  userInvocable: boolean
 }
 
 export interface SaveAgentPayload {
@@ -87,6 +196,16 @@ export interface ChatMessage {
   thinking_state?: unknown
   tool_calls?: ToolCall[]
   tool_call_id?: string
+  // Images the user attached, or a tool returned.
+  images?: ChatImage[]
+}
+
+// A stored image a message refers to. The server keeps the image itself.
+export interface ChatImage {
+  attachmentId: number
+  mediaType: string
+  width: number
+  height: number
 }
 
 export interface ToolCall {
@@ -104,16 +223,38 @@ export interface ToolResult {
   name: string
   content: string
   isError?: boolean
+  images?: ChatImage[]
 }
 
+// A tool call waiting for the user's approval. Without a title, command is a
+// sudo shell command; with one, command describes the action, such as
+// starting a background agent, in the server's own words.
 export interface ApprovalRequest {
   id: string
+  title?: string
   command: string
+  details?: ApprovalDetail[]
+}
+
+// One fact about an action awaiting approval. Text marks a value the model
+// wrote, such as a task's instructions, shown verbatim and set apart.
+export interface ApprovalDetail {
+  label: string
+  value: string
+  text?: boolean
+}
+
+export interface AttentionItem {
+  run: AgentRun
+  approval?: ApprovalRequest
+  question?: UserQuestionRequest
 }
 
 export interface ApprovalResult {
   id: string
+  title?: string
   command: string
+  details?: ApprovalDetail[]
   status: 'approved' | 'denied' | 'expired' | 'failed'
 }
 
@@ -157,6 +298,16 @@ export interface PlanStep {
   status: 'pending' | 'in_progress' | 'completed' | 'failed'
 }
 
+// Usage is the tokens provider requests were billed for. costUsd is absent
+// when the model's prices are not known.
+export interface Usage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  costUsd?: number
+}
+
 export interface ContextSize {
   approximate: boolean
   providerId?: string
@@ -192,6 +343,7 @@ export interface StreamEvent {
   questionResolved?: UserQuestionResult
   plan?: PlanStep[]
   contextSize?: ContextSize
+  usage?: Usage
   done?: boolean
   error?: string
 }
@@ -202,12 +354,15 @@ interface PartDTO {
   text?: string
   thinking?: { text?: string; state?: unknown }
   toolCall?: { id: string; itemId?: string; name: string; arguments: string }
-  toolResult?: { toolCallId: string; name: string; content: string; isError?: boolean }
+  toolResult?: { toolCallId: string; name: string; content: string; isError?: boolean; images?: ChatImage[] }
+  image?: ChatImage
 }
 
 interface TurnDTO {
   role: string
   parts: PartDTO[]
+  // What the user typed, when the model was sent something else.
+  displayText?: string
 }
 
 interface AgentRunDTO {
@@ -222,6 +377,7 @@ interface AgentRunDTO {
   status: AgentRunStatus
   error?: string
   inputTurns?: TurnDTO[]
+  usage?: Usage
   createdAt: string
   updatedAt: string
   startedAt?: string
@@ -240,12 +396,15 @@ function messagesToTurns(messages: ChatMessage[]): TurnDTO[] {
             toolCallId: msg.tool_call_id ?? '',
             name: '',
             content: msg.content,
+            images: msg.images?.length ? msg.images : undefined,
           },
         }],
       })
     } else if (msg.role === 'assistant') {
       const parts: PartDTO[] = []
-      if (msg.reasoning_content) {
+      // Redacted or encrypted reasoning arrives as state with no readable text; it must
+      // still go back to the provider.
+      if (msg.reasoning_content || msg.thinking_state != null) {
         parts.push({
           kind: 'thinking',
           thinking: { text: msg.reasoning_content, state: msg.thinking_state },
@@ -260,12 +419,14 @@ function messagesToTurns(messages: ChatMessage[]): TurnDTO[] {
           toolCall: { id: tc.id, itemId: tc.itemId, name: tc.function.name, arguments: tc.function.arguments },
         })
       }
-      turns.push({ role: 'assistant', parts })
+      // Conversations saved before empty rounds were dropped can still hold empty
+      // assistant messages; providers reject a turn with no parts.
+      if (parts.length > 0) turns.push({ role: 'assistant', parts })
     } else {
-      turns.push({
-        role: msg.role,
-        parts: msg.content ? [{ kind: 'text', text: msg.content }] : [],
-      })
+      // Images go first: models read a picture best before the question about it.
+      const parts: PartDTO[] = (msg.images ?? []).map(image => ({ kind: 'image', image }))
+      if (msg.content) parts.push({ kind: 'text', text: msg.content })
+      turns.push({ role: msg.role, parts })
     }
   }
   return turns
@@ -298,19 +459,28 @@ function turnsToMessages(turns: TurnDTO[]): ChatMessage[] {
       messages.push(msg)
     } else if (turn.role === 'user') {
       let userContent = ''
+      const images: ChatImage[] = []
       for (const part of turn.parts) {
         if (part.kind === 'text') {
           userContent += part.text ?? ''
+        } else if (part.kind === 'image' && part.image) {
+          images.push(part.image)
         } else if (part.kind === 'tool_result' && part.toolResult) {
-          messages.push({
+          const msg: ChatMessage = {
             role: 'tool',
             content: part.toolResult.content,
             tool_call_id: part.toolResult.toolCallId,
-          })
+          }
+          if (part.toolResult.images?.length) msg.images = part.toolResult.images
+          messages.push(msg)
         }
       }
-      if (userContent) {
-        messages.push({ role: 'user', content: userContent })
+      // Saved turns are only displayed, so show what the user typed.
+      if (turn.displayText) userContent = turn.displayText
+      if (userContent || images.length > 0) {
+        const msg: ChatMessage = { role: 'user', content: userContent }
+        if (images.length > 0) msg.images = images
+        messages.push(msg)
       }
     } else {
       const text = turn.parts.filter(p => p.kind === 'text').map(p => p.text ?? '').join('')
@@ -332,6 +502,7 @@ function agentRunFromDTO(dto: AgentRunDTO): AgentRun {
     model: dto.model,
     status: dto.status,
     error: dto.error,
+    usage: dto.usage,
     createdAt: dto.createdAt,
     updatedAt: dto.updatedAt,
     startedAt: dto.startedAt,
@@ -344,8 +515,8 @@ function agentRunFromDTO(dto: AgentRunDTO): AgentRun {
 }
 
 export const aiApi = {
-  listModels(): Promise<{ models: AIModel[] }> {
-    return apiClient.get<{ models: AIModel[] }>('/api/ai/models')
+  listModels(): Promise<{ models: AIModel[]; agentDefaults?: Record<string, AgentDefaults> }> {
+    return apiClient.get<{ models: AIModel[]; agentDefaults?: Record<string, AgentDefaults> }>('/api/ai/models')
   },
 
   listProviders(): Promise<{ providers: AIProvider[] }> {
@@ -354,6 +525,10 @@ export const aiApi = {
 
   listAgents(workspaceId: number): Promise<{ agents: AIAgent[] }> {
     return apiClient.get<{ agents: AIAgent[] }>(`/api/ai/agents?workspaceId=${workspaceId}`)
+  },
+
+  listSkills(workspaceId: number): Promise<{ skills: AISkill[] }> {
+    return apiClient.get<{ skills: AISkill[] }>(`/api/workspaces/${workspaceId}/skills`)
   },
 
   createAgent(payload: SaveAgentPayload): Promise<{ agent: AIAgent }> {
@@ -368,8 +543,43 @@ export const aiApi = {
     return apiClient.delete(`/api/ai/agents/${id}`)
   },
 
-  updateProvider(id: string, apiKey: string, enabled: boolean): Promise<void> {
-    return apiClient.put<void>(`/api/ai/providers/${id}`, { apiKey, enabled })
+  setProviderKey(id: string, apiKey: string): Promise<void> {
+    return apiClient.put<void>(`/api/ai/providers/${encodeURIComponent(id)}`, { apiKey })
+  },
+
+  removeProviderKey(id: string): Promise<void> {
+    return apiClient.delete(`/api/ai/providers/${encodeURIComponent(id)}`)
+  },
+
+  listAgentDefaults(): Promise<{ agents: BuiltInAgentDefaults[] }> {
+    return apiClient.get<{ agents: BuiltInAgentDefaults[] }>('/api/ai/agent-defaults')
+  },
+
+  setAgentDefaults(agentId: string, model: string, effort: string): Promise<{ agent: BuiltInAgentDefaults }> {
+    return apiClient.put<{ agent: BuiltInAgentDefaults }>(`/api/ai/agent-defaults/${encodeURIComponent(agentId)}`, { model, effort })
+  },
+
+  getBudgets(): Promise<{ budgets: BudgetDefaults }> {
+    return apiClient.get<{ budgets: BudgetDefaults }>('/api/ai/budgets')
+  },
+
+  setBudgets(budgets: BudgetDefaults): Promise<{ budgets: BudgetDefaults }> {
+    return apiClient.put<{ budgets: BudgetDefaults }>('/api/ai/budgets', budgets)
+  },
+
+  // The model summarize_file uses; '' means the cheapest priced model the
+  // user has a key for.
+  getSummaryModel(): Promise<{ model: string }> {
+    return apiClient.get<{ model: string }>('/api/ai/summary-model')
+  },
+
+  setSummaryModel(model: string): Promise<{ model: string }> {
+    return apiClient.put<{ model: string }>('/api/ai/summary-model', { model })
+  },
+
+  getUsage(query: UsageQuery): Promise<UsageReport> {
+    const params = new URLSearchParams({ period: query.period, from: query.from, to: query.to, tz: query.tz })
+    return apiClient.get<UsageReport>(`/api/ai/usage?${params}`)
   },
 
   async chatStream(
@@ -394,6 +604,12 @@ export const aiApi = {
     await readSSEStream(res, onEvent)
   },
 
+  // Runs in any workspace that are waiting for an approval or an answer.
+  async listAttention(): Promise<{ items: AttentionItem[] }> {
+    const res = await apiClient.get<{ items: (Omit<AttentionItem, 'run'> & { run: AgentRunDTO })[] }>('/api/ai/agent/attention')
+    return { items: (res.items ?? []).map((item) => ({ ...item, run: agentRunFromDTO(item.run) })) }
+  },
+
   approveCommand(id: string, approved: boolean): Promise<void> {
     return apiClient.post<void>('/api/ai/agent/approve', { id, approved })
   },
@@ -412,22 +628,27 @@ export const aiApi = {
     return { run: agentRunFromDTO(res.run) }
   },
 
+  // Continues a conversation with a new message. The server loads the
+  // conversation's history and saves everything the run produces. displayText
+  // is what the user typed, when the message sent to the model differs.
   async createAgentRun(
     model: string,
-    messages: ChatMessage[],
+    message: string,
+    images: ChatImage[],
     workspaceId: number,
-    conversationId?: number,
+    conversationId: number,
     thinking?: ThinkingConfig,
-    parentRunId?: number,
     agentId?: string,
+    displayText?: string,
   ): Promise<{ run: AgentRun }> {
     const res = await apiClient.post<{ run: AgentRunDTO }>('/api/ai/agent/runs', {
       model,
-      turns: messagesToTurns(messages),
+      message,
+      displayText,
+      images: images.length > 0 ? images : undefined,
       workspaceId,
       conversationId,
       thinking,
-      parentRunId,
       agentId,
     })
     return { run: agentRunFromDTO(res.run) }
@@ -494,9 +715,17 @@ export const aiApi = {
     return { messages: turnsToMessages(res.turns ?? []) }
   },
 
-  saveMessages(conversationId: number, messages: ChatMessage[]): Promise<void> {
-    return apiClient.put<void>(`/api/ai/conversations/${conversationId}/messages`, { turns: messagesToTurns(messages) })
+  // Stores an image to attach to a message. The server checks and shrinks it.
+  async uploadAttachment(file: File): Promise<ChatImage> {
+    const form = new FormData()
+    form.append('file', file)
+    const { attachment } = await apiClient.postForm<{ attachment: ChatImage }>('/api/ai/attachments', form)
+    return { attachmentId: attachment.attachmentId, mediaType: attachment.mediaType, width: attachment.width, height: attachment.height }
   },
+}
+
+export function attachmentUrl(attachmentId: number): string {
+  return `/api/ai/attachments/${attachmentId}`
 }
 
 async function readSSEStream(
@@ -522,11 +751,19 @@ async function readSSEStream(
       const data = line.slice(6).trim()
       if (!data) continue
 
+      let event: StreamEvent
       try {
-        const event: StreamEvent = JSON.parse(data)
-        onEvent(event)
+        event = JSON.parse(data)
       } catch {
-        // skip malformed events
+        console.error('Skipping malformed stream event:', data)
+        continue
+      }
+      try {
+        onEvent(event)
+      } catch (err) {
+        // A failing handler only affects what this page displays; the server
+        // keeps the conversation, so log it and keep reading.
+        console.error('Stream event handler failed:', err, event)
       }
     }
   }

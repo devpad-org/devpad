@@ -21,7 +21,7 @@ func (s fakeAgentRunService) StartRun(context.Context, app.StartAgentRunRequest)
 	return nil, nil
 }
 
-func (s fakeAgentRunService) StartChildRun(context.Context, int64, app.StartAgentRunRequest) (*domain.AgentRun, error) {
+func (s fakeAgentRunService) StartChildRun(context.Context, int64, app.StartChildAgentRunRequest) (*domain.AgentRun, error) {
 	return nil, nil
 }
 
@@ -51,6 +51,10 @@ func (s fakeAgentRunService) SubscribeEvents(context.Context, int64, int64, int6
 
 func (s fakeAgentRunService) CancelRun(context.Context, int64, int64) error {
 	return nil
+}
+
+func (s fakeAgentRunService) ListAttention(context.Context, int64) ([]app.AttentionItem, error) {
+	return nil, nil
 }
 
 func (s fakeAgentRunService) Shutdown(context.Context) error {

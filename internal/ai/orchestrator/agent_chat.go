@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/devpad-org/devpad/internal/ai/approval"
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -14,11 +13,10 @@ import (
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 )
 
-const (
-	defaultMaxToolIterations = 100
-	defaultApprovalTimeout   = 60 * time.Second
-	defaultQuestionTimeout   = 10 * time.Minute
-)
+// defaultMaxToolIterations bounds the model requests one run makes. A run's
+// budget is what normally stops it; this catches runs a budget cannot, such
+// as those on models without known prices.
+const defaultMaxToolIterations = 500
 
 type agentChatOrchestrator struct {
 	service           ChatService
@@ -27,8 +25,6 @@ type agentChatOrchestrator struct {
 	approvals         approval.Broker
 	questions         question.Broker
 	maxToolIterations int
-	approvalTimeout   time.Duration
-	questionTimeout   time.Duration
 }
 
 // NewAgentChatOrchestrator creates the phase-2 agent orchestrator.
@@ -40,8 +36,6 @@ func NewAgentChatOrchestrator(service ChatService, toolCatalog ToolCatalog, tool
 		approvals:         approvals,
 		questions:         questions,
 		maxToolIterations: defaultMaxToolIterations,
-		approvalTimeout:   defaultApprovalTimeout,
-		questionTimeout:   defaultQuestionTimeout,
 	}
 }
 
@@ -59,18 +53,38 @@ func (o *agentChatOrchestrator) Stream(ctx context.Context, req AgentChatRequest
 		return nil, err
 	}
 
+	// A run that cannot tell what its workspace is fails before it starts:
+	// a review agent without its review tools would only spend its budget.
+	var scope aitools.Scope
+	scoped, isScoped := o.toolCatalog.(WorkspaceToolCatalog)
+	if isScoped {
+		if scope, err = scoped.Scope(ctx, req.UserID, req.WorkspaceID); err != nil {
+			return nil, fmt.Errorf("resolving the run's scope: %w", err)
+		}
+	}
+
 	out := make(chan domain.ClientEvent)
-	go o.run(ctx, req, model, out)
+	go o.run(ctx, req, model, scope, out)
 
 	return out, nil
 }
 
-func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, model domain.Model, out chan<- domain.ClientEvent) {
+func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, model domain.Model, scope aitools.Scope, out chan<- domain.ClientEvent) {
 	defer close(out)
+	meter := usageMeter{model: model, budget: req.Budget, record: req.RecordUsage}
+	// open is the provider stream being read, which a run that stops part-way
+	// leaves to be drained of its usage.
+	var open <-chan domain.ProviderEvent
+	defer func() { meter.drain(open) }()
 
 	systemPrompt := o.toolCatalog.SystemPrompt()
-	if strings.TrimSpace(req.WorkspaceInstructions) != "" {
-		systemPrompt = systemPrompt + "\n\nWorkspace instructions from AGENTS.md:\n" + strings.TrimSpace(req.WorkspaceInstructions)
+	toolDefinitions := o.toolCatalog.Definitions()
+	if scoped, ok := o.toolCatalog.(WorkspaceToolCatalog); ok {
+		var section string
+		toolDefinitions, section = scoped.For(ctx, scope)
+		if section = strings.TrimSpace(section); section != "" {
+			systemPrompt = systemPrompt + "\n\n" + section
+		}
 	}
 	if strings.TrimSpace(req.AgentPrompt) != "" {
 		systemPrompt = systemPrompt + "\n\nSelected agent instructions:\n" + strings.TrimSpace(req.AgentPrompt)
@@ -84,14 +98,23 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 		}},
 	})
 	turns = append(turns, req.Turns...)
-	toolDefinitions := o.toolCatalog.Definitions()
-
-	for i := 0; i < o.maxToolIterations; i++ {
+	for i := 0; ; i++ {
 		if ctx.Err() != nil {
+			return
+		}
+		// Both limits are checked between requests, after the last one's tool
+		// calls ran, so the transcript stays one a later run can continue.
+		if req.Budget.Exhausted() {
+			emitStop(ctx, out, req.Budget.ExhaustedMessage())
+			return
+		}
+		if i == o.maxToolIterations {
+			emitStop(ctx, out, fmt.Sprintf("the agent made %d model requests, the most one run may make", o.maxToolIterations))
 			return
 		}
 
 		chatReq := domain.ChatRequest{
+			UserID:   req.UserID,
 			Model:    req.Model,
 			Turns:    turns,
 			Thinking: req.Thinking,
@@ -110,6 +133,8 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 			return
 		}
 
+		open = stream
+
 		var toolCalls []domain.ToolCall
 		var reasoningAccum strings.Builder
 		var thinkingState json.RawMessage
@@ -120,6 +145,7 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 			select {
 			case event, ok := <-stream:
 				if !ok {
+					open = nil
 					streamDone = true
 					continue
 				}
@@ -129,6 +155,11 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 					}
 					emitEvent(ctx, out, domain.ClientEvent{Done: true})
 					return
+				}
+				if event.Usage != nil {
+					if !emitEvent(ctx, out, domain.ClientEvent{Usage: meter.meter(*event.Usage)}) {
+						return
+					}
 				}
 				if event.ReasoningDelta != "" || len(event.ReasoningState) > 0 {
 					if !emitEvent(ctx, out, domain.ClientEvent{
@@ -152,6 +183,13 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 				}
 				if len(event.ToolCalls) > 0 {
 					toolCalls = append([]domain.ToolCall(nil), event.ToolCalls...)
+					// A call to a tool without parameters can stream no
+					// arguments at all, as Anthropic's do; it means none.
+					for i := range toolCalls {
+						if strings.TrimSpace(toolCalls[i].Function.Arguments) == "" {
+							toolCalls[i].Function.Arguments = "{}"
+						}
+					}
 				}
 			case <-ctx.Done():
 				return
@@ -186,15 +224,7 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 		}
 
 		for _, toolCall := range toolCalls {
-			if !o.handleToolCall(ctx, req, toolCall, &turns, out) {
-				return
-			}
-		}
-
-		if i == o.maxToolIterations-1 {
-			if !emitEvent(ctx, out, domain.ClientEvent{
-				TextDelta: fmt.Sprintf("\n\n⚠️ Reached the maximum number of tool call iterations (%d). Stopping here.", o.maxToolIterations),
-			}) {
+			if !o.handleToolCall(ctx, req, model, toolCall, &turns, out) {
 				return
 			}
 		}
@@ -203,7 +233,7 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 	emitEvent(ctx, out, domain.ClientEvent{Done: true})
 }
 
-func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentChatRequest, toolCall domain.ToolCall, turns *[]domain.Turn, out chan<- domain.ClientEvent) bool {
+func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentChatRequest, model domain.Model, toolCall domain.ToolCall, turns *[]domain.Turn, out chan<- domain.ClientEvent) bool {
 	if toolCall.Function.Name == "update_plan" {
 		var planArgs struct {
 			Steps []domain.PlanStep `json:"steps"`
@@ -219,8 +249,29 @@ func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentCha
 		return o.handleUserQuestion(ctx, req, toolCall, turns, out)
 	}
 
-	if aitools.ToolCallNeedsSudoApproval(toolCall.Function.Name, toolCall.Function.Arguments) {
-		result, approved, ok := o.awaitApproval(ctx, req.UserID, toolCall.Function.Arguments, out)
+	execReq := aitools.ExecutionRequest{
+		UserID:         req.UserID,
+		WorkspaceID:    req.WorkspaceID,
+		CurrentRunID:   req.CurrentRunID,
+		ConversationID: req.ConversationID,
+		Model:          req.Model,
+		Vision:         model.Vision,
+		Thinking:       req.Thinking,
+		ToolName:       toolCall.Function.Name,
+		Arguments:      json.RawMessage(toolCall.Function.Arguments),
+	}
+	gate, needed, err := o.approvalFor(ctx, execReq)
+	if err != nil {
+		// Without knowing whether the call needs approval it must not run.
+		return o.emitToolResult(ctx, domain.ToolResultPart{
+			ToolCallID: toolCall.ID,
+			Name:       toolCall.Function.Name,
+			Content:    "Error: could not check whether this action needs the user's approval, so it did not run. Try again later.",
+			IsError:    true,
+		}, turns, out)
+	}
+	if needed {
+		result, approved, ok := o.awaitApproval(ctx, req.UserID, gate, out)
 		if !ok {
 			return false
 		}
@@ -232,18 +283,10 @@ func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentCha
 				IsError:    true,
 			}, turns, out)
 		}
+		execReq.Approved = true
 	}
 
-	result := o.toolExecutor.ExecuteTool(ctx, aitools.ExecutionRequest{
-		UserID:         req.UserID,
-		WorkspaceID:    req.WorkspaceID,
-		CurrentRunID:   req.CurrentRunID,
-		ConversationID: req.ConversationID,
-		Model:          req.Model,
-		Thinking:       req.Thinking,
-		ToolName:       toolCall.Function.Name,
-		Arguments:      json.RawMessage(toolCall.Function.Arguments),
-	})
+	result := o.toolExecutor.ExecuteTool(ctx, execReq)
 	if ctx.Err() != nil {
 		return false
 	}
@@ -289,9 +332,8 @@ func (o *agentChatOrchestrator) handleUserQuestion(ctx context.Context, req Agen
 		return false
 	}
 
-	waitCtx, cancel := context.WithTimeout(ctx, o.questionTimeout)
-	defer cancel()
-	answers, err := o.questions.Await(waitCtx, opened.ID)
+	// Like approvals, wait until the user answers or the run is cancelled.
+	answers, err := o.questions.Await(ctx, opened.ID)
 	if err == nil {
 		result := domain.UserQuestionResult{ID: opened.ID, Status: "answered", Answers: answers}
 		if !emitQuestionResult(ctx, out, result) {
@@ -316,12 +358,9 @@ func (o *agentChatOrchestrator) handleUserQuestion(ctx context.Context, req Agen
 	status := "failed"
 	message := "User question failed."
 	switch {
-	case errors.Is(err, context.Canceled):
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		status = "expired"
 		message = "User question was cancelled before the user answered."
-	case errors.Is(err, context.DeadlineExceeded):
-		status = "expired"
-		message = "User question timed out before the user answered."
 	default:
 		message = fmt.Sprintf("User question failed: %v", err)
 	}
@@ -354,19 +393,57 @@ func (o *agentChatOrchestrator) emitToolResult(ctx context.Context, result domai
 	return true
 }
 
-func (o *agentChatOrchestrator) awaitApproval(ctx context.Context, userID int64, args string, out chan<- domain.ClientEvent) (string, bool, bool) {
-	request, err := o.approvals.Open(ctx, userID, aitools.CommandFromArgs(args))
-	if err != nil {
-		return "Command approval failed.", false, true
+// approvalGate is a tool call waiting on the user's approval, with the
+// result the agent gets if the user denies it.
+type approvalGate struct {
+	title   string
+	command string
+	details []domain.ApprovalDetail
+	denied  string
+}
+
+// approvalFor reports whether a tool call must wait for the user: sudo
+// commands always do, and the executor's tools may ask for it too. An error
+// means it could not tell, and the call must not run.
+func (o *agentChatOrchestrator) approvalFor(ctx context.Context, req aitools.ExecutionRequest) (approvalGate, bool, error) {
+	if aitools.ToolCallNeedsSudoApproval(req.ToolName, string(req.Arguments)) {
+		return approvalGate{
+			command: aitools.CommandFromArgs(string(req.Arguments)),
+			denied:  "Command denied by user. The user rejected executing this sudo command.",
+		}, true, nil
 	}
+	if checker, ok := o.toolExecutor.(ApprovalChecker); ok {
+		approval, needed, err := checker.ApprovalFor(ctx, req)
+		if err != nil {
+			return approvalGate{}, false, err
+		}
+		if needed {
+			return approvalGate{
+				title:   approval.Title,
+				command: approval.Summary,
+				details: approval.Details,
+				denied:  "The user denied this action. Do not retry it unless the user asks you to.",
+			}, true, nil
+		}
+	}
+	return approvalGate{}, false, nil
+}
+
+func (o *agentChatOrchestrator) awaitApproval(ctx context.Context, userID int64, gate approvalGate, out chan<- domain.ClientEvent) (string, bool, bool) {
+	request, err := o.approvals.Open(ctx, userID, gate.command)
+	if err != nil {
+		return "Approval failed.", false, true
+	}
+	request.Title = gate.title
+	request.Details = gate.details
 
 	if !emitEvent(ctx, out, domain.ClientEvent{Approval: &request}) {
 		return "", false, false
 	}
 
-	approvalCtx, cancel := context.WithTimeout(ctx, o.approvalTimeout)
-	defer cancel()
-	approved, err := o.approvals.Await(approvalCtx, request.ID)
+	// Wait as long as it takes: a timeout here just pushes the agent toward
+	// workarounds. Cancelling the run cancels ctx, which ends the wait.
+	approved, err := o.approvals.Await(ctx, request.ID)
 	if err == nil {
 		status := "denied"
 		if approved {
@@ -376,34 +453,93 @@ func (o *agentChatOrchestrator) awaitApproval(ctx context.Context, userID int64,
 			return "", false, false
 		}
 		if !approved {
-			return "Command denied by user. The user rejected executing this sudo command.", false, true
+			return gate.denied, false, true
 		}
 		return "", true, true
 	}
 
 	switch {
-	case errors.Is(err, context.Canceled):
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		if !emitApprovalResult(ctx, out, request, "expired") {
 			return "", false, false
 		}
-		return "Command approval timed out — the request was cancelled.", false, true
-	case errors.Is(err, context.DeadlineExceeded):
-		if !emitApprovalResult(ctx, out, request, "expired") {
-			return "", false, false
-		}
-		return "Command approval timed out after 60 seconds.", false, true
+		return "Approval was cancelled before the user responded.", false, true
 	default:
 		if !emitApprovalResult(ctx, out, request, "failed") {
 			return "", false, false
 		}
-		return "Command approval failed.", false, true
+		return "Approval failed.", false, true
+	}
+}
+
+// pricedUsage adds the cost of one request's usage when the prices of the
+// model that ran it are known: the model asked for, or the one the provider
+// ran the request on instead.
+func pricedUsage(model domain.Model, usage domain.Usage) *domain.Usage {
+	pricing := model.Pricing
+	if usage.Model != "" && usage.Model != model.ID {
+		pricing = nil
+		if fallback, ok := model.FallbackPricing[usage.Model]; ok {
+			pricing = &fallback
+		}
+	}
+	if pricing != nil {
+		cost := pricing.Cost(usage)
+		usage.CostUSD = &cost
+	}
+	return &usage
+}
+
+// usageMeter prices each provider request's usage, spends it from the budget
+// and records it. Every request is metered, whether or not anyone still reads
+// the chat, since the provider billed it either way.
+type usageMeter struct {
+	model  domain.Model
+	budget *domain.Budget
+	record func(domain.Usage)
+}
+
+func (m usageMeter) meter(usage domain.Usage) *domain.Usage {
+	priced := pricedUsage(m.model, usage)
+	if priced.CostUSD != nil {
+		m.budget.Spend(*priced.CostUSD)
+	}
+	if m.record != nil {
+		m.record(*priced)
+	}
+	return priced
+}
+
+// drain meters what is left of a provider stream the chat stopped reading,
+// such as the usage a provider reports as a cancelled request ends. A nil
+// stream has nothing left.
+func (m usageMeter) drain(stream <-chan domain.ProviderEvent) {
+	if stream == nil {
+		return
+	}
+	go func() {
+		for event := range stream {
+			if event.Usage != nil {
+				m.meter(*event.Usage)
+			}
+		}
+	}()
+}
+
+// emitStop ends a run that hit a limit. It fails, so whoever started it does
+// not take the unfinished work for finished.
+func emitStop(ctx context.Context, out chan<- domain.ClientEvent, message string) {
+	if emitEvent(ctx, out, domain.ClientEvent{ErrorMessage: message}) {
+		emitEvent(ctx, out, domain.ClientEvent{Done: true})
 	}
 }
 
 func emitApprovalResult(ctx context.Context, out chan<- domain.ClientEvent, request domain.ApprovalRequest, status string) bool {
 	return emitEvent(ctx, out, domain.ClientEvent{ApprovalResult: &domain.ApprovalResult{
 		ID:      request.ID,
+		Title:   request.Title,
 		Command: request.Command,
+		Details: request.Details,
 		Status:  status,
 	}})
 }
