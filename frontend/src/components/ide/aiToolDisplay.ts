@@ -132,6 +132,8 @@ export function toolFriendlyName(name: string): string {
       return 'List merge requests'
     case 'get_merge_request':
       return 'Read merge request'
+    case 'create_merge_request':
+      return 'Open merge request'
     case 'comment_on_line':
       return 'Comment on line'
     case 'resolve_comment_thread':
@@ -192,6 +194,11 @@ export function toolTargetLabel(seg: ToolDisplaySegment): string {
     }
     case 'create_task':
       return truncateEnd(stringArg(seg.args, 'title') || formatToolArgs(seg.name, seg.args))
+    case 'create_merge_request': {
+      const source = stringArg(seg.args, 'source_branch')
+      const target = stringArg(seg.args, 'target_branch')
+      return source && target ? truncateMiddle(`${source} → ${target}`) : formatToolArgs(seg.name, seg.args)
+    }
     case 'get_merge_request': {
       const id = numberArg(seg.args, 'merge_request_id')
       return id !== null ? `!${id}` : formatToolArgs(seg.name, seg.args)
@@ -284,7 +291,8 @@ export function toolResultMeta(seg: ToolDisplaySegment): string {
     }
     case 'create_task':
     case 'start_task':
-    case 'request_task_changes': {
+    case 'request_task_changes':
+    case 'create_merge_request': {
       const message = parseToolResult(seg.result)?.message
       return typeof message === 'string' ? truncateEnd(message, 80) : 'Completed'
     }
@@ -348,6 +356,7 @@ export function projectRefs(seg: ToolDisplaySegment): ProjectRef[] {
     case 'list_merge_requests':
       if (Array.isArray(result.mergeRequests)) result.mergeRequests.slice(0, MAX_PROJECT_REFS).forEach((mr) => add('mr', mr))
       break
+    case 'create_merge_request':
     case 'get_merge_request': {
       add('mr', result.mergeRequest)
       const taskId = (result.mergeRequest as Record<string, unknown> | undefined)?.taskId

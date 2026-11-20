@@ -1,13 +1,13 @@
 // Package projecttools gives the assistant in a project's workspace tools
-// to look at the project's tasks and merge requests, comment on merge
-// requests, and hand work to background agents.
+// to look at the project's tasks and merge requests, open and comment on
+// merge requests, and hand work to background agents.
 //
 // The tools run on the host, and the project is always the one the
 // conversation's workspace belongs to, never one named in a tool argument.
 // They cannot merge, close, approve, push, delete or move the default
-// branch: those stay with the user. Anything that starts an agent run waits
-// for the user's approval first; comments do not, since they change nothing
-// but the discussion.
+// branch: those stay with the user. Anything that starts an agent run or
+// opens a merge request waits for the user's approval first; comments do
+// not, since they change nothing but the discussion.
 package projecttools
 
 import (
@@ -29,6 +29,7 @@ import (
 	"github.com/devpad-org/devpad/internal/mergerequest"
 	"github.com/devpad-org/devpad/internal/project"
 	"github.com/devpad-org/devpad/internal/task"
+	"github.com/devpad-org/devpad/internal/workspace"
 )
 
 const (
@@ -39,6 +40,7 @@ const (
 	requestTaskChangesTool = "request_task_changes"
 	listMergeRequestsTool  = "list_merge_requests"
 	getMergeRequestTool    = "get_merge_request"
+	createMRTool           = "create_merge_request"
 	// The merge request service already offers task agents a tool named
 	// comment_on_merge_request, and it claims every call by that name.
 	commentTool = "add_merge_request_comment"
@@ -53,9 +55,15 @@ const (
 	maxSummaryBytes    = 300
 )
 
-// promptStatusTimeout bounds reading the workspace's branch for the prompt,
-// so a slow workspace cannot hold up the start of a run.
-var promptStatusTimeout = 2 * time.Second
+var (
+	// promptStatusTimeout bounds reading the workspace's branch for the
+	// prompt, so a slow workspace cannot hold up the start of a run.
+	promptStatusTimeout = 2 * time.Second
+	// branchStatusTimeout bounds comparing the workspace's copy of a branch
+	// with the project's after opening a merge request, which only adds a
+	// hint to the result.
+	branchStatusTimeout = 10 * time.Second
+)
 
 var definitions = []domain.ToolDefinition{
 	{
@@ -117,6 +125,14 @@ var definitions = []domain.ToolDefinition{
 	{
 		Type: "function",
 		Function: domain.ToolFunction{
+			Name:        createMRTool,
+			Description: "Open a merge request to merge a branch published to the project into one of its protected branches. Needs the user's approval. Publish the branch first (git push devpad <branch>): the merge request takes the project's copy of the branch, not your workspace's. The branch of a task that is not merged or cancelled gets its merge request from devpad when its agent finishes, so it cannot be the source here.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"source_branch":{"type":"string","description":"The published branch to merge."},"target_branch":{"type":"string","description":"The protected branch to merge it into. There is no default: name it, and ask the user when it is not clear which one they want."},"title":{"type":"string","description":"A short title."},"description":{"type":"string","description":"What the change does and why, in Markdown, for the user and reviewers."}},"required":["source_branch","target_branch","title"]}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: domain.ToolFunction{
 			Name:        commentTool,
 			Description: "Comment on an open merge request, or reply to one of its comments, such as a review comment you addressed. The comment is shown as the assistant's. A reply sits with the comment it answers; use the comment ids from get_merge_request.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"merge_request_id":{"type":"integer","minimum":1},"reply_to":{"type":"integer","minimum":1,"description":"The id of the comment you are answering. Leave it out to comment on the whole change."},"body":{"type":"string","description":"The comment, in Markdown. Keep it short and factual."}},"required":["merge_request_id","body"]}`),
@@ -132,6 +148,9 @@ type Workspaces interface {
 // Projects is the project surface the tools need.
 type Projects interface {
 	Get(ctx context.Context, userID, projectID int64) (*project.Project, error)
+	Branches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error)
+	ListSandboxes(ctx context.Context, userID, projectID int64) ([]*workspace.Workspace, error)
+	WorkspaceBranchStatus(ctx context.Context, userID, projectID int64, branch string) (*project.WorkspaceBranchStatus, error)
 }
 
 // AgentDefaults looks up the model and effort a user set for a built-in
@@ -154,6 +173,7 @@ type Tasks interface {
 type MergeRequests interface {
 	List(ctx context.Context, userID, projectID int64) ([]*mergerequest.MergeRequest, error)
 	Get(ctx context.Context, userID, projectID, mrID int64) (*mergerequest.Detail, error)
+	AssistantCreate(ctx context.Context, userID, projectID int64, in mergerequest.CreateInput) (*mergerequest.MergeRequest, error)
 	AssistantComment(ctx context.Context, userID, projectID, mrID int64, in mergerequest.AgentCommentInput) (*mergerequest.Comment, error)
 }
 
@@ -235,8 +255,9 @@ You are the user's assistant in this workspace, not one of the project's backgro
 - The repo has a devpad remote. git fetch devpad refreshes the project's branches as devpad/<branch>, and git push devpad <branch> publishes a branch exactly as the IDE's Publish button does: never a protected branch, fast-forward only, and an open merge request for the branch moves to the new commit. Push only when the user asks you to publish. A plain git push goes to devpad too.
 - An origin remote, when there is one, is the project's upstream and read-only: git fetch origin fetches its latest branches as origin/<branch>, and pushing to it is refused. The project's protected branches reach the upstream only from the project panel, after a merge.
 - Background agents implement tasks from the project's board on their own branches. Use list_tasks, get_task, list_merge_requests and get_merge_request to see the board, and create_task to add work for them. Starting an agent (create_task with start, start_task, request_task_changes) asks the user first.
+- create_merge_request opens a merge request from a published branch into a protected branch, and asks the user first. Open one only when the user asks, and name the target branch they want: if they haven't said which and the project has more than one protected branch, ask. The merge request takes the project's copy of the branch, so publish it first: asking you to open a merge request for a branch is asking you to publish it too, unless the user says otherwise. Publishing to it later moves the merge request to the new commit.
 - add_merge_request_comment comments on an open merge request or replies to one of its comments, for example to say how you addressed a review comment. Comments are shown as yours, not the user's.
-- Only the user opens, merges, closes or approves merge requests. You have no tools for those.`)
+- Only the user merges, closes or approves merge requests. You have no tools for those.`)
 	return b.String()
 }
 
@@ -271,15 +292,27 @@ type taskArgs struct {
 	// ReplyTo is the comment add_merge_request_comment answers; Body is
 	// its comment.
 	ReplyTo int64 `json:"reply_to"`
+	// The merge request create_merge_request opens, with Title.
+	SourceBranch string `json:"source_branch"`
+	TargetBranch string `json:"target_branch"`
+	Description  string `json:"description"`
 }
 
-// needsApproval reports whether a call starts an agent run, which costs
-// money and so waits for the user.
+// needsApproval reports whether a call waits for the user: one that starts
+// an agent run, which costs money, or opens a merge request, which puts a
+// change up for merging and can start a review agent.
 func needsApproval(tool string, args taskArgs) bool {
-	switch tool {
-	case createTaskTool:
+	if tool == createTaskTool {
 		return args.Start
-	case startTaskTool, requestTaskChangesTool:
+	}
+	return mayNeedApproval(tool)
+}
+
+// mayNeedApproval reports whether some calls of a tool wait for the user,
+// before its arguments are read.
+func mayNeedApproval(tool string) bool {
+	switch tool {
+	case createTaskTool, startTaskTool, requestTaskChangesTool, createMRTool:
 		return true
 	default:
 		return false
@@ -287,7 +320,7 @@ func needsApproval(tool string, args taskArgs) bool {
 }
 
 func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest) (aitools.Approval, bool, error) {
-	if req.ToolName != createTaskTool && req.ToolName != startTaskTool && req.ToolName != requestTaskChangesTool {
+	if !mayNeedApproval(req.ToolName) {
 		return aitools.Approval{}, false, nil
 	}
 	// Outside a project workspace the call is refused without asking, so an
@@ -355,6 +388,41 @@ func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest
 			Details: details,
 		}, true, nil
 
+	case createMRTool:
+		in, refusal, err := p.mergeRequestInput(ctx, req, proj, args)
+		if err != nil {
+			return aitools.Approval{}, false, err
+		}
+		if refusal != "" {
+			// ExecuteTool reports why the call cannot run.
+			return aitools.Approval{}, false, nil
+		}
+		target := in.TargetBranch
+		if target == proj.DefaultBranch {
+			target += " (the default branch)"
+		}
+		details := []domain.ApprovalDetail{
+			{Label: "Merge", Value: in.SourceBranch},
+			{Label: "Into", Value: target},
+			textDetail("Title", in.Title),
+		}
+		if strings.TrimSpace(in.Description) != "" {
+			details = append(details, textDetail("Description", in.Description))
+		}
+		// The merge request takes the project's copy of the branch, so the
+		// user should know what it leaves out before approving.
+		if ahead := p.unpublishedCommits(ctx, req, proj, in.SourceBranch); ahead > 0 {
+			details = append(details, domain.ApprovalDetail{Label: "Left out", Value: unpublishedLabel(ahead)})
+		}
+		summary := "Open a merge request in this project."
+		review := "Off for this project"
+		if proj.AutoReview {
+			summary += " The project reviews new merge requests automatically, so a review agent starts on it."
+			review = "Starts on the new merge request"
+		}
+		details = append(details, domain.ApprovalDetail{Label: "Automatic review", Value: review})
+		return aitools.Approval{Title: "Open a merge request", Summary: summary, Details: details}, true, nil
+
 	default:
 		t, err := p.tasks.Get(ctx, req.UserID, proj.ID, args.TaskID)
 		if err != nil {
@@ -374,6 +442,13 @@ func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest
 			Details: details,
 		}, true, nil
 	}
+}
+
+func unpublishedLabel(ahead int) string {
+	if ahead == 1 {
+		return "1 commit in your workspace that isn't published"
+	}
+	return fmt.Sprintf("%d commits in your workspace that aren't published", ahead)
 }
 
 // textDetail is model-written text, shown in full and set apart.
@@ -447,6 +522,8 @@ func (p *Provider) ExecuteTool(ctx context.Context, req aitools.ExecutionRequest
 		return p.requestChanges(ctx, req, proj, args), true
 	case listMergeRequestsTool:
 		return p.listMergeRequests(ctx, req, proj, args.Status), true
+	case createMRTool:
+		return p.createMergeRequest(ctx, req, proj, args), true
 	case commentTool:
 		return p.comment(ctx, req, proj, args), true
 	default:
@@ -765,6 +842,135 @@ func (p *Provider) getMergeRequest(ctx context.Context, req aitools.ExecutionReq
 		result["olderCommentsLeftOut"] = omitted
 	}
 	return toolResult(req.ToolName, result)
+}
+
+// mergeRequestInput checks a create_merge_request call and returns the
+// merge request it would open, or why it is refused. ApprovalFor and
+// ExecuteTool both use it, so a call that would be refused shows no
+// approval card, short of the branches changing in between, which
+// mergerequest.Create checks again under its own lock. An error means it
+// could not tell.
+//
+// The target must be named, never left to the default branch, so the user
+// sees the assistant's choice on the approval card. The source must be
+// published and not already proposed. A branch an agent's sandbox owns, or
+// an unfinished task works on, is refused: devpad opens a task's merge
+// request itself, linked to the task so reviews can send changes to its
+// agent.
+func (p *Provider) mergeRequestInput(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) (mergerequest.CreateInput, string, error) {
+	in := mergerequest.CreateInput{
+		Title:        strings.TrimSpace(args.Title),
+		Description:  args.Description,
+		SourceBranch: strings.TrimSpace(args.SourceBranch),
+		TargetBranch: strings.TrimSpace(args.TargetBranch),
+	}
+	protected := codeList(proj.Protected())
+	switch {
+	case in.Title == "":
+		return in, "title is required", nil
+	case in.TargetBranch == "":
+		return in, "target_branch is required: name the protected branch to merge into, one of " + protected, nil
+	case !proj.IsProtected(in.TargetBranch):
+		return in, fmt.Sprintf("target_branch must be one of the project's protected branches: %s", protected), nil
+	case in.SourceBranch == "":
+		return in, "source_branch is required", nil
+	case cleanBranch(in.SourceBranch) == "":
+		return in, "source_branch is not a valid branch name", nil
+	case in.SourceBranch == in.TargetBranch:
+		return in, "source_branch must be a branch other than target_branch", nil
+	}
+
+	sandboxes, err := p.projects.ListSandboxes(ctx, req.UserID, proj.ID)
+	if err != nil {
+		return in, "", fmt.Errorf("listing the project's sandboxes: %w", err)
+	}
+	for _, sb := range sandboxes {
+		if sb.IsSandbox() && sb.Branch == in.SourceBranch {
+			return in, fmt.Sprintf("%s belongs to an agent's sandbox, so it cannot be the source of a merge request opened here", in.SourceBranch), nil
+		}
+	}
+	tasks, err := p.tasks.List(ctx, req.UserID, proj.ID)
+	if err != nil {
+		return in, "", fmt.Errorf("listing the project's tasks: %w", err)
+	}
+	for _, t := range tasks {
+		if t.Branch == in.SourceBranch && !t.Status.Closed() {
+			return in, fmt.Sprintf("%s is task #%d's branch, and devpad opens its merge request when the agent finishes; use request_task_changes to send it more work", in.SourceBranch, t.ID), nil
+		}
+	}
+
+	mrs, err := p.mrs.List(ctx, req.UserID, proj.ID)
+	if err != nil {
+		return in, "", fmt.Errorf("listing the project's merge requests: %w", err)
+	}
+	for _, mr := range mrs {
+		if mr.SourceBranch == in.SourceBranch && mr.Status == mergerequest.StatusOpen {
+			return in, fmt.Sprintf("%s already has an open merge request, !%d; publishing new commits to the branch moves it to them", in.SourceBranch, mr.ID), nil
+		}
+	}
+	refs, err := p.projects.Branches(ctx, req.UserID, proj.ID)
+	if errors.Is(err, project.ErrNotReady) {
+		return in, err.Error(), nil
+	}
+	if err != nil {
+		return in, "", fmt.Errorf("listing the project's branches: %w", err)
+	}
+	if !slices.ContainsFunc(refs.Branches, func(b agent.RepoRef) bool { return b.Name == in.SourceBranch }) {
+		return in, fmt.Sprintf("%s is not published to the project: publish it with git push devpad %s first", in.SourceBranch, in.SourceBranch), nil
+	}
+	return in, "", nil
+}
+
+func (p *Provider) createMergeRequest(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) domain.ToolResultPart {
+	in, refusal, err := p.mergeRequestInput(ctx, req, proj, args)
+	if err != nil {
+		return toolError(req.ToolName, "checking the branches: %v", err)
+	}
+	if refusal != "" {
+		return toolError(req.ToolName, "%s", refusal)
+	}
+	if !req.Approved {
+		return toolError(req.ToolName, "opening a merge request needs the user's approval, which it did not get")
+	}
+	mr, err := p.mrs.AssistantCreate(ctx, req.UserID, proj.ID, in)
+	switch {
+	case errors.Is(err, mergerequest.ErrInvalidInput), errors.Is(err, mergerequest.ErrInvalidState), errors.Is(err, project.ErrNotReady):
+		return toolError(req.ToolName, "%v", err)
+	case err != nil:
+		return toolError(req.ToolName, "opening the merge request: %v", err)
+	}
+
+	message := fmt.Sprintf("Opened merge request !%d to merge %s into %s.", mr.ID, mr.SourceBranch, mr.TargetBranch)
+	if proj.AutoReview {
+		message += " The project reviews new merge requests automatically, so a review agent is starting on it."
+	}
+	result := map[string]any{"message": message, "mergeRequest": summarizeMR(mr)}
+	if ahead := p.unpublishedCommits(ctx, req, proj, mr.SourceBranch); ahead > 0 {
+		result["unpublishedCommits"] = ahead
+		unpublished := fmt.Sprintf(" Your workspace has %d commit(s) on %s that the project does not, so they are not in it", ahead, mr.SourceBranch)
+		if proj.IsProtected(mr.SourceBranch) {
+			// A protected branch is never published: its commits arrive
+			// only through merge requests.
+			unpublished += fmt.Sprintf(". %s is protected, so they can reach it only through a merge request of their own.", mr.SourceBranch)
+		} else {
+			unpublished += fmt.Sprintf(": publishing them with git push devpad %s adds them.", mr.SourceBranch)
+		}
+		result["message"] = message + unpublished
+	}
+	return toolResult(req.ToolName, result)
+}
+
+// unpublishedCommits counts the workspace's commits on branch that the
+// project's copy lacks, and so a merge request from it would leave out. The
+// count is only a hint, so failing to make it counts none.
+func (p *Provider) unpublishedCommits(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, branch string) int {
+	statusCtx, cancel := context.WithTimeout(ctx, branchStatusTimeout)
+	defer cancel()
+	status, err := p.projects.WorkspaceBranchStatus(statusCtx, req.UserID, proj.ID, branch)
+	if err != nil || status == nil {
+		return 0
+	}
+	return status.Ahead
 }
 
 func (p *Provider) comment(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) domain.ToolResultPart {

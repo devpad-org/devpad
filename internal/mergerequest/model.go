@@ -16,7 +16,7 @@ const (
 	StatusClosed Status = "closed"
 )
 
-// Author is who wrote a review or comment.
+// Author is who wrote a review or comment, or opened a merge request.
 type Author string
 
 const (
@@ -79,10 +79,13 @@ var (
 // MergeRequest proposes merging a branch into one of the project's protected
 // branches.
 type MergeRequest struct {
-	ID           int64
-	ProjectID    int64
-	UserID       int64
-	TaskID       int64
+	ID        int64
+	ProjectID int64
+	UserID    int64
+	TaskID    int64
+	// OpenedBy is AuthorUser, AuthorTaskAgent for a task's merge request,
+	// or AuthorAssistant.
+	OpenedBy     Author
 	Title        string
 	Description  string
 	SourceBranch string

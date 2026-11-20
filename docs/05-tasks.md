@@ -39,7 +39,8 @@ A task's budget covers every run of its agent, across retries and rounds of feed
 The **AI** panel is the assistant: an agent working in your project workspace, beside you. Pick the **Agent** (the **Coding Agent**, the **Code Review Agent**, or one you've made under **AI Agents**), the **Model** and **Effort** below the message box.
 
 - It reads, edits and runs things in your workspace. It leaves its edits for you to review and commits only when you ask.
-- In a project workspace it can see the board: list tasks and merge requests, create and start tasks, send a task back to its agent, and comment on merge requests. It can't merge, close or approve a merge request.
+- In a project workspace it can see the board: list tasks and merge requests, create and start tasks, send a task back to its agent, and comment on merge requests.
+- It can open a merge request from a published branch into a protected branch it names. It can't open one from the branch of a task that isn't merged or cancelled, which gets its merge request when the task's agent finishes, and it can't merge, close or approve a merge request.
 - It can publish a branch with `git push devpad`, with no more power than the Publish button.
 - It can answer questions about devpad itself from these docs.
 - **Continue in background** hands the conversation to a background agent as a new task, in its own sandbox. It starts from your work on the current branch, or from the project's latest default branch, and gets the conversation so far.
@@ -51,7 +52,8 @@ Each reply spends from your **Per assistant reply** budget, if you set one.
 Some of an agent's tool calls wait for you before they run:
 
 - any command that uses `sudo`;
-- starting a background agent (creating and starting a task, or starting one) and sending a task back to its agent.
+- starting a background agent (creating and starting a task, or starting one) and sending a task back to its agent;
+- the assistant opening a merge request: the card shows the branch, the branch it would merge into, whether an automatic review would start, and any commits in your workspace that aren't published and so would be left out.
 
 The call shows as a card with **Approve** and **Deny**, in the chat and in the inbox. An agent can also stop to ask you a question. Both appear in the **inbox** in the header, from every workspace and sandbox, so you can answer an agent without finding it first.
 

@@ -652,6 +652,38 @@ func TestCreateOpensMergeRequestForPublishedBranch(t *testing.T) {
 	}
 }
 
+func TestMergeRequestsRecordWhoOpenedThem(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.projects.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "feature", SHA: "f1"}, {Name: "fix", SHA: "x1"}}
+
+	byUser, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Feature", SourceBranch: "feature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byAssistant, err := e.svc.AssistantCreate(ctx, e.owner, e.pid(), CreateInput{Title: "Fix", SourceBranch: "fix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byTask := e.openTaskMR(t)
+	for _, c := range []struct {
+		id   int64
+		want Author
+	}{{byUser.ID, AuthorUser}, {byAssistant.ID, AuthorAssistant}, {byTask.ID, AuthorTaskAgent}} {
+		mr, err := e.svc.repo.GetByID(ctx, c.id)
+		if err != nil || mr == nil {
+			t.Fatalf("merge request %d: %v", c.id, err)
+		}
+		if mr.OpenedBy != c.want {
+			t.Errorf("merge request %d: opened by %q, want %q", c.id, mr.OpenedBy, c.want)
+		}
+	}
+	// The assistant's merge request is held to the same rules as the user's.
+	if _, err := e.svc.AssistantCreate(ctx, e.owner, e.pid(), CreateInput{Title: "Main", SourceBranch: "main"}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+}
+
 // gitFlow makes the project's default branch develop, with main protected
 // for releases.
 func (e *env) gitFlow() {

@@ -10,6 +10,9 @@ export interface MergeRequest {
   id: number
   projectId: number
   taskId: number
+  // Who opened it: the user, devpad for a task, or the assistant with the
+  // user's approval.
+  openedBy: 'user' | 'task_agent' | 'assistant'
   title: string
   description: string
   sourceBranch: string

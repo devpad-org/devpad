@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -50,16 +51,50 @@ func (f fakeWorkspaces) GitStatus(ctx context.Context, _, _ int64) (*agent.GitSt
 	return &agent.GitStatus{IsRepo: true, Branch: "feature/cart"}, nil
 }
 
-type fakeProjects struct{}
+// fakeProjects protects develop besides main in project 1.
+type fakeProjects struct {
+	workspaces *fakeWorkspaces
+	autoReview bool
+	// ahead is how many commits the workspace's copy of each branch has
+	// that the project's lacks.
+	ahead map[string]int
+}
 
-func (fakeProjects) Get(_ context.Context, userID, id int64) (*project.Project, error) {
+func (f *fakeProjects) Get(_ context.Context, userID, id int64) (*project.Project, error) {
 	if id == 3 {
 		return nil, errLocked
 	}
 	if userID != owner || (id != 1 && id != 2) {
 		return nil, project.ErrNotFound
 	}
-	return &project.Project{ID: id, UserID: owner, Name: map[int64]string{1: "shop", 2: "blog"}[id], DefaultBranch: "main", Status: project.StatusReady}, nil
+	p := &project.Project{ID: id, UserID: owner, Name: map[int64]string{1: "shop", 2: "blog"}[id], DefaultBranch: "main", Status: project.StatusReady, AutoReview: f.autoReview}
+	if id == 1 {
+		p.ProtectedBranches = []string{"develop"}
+	}
+	return p, nil
+}
+
+func (f *fakeProjects) Branches(_ context.Context, _, projectID int64) (*agent.RepoRefs, error) {
+	refs := &agent.RepoRefs{DefaultBranch: "main"}
+	for _, name := range published {
+		refs.Branches = append(refs.Branches, agent.RepoRef{Name: name, SHA: "0123456789abcdef"})
+	}
+	return refs, nil
+}
+
+func (f *fakeProjects) ListSandboxes(_ context.Context, userID, projectID int64) ([]*workspace.Workspace, error) {
+	var out []*workspace.Workspace
+	for _, ws := range f.workspaces.byID {
+		if ws.UserID == userID && ws.ProjectID == projectID && ws.IsSandbox() {
+			clone := *ws
+			out = append(out, &clone)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeProjects) WorkspaceBranchStatus(_ context.Context, _, _ int64, branch string) (*project.WorkspaceBranchStatus, error) {
+	return &project.WorkspaceBranchStatus{Branch: branch, Published: true, Ahead: f.ahead[branch]}, nil
 }
 
 type fakeTasks struct {
@@ -135,9 +170,29 @@ type fakeMRs struct {
 	mrs []*mergerequest.MergeRequest
 	// comments records the assistant's comments, by merge request.
 	comments map[int64][]mergerequest.AgentCommentInput
+	// opened records the merge requests the assistant opened.
+	opened []mergerequest.CreateInput
 }
 
-func (f fakeMRs) List(_ context.Context, _, projectID int64) ([]*mergerequest.MergeRequest, error) {
+// published are the project's branches.
+var published = []string{"main", "develop", "feature/cart", "task/1", "task/2"}
+
+func (f *fakeMRs) AssistantCreate(_ context.Context, _, projectID int64, in mergerequest.CreateInput) (*mergerequest.MergeRequest, error) {
+	if !slices.Contains(published, in.SourceBranch) {
+		return nil, fmt.Errorf("%w: branch %q does not exist", mergerequest.ErrInvalidInput, in.SourceBranch)
+	}
+	for _, mr := range f.mrs {
+		if mr.ProjectID == projectID && mr.SourceBranch == in.SourceBranch && mr.Status == mergerequest.StatusOpen {
+			return nil, fmt.Errorf("%w: %s already has an open merge request", mergerequest.ErrInvalidState, in.SourceBranch)
+		}
+	}
+	f.opened = append(f.opened, in)
+	mr := &mergerequest.MergeRequest{ID: int64(40 + len(f.opened)), ProjectID: projectID, Title: in.Title, Description: in.Description, SourceBranch: in.SourceBranch, TargetBranch: in.TargetBranch, Status: mergerequest.StatusOpen, HeadSHA: "0123456789abcdef"}
+	f.mrs = append(f.mrs, mr)
+	return mr, nil
+}
+
+func (f *fakeMRs) List(_ context.Context, _, projectID int64) ([]*mergerequest.MergeRequest, error) {
 	var out []*mergerequest.MergeRequest
 	for _, mr := range f.mrs {
 		if mr.ProjectID == projectID {
@@ -147,7 +202,7 @@ func (f fakeMRs) List(_ context.Context, _, projectID int64) ([]*mergerequest.Me
 	return out, nil
 }
 
-func (f fakeMRs) Get(_ context.Context, _, projectID, mrID int64) (*mergerequest.Detail, error) {
+func (f *fakeMRs) Get(_ context.Context, _, projectID, mrID int64) (*mergerequest.Detail, error) {
 	for _, mr := range f.mrs {
 		if mr.ID == mrID && mr.ProjectID == projectID {
 			d := &mergerequest.Detail{MergeRequest: mr}
@@ -161,7 +216,7 @@ func (f fakeMRs) Get(_ context.Context, _, projectID, mrID int64) (*mergerequest
 	return nil, mergerequest.ErrNotFound
 }
 
-func (f fakeMRs) AssistantComment(_ context.Context, _, projectID, mrID int64, in mergerequest.AgentCommentInput) (*mergerequest.Comment, error) {
+func (f *fakeMRs) AssistantComment(_ context.Context, _, projectID, mrID int64, in mergerequest.AgentCommentInput) (*mergerequest.Comment, error) {
 	for _, mr := range f.mrs {
 		if mr.ID == mrID && mr.ProjectID == projectID {
 			if strings.TrimSpace(in.Body) == "" {
@@ -196,7 +251,8 @@ type env struct {
 	provider   *Provider
 	tasks      *fakeTasks
 	workspaces *fakeWorkspaces
-	mrs        fakeMRs
+	projects   *fakeProjects
+	mrs        *fakeMRs
 	defaults   fakeDefaults
 }
 
@@ -213,12 +269,13 @@ func setup() *env {
 		2: {ID: 2, ProjectID: 1, Title: "Old work", Status: task.StatusMerged, Branch: "task/2"},
 		3: {ID: 3, ProjectID: 2, Title: "Blog post", Status: task.StatusTodo, Branch: "task/3"},
 	}}
-	mrs := fakeMRs{mrs: []*mergerequest.MergeRequest{
+	mrs := &fakeMRs{mrs: []*mergerequest.MergeRequest{
 		{ID: 5, ProjectID: 1, TaskID: 1, Title: "Add a cart", Status: mergerequest.StatusOpen, SourceBranch: "task/1", TargetBranch: "main", HeadSHA: "abcdef1234567890"},
 		{ID: 6, ProjectID: 2, TaskID: 3, Title: "Blog post", Status: mergerequest.StatusOpen},
 	}, comments: map[int64][]mergerequest.AgentCommentInput{}}
+	projects := &fakeProjects{workspaces: workspaces, ahead: map[string]int{}}
 	defaults := fakeDefaults{}
-	return &env{provider: NewProvider(workspaces, fakeProjects{}, tasks, mrs, defaults), tasks: tasks, workspaces: workspaces, mrs: mrs, defaults: defaults}
+	return &env{provider: NewProvider(workspaces, projects, tasks, mrs, defaults), tasks: tasks, workspaces: workspaces, projects: projects, mrs: mrs, defaults: defaults}
 }
 
 func (e *env) call(t *testing.T, userID, workspaceID int64, tool, args string) (domain.ToolResultPart, bool) {
@@ -360,6 +417,7 @@ func TestOnlyCallsThatStartAnAgentNeedApproval(t *testing.T) {
 		}
 		return got, needed
 	}
+	e.mrs.mrs = append(e.mrs.mrs, &mergerequest.MergeRequest{ID: 7, ProjectID: 1, Title: "Release", Status: mergerequest.StatusOpen, SourceBranch: "develop", TargetBranch: "main"})
 	for _, c := range []struct {
 		tool, args string
 		needed     bool
@@ -374,6 +432,12 @@ func TestOnlyCallsThatStartAnAgentNeedApproval(t *testing.T) {
 		{createTaskTool, `{"title":"Checkout","body":"y","start":true}`, true, "Checkout"},
 		{startTaskTool, `{"task_id":1}`, true, "task #1"},
 		{requestTaskChangesTool, `{"task_id":1,"feedback":"Add tests"}`, true, "Add tests"},
+		{createMRTool, `{"source_branch":"feature/cart","target_branch":"develop","title":"Cart"}`, true, "feature/cart"},
+		// A merge request that would be refused gets no card either: no
+		// target, an unpublished source, or one already proposed.
+		{createMRTool, `{"source_branch":"feature/cart","title":"Cart"}`, false, ""},
+		{createMRTool, `{"source_branch":"nope","target_branch":"main","title":"Cart"}`, false, ""},
+		{createMRTool, `{"source_branch":"develop","target_branch":"main","title":"Release"}`, false, ""},
 		{"run_command", `{"command":"ls"}`, false, ""},
 		// A task that is not in the project gets no card; the call itself
 		// reports it.
@@ -461,14 +525,15 @@ func TestCallsThatStartAnAgentRefuseWithoutApproval(t *testing.T) {
 		{createTaskTool, `{"title":"x","body":"y","start":true}`},
 		{startTaskTool, `{"task_id":1}`},
 		{requestTaskChangesTool, `{"task_id":1,"feedback":"more"}`},
+		{createMRTool, `{"source_branch":"feature/cart","target_branch":"main","title":"Cart"}`},
 	} {
 		res, handled := e.call(t, owner, 10, c.tool, c.args)
 		if !handled || !res.IsError || !strings.Contains(res.Content, "approval") {
 			t.Errorf("%s: expected a refusal without approval, got %+v", c.tool, res)
 		}
 	}
-	if len(e.tasks.created) != 0 || len(e.tasks.started) != 0 || len(e.tasks.changes) != 0 {
-		t.Fatalf("nothing should have run: %+v %+v %+v", e.tasks.created, e.tasks.started, e.tasks.changes)
+	if len(e.tasks.created) != 0 || len(e.tasks.started) != 0 || len(e.tasks.changes) != 0 || len(e.mrs.opened) != 0 {
+		t.Fatalf("nothing should have run: %+v %+v %+v %+v", e.tasks.created, e.tasks.started, e.tasks.changes, e.mrs.opened)
 	}
 	// Creating without starting needs none.
 	if res, _ := e.call(t, owner, 10, createTaskTool, `{"title":"x","body":"y"}`); res.IsError {
@@ -686,5 +751,131 @@ func TestCleanBranchDropsNamesThatCouldMisleadThePrompt(t *testing.T) {
 		if got := cleanBranch(name); got != want {
 			t.Errorf("cleanBranch(%q) = %q, want %q", name, got, want)
 		}
+	}
+}
+
+func TestAssistantOpensMergeRequests(t *testing.T) {
+	e := setup()
+	e.projects.ahead["feature/cart"] = 2
+	res, _ := e.approved(t, owner, 10, createMRTool, `{"source_branch":" feature/cart ","target_branch":"develop","title":" Cart ","description":"Adds a cart."}`)
+	if res.IsError {
+		t.Fatalf("create: %+v", res)
+	}
+	want := mergerequest.CreateInput{Title: "Cart", Description: "Adds a cart.", SourceBranch: "feature/cart", TargetBranch: "develop"}
+	if len(e.mrs.opened) != 1 || e.mrs.opened[0] != want {
+		t.Fatalf("opened %+v, want %+v", e.mrs.opened, want)
+	}
+	var out struct {
+		Message            string
+		MergeRequest       mrSummary
+		UnpublishedCommits int
+	}
+	if err := json.Unmarshal([]byte(res.Content), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.MergeRequest.ID != 41 || out.MergeRequest.TargetBranch != "develop" {
+		t.Errorf("expected the new merge request in the result: %s", res.Content)
+	}
+	// Commits the workspace has not published are not in the merge request,
+	// and the assistant is told how to add them.
+	if out.UnpublishedCommits != 2 || !strings.Contains(out.Message, "git push devpad feature/cart") {
+		t.Errorf("expected the unpublished commits pointed out: %s", res.Content)
+	}
+
+	// A merged task's branch is the assistant's to propose again.
+	if res, _ := e.approved(t, owner, 10, createMRTool, `{"source_branch":"task/2","target_branch":"main","title":"Salvage"}`); res.IsError || strings.Contains(res.Content, "unpublished") {
+		t.Errorf("task/2: %+v", res)
+	}
+
+	// A protected branch can be the source, as in a release. Its unpublished
+	// commits are pointed out, but never with a push, which would be refused.
+	e.projects.ahead["develop"] = 1
+	res, _ = e.approved(t, owner, 10, createMRTool, `{"source_branch":"develop","target_branch":"main","title":"Release"}`)
+	out.UnpublishedCommits = 0
+	if err := json.Unmarshal([]byte(res.Content), &out); res.IsError || err != nil {
+		t.Fatalf("release: %+v %v", res, err)
+	}
+	if out.UnpublishedCommits != 1 || strings.Contains(out.Message, "git push") || !strings.Contains(out.Message, "develop is protected") {
+		t.Errorf("expected the unpublished commits pointed out without a push: %s", res.Content)
+	}
+}
+
+func TestAssistantMergeRequestsAreRefused(t *testing.T) {
+	e := setup()
+	e.tasks.tasks[4] = &task.Task{ID: 4, ProjectID: 1, Title: "Queued", Status: task.StatusQueued, Branch: "task/4"}
+	e.approved(t, owner, 10, createMRTool, `{"source_branch":"feature/cart","target_branch":"main","title":"Cart"}`)
+
+	for name, c := range map[string]struct {
+		ws         int64
+		args, want string
+	}{
+		"no title":                    {10, `{"source_branch":"develop","target_branch":"main","title":" "}`, "title is required"},
+		"no target":                   {10, `{"source_branch":"develop","title":"x"}`, "`main`, `develop`"},
+		"an unprotected target":       {10, `{"source_branch":"develop","target_branch":"feature/cart","title":"x"}`, "protected branches"},
+		"no source":                   {10, `{"target_branch":"main","title":"x"}`, "source_branch is required"},
+		"a source that could mislead": {10, "{\"source_branch\":\"x\\u202eniam\",\"target_branch\":\"main\",\"title\":\"x\"}", "not a valid branch name"},
+		"the target as the source":    {10, `{"source_branch":"main","target_branch":"main","title":"x"}`, "other than"},
+		"a sandbox's branch":          {10, `{"source_branch":"task/1","target_branch":"main","title":"x"}`, "sandbox"},
+		"an unfinished task's branch": {10, `{"source_branch":"task/4","target_branch":"main","title":"x"}`, "task #4"},
+		"an unpublished branch":       {10, `{"source_branch":"nope","target_branch":"main","title":"x"}`, "git push devpad nope"},
+		"a branch already proposed":   {10, `{"source_branch":"feature/cart","target_branch":"develop","title":"x"}`, "already has an open merge request"},
+		"a task sandbox":              {11, `{"source_branch":"develop","target_branch":"main","title":"x"}`, "project's own workspace"},
+		"a standalone workspace":      {12, `{"source_branch":"develop","target_branch":"main","title":"x"}`, "project's own workspace"},
+	} {
+		res, handled := e.approved(t, owner, c.ws, createMRTool, c.args)
+		if !handled || !res.IsError || !strings.Contains(res.Content, c.want) {
+			t.Errorf("%s: expected refused with %q, got %+v", name, c.want, res)
+		}
+	}
+	if len(e.mrs.opened) != 1 {
+		t.Fatalf("refused merge requests must not open: %+v", e.mrs.opened)
+	}
+}
+
+func TestMergeRequestApprovalShowsWhatWillOpen(t *testing.T) {
+	e := setup()
+	ctx := context.Background()
+	approval := func(args string) aitools.Approval {
+		t.Helper()
+		got, needed, err := e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: createMRTool, Arguments: json.RawMessage(args)})
+		if err != nil || !needed {
+			t.Fatalf("expected an approval, got %v %v", needed, err)
+		}
+		return got
+	}
+
+	got := approval(`{"source_branch":"feature/cart","target_branch":"main","title":"Cart","description":"Adds a cart."}`)
+	for label, value := range map[string]string{
+		"Merge":            "feature/cart",
+		"Into":             "main (the default branch)",
+		"Title":            "Cart",
+		"Description":      "Adds a cart.",
+		"Automatic review": "Off for this project",
+	} {
+		if !hasDetail(got, label, value) {
+			t.Errorf("expected %s %q on the card: %+v", label, value, got.Details)
+		}
+	}
+	if strings.Contains(got.Summary, "feature/cart") || strings.Contains(got.Summary, "review agent") {
+		t.Errorf("the summary must be the server's own words: %q", got.Summary)
+	}
+
+	e.projects.autoReview = true
+	got = approval(`{"source_branch":"feature/cart","target_branch":"develop","title":"Cart"}`)
+	if !hasDetail(got, "Into", "develop") || !hasDetail(got, "Automatic review", "Starts on the new merge request") || !strings.Contains(got.Summary, "review agent") {
+		t.Errorf("expected the card to say a review agent starts: %+v", got)
+	}
+	for _, d := range got.Details {
+		if d.Label == "Description" || d.Label == "Left out" {
+			t.Errorf("an empty description and a fully published branch need no detail: %+v", got.Details)
+		}
+	}
+
+	// Commits the workspace hasn't published won't be in the merge request,
+	// and the user sees so before approving.
+	e.projects.ahead["feature/cart"] = 3
+	got = approval(`{"source_branch":"feature/cart","target_branch":"develop","title":"Cart"}`)
+	if !hasDetail(got, "Left out", "3 commits in your workspace that aren't published") {
+		t.Errorf("expected the unpublished commits on the card: %+v", got.Details)
 	}
 }
