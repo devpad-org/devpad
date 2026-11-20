@@ -1186,7 +1186,7 @@ func (s *service) launchReview(ctx context.Context, reviewID int64) {
 	}
 	// The prompt describes the image the sandbox has, which can be older than
 	// the one read before it was made.
-	if err := s.startReviewRun(ctx, mr, rv, ws, diff, env.For(ws.Image), setup); err != nil && s.rootCtx.Err() == nil {
+	if err := s.startReviewRun(ctx, mr, rv, ws, diff, project.SandboxState{Environment: env.For(ws.Image), Setup: setup}); err != nil && s.rootCtx.Err() == nil {
 		s.failReview(ctx, mr, rv, err.Error())
 	}
 }
@@ -1298,7 +1298,7 @@ func (s *service) startReviewSandbox(ctx context.Context, mr *MergeRequest, rv *
 
 // startReviewRun starts the agent run of a review the caller has locked, in
 // the sandbox startReviewSandbox gave it.
-func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Review, ws *workspace.Workspace, diff *agent.RepoDiff, env *project.Environment, setup *project.Setup) error {
+func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Review, ws *workspace.Workspace, diff *agent.RepoDiff, sandbox project.SandboxState) error {
 	// Everything is read before the conversation is made, so a failed lookup
 	// does not leave an empty one in the sandbox.
 	p, err := s.projects.Get(ctx, mr.UserID, mr.ProjectID)
@@ -1339,7 +1339,16 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 			return err
 		}
 		rv.ConversationID = conv.ID
-		prompt = reviewPrompt(p, mr, t, rv, ws.Branch, diff, env, setup, history)
+		prompt = reviewPrompt(reviewPromptInput{
+			project: p,
+			mr:      mr,
+			task:    t,
+			review:  rv,
+			branch:  ws.Branch,
+			diff:    diff,
+			sandbox: sandbox,
+			history: history,
+		})
 	}
 	run, err := s.runs.StartRun(ctx, app.StartAgentRunRequest{
 		UserID:         mr.UserID,
@@ -1467,23 +1476,37 @@ func (s *service) reviewHistory(ctx context.Context, mr *MergeRequest, rv *Revie
 	return h, nil
 }
 
-func reviewPrompt(p *project.Project, mr *MergeRequest, t *task.Task, rv *Review, branch string, diff *agent.RepoDiff, env *project.Environment, setup *project.Setup, h reviewHistory) string {
+// reviewPromptInput is what a review agent's first prompt describes.
+type reviewPromptInput struct {
+	project *project.Project
+	mr      *MergeRequest
+	// task is the task the merge request implements, nil when there is none.
+	task   *task.Task
+	review *Review
+	// branch is the sandbox's branch, a checkout of the change.
+	branch  string
+	diff    *agent.RepoDiff
+	sandbox project.SandboxState
+	history reviewHistory
+}
+
+func reviewPrompt(in reviewPromptInput) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are reviewing merge request !%d in the project %q: %s\n\n", mr.ID, p.Name, mr.Title)
-	if d := strings.TrimSpace(mr.Description); d != "" {
+	fmt.Fprintf(&b, "You are reviewing merge request !%d in the project %q: %s\n\n", in.mr.ID, in.project.Name, in.mr.Title)
+	if d := strings.TrimSpace(in.mr.Description); d != "" {
 		fmt.Fprintf(&b, "## Description from the author\n\n%s\n\n", d)
 	}
-	if t != nil {
-		fmt.Fprintf(&b, "## The task it implements\n\n### %s\n\n", t.Title)
-		if body := strings.TrimSpace(t.Body); body != "" {
+	if in.task != nil {
+		fmt.Fprintf(&b, "## The task it implements\n\n### %s\n\n", in.task.Title)
+		if body := strings.TrimSpace(in.task.Body); body != "" {
 			b.WriteString(body + "\n\n")
 		}
 	}
 	fmt.Fprintf(&b, "## The change\n\n/workspace is a checkout of the change at commit `%s`, on the branch `%s` made from `%s`. Since it branched from `%s` it changes %d files:\n\n",
-		short(rv.HeadSHA), branch, mr.SourceBranch, mr.TargetBranch, len(diff.Files))
-	for i, f := range diff.Files {
+		short(in.review.HeadSHA), in.branch, in.mr.SourceBranch, in.mr.TargetBranch, len(in.diff.Files))
+	for i, f := range in.diff.Files {
 		if i == 200 {
-			fmt.Fprintf(&b, "- … and %d more\n", len(diff.Files)-i)
+			fmt.Fprintf(&b, "- … and %d more\n", len(in.diff.Files)-i)
 			break
 		}
 		switch {
@@ -1495,30 +1518,25 @@ func reviewPrompt(p *project.Project, mr *MergeRequest, t *task.Task, rv *Review
 			fmt.Fprintf(&b, "- %s (%s, +%d −%d)\n", f.Path, f.Status, f.Additions, f.Deletions)
 		}
 	}
-	fmt.Fprintf(&b, "\nRun `git diff %[1]s HEAD` to read the change and `git log %[1]s..HEAD` for its commits.\n\n", diff.MergeBase)
-	if note := project.EnvironmentPrompt(env); note != "" {
-		b.WriteString(note + "\n")
-	}
-	if note := project.SetupPrompt(setup); note != "" {
-		b.WriteString(note + "\n")
-	}
-	if h.earlier > 0 {
+	fmt.Fprintf(&b, "\nRun `git diff %[1]s HEAD` to read the change and `git log %[1]s..HEAD` for its commits.\n\n", in.diff.MergeBase)
+	b.WriteString(in.sandbox.Prompt())
+	if in.history.earlier > 0 {
 		b.WriteString("## Earlier reviews\n\nThis merge request has been reviewed before")
 		switch {
-		case h.open == 1:
+		case in.history.open == 1:
 			b.WriteString(", and 1 comment thread on it is still open")
-		case h.open > 1:
-			fmt.Fprintf(&b, ", and %d comment threads on it are still open", h.open)
+		case in.history.open > 1:
+			fmt.Fprintf(&b, ", and %d comment threads on it are still open", in.history.open)
 		}
-		if h.blocking > 0 {
-			fmt.Fprintf(&b, " (%d blocking)", h.blocking)
+		if in.history.blocking > 0 {
+			fmt.Fprintf(&b, " (%d blocking)", in.history.blocking)
 		}
 		fmt.Fprintf(&b, ". Read the earlier reviews and comments, and the author's replies, with %[1]s. For each open thread, check the current code, not only the replies: if the change addresses it, resolve it with %[2]s; if it does not, leave it open, and reply in it with %[3]s when you have something to add. Do not raise again what was addressed or answered convincingly.\n\n", readCommentsTool, resolveTool, mrCommentTool)
 		switch {
-		case h.lastReviewed == rv.HeadSHA:
+		case in.history.lastReviewed == in.review.HeadSHA:
 			b.WriteString("The last review by a review agent was of this same commit, so the code has not changed since. Check the open threads and the replies to them, and raise a new problem only if it is blocking.\n\n")
-		case h.lastReviewed != "":
-			fmt.Fprintf(&b, "The last review by a review agent was of commit `%[1]s`, and the rest of the change was reviewed then. Review what changed since with `git diff %[1]s HEAD`, reading the code around it as you need. Raise a new problem in code the last review already saw only if it is blocking. If `git merge-base --is-ancestor %[1]s HEAD` fails, the branch was rewritten: review the whole change.\n\n", h.lastReviewed)
+		case in.history.lastReviewed != "":
+			fmt.Fprintf(&b, "The last review by a review agent was of commit `%[1]s`, and the rest of the change was reviewed then. Review what changed since with `git diff %[1]s HEAD`, reading the code around it as you need. Raise a new problem in code the last review already saw only if it is blocking. If `git merge-base --is-ancestor %[1]s HEAD` fails, the branch was rewritten: review the whole change.\n\n", in.history.lastReviewed)
 		}
 	}
 	fmt.Fprintf(&b, `## How to review
