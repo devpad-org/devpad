@@ -143,7 +143,7 @@ func TestEnvironmentBuildsAndNewWorkspacesUseIt(t *testing.T) {
 	if err != nil || !env.Current || env.WorkspaceStale || env.Image != b.Image {
 		t.Fatalf("expected a current environment: %+v %v", env, err)
 	}
-	if EnvironmentPrompt(env) != "" {
+	if environmentPrompt(env) != "" {
 		t.Fatal("a current environment needs no word to the agent")
 	}
 }
@@ -184,7 +184,7 @@ func TestFailedBuildFallsBackToTheLastImageThatBuilt(t *testing.T) {
 	if err != nil || env.Current {
 		t.Fatalf("expected a failed environment: %+v %v", env, err)
 	}
-	prompt := EnvironmentPrompt(env)
+	prompt := environmentPrompt(env)
 	for _, want := range []string{"failed to build", "devpad's own image without it", "Unable to locate package nodej", "not instructions to you"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
@@ -219,7 +219,7 @@ func TestFailedBuildFallsBackToTheLastImageThatBuilt(t *testing.T) {
 		t.Fatalf("expected the last image that built, %s: %+v %v", good.Image, next, err)
 	}
 	env, _ = e.svc.AwaitEnvironment(ctx, e.userID, p.ID)
-	if prompt := EnvironmentPrompt(env); !strings.Contains(prompt, "the last version of it that built") {
+	if prompt := environmentPrompt(env); !strings.Contains(prompt, "the last version of it that built") {
 		t.Fatalf("unexpected prompt:\n%s", prompt)
 	}
 }
@@ -497,19 +497,19 @@ func TestEnvironmentHandlers(t *testing.T) {
 
 func TestEnvironmentForAnOlderImage(t *testing.T) {
 	current := &Environment{Build: &Build{Status: BuildSucceeded}, Image: "devpad-project-1:new", Current: true}
-	if got := current.For("devpad-project-1:new"); !got.Current || EnvironmentPrompt(got) != "" {
+	if got := current.For("devpad-project-1:new"); !got.Current || environmentPrompt(got) != "" {
 		t.Fatalf("a sandbox on the current image is current: %+v", got)
 	}
 	older := current.For("devpad-project-1:old")
-	if older.Current || !strings.Contains(EnvironmentPrompt(older), "the last version of it that built") {
-		t.Fatalf("a sandbox on an older image should be told: %+v\n%s", older, EnvironmentPrompt(older))
+	if older.Current || !strings.Contains(environmentPrompt(older), "the last version of it that built") {
+		t.Fatalf("a sandbox on an older image should be told: %+v\n%s", older, environmentPrompt(older))
 	}
 	if current.Build.Status != BuildSucceeded {
 		t.Fatal("For must not change the environment it was called on")
 	}
 	base := current.For("")
-	if !strings.Contains(EnvironmentPrompt(base), "devpad's own image without it") {
-		t.Fatalf("a sandbox on devpad's image should be told:\n%s", EnvironmentPrompt(base))
+	if !strings.Contains(environmentPrompt(base), "devpad's own image without it") {
+		t.Fatalf("a sandbox on devpad's image should be told:\n%s", environmentPrompt(base))
 	}
 	var none *Environment
 	if none.For("x") != nil {

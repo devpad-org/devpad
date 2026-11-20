@@ -603,10 +603,10 @@ func (s *service) resumeEnvironments(ctx context.Context) error {
 	return nil
 }
 
-// EnvironmentPrompt tells an agent starting in a sandbox when the sandbox
+// environmentPrompt tells an agent starting in a sandbox when the sandbox
 // lacks the project's current environment. It is empty when it has it, or
 // the project has none.
-func EnvironmentPrompt(env *Environment) string {
+func environmentPrompt(env *Environment) string {
 	if env == nil || env.Current {
 		return ""
 	}

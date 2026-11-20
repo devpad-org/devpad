@@ -549,12 +549,19 @@ type SandboxState struct {
 	Setup       *Setup
 }
 
-// Prompt tells an agent starting in the sandbox what EnvironmentPrompt and
-// SetupPrompt say, each followed by a blank line. It is empty when neither
+// For returns the state of a sandbox made from image, which may be older
+// than the image the environment was read for.
+func (st SandboxState) For(image string) SandboxState {
+	st.Environment = st.Environment.For(image)
+	return st
+}
+
+// Prompt tells an agent starting in the sandbox what environmentPrompt and
+// setupPrompt say, each followed by a blank line. It is empty when neither
 // says anything.
 func (st SandboxState) Prompt() string {
 	var b strings.Builder
-	for _, note := range []string{EnvironmentPrompt(st.Environment), SetupPrompt(st.Setup)} {
+	for _, note := range []string{environmentPrompt(st.Environment), setupPrompt(st.Setup)} {
 		if note != "" {
 			b.WriteString(note + "\n")
 		}
@@ -562,9 +569,9 @@ func (st SandboxState) Prompt() string {
 	return b.String()
 }
 
-// SetupPrompt tells an agent starting in a sandbox how the project's setup
+// setupPrompt tells an agent starting in a sandbox how the project's setup
 // script went there. It is empty when no setup ran.
-func SetupPrompt(st *Setup) string {
+func setupPrompt(st *Setup) string {
 	if st == nil {
 		return ""
 	}
