@@ -15,8 +15,17 @@ type fakeAgentRunRepository struct {
 	mu          sync.Mutex
 	nextRunID   int64
 	nextEventID int64
-	runs        map[int64]*domain.AgentRun
-	events      map[int64][]domain.AgentRunEvent
+	appendErr   error
+	// beforeStatus, if set, runs before each status update is applied.
+	beforeStatus func(domain.AgentRunStatus)
+	runs         map[int64]*domain.AgentRun
+	events       map[int64][]domain.AgentRunEvent
+}
+
+func (r *fakeAgentRunRepository) failAppends(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.appendErr = err
 }
 
 func newFakeAgentRunRepository() *fakeAgentRunRepository {
@@ -82,6 +91,9 @@ func (r *fakeAgentRunRepository) AppendEvent(_ context.Context, runID int64, eve
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.appendErr != nil {
+		return domain.AgentRunEvent{}, r.appendErr
+	}
 	if r.runs[runID] == nil {
 		return domain.AgentRunEvent{}, domain.ErrAgentRunNotFound
 	}
@@ -98,6 +110,9 @@ func (r *fakeAgentRunRepository) AppendEvent(_ context.Context, runID int64, eve
 }
 
 func (r *fakeAgentRunRepository) UpdateStatus(_ context.Context, runID int64, status domain.AgentRunStatus, errorMessage string) error {
+	if r.beforeStatus != nil {
+		r.beforeStatus(status)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -625,6 +640,138 @@ func TestAgentRunService_CancelStillMarksRunCancelledWhenPersistenceFails(t *tes
 	}
 
 	waitForRunStatus(t, repo, run.ID, domain.AgentRunCancelled)
+}
+
+func TestAgentRunService_FailedStartEndsRunWhenEventsCannotBeSaved(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+		streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
+			return nil, errors.New("workspace is stopped")
+		},
+	}, nil)
+	defer shutdownRunner(t, service)
+
+	repo.failAppends(errors.New("disk full"))
+	if _, err := service.StartRun(context.Background(), StartAgentRunRequest{
+		UserID:      7,
+		WorkspaceID: 9,
+		Model:       "gpt-5.4",
+		Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "build it")},
+	}); err == nil {
+		t.Fatal("expected the run to fail to start")
+	}
+	runs, err := repo.ListRuns(context.Background(), 7, 9)
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != domain.AgentRunFailed {
+		t.Fatalf("expected the run to be marked failed without its events, got %+v", runs)
+	}
+}
+
+func TestAgentRunService_CancelStillMarksRunCancelledWhenEventsCannotBeSaved(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{}, nil)
+	defer shutdownRunner(t, service)
+	run := &domain.AgentRun{UserID: 7, WorkspaceID: 9, Model: "gpt-5.4", Status: domain.AgentRunQueued}
+	if err := repo.CreateRun(context.Background(), run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	// A run with no live cancel func, such as one left queued, is ended directly.
+	repo.failAppends(errors.New("disk full"))
+	if err := service.CancelRun(context.Background(), 7, run.ID); err == nil {
+		t.Fatal("expected the event failure to be reported")
+	}
+	stored, err := repo.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if stored.Status != domain.AgentRunCancelled {
+		t.Fatalf("expected the run to be cancelled, got %s", stored.Status)
+	}
+}
+
+func TestAgentRunService_RunIsEndedBeforeViewersSeeItEnd(t *testing.T) {
+	tests := []struct {
+		name   string
+		end    func(t *testing.T, service *agentRunService, runID int64, events chan<- domain.ClientEvent)
+		status domain.AgentRunStatus
+	}{
+		{
+			name: "completed",
+			end: func(_ *testing.T, _ *agentRunService, _ int64, events chan<- domain.ClientEvent) {
+				events <- domain.ClientEvent{Done: true}
+			},
+			status: domain.AgentRunCompleted,
+		},
+		{
+			name: "cancelled",
+			end: func(t *testing.T, service *agentRunService, runID int64, _ chan<- domain.ClientEvent) {
+				if err := service.CancelRun(context.Background(), 7, runID); err != nil {
+					t.Fatalf("cancel run: %v", err)
+				}
+			},
+			status: domain.AgentRunCancelled,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFakeAgentRunRepository()
+			// A slow final status write would let a viewer see the run end
+			// while it still counts as active, if the status came second.
+			repo.beforeStatus = func(status domain.AgentRunStatus) {
+				if domain.AgentRunStatusTerminal(status) {
+					time.Sleep(50 * time.Millisecond)
+				}
+			}
+			events := make(chan domain.ClientEvent, 2)
+			service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{
+				streamAgentFn: func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
+					return events, nil
+				},
+			}, nil)
+			defer shutdownRunner(t, service)
+			run, err := service.StartRun(context.Background(), StartAgentRunRequest{
+				UserID:      7,
+				WorkspaceID: 9,
+				Model:       "gpt-5.4",
+				Turns:       []domain.Turn{domain.NewTextTurn(domain.RoleUser, "build it")},
+			})
+			if err != nil {
+				t.Fatalf("start run: %v", err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			subscription, err := service.SubscribeEvents(ctx, 7, run.ID, 0)
+			if err != nil {
+				t.Fatalf("subscribe: %v", err)
+			}
+			// Receiving an event first means the subscription has replayed what
+			// was stored and only sees events as they are published.
+			events <- domain.ClientEvent{TextDelta: "working"}
+			if event := receiveRunEvent(t, subscription); event.Event.TextDelta != "working" {
+				t.Fatalf("expected the working event first, got %+v", event.Event)
+			}
+			tt.end(t, service, run.ID, events)
+
+			for {
+				event := receiveRunEvent(t, subscription)
+				if !event.Event.Done {
+					continue
+				}
+				stored, err := repo.GetRun(context.Background(), run.ID)
+				if err != nil {
+					t.Fatalf("get run: %v", err)
+				}
+				if stored.Status != tt.status {
+					t.Fatalf("expected the run to be %s when viewers see it end, got %s", tt.status, stored.Status)
+				}
+				return
+			}
+		})
+	}
 }
 
 func TestAgentRunService_DoesNotPersistChildRunConversation(t *testing.T) {
