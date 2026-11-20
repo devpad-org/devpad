@@ -59,7 +59,7 @@ func newProxyRig(t *testing.T) *proxyRig {
 	}))
 	t.Cleanup(rig.agent.Close)
 	rig.addr = strings.TrimPrefix(rig.agent.URL, "http://")
-	rig.handler = NewHandler(agentAt{Service: svc, addr: rig.addr}, "preview.example.com", 443)
+	rig.handler = NewHandler(agentAt{Service: svc, addr: rig.addr}, "preview.example.com")
 	return rig
 }
 
@@ -96,7 +96,7 @@ func TestPreviewsKeepSeparateSignIns(t *testing.T) {
 	}
 	open := func(port int) {
 		t.Helper()
-		link, err := rig.service.GenerateURL(context.Background(), 1, 1, port, "preview.example.com", 443)
+		link, err := rig.service.GenerateURL(context.Background(), 1, 1, port)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -120,7 +120,7 @@ func TestPreviewsKeepSeparateSignIns(t *testing.T) {
 
 func TestPreviewCookieStaysOnItsHost(t *testing.T) {
 	rig := newProxyRig(t)
-	link, err := rig.service.GenerateURL(context.Background(), 1, 1, 3000, "preview.example.com", 443)
+	link, err := rig.service.GenerateURL(context.Background(), 1, 1, 3000)
 	if err != nil {
 		t.Fatal(err)
 	}

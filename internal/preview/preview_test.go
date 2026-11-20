@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -181,18 +182,23 @@ func createStoppedWorkspace(t *testing.T, db *sql.DB, userID int64, name string)
 
 func setupTestService(t *testing.T) (Service, *sql.DB) {
 	t.Helper()
+	return setupTestServiceWith(t, Config{Domain: "preview.example.com", HTTPSPort: 443})
+}
+
+func setupTestServiceWith(t *testing.T, cfg Config) (Service, *sql.DB) {
+	t.Helper()
 	db := setupTestDB(t)
 	repo := NewRepository(db)
 	wsRepo := workspace.NewRepository(db)
 	cm := &mockContainerManager{}
-	svc := NewService(repo, wsRepo, cm)
+	svc := NewService(repo, wsRepo, cm, cfg)
 	return svc, db
 }
 
 func setupTestHandler(t *testing.T) (*Handler, Service, *sql.DB) {
 	t.Helper()
 	svc, db := setupTestService(t)
-	handler := NewHandler(svc, "preview.example.com", 443)
+	handler := NewHandler(svc, "preview.example.com")
 	return handler, svc, db
 }
 
@@ -213,7 +219,7 @@ func TestService_GenerateURL(t *testing.T) {
 
 	wsID := createRunningWorkspace(t, db, 1, "myproject")
 
-	url, err := svc.GenerateURL(ctx, 1, wsID, 3000, "preview.example.com", 443)
+	url, err := svc.GenerateURL(ctx, 1, wsID, 3000)
 	if err != nil {
 		t.Fatalf("GenerateURL failed: %v", err)
 	}
@@ -230,13 +236,35 @@ func TestService_GenerateURL(t *testing.T) {
 	}
 }
 
+func TestService_GenerateURLNamesANonStandardPort(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		port int
+		host string
+	}{
+		{443, "preview.example.com?"},
+		{0, "preview.example.com?"},
+		{8443, "preview.example.com:8443?"},
+	} {
+		svc, db := setupTestServiceWith(t, Config{Domain: "preview.example.com", HTTPSPort: tc.port})
+		wsID := createRunningWorkspace(t, db, 1, "port")
+		url, err := svc.GenerateURL(ctx, 1, wsID, 3000)
+		if err != nil {
+			t.Fatalf("GenerateURL failed: %v", err)
+		}
+		if want := fmt.Sprintf("https://%d-3000.%s", wsID, tc.host); !strings.HasPrefix(url, want) {
+			t.Errorf("HTTPS port %d: expected URL to start with %q, got %q", tc.port, want, url)
+		}
+	}
+}
+
 func TestService_GenerateURL_StoppedWorkspace(t *testing.T) {
 	svc, db := setupTestService(t)
 	ctx := context.Background()
 
 	wsID := createStoppedWorkspace(t, db, 1, "stopped-project")
 
-	_, err := svc.GenerateURL(ctx, 1, wsID, 3000, "preview.example.com", 443)
+	_, err := svc.GenerateURL(ctx, 1, wsID, 3000)
 	if err == nil {
 		t.Fatal("expected error for stopped workspace")
 	}
@@ -251,7 +279,7 @@ func TestService_GenerateURL_WrongUser(t *testing.T) {
 
 	wsID := createRunningWorkspace(t, db, 1, "user1project")
 
-	_, err := svc.GenerateURL(ctx, 2, wsID, 3000, "preview.example.com", 443)
+	_, err := svc.GenerateURL(ctx, 2, wsID, 3000)
 	if err == nil {
 		t.Fatal("expected error for wrong user")
 	}
@@ -263,7 +291,7 @@ func TestService_ValidateToken(t *testing.T) {
 
 	wsID := createRunningWorkspace(t, db, 1, "tokentest")
 
-	url, err := svc.GenerateURL(ctx, 1, wsID, 8080, "preview.example.com", 443)
+	url, err := svc.GenerateURL(ctx, 1, wsID, 8080)
 	if err != nil {
 		t.Fatalf("GenerateURL failed: %v", err)
 	}

@@ -148,7 +148,7 @@ func TestHostRouterKeepsPreviewHostsOffTheApp(t *testing.T) {
 				reached = true
 				w.WriteHeader(http.StatusOK)
 			})
-			previews := preview.NewHandler(nil, "preview.example.com", 443)
+			previews := preview.NewHandler(nil, "preview.example.com")
 			h := hostRouter(app, http.HandlerFunc(previews.HandleProxy), "preview.example.com")
 
 			r := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
@@ -187,7 +187,7 @@ func TestBuildHandlerWiring(t *testing.T) {
 		reached = true
 		w.WriteHeader(http.StatusOK)
 	})
-	previews := preview.NewHandler(nil, cfg.PreviewDomain, cfg.Port)
+	previews := preview.NewHandler(nil, cfg.PreviewDomain)
 	h := buildHandler(app, http.HandlerFunc(previews.HandleProxy), cfg)
 
 	serve := func(r *http.Request) *httptest.ResponseRecorder {
