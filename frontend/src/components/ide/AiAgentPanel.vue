@@ -1202,6 +1202,7 @@ async function sendMessage() {
       conversationId,
       thinkingRequest.value,
       props.selectedAgentId,
+      slashCommand ? text : undefined,
     )
     agentRunStore.upsertRun(created.run)
     activeAgentRunId.value = created.run.id

@@ -185,7 +185,8 @@ func (s *attachmentService) Hydrate(ctx context.Context, userID int64, turns []d
 func mapImages(turns []domain.Turn, fn func(domain.ImagePart) domain.ImagePart) []domain.Turn {
 	mapped := make([]domain.Turn, len(turns))
 	for i, turn := range turns {
-		mapped[i] = domain.Turn{Role: turn.Role, Parts: make([]domain.Part, len(turn.Parts))}
+		mapped[i] = turn
+		mapped[i].Parts = make([]domain.Part, len(turn.Parts))
 		for j, part := range turn.Parts {
 			switch {
 			case part.Kind == domain.PartImage && part.Image != nil:

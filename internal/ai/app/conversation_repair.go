@@ -80,7 +80,8 @@ func repairStep(assistant domain.Turn, results []domain.Turn, findCall func(id s
 			parts = append(parts, part)
 		}
 		if len(parts) > 0 {
-			keptResults = append(keptResults, domain.Turn{Role: turn.Role, Parts: parts})
+			turn.Parts = parts
+			keptResults = append(keptResults, turn)
 		}
 	}
 
@@ -116,5 +117,6 @@ func withoutToolResults(turn domain.Turn) (domain.Turn, bool) {
 			parts = append(parts, part)
 		}
 	}
-	return domain.Turn{Role: turn.Role, Parts: parts}, len(parts) > 0
+	turn.Parts = parts
+	return turn, len(parts) > 0
 }

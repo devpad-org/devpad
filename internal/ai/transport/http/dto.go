@@ -26,17 +26,20 @@ type CreateAgentRunRequestDTO struct {
 	AgentID string `json:"agentId,omitempty"`
 	// Message and Images are the user's new message; the server holds the
 	// conversation's history.
-	Message        string        `json:"message"`
-	Images         []ImageRefDTO `json:"images,omitempty"`
-	Thinking       *ThinkingDTO  `json:"thinking,omitempty"`
-	WorkspaceID    int64         `json:"workspaceId,omitempty"`
-	ConversationID int64         `json:"conversationId,omitempty"`
+	Message string        `json:"message"`
+	Images  []ImageRefDTO `json:"images,omitempty"`
+	// DisplayText is what the user typed, when Message is something else,
+	// such as a slash command expanded into its prompt.
+	DisplayText    string       `json:"displayText,omitempty"`
+	Thinking       *ThinkingDTO `json:"thinking,omitempty"`
+	WorkspaceID    int64        `json:"workspaceId,omitempty"`
+	ConversationID int64        `json:"conversationId,omitempty"`
 }
 
 // MessageTurn is the user's turn the request sends. Images go first: models
 // read a picture best before the question about it.
 func (r CreateAgentRunRequestDTO) MessageTurn() domain.Turn {
-	turn := domain.Turn{Role: domain.RoleUser}
+	turn := domain.Turn{Role: domain.RoleUser, DisplayText: r.DisplayText}
 	for _, image := range r.Images {
 		turn.Parts = append(turn.Parts, domain.NewImagePart(toDomainImage(image)))
 	}
@@ -56,6 +59,9 @@ type ThinkingDTO struct {
 type TurnDTO struct {
 	Role  string    `json:"role"`
 	Parts []PartDTO `json:"parts"`
+	// DisplayText is what the user typed, when the model was sent the text
+	// in Parts instead. It is only for showing the turn.
+	DisplayText string `json:"displayText,omitempty"`
 }
 
 // PartDTO carries one normalized piece of a turn.
@@ -402,7 +408,7 @@ func FromDomainTurns(turns []domain.Turn) []TurnDTO {
 	for _, turn := range turns {
 		// A turn with no parts must still encode as an empty array, not null:
 		// the frontend iterates parts directly.
-		dto := TurnDTO{Role: string(turn.Role), Parts: make([]PartDTO, 0, len(turn.Parts))}
+		dto := TurnDTO{Role: string(turn.Role), Parts: make([]PartDTO, 0, len(turn.Parts)), DisplayText: turn.DisplayText}
 		for _, part := range turn.Parts {
 			dto.Parts = append(dto.Parts, fromDomainPart(part))
 		}
@@ -648,7 +654,7 @@ func AgentRunPromptPreview(turns []domain.Turn) string {
 		if turn.Role != domain.RoleUser {
 			continue
 		}
-		preview := strings.Join(strings.Fields(turn.Text()), " ")
+		preview := strings.Join(strings.Fields(turn.DisplayedText()), " ")
 		if preview == "" && len(turn.Images()) > 0 {
 			preview = "Image"
 		}
