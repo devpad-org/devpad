@@ -20,7 +20,7 @@ import (
 // mockContainerManager is a test double for container.Manager.
 type mockContainerManager struct{}
 
-func (m *mockContainerManager) Create(_ context.Context, _, _, _, _ string, _ []string, _, _ int64) (string, error) {
+func (m *mockContainerManager) Create(context.Context, container.CreateOptions) (string, error) {
 	return "mock-container", nil
 }
 func (m *mockContainerManager) Start(_ context.Context, _ string) error   { return nil }

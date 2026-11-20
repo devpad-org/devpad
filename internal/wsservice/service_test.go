@@ -201,7 +201,7 @@ func (m *fakeContainerManager) SidecarHealth(_ context.Context, id string) (cont
 	return h, nil
 }
 
-func (m *fakeContainerManager) Create(_ context.Context, _, _, _, _ string, _ []string, _, _ int64) (string, error) {
+func (m *fakeContainerManager) Create(context.Context, containerpkg.CreateOptions) (string, error) {
 	return "", nil
 }
 
