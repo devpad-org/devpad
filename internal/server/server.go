@@ -207,8 +207,9 @@ func New(cfg Config) (*Server, error) {
 
 	// Preview layer
 	previewRepo := preview.NewRepository(db.Conn())
-	previewService := preview.NewService(previewRepo, workspaceRepo, containerManager, preview.Config{Domain: cfg.PreviewDomain, HTTPSPort: cfg.Port})
-	previewHandler := preview.NewHandler(previewService, cfg.PreviewDomain)
+	previewConfig := preview.Config{Domain: cfg.PreviewDomain, HTTPSPort: cfg.Port}
+	previewService := preview.NewService(previewRepo, workspaceRepo, containerManager, previewConfig)
+	previewHandler := preview.NewHandler(previewService, previewConfig)
 
 	// Auth rate limiter: 5 attempts per second, burst of 10 per IP.
 	authRateLimiter := auth.NewRateLimiter(rate.Limit(5), 10)

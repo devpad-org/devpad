@@ -23,21 +23,22 @@ import (
 
 // Handler holds HTTP handlers for preview endpoints.
 type Handler struct {
-	service       Service
-	previewDomain string
-	cookieSecret  []byte
+	service      Service
+	cfg          Config
+	cookieSecret []byte
 }
 
-// NewHandler creates a new preview Handler for previews under previewDomain.
-func NewHandler(service Service, previewDomain string) *Handler {
+// NewHandler creates a new preview Handler, given the Config its service
+// was made with.
+func NewHandler(service Service, cfg Config) *Handler {
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		log.Fatalf("failed to generate preview cookie secret: %v", err)
 	}
 	return &Handler{
-		service:       service,
-		previewDomain: previewDomain,
-		cookieSecret:  secret,
+		service:      service,
+		cfg:          cfg,
+		cookieSecret: secret,
 	}
 }
 
@@ -92,7 +93,7 @@ func (h *Handler) HandleGenerateURL(w http.ResponseWriter, r *http.Request) {
 // validates the token (on first request) or cookie (subsequent requests),
 // and reverse-proxies to the container via the agent.
 func (h *Handler) HandleProxy(w http.ResponseWriter, r *http.Request) {
-	wsID, port, err := h.parseSubdomain(r.Host)
+	wsID, port, err := h.cfg.parseHost(r.Host)
 	if err != nil {
 		http.Error(w, "invalid preview URL", http.StatusBadRequest)
 		return
@@ -263,37 +264,6 @@ func rewriteRedirect(h http.Header, agentHost, publicHost string) {
 	}
 	u.Scheme, u.Host = "https", publicHost
 	h.Set("Location", u.String())
-}
-
-// parseSubdomain extracts workspace ID and port from a hostname like "3-8080.preview.example.com".
-func (h *Handler) parseSubdomain(host string) (int64, int, error) {
-	// Strip port number from host if present.
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		host = host[:idx]
-	}
-
-	suffix := "." + h.previewDomain
-	if !strings.HasSuffix(host, suffix) {
-		return 0, 0, fmt.Errorf("host %q does not match preview domain", host)
-	}
-
-	prefix := strings.TrimSuffix(host, suffix)
-	parts := strings.SplitN(prefix, "-", 2)
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid subdomain format: %q", prefix)
-	}
-
-	wsID, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid workspace id in subdomain: %w", err)
-	}
-
-	port, err := strconv.Atoi(parts[1])
-	if err != nil || port < 1 || port > 65535 {
-		return 0, 0, fmt.Errorf("invalid port in subdomain: %q", parts[1])
-	}
-
-	return wsID, port, nil
 }
 
 // previewClaims holds the data encoded in the preview cookie.

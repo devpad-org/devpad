@@ -59,7 +59,7 @@ func newProxyRig(t *testing.T) *proxyRig {
 	}))
 	t.Cleanup(rig.agent.Close)
 	rig.addr = strings.TrimPrefix(rig.agent.URL, "http://")
-	rig.handler = NewHandler(agentAt{Service: svc, addr: rig.addr}, "preview.example.com")
+	rig.handler = NewHandler(agentAt{Service: svc, addr: rig.addr}, testConfig)
 	return rig
 }
 
