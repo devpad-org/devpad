@@ -74,6 +74,14 @@ func (f *fakeProjects) Get(_ context.Context, userID, id int64) (*project.Projec
 	return p, nil
 }
 
+func (f *fakeProjects) Branches(_ context.Context, _, projectID int64) (*agent.RepoRefs, error) {
+	refs := &agent.RepoRefs{DefaultBranch: "main"}
+	for _, name := range published {
+		refs.Branches = append(refs.Branches, agent.RepoRef{Name: name, SHA: "0123456789abcdef"})
+	}
+	return refs, nil
+}
+
 func (f *fakeProjects) ListSandboxes(_ context.Context, userID, projectID int64) ([]*workspace.Workspace, error) {
 	var out []*workspace.Workspace
 	for _, ws := range f.workspaces.byID {
@@ -409,6 +417,7 @@ func TestOnlyCallsThatStartAnAgentNeedApproval(t *testing.T) {
 		}
 		return got, needed
 	}
+	e.mrs.mrs = append(e.mrs.mrs, &mergerequest.MergeRequest{ID: 7, ProjectID: 1, Title: "Release", Status: mergerequest.StatusOpen, SourceBranch: "develop", TargetBranch: "main"})
 	for _, c := range []struct {
 		tool, args string
 		needed     bool
@@ -424,8 +433,11 @@ func TestOnlyCallsThatStartAnAgentNeedApproval(t *testing.T) {
 		{startTaskTool, `{"task_id":1}`, true, "task #1"},
 		{requestTaskChangesTool, `{"task_id":1,"feedback":"Add tests"}`, true, "Add tests"},
 		{createMRTool, `{"source_branch":"feature/cart","target_branch":"develop","title":"Cart"}`, true, "feature/cart"},
-		// A merge request that would be refused gets no card either.
+		// A merge request that would be refused gets no card either: no
+		// target, an unpublished source, or one already proposed.
 		{createMRTool, `{"source_branch":"feature/cart","title":"Cart"}`, false, ""},
+		{createMRTool, `{"source_branch":"nope","target_branch":"main","title":"Cart"}`, false, ""},
+		{createMRTool, `{"source_branch":"develop","target_branch":"main","title":"Release"}`, false, ""},
 		{"run_command", `{"command":"ls"}`, false, ""},
 		// A task that is not in the project gets no card; the call itself
 		// reports it.
@@ -770,15 +782,21 @@ func TestAssistantOpensMergeRequests(t *testing.T) {
 		t.Errorf("expected the unpublished commits pointed out: %s", res.Content)
 	}
 
-	// A merged task's branch is the assistant's to propose again, and a
-	// protected branch can be the source, as in a release.
-	for _, args := range []string{
-		`{"source_branch":"task/2","target_branch":"main","title":"Salvage"}`,
-		`{"source_branch":"develop","target_branch":"main","title":"Release"}`,
-	} {
-		if res, _ := e.approved(t, owner, 10, createMRTool, args); res.IsError || strings.Contains(res.Content, "unpublished") {
-			t.Errorf("%s: %+v", args, res)
-		}
+	// A merged task's branch is the assistant's to propose again.
+	if res, _ := e.approved(t, owner, 10, createMRTool, `{"source_branch":"task/2","target_branch":"main","title":"Salvage"}`); res.IsError || strings.Contains(res.Content, "unpublished") {
+		t.Errorf("task/2: %+v", res)
+	}
+
+	// A protected branch can be the source, as in a release. Its unpublished
+	// commits are pointed out, but never with a push, which would be refused.
+	e.projects.ahead["develop"] = 1
+	res, _ = e.approved(t, owner, 10, createMRTool, `{"source_branch":"develop","target_branch":"main","title":"Release"}`)
+	out.UnpublishedCommits = 0
+	if err := json.Unmarshal([]byte(res.Content), &out); res.IsError || err != nil {
+		t.Fatalf("release: %+v %v", res, err)
+	}
+	if out.UnpublishedCommits != 1 || strings.Contains(out.Message, "git push") || !strings.Contains(out.Message, "develop is protected") {
+		t.Errorf("expected the unpublished commits pointed out without a push: %s", res.Content)
 	}
 }
 
@@ -799,7 +817,7 @@ func TestAssistantMergeRequestsAreRefused(t *testing.T) {
 		"the target as the source":    {10, `{"source_branch":"main","target_branch":"main","title":"x"}`, "other than"},
 		"a sandbox's branch":          {10, `{"source_branch":"task/1","target_branch":"main","title":"x"}`, "sandbox"},
 		"an unfinished task's branch": {10, `{"source_branch":"task/4","target_branch":"main","title":"x"}`, "task #4"},
-		"an unpublished branch":       {10, `{"source_branch":"nope","target_branch":"main","title":"x"}`, "does not exist"},
+		"an unpublished branch":       {10, `{"source_branch":"nope","target_branch":"main","title":"x"}`, "git push devpad nope"},
 		"a branch already proposed":   {10, `{"source_branch":"feature/cart","target_branch":"develop","title":"x"}`, "already has an open merge request"},
 		"a task sandbox":              {11, `{"source_branch":"develop","target_branch":"main","title":"x"}`, "project's own workspace"},
 		"a standalone workspace":      {12, `{"source_branch":"develop","target_branch":"main","title":"x"}`, "project's own workspace"},

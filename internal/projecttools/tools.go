@@ -126,7 +126,7 @@ var definitions = []domain.ToolDefinition{
 		Type: "function",
 		Function: domain.ToolFunction{
 			Name:        createMRTool,
-			Description: "Open a merge request to merge a branch published to the project into one of its protected branches. Needs the user's approval. Publish the branch first (git push devpad <branch>): the merge request takes the project's copy of the branch, not your workspace's. A task's branch gets its merge request from devpad when its agent finishes, so it cannot be the source here.",
+			Description: "Open a merge request to merge a branch published to the project into one of its protected branches. Needs the user's approval. Publish the branch first (git push devpad <branch>): the merge request takes the project's copy of the branch, not your workspace's. The branch of a task that is not merged or cancelled gets its merge request from devpad when its agent finishes, so it cannot be the source here.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"source_branch":{"type":"string","description":"The published branch to merge."},"target_branch":{"type":"string","description":"The protected branch to merge it into. There is no default: name it, and ask the user when it is not clear which one they want."},"title":{"type":"string","description":"A short title."},"description":{"type":"string","description":"What the change does and why, in Markdown, for the user and reviewers."}},"required":["source_branch","target_branch","title"]}`),
 		},
 	},
@@ -148,6 +148,7 @@ type Workspaces interface {
 // Projects is the project surface the tools need.
 type Projects interface {
 	Get(ctx context.Context, userID, projectID int64) (*project.Project, error)
+	Branches(ctx context.Context, userID, projectID int64) (*agent.RepoRefs, error)
 	ListSandboxes(ctx context.Context, userID, projectID int64) ([]*workspace.Workspace, error)
 	WorkspaceBranchStatus(ctx context.Context, userID, projectID int64, branch string) (*project.WorkspaceBranchStatus, error)
 }
@@ -254,7 +255,7 @@ You are the user's assistant in this workspace, not one of the project's backgro
 - The repo has a devpad remote. git fetch devpad refreshes the project's branches as devpad/<branch>, and git push devpad <branch> publishes a branch exactly as the IDE's Publish button does: never a protected branch, fast-forward only, and an open merge request for the branch moves to the new commit. Push only when the user asks you to publish. A plain git push goes to devpad too.
 - An origin remote, when there is one, is the project's upstream and read-only: git fetch origin fetches its latest branches as origin/<branch>, and pushing to it is refused. The project's protected branches reach the upstream only from the project panel, after a merge.
 - Background agents implement tasks from the project's board on their own branches. Use list_tasks, get_task, list_merge_requests and get_merge_request to see the board, and create_task to add work for them. Starting an agent (create_task with start, start_task, request_task_changes) asks the user first.
-- create_merge_request opens a merge request from a published branch into a protected branch, and asks the user first. Open one only when the user asks, and name the target branch they want: if they haven't said which and the project has more than one protected branch, ask. Publish the branch first, since the merge request takes the project's copy; pushing to it later moves the merge request to the new commit.
+- create_merge_request opens a merge request from a published branch into a protected branch, and asks the user first. Open one only when the user asks, and name the target branch they want: if they haven't said which and the project has more than one protected branch, ask. The merge request takes the project's copy of the branch, so publish it first: asking you to open a merge request for a branch is asking you to publish it too, unless the user says otherwise. Publishing to it later moves the merge request to the new commit.
 - add_merge_request_comment comments on an open merge request or replies to one of its comments, for example to say how you addressed a review comment. Comments are shown as yours, not the user's.
 - Only the user merges, closes or approves merge requests. You have no tools for those.`)
 	return b.String()
@@ -828,14 +829,17 @@ func (p *Provider) getMergeRequest(ctx context.Context, req aitools.ExecutionReq
 
 // mergeRequestInput checks a create_merge_request call and returns the
 // merge request it would open, or why it is refused. ApprovalFor and
-// ExecuteTool both use it, so a call that would be refused never shows an
-// approval card. An error means it could not tell.
+// ExecuteTool both use it, so a call that would be refused shows no
+// approval card, short of the branches changing in between, which
+// mergerequest.Create checks again under its own lock. An error means it
+// could not tell.
 //
 // The target must be named, never left to the default branch, so the user
-// sees the assistant's choice on the approval card. A branch an agent's
-// sandbox owns, or an unfinished task works on, is refused: devpad opens a
-// task's merge request itself, linked to the task so reviews can send
-// changes to its agent.
+// sees the assistant's choice on the approval card. The source must be
+// published and not already proposed. A branch an agent's sandbox owns, or
+// an unfinished task works on, is refused: devpad opens a task's merge
+// request itself, linked to the task so reviews can send changes to its
+// agent.
 func (p *Provider) mergeRequestInput(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) (mergerequest.CreateInput, string, error) {
 	in := mergerequest.CreateInput{
 		Title:        strings.TrimSpace(args.Title),
@@ -865,7 +869,7 @@ func (p *Provider) mergeRequestInput(ctx context.Context, req aitools.ExecutionR
 	}
 	for _, sb := range sandboxes {
 		if sb.IsSandbox() && sb.Branch == in.SourceBranch {
-			return in, fmt.Sprintf("%s belongs to an agent's sandbox, and devpad opens its merge request when the agent finishes", in.SourceBranch), nil
+			return in, fmt.Sprintf("%s belongs to an agent's sandbox, so it cannot be the source of a merge request opened here", in.SourceBranch), nil
 		}
 	}
 	tasks, err := p.tasks.List(ctx, req.UserID, proj.ID)
@@ -876,6 +880,26 @@ func (p *Provider) mergeRequestInput(ctx context.Context, req aitools.ExecutionR
 		if t.Branch == in.SourceBranch && !t.Status.Closed() {
 			return in, fmt.Sprintf("%s is task #%d's branch, and devpad opens its merge request when the agent finishes; use request_task_changes to send it more work", in.SourceBranch, t.ID), nil
 		}
+	}
+
+	mrs, err := p.mrs.List(ctx, req.UserID, proj.ID)
+	if err != nil {
+		return in, "", fmt.Errorf("listing the project's merge requests: %w", err)
+	}
+	for _, mr := range mrs {
+		if mr.SourceBranch == in.SourceBranch && mr.Status == mergerequest.StatusOpen {
+			return in, fmt.Sprintf("%s already has an open merge request, !%d; publishing new commits to the branch moves it to them", in.SourceBranch, mr.ID), nil
+		}
+	}
+	refs, err := p.projects.Branches(ctx, req.UserID, proj.ID)
+	if errors.Is(err, project.ErrNotReady) {
+		return in, err.Error(), nil
+	}
+	if err != nil {
+		return in, "", fmt.Errorf("listing the project's branches: %w", err)
+	}
+	if !slices.ContainsFunc(refs.Branches, func(b agent.RepoRef) bool { return b.Name == in.SourceBranch }) {
+		return in, fmt.Sprintf("%s is not published to the project: publish it with git push devpad %s first", in.SourceBranch, in.SourceBranch), nil
 	}
 	return in, "", nil
 }
@@ -910,7 +934,15 @@ func (p *Provider) createMergeRequest(ctx context.Context, req aitools.Execution
 	defer cancel()
 	if status, err := p.projects.WorkspaceBranchStatus(statusCtx, req.UserID, proj.ID, mr.SourceBranch); err == nil && status != nil && status.Ahead > 0 {
 		result["unpublishedCommits"] = status.Ahead
-		result["message"] = message + fmt.Sprintf(" Your workspace has %d commit(s) on %s that the project does not, so they are not in it: git push devpad %s adds them.", status.Ahead, mr.SourceBranch, mr.SourceBranch)
+		unpublished := fmt.Sprintf(" Your workspace has %d commit(s) on %s that the project does not, so they are not in it", status.Ahead, mr.SourceBranch)
+		if proj.IsProtected(mr.SourceBranch) {
+			// A protected branch is never published: its commits arrive
+			// only through merge requests.
+			unpublished += fmt.Sprintf(". %s is protected, so they can reach it only through a merge request of their own.", mr.SourceBranch)
+		} else {
+			unpublished += fmt.Sprintf(": publishing them with git push devpad %s adds them.", mr.SourceBranch)
+		}
+		result["message"] = message + unpublished
 	}
 	return toolResult(req.ToolName, result)
 }

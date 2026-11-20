@@ -40,7 +40,7 @@ The **AI** panel is the assistant: an agent working in your project workspace, b
 
 - It reads, edits and runs things in your workspace. It leaves its edits for you to review and commits only when you ask.
 - In a project workspace it can see the board: list tasks and merge requests, create and start tasks, send a task back to its agent, and comment on merge requests.
-- It can open a merge request from a published branch into a protected branch it names. It can't open one from a task's branch, which gets its merge request when the task's agent finishes, and it can't merge, close or approve a merge request.
+- It can open a merge request from a published branch into a protected branch it names. It can't open one from the branch of a task that isn't merged or cancelled, which gets its merge request when the task's agent finishes, and it can't merge, close or approve a merge request.
 - It can publish a branch with `git push devpad`, with no more power than the Publish button.
 - It can answer questions about devpad itself from these docs.
 - **Continue in background** hands the conversation to a background agent as a new task, in its own sandbox. It starts from your work on the current branch, or from the project's latest default branch, and gets the conversation so far.
