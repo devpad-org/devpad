@@ -16,6 +16,8 @@ Run all commands from the repository root unless noted.
 | Theme check (also run by `npm run build`) | `cd frontend && npm run check-themes` |
 | Backend dev server | `DEVPAD_ENCRYPTION_KEY=<key> go run .` (required; make one once with `openssl rand -hex 32` and reuse it) |
 | Frontend dev server | `make dev-frontend` |
+| Format all Go files | `make fmt` |
+| Check Go formatting (also run by `make test`) | `make fmt-check` |
 | All Go tests with coverage | `make test` |
 | All Go tests without coverage | `go test ./...` |
 | Package tests | `go test ./internal/auth` |
