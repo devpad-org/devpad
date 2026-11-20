@@ -52,6 +52,7 @@ Your workspace has no SSH key and no direct access to the project's repo: devpad
 A project's environment is the body of a Dockerfile, run as root on devpad's workspace image (`FROM devpad-workspace:latest`). Use it for toolchains and system packages, such as `RUN apt-get install -y …` or a language runtime; install the project's own dependencies in the [setup script](#setup-script) instead.
 
 - The base image is Debian 13 with `bash`, `ca-certificates`, `curl`, `git`, `openssh-client`, `sudo`, `tmux` and `procps`. It has no Python, Node, `xz` or C compiler, so install what your project needs, including what its dependencies need to build.
+- Workspaces run as the `devpad` user, not root: terminals, commands, agents and the setup script all do. Install into system locations such as `/usr/local` or `/opt`, never root's home (`/root`), which `devpad` can't read. Many installers default to `~/.local`, so point them elsewhere, for example `UV_INSTALL_DIR=/usr/local/bin`.
 - `FROM`, `ADD` and `COPY` aren't allowed: devpad supplies the base image, and there are no files to copy. Download what you need with `RUN curl`.
 - `ENV` values, `PATH` included, reach terminals, commands, agents and the setup script.
 - Devpad builds it in the background whenever it changes. Builds can reach the internet, on a network of their own, and are limited to 4 GB of memory, 2 CPUs and 30 minutes.
