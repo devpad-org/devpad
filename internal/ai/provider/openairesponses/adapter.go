@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -438,7 +437,8 @@ func readResponsesStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 
 		var event streamEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			return true
+			ch <- domain.ProviderEvent{Err: shared.MalformedEventError(providerName, data, err)}
+			return false
 		}
 
 		switch event.Type {
@@ -531,13 +531,11 @@ func readResponsesStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Printf("error reading OpenAI Responses stream: %v", err)
-		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
+		ch <- domain.ProviderEvent{Err: shared.ReadStreamError(providerName, err)}
 		return
 	}
-
-	emitResponseToolCalls(ch, toolCallsByIndex)
-	ch <- domain.ProviderEvent{Done: true}
+	// The stream closed before response.completed, so the response is incomplete.
+	ch <- domain.ProviderEvent{Err: shared.IncompleteStreamError(providerName)}
 }
 
 func registerToolCall(event streamEvent, byIndex map[int]*pendingToolCall, byItemID map[string]*pendingToolCall) {

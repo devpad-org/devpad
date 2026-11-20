@@ -12,7 +12,7 @@ func readSSEUsage(t *testing.T, sse string) (domain.Usage, []domain.ProviderEven
 	t.Helper()
 
 	ch := make(chan domain.ProviderEvent, 64)
-	go ReadSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+	go ReadSSEStream("Test", io.NopCloser(strings.NewReader(sse)), ch)
 
 	var events []domain.ProviderEvent
 	var usages []domain.Usage
@@ -54,7 +54,8 @@ func TestReadSSEStream_ReportsUsageFromChunkWithoutChoices(t *testing.T) {
 }
 
 func TestReadSSEStream_ReportsTopLevelCachedTokens(t *testing.T) {
-	usage, _ := readSSEUsage(t, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":500,\"completion_tokens\":20,\"cached_tokens\":200}}\n\n")
+	usage, _ := readSSEUsage(t, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":500,\"completion_tokens\":20,\"cached_tokens\":200}}\n\n"+
+		"data: [DONE]\n\n")
 
 	want := domain.Usage{InputTokens: 300, OutputTokens: 20, CacheReadTokens: 200}
 	if usage != want {

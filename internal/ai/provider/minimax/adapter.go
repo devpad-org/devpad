@@ -4,9 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
-	"log"
 	"net/http"
 	"slices"
 	"strings"
@@ -263,6 +261,10 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 	var reasoningBuffer string
 	var contentBuffer string
 	var usage *chatUsage
+	finished := false
+	// A finish reason that means the response is unusable. Reading goes on,
+	// since the usage it was billed for arrives after it.
+	var failure error
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -271,8 +273,15 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		}
 
 		data := strings.TrimPrefix(line, "data: ")
+		if data == "" {
+			continue
+		}
 		if data == "[DONE]" {
 			emitUsage(ch, usage)
+			if failure != nil {
+				ch <- domain.ProviderEvent{Err: failure}
+				return
+			}
 			toolCalls.Emit(ch)
 			ch <- domain.ProviderEvent{Done: true}
 			return
@@ -287,15 +296,33 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 					ReasoningContent string                 `json:"reasoning_content"`
 					ToolCalls        []shared.ToolCallDelta `json:"tool_calls"`
 				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
+			// MiniMax reports errors in base_resp, with status_code 0 meaning success.
+			BaseResp *struct {
+				StatusCode int    `json:"status_code"`
+				StatusMsg  string `json:"status_msg"`
+			} `json:"base_resp"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
+			emitUsage(ch, usage)
+			ch <- domain.ProviderEvent{Err: shared.MalformedEventError(providerName, data, err)}
+			return
 		}
 		if chunk.Usage != nil {
 			usage = chunk.Usage
 		}
+		if chunk.BaseResp != nil && chunk.BaseResp.StatusCode != 0 {
+			emitUsage(ch, usage)
+			ch <- domain.ProviderEvent{Err: shared.ProviderStreamError(providerName, chunk.BaseResp.StatusMsg)}
+			return
+		}
 		if len(chunk.Choices) == 0 {
+			if message, ok := shared.ChatStreamErrorMessage([]byte(data)); ok {
+				emitUsage(ch, usage)
+				ch <- domain.ProviderEvent{Err: shared.ProviderStreamError(providerName, message)}
+				return
+			}
 			continue
 		}
 
@@ -325,12 +352,28 @@ func readSSEStream(body io.ReadCloser, ch chan<- domain.ProviderEvent) {
 		for _, delta := range choice.Delta.ToolCalls {
 			toolCalls.Add(delta)
 		}
+
+		if choice.FinishReason != "" {
+			if err := shared.FinishReasonError(providerName, choice.FinishReason); err != nil {
+				failure = err
+			} else {
+				finished = true
+			}
+		}
 	}
 
 	emitUsage(ch, usage)
 	if err := scanner.Err(); err != nil {
-		log.Printf("error reading MiniMax SSE stream: %v", err)
-		ch <- domain.ProviderEvent{Err: errors.New("error reading response stream")}
+		ch <- domain.ProviderEvent{Err: shared.ReadStreamError(providerName, err)}
+		return
+	}
+	if failure != nil {
+		ch <- domain.ProviderEvent{Err: failure}
+		return
+	}
+	if !finished {
+		ch <- domain.ProviderEvent{Err: shared.IncompleteStreamError(providerName)}
+		return
 	}
 
 	toolCalls.Emit(ch)

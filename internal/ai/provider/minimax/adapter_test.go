@@ -350,4 +350,80 @@ func TestReadSSEStream_ToolCallsStillAccumulate(t *testing.T) {
 	}
 }
 
+func TestReadSSEStream_ReportsFailures(t *testing.T) {
+	toolCallChunk := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":"}}]}}]}` + "\n\n"
+
+	tests := []struct {
+		name    string
+		sse     string
+		wantErr string
+	}{
+		{
+			name:    "cut off at the output token limit",
+			sse:     toolCallChunk + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n",
+			wantErr: "MiniMax stopped the response because it reached the output token limit",
+		},
+		{
+			name:    "base_resp error",
+			sse:     toolCallChunk + "data: {\"choices\":[],\"base_resp\":{\"status_code\":1002,\"status_msg\":\"rate limit exceeded\"}}\n\n",
+			wantErr: "MiniMax returned an error: rate limit exceeded",
+		},
+		{
+			name:    "stream closes mid tool call",
+			sse:     toolCallChunk,
+			wantErr: "MiniMax response stream ended before the response finished",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ch := make(chan domain.ProviderEvent, 64)
+			go readSSEStream(io.NopCloser(strings.NewReader(tt.sse)), ch)
+
+			var events []domain.ProviderEvent
+			for event := range ch {
+				events = append(events, event)
+			}
+
+			last := events[len(events)-1]
+			if last.Err == nil || last.Err.Error() != tt.wantErr {
+				t.Fatalf("expected final error %q, got %+v", tt.wantErr, last)
+			}
+			for _, event := range events {
+				if event.Done || len(event.ToolCalls) > 0 {
+					t.Fatalf("a failed stream must not report Done or tool calls, got %+v", event)
+				}
+			}
+		})
+	}
+}
+
+func TestReadSSEStream_SuccessfulBaseRespIsNotAnError(t *testing.T) {
+	sse := "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}],\"base_resp\":{\"status_code\":0,\"status_msg\":\"\"}}\n\n"
+
+	ch := make(chan domain.ProviderEvent, 64)
+	go readSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+
+	var events []domain.ProviderEvent
+	for event := range ch {
+		events = append(events, event)
+	}
+	if !events[len(events)-1].Done {
+		t.Fatalf("expected final Done event, got %+v", events[len(events)-1])
+	}
+}
+
+func TestReadSSEStream_ReportsUsageOfATruncatedResponse(t *testing.T) {
+	events := readSSEEvents("data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"},\"finish_reason\":\"length\"}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":7}}\n\n" +
+		"data: [DONE]\n\n")
+
+	if len(events) != 3 || events[1].Usage == nil || events[2].Err == nil {
+		t.Fatalf("expected text, usage, then an error, got %+v", events)
+	}
+	if events[1].Usage.OutputTokens != 7 {
+		t.Fatalf("expected the truncated response's output tokens, got %+v", *events[1].Usage)
+	}
+}
+
 func boolPtr(v bool) *bool { return &v }

@@ -115,7 +115,7 @@ func TestReadSSEStream_ToolCallDeltas(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sse := strings.Join(tt.deltas(t), "") + "data: [DONE]\n\n"
 			ch := make(chan domain.ProviderEvent, 16)
-			go ReadSSEStream(io.NopCloser(strings.NewReader(sse)), ch)
+			go ReadSSEStream("Test", io.NopCloser(strings.NewReader(sse)), ch)
 
 			var calls []domain.ToolCall
 			for event := range ch {

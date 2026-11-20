@@ -81,7 +81,7 @@ func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req 
 	model, _ := domain.ModelByID(a.Models(), req.Model)
 	body := buildChatRequest(req, model)
 
-	return shared.StartStreamRequest(ctx, a.client, a.baseURL+"/chat/completions", creds.APIKey, providerID, body, shared.ReadSSEStream)
+	return shared.StartStreamRequest(ctx, a.client, a.baseURL+"/chat/completions", creds.APIKey, providerID, body, shared.ChatStreamDecoder(providerName))
 }
 
 func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) map[string]any {
