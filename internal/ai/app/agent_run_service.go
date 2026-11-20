@@ -615,7 +615,16 @@ func (s *agentRunService) consumeRun(ctx context.Context, runID int64, recorder 
 	defer s.unregisterCancel(runID)
 
 	if err := s.repo.UpdateStatus(context.Background(), runID, domain.AgentRunRunning, ""); err != nil {
-		log.Printf("failed to mark agent run %d running: %v", runID, err)
+		// A run left queued keeps its conversation busy until the server
+		// restarts, and nothing would read or stop its stream, so end it.
+		if cancel, ok := s.cancelForRun(runID); ok {
+			cancel()
+		}
+		message := fmt.Sprintf("marking agent run running: %v", err)
+		log.Printf("agent run %d: %s", runID, message)
+		if err := s.failRun(runID, message); err != nil {
+			log.Printf("failed to mark agent run %d failed: %v", runID, err)
+		}
 		return
 	}
 

@@ -18,8 +18,10 @@ type fakeAgentRunRepository struct {
 	appendErr   error
 	// beforeStatus, if set, runs before each status update is applied.
 	beforeStatus func(domain.AgentRunStatus)
-	runs         map[int64]*domain.AgentRun
-	events       map[int64][]domain.AgentRunEvent
+	// statusErr, if set, fails the status updates it returns an error for.
+	statusErr func(domain.AgentRunStatus) error
+	runs      map[int64]*domain.AgentRun
+	events    map[int64][]domain.AgentRunEvent
 }
 
 func (r *fakeAgentRunRepository) failAppends(err error) {
@@ -112,6 +114,11 @@ func (r *fakeAgentRunRepository) AppendEvent(_ context.Context, runID int64, eve
 func (r *fakeAgentRunRepository) UpdateStatus(_ context.Context, runID int64, status domain.AgentRunStatus, errorMessage string) error {
 	if r.beforeStatus != nil {
 		r.beforeStatus(status)
+	}
+	if r.statusErr != nil {
+		if err := r.statusErr(status); err != nil {
+			return err
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -633,6 +640,43 @@ func TestAgentRunService_FailsRunWhenAStepCannotBeSaved(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected the run to be stopped after the save failure")
 	}
+}
+
+func TestAgentRunService_FailsRunWhoseRunningStatusCannotBeSaved(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	var failRunning sync.Once
+	repo.statusErr = func(status domain.AgentRunStatus) error {
+		var err error
+		if status == domain.AgentRunRunning {
+			failRunning.Do(func() { err = errors.New("database is locked") })
+		}
+		return err
+	}
+	runCtx := make(chan context.Context, 2)
+	service, _ := newConversationRunner(t, repo, func(ctx context.Context, _ AgentChatRequest) (<-chan domain.ClientEvent, error) {
+		runCtx <- ctx
+		ch := make(chan domain.ClientEvent, 1)
+		ch <- domain.ClientEvent{Done: true}
+		close(ch)
+		return ch, nil
+	})
+
+	run := startTestRun(t, service, "first")
+	ctx := <-runCtx
+	waitForRunStatus(t, repo, run.ID, domain.AgentRunFailed)
+	stored, _ := repo.GetRun(context.Background(), run.ID)
+	if !strings.Contains(stored.Error, "database is locked") {
+		t.Fatalf("expected the status failure as the run's error, got %q", stored.Error)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the run's stream to be stopped")
+	}
+
+	// The failed run no longer claims the conversation.
+	next := startTestRun(t, service, "second")
+	waitForRunStatus(t, repo, next.ID, domain.AgentRunCompleted)
 }
 
 func TestAgentRunService_RejectsSecondRunWhileConversationIsActive(t *testing.T) {
