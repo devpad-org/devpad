@@ -102,8 +102,15 @@ func TestConversationRepository_RoundTripsEveryPartField(t *testing.T) {
 
 	thinking := domain.ThinkingPart{Text: "hmm", State: json.RawMessage(`[{"type":"thinking","signature":"sig"}]`)}
 	call := domain.ToolCall{ID: "call-1", ItemID: "fc_1", Type: "function", Function: domain.ToolCallFunction{Name: "run", Arguments: `{"cmd":"go test"}`}}
-	result := domain.ToolResultPart{ToolCallID: "call-1", Name: "run", Content: "FAIL", IsError: true}
+	result := domain.ToolResultPart{ToolCallID: "call-1", Name: "run", Content: "FAIL", IsError: true, Images: []domain.ImagePart{
+		{AttachmentID: 2, MediaType: "image/png", Width: 800, Height: 600},
+		{AttachmentID: 3, MediaType: "image/jpeg", Width: 64, Height: 48},
+	}}
 	want := []domain.Turn{
+		{Role: domain.RoleUser, DisplayText: "/fix", Parts: []domain.Part{
+			{Kind: domain.PartText, Text: "Fix the failing test."},
+			domain.NewImagePart(domain.ImagePart{AttachmentID: 1, MediaType: "image/webp", Width: 1024, Height: 768}),
+		}},
 		{Role: domain.RoleAssistant, Parts: []domain.Part{
 			{Kind: domain.PartThinking, Thinking: &thinking},
 			{Kind: domain.PartText, Text: "Running the tests."},
