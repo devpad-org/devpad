@@ -177,20 +177,33 @@ type service struct {
 	reviewBudgets map[int64]*domain.Budget
 }
 
+// Deps are what a merge request Service is made from.
+type Deps struct {
+	Repo          Repository
+	Projects      Projects
+	Workspaces    Workspaces
+	Tasks         Tasks
+	Runs          Runs
+	Conversations Conversations
+	Defaults      AgentDefaults
+	Budgets       Budgets
+	Models        Models
+}
+
 // NewService creates a merge request Service. Background work stops on
 // Shutdown.
-func NewService(repo Repository, projects Projects, workspaces Workspaces, tasks Tasks, runs Runs, conversations Conversations, defaults AgentDefaults, budgets Budgets, models Models) Service {
+func NewService(d Deps) Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &service{
-		repo:          repo,
-		projects:      projects,
-		workspaces:    workspaces,
-		tasks:         tasks,
-		runs:          runs,
-		conversations: conversations,
-		defaults:      defaults,
-		budgets:       budgets,
-		models:        models,
+		repo:          d.Repo,
+		projects:      d.Projects,
+		workspaces:    d.Workspaces,
+		tasks:         d.Tasks,
+		runs:          d.Runs,
+		conversations: d.Conversations,
+		defaults:      d.Defaults,
+		budgets:       d.Budgets,
+		models:        d.Models,
 		rootCtx:       ctx,
 		rootCancel:    cancel,
 		locks:         make(map[string]*sync.Mutex),

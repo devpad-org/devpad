@@ -523,7 +523,17 @@ func setup(t *testing.T) *env {
 		stranger:   stranger,
 		taskID:     taskID,
 	}
-	e.svc = NewService(NewRepository(conn), e.projects, e.workspaces, e.tasks, e.runs, fakeConversations{conn}, e.defaults, e.budgets, e.models).(*service)
+	e.svc = NewService(Deps{
+		Repo:          NewRepository(conn),
+		Projects:      e.projects,
+		Workspaces:    e.workspaces,
+		Tasks:         e.tasks,
+		Runs:          e.runs,
+		Conversations: fakeConversations{conn},
+		Defaults:      e.defaults,
+		Budgets:       e.budgets,
+		Models:        e.models,
+	}).(*service)
 	e.runs.onFinish = e.svc.RunFinished
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

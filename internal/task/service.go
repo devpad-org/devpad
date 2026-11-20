@@ -159,17 +159,28 @@ type service struct {
 	announceGates map[int64]*sync.Mutex
 }
 
+// Deps are what a task Service is made from.
+type Deps struct {
+	Repo          Repository
+	Projects      Projects
+	Workspaces    Workspaces
+	Runs          Runs
+	Conversations Conversations
+	Defaults      AgentDefaults
+	Budgets       Budgets
+}
+
 // NewService creates a task Service. Background work stops on Shutdown.
-func NewService(repo Repository, projects Projects, workspaces Workspaces, runs Runs, conversations Conversations, defaults AgentDefaults, budgets Budgets) Service {
+func NewService(d Deps) Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &service{
-		repo:          repo,
-		projects:      projects,
-		workspaces:    workspaces,
-		runs:          runs,
-		defaults:      defaults,
-		budgets:       budgets,
-		conversations: conversations,
+		repo:          d.Repo,
+		projects:      d.Projects,
+		workspaces:    d.Workspaces,
+		runs:          d.Runs,
+		defaults:      d.Defaults,
+		budgets:       d.Budgets,
+		conversations: d.Conversations,
 		rootCtx:       ctx,
 		rootCancel:    cancel,
 		locks:         make(map[int64]*sync.Mutex),

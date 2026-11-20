@@ -129,12 +129,30 @@ func New(cfg Config) (*Server, error) {
 	aiModule := ai.NewModule(db.Conn(), workspaceService, cipher)
 
 	// Task layer (agents implementing tasks in project sandboxes)
-	taskService := task.NewService(task.NewRepository(db.Conn()), projectService, workspaceService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults, aiModule.BudgetDefaults)
+	taskService := task.NewService(task.Deps{
+		Repo:          task.NewRepository(db.Conn()),
+		Projects:      projectService,
+		Workspaces:    workspaceService,
+		Runs:          aiModule.AgentRunService,
+		Conversations: aiModule.ConversationService,
+		Defaults:      aiModule.AgentDefaults,
+		Budgets:       aiModule.BudgetDefaults,
+	})
 	aiModule.OnAgentRunFinished(taskService.RunFinished)
 	taskHandler := task.NewHandler(taskService)
 
 	// Merge request layer (reviews by users and review agents, and merging)
-	mrService := mergerequest.NewService(mergerequest.NewRepository(db.Conn()), projectService, workspaceService, taskService, aiModule.AgentRunService, aiModule.ConversationService, aiModule.AgentDefaults, aiModule.BudgetDefaults, aiModule.CatalogService)
+	mrService := mergerequest.NewService(mergerequest.Deps{
+		Repo:          mergerequest.NewRepository(db.Conn()),
+		Projects:      projectService,
+		Workspaces:    workspaceService,
+		Tasks:         taskService,
+		Runs:          aiModule.AgentRunService,
+		Conversations: aiModule.ConversationService,
+		Defaults:      aiModule.AgentDefaults,
+		Budgets:       aiModule.BudgetDefaults,
+		Models:        aiModule.CatalogService,
+	})
 	taskService.SetReviewHook(mrService)
 	projectService.SetPublishHook(mrService)
 	projectService.AddBranchGuard(mrService)
