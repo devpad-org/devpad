@@ -30,12 +30,12 @@ func (s *service) CommandStatus(ctx context.Context, userID, workspaceID int64, 
 	return c.CommandStatus(ctx, commandID)
 }
 
-func (s *service) ReadCommandOutput(ctx context.Context, userID, workspaceID int64, commandID string, cursor int64, maxBytes, waitMS int) (*agent.CommandOutput, error) {
+func (s *service) ReadCommandOutput(ctx context.Context, userID, workspaceID int64, commandID string, opts agent.CommandOutputOptions) (*agent.CommandOutput, error) {
 	c, err := s.getAgent(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	return c.ReadCommandOutput(ctx, commandID, cursor, maxBytes, waitMS)
+	return c.ReadCommandOutput(ctx, commandID, opts)
 }
 
 func (s *service) StopCommand(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error) {

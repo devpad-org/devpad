@@ -22,7 +22,7 @@ type stubWorkspaceOps struct {
 	runCommandFn        func(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error)
 	startCommandFn      func(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
 	commandStatusFn     func(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
-	readCommandOutputFn func(ctx context.Context, userID, workspaceID int64, commandID string, cursor int64, maxBytes, waitMS int) (*agent.CommandOutput, error)
+	readCommandOutputFn func(ctx context.Context, userID, workspaceID int64, commandID string, opts agent.CommandOutputOptions) (*agent.CommandOutput, error)
 	stopCommandFn       func(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
 }
 
@@ -125,9 +125,9 @@ func (s *stubWorkspaceOps) CommandStatus(ctx context.Context, userID, workspaceI
 	return nil, nil
 }
 
-func (s *stubWorkspaceOps) ReadCommandOutput(ctx context.Context, userID, workspaceID int64, commandID string, cursor int64, maxBytes, waitMS int) (*agent.CommandOutput, error) {
+func (s *stubWorkspaceOps) ReadCommandOutput(ctx context.Context, userID, workspaceID int64, commandID string, opts agent.CommandOutputOptions) (*agent.CommandOutput, error) {
 	if s.readCommandOutputFn != nil {
-		return s.readCommandOutputFn(ctx, userID, workspaceID, commandID, cursor, maxBytes, waitMS)
+		return s.readCommandOutputFn(ctx, userID, workspaceID, commandID, opts)
 	}
 	return nil, nil
 }
@@ -253,9 +253,9 @@ func TestWorkspaceExecutor_StartCommandReturnsStructuredResult(t *testing.T) {
 }
 
 func TestWorkspaceExecutor_ReadCommandOutputUsesCursor(t *testing.T) {
-	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readCommandOutputFn: func(_ context.Context, userID, workspaceID int64, commandID string, cursor int64, maxBytes, waitMS int) (*agent.CommandOutput, error) {
-		if userID != 7 || workspaceID != 9 || commandID != "cmd_123" || cursor != 42 || maxBytes != 1000 || waitMS != 250 {
-			t.Fatalf("unexpected read output call: user=%d workspace=%d id=%q cursor=%d max=%d wait=%d", userID, workspaceID, commandID, cursor, maxBytes, waitMS)
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readCommandOutputFn: func(_ context.Context, userID, workspaceID int64, commandID string, opts agent.CommandOutputOptions) (*agent.CommandOutput, error) {
+		if userID != 7 || workspaceID != 9 || commandID != "cmd_123" || opts != (agent.CommandOutputOptions{Cursor: 42, MaxBytes: 1000, WaitMS: 250}) {
+			t.Fatalf("unexpected read output call: user=%d workspace=%d id=%q opts=%+v", userID, workspaceID, commandID, opts)
 		}
 		return &agent.CommandOutput{CommandID: commandID, Status: "running", Output: "listening", Cursor: 42, NextCursor: 51}, nil
 	}})

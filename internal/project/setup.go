@@ -399,7 +399,7 @@ func (s *service) followSetup(st *Setup) {
 	failures := 0
 	for {
 		began := time.Now()
-		res, err := s.workspaces.ReadCommandOutput(ctx, st.UserID, st.WorkspaceID, st.CommandID, cursor, setupReadBytes, setupReadWaitMS)
+		res, err := s.workspaces.ReadCommandOutput(ctx, st.UserID, st.WorkspaceID, st.CommandID, agent.CommandOutputOptions{Cursor: cursor, MaxBytes: setupReadBytes, WaitMS: setupReadWaitMS})
 		switch {
 		case ctx.Err() != nil:
 			s.stopSetup(st)

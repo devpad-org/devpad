@@ -175,13 +175,13 @@ func TestReadCommandOutputRefusesOversizedResponses(t *testing.T) {
 	defer srv.Close()
 	c := &Client{baseURL: srv.URL, http: srv.Client()}
 
-	got, err := c.ReadCommandOutput(context.Background(), "cmd", 0, 64*1024, 0)
+	got, err := c.ReadCommandOutput(context.Background(), "cmd", CommandOutputOptions{MaxBytes: 64 * 1024})
 	if err != nil || got.Output != "ok" {
 		t.Fatalf("read: %+v %v", got, err)
 	}
 	// A workspace that ignores max_bytes.
 	output = strings.Repeat("x", maxCommandOutputResponse+1)
-	if _, err := c.ReadCommandOutput(context.Background(), "cmd", 0, 64*1024, 0); err == nil {
+	if _, err := c.ReadCommandOutput(context.Background(), "cmd", CommandOutputOptions{MaxBytes: 64 * 1024}); err == nil {
 		t.Fatal("expected an oversized response refused")
 	}
 }

@@ -699,7 +699,8 @@ func (f *fakeWorkspaces) StartCommand(_ context.Context, _, id int64, command, _
 	return &agent.ManagedCommand{CommandID: fmt.Sprintf("cmd-%d", id), Status: "running"}, nil
 }
 
-func (f *fakeWorkspaces) ReadCommandOutput(_ context.Context, _, id int64, _ string, cursor int64, _, _ int) (*agent.CommandOutput, error) {
+func (f *fakeWorkspaces) ReadCommandOutput(_ context.Context, _, id int64, _ string, opts agent.CommandOutputOptions) (*agent.CommandOutput, error) {
+	cursor := opts.Cursor
 	f.mu.Lock()
 	read := f.commandOutput
 	f.mu.Unlock()
