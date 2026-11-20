@@ -182,8 +182,10 @@ func createStoppedWorkspace(t *testing.T, db *sql.DB, userID int64, name string)
 
 func setupTestService(t *testing.T) (Service, *sql.DB) {
 	t.Helper()
-	return setupTestServiceWith(t, Config{Domain: "preview.example.com", HTTPSPort: 443})
+	return setupTestServiceWith(t, testConfig)
 }
+
+var testConfig = Config{Domain: "preview.example.com", HTTPSPort: 443}
 
 func setupTestServiceWith(t *testing.T, cfg Config) (Service, *sql.DB) {
 	t.Helper()
@@ -198,7 +200,7 @@ func setupTestServiceWith(t *testing.T, cfg Config) (Service, *sql.DB) {
 func setupTestHandler(t *testing.T) (*Handler, Service, *sql.DB) {
 	t.Helper()
 	svc, db := setupTestService(t)
-	handler := NewHandler(svc, "preview.example.com")
+	handler := NewHandler(svc, testConfig)
 	return handler, svc, db
 }
 
@@ -422,9 +424,7 @@ func TestHandler_GenerateURL_Unauthenticated(t *testing.T) {
 	}
 }
 
-func TestHandler_ParseSubdomain(t *testing.T) {
-	handler, _, _ := setupTestHandler(t)
-
+func TestConfig_ParseHost(t *testing.T) {
 	tests := []struct {
 		name    string
 		host    string
@@ -443,7 +443,7 @@ func TestHandler_ParseSubdomain(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wsID, port, err := handler.parseSubdomain(tt.host)
+			wsID, port, err := testConfig.parseHost(tt.host)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got ws=%d port=%d", wsID, port)

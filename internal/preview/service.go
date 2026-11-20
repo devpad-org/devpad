@@ -37,16 +37,6 @@ type Service interface {
 	ResolveContainerAddr(ctx context.Context, workspaceID int64) (addr, agentToken string, err error)
 }
 
-// Config says where preview URLs point.
-type Config struct {
-	// Domain is the preview domain, under which each preview has its own
-	// subdomain.
-	Domain string
-	// HTTPSPort is the main server's HTTPS port. A port other than 443 is
-	// put in preview URLs.
-	HTTPSPort int
-}
-
 type service struct {
 	repo       Repository
 	workspaces workspace.Repository
@@ -81,12 +71,7 @@ func (s *service) GenerateURL(ctx context.Context, userID, workspaceID int64, po
 		return "", fmt.Errorf("creating preview token: %w", err)
 	}
 
-	host := fmt.Sprintf("%d-%d.%s", workspaceID, port, s.cfg.Domain)
-	if s.cfg.HTTPSPort != 0 && s.cfg.HTTPSPort != 443 {
-		host = fmt.Sprintf("%s:%d", host, s.cfg.HTTPSPort)
-	}
-	url := fmt.Sprintf("https://%s?token=%s", host, t.Token)
-	return url, nil
+	return s.cfg.url(workspaceID, port, t.Token), nil
 }
 
 func (s *service) ValidateToken(ctx context.Context, tokenStr string) (*Token, error) {

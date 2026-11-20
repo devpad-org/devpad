@@ -763,8 +763,7 @@ func (s *service) startPrepared(ctx context.Context, taskID int64, ws *workspace
 	}
 	// The prompt describes the image the sandbox has, which can be older than
 	// the one read before it was made.
-	sandbox.Environment = sandbox.Environment.For(ws.Image)
-	if err := s.startRun(ctx, t, ws, sandbox); err != nil {
+	if err := s.startRun(ctx, t, ws, sandbox.For(ws.Image)); err != nil {
 		s.failUnlessShuttingDown(ctx, t, err.Error())
 	}
 }

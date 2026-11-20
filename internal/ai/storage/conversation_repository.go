@@ -343,14 +343,14 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 			turnID, turnPos   int64
 			role, displayText string
 			partPos           sql.NullInt64
-			r                 partRow
+			row               partRow
 		)
 		if err := rows.Scan(
 			&turnID, &turnPos, &role, &displayText,
-			&partPos, &r.kind, &r.text, &r.thinkingState,
-			&r.toolCallID, &r.toolCallItemID, &r.toolCallName, &r.toolCallArgs,
-			&r.toolResultCallID, &r.toolResultName, &r.toolResultContent, &r.toolResultIsError,
-			&r.imageRef, &r.toolResultImages,
+			&partPos, &row.kind, &row.text, &row.thinkingState,
+			&row.toolCallID, &row.toolCallItemID, &row.toolCallName, &row.toolCallArgs,
+			&row.toolResultCallID, &row.toolResultName, &row.toolResultContent, &row.toolResultIsError,
+			&row.imageRef, &row.toolResultImages,
 		); err != nil {
 			return nil, fmt.Errorf("scanning row: %w", err)
 		}
@@ -360,11 +360,11 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 			orderedKeys = append(orderedKeys, turnKey{id: turnID, position: int(turnPos), role: role, displayText: displayText})
 		}
 
-		if !r.kind.Valid {
+		if !row.kind.Valid {
 			continue
 		}
 
-		part, err := r.part()
+		part, err := row.part()
 		if err != nil {
 			return nil, fmt.Errorf("building part: %w", err)
 		}

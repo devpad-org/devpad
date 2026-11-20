@@ -1186,7 +1186,8 @@ func (s *service) launchReview(ctx context.Context, reviewID int64) {
 	}
 	// The prompt describes the image the sandbox has, which can be older than
 	// the one read before it was made.
-	if err := s.startReviewRun(ctx, mr, rv, ws, diff, project.SandboxState{Environment: env.For(ws.Image), Setup: setup}); err != nil && s.rootCtx.Err() == nil {
+	sandbox := project.SandboxState{Environment: env, Setup: setup}
+	if err := s.startReviewRun(ctx, mr, rv, ws, diff, sandbox.For(ws.Image)); err != nil && s.rootCtx.Err() == nil {
 		s.failReview(ctx, mr, rv, err.Error())
 	}
 }
