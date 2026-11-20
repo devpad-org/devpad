@@ -41,11 +41,11 @@ func startTestStream(t *testing.T, handler http.HandlerFunc) (<-chan domain.Prov
 	}))
 	t.Cleanup(server.Close)
 
-	ch, err := StartStreamRequest(context.Background(), server.Client(), server.URL, "test-key", "testprovider", map[string]string{"model": "test"}, discardDecoder)
+	ch, err := StartStream(context.Background(), StreamRequest{Client: server.Client(), URL: server.URL, Headers: BearerAuth("test-key"), Label: "testprovider", Payload: map[string]string{"model": "test"}, Decode: discardDecoder})
 	return ch, err, &calls
 }
 
-func TestStartStreamRequestRetriesOverloadedProvider(t *testing.T) {
+func TestStartStreamRetriesOverloadedProvider(t *testing.T) {
 	shortenRetryBackoff(t)
 
 	var attempts int64
@@ -69,7 +69,7 @@ func TestStartStreamRequestRetriesOverloadedProvider(t *testing.T) {
 	}
 }
 
-func TestStartStreamRequestSurfacesErrorAfterExhaustingRetries(t *testing.T) {
+func TestStartStreamSurfacesErrorAfterExhaustingRetries(t *testing.T) {
 	shortenRetryBackoff(t)
 
 	_, err, calls := startTestStream(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -89,7 +89,7 @@ func TestStartStreamRequestSurfacesErrorAfterExhaustingRetries(t *testing.T) {
 	}
 }
 
-func TestStartStreamRequestDoesNotRetryClientErrors(t *testing.T) {
+func TestStartStreamDoesNotRetryClientErrors(t *testing.T) {
 	shortenRetryBackoff(t)
 
 	_, err, calls := startTestStream(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -103,7 +103,7 @@ func TestStartStreamRequestDoesNotRetryClientErrors(t *testing.T) {
 	}
 }
 
-func TestStartStreamRequestDoesNotRetryGatewayErrors(t *testing.T) {
+func TestStartStreamDoesNotRetryGatewayErrors(t *testing.T) {
 	shortenRetryBackoff(t)
 
 	_, err, calls := startTestStream(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -117,7 +117,7 @@ func TestStartStreamRequestDoesNotRetryGatewayErrors(t *testing.T) {
 	}
 }
 
-func TestStartStreamRequestFollowsShouldRetryHeader(t *testing.T) {
+func TestStartStreamFollowsShouldRetryHeader(t *testing.T) {
 	shortenRetryBackoff(t)
 
 	_, err, calls := startTestStream(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -132,7 +132,7 @@ func TestStartStreamRequestFollowsShouldRetryHeader(t *testing.T) {
 	}
 }
 
-func TestStartStreamRequestDoesNotRetryWhenProviderStallsBeforeHeaders(t *testing.T) {
+func TestStartStreamDoesNotRetryWhenProviderStallsBeforeHeaders(t *testing.T) {
 	shortenRetryBackoff(t)
 
 	release := make(chan struct{})
@@ -149,7 +149,7 @@ func TestStartStreamRequestDoesNotRetryWhenProviderStallsBeforeHeaders(t *testin
 	transport.ResponseHeaderTimeout = 50 * time.Millisecond
 	client.Transport = transport
 
-	_, err := StartStreamRequest(context.Background(), client, server.URL, "test-key", "testprovider", map[string]string{}, discardDecoder)
+	_, err := StartStream(context.Background(), StreamRequest{Client: client, URL: server.URL, Headers: BearerAuth("test-key"), Label: "testprovider", Payload: map[string]string{}, Decode: discardDecoder})
 	if err == nil {
 		t.Fatal("expected the stalled request to fail")
 	}
@@ -158,7 +158,7 @@ func TestStartStreamRequestDoesNotRetryWhenProviderStallsBeforeHeaders(t *testin
 	}
 }
 
-func TestStartStreamRequestDoesNotRetryDroppedConnections(t *testing.T) {
+func TestStartStreamDoesNotRetryDroppedConnections(t *testing.T) {
 	shortenRetryBackoff(t)
 
 	_, err, calls := startTestStream(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -177,7 +177,7 @@ func TestStartStreamRequestDoesNotRetryDroppedConnections(t *testing.T) {
 	}
 }
 
-func TestStartStreamRequestRetriesConnectionsThatNeverOpened(t *testing.T) {
+func TestStartStreamRetriesConnectionsThatNeverOpened(t *testing.T) {
 	shortenRetryBackoff(t)
 
 	var calls int64
@@ -198,7 +198,7 @@ func TestStartStreamRequestRetriesConnectionsThatNeverOpened(t *testing.T) {
 		return dial(ctx, network, addr)
 	}
 
-	ch, err := StartStreamRequest(context.Background(), &http.Client{Transport: transport}, server.URL, "test-key", "testprovider", map[string]string{}, discardDecoder)
+	ch, err := StartStream(context.Background(), StreamRequest{Client: &http.Client{Transport: transport}, URL: server.URL, Headers: BearerAuth("test-key"), Label: "testprovider", Payload: map[string]string{}, Decode: discardDecoder})
 	if err != nil {
 		t.Fatalf("expected the request to succeed once the connection opened, got %v", err)
 	}
@@ -213,7 +213,7 @@ func TestStartStreamRequestRetriesConnectionsThatNeverOpened(t *testing.T) {
 	}
 }
 
-func TestStartStreamRequestSendsHeadersOnEveryAttempt(t *testing.T) {
+func TestStartStreamSendsHeadersOnEveryAttempt(t *testing.T) {
 	shortenRetryBackoff(t)
 
 	var auth []string
@@ -234,7 +234,7 @@ func TestStartStreamRequestSendsHeadersOnEveryAttempt(t *testing.T) {
 
 	headers := http.Header{}
 	headers.Set("x-api-key", "test-key")
-	if _, err := StartStreamRequestWithHeaders(context.Background(), server.Client(), server.URL, headers, "testprovider", map[string]string{}, discardDecoder); err != nil {
+	if _, err := StartStream(context.Background(), StreamRequest{Client: server.Client(), URL: server.URL, Headers: headers, Label: "testprovider", Payload: map[string]string{}, Decode: discardDecoder}); err != nil {
 		t.Fatalf("expected the retried request to succeed, got %v", err)
 	}
 
@@ -248,7 +248,7 @@ func TestStartStreamRequestSendsHeadersOnEveryAttempt(t *testing.T) {
 	}
 }
 
-func TestStartStreamRequestAbandonsStalledStream(t *testing.T) {
+func TestStartStreamAbandonsStalledStream(t *testing.T) {
 	original := streamIdleTimeout
 	streamIdleTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { streamIdleTimeout = original })
@@ -271,7 +271,7 @@ func TestStartStreamRequestAbandonsStalledStream(t *testing.T) {
 		readErr <- err
 	}
 
-	if _, err := StartStreamRequest(context.Background(), server.Client(), server.URL, "test-key", "testprovider", map[string]string{}, decode); err != nil {
+	if _, err := StartStream(context.Background(), StreamRequest{Client: server.Client(), URL: server.URL, Headers: BearerAuth("test-key"), Label: "testprovider", Payload: map[string]string{}, Decode: decode}); err != nil {
 		t.Fatalf("unexpected request error: %v", err)
 	}
 
@@ -285,7 +285,7 @@ func TestStartStreamRequestAbandonsStalledStream(t *testing.T) {
 	}
 }
 
-func TestStartStreamRequestDoesNotTakeSlowConsumerForStall(t *testing.T) {
+func TestStartStreamDoesNotTakeSlowConsumerForStall(t *testing.T) {
 	original := streamIdleTimeout
 	streamIdleTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { streamIdleTimeout = original })
@@ -305,7 +305,7 @@ func TestStartStreamRequestDoesNotTakeSlowConsumerForStall(t *testing.T) {
 		readErr <- err
 	}
 
-	if _, err := StartStreamRequest(context.Background(), server.Client(), server.URL, "test-key", "testprovider", map[string]string{}, decode); err != nil {
+	if _, err := StartStream(context.Background(), StreamRequest{Client: server.Client(), URL: server.URL, Headers: BearerAuth("test-key"), Label: "testprovider", Payload: map[string]string{}, Decode: decode}); err != nil {
 		t.Fatalf("unexpected request error: %v", err)
 	}
 	if err := <-readErr; err != nil {
@@ -313,14 +313,14 @@ func TestStartStreamRequestDoesNotTakeSlowConsumerForStall(t *testing.T) {
 	}
 }
 
-func TestStartStreamRequestSurfacesTransportErrorAfterExhaustingRetries(t *testing.T) {
+func TestStartStreamSurfacesTransportErrorAfterExhaustingRetries(t *testing.T) {
 	shortenRetryBackoff(t)
 
 	server := httptest.NewServer(http.NotFoundHandler())
 	url := server.URL
 	server.Close()
 
-	_, err := StartStreamRequest(context.Background(), http.DefaultClient, url, "test-key", "testprovider", map[string]string{}, discardDecoder)
+	_, err := StartStream(context.Background(), StreamRequest{Client: http.DefaultClient, URL: url, Headers: BearerAuth("test-key"), Label: "testprovider", Payload: map[string]string{}, Decode: discardDecoder})
 	if err == nil {
 		t.Fatal("expected an error when the provider is unreachable")
 	}
@@ -329,7 +329,7 @@ func TestStartStreamRequestSurfacesTransportErrorAfterExhaustingRetries(t *testi
 	}
 }
 
-func TestStartStreamRequestStopsRetryingWhenContextIsCancelled(t *testing.T) {
+func TestStartStreamStopsRetryingWhenContextIsCancelled(t *testing.T) {
 	var calls int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt64(&calls, 1)
@@ -340,7 +340,7 @@ func TestStartStreamRequestStopsRetryingWhenContextIsCancelled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, err := StartStreamRequest(ctx, server.Client(), server.URL, "test-key", "testprovider", map[string]string{}, discardDecoder)
+	_, err := StartStream(ctx, StreamRequest{Client: server.Client(), URL: server.URL, Headers: BearerAuth("test-key"), Label: "testprovider", Payload: map[string]string{}, Decode: discardDecoder})
 	if err == nil {
 		t.Fatal("expected an error when the context expires during backoff")
 	}
