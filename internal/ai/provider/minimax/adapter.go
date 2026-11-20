@@ -25,6 +25,11 @@ const (
 	// returns its thinking as reasoning_content instead of reasoning_details.
 	minimaxM31FlashModelID = "MiniMax-M3.1-Flash"
 	defaultReasoningEffort = "high"
+
+	// MiniMax documents no default output limit for M3-series models, and
+	// thinking counts toward it, so requests ask for the 128K it recommends.
+	// A reply cut off at the limit fails the run.
+	maxCompletionTokens = 131072
 )
 
 // Adapter streams chat completions from MiniMax.
@@ -34,14 +39,15 @@ type Adapter struct {
 }
 
 type chatRequest struct {
-	Model           string                  `json:"model"`
-	Messages        []message               `json:"messages"`
-	Stream          bool                    `json:"stream"`
-	Tools           []domain.ToolDefinition `json:"tools,omitempty"`
-	ReasoningSplit  bool                    `json:"reasoning_split,omitempty"`
-	Thinking        *thinking               `json:"thinking,omitempty"`
-	ReasoningEffort string                  `json:"reasoning_effort,omitempty"`
-	StreamOptions   *streamOptions          `json:"stream_options,omitempty"`
+	Model               string                  `json:"model"`
+	Messages            []message               `json:"messages"`
+	Stream              bool                    `json:"stream"`
+	Tools               []domain.ToolDefinition `json:"tools,omitempty"`
+	ReasoningSplit      bool                    `json:"reasoning_split,omitempty"`
+	Thinking            *thinking               `json:"thinking,omitempty"`
+	ReasoningEffort     string                  `json:"reasoning_effort,omitempty"`
+	StreamOptions       *streamOptions          `json:"stream_options,omitempty"`
+	MaxCompletionTokens int                     `json:"max_completion_tokens"`
 }
 
 // streamOptions asks for the request's usage in the stream's final chunk,
@@ -197,11 +203,12 @@ func buildChatRequest(req aiprovider.StreamRequest, model domain.Model) chatRequ
 	flushToolImages()
 
 	body := chatRequest{
-		Model:         req.Model,
-		Messages:      messages,
-		Stream:        true,
-		Tools:         req.Tools,
-		StreamOptions: &streamOptions{IncludeUsage: true},
+		Model:               req.Model,
+		Messages:            messages,
+		Stream:              true,
+		Tools:               req.Tools,
+		StreamOptions:       &streamOptions{IncludeUsage: true},
+		MaxCompletionTokens: maxCompletionTokens,
 	}
 	if thinkingEnabled {
 		body.ReasoningSplit = true
