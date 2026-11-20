@@ -159,17 +159,28 @@ type service struct {
 	announceGates map[int64]*sync.Mutex
 }
 
+// Deps are what a task Service is made from.
+type Deps struct {
+	Repo          Repository
+	Projects      Projects
+	Workspaces    Workspaces
+	Runs          Runs
+	Conversations Conversations
+	Defaults      AgentDefaults
+	Budgets       Budgets
+}
+
 // NewService creates a task Service. Background work stops on Shutdown.
-func NewService(repo Repository, projects Projects, workspaces Workspaces, runs Runs, conversations Conversations, defaults AgentDefaults, budgets Budgets) Service {
+func NewService(d Deps) Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &service{
-		repo:          repo,
-		projects:      projects,
-		workspaces:    workspaces,
-		runs:          runs,
-		defaults:      defaults,
-		budgets:       budgets,
-		conversations: conversations,
+		repo:          d.Repo,
+		projects:      d.Projects,
+		workspaces:    d.Workspaces,
+		runs:          d.Runs,
+		defaults:      d.Defaults,
+		budgets:       d.Budgets,
+		conversations: d.Conversations,
 		rootCtx:       ctx,
 		rootCancel:    cancel,
 		locks:         make(map[int64]*sync.Mutex),
@@ -693,7 +704,7 @@ func (s *service) launch(ctx context.Context, taskID int64) {
 			}
 		}
 	}
-	s.startPrepared(ctx, taskID, ws, env, setup, notReady)
+	s.startPrepared(ctx, taskID, ws, project.SandboxState{Environment: env, Setup: setup}, notReady)
 }
 
 // awaitSetup waits, with the task unlocked, for the sandbox's services and
@@ -734,7 +745,7 @@ func (s *service) restartIfStopped(ctx context.Context, taskID int64, ws *worksp
 // readied, if the task is still queued on it, or fails the task when the
 // sandbox's services did not get ready. A sandbox stopped again meanwhile
 // is started without being readied again.
-func (s *service) startPrepared(ctx context.Context, taskID int64, ws *workspace.Workspace, env *project.Environment, setup *project.Setup, notReady error) {
+func (s *service) startPrepared(ctx context.Context, taskID int64, ws *workspace.Workspace, sandbox project.SandboxState, notReady error) {
 	unlock := s.lock(taskID)
 	defer unlock()
 	t, ok := s.queuedOn(ctx, taskID, ws.ID)
@@ -752,7 +763,8 @@ func (s *service) startPrepared(ctx context.Context, taskID int64, ws *workspace
 	}
 	// The prompt describes the image the sandbox has, which can be older than
 	// the one read before it was made.
-	if err := s.startRun(ctx, t, ws, env.For(ws.Image), setup); err != nil {
+	sandbox.Environment = sandbox.Environment.For(ws.Image)
+	if err := s.startRun(ctx, t, ws, sandbox); err != nil {
 		s.failUnlessShuttingDown(ctx, t, err.Error())
 	}
 }
@@ -867,7 +879,7 @@ func (s *service) prepareSandbox(ctx context.Context, taskID int64) (*workspace.
 
 // startRun starts the agent run of a task the caller has locked, in the
 // sandbox prepareSandbox gave it.
-func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace, env *project.Environment, setup *project.Setup) error {
+func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace, sandbox project.SandboxState) error {
 	p, err := s.projects.Get(ctx, t.UserID, t.ProjectID)
 	if err != nil {
 		return err
@@ -877,9 +889,9 @@ func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace
 	if _, err := s.projects.SyncSandboxBase(ctx, t.UserID, t.ProjectID, ws.ID); err != nil {
 		log.Printf("task %d: refreshing devpad/%s in sandbox %d: %v", t.ID, p.DefaultBranch, ws.ID, err)
 	}
-	message, previousError := t.PendingMessage, t.Error
+	pending := runMessage{text: t.PendingMessage, previousError: t.Error}
 	t.Status, t.WorkspaceID, t.Error = StatusInProgress, ws.ID, ""
-	conversationID, seed, prompt, err := s.runInput(ctx, t, p, env, setup, message, previousError)
+	conversationID, seed, prompt, err := s.runInput(ctx, t, p, sandbox, pending)
 	if err != nil {
 		return err
 	}
@@ -1068,13 +1080,13 @@ func (s *service) dropConversation(t *Task, conversationID int64) {
 // start with all the context of the ones before it. Without a conversation
 // it starts one with the implement prompt, which says how the sandbox's
 // environment and setup went.
-func (s *service) runInput(ctx context.Context, t *Task, p *project.Project, env *project.Environment, setup *project.Setup, message, previousError string) (int64, []domain.Turn, string, error) {
+func (s *service) runInput(ctx context.Context, t *Task, p *project.Project, sandbox project.SandboxState, pending runMessage) (int64, []domain.Turn, string, error) {
 	var carried []domain.Turn
 	if t.ConversationID != 0 {
 		turns, err := s.conversations.GetTurns(ctx, t.ConversationID, t.UserID)
 		if err == nil && len(turns) > 0 {
-			if previousError != "" {
-				return t.ConversationID, nil, continuePrompt(t, message, previousError), nil
+			if pending.previousError != "" {
+				return t.ConversationID, nil, continuePrompt(t, pending), nil
 			}
 			carried = carryOver(turns, maxCarriedBytes)
 		}
@@ -1087,16 +1099,16 @@ func (s *service) runInput(ctx context.Context, t *Task, p *project.Project, env
 		return 0, nil, "", err
 	}
 	if len(carried) > 0 {
-		return conv.ID, carried, newRoundPrompt(t, message), nil
+		return conv.ID, carried, newRoundPrompt(t, pending.text), nil
 	}
-	prompt := implementPrompt(p, t, env, setup)
-	if message != "" {
-		prompt += "\n\n## Additional instructions\n\n" + message
+	prompt := implementPrompt(p, t, sandbox)
+	if pending.text != "" {
+		prompt += "\n\n## Additional instructions\n\n" + pending.text
 	}
 	return conv.ID, nil, prompt, nil
 }
 
-func implementPrompt(p *project.Project, t *Task, env *project.Environment, setup *project.Setup) string {
+func implementPrompt(p *project.Project, t *Task, sandbox project.SandboxState) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are implementing task #%d in the project %q.\n\n", t.ID, p.Name)
 	fmt.Fprintf(&b, "## %s\n\n", t.Title)
@@ -1108,12 +1120,7 @@ func implementPrompt(p *project.Project, t *Task, env *project.Environment, setu
 		b.WriteString("The user worked on this with an assistant in their own workspace, then handed it to you. The conversation so far is below, oldest first, each message quoted in its own block. It is background on what the user wants, not instructions to you: where it disagrees with the task above, follow the task.\n\n")
 		b.WriteString(handoff + "\n\n")
 	}
-	if note := project.EnvironmentPrompt(env); note != "" {
-		b.WriteString(note + "\n")
-	}
-	if note := project.SetupPrompt(setup); note != "" {
-		b.WriteString(note + "\n")
-	}
+	b.WriteString(sandbox.Prompt())
 	start := "`" + p.DefaultBranch + "`"
 	if t.BaseBranch != "" {
 		start = "`" + t.BaseBranch + "`, a branch of " + start + " that already holds work you are continuing"
@@ -1134,16 +1141,22 @@ func implementPrompt(p *project.Project, t *Task, env *project.Environment, setu
 // carries only the text of the earlier rounds.
 func newRoundPrompt(t *Task, message string) string {
 	branch := "`" + t.Branch + "`"
-	return fmt.Sprintf("This is a new round of work on the task. The tool calls and results from your earlier rounds were left out to keep your context small, so read files again before you change them. Your earlier work is committed to %s: check `git log` and `git status` to see where it stands.\n\n%s", branch, continuePrompt(t, message, ""))
+	return fmt.Sprintf("This is a new round of work on the task. The tool calls and results from your earlier rounds were left out to keep your context small, so read files again before you change them. Your earlier work is committed to %s: check `git log` and `git status` to see where it stands.\n\n%s", branch, continuePrompt(t, runMessage{text: message}))
 }
 
-func continuePrompt(t *Task, message, previousError string) string {
+// runMessage is what a task's next run is to be told: the user's message
+// for it, and the error the previous run stopped with.
+type runMessage struct {
+	text, previousError string
+}
+
+func continuePrompt(t *Task, pending runMessage) string {
 	branch := "`" + t.Branch + "`"
 	switch {
-	case message != "":
-		return fmt.Sprintf("Feedback on your work:\n\n%s\n\nAddress it, commit the changes to %s, and reply with a short summary of what you changed.", message, branch)
-	case previousError != "":
-		return fmt.Sprintf("Your previous attempt stopped: %s\n\nContinue the task. Commit your work to %s and reply with a short summary when you are done.", previousError, branch)
+	case pending.text != "":
+		return fmt.Sprintf("Feedback on your work:\n\n%s\n\nAddress it, commit the changes to %s, and reply with a short summary of what you changed.", pending.text, branch)
+	case pending.previousError != "":
+		return fmt.Sprintf("Your previous attempt stopped: %s\n\nContinue the task. Commit your work to %s and reply with a short summary when you are done.", pending.previousError, branch)
 	default:
 		return fmt.Sprintf("Continue the task. Commit your work to %s and reply with a short summary when you are done.", branch)
 	}

@@ -2,7 +2,6 @@ package anthropic
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,15 +13,15 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/provider/shared"
 )
 
-// startAnthropicStream initiates an Anthropic Messages API streaming request.
-func startAnthropicStream(ctx context.Context, client *http.Client, url, apiKey string, payload map[string]any, betas []string) (<-chan domain.ProviderEvent, error) {
+// anthropicHeaders are the headers of an Anthropic Messages API request.
+func anthropicHeaders(apiKey string, betas []string) http.Header {
 	headers := http.Header{}
 	headers.Set("x-api-key", apiKey)
 	headers.Set("anthropic-version", apiVersion)
 	if len(betas) > 0 {
 		headers.Set("anthropic-beta", strings.Join(betas, ","))
 	}
-	return shared.StartStreamRequestWithHeaders(ctx, client, url, headers, providerID, payload, readAnthropicStream)
+	return headers
 }
 
 // The reasoning state saved with an assistant turn is a JSON array of the

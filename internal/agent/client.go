@@ -44,6 +44,16 @@ type Client struct {
 	http    *http.Client
 }
 
+// CommandOutputOptions controls a read of a managed command's output.
+type CommandOutputOptions struct {
+	// Cursor is where to read from: 0, or the NextCursor of the last read.
+	Cursor int64
+	// MaxBytes bounds the output returned.
+	MaxBytes int
+	// WaitMS is how long to wait for new output when there is none yet.
+	WaitMS int
+}
+
 // GitLogOptions controls which commits are returned from the git log.
 type GitLogOptions struct {
 	AllBranches bool
@@ -480,8 +490,8 @@ func (c *Client) CommandStatus(ctx context.Context, commandID string) (*ManagedC
 const maxCommandOutputResponse = 6*64*1024 + 64*1024
 
 // ReadCommandOutput reads buffered output from a managed command session.
-func (c *Client) ReadCommandOutput(ctx context.Context, commandID string, cursor int64, maxBytes, waitMS int) (*CommandOutput, error) {
-	u := fmt.Sprintf("%s/api/commands/%s/output?cursor=%d&max_bytes=%d&wait_ms=%d", c.baseURL, url.PathEscape(commandID), cursor, maxBytes, waitMS)
+func (c *Client) ReadCommandOutput(ctx context.Context, commandID string, opts CommandOutputOptions) (*CommandOutput, error) {
+	u := fmt.Sprintf("%s/api/commands/%s/output?cursor=%d&max_bytes=%d&wait_ms=%d", c.baseURL, url.PathEscape(commandID), opts.Cursor, opts.MaxBytes, opts.WaitMS)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err

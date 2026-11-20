@@ -30,27 +30,36 @@ var (
 // Service defines preview business logic.
 type Service interface {
 	// GenerateURL creates a short-lived preview URL for a workspace port.
-	// httpsPort is the HTTPS port of the main server; if non-standard (not 443),
-	// it is included in the generated URL.
-	GenerateURL(ctx context.Context, userID, workspaceID int64, port int, previewDomain string, httpsPort int) (string, error)
+	GenerateURL(ctx context.Context, userID, workspaceID int64, port int) (string, error)
 	// ValidateToken checks and consumes a single-use preview token, returning its claims.
 	ValidateToken(ctx context.Context, tokenStr string) (*Token, error)
 	// ResolveContainerAddr gets the agent address and auth token for proxying a preview request.
 	ResolveContainerAddr(ctx context.Context, workspaceID int64) (addr, agentToken string, err error)
 }
 
+// Config says where preview URLs point.
+type Config struct {
+	// Domain is the preview domain, under which each preview has its own
+	// subdomain.
+	Domain string
+	// HTTPSPort is the main server's HTTPS port. A port other than 443 is
+	// put in preview URLs.
+	HTTPSPort int
+}
+
 type service struct {
 	repo       Repository
 	workspaces workspace.Repository
 	container  container.Manager
+	cfg        Config
 }
 
 // NewService creates a new preview Service.
-func NewService(repo Repository, wsRepo workspace.Repository, cm container.Manager) Service {
-	return &service{repo: repo, workspaces: wsRepo, container: cm}
+func NewService(repo Repository, wsRepo workspace.Repository, cm container.Manager, cfg Config) Service {
+	return &service{repo: repo, workspaces: wsRepo, container: cm, cfg: cfg}
 }
 
-func (s *service) GenerateURL(ctx context.Context, userID, workspaceID int64, port int, previewDomain string, httpsPort int) (string, error) {
+func (s *service) GenerateURL(ctx context.Context, userID, workspaceID int64, port int) (string, error) {
 	ws, err := s.workspaces.GetByID(ctx, workspaceID)
 	if err != nil {
 		return "", fmt.Errorf("getting workspace: %w", err)
@@ -72,9 +81,9 @@ func (s *service) GenerateURL(ctx context.Context, userID, workspaceID int64, po
 		return "", fmt.Errorf("creating preview token: %w", err)
 	}
 
-	host := fmt.Sprintf("%d-%d.%s", workspaceID, port, previewDomain)
-	if httpsPort != 0 && httpsPort != 443 {
-		host = fmt.Sprintf("%s:%d", host, httpsPort)
+	host := fmt.Sprintf("%d-%d.%s", workspaceID, port, s.cfg.Domain)
+	if s.cfg.HTTPSPort != 0 && s.cfg.HTTPSPort != 443 {
+		host = fmt.Sprintf("%s:%d", host, s.cfg.HTTPSPort)
 	}
 	url := fmt.Sprintf("https://%s?token=%s", host, t.Token)
 	return url, nil

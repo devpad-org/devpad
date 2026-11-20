@@ -54,21 +54,33 @@ func NewStreamingClient() *http.Client {
 	return &http.Client{Transport: transport}
 }
 
-// StartStreamRequest posts a JSON body to a streaming endpoint that takes a
-// bearer API key and delegates decoding.
-func StartStreamRequest(ctx context.Context, client *http.Client, url, apiKey, errorLabel string, payload any, decode StreamDecoder) (<-chan domain.ProviderEvent, error) {
-	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+apiKey)
-	return StartStreamRequestWithHeaders(ctx, client, url, headers, errorLabel, payload, decode)
+// StreamRequest is a streaming request to a provider.
+type StreamRequest struct {
+	Client *http.Client
+	URL    string
+	// Headers carry the provider's auth and version headers; BearerAuth
+	// makes them for a provider that takes a bearer API key.
+	Headers http.Header
+	// Label names the provider in errors. It is never a secret.
+	Label   string
+	Payload any
+	Decode  StreamDecoder
 }
 
-// StartStreamRequestWithHeaders posts a JSON body to a streaming endpoint with
-// the provider's own auth and version headers and delegates decoding.
-// Transient provider failures are retried with exponential backoff, but only
-// when the provider cannot have started generating: a second attempt at a
-// request it is still working on would bill that work twice.
-func StartStreamRequestWithHeaders(ctx context.Context, client *http.Client, url string, headers http.Header, errorLabel string, payload any, decode StreamDecoder) (<-chan domain.ProviderEvent, error) {
-	body, err := json.Marshal(payload)
+// BearerAuth returns headers that authenticate with a bearer API key.
+func BearerAuth(apiKey string) http.Header {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+apiKey)
+	return headers
+}
+
+// StartStream posts req's payload as JSON to a streaming endpoint and
+// delegates decoding to req.Decode. Transient provider failures are retried
+// with exponential backoff, but only when the provider cannot have started
+// generating: a second attempt at a request it is still working on would bill
+// that work twice.
+func StartStream(ctx context.Context, req StreamRequest) (<-chan domain.ProviderEvent, error) {
+	body, err := json.Marshal(req.Payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshalling request: %w", err)
 	}
@@ -76,7 +88,7 @@ func StartStreamRequestWithHeaders(ctx context.Context, client *http.Client, url
 	var lastErr error
 	for attempt := 0; attempt < maxStreamAttempts; attempt++ {
 		attemptCtx, cancel := context.WithCancel(ctx)
-		resp, err := sendStreamRequest(attemptCtx, client, url, headers, body)
+		resp, err := sendStreamRequest(attemptCtx, req.Client, req.URL, req.Headers, body)
 
 		var retry bool
 		var retryAfter string
@@ -87,13 +99,13 @@ func StartStreamRequestWithHeaders(ctx context.Context, client *http.Client, url
 			retry = ctx.Err() == nil && retryableTransportError(err)
 		case resp.StatusCode == http.StatusOK:
 			ch := make(chan domain.ProviderEvent, 64)
-			go decode(newIdleTimeoutBody(resp.Body, streamIdleTimeout, cancel), ch)
+			go req.Decode(newIdleTimeoutBody(resp.Body, streamIdleTimeout, cancel), ch)
 			return ch, nil
 		default:
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			cancel()
-			lastErr = fmt.Errorf("%s API error (status %d): %s", errorLabel, resp.StatusCode, string(respBody))
+			lastErr = fmt.Errorf("%s API error (status %d): %s", req.Label, resp.StatusCode, string(respBody))
 			retry = retryableResponse(resp)
 			retryAfter = resp.Header.Get("Retry-After")
 		}

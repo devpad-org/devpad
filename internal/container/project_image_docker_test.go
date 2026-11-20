@@ -63,7 +63,14 @@ func TestBuildProjectImageWithDocker(t *testing.T) {
 	}
 
 	// A container made from it runs devpad's agent.
-	containerID, err := m.Create(ctx, "test-"+id, tag, "", network, []string{"AGENT_AUTH_TOKEN=test"}, 512<<20, 500_000_000)
+	containerID, err := m.Create(ctx, CreateOptions{
+		Name:        "test-" + id,
+		Image:       tag,
+		Network:     network,
+		Env:         []string{"AGENT_AUTH_TOKEN=test"},
+		MemoryLimit: 512 << 20,
+		NanoCPUs:    500_000_000,
+	})
 	if err != nil {
 		t.Fatalf("create container: %v", err)
 	}

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+
+	"github.com/devpad-org/devpad/internal/container"
 )
 
 // CreateSandbox creates a workspace that belongs to a project and owns one of
@@ -123,7 +125,15 @@ func (s *service) create(ctx context.Context, ws *Workspace) (*Workspace, error)
 	}
 
 	containerEnv := s.containerEnv(ctx, ws.ID, agentToken, networkName)
-	containerID, err := s.container.Create(ctx, fmt.Sprintf("%d", ws.ID), ws.Image, volumeName, networkName, containerEnv, ws.MemoryLimit, ws.NanoCPUs)
+	containerID, err := s.container.Create(ctx, container.CreateOptions{
+		Name:        fmt.Sprintf("%d", ws.ID),
+		Image:       ws.Image,
+		Volume:      volumeName,
+		Network:     networkName,
+		Env:         containerEnv,
+		MemoryLimit: ws.MemoryLimit,
+		NanoCPUs:    ws.NanoCPUs,
+	})
 	if err != nil {
 		undo()
 		return nil, fmt.Errorf("creating container: %w", err)

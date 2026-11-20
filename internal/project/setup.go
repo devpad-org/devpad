@@ -399,7 +399,7 @@ func (s *service) followSetup(st *Setup) {
 	failures := 0
 	for {
 		began := time.Now()
-		res, err := s.workspaces.ReadCommandOutput(ctx, st.UserID, st.WorkspaceID, st.CommandID, cursor, setupReadBytes, setupReadWaitMS)
+		res, err := s.workspaces.ReadCommandOutput(ctx, st.UserID, st.WorkspaceID, st.CommandID, agent.CommandOutputOptions{Cursor: cursor, MaxBytes: setupReadBytes, WaitMS: setupReadWaitMS})
 		switch {
 		case ctx.Err() != nil:
 			s.stopSetup(st)
@@ -540,6 +540,26 @@ func trimToRune(b []byte) []byte {
 		}
 	}
 	return b
+}
+
+// SandboxState is how a sandbox was readied for its agent: the environment
+// it has and how the project's setup script went there. Either may be nil.
+type SandboxState struct {
+	Environment *Environment
+	Setup       *Setup
+}
+
+// Prompt tells an agent starting in the sandbox what EnvironmentPrompt and
+// SetupPrompt say, each followed by a blank line. It is empty when neither
+// says anything.
+func (st SandboxState) Prompt() string {
+	var b strings.Builder
+	for _, note := range []string{EnvironmentPrompt(st.Environment), SetupPrompt(st.Setup)} {
+		if note != "" {
+			b.WriteString(note + "\n")
+		}
+	}
+	return b.String()
 }
 
 // SetupPrompt tells an agent starting in a sandbox how the project's setup

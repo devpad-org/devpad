@@ -133,15 +133,15 @@ func newFakeContainers(ip string) *fakeContainers {
 	return &fakeContainers{ip: ip, networks: map[string]bool{}, volumes: map[string]bool{}, baseID: "sha256:base1", images: map[string]map[string]string{}, inUse: map[string]bool{}}
 }
 
-func (f *fakeContainers) Create(_ context.Context, name, image, volumeName, networkName string, env []string, _, _ int64) (string, error) {
+func (f *fakeContainers) Create(_ context.Context, opts container.CreateOptions) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	created := fmt.Sprintf("%s vol=%s net=%s", name, volumeName, networkName)
-	if image != container.WorkspaceImage && image != "" {
-		created += " image=" + image
+	created := fmt.Sprintf("%s vol=%s net=%s", opts.Name, opts.Volume, opts.Network)
+	if opts.Image != container.WorkspaceImage && opts.Image != "" {
+		created += " image=" + opts.Image
 	}
 	f.created = append(f.created, created)
-	return "container-" + name, nil
+	return "container-" + opts.Name, nil
 }
 func (f *fakeContainers) Start(context.Context, string) error   { return nil }
 func (f *fakeContainers) Stop(context.Context, string) error    { return nil }
@@ -699,7 +699,8 @@ func (f *fakeWorkspaces) StartCommand(_ context.Context, _, id int64, command, _
 	return &agent.ManagedCommand{CommandID: fmt.Sprintf("cmd-%d", id), Status: "running"}, nil
 }
 
-func (f *fakeWorkspaces) ReadCommandOutput(_ context.Context, _, id int64, _ string, cursor int64, _, _ int) (*agent.CommandOutput, error) {
+func (f *fakeWorkspaces) ReadCommandOutput(_ context.Context, _, id int64, _ string, opts agent.CommandOutputOptions) (*agent.CommandOutput, error) {
+	cursor := opts.Cursor
 	f.mu.Lock()
 	read := f.commandOutput
 	f.mu.Unlock()

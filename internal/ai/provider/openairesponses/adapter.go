@@ -154,7 +154,14 @@ func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req 
 	model, _ := domain.ModelByID(a.Models(), req.Model)
 	body := buildResponsesRequest(req, model)
 
-	return shared.StartStreamRequest(ctx, a.client, a.baseURL+"/responses", creds.APIKey, providerID, body, readResponsesStream)
+	return shared.StartStream(ctx, shared.StreamRequest{
+		Client:  a.client,
+		URL:     a.baseURL + "/responses",
+		Headers: shared.BearerAuth(creds.APIKey),
+		Label:   providerID,
+		Payload: body,
+		Decode:  readResponsesStream,
+	})
 }
 
 func buildResponsesRequest(req aiprovider.StreamRequest, model domain.Model) map[string]any {

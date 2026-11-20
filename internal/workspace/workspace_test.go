@@ -39,10 +39,10 @@ type mockContainerManager struct {
 	envs [][]string
 }
 
-func (m *mockContainerManager) Create(_ context.Context, name, image, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
-	m.lastCreatedID = "mock-container-" + name
-	m.created = append(m.created, name+" "+image)
-	m.envs = append(m.envs, env)
+func (m *mockContainerManager) Create(_ context.Context, opts container.CreateOptions) (string, error) {
+	m.lastCreatedID = "mock-container-" + opts.Name
+	m.created = append(m.created, opts.Name+" "+opts.Image)
+	m.envs = append(m.envs, opts.Env)
 	return m.lastCreatedID, nil
 }
 func (m *mockContainerManager) Rename(_ context.Context, id, name string) error {

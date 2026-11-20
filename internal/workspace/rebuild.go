@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+
+	"github.com/devpad-org/devpad/internal/container"
 )
 
 // RebuildProjectContainer replaces a project workspace's container with one
@@ -51,7 +53,15 @@ func (s *service) RebuildProjectContainer(ctx context.Context, userID, workspace
 		}
 	}
 	env := s.containerEnv(ctx, ws.ID, ws.AgentToken, ws.NetworkName)
-	newID, err := s.container.Create(ctx, name+"-"+hex.EncodeToString(suffix), image, ws.VolumeName, ws.NetworkName, env, ws.MemoryLimit, ws.NanoCPUs)
+	newID, err := s.container.Create(ctx, container.CreateOptions{
+		Name:        name + "-" + hex.EncodeToString(suffix),
+		Image:       image,
+		Volume:      ws.VolumeName,
+		Network:     ws.NetworkName,
+		Env:         env,
+		MemoryLimit: ws.MemoryLimit,
+		NanoCPUs:    ws.NanoCPUs,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("creating the new container: %w", err)
 	}

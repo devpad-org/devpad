@@ -49,11 +49,25 @@ type BuildOptions struct {
 	Labels      map[string]string
 }
 
+// CreateOptions describes a workspace container.
+type CreateOptions struct {
+	// Name is the container's name without the "devpad-ws-" prefix.
+	Name string
+	// Image is the image to run; empty means WorkspaceImage.
+	Image string
+	// Volume, when set, is mounted at /workspace.
+	Volume string
+	// Network, when set, is the network the container joins.
+	Network     string
+	Env         []string
+	MemoryLimit int64
+	NanoCPUs    int64
+}
+
 // Manager handles Docker container lifecycle operations.
 type Manager interface {
-	// Create makes a workspace container from image, or from WorkspaceImage
-	// when image is empty.
-	Create(ctx context.Context, name, image, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (containerID string, err error)
+	// Create makes a workspace container.
+	Create(ctx context.Context, opts CreateOptions) (containerID string, err error)
 	// Rename gives a container a new name.
 	Rename(ctx context.Context, containerID, name string) error
 	Start(ctx context.Context, containerID string) error
@@ -174,17 +188,18 @@ func NewManager() (Manager, error) {
 	return &manager{cli: cli, attached: make(map[string]bool)}, nil
 }
 
-func (m *manager) Create(ctx context.Context, name, image, volumeName, networkName string, env []string, memoryLimit, nanoCPUs int64) (string, error) {
-	containerName := fmt.Sprintf("devpad-ws-%s", name)
+func (m *manager) Create(ctx context.Context, opts CreateOptions) (string, error) {
+	containerName := fmt.Sprintf("devpad-ws-%s", opts.Name)
+	image := opts.Image
 	if image == "" {
 		image = WorkspaceImage
 	}
 
 	var mounts []mount.Mount
-	if volumeName != "" {
+	if opts.Volume != "" {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeVolume,
-			Source: volumeName,
+			Source: opts.Volume,
 			Target: "/workspace",
 		})
 	}
@@ -193,16 +208,16 @@ func (m *manager) Create(ctx context.Context, name, image, volumeName, networkNa
 		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
 		Mounts:        mounts,
 		Resources: container.Resources{
-			Memory:   memoryLimit,
-			NanoCPUs: nanoCPUs,
+			Memory:   opts.MemoryLimit,
+			NanoCPUs: opts.NanoCPUs,
 		},
 	}
 
 	var networkingConfig *network.NetworkingConfig
-	if networkName != "" {
+	if opts.Network != "" {
 		networkingConfig = &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
-				networkName: {},
+				opts.Network: {},
 			},
 		}
 	}
@@ -211,7 +226,7 @@ func (m *manager) Create(ctx context.Context, name, image, volumeName, networkNa
 		Config: &container.Config{
 			Image: image,
 			Tty:   true,
-			Env:   env,
+			Env:   opts.Env,
 			Labels: map[string]string{
 				"devpad.managed": "true",
 			},

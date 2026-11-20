@@ -47,7 +47,15 @@ func (s *service) provisionRepoContainer(ctx context.Context, p *Project) error 
 	env := []string{"AGENT_AUTH_TOKEN=" + p.RepoAgentToken}
 	// Always devpad's own image: a project's environment never runs next to
 	// the canonical repo.
-	containerID, err := s.container.Create(ctx, repoContainerName(p.ID), container.WorkspaceImage, volume, network, env, repoMemoryLimit, repoNanoCPUs)
+	containerID, err := s.container.Create(ctx, container.CreateOptions{
+		Name:        repoContainerName(p.ID),
+		Image:       container.WorkspaceImage,
+		Volume:      volume,
+		Network:     network,
+		Env:         env,
+		MemoryLimit: repoMemoryLimit,
+		NanoCPUs:    repoNanoCPUs,
+	})
 	if err != nil {
 		_ = s.container.RemoveVolume(ctx, volume)
 		s.removeRepoNetwork(ctx, network)

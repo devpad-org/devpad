@@ -141,7 +141,14 @@ func (a *Adapter) Models() []domain.Model {
 func (a *Adapter) Stream(ctx context.Context, creds aiprovider.Credentials, req aiprovider.StreamRequest) (<-chan domain.ProviderEvent, error) {
 	model, _ := domain.ModelByID(a.Models(), req.Model)
 	body := buildAnthropicRequest(req, model)
-	return startAnthropicStream(ctx, a.client, a.baseURL+"/messages", creds.APIKey, body, requestBetas(body))
+	return shared.StartStream(ctx, shared.StreamRequest{
+		Client:  a.client,
+		URL:     a.baseURL + "/messages",
+		Headers: anthropicHeaders(creds.APIKey, requestBetas(body)),
+		Label:   providerID,
+		Payload: body,
+		Decode:  readAnthropicStream,
+	})
 }
 
 // buildAnthropicRequest converts the provider StreamRequest into an Anthropic-specific payload.

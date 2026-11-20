@@ -72,7 +72,7 @@ type CommandService interface {
 	RunCommand(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error)
 	StartCommand(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
 	CommandStatus(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
-	ReadCommandOutput(ctx context.Context, userID, workspaceID int64, commandID string, cursor int64, maxBytes, waitMS int) (*agent.CommandOutput, error)
+	ReadCommandOutput(ctx context.Context, userID, workspaceID int64, commandID string, opts agent.CommandOutputOptions) (*agent.CommandOutput, error)
 	StopCommand(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
 }
 

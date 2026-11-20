@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
@@ -51,20 +52,18 @@ func (e *WorkspaceExecutor) readCommandOutput(ctx context.Context, userID, works
 		return toolFailure("read_command_output", "Error: command_id is required")
 	}
 
-	cursor := int64(0)
+	opts := agent.CommandOutputOptions{MaxBytes: 12 * 1024}
 	if value, ok := params["cursor"].(float64); ok {
-		cursor = int64(value)
+		opts.Cursor = int64(value)
 	}
-	maxBytes := 12 * 1024
 	if value, ok := params["max_bytes"].(float64); ok {
-		maxBytes = int(value)
+		opts.MaxBytes = int(value)
 	}
-	waitMS := 0
 	if value, ok := params["wait_ms"].(float64); ok {
-		waitMS = int(value)
+		opts.WaitMS = int(value)
 	}
 
-	result, err := e.ws.ReadCommandOutput(ctx, userID, workspaceID, commandID, cursor, maxBytes, waitMS)
+	result, err := e.ws.ReadCommandOutput(ctx, userID, workspaceID, commandID, opts)
 	if err != nil {
 		return toolFailure("read_command_output", "Error: %v", err)
 	}

@@ -340,21 +340,17 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 
 	for rows.Next() {
 		var (
-			turnID, turnPos                                        int64
-			role, displayText                                      string
-			partPos                                                sql.NullInt64
-			kind, text, thinkingState                              sql.NullString
-			toolCallID, toolCallItemID, toolCallName, toolCallArgs sql.NullString
-			toolResultCallID, toolResultName, toolResultContent    sql.NullString
-			toolResultIsError                                      sql.NullInt64
-			imageRef, toolResultImages                             sql.NullString
+			turnID, turnPos   int64
+			role, displayText string
+			partPos           sql.NullInt64
+			r                 partRow
 		)
 		if err := rows.Scan(
 			&turnID, &turnPos, &role, &displayText,
-			&partPos, &kind, &text, &thinkingState,
-			&toolCallID, &toolCallItemID, &toolCallName, &toolCallArgs,
-			&toolResultCallID, &toolResultName, &toolResultContent, &toolResultIsError,
-			&imageRef, &toolResultImages,
+			&partPos, &r.kind, &r.text, &r.thinkingState,
+			&r.toolCallID, &r.toolCallItemID, &r.toolCallName, &r.toolCallArgs,
+			&r.toolResultCallID, &r.toolResultName, &r.toolResultContent, &r.toolResultIsError,
+			&r.imageRef, &r.toolResultImages,
 		); err != nil {
 			return nil, fmt.Errorf("scanning row: %w", err)
 		}
@@ -364,14 +360,11 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 			orderedKeys = append(orderedKeys, turnKey{id: turnID, position: int(turnPos), role: role, displayText: displayText})
 		}
 
-		if !kind.Valid {
+		if !r.kind.Valid {
 			continue
 		}
 
-		part, err := scanPart(kind.String, text.String, thinkingState.String,
-			toolCallID.String, toolCallItemID.String, toolCallName.String, toolCallArgs.String,
-			toolResultCallID.String, toolResultName.String, toolResultContent.String, toolResultIsError.Int64 != 0,
-			imageRef.String, toolResultImages.String)
+		part, err := r.part()
 		if err != nil {
 			return nil, fmt.Errorf("building part: %w", err)
 		}
@@ -392,19 +385,26 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 	return turns, nil
 }
 
-func scanPart(kind, text, thinkingState,
-	toolCallID, toolCallItemID, toolCallName, toolCallArgs,
-	toolResultCallID, toolResultName, toolResultContent string,
-	toolResultIsError bool, imageRef, toolResultImages string) (domain.Part, error) {
+// partRow is the part columns of a turn row, which are all NULL for a turn
+// with no parts.
+type partRow struct {
+	kind, text, thinkingState                              sql.NullString
+	toolCallID, toolCallItemID, toolCallName, toolCallArgs sql.NullString
+	toolResultCallID, toolResultName, toolResultContent    sql.NullString
+	toolResultIsError                                      sql.NullInt64
+	imageRef, toolResultImages                             sql.NullString
+}
 
-	switch domain.PartKind(kind) {
+// part decodes the row's part.
+func (r partRow) part() (domain.Part, error) {
+	switch domain.PartKind(r.kind.String) {
 	case domain.PartText:
-		return domain.Part{Kind: domain.PartText, Text: text}, nil
+		return domain.Part{Kind: domain.PartText, Text: r.text.String}, nil
 
 	case domain.PartThinking:
-		tp := &domain.ThinkingPart{Text: text}
-		if thinkingState != "" {
-			tp.State = json.RawMessage(thinkingState)
+		tp := &domain.ThinkingPart{Text: r.text.String}
+		if r.thinkingState.String != "" {
+			tp.State = json.RawMessage(r.thinkingState.String)
 		}
 		return domain.Part{Kind: domain.PartThinking, Thinking: tp}, nil
 
@@ -412,26 +412,26 @@ func scanPart(kind, text, thinkingState,
 		return domain.Part{
 			Kind: domain.PartToolCall,
 			ToolCall: &domain.ToolCall{
-				ID:     toolCallID,
-				ItemID: toolCallItemID,
+				ID:     r.toolCallID.String,
+				ItemID: r.toolCallItemID.String,
 				Type:   "function",
 				Function: domain.ToolCallFunction{
-					Name:      toolCallName,
-					Arguments: toolCallArgs,
+					Name:      r.toolCallName.String,
+					Arguments: r.toolCallArgs.String,
 				},
 			},
 		}, nil
 
 	case domain.PartToolResult:
 		result := &domain.ToolResultPart{
-			ToolCallID: toolResultCallID,
-			Name:       toolResultName,
-			Content:    toolResultContent,
-			IsError:    toolResultIsError,
+			ToolCallID: r.toolResultCallID.String,
+			Name:       r.toolResultName.String,
+			Content:    r.toolResultContent.String,
+			IsError:    r.toolResultIsError.Int64 != 0,
 		}
-		if toolResultImages != "" {
+		if r.toolResultImages.String != "" {
 			var refs []storedImageRef
-			if err := json.Unmarshal([]byte(toolResultImages), &refs); err != nil {
+			if err := json.Unmarshal([]byte(r.toolResultImages.String), &refs); err != nil {
 				return domain.Part{}, fmt.Errorf("decoding tool result images: %w", err)
 			}
 			for _, ref := range refs {
@@ -442,12 +442,12 @@ func scanPart(kind, text, thinkingState,
 
 	case domain.PartImage:
 		var ref storedImageRef
-		if err := json.Unmarshal([]byte(imageRef), &ref); err != nil {
+		if err := json.Unmarshal([]byte(r.imageRef.String), &ref); err != nil {
 			return domain.Part{}, fmt.Errorf("decoding image reference: %w", err)
 		}
 		return domain.NewImagePart(ref.imagePart()), nil
 
 	default:
-		return domain.Part{}, fmt.Errorf("unknown part kind %q", kind)
+		return domain.Part{}, fmt.Errorf("unknown part kind %q", r.kind.String)
 	}
 }

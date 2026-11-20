@@ -25,13 +25,11 @@ import (
 type Handler struct {
 	service       Service
 	previewDomain string
-	httpsPort     int
 	cookieSecret  []byte
 }
 
-// NewHandler creates a new preview Handler.
-// httpsPort is the HTTPS port of the main server; used when generating preview URLs.
-func NewHandler(service Service, previewDomain string, httpsPort int) *Handler {
+// NewHandler creates a new preview Handler for previews under previewDomain.
+func NewHandler(service Service, previewDomain string) *Handler {
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		log.Fatalf("failed to generate preview cookie secret: %v", err)
@@ -39,7 +37,6 @@ func NewHandler(service Service, previewDomain string, httpsPort int) *Handler {
 	return &Handler{
 		service:       service,
 		previewDomain: previewDomain,
-		httpsPort:     httpsPort,
 		cookieSecret:  secret,
 	}
 }
@@ -72,7 +69,7 @@ func (h *Handler) HandleGenerateURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	previewURL, err := h.service.GenerateURL(r.Context(), user.ID, wsID, req.Port, h.previewDomain, h.httpsPort)
+	previewURL, err := h.service.GenerateURL(r.Context(), user.ID, wsID, req.Port)
 	if err != nil {
 		if errors.Is(err, workspace.ErrNotFound) || errors.Is(err, workspace.ErrForbidden) {
 			writeError(w, http.StatusNotFound, "workspace not found")
