@@ -378,7 +378,6 @@ type aiRouteHandler interface {
 	HandleCreateConversation(http.ResponseWriter, *http.Request)
 	HandleDeleteConversation(http.ResponseWriter, *http.Request)
 	HandleGetMessages(http.ResponseWriter, *http.Request)
-	HandleSaveMessages(http.ResponseWriter, *http.Request)
 	HandleUploadAttachment(http.ResponseWriter, *http.Request)
 	HandleGetAttachment(http.ResponseWriter, *http.Request)
 	HandleListProviders(http.ResponseWriter, *http.Request)
@@ -575,7 +574,6 @@ func registerRoutes(mux *http.ServeMux, authHandler *auth.Handler, inviteHandler
 	mux.Handle("POST /api/ai/conversations", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleCreateConversation)))
 	mux.Handle("DELETE /api/ai/conversations/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleDeleteConversation)))
 	mux.Handle("GET /api/ai/conversations/{id}/messages", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetMessages)))
-	mux.Handle("PUT /api/ai/conversations/{id}/messages", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleSaveMessages)))
 	mux.Handle("POST /api/ai/attachments", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleUploadAttachment)))
 	mux.Handle("GET /api/ai/attachments/{id}", authMiddleware.RequireAuth(http.HandlerFunc(aiHandler.HandleGetAttachment)))
 

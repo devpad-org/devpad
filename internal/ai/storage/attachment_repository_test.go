@@ -99,7 +99,7 @@ func TestConversationRepository_SavesImagePartsAndLinksTheirAttachments(t *testi
 			ToolCallID: "call-1", Name: "read_file", Content: "Image a.png", Images: []domain.ImagePart{fromTool.ImagePart()},
 		}),
 	}
-	if err := conversations.SaveTurns(ctx, conv.ID, turns); err != nil {
+	if err := conversations.AppendTurns(ctx, conv.ID, turns); err != nil {
 		t.Fatalf("save turns: %v", err)
 	}
 

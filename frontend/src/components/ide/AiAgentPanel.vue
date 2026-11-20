@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import DocLink from '@/components/DocLink.vue'
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { aiApi, attachmentUrl, type AISkill, type ChatImage, type ChatMessage, type StreamEvent, type PlanStep, type ToolCall, type ToolResult, type ApprovalDetail, type ApprovalRequest, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
+import { aiApi, attachmentUrl, type AISkill, type ChatImage, type ChatMessage, type StreamEvent, type PlanStep, type ToolResult, type ApprovalDetail, type ApprovalRequest, type ApprovalResult, type ContextSize, type UserQuestion, type UserQuestionAnswer, type UserQuestionOption, type UserQuestionRequest, type UserQuestionResult } from '@/api/ai'
 import { useConversationStore } from '@/stores/chatHistory'
-import { useAgentRunStore, isAgentRunActiveStatus, type AgentRun } from '@/stores/agentRuns'
+import { useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
 import { useAiAgentStore } from '@/stores/aiAgents'
 import { useAiModelStore } from '@/stores/aiModels'
 import { defaultAIModel, defaultThinkingEffort, isBuiltInAgentId, thinkingEffortLabel } from '@/utils/aiModels'
@@ -163,10 +163,9 @@ const allSlashCommands = computed<SlashCommand[]>(() => [
 ])
 const activeConversationId = ref<number | null>(null)
 
+// messages is only what the panel displays. The server owns the conversation:
+// it loads the history for each run and saves everything the run produces.
 const messages = ref<DisplayMessage[]>([])
-// rawMessages tracks the full API message history including role:"tool" messages.
-// It is the source of truth for saving; messages is the source of truth for rendering.
-const rawMessages = ref<ChatMessage[]>([])
 
 const inputValue = ref('')
 const pendingImages = ref<PendingImage[]>([])
@@ -187,7 +186,6 @@ const thinkingEffortPreferences = ref<Record<string, string>>({})
 const streaming = ref(false)
 const abortController = ref<AbortController | null>(null)
 const activeAgentRunId = ref<number | null>(null)
-const continuationParentRunId = ref<number | null>(null)
 const inputFocused = ref(false)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const planExpanded = ref(false)
@@ -1043,41 +1041,11 @@ async function loadConversation(convId: number) {
   // Handoff notes belong to the conversation they came from.
   handedOff.value = []
   const res = await aiApi.getMessages(convId)
-  rawMessages.value = res.messages
   messages.value = reconstructDisplayMessages(res.messages)
   activeConversationId.value = convId
-  continuationParentRunId.value = findContinuationParentRunId(convId)
   conversationStore.setActive(convId)
   await nextTick()
   scrollToBottom({ force: true })
-}
-
-async function saveCurrentConversation() {
-  // If no messages to save, skip.
-  if (rawMessages.value.length === 0) return
-
-  // Create a conversation on first save for this session.
-  if (activeConversationId.value === null) {
-    try {
-      const conv = await conversationStore.createConversation(props.workspaceId, selectedModel.value)
-      activeConversationId.value = conv.id
-      conversationStore.setActive(conv.id)
-    } catch {
-      // Could not create conversation — skip save to avoid losing chat flow.
-      return
-    }
-  }
-
-  const convId = activeConversationId.value
-  if (convId === null) return
-
-  try {
-    await aiApi.saveMessages(convId, rawMessages.value)
-    // Refresh the conversation list so the title/updatedAt updates are reflected.
-    conversationStore.fetchConversations(props.workspaceId)
-  } catch (err) {
-    console.error('Failed to save conversation messages:', err)
-  }
 }
 
 function addImageFiles(files: File[]) {
@@ -1206,17 +1174,16 @@ async function sendMessage() {
     return
   }
 
-  // Push user message to display and raw arrays.
-  const userImages = images.length > 0 ? images : undefined
-  messages.value.push({ role: 'user', content: text, segments: [], images: userImages })
-  rawMessages.value.push({ role: 'user', content: text, images: userImages })
+  messages.value.push({ role: 'user', content: text, segments: [], images: images.length > 0 ? images : undefined })
   inputValue.value = ''
   clearPendingImages()
   resetInputHeight()
 
-  // Add empty assistant message for streaming.
+  // Add empty assistant message for streaming. Keep a reference to it rather
+  // than its index: loading another conversation replaces messages while this
+  // stream may still be delivering events.
   messages.value.push({ role: 'assistant', content: '', segments: [] })
-  const assistantIdx = messages.value.length - 1
+  const assistantMsg = messages.value[messages.value.length - 1]
 
   await nextTick()
   scrollToBottom({ force: true })
@@ -1226,38 +1193,16 @@ async function sendMessage() {
   abortController.value = controller
   activeContextSize.value = null
 
-  // Build the API payload from rawMessages (excludes the empty assistant placeholder).
-  const chatMessages: ChatMessage[] = rawMessages.value.slice()
-  if (slashCommand && chatMessages.length > 0) {
-    chatMessages[chatMessages.length - 1] = { role: 'user', content: requestText, images: userImages }
-  }
-
-  // Each LLM iteration is tracked as a "round" so we can reconstruct the correct
-  // interleaved assistant/tool message sequence for rawMessages on completion.
-  interface Round {
-    content: string
-    reasoningContent: string
-    thinkingState: unknown
-    toolCalls: ToolCall[]
-    toolResults: ChatMessage[]
-  }
-  const rounds: Round[] = [{ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] }]
-  let streamFailed = false
-  let streamDetached = false
-  let createdRun: AgentRun | null = null
-  const parentRunId = continuationParentRunId.value
-
   try {
     const created = await aiApi.createAgentRun(
       selectedModel.value,
-      chatMessages,
+      requestText,
+      images,
       props.workspaceId,
       conversationId,
       thinkingRequest.value,
-      parentRunId ?? undefined,
       props.selectedAgentId,
     )
-    createdRun = created.run
     agentRunStore.upsertRun(created.run)
     activeAgentRunId.value = created.run.id
 
@@ -1269,9 +1214,8 @@ async function sendMessage() {
         }
 
         if (event.error) {
-          streamFailed = true
-          messages.value[assistantIdx].content += `\n\nError: ${event.error}`
-          const segs = messages.value[assistantIdx].segments
+          assistantMsg.content += `\n\nError: ${event.error}`
+          const segs = assistantMsg.segments
           const last = segs[segs.length - 1]
           if (last && last.type === 'text') {
             last.content += `\n\nError: ${event.error}`
@@ -1281,36 +1225,18 @@ async function sendMessage() {
         }
 
         if (event.reasoningContent) {
-          // Reasoning before content marks the start of a new LLM round after tool results.
-          if (rounds[rounds.length - 1].toolResults.length > 0) {
-            rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
-          }
-          const segs = messages.value[assistantIdx].segments
+          const segs = assistantMsg.segments
           const lastSeg = segs[segs.length - 1]
           if (lastSeg && lastSeg.type === 'thinking') {
             lastSeg.content += event.reasoningContent
           } else {
             segs.push({ type: 'thinking', content: event.reasoningContent })
           }
-          rounds[rounds.length - 1].reasoningContent += event.reasoningContent
-        }
-
-        if (event.thinkingState !== undefined) {
-          // ThinkingState before content also signals a new round when tool results are present.
-          if (rounds[rounds.length - 1].toolResults.length > 0) {
-            rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
-          }
-          rounds[rounds.length - 1].thinkingState = event.thinkingState
         }
 
         if (event.content) {
-          // A content event after tool results signals the start of a new LLM round.
-          if (rounds[rounds.length - 1].toolResults.length > 0) {
-            rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
-          }
-          rounds[rounds.length - 1].content += event.content
-          messages.value[assistantIdx].content += event.content
-          const segs = messages.value[assistantIdx].segments
+          assistantMsg.content += event.content
+          const segs = assistantMsg.segments
           const last = segs[segs.length - 1]
           if (last && last.type === 'text') {
             last.content += event.content
@@ -1320,16 +1246,9 @@ async function sendMessage() {
         }
 
         if (event.toolCalls) {
-          // The server sends all tool calls for one LLM iteration in a single event
-          // before executing any of them. If there are prior tool results in the current
-          // round, this batch belongs to the next iteration — start a fresh round.
-          if (rounds[rounds.length - 1].toolResults.length > 0) {
-            rounds.push({ content: '', reasoningContent: '', thinkingState: undefined, toolCalls: [], toolResults: [] })
-          }
           for (const tc of event.toolCalls) {
-            rounds[rounds.length - 1].toolCalls.push({ id: tc.id, itemId: tc.itemId, type: tc.type, function: { name: tc.name, arguments: tc.arguments } })
             if (!shouldRenderToolCall(tc.name)) continue
-            messages.value[assistantIdx].segments.push({
+            assistantMsg.segments.push({
               type: 'tool',
               toolCallId: tc.id,
               name: tc.name,
@@ -1340,7 +1259,7 @@ async function sendMessage() {
 
         const toolResult = event.toolResult
         if (toolResult) {
-          const segs = messages.value[assistantIdx].segments
+          const segs = assistantMsg.segments
           const toolSeg = segs.find(
             (s): s is ToolSegment => s.type === 'tool' && s.toolCallId === toolResult.toolCallId && !hasToolResult(s)
           )
@@ -1348,37 +1267,31 @@ async function sendMessage() {
             toolSeg.result = toolResult.content
             toolSeg.images = toolResult.images
           }
-          rounds[rounds.length - 1].toolResults.push({
-            role: 'tool',
-            content: toolResult.content,
-            tool_call_id: toolResult.toolCallId,
-            images: toolResult.images,
-          })
           refreshRunsAfterSubAgentTool(toolResult)
         }
 
         if (event.approvalRequired) {
-          applyApprovalRequired(messages.value[assistantIdx].segments, event.approvalRequired)
+          applyApprovalRequired(assistantMsg.segments, event.approvalRequired)
           refreshRunForEvent(event)
         }
 
         if (event.approvalResolved) {
-          applyApprovalResolved(messages.value[assistantIdx].segments, event.approvalResolved)
+          applyApprovalResolved(assistantMsg.segments, event.approvalResolved)
           refreshRunForEvent(event)
         }
 
         if (event.questionRequired) {
-          applyQuestionRequired(messages.value[assistantIdx].segments, event.questionRequired)
+          applyQuestionRequired(assistantMsg.segments, event.questionRequired)
           refreshRunForEvent(event)
         }
 
         if (event.questionResolved) {
-          applyQuestionResolved(messages.value[assistantIdx].segments, event.questionResolved)
+          applyQuestionResolved(assistantMsg.segments, event.questionResolved)
           refreshRunForEvent(event)
         }
 
         if (event.plan) {
-          upsertPlanSegment(messages.value[assistantIdx].segments, event.plan)
+          upsertPlanSegment(assistantMsg.segments, event.plan)
         }
         scrollToBottom()
       },
@@ -1386,40 +1299,12 @@ async function sendMessage() {
       controller.signal,
     )
   } catch (err: any) {
-    streamFailed = true
-    // Aborting only detaches this panel from the SSE stream — newChat() has already reset
-    // the panel and the run keeps going server-side, so this turn owns no state to persist.
-    streamDetached = isAbortError(err)
-    if (!streamDetached) {
-      messages.value[assistantIdx].content =
-        messages.value[assistantIdx].content || `Error: ${err.message}`
+    // Aborting only detaches this panel from the SSE stream; the run keeps going
+    // server-side and saves its own output.
+    if (!isAbortError(err)) {
+      assistantMsg.content = assistantMsg.content || `Error: ${err.message}`
     }
   } finally {
-    // Flush each LLM round to rawMessages: assistant message followed by its tool results.
-    // This preserves the exact interleaved structure the provider saw across iterations.
-    // Failed streams flush too: dropping the exchange would erase the user's message along
-    // with everything the agent already did, so the next request would start with no history
-    // even though the panel still shows the conversation.
-    if (!streamDetached) {
-      for (const round of rounds) {
-        // A round interrupted mid-iteration can hold tool calls that never ran. Providers
-        // reject tool calls without matching results, so only keep the answered ones.
-        const toolCalls = streamFailed
-          ? round.toolCalls.filter((call) => round.toolResults.some((result) => result.tool_call_id === call.id))
-          : round.toolCalls
-        // A round that produced nothing would be saved as an assistant turn with no parts,
-        // which providers reject on the next request.
-        if (!round.content && !round.reasoningContent && round.thinkingState === undefined && toolCalls.length === 0) continue
-
-        const assistantRaw: ChatMessage = { role: 'assistant', content: round.content }
-        if (round.reasoningContent) assistantRaw.reasoning_content = round.reasoningContent
-        if (round.thinkingState !== undefined) assistantRaw.thinking_state = round.thinkingState
-        if (toolCalls.length > 0) assistantRaw.tool_calls = toolCalls
-        rawMessages.value.push(assistantRaw)
-        for (const toolMsg of round.toolResults) rawMessages.value.push(toolMsg)
-      }
-    }
-
     streaming.value = false
     abortController.value = null
     const completedRunId = activeAgentRunId.value
@@ -1427,17 +1312,10 @@ async function sendMessage() {
     await nextTick()
     scrollToBottom()
 
-    // Auto-save whatever the turn produced, including after a failure — a transient
-    // provider error must not cost the user their history. Await it before refreshing the
-    // run status so that the "Continue" button only becomes available once persisted.
-    if (!streamDetached) {
-      await saveCurrentConversation().catch((err) => {
-        console.error('Auto-save failed:', err)
-      })
-      if (createdRun) {
-        continuationParentRunId.value = rootRunIdFor(createdRun)
-      }
-    }
+    // The run may have titled the conversation or moved it to the top.
+    conversationStore.fetchConversations(props.workspaceId).catch((err) => {
+      console.error('Failed to refresh conversations:', err)
+    })
 
     if (completedRunId !== null) {
       agentRunStore.refreshRun(completedRunId).catch((err) => {
@@ -1488,13 +1366,11 @@ function newChat() {
     abortController.value?.abort()
   }
   messages.value = []
-  rawMessages.value = []
   handedOff.value = []
   inputValue.value = ''
   clearPendingImages()
   planExpanded.value = false
   activeAgentRunId.value = null
-  continuationParentRunId.value = null
   activeContextSize.value = null
   focusedRunContextSize.value = null
   autoScrollEnabled.value = true
@@ -1503,48 +1379,13 @@ function newChat() {
   conversationStore.setActive(null)
 }
 
-function findContinuationParentRunId(conversationId: number): number | null {
-  const runs = agentRunStore.runs
-    .filter((run) => run.workspaceId === props.workspaceId && run.conversationId === conversationId)
-    .sort(compareRunsByUpdatedAt)
-  const latest = runs[0]
-  return latest ? rootRunIdFor(latest) : null
-}
-
-function rootRunIdFor(run: AgentRun): number {
-  let current = run
-  const seen = new Set<number>()
-
-  while (current.parentRunId && !seen.has(current.id)) {
-    seen.add(current.id)
-    const parent = agentRunStore.runs.find((candidate) => candidate.id === current.parentRunId)
-    if (!parent) return current.parentRunId
-    current = parent
-  }
-
-  return current.id
-}
-
-function compareRunsByUpdatedAt(a: AgentRun, b: AgentRun): number {
-  return runTime(b.updatedAt, b.createdAt) - runTime(a.updatedAt, a.createdAt) || b.id - a.id
-}
-
-function runTime(updatedAt: string, createdAt: string): number {
-  const updated = new Date(updatedAt).getTime()
-  if (Number.isFinite(updated)) return updated
-  const created = new Date(createdAt).getTime()
-  return Number.isFinite(created) ? created : 0
-}
-
 async function continueFocusedRunConversation() {
   const conversationId = focusedRun.value?.conversationId
   if (!conversationId) return
 
   try {
-    const parentRunId = rootRunIdFor(focusedRun.value)
     const focusedTranscript = cloneDisplayMessages(focusedRunMessages.value)
     await loadConversation(conversationId)
-    continuationParentRunId.value = parentRunId
     if (focusedTranscript.length > 0) {
       messages.value = focusedTranscript
     }

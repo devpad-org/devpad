@@ -127,13 +127,13 @@ type childAgentRunStarter struct {
 }
 
 func (s childAgentRunStarter) StartChildAgentRun(ctx context.Context, req aitools.ChildAgentRunRequest) (*aitools.ChildAgentRun, error) {
-	run, err := s.runs.StartChildRun(ctx, req.ParentRunID, app.StartAgentRunRequest{
+	run, err := s.runs.StartChildRun(ctx, req.ParentRunID, app.StartChildAgentRunRequest{
 		UserID:         req.UserID,
 		WorkspaceID:    req.WorkspaceID,
 		ConversationID: req.ConversationID,
 		Model:          req.Model,
 		AgentID:        req.AgentID,
-		Turns:          []domain.Turn{domain.NewTextTurn(domain.RoleUser, req.Prompt)},
+		Prompt:         req.Prompt,
 		Thinking:       req.Thinking,
 	})
 	if err != nil {

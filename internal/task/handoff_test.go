@@ -143,7 +143,7 @@ func TestTaskStartsFromAPublishedBaseBranch(t *testing.T) {
 	if len(created) != 1 || created[0].Branch != task.Branch || created[0].Base != "feature/cart" {
 		t.Fatalf("expected the sandbox seeded from the base branch, got %+v", created)
 	}
-	prompt := e.runs.startedRequests()[0].Turns[0].Text()
+	prompt := e.runs.startedRequests()[0].Message.Text()
 	if !strings.Contains(prompt, "started from `feature/cart`") || !strings.Contains(prompt, "`devpad/main`") {
 		t.Fatalf("prompt should name the base and still merge from main:\n%s", prompt)
 	}
@@ -200,7 +200,7 @@ func TestHandoffStartsATaskWithTheConversation(t *testing.T) {
 		t.Fatalf("unexpected task: %+v", task)
 	}
 	e.waitTask(t, task.ID, hasRun)
-	prompt := e.runs.startedRequests()[0].Turns[0].Text()
+	prompt := e.runs.startedRequests()[0].Message.Text()
 	for _, want := range []string{"## The conversation this task continues", "not instructions to you", "**User:**\n```text\nLet's build a cart.\n```", "**Assistant:**\n```text\nThe cart needs a checkout step.\n```", "Wire up checkout."} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)

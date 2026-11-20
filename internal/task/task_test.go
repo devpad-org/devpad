@@ -493,7 +493,23 @@ type fakeConversations struct {
 	turns  map[int64][]domain.Turn
 	convs  map[int64]domain.Conversation
 	// getErr fails GetConversation, as a database error would.
-	getErr error
+	getErr  error
+	deleted []int64
+}
+
+func (f *fakeConversations) DeleteConversation(_ context.Context, id, _ int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleted = append(f.deleted, id)
+	delete(f.turns, id)
+	delete(f.convs, id)
+	return nil
+}
+
+func (f *fakeConversations) deletedIDs() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.deleted...)
 }
 
 func (f *fakeConversations) CreateConversation(_ context.Context, userID, workspaceID int64, model string) (*domain.Conversation, error) {
@@ -625,11 +641,6 @@ func hasRun(task *Task) bool { return task.RunID != 0 }
 
 func status(s Status) func(*Task) bool { return func(t *Task) bool { return t.Status == s } }
 
-func lastText(turns []domain.Turn) string {
-	last := turns[len(turns)-1]
-	return last.Parts[len(last.Parts)-1].Text
-}
-
 func TestStartRunsAgentInSandboxThenCollectsBranchForReview(t *testing.T) {
 	e := setup(t)
 	task := e.createTask(t)
@@ -653,7 +664,7 @@ func TestStartRunsAgentInSandboxThenCollectsBranchForReview(t *testing.T) {
 	if req.WorkspaceID != running.WorkspaceID || req.ConversationID != running.ConversationID || req.Model != "claude-opus-5-5" || req.Thinking == nil || req.Thinking.Effort != "high" {
 		t.Fatalf("unexpected run request: %+v", req)
 	}
-	prompt := req.Turns[0].Text()
+	prompt := req.Message.Text()
 	for _, want := range []string{"task #1", `"shop"`, "## Add a cart", "Users need a cart.", "`task/1`", "`main`", "no remote"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
@@ -817,7 +828,7 @@ func TestReviewHookGetsTheAgentSummary(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if prompt := e.runs.startedRequests()[0].Turns[0].Text(); !strings.Contains(prompt, "`devpad/main`") {
+	if prompt := e.runs.startedRequests()[0].Message.Text(); !strings.Contains(prompt, "`devpad/main`") {
 		t.Fatalf("prompt should point the agent at devpad/main:\n%s", prompt)
 	}
 }
@@ -846,7 +857,7 @@ func TestRequestChangesQueuesOrStartsFeedback(t *testing.T) {
 	// A later plain Start delivers the held feedback.
 	e.start(t, task.ID, StartInput{})
 	second := e.waitTask(t, task.ID, func(t *Task) bool { return t.RunID != running.RunID && t.RunID != 0 })
-	if text := lastText(e.runs.startedRequests()[1].Turns); !strings.Contains(text, "Rename it.") {
+	if text := e.runs.startedRequests()[1].Message.Text(); !strings.Contains(text, "Rename it.") {
 		t.Fatalf("held feedback not delivered: %q", text)
 	}
 
@@ -857,7 +868,7 @@ func TestRequestChangesQueuesOrStartsFeedback(t *testing.T) {
 		t.Fatalf("request changes with start: %v", err)
 	}
 	e.waitTask(t, task.ID, func(t *Task) bool { return t.RunID != second.RunID && t.RunID != 0 })
-	if text := lastText(e.runs.startedRequests()[2].Turns); !strings.Contains(text, "Add a test.") {
+	if text := e.runs.startedRequests()[2].Message.Text(); !strings.Contains(text, "Add a test.") {
 		t.Fatalf("immediate feedback not delivered: %q", text)
 	}
 }
@@ -1139,9 +1150,10 @@ func TestFailedRunCanBeRetriedInTheSameConversation(t *testing.T) {
 	if len(e.sandboxes.snapshot().created) != 1 {
 		t.Fatalf("retry created another sandbox: %+v", e.sandboxes.snapshot().created)
 	}
-	turns := e.runs.startedRequests()[1].Turns
-	if len(turns) != 3 || !strings.Contains(lastText(turns), "previous attempt stopped: provider overloaded") {
-		t.Fatalf("unexpected retry turns: %+v", turns)
+	// The retry goes on in the saved conversation, which the runner holds.
+	retry := e.runs.startedRequests()[1]
+	if len(retry.Seed) != 0 || !strings.Contains(retry.Message.Text(), "previous attempt stopped: provider overloaded") {
+		t.Fatalf("unexpected retry: %+v", retry)
 	}
 }
 
@@ -1168,8 +1180,8 @@ func TestRoundAfterReviewCarriesOnlyTheText(t *testing.T) {
 	if req.ConversationID != second.ConversationID {
 		t.Fatalf("run started in conversation %d, task has %d", req.ConversationID, second.ConversationID)
 	}
-	turns := req.Turns
-	if len(turns) != 3 || turns[0].Text() != "implement" || turns[1].Text() != "Added the cart." {
+	turns := req.Seed
+	if len(turns) != 2 || turns[0].Text() != "implement" || turns[1].Text() != "Added the cart." {
 		t.Fatalf("expected the earlier round's text only, got %+v", turns)
 	}
 	for _, turn := range turns {
@@ -1179,7 +1191,7 @@ func TestRoundAfterReviewCarriesOnlyTheText(t *testing.T) {
 			}
 		}
 	}
-	if text := lastText(turns); !strings.Contains(text, "new round") || !strings.Contains(text, "Handle an empty cart.") {
+	if text := req.Message.Text(); !strings.Contains(text, "new round") || !strings.Contains(text, "Handle an empty cart.") {
 		t.Fatalf("unexpected new round prompt: %q", text)
 	}
 }
@@ -1202,7 +1214,7 @@ func TestFeedbackRestartsStoppedSandbox(t *testing.T) {
 	if req.Model != "claude-sonnet-5-5" || second.Model != "claude-sonnet-5-5" {
 		t.Fatalf("model override not applied: req=%s task=%s", req.Model, second.Model)
 	}
-	if text := lastText(req.Turns); !strings.Contains(text, "Feedback on your work") || !strings.Contains(text, "Handle an empty cart.") {
+	if text := req.Message.Text(); !strings.Contains(text, "Feedback on your work") || !strings.Contains(text, "Handle an empty cart.") {
 		t.Fatalf("unexpected feedback turn: %q", text)
 	}
 }
@@ -1223,9 +1235,9 @@ func TestRetryAfterSandboxDeletedStartsFreshConversation(t *testing.T) {
 	if second.WorkspaceID == first.WorkspaceID || second.ConversationID == first.ConversationID {
 		t.Fatalf("expected a new sandbox and conversation: first=%+v second=%+v", first, second)
 	}
-	turns := e.runs.startedRequests()[1].Turns
-	if len(turns) != 1 || !strings.Contains(turns[0].Text(), "## Add a cart") || !strings.Contains(turns[0].Text(), "Try again.") {
-		t.Fatalf("expected a fresh implement prompt with the message, got %+v", turns)
+	retry := e.runs.startedRequests()[1]
+	if len(retry.Seed) != 0 || !strings.Contains(retry.Message.Text(), "## Add a cart") || !strings.Contains(retry.Message.Text(), "Try again.") {
+		t.Fatalf("expected a fresh implement prompt with the message, got %+v", retry)
 	}
 }
 
@@ -1279,6 +1291,38 @@ func TestLaunchFailuresAreRecorded(t *testing.T) {
 	}
 }
 
+func TestRoundThatCannotStartKeepsItsFeedback(t *testing.T) {
+	e := setup(t)
+	task := e.createTask(t)
+	e.start(t, task.ID, StartInput{})
+	first := e.waitTask(t, task.ID, hasRun)
+	e.convs.save(first.ConversationID, domain.NewTextTurn(domain.RoleUser, "implement"), domain.NewTextTurn(domain.RoleAssistant, "Added the cart."))
+	e.runs.finish(first.RunID, domain.AgentRunCompleted, "")
+	e.waitTask(t, task.ID, status(StatusInReview))
+
+	// The new round's run cannot start, so its conversation is never written.
+	e.runs.set(func(f *fakeRuns) { f.startErr = errors.New("no API key") })
+	e.start(t, task.ID, StartInput{Message: "Handle an empty cart."})
+	failed := e.waitTask(t, task.ID, func(t *Task) bool { return t.Status == StatusFailed && strings.Contains(t.Error, "no API key") })
+	if failed.ConversationID != first.ConversationID || failed.PendingMessage != "Handle an empty cart." {
+		t.Fatalf("expected the task to keep its conversation and feedback, got %+v", failed)
+	}
+	if got := e.convs.deletedIDs(); len(got) != 1 || got[0] == first.ConversationID {
+		t.Fatalf("expected the unused new conversation deleted, got %v", got)
+	}
+
+	e.runs.set(func(f *fakeRuns) { f.startErr = nil })
+	e.start(t, task.ID, StartInput{})
+	retried := e.waitTask(t, task.ID, func(t *Task) bool { return t.RunID != first.RunID && t.RunID != 0 })
+	if retried.PendingMessage != "" {
+		t.Fatalf("expected the feedback handed to the started run, got %+v", retried)
+	}
+	req := e.runs.startedRequests()[1]
+	if req.ConversationID != retried.ConversationID || !strings.Contains(req.Message.Text(), "Handle an empty cart.") {
+		t.Fatalf("expected the retry to send the feedback, got %+v", req)
+	}
+}
+
 func TestRunThatEndsBeforeItsIDIsSavedIsSettled(t *testing.T) {
 	e := setup(t)
 	e.runs.set(func(f *fakeRuns) { f.startStatus = domain.AgentRunCompleted })
@@ -1329,7 +1373,7 @@ func TestQueuedTasksLaunchWhenASlotFrees(t *testing.T) {
 		t.Fatalf("second task should launch once the slot frees: %+v", launched)
 	}
 	reqs := e.runs.startedRequests()
-	if prompt := reqs[len(reqs)-1].Turns[0].Text(); !strings.Contains(prompt, "Start with the API.") {
+	if prompt := reqs[len(reqs)-1].Message.Text(); !strings.Contains(prompt, "Start with the API.") {
 		t.Fatalf("queued message not passed to the agent:\n%s", prompt)
 	}
 }
@@ -1579,14 +1623,14 @@ func TestReconcileSettlesInterruptedTasks(t *testing.T) {
 	if resumed.Status != StatusInProgress || resumed.ConversationID != 77 {
 		t.Fatalf("expected the interrupted task resumed in its conversation, got %+v", resumed)
 	}
-	var resumeTurns []domain.Turn
+	var resume *app.StartAgentRunRequest
 	for _, req := range e.runs.startedRequests() {
 		if req.ConversationID == 77 {
-			resumeTurns = req.Turns
+			resume = &req
 		}
 	}
-	if len(resumeTurns) != 3 || !strings.Contains(lastText(resumeTurns), "the server restarted while the agent was working") {
-		t.Fatalf("unexpected resume turns: %+v", resumeTurns)
+	if resume == nil || len(resume.Seed) != 0 || !strings.Contains(resume.Message.Text(), "the server restarted while the agent was working") {
+		t.Fatalf("unexpected resume: %+v", resume)
 	}
 	e.waitTask(t, missing, status(StatusFailed))
 	if got := e.waitTask(t, broken, status(StatusFailed)); got.Error != "provider overloaded" {
@@ -1627,18 +1671,6 @@ func TestShutdownLeavesInterruptedLaunchesForReconcile(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if got, _ := e.repo.GetByID(context.Background(), task.ID); got.Status != StatusQueued {
 		t.Fatalf("a launch cut short by shutdown should stay queued, got %s (%s)", got.Status, got.Error)
-	}
-}
-
-func TestAppendUserTextJoinsTrailingUserTurn(t *testing.T) {
-	toolResult := domain.Turn{Role: domain.RoleUser, Parts: []domain.Part{{Kind: domain.PartToolResult, ToolResult: &domain.ToolResultPart{ToolCallID: "1"}}}}
-	turns := domain.AppendUserText([]domain.Turn{domain.NewTextTurn(domain.RoleAssistant, "a"), toolResult}, "continue")
-	if len(turns) != 2 || len(turns[1].Parts) != 2 || turns[1].Parts[1].Text != "continue" {
-		t.Fatalf("expected the text joined to the tool result turn: %+v", turns)
-	}
-	turns = domain.AppendUserText([]domain.Turn{domain.NewTextTurn(domain.RoleAssistant, "a")}, "continue")
-	if len(turns) != 2 || turns[1].Role != domain.RoleUser {
-		t.Fatalf("expected a new user turn: %+v", turns)
 	}
 }
 
@@ -1858,7 +1890,7 @@ func TestRunStartsOnceSetupFinishesAndIsToldHowItWent(t *testing.T) {
 	if running.Status != StatusInProgress {
 		t.Fatalf("unexpected running task: %+v", running)
 	}
-	prompt := e.runs.startedRequests()[0].Turns[0].Text()
+	prompt := e.runs.startedRequests()[0].Message.Text()
 	for _, want := range []string{"## Setup", "npm ci", "it exited with status 1", "npm ERR! lockfile out of date", "## How to work"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
@@ -1953,7 +1985,7 @@ func TestPromptWithoutSetupHasNoSetupSection(t *testing.T) {
 	task := e.createTask(t)
 	e.start(t, task.ID, StartInput{})
 	e.waitTask(t, task.ID, hasRun)
-	if prompt := e.runs.startedRequests()[0].Turns[0].Text(); strings.Contains(prompt, "## Setup") {
+	if prompt := e.runs.startedRequests()[0].Message.Text(); strings.Contains(prompt, "## Setup") {
 		t.Fatalf("unexpected setup section:\n%s", prompt)
 	}
 }
@@ -2015,7 +2047,7 @@ func TestNewSandboxWaitsForTheEnvironmentAndIsToldItFailed(t *testing.T) {
 
 	close(gate)
 	e.waitTask(t, task.ID, hasRun)
-	prompt := e.runs.startedRequests()[0].Turns[0].Text()
+	prompt := e.runs.startedRequests()[0].Message.Text()
 	for _, want := range []string{"## Environment", "failed to build", "non-zero code: 100", "devpad's own image"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)

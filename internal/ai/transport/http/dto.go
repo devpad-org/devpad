@@ -22,13 +22,28 @@ type ChatRequestDTO struct {
 
 // CreateAgentRunRequestDTO is the frontend request contract for background agent runs.
 type CreateAgentRunRequestDTO struct {
-	Model          string       `json:"model"`
-	AgentID        string       `json:"agentId,omitempty"`
-	Turns          []TurnDTO    `json:"turns"`
-	Thinking       *ThinkingDTO `json:"thinking,omitempty"`
-	WorkspaceID    int64        `json:"workspaceId,omitempty"`
-	ConversationID int64        `json:"conversationId,omitempty"`
-	ParentRunID    int64        `json:"parentRunId,omitempty"`
+	Model   string `json:"model"`
+	AgentID string `json:"agentId,omitempty"`
+	// Message and Images are the user's new message; the server holds the
+	// conversation's history.
+	Message        string        `json:"message"`
+	Images         []ImageRefDTO `json:"images,omitempty"`
+	Thinking       *ThinkingDTO  `json:"thinking,omitempty"`
+	WorkspaceID    int64         `json:"workspaceId,omitempty"`
+	ConversationID int64         `json:"conversationId,omitempty"`
+}
+
+// MessageTurn is the user's turn the request sends. Images go first: models
+// read a picture best before the question about it.
+func (r CreateAgentRunRequestDTO) MessageTurn() domain.Turn {
+	turn := domain.Turn{Role: domain.RoleUser}
+	for _, image := range r.Images {
+		turn.Parts = append(turn.Parts, domain.NewImagePart(toDomainImage(image)))
+	}
+	if r.Message != "" {
+		turn.Parts = append(turn.Parts, domain.Part{Kind: domain.PartText, Text: r.Message})
+	}
+	return turn
 }
 
 // ThinkingDTO controls thinking mode over the transport boundary.

@@ -99,6 +99,7 @@ type Conversations interface {
 	CreateConversation(ctx context.Context, userID, workspaceID int64, model string) (*domain.Conversation, error)
 	GetConversation(ctx context.Context, id, userID int64) (*domain.Conversation, error)
 	GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error)
+	DeleteConversation(ctx context.Context, id, userID int64) error
 }
 
 // Budgets looks up the limits a user set on what their agents may spend.
@@ -877,12 +878,16 @@ func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace
 		log.Printf("task %d: refreshing devpad/%s in sandbox %d: %v", t.ID, p.DefaultBranch, ws.ID, err)
 	}
 	message, previousError := t.PendingMessage, t.Error
-	t.Status, t.WorkspaceID, t.PendingMessage, t.Error = StatusInProgress, ws.ID, "", ""
-	turns, err := s.buildTurns(ctx, t, p, env, setup, message, previousError)
+	t.Status, t.WorkspaceID, t.Error = StatusInProgress, ws.ID, ""
+	conversationID, seed, prompt, err := s.runInput(ctx, t, p, env, setup, message, previousError)
 	if err != nil {
 		return err
 	}
+	// The task keeps its message and conversation until the run starts: a
+	// run that cannot start saves nothing to the conversation, so a retry
+	// has to build the same start again.
 	if err := s.repo.Update(ctx, t); err != nil {
+		s.dropConversation(t, conversationID)
 		return err
 	}
 
@@ -893,17 +898,19 @@ func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace
 	run, err := s.runs.StartRun(ctx, app.StartAgentRunRequest{
 		UserID:         t.UserID,
 		WorkspaceID:    ws.ID,
-		ConversationID: t.ConversationID,
+		ConversationID: conversationID,
 		AgentID:        t.AgentID,
 		Model:          t.Model,
-		Turns:          turns,
+		Seed:           seed,
+		Message:        domain.NewTextTurn(domain.RoleUser, prompt),
 		Thinking:       thinking,
 		Budget:         s.runBudget(t),
 	})
 	if err != nil {
+		s.dropConversation(t, conversationID)
 		return fmt.Errorf("starting agent: %w", err)
 	}
-	t.RunID = run.ID
+	t.ConversationID, t.PendingMessage, t.RunID = conversationID, "", run.ID
 	if err := s.repo.Update(ctx, t); err != nil {
 		return err
 	}
@@ -1038,7 +1045,22 @@ func (s *service) running(ctx context.Context, t *Task, ws *workspace.Workspace)
 	return ws, nil
 }
 
-// buildTurns picks up from the task's conversation when it has one. A round
+// dropConversation deletes a conversation runInput made for a run that did
+// not start, which is still empty. It is best-effort: an empty conversation
+// left behind changes nothing.
+func (s *service) dropConversation(t *Task, conversationID int64) {
+	if conversationID == t.ConversationID {
+		return
+	}
+	if err := s.conversations.DeleteConversation(context.Background(), conversationID, t.UserID); err != nil {
+		log.Printf("task %d: deleting unused conversation %d: %v", t.ID, conversationID, err)
+	}
+}
+
+// runInput is what the task's next run starts from: the conversation it
+// goes on in, the turns a new conversation is seeded with, if any, and the
+// prompt the agent is sent. It picks up from the task's conversation when it
+// has one. A round
 // cut short, by a failure or a restart, continues that conversation as it
 // is, so the agent keeps the work in progress. A round after one that
 // reached review starts a new conversation that carries only the earlier
@@ -1046,13 +1068,13 @@ func (s *service) running(ctx context.Context, t *Task, ws *workspace.Workspace)
 // start with all the context of the ones before it. Without a conversation
 // it starts one with the implement prompt, which says how the sandbox's
 // environment and setup went.
-func (s *service) buildTurns(ctx context.Context, t *Task, p *project.Project, env *project.Environment, setup *project.Setup, message, previousError string) ([]domain.Turn, error) {
+func (s *service) runInput(ctx context.Context, t *Task, p *project.Project, env *project.Environment, setup *project.Setup, message, previousError string) (int64, []domain.Turn, string, error) {
 	var carried []domain.Turn
 	if t.ConversationID != 0 {
 		turns, err := s.conversations.GetTurns(ctx, t.ConversationID, t.UserID)
 		if err == nil && len(turns) > 0 {
 			if previousError != "" {
-				return domain.AppendUserText(turns, continuePrompt(t, message, previousError)), nil
+				return t.ConversationID, nil, continuePrompt(t, message, previousError), nil
 			}
 			carried = carryOver(turns, maxCarriedBytes)
 		}
@@ -1062,17 +1084,16 @@ func (s *service) buildTurns(ctx context.Context, t *Task, p *project.Project, e
 	}
 	conv, err := s.conversations.CreateConversation(ctx, t.UserID, t.WorkspaceID, t.Model)
 	if err != nil {
-		return nil, err
+		return 0, nil, "", err
 	}
-	t.ConversationID = conv.ID
 	if len(carried) > 0 {
-		return domain.AppendUserText(carried, newRoundPrompt(t, message)), nil
+		return conv.ID, carried, newRoundPrompt(t, message), nil
 	}
 	prompt := implementPrompt(p, t, env, setup)
 	if message != "" {
 		prompt += "\n\n## Additional instructions\n\n" + message
 	}
-	return []domain.Turn{domain.NewTextTurn(domain.RoleUser, prompt)}, nil
+	return conv.ID, nil, prompt, nil
 }
 
 func implementPrompt(p *project.Project, t *Task, env *project.Environment, setup *project.Setup) string {

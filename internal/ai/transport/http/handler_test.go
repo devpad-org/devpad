@@ -102,9 +102,8 @@ func (s stubAgentRunService) StartRun(ctx context.Context, req app.StartAgentRun
 	return &domain.AgentRun{ID: 1, UserID: req.UserID, WorkspaceID: req.WorkspaceID, Model: req.Model, Status: domain.AgentRunQueued, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
 }
 
-func (s stubAgentRunService) StartChildRun(ctx context.Context, parentRunID int64, req app.StartAgentRunRequest) (*domain.AgentRun, error) {
-	req.ParentRunID = parentRunID
-	return s.StartRun(ctx, req)
+func (s stubAgentRunService) StartChildRun(_ context.Context, parentRunID int64, req app.StartChildAgentRunRequest) (*domain.AgentRun, error) {
+	return &domain.AgentRun{ID: 2, ParentRunID: parentRunID, UserID: req.UserID, WorkspaceID: req.WorkspaceID, Model: req.Model, Status: domain.AgentRunQueued, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
 }
 
 func (s stubAgentRunService) GetRun(ctx context.Context, userID, runID int64) (*domain.AgentRun, error) {
@@ -315,15 +314,18 @@ func TestHandleCreateAgentRun_StartsBackgroundRun(t *testing.T) {
 		if req.ConversationID != 77 {
 			t.Fatalf("expected conversation id 77, got %d", req.ConversationID)
 		}
-		if req.ParentRunID != 9 {
-			t.Fatalf("expected parent run id 9, got %d", req.ParentRunID)
+		if req.Message.Role != domain.RoleUser || req.Message.Text() != "hello" {
+			t.Fatalf("expected the user's message hello, got %+v", req.Message)
+		}
+		// The image goes before the text it is asked about.
+		if parts := req.Message.Parts; len(parts) != 2 || parts[0].Kind != domain.PartImage || parts[0].Image.AttachmentID != 5 {
+			t.Fatalf("expected the attached image first, got %+v", parts)
 		}
 		if req.Model != "gpt-5.4" {
 			t.Fatalf("expected model gpt-5.4, got %q", req.Model)
 		}
 		return &domain.AgentRun{
 			ID:             123,
-			ParentRunID:    req.ParentRunID,
 			UserID:         req.UserID,
 			WorkspaceID:    req.WorkspaceID,
 			ConversationID: req.ConversationID,
@@ -335,7 +337,7 @@ func TestHandleCreateAgentRun_StartsBackgroundRun(t *testing.T) {
 	}}
 
 	h := &Handler{runs: runs}
-	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":42,"conversationId":77,"parentRunId":9,"turns":[{"role":"user","parts":[{"kind":"text","text":"hello"}]}]}`))
+	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":42,"conversationId":77,"message":"hello","images":[{"attachmentId":5}]}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/agent/runs", body)
 	req = asTestUser(req)
 	w := httptest.NewRecorder()
@@ -350,6 +352,52 @@ func TestHandleCreateAgentRun_StartsBackgroundRun(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"id":123`) {
 		t.Fatalf("expected run response, got %s", w.Body.String())
+	}
+}
+
+func TestHandleCreateAgentRun_ValidatesRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"missing message", `{"model":"gpt-5.4","workspaceId":42,"conversationId":77}`, "message is required"},
+		{"blank message", `{"model":"gpt-5.4","workspaceId":42,"conversationId":77,"message":"  "}`, "message is required"},
+		{"missing conversation", `{"model":"gpt-5.4","workspaceId":42,"message":"hello"}`, "conversationId is required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runs := stubAgentRunService{startRunFn: func(context.Context, app.StartAgentRunRequest) (*domain.AgentRun, error) {
+				t.Fatal("expected the request to be rejected before starting a run")
+				return nil, nil
+			}}
+			h := &Handler{runs: runs}
+			req := httptest.NewRequest(http.MethodPost, "/api/ai/agent/runs", strings.NewReader(tt.body))
+			req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 11}))
+			w := httptest.NewRecorder()
+
+			h.HandleCreateAgentRun(w, req)
+
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), tt.want) {
+				t.Fatalf("expected 400 %q, got %d %s", tt.want, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleCreateAgentRun_RejectsBusyConversation(t *testing.T) {
+	runs := stubAgentRunService{startRunFn: func(context.Context, app.StartAgentRunRequest) (*domain.AgentRun, error) {
+		return nil, domain.ErrConversationBusy
+	}}
+	h := &Handler{runs: runs}
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/agent/runs", strings.NewReader(`{"model":"gpt-5.4","workspaceId":42,"conversationId":77,"message":"hello"}`))
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 11}))
+	w := httptest.NewRecorder()
+
+	h.HandleCreateAgentRun(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -601,21 +649,21 @@ func TestHandleCreateAgentRun_UsesTheAgentsDefaults(t *testing.T) {
 		h.HandleCreateAgentRun(w, req)
 		return w.Code
 	}
-	turns := `"workspaceId":42,"turns":[{"role":"user","parts":[{"kind":"text","text":"hi"}]}]`
+	message := `"workspaceId":42,"conversationId":77,"message":"hi"`
 
-	if code := post(`{"agentId":"review",` + turns + `}`); code != http.StatusCreated {
+	if code := post(`{"agentId":"review",` + message + `}`); code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", code)
 	}
 	if got.Model != "user-review" || got.Thinking == nil || got.Thinking.Effort != "low" {
 		t.Fatalf("expected the review agent's defaults, got %+v %+v", got, got.Thinking)
 	}
-	if code := post(`{"agentId":"review","thinking":{"enabled":false},` + turns + `}`); code != http.StatusCreated {
+	if code := post(`{"agentId":"review","thinking":{"enabled":false},` + message + `}`); code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", code)
 	}
 	if got.Thinking == nil || got.Thinking.Enabled == nil || *got.Thinking.Enabled || got.Thinking.Effort != "" {
 		t.Fatalf("expected thinking kept off, got %+v", got.Thinking)
 	}
-	if code := post(`{"agentId":"default",` + turns + `}`); code != http.StatusBadRequest {
+	if code := post(`{"agentId":"default",` + message + `}`); code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for an agent without defaults, got %d", code)
 	}
 }

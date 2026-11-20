@@ -828,7 +828,7 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 		t.Fatalf("unexpected review sandbox: %+v", sb)
 	}
 	req := e.runs.started()[0]
-	prompt := req.Turns[0].Text()
+	prompt := req.Message.Text()
 	for _, want := range []string{"merge request !1", "Added a cart.", "### Add a cart", "Users need a cart.", "cart.go (A, +40 −0)", "git diff mergebase HEAD", "submit_review", "not instructions to you"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
@@ -1402,7 +1402,7 @@ func TestAgentReviewStartsOnceSetupFinishes(t *testing.T) {
 
 	close(gate)
 	waitFor(t, "the review run", func() bool { return len(e.runs.started()) == 1 })
-	prompt := e.runs.started()[0].Turns[0].Text()
+	prompt := e.runs.started()[0].Message.Text()
 	for _, want := range []string{"## Setup", "go mod download", "It succeeded.", "## How to review"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
@@ -1477,7 +1477,7 @@ func TestReviewPromptSaysTheEnvironmentWasStillBuilding(t *testing.T) {
 	e.projects.environment = &project.Environment{Build: &project.Build{Status: project.BuildRunning}}
 	e.projects.mu.Unlock()
 	e.startAgentReview(t, mr, AgentReviewInput{})
-	prompt := e.runs.started()[0].Turns[0].Text()
+	prompt := e.runs.started()[0].Message.Text()
 	for _, want := range []string{"## Environment", "still building", "devpad's own image without it"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
@@ -2110,7 +2110,7 @@ func TestReReviewIsToldAboutEarlierReviews(t *testing.T) {
 	e := setup(t)
 	mr := e.openTaskMR(t)
 	first := e.startAgentReview(t, mr, AgentReviewInput{})
-	if prompt := e.runs.started()[0].Turns[0].Text(); strings.Contains(prompt, "Earlier reviews") {
+	if prompt := e.runs.started()[0].Message.Text(); strings.Contains(prompt, "Earlier reviews") {
 		t.Fatalf("a first review has no earlier reviews:\n%s", prompt)
 	}
 	e.tool(e.owner, first.WorkspaceID, commentTool, `{"path":"cart.go","line":3,"body":"No test covers this.","blocking":true}`)
@@ -2119,7 +2119,7 @@ func TestReReviewIsToldAboutEarlierReviews(t *testing.T) {
 	waitFor(t, "the first review sandbox to stop", func() bool { stopped, _ := e.workspaces.calls(); return len(stopped) == 1 })
 
 	second := e.startAgentReview(t, mr, AgentReviewInput{})
-	if prompt := e.runs.started()[1].Turns[0].Text(); !strings.Contains(prompt, "Earlier reviews") || !strings.Contains(prompt, readCommentsTool) {
+	if prompt := e.runs.started()[1].Message.Text(); !strings.Contains(prompt, "Earlier reviews") || !strings.Contains(prompt, readCommentsTool) {
 		t.Fatalf("a re-review should be pointed at the earlier reviews:\n%s", prompt)
 	}
 	result, _ := e.tool(e.owner, second.WorkspaceID, readCommentsTool, `{}`)
@@ -2127,7 +2127,7 @@ func TestReReviewIsToldAboutEarlierReviews(t *testing.T) {
 		t.Fatalf("the review agent should read the earlier review: %+v", result)
 	}
 	// Nothing moved since the first review, so only blocking problems are new.
-	if prompt := e.runs.started()[1].Turns[0].Text(); !strings.Contains(prompt, "(1 blocking)") || !strings.Contains(prompt, "of this same commit") {
+	if prompt := e.runs.started()[1].Message.Text(); !strings.Contains(prompt, "(1 blocking)") || !strings.Contains(prompt, "of this same commit") {
 		t.Fatalf("a re-review of the same commit should check the threads:\n%s", prompt)
 	}
 	e.tool(e.owner, second.WorkspaceID, submitTool, `{"verdict":"request_changes","body":"Still needs tests."}`)
@@ -2137,7 +2137,7 @@ func TestReReviewIsToldAboutEarlierReviews(t *testing.T) {
 	// After a push, the next review looks at what changed since.
 	e.svc.BranchPublished(context.Background(), e.owner, e.pid(), "task/1", "head2")
 	e.startAgentReview(t, mr, AgentReviewInput{})
-	if prompt := e.runs.started()[2].Turns[0].Text(); !strings.Contains(prompt, "`git diff head1 HEAD`") || !strings.Contains(prompt, "only if it is blocking") {
+	if prompt := e.runs.started()[2].Message.Text(); !strings.Contains(prompt, "`git diff head1 HEAD`") || !strings.Contains(prompt, "only if it is blocking") {
 		t.Fatalf("a re-review should be scoped to what changed since the last one:\n%s", prompt)
 	}
 }
@@ -2302,7 +2302,7 @@ func TestReviewAgentResolvesAddressedThreads(t *testing.T) {
 	}
 
 	rv := e.startAgentReview(t, mr, AgentReviewInput{})
-	prompt := e.runs.started()[0].Turns[0].Text()
+	prompt := e.runs.started()[0].Message.Text()
 	for _, want := range []string{"2 comment threads on it are still open", resolveTool, mrCommentTool} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
@@ -2560,7 +2560,7 @@ func TestContinueReviewAfterItsBudgetRanOut(t *testing.T) {
 	if len(e.projects.sandboxes) != 1 || !slices.Contains(e.projects.restarted, rv.WorkspaceID) {
 		t.Fatalf("expected the review's sandbox started again, not a new one: %v %v", e.projects.sandboxes, e.projects.restarted)
 	}
-	last := second.Turns[len(second.Turns)-1].Text()
+	last := second.Message.Text()
 	for _, want := range []string{"Your review stopped before you submitted it: Budget reached: this review", readCommentsTool, submitTool} {
 		if !strings.Contains(last, want) {
 			t.Errorf("continue prompt missing %q:\n%s", want, last)

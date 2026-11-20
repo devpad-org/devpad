@@ -624,22 +624,24 @@ export const aiApi = {
     return { run: agentRunFromDTO(res.run) }
   },
 
+  // Continues a conversation with a new message. The server loads the
+  // conversation's history and saves everything the run produces.
   async createAgentRun(
     model: string,
-    messages: ChatMessage[],
+    message: string,
+    images: ChatImage[],
     workspaceId: number,
-    conversationId?: number,
+    conversationId: number,
     thinking?: ThinkingConfig,
-    parentRunId?: number,
     agentId?: string,
   ): Promise<{ run: AgentRun }> {
     const res = await apiClient.post<{ run: AgentRunDTO }>('/api/ai/agent/runs', {
       model,
-      turns: messagesToTurns(messages),
+      message,
+      images: images.length > 0 ? images : undefined,
       workspaceId,
       conversationId,
       thinking,
-      parentRunId,
       agentId,
     })
     return { run: agentRunFromDTO(res.run) }
@@ -706,10 +708,6 @@ export const aiApi = {
     return { messages: turnsToMessages(res.turns ?? []) }
   },
 
-  saveMessages(conversationId: number, messages: ChatMessage[]): Promise<void> {
-    return apiClient.put<void>(`/api/ai/conversations/${conversationId}/messages`, { turns: messagesToTurns(messages) })
-  },
-
   // Stores an image to attach to a message. The server checks and shrinks it.
   async uploadAttachment(file: File): Promise<ChatImage> {
     const form = new FormData()
@@ -746,11 +744,19 @@ async function readSSEStream(
       const data = line.slice(6).trim()
       if (!data) continue
 
+      let event: StreamEvent
       try {
-        const event: StreamEvent = JSON.parse(data)
-        onEvent(event)
+        event = JSON.parse(data)
       } catch {
-        // skip malformed events
+        console.error('Skipping malformed stream event:', data)
+        continue
+      }
+      try {
+        onEvent(event)
+      } catch (err) {
+        // A failing handler only affects what this page displays; the server
+        // keeps the conversation, so log it and keep reading.
+        console.error('Stream event handler failed:', err, event)
       }
     }
   }

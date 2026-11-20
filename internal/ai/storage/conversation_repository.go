@@ -122,7 +122,33 @@ func (r *ConversationRepository) DeleteConversation(ctx context.Context, id, use
 	return nil
 }
 
-func (r *ConversationRepository) SaveTurns(ctx context.Context, conversationID int64, turns []domain.Turn) error {
+// AppendTurns adds turns after the conversation's existing turns.
+func (r *ConversationRepository) AppendTurns(ctx context.Context, conversationID int64, turns []domain.Turn) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var next int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(position) + 1, 0) FROM ai_turns WHERE conversation_id = ?`, conversationID,
+	).Scan(&next); err != nil {
+		return fmt.Errorf("finding next turn position: %w", err)
+	}
+
+	if err := insertTurns(ctx, tx, conversationID, next, turns); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing transaction: %w", err)
+	}
+	return nil
+}
+
+// ReplaceTurns overwrites the conversation's turns. Conversations are otherwise
+// append-only; this exists to repair a history that was saved broken.
+func (r *ConversationRepository) ReplaceTurns(ctx context.Context, conversationID int64, turns []domain.Turn) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -132,7 +158,16 @@ func (r *ConversationRepository) SaveTurns(ctx context.Context, conversationID i
 	if _, err := tx.ExecContext(ctx, `DELETE FROM ai_turns WHERE conversation_id = ?`, conversationID); err != nil {
 		return fmt.Errorf("deleting existing turns: %w", err)
 	}
+	if err := insertTurns(ctx, tx, conversationID, 0, turns); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing transaction: %w", err)
+	}
+	return nil
+}
 
+func insertTurns(ctx context.Context, tx *sql.Tx, conversationID int64, startPosition int, turns []domain.Turn) error {
 	turnStmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO ai_turns (conversation_id, position, role) VALUES (?, ?, ?)`,
 	)
@@ -154,30 +189,23 @@ func (r *ConversationRepository) SaveTurns(ctx context.Context, conversationID i
 	defer partStmt.Close()
 
 	for i, turn := range turns {
-		result, err := turnStmt.ExecContext(ctx, conversationID, i, string(turn.Role))
+		position := startPosition + i
+		result, err := turnStmt.ExecContext(ctx, conversationID, position, string(turn.Role))
 		if err != nil {
-			return fmt.Errorf("inserting turn at position %d: %w", i, err)
+			return fmt.Errorf("inserting turn at position %d: %w", position, err)
 		}
 		turnID, err := result.LastInsertId()
 		if err != nil {
-			return fmt.Errorf("getting turn ID at position %d: %w", i, err)
+			return fmt.Errorf("getting turn ID at position %d: %w", position, err)
 		}
 
 		for j, part := range turn.Parts {
 			if err := insertPart(ctx, partStmt, turnID, j, part); err != nil {
-				return fmt.Errorf("inserting part %d for turn %d: %w", j, i, err)
+				return fmt.Errorf("inserting part %d for turn %d: %w", j, position, err)
 			}
 		}
 	}
-
-	if err := linkAttachments(ctx, tx, conversationID, turns); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing transaction: %w", err)
-	}
-	return nil
+	return linkAttachments(ctx, tx, conversationID, turns)
 }
 
 func insertPart(ctx context.Context, stmt *sql.Stmt, turnID int64, position int, part domain.Part) error {
