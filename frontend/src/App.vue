@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { RouterView, RouterLink } from 'vue-router'
 import { useRouter, useRoute } from 'vue-router'
-import { computed, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useAttentionStore } from '@/stores/attention'
 import InboxPopover from '@/components/inbox/InboxPopover.vue'
 import { syncThemeFromAccount } from '@/theme/account'
+import { prefetchWhenIdle, viewLoading } from '@/router/lazyView'
+import { ideView } from '@/router/views'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -24,10 +26,24 @@ watch(
     if (showing) {
       attention.watch()
       void syncThemeFromAccount()
+      // Opening a project is what a signed-in user does next.
+      prefetchWhenIdle(ideView)
     } else if (wasShowing) attention.unwatch()
   },
   { immediate: true },
 )
+
+// A navigation waiting on a view's code shows a bar along the top, from a
+// moment in so that one that is quick doesn't flash it.
+const PROGRESS_DELAY_MS = 150
+const showProgress = ref(false)
+let progressTimer: ReturnType<typeof setTimeout> | undefined
+watch(viewLoading, (loading) => {
+  clearTimeout(progressTimer)
+  if (loading) progressTimer = setTimeout(() => (showProgress.value = true), PROGRESS_DELAY_MS)
+  else showProgress.value = false
+})
+onUnmounted(() => clearTimeout(progressTimer))
 
 async function handleLogout() {
   await auth.logout()
@@ -36,6 +52,9 @@ async function handleLogout() {
 </script>
 
 <template>
+  <div v-if="showProgress" class="route-progress" role="progressbar" aria-label="Loading page">
+    <span class="route-progress-bar" />
+  </div>
   <header v-if="auth.isAuthenticated && !hideChrome" class="app-header">
     <div class="header-left">
       <RouterLink to="/" class="header-brand">Devpad</RouterLink>
@@ -76,6 +95,42 @@ async function handleLogout() {
 </template>
 
 <style scoped>
+.route-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1200;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--accent-glow);
+}
+
+.route-progress-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  background: var(--accent);
+  animation: route-progress 1.1s ease-in-out infinite;
+}
+
+@keyframes route-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-progress-bar {
+    width: 100%;
+    animation: none;
+  }
+}
+
 .app-header {
   display: flex;
   align-items: center;

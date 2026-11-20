@@ -16,7 +16,7 @@ import AIModelPricing from '@/components/settings/AIModelPricing.vue'
 import InboxView from '@/views/InboxView.vue'
 import UsageView from '@/views/UsageView.vue'
 import DocsView from '@/views/DocsView.vue'
-const IdeView = () => import('@/views/IdeView.vue')
+import { ideView } from './views'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -54,7 +54,7 @@ export const router = createRouter({
     {
       path: '/projects/:id',
       name: 'project',
-      component: IdeView,
+      component: ideView.load,
       meta: { requiresAuth: true, hideChrome: true },
     },
     // Merge requests open in a modal over their project.
@@ -115,7 +115,7 @@ export const router = createRouter({
     {
       path: '/workspace/:id',
       name: 'ide',
-      component: IdeView,
+      component: ideView.load,
       meta: { requiresAuth: true, hideChrome: true },
     },
   ],
