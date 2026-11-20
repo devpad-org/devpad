@@ -98,7 +98,8 @@ func ForModel(model domain.Model, turns []domain.Turn) []domain.Turn {
 			if out == nil {
 				out = append([]domain.Turn(nil), turns...)
 			}
-			out[i] = domain.Turn{Role: turn.Role, Parts: parts}
+			turn.Parts = parts
+			out[i] = turn
 		}
 	}
 	if out == nil {

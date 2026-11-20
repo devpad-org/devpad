@@ -1045,7 +1045,7 @@ func TestAgentRunService_GetRunEnforcesOwnership(t *testing.T) {
 func TestAgentRunService_ReasoningStateStaysWithItsModel(t *testing.T) {
 	const state = `[{"id":"rs_1","type":"reasoning","encrypted_content":"enc"}]`
 	transcript := []domain.Turn{
-		domain.NewTextTurn(domain.RoleUser, "build it"),
+		{Role: domain.RoleUser, Parts: []domain.Part{{Kind: domain.PartText, Text: "build it"}}, DisplayText: "/build"},
 		{Role: domain.RoleAssistant, Parts: []domain.Part{
 			{Kind: domain.PartThinking, Thinking: &domain.ThinkingPart{Text: "tests first", State: []byte(state)}},
 			{Kind: domain.PartToolCall, ToolCall: &domain.ToolCall{ID: "call-1", ItemID: "fc_1", Type: "function"}},
@@ -1089,6 +1089,9 @@ func TestAgentRunService_ReasoningStateStaysWithItsModel(t *testing.T) {
 			for name, turns := range map[string][]domain.Turn{"sent": sent, "saved": conversations.history(testConversationID)} {
 				if got := turnSummary(turns); len(got) != 4 || got[3] != "user:go on" {
 					t.Fatalf("%s: expected the history and the message, got %v", name, got)
+				}
+				if got := turns[0].DisplayText; got != "/build" {
+					t.Errorf("%s: display text = %q, want what the user typed", name, got)
 				}
 				assistant := turns[1]
 				if got := string(assistant.ThinkingState()); got != tt.wantState {

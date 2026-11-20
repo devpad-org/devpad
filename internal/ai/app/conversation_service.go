@@ -140,8 +140,8 @@ func (s *conversationService) touchConversation(ctx context.Context, conv *domai
 	newTitle := conv.Title
 	if newTitle == "" {
 		for _, turn := range turns {
-			if turn.Role == domain.RoleUser && turn.Text() != "" {
-				title := turn.Text()
+			if turn.Role == domain.RoleUser && turn.DisplayedText() != "" {
+				title := turn.DisplayedText()
 				if len([]rune(title)) > 60 {
 					title = string([]rune(title)[:60])
 				}

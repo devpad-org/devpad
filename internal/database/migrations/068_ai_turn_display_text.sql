@@ -1,0 +1,1 @@
+ALTER TABLE ai_turns ADD COLUMN display_text TEXT NOT NULL DEFAULT '';

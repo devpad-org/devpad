@@ -234,12 +234,21 @@ func newConversationFlow(t *testing.T, backend orchestrator.ChatService, model s
 // send runs one user message to completion and fails the test if the run fails.
 func (f *conversationFlow) send(t *testing.T, message string) {
 	t.Helper()
+	f.sendDisplayed(t, message, "")
+}
+
+// sendDisplayed is send for a message the user typed as displayText, such as
+// a slash command.
+func (f *conversationFlow) sendDisplayed(t *testing.T, message, displayText string) {
+	t.Helper()
+	turn := domain.NewTextTurn(domain.RoleUser, message)
+	turn.DisplayText = displayText
 	run, err := f.runs.StartRun(context.Background(), app.StartAgentRunRequest{
 		UserID:         f.userID,
 		WorkspaceID:    f.workspaceID,
 		ConversationID: f.conversationID,
 		Model:          f.model,
-		Message:        domain.NewTextTurn(domain.RoleUser, message),
+		Message:        turn,
 	})
 	if err != nil {
 		t.Fatalf("start run: %v", err)
@@ -323,6 +332,39 @@ func TestConversationFlow_SavedHistoryMatchesWhatTheModelIsSent(t *testing.T) {
 // TestLive_ConversationFlow runs the same two-message flow against the real
 // Anthropic API. It costs a few cents and is skipped unless DEVPAD_LIVE_TESTS=1
 // and DEVPAD_TEST_ANTHROPIC_KEY are set.
+func TestConversationFlow_SlashCommandShowsWhatTheUserTyped(t *testing.T) {
+	const prompt = "Initialize this repository for future AI coding agents by creating or updating AGENTS.md."
+	backend := &scriptedBackend{responses: [][]domain.ProviderEvent{
+		{{TextDelta: "Wrote AGENTS.md."}},
+		{{TextDelta: "You're welcome."}},
+	}}
+	flow := newConversationFlow(t, backend, "scripted-model")
+
+	flow.sendDisplayed(t, prompt, "/init")
+	flow.sendDisplayed(t, "thanks", "thanks")
+
+	// The model is sent the expanded prompt, on this run and every later one.
+	for i := 0; i < 2; i++ {
+		if got := flow.backend.request(i)[0].Text(); got != prompt {
+			t.Fatalf("request %d: expected the model to be sent the prompt, got %q", i, got)
+		}
+	}
+	history := flow.history(t)
+	if history[0].DisplayText != "/init" || history[0].Text() != prompt {
+		t.Fatalf("expected the saved message to keep both the prompt and what was typed, got %+v", history[0])
+	}
+	if history[2].DisplayText != "" {
+		t.Fatalf("expected no display text for a message sent as typed, got %q", history[2].DisplayText)
+	}
+	conv, err := flow.conversations.GetConversation(context.Background(), flow.conversationID, flow.userID)
+	if err != nil {
+		t.Fatalf("get conversation: %v", err)
+	}
+	if conv.Title != "/init" {
+		t.Fatalf("expected the conversation to be titled after what was typed, got %q", conv.Title)
+	}
+}
+
 func TestLive_ConversationFlow(t *testing.T) {
 	if os.Getenv("DEVPAD_LIVE_TESTS") != "1" {
 		t.Skip("set DEVPAD_LIVE_TESTS=1 to run live API tests")

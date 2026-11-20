@@ -81,7 +81,7 @@ func TestAttachmentService_HydrateLoadsTheUsersImages(t *testing.T) {
 	service := NewAttachmentService(repo)
 	// The client's copy of the reference is not trusted for type or size.
 	turns := []domain.Turn{
-		{Role: domain.RoleUser, Parts: []domain.Part{domain.NewImagePart(domain.ImagePart{AttachmentID: 1, MediaType: "image/svg+xml"})}},
+		{Role: domain.RoleUser, Parts: []domain.Part{domain.NewImagePart(domain.ImagePart{AttachmentID: 1, MediaType: "image/svg+xml"})}, DisplayText: "/look"},
 		domain.NewToolResultTurnFromPart(domain.ToolResultPart{ToolCallID: "c", Images: []domain.ImagePart{{AttachmentID: 2}}}),
 	}
 
@@ -95,6 +95,9 @@ func TestAttachmentService_HydrateLoadsTheUsersImages(t *testing.T) {
 	}
 	if string(got[1].ToolResult().Images[0].Data) != "two" {
 		t.Fatalf("unexpected tool image: %+v", got[1].ToolResult().Images[0])
+	}
+	if got[0].DisplayText != "/look" {
+		t.Fatalf("expected what the user typed kept, got %q", got[0].DisplayText)
 	}
 	if len(turns[0].Parts[0].Image.Data) != 0 {
 		t.Fatal("expected the input turns to be left unchanged")

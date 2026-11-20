@@ -201,6 +201,12 @@ func (s *agentRunService) notifyFinished(runID int64) {
 // completes, so the history never depends on a browser staying connected.
 func (s *agentRunService) StartRun(ctx context.Context, req StartAgentRunRequest) (*domain.AgentRun, error) {
 	req.Message.Role = domain.RoleUser
+	// What the user typed is kept only where the model is sent something else.
+	if displayText := strings.TrimSpace(req.Message.DisplayText); displayText == req.Message.Text() {
+		req.Message.DisplayText = ""
+	} else {
+		req.Message.DisplayText = displayText
+	}
 	if err := validateStartAgentRunRequest(req); err != nil {
 		return nil, err
 	}
@@ -1036,7 +1042,7 @@ func cloneTurns(turns []domain.Turn) []domain.Turn {
 	}
 	cloned := make([]domain.Turn, 0, len(turns))
 	for _, turn := range turns {
-		clonedTurn := domain.Turn{Role: turn.Role}
+		clonedTurn := domain.Turn{Role: turn.Role, DisplayText: turn.DisplayText}
 		for _, part := range turn.Parts {
 			clonedTurn.Parts = append(clonedTurn.Parts, clonePart(part))
 		}

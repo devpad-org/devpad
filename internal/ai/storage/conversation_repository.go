@@ -169,7 +169,7 @@ func (r *ConversationRepository) ReplaceTurns(ctx context.Context, conversationI
 
 func insertTurns(ctx context.Context, tx *sql.Tx, conversationID int64, startPosition int, turns []domain.Turn) error {
 	turnStmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO ai_turns (conversation_id, position, role) VALUES (?, ?, ?)`,
+		`INSERT INTO ai_turns (conversation_id, position, role, display_text) VALUES (?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return fmt.Errorf("preparing turn insert: %w", err)
@@ -190,7 +190,7 @@ func insertTurns(ctx context.Context, tx *sql.Tx, conversationID int64, startPos
 
 	for i, turn := range turns {
 		position := startPosition + i
-		result, err := turnStmt.ExecContext(ctx, conversationID, position, string(turn.Role))
+		result, err := turnStmt.ExecContext(ctx, conversationID, position, string(turn.Role), turn.DisplayText)
 		if err != nil {
 			return fmt.Errorf("inserting turn at position %d: %w", position, err)
 		}
@@ -310,7 +310,7 @@ func (r storedImageRef) imagePart() domain.ImagePart {
 
 func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, userID int64) ([]domain.Turn, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT t.id, t.position, t.role,
+		`SELECT t.id, t.position, t.role, t.display_text,
 		        p.position, p.kind, p.text, p.thinking_state,
 		        p.tool_call_id, p.tool_call_item_id, p.tool_call_name, p.tool_call_args,
 		        p.tool_result_call_id, p.tool_result_name, p.tool_result_content, p.tool_result_is_error,
@@ -328,9 +328,10 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 	defer rows.Close()
 
 	type turnKey struct {
-		id       int64
-		position int
-		role     string
+		id          int64
+		position    int
+		role        string
+		displayText string
 	}
 
 	var orderedKeys []turnKey
@@ -340,7 +341,7 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 	for rows.Next() {
 		var (
 			turnID, turnPos                                        int64
-			role                                                   string
+			role, displayText                                      string
 			partPos                                                sql.NullInt64
 			kind, text, thinkingState                              sql.NullString
 			toolCallID, toolCallItemID, toolCallName, toolCallArgs sql.NullString
@@ -349,7 +350,7 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 			imageRef, toolResultImages                             sql.NullString
 		)
 		if err := rows.Scan(
-			&turnID, &turnPos, &role,
+			&turnID, &turnPos, &role, &displayText,
 			&partPos, &kind, &text, &thinkingState,
 			&toolCallID, &toolCallItemID, &toolCallName, &toolCallArgs,
 			&toolResultCallID, &toolResultName, &toolResultContent, &toolResultIsError,
@@ -360,7 +361,7 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 
 		if !seenTurns[turnID] {
 			seenTurns[turnID] = true
-			orderedKeys = append(orderedKeys, turnKey{id: turnID, position: int(turnPos), role: role})
+			orderedKeys = append(orderedKeys, turnKey{id: turnID, position: int(turnPos), role: role, displayText: displayText})
 		}
 
 		if !kind.Valid {
@@ -383,8 +384,9 @@ func (r *ConversationRepository) GetTurns(ctx context.Context, conversationID, u
 	turns := make([]domain.Turn, 0, len(orderedKeys))
 	for _, key := range orderedKeys {
 		turns = append(turns, domain.Turn{
-			Role:  domain.Role(key.role),
-			Parts: turnParts[key.id],
+			Role:        domain.Role(key.role),
+			Parts:       turnParts[key.id],
+			DisplayText: key.displayText,
 		})
 	}
 	return turns, nil

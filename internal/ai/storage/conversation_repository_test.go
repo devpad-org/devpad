@@ -29,7 +29,9 @@ func TestConversationRepository_AppendAndReplaceTurns(t *testing.T) {
 	}
 
 	call := domain.ToolCall{ID: "call-1", Type: "function", Function: domain.ToolCallFunction{Name: "read_file", Arguments: `{"path":"a.go"}`}}
-	if err := repo.AppendTurns(ctx, conv.ID, []domain.Turn{domain.NewTextTurn(domain.RoleUser, "read a.go")}); err != nil {
+	first := domain.NewTextTurn(domain.RoleUser, "read a.go")
+	first.DisplayText = "/read"
+	if err := repo.AppendTurns(ctx, conv.ID, []domain.Turn{first}); err != nil {
 		t.Fatalf("append first turn: %v", err)
 	}
 	if err := repo.AppendTurns(ctx, conv.ID, []domain.Turn{
@@ -51,6 +53,9 @@ func TestConversationRepository_AppendAndReplaceTurns(t *testing.T) {
 	}
 	if turns[0].Text() != "read a.go" || turns[1].Text() != "Reading it." {
 		t.Fatalf("turns out of order: %+v", turns)
+	}
+	if turns[0].DisplayText != "/read" || turns[1].DisplayText != "" {
+		t.Fatalf("expected display text to round-trip, got %q and %q", turns[0].DisplayText, turns[1].DisplayText)
 	}
 	if calls := turns[1].ToolCalls(); len(calls) != 1 || calls[0].ID != "call-1" {
 		t.Fatalf("expected the tool call to round-trip, got %+v", calls)

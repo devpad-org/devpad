@@ -314,8 +314,8 @@ func TestHandleCreateAgentRun_StartsBackgroundRun(t *testing.T) {
 		if req.ConversationID != 77 {
 			t.Fatalf("expected conversation id 77, got %d", req.ConversationID)
 		}
-		if req.Message.Role != domain.RoleUser || req.Message.Text() != "hello" {
-			t.Fatalf("expected the user's message hello, got %+v", req.Message)
+		if req.Message.Role != domain.RoleUser || req.Message.Text() != "hello" || req.Message.DisplayText != "/hello" {
+			t.Fatalf("expected the user's message hello, typed as /hello, got %+v", req.Message)
 		}
 		// The image goes before the text it is asked about.
 		if parts := req.Message.Parts; len(parts) != 2 || parts[0].Kind != domain.PartImage || parts[0].Image.AttachmentID != 5 {
@@ -337,7 +337,7 @@ func TestHandleCreateAgentRun_StartsBackgroundRun(t *testing.T) {
 	}}
 
 	h := &Handler{runs: runs}
-	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":42,"conversationId":77,"message":"hello","images":[{"attachmentId":5}]}`))
+	body := bytes.NewReader([]byte(`{"model":"gpt-5.4","workspaceId":42,"conversationId":77,"message":"hello","displayText":"/hello","images":[{"attachmentId":5}]}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/agent/runs", body)
 	req = asTestUser(req)
 	w := httptest.NewRecorder()

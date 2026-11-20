@@ -171,6 +171,23 @@ func TestFromDomainTurns(t *testing.T) {
 	}
 }
 
+func TestFromDomainTurnsIncludesDisplayText(t *testing.T) {
+	typed := domain.NewTextTurn(domain.RoleUser, "Initialize this repository.")
+	typed.DisplayText = "/init"
+	dtos := FromDomainTurns([]domain.Turn{typed, domain.NewTextTurn(domain.RoleUser, "thanks")})
+
+	if dtos[0].DisplayText != "/init" || dtos[0].Parts[0].Text != "Initialize this repository." {
+		t.Fatalf("expected both the text and what was typed, got %+v", dtos[0])
+	}
+	encoded, err := json.Marshal(dtos[1])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "displayText") {
+		t.Fatalf("expected displayText to be omitted when empty, got %s", encoded)
+	}
+}
+
 func TestFromDomainTurnsEncodesEmptyPartsAsArray(t *testing.T) {
 	dtos := FromDomainTurns([]domain.Turn{{Role: domain.RoleAssistant}})
 
@@ -341,6 +358,15 @@ func TestAgentRunPromptPreview(t *testing.T) {
 				domain.NewToolResultTurn("call-2", "tool", "latest result only", false),
 			},
 			want: "next real prompt",
+		},
+		{
+			name: "prefers what the user typed",
+			turns: []domain.Turn{{
+				Role:        domain.RoleUser,
+				Parts:       []domain.Part{{Kind: domain.PartText, Text: "Initialize this repository for future AI coding agents."}},
+				DisplayText: "/init",
+			}},
+			want: "/init",
 		},
 		{
 			name:  "truncates long prompt",

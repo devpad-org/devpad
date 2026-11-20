@@ -26,6 +26,10 @@ const (
 type Turn struct {
 	Role  Role
 	Parts []Part
+	// DisplayText is what the user typed when it differs from the text the
+	// model is sent, such as a slash command expanded into its prompt.
+	// Providers never see it.
+	DisplayText string
 }
 
 // Part stores one normalized piece of a turn.
@@ -119,7 +123,8 @@ func WithoutReasoningState(turns []Turn) []Turn {
 			}
 			parts = append(parts, part)
 		}
-		out[i] = Turn{Role: turn.Role, Parts: parts}
+		turn.Parts = parts
+		out[i] = turn
 	}
 	return out
 }
@@ -153,6 +158,15 @@ func (t Turn) Text() string {
 		}
 	}
 	return text
+}
+
+// DisplayedText returns the text to show people for the turn: what the user
+// typed if it differs from what the model was sent, otherwise its text.
+func (t Turn) DisplayedText() string {
+	if t.DisplayText != "" {
+		return t.DisplayText
+	}
+	return t.Text()
 }
 
 // Images returns the image parts attached to the turn.

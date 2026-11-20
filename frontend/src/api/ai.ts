@@ -361,6 +361,8 @@ interface PartDTO {
 interface TurnDTO {
   role: string
   parts: PartDTO[]
+  // What the user typed, when the model was sent something else.
+  displayText?: string
 }
 
 interface AgentRunDTO {
@@ -473,6 +475,8 @@ function turnsToMessages(turns: TurnDTO[]): ChatMessage[] {
           messages.push(msg)
         }
       }
+      // Saved turns are only displayed, so show what the user typed.
+      if (turn.displayText) userContent = turn.displayText
       if (userContent || images.length > 0) {
         const msg: ChatMessage = { role: 'user', content: userContent }
         if (images.length > 0) msg.images = images
@@ -625,7 +629,8 @@ export const aiApi = {
   },
 
   // Continues a conversation with a new message. The server loads the
-  // conversation's history and saves everything the run produces.
+  // conversation's history and saves everything the run produces. displayText
+  // is what the user typed, when the message sent to the model differs.
   async createAgentRun(
     model: string,
     message: string,
@@ -634,10 +639,12 @@ export const aiApi = {
     conversationId: number,
     thinking?: ThinkingConfig,
     agentId?: string,
+    displayText?: string,
   ): Promise<{ run: AgentRun }> {
     const res = await apiClient.post<{ run: AgentRunDTO }>('/api/ai/agent/runs', {
       model,
       message,
+      displayText,
       images: images.length > 0 ? images : undefined,
       workspaceId,
       conversationId,
