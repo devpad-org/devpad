@@ -7,6 +7,8 @@ export interface MFAStatus {
 export interface TOTPSetup {
   secret: string
   url: string
+  /** The provisioning URL as a QR code, a data URL devpad renders itself. */
+  qrCode: string
 }
 
 export interface SSHKeyResponse {

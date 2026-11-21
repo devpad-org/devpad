@@ -5,6 +5,7 @@ go 1.26.1
 toolchain go1.26.10
 
 require (
+	github.com/boombuler/barcode v1.1.0
 	github.com/caddyserver/certmagic v0.25.6
 	github.com/creack/pty v1.1.24
 	github.com/fsnotify/fsnotify v1.10.1
@@ -22,7 +23,6 @@ require (
 
 require (
 	github.com/Microsoft/go-winio v0.6.4 // indirect
-	github.com/boombuler/barcode v1.1.0 // indirect
 	github.com/caddyserver/zerossl v0.1.6 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
