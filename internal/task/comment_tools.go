@@ -23,10 +23,10 @@ const (
 )
 
 // maxReadCommentBytes bounds the comment bodies readCommentsTool returns;
-// the oldest are left out past it.
+// past it, the oldest are left out, the agents' before the user's.
 const maxReadCommentBytes = 100_000
 
-const commentAuthorsDescription = "Authors are user (the user), task_agent (the agent implementing the task) and assistant (the assistant in the user's own workspace). yours marks the comments you wrote, which you can edit. edited says a comment was changed after it was written; every version is kept and the user can read them all."
+const commentAuthorsDescription = "Authors are user (the user), task_agent (the agent implementing the task) and assistant (the assistant in the user's own workspace). yours marks the comments you wrote, which you can edit. edited says a comment was changed after it was written; every version is kept and the user can read them all. When there are too many to list in full, the oldest are left out, the agents' before the user's, and older_comments_left_out counts them by author."
 
 var taskAgentCommentTools = []domain.ToolDefinition{
 	{
@@ -194,16 +194,37 @@ func (p *CommentTools) ExecuteTool(ctx context.Context, req aitools.ExecutionReq
 	}
 }
 
-// readCommentsResult lists a task's comments for an agent, the newest that
-// fit in maxReadCommentBytes.
+// readCommentsResult lists a task's comments for an agent, oldest first,
+// with no more than maxReadCommentBytes of bodies. The user's comments are
+// the user's word, and agents could otherwise push them out of view just by
+// commenting more, so they go in first: the newest of the user's that fit,
+// then the newest of the agents' that fit in what is left.
 func readCommentsResult(taskID int64, reader Author, comments []*Comment) domain.ToolResultPart {
-	first, size := len(comments), 0
-	for first > 0 && size+len(comments[first-1].Body) <= maxReadCommentBytes {
-		first--
-		size += len(comments[first].Body)
+	keep := make([]bool, len(comments))
+	size := 0
+	fill := func(byUser bool) {
+		for i := len(comments) - 1; i >= 0; i-- {
+			c := comments[i]
+			if (c.Author == AuthorUser) != byUser {
+				continue
+			}
+			if size+len(c.Body) > maxReadCommentBytes {
+				return
+			}
+			keep[i] = true
+			size += len(c.Body)
+		}
 	}
-	listed := make([]map[string]any, 0, len(comments)-first)
-	for _, c := range comments[first:] {
+	fill(true)
+	fill(false)
+
+	listed := make([]map[string]any, 0, len(comments))
+	leftOut := map[Author]int{}
+	for i, c := range comments {
+		if !keep[i] {
+			leftOut[c.Author]++
+			continue
+		}
 		comment := map[string]any{
 			"id":         c.ID,
 			"author":     c.Author,
@@ -220,8 +241,8 @@ func readCommentsResult(taskID int64, reader Author, comments []*Comment) domain
 		listed = append(listed, comment)
 	}
 	result := map[string]any{"task_id": taskID, "comments": listed}
-	if first > 0 {
-		result["older_comments_left_out"] = first
+	if len(leftOut) > 0 {
+		result["older_comments_left_out"] = leftOut
 	}
 	out, err := json.Marshal(result)
 	if err != nil {

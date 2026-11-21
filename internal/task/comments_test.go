@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -478,5 +479,69 @@ func TestCommentHandlers(t *testing.T) {
 	}
 	if code, _ = do(owner, http.MethodPost, base, `{"body":"  "}`); code != http.StatusBadRequest {
 		t.Fatalf("empty comment: %d", code)
+	}
+}
+
+func TestReadCommentsKeepsTheUsers(t *testing.T) {
+	type listing struct {
+		Comments []struct {
+			ID int64 `json:"id"`
+		} `json:"comments"`
+		LeftOut map[Author]int `json:"older_comments_left_out"`
+	}
+	read := func(comments []*Comment) listing {
+		t.Helper()
+		r := readCommentsResult(1, AuthorTaskAgent, comments)
+		var l listing
+		if err := json.Unmarshal([]byte(r.Content), &l); err != nil || r.IsError {
+			t.Fatalf("read: %s %v", r.Content, err)
+		}
+		return l
+	}
+	ids := func(l listing) []int64 {
+		var got []int64
+		for _, c := range l.Comments {
+			got = append(got, c.ID)
+		}
+		return got
+	}
+	full := strings.Repeat("x", maxCommentBytes)
+	comment := func(id int64, author Author, body string) *Comment {
+		return &Comment{ID: id, TaskID: 1, Author: author, Body: body, Revisions: 1}
+	}
+
+	// The user's oldest comment outlasts a flood of agents' comments; the
+	// oldest of theirs go instead.
+	comments := []*Comment{comment(1, AuthorUser, "Keep the old endpoint working.")}
+	for id := int64(2); id <= 21; id++ {
+		author := AuthorAssistant
+		if id%2 == 0 {
+			author = AuthorTaskAgent
+		}
+		comments = append(comments, comment(id, author, full))
+	}
+	comments = append(comments, comment(22, AuthorUser, "And add tests."))
+	l := read(comments)
+	want := []int64{1, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}
+	if got := ids(l); !slices.Equal(got, want) {
+		t.Fatalf("listed %v, want %v", got, want)
+	}
+	if l.LeftOut[AuthorTaskAgent] != 6 || l.LeftOut[AuthorAssistant] != 5 || l.LeftOut[AuthorUser] != 0 {
+		t.Fatalf("left out %v", l.LeftOut)
+	}
+
+	// The user's own comments alone past the bound lose their oldest.
+	comments = nil
+	for id := int64(1); id <= 11; id++ {
+		comments = append(comments, comment(id, AuthorUser, full))
+	}
+	comments = append(comments, comment(12, AuthorTaskAgent, "Done."))
+	if l := read(comments); len(l.Comments) != 10 || l.Comments[0].ID != 2 || l.LeftOut[AuthorUser] != 1 || l.LeftOut[AuthorTaskAgent] != 1 {
+		t.Fatalf("listed %v, left out %v", ids(l), l.LeftOut)
+	}
+
+	// Everything that fits is listed, with nothing said to be left out.
+	if l := read(comments[10:]); len(l.Comments) != 2 || l.LeftOut != nil {
+		t.Fatalf("listed %v, left out %v", ids(l), l.LeftOut)
 	}
 }
