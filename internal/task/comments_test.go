@@ -218,6 +218,12 @@ func TestCommentRules(t *testing.T) {
 		"zero-width space":   "Looks\u200Bgood.",
 		"variation selector": "Looks good.\U000E0100\U000E0101",
 		"control character":  "Looks\x1bgood.",
+		// The browser decodes character references into what they name.
+		"referenced bidi override": "Looks &#x202E;doog&#x202C;.",
+		"referenced zero-width":    "Looks&#8203;good.",
+		"named zero-width":         "Looks&ZeroWidthSpace;good.",
+		"unterminated reference":   "Looks &#x202E doog.",
+		"referenced tags":          "Looks good.&#xE0049;&#xE0067;",
 	}
 	for name, body := range hidden {
 		if _, err := e.svc.AddComment(ctx, owner, 1, task.ID, AuthorAssistant, body); !errors.Is(err, ErrInvalidInput) {
@@ -229,6 +235,12 @@ func TestCommentRules(t *testing.T) {
 	}
 	if _, err := e.svc.AddComment(ctx, owner, 1, task.ID, AuthorTaskAgent, "Done 👩\u200d💻\r\n\tTests ✔\uFE0F pass."); err != nil {
 		t.Errorf("an emoji sequence, CRLF and a tab: %v", err)
+	}
+	if _, err := e.svc.AddComment(ctx, owner, 1, task.ID, AuthorTaskAgent, "Write &amp;#x200B; to get &#x200B;? No: &amp; &lt;b&gt; &#65;"); err == nil {
+		t.Error("a reference to an invisible character, beside escaped ones")
+	}
+	if _, err := e.svc.AddComment(ctx, owner, 1, task.ID, AuthorTaskAgent, "Escape it as &amp;#x200B;, like &amp; and &lt;b&gt; &#65;."); err != nil {
+		t.Errorf("visible character references: %v", err)
 	}
 
 	// An edit past the last version a comment can have is refused, and

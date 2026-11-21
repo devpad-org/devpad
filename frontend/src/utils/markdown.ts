@@ -12,10 +12,16 @@ function escapeHtml(text: string): string {
 
 // literal renders raw HTML as the text it is, so nothing in it is hidden:
 // an HTML comment, or an element styled out of sight, shows as written.
-// Text an agent wrote for other agents to read is shown this way, so the
-// user sees all that they read.
+// So does a link reference definition, which Markdown otherwise renders as
+// nothing, making `[//]: # (...)` a comment. Text an agent wrote for other
+// agents to read is shown this way, so the user sees all that they read.
 const literal = new Marked({ breaks: true, gfm: true })
 literal.use({
+  // Definitions can sit in quotes and list items too, which walkTokens
+  // reaches. Links that use one still resolve: the lexer has kept it.
+  walkTokens(token) {
+    if (token.type === 'def') Object.assign(token, { type: 'html', block: true, pre: false, text: token.raw })
+  },
   renderer: {
     html({ text, block }) {
       return block ? `<p>${escapeHtml(text)}</p>` : escapeHtml(text)

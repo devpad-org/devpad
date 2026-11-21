@@ -41,7 +41,7 @@ A task's **Comments**, below its description, are a discussion about the task. Y
 - The agent comments for you to see with the task: a question, a decision it made, or a problem it found outside the task. What a round did goes in its closing summary, as before.
 - Each author can edit only its own comments: the pencil edits yours, and an agent can't touch yours or another agent's. No one can delete a comment. Deleting the task deletes its comments with it.
 - Every version of a comment is kept. An edited comment shows **edited** and how many versions it has. Press it to see each one, from the **Original** to the **Current**. An agent's edited comment is highlighted, so you can check what it said before.
-- So that nothing is hidden from you, HTML in a comment shows as the text it is, not rendered, and an agent's comment can't contain characters a screen doesn't show, such as zero-width or bidi control characters.
+- So that nothing is hidden from you, HTML in a comment shows as the text it is, not rendered, and so does Markdown that would otherwise show nothing, such as a `[//]: # (...)` comment. An agent's comment can't contain characters a screen doesn't show, such as zero-width or bidi control characters, whether written as themselves or as HTML references like `&#x200B;`.
 
 ## How a task runs {#how-a-task-runs}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -98,12 +99,26 @@ func commentBody(author Author, body string) (string, error) {
 		return "", invalid("the comment is not valid UTF-8")
 	}
 	if author != AuthorUser {
-		if i := strings.IndexFunc(body, invisible); i >= 0 {
-			r, _ := utf8.DecodeRuneInString(body[i:])
+		if r, ok := invisibleIn(body); ok {
 			return "", invalid("the comment holds an invisible character, U+%04X; write only what the user can see", r)
+		}
+		// The browser decodes HTML character references, such as
+		// &#x200B; or &ZeroWidthSpace;, into the characters they name.
+		if r, ok := invisibleIn(html.UnescapeString(body)); ok {
+			return "", invalid("the comment holds an HTML character reference to an invisible character, U+%04X; write only what the user can see", r)
 		}
 	}
 	return body, nil
+}
+
+// invisibleIn returns the first invisible character in s.
+func invisibleIn(s string) (rune, bool) {
+	i := strings.IndexFunc(s, invisible)
+	if i < 0 {
+		return 0, false
+	}
+	r, _ := utf8.DecodeRuneInString(s[i:])
+	return r, true
 }
 
 // invisible reports whether r takes no visible space in text: a control or
