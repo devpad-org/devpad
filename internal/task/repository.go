@@ -35,6 +35,27 @@ type Repository interface {
 	ListLinks(ctx context.Context, projectID int64) ([]Link, error)
 	// LinksOf returns the links to and from one task.
 	LinksOf(ctx context.Context, taskID int64) ([]Link, error)
+
+	// GetByWorkspaceID returns the task whose sandbox the workspace is, or
+	// nil when there is none.
+	GetByWorkspaceID(ctx context.Context, workspaceID int64) (*Task, error)
+
+	// CreateComment stores a new comment, which the database records as its
+	// first version. It refuses one past limit comments by the same author
+	// on the task with ErrCommentLimit; zero means no limit.
+	CreateComment(ctx context.Context, c *Comment, limit int) error
+	// GetComment returns a comment, or nil when there is none.
+	GetComment(ctx context.Context, id int64) (*Comment, error)
+	// ListComments returns a task's comments, oldest first.
+	ListComments(ctx context.Context, taskID int64) ([]*Comment, error)
+	// EditComment replaces a comment's body, which the database keeps as a
+	// new version. It refuses an edit by anyone but the comment's author
+	// with ErrNotCommentAuthor, and one past maxCommentRevisions versions
+	// with ErrCommentLimit. An edit that changes nothing leaves the comment
+	// as it is.
+	EditComment(ctx context.Context, id int64, author Author, body string) (*Comment, error)
+	// ListCommentRevisions returns every version of a comment, oldest first.
+	ListCommentRevisions(ctx context.Context, commentID int64) ([]*CommentRevision, error)
 }
 
 type repository struct {
@@ -205,6 +226,147 @@ func (r *repository) links(ctx context.Context, query string, args ...any) ([]Li
 		return nil, fmt.Errorf("iterating task links: %w", err)
 	}
 	return links, nil
+}
+
+func (r *repository) GetByWorkspaceID(ctx context.Context, workspaceID int64) (*Task, error) {
+	return r.getOne(ctx, `SELECT `+taskColumns+` FROM tasks WHERE workspace_id = ? ORDER BY id DESC LIMIT 1`, workspaceID)
+}
+
+const commentQuery = `SELECT c.id, c.task_id, c.author, c.body, c.created_at, c.updated_at,
+	(SELECT COUNT(*) FROM task_comment_revisions v WHERE v.comment_id = c.id) FROM task_comments c`
+
+func (r *repository) CreateComment(ctx context.Context, c *Comment, limit int) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if limit > 0 {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_comments WHERE task_id = ? AND author = ?`, c.TaskID, c.Author).Scan(&n); err != nil {
+			return fmt.Errorf("counting task comments: %w", err)
+		}
+		if n >= limit {
+			return ErrCommentLimit
+		}
+	}
+	now := time.Now()
+	result, err := tx.ExecContext(ctx,
+		`INSERT INTO task_comments (task_id, author, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		c.TaskID, c.Author, c.Body, now, now,
+	)
+	if err != nil {
+		return fmt.Errorf("inserting task comment: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("getting inserted id: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing task comment: %w", err)
+	}
+	c.ID, c.Revisions, c.CreatedAt, c.UpdatedAt = id, 1, now, now
+	return nil
+}
+
+func (r *repository) GetComment(ctx context.Context, id int64) (*Comment, error) {
+	return getComment(ctx, r.db, id)
+}
+
+// queryer is a database or a transaction.
+type queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func getComment(ctx context.Context, q queryer, id int64) (*Comment, error) {
+	c, err := scanComment(q.QueryRowContext(ctx, commentQuery+` WHERE c.id = ?`, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("getting task comment: %w", err)
+	}
+	return c, nil
+}
+
+func (r *repository) ListComments(ctx context.Context, taskID int64) ([]*Comment, error) {
+	rows, err := r.db.QueryContext(ctx, commentQuery+` WHERE c.task_id = ? ORDER BY c.id`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("listing task comments: %w", err)
+	}
+	defer rows.Close()
+	var comments []*Comment
+	for rows.Next() {
+		c, err := scanComment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning task comment: %w", err)
+		}
+		comments = append(comments, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating task comments: %w", err)
+	}
+	return comments, nil
+}
+
+func (r *repository) EditComment(ctx context.Context, id int64, author Author, body string) (*Comment, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+	c, err := getComment(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case c == nil:
+		return nil, ErrCommentNotFound
+	case c.Author != author:
+		return nil, ErrNotCommentAuthor
+	case c.Body == body:
+		return c, nil
+	case c.Revisions >= maxCommentRevisions:
+		return nil, ErrCommentLimit
+	}
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `UPDATE task_comments SET body = ?, updated_at = ? WHERE id = ?`, body, now, id); err != nil {
+		return nil, fmt.Errorf("editing task comment: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing task comment edit: %w", err)
+	}
+	c.Body, c.UpdatedAt = body, now
+	c.Revisions++
+	return c, nil
+}
+
+func (r *repository) ListCommentRevisions(ctx context.Context, commentID int64) ([]*CommentRevision, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT id, comment_id, body, created_at FROM task_comment_revisions WHERE comment_id = ? ORDER BY id`, commentID)
+	if err != nil {
+		return nil, fmt.Errorf("listing task comment revisions: %w", err)
+	}
+	defer rows.Close()
+	var revisions []*CommentRevision
+	for rows.Next() {
+		var v CommentRevision
+		if err := rows.Scan(&v.ID, &v.CommentID, &v.Body, &v.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scanning task comment revision: %w", err)
+		}
+		revisions = append(revisions, &v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating task comment revisions: %w", err)
+	}
+	return revisions, nil
+}
+
+func scanComment(row rowScanner) (*Comment, error) {
+	var c Comment
+	if err := row.Scan(&c.ID, &c.TaskID, &c.Author, &c.Body, &c.CreatedAt, &c.UpdatedAt, &c.Revisions); err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 type rowScanner interface {

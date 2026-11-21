@@ -41,6 +41,13 @@ var (
 	ErrInvalidState = errors.New("task cannot do that in its current status")
 	// ErrAlreadyLinked refuses a second link between two tasks.
 	ErrAlreadyLinked = errors.New("the tasks are already linked")
+	// ErrCommentNotFound is a comment that is not on the task.
+	ErrCommentNotFound = errors.New("comment not found")
+	// ErrNotCommentAuthor refuses editing a comment someone else wrote.
+	ErrNotCommentAuthor = errors.New("only a comment's author can edit it")
+	// ErrCommentLimit refuses a comment or edit past what an author may
+	// leave on a task or a comment.
+	ErrCommentLimit = errors.New("comment limit reached")
 )
 
 // Task is a unit of work in a project. An AI agent implements it in a
@@ -216,3 +223,52 @@ func linksOf(id int64, links []Link) Links {
 	}
 	return l
 }
+
+// Author is who wrote a task comment.
+type Author string
+
+const (
+	AuthorUser Author = "user"
+	// AuthorTaskAgent is the agent working on the task, in its sandbox.
+	AuthorTaskAgent Author = "task_agent"
+	// AuthorAssistant is the assistant in the project's own workspace.
+	AuthorAssistant Author = "assistant"
+)
+
+// Comment is a remark on a task. Its author can edit it, and every version
+// is kept: Body is the latest, and Revisions counts them, the first
+// included.
+type Comment struct {
+	ID        int64
+	TaskID    int64
+	Author    Author
+	Body      string
+	Revisions int
+	CreatedAt time.Time
+	// UpdatedAt is when the latest version was written.
+	UpdatedAt time.Time
+}
+
+// Edited reports whether the comment has more than its first version.
+func (c *Comment) Edited() bool {
+	return c.Revisions > 1
+}
+
+// CommentRevision is one version of a comment.
+type CommentRevision struct {
+	ID        int64
+	CommentID int64
+	Body      string
+	CreatedAt time.Time
+}
+
+const (
+	// maxCommentBytes bounds one version of a comment.
+	maxCommentBytes = 10_000
+	// maxAgentComments bounds the comments each agent author can leave on
+	// one task.
+	maxAgentComments = 200
+	// maxCommentRevisions bounds the versions of one comment, the first
+	// included, so edits cannot grow its history without end.
+	maxCommentRevisions = 50
+)

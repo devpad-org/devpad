@@ -20,6 +20,7 @@ export const DOC_LINKS = {
   autoMerge: '/docs/branches#automatic-merges',
   tasks: '/docs/tasks',
   taskLinks: '/docs/tasks#linked-tasks',
+  taskComments: '/docs/tasks#comments',
   assistant: '/docs/tasks#the-assistant',
   services: '/docs/services',
   projectServices: '/docs/services#project-services',

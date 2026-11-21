@@ -1,9 +1,26 @@
-import { marked } from 'marked'
+import { Marked, marked } from 'marked'
 import DOMPurify from 'dompurify'
 
 marked.use({
   breaks: true,
   gfm: true,
+})
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+// literal renders raw HTML as the text it is, so nothing in it is hidden:
+// an HTML comment, or an element styled out of sight, shows as written.
+// Text an agent wrote for other agents to read is shown this way, so the
+// user sees all that they read.
+const literal = new Marked({ breaks: true, gfm: true })
+literal.use({
+  renderer: {
+    html({ text, block }) {
+      return block ? `<p>${escapeHtml(text)}</p>` : escapeHtml(text)
+    },
+  },
 })
 
 const emojiMap: Record<string, string> = {
@@ -17,8 +34,10 @@ const emojiMap: Record<string, string> = {
   ':green_circle:': '🟢', ':red_circle:': '🔴', ':check:': '✅', ':x_mark:': '❌',
 }
 
-export function renderMarkdown(content: string): string {
+// renderMarkdown renders Markdown as sanitized HTML. With literalHtml, raw
+// HTML in it is shown as text instead of rendered.
+export function renderMarkdown(content: string, literalHtml = false): string {
   const withEmoji = content.replace(/:[a-z_]+:/g, (m) => emojiMap[m] || m)
-  const raw = marked.parse(withEmoji) as string
+  const raw = (literalHtml ? literal : marked).parse(withEmoji) as string
   return DOMPurify.sanitize(raw)
 }

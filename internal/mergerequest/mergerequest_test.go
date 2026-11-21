@@ -596,11 +596,19 @@ func (e *env) startAgentReview(t *testing.T, mr *MergeRequest, in AgentReviewInp
 	return got
 }
 
+// noSandboxTask finds no task for any sandbox: the merge request tools go
+// by the task's merge request, never by the task itself.
+type noSandboxTask struct{}
+
+func (noSandboxTask) SandboxTask(context.Context, int64, *workspace.Workspace) (*aitools.TaskScope, error) {
+	return nil, nil
+}
+
 // callScope is a call's scope as the executor resolves it. A call it cannot
 // resolve, such as another user's, never reaches the service; the zero
 // scope stands in for it here, and the service must refuse that too.
 func (e *env) callScope(userID, workspaceID int64) aitools.Scope {
-	s, err := runscope.New(e.workspaces, e.svc).Resolve(context.Background(), userID, workspaceID)
+	s, err := runscope.New(e.workspaces, e.svc, noSandboxTask{}).Resolve(context.Background(), userID, workspaceID)
 	if err != nil {
 		return aitools.Scope{}
 	}
@@ -615,7 +623,7 @@ func (e *env) contribution(userID, workspaceID int64) aitools.Contribution {
 // scope resolves a run's scope in the workspace as the AI module does.
 func (e *env) scope(t *testing.T, userID, workspaceID int64) aitools.Scope {
 	t.Helper()
-	s, err := runscope.New(e.workspaces, e.svc).Resolve(context.Background(), userID, workspaceID)
+	s, err := runscope.New(e.workspaces, e.svc, noSandboxTask{}).Resolve(context.Background(), userID, workspaceID)
 	if err != nil {
 		t.Fatalf("resolving workspace %d: %v", workspaceID, err)
 	}
@@ -918,7 +926,7 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	if s := e.scope(t, e.owner, rv.WorkspaceID); s.Review == nil || s.Review.ReviewID != rv.ID || s.Review.MergeRequestID != rv.MergeRequestID || s.Review.TargetBranch != "main" || s.Review.TargetSHA != mainTip || s.TaskMR != nil {
 		t.Fatalf("expected the pending review in the sandbox's scope, got %+v", s)
 	}
-	if _, err := runscope.New(e.workspaces, e.svc).Resolve(ctx, e.stranger, rv.WorkspaceID); err == nil {
+	if _, err := runscope.New(e.workspaces, e.svc, noSandboxTask{}).Resolve(ctx, e.stranger, rv.WorkspaceID); err == nil {
 		t.Fatal("another user's run must not get a scope in the review sandbox")
 	}
 

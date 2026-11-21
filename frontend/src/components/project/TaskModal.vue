@@ -11,6 +11,7 @@ import AgentModelPicker from './AgentModelPicker.vue'
 import BudgetReached, { type SpentBudget } from './BudgetReached.vue'
 import MrIcon, { type MrIconName } from './MrIcon.vue'
 import StatusBadge from './StatusBadge.vue'
+import TaskComments from './TaskComments.vue'
 import TaskLinks from './TaskLinks.vue'
 import { TASK_STAGES, TASK_STATUS } from './taskStatus'
 import { formatUsd } from '@/utils/cost'
@@ -565,6 +566,8 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               <MrIcon name="alert" :size="14" />
               {{ error }}
             </p>
+
+            <TaskComments v-show="!editing" :task="task" :project-id="projectId" />
           </div>
 
           <aside class="side-col">

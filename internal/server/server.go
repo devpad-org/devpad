@@ -161,7 +161,7 @@ func New(cfg Config) (*Server, error) {
 
 	// What each run's workspace is, which every tool provider is told. It is
 	// set before any provider is added and before reconciling restarts runs.
-	scopes := runscope.New(workspaceService, mrService)
+	scopes := runscope.New(workspaceService, mrService, taskService)
 	aiModule.SetScopeResolver(scopes)
 
 	// AGENTS.md and the project's skills, and load_skill. Review agents read
@@ -190,6 +190,10 @@ func New(cfg Config) (*Server, error) {
 	// The assistant in a project's workspace sees the board and hands work to
 	// task agents.
 	aiModule.AddToolProvider(projecttools.NewProvider(workspaceService, projectService, taskService, mrService, aiModule.AgentDefaults))
+
+	// Comments on tasks, by a task's agent on its own task and by the
+	// assistant on the project's.
+	aiModule.AddToolProvider(task.NewCommentTools(taskService))
 
 	// devpad's own documentation, for the assistant to answer questions
 	// about devpad from.
@@ -595,6 +599,10 @@ func registerRoutes(mux *http.ServeMux, h routeHandlers) {
 	mux.Handle("POST /api/projects/{id}/tasks/{taskId}/cancel-start", h.authMiddleware.RequireAuth(http.HandlerFunc(h.task.HandleCancelStart)))
 	mux.Handle("POST /api/projects/{id}/tasks/{taskId}/links", h.authMiddleware.RequireAuth(http.HandlerFunc(h.task.HandleLink)))
 	mux.Handle("DELETE /api/projects/{id}/tasks/{taskId}/links/{otherId}", h.authMiddleware.RequireAuth(http.HandlerFunc(h.task.HandleUnlink)))
+	mux.Handle("GET /api/projects/{id}/tasks/{taskId}/comments", h.authMiddleware.RequireAuth(http.HandlerFunc(h.task.HandleListComments)))
+	mux.Handle("POST /api/projects/{id}/tasks/{taskId}/comments", h.authMiddleware.RequireAuth(http.HandlerFunc(h.task.HandleAddComment)))
+	mux.Handle("PUT /api/projects/{id}/tasks/{taskId}/comments/{commentId}", h.authMiddleware.RequireAuth(http.HandlerFunc(h.task.HandleEditComment)))
+	mux.Handle("GET /api/projects/{id}/tasks/{taskId}/comments/{commentId}/revisions", h.authMiddleware.RequireAuth(http.HandlerFunc(h.task.HandleCommentRevisions)))
 	mux.Handle("GET /api/projects/{id}/merge-requests", h.authMiddleware.RequireAuth(http.HandlerFunc(h.mr.HandleList)))
 	mux.Handle("POST /api/projects/{id}/merge-requests", h.authMiddleware.RequireAuth(http.HandlerFunc(h.mr.HandleCreate)))
 	mux.Handle("GET /api/projects/{id}/merge-requests/{mrId}", h.authMiddleware.RequireAuth(http.HandlerFunc(h.mr.HandleGet)))

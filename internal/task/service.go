@@ -12,6 +12,7 @@ import (
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/ai/app"
 	"github.com/devpad-org/devpad/internal/ai/domain"
+	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 	"github.com/devpad-org/devpad/internal/project"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
@@ -59,6 +60,21 @@ type Service interface {
 	Unlink(ctx context.Context, userID, projectID, taskID, otherID int64) (*Task, error)
 	// CancelStart drops a blocked task's request to start when unblocked.
 	CancelStart(ctx context.Context, userID, projectID, taskID int64) (*Task, error)
+
+	// Comments are the task's comments, oldest first.
+	Comments(ctx context.Context, userID, projectID, taskID int64) ([]*Comment, error)
+	// AddComment leaves author's comment on the task.
+	AddComment(ctx context.Context, userID, projectID, taskID int64, author Author, body string) (*Comment, error)
+	// EditComment replaces the body of a comment author wrote on the task;
+	// a comment by anyone else is refused with ErrNotCommentAuthor. Every
+	// earlier version is kept.
+	EditComment(ctx context.Context, userID, projectID, taskID, commentID int64, author Author, body string) (*Comment, error)
+	// CommentRevisions are every version of a comment on the task, oldest
+	// first.
+	CommentRevisions(ctx context.Context, userID, projectID, taskID, commentID int64) ([]*CommentRevision, error)
+	// SandboxTask is the open task whose sandbox ws is, or nil when there
+	// is none, for a run's scope.
+	SandboxTask(ctx context.Context, userID int64, ws *workspace.Workspace) (*aitools.TaskScope, error)
 
 	// RunFinished is the agent runner's completion hook.
 	RunFinished(run domain.AgentRun)

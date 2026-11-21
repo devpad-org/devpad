@@ -97,7 +97,14 @@ type resolvable interface {
 // scopes resolves runs' scopes from a provider's fake workspaces.
 func scopes(p *Provider) *runscope.Resolver {
 	ws := p.workspaces.(resolvable)
-	return runscope.New(ws, ws)
+	return runscope.New(ws, ws, noSandboxTask{})
+}
+
+// noSandboxTask finds no task for any sandbox: skills do not depend on it.
+type noSandboxTask struct{}
+
+func (noSandboxTask) SandboxTask(context.Context, int64, *workspace.Workspace) (*aitools.TaskScope, error) {
+	return nil, nil
 }
 
 // scopeOf is a run's scope in the workspace, as devpad resolves it. A run

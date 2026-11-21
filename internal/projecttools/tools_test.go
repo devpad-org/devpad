@@ -334,11 +334,15 @@ func (noSandboxes) TaskMergeRequest(context.Context, int64, *workspace.Workspace
 	return nil, nil
 }
 
+func (noSandboxes) SandboxTask(context.Context, int64, *workspace.Workspace) (*aitools.TaskScope, error) {
+	return nil, nil
+}
+
 // scope resolves a call's scope as the executor does. A call it cannot
 // resolve never reaches the provider; the zero scope stands in for it here,
 // and the provider must refuse that too.
 func (e *env) scope(userID, workspaceID int64) aitools.Scope {
-	s, err := runscope.New(e.workspaces, noSandboxes{}).Resolve(context.Background(), userID, workspaceID)
+	s, err := runscope.New(e.workspaces, noSandboxes{}, noSandboxes{}).Resolve(context.Background(), userID, workspaceID)
 	if err != nil {
 		return aitools.Scope{}
 	}

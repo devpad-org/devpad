@@ -159,6 +159,34 @@ func (r *memRepo) LinksOf(_ context.Context, taskID int64) ([]Link, error) {
 	return r.linksWhere(func(l memLink) bool { return l.From == taskID || l.To == taskID }), nil
 }
 
+func (r *memRepo) GetByWorkspaceID(_ context.Context, workspaceID int64) (*Task, error) {
+	var found *Task
+	for _, t := range r.filter(func(t Task) bool { return t.WorkspaceID == workspaceID }) {
+		if found == nil || t.ID > found.ID {
+			found = t
+		}
+	}
+	return found, nil
+}
+
+// Comments live in SQLite, whose triggers keep their history, so they are
+// tested against it (comments_test.go) rather than here.
+var errNoMemComments = errors.New("memRepo does not store comments")
+
+func (r *memRepo) CreateComment(context.Context, *Comment, int) error { return errNoMemComments }
+func (r *memRepo) GetComment(context.Context, int64) (*Comment, error) {
+	return nil, errNoMemComments
+}
+func (r *memRepo) ListComments(context.Context, int64) ([]*Comment, error) {
+	return nil, errNoMemComments
+}
+func (r *memRepo) EditComment(context.Context, int64, Author, string) (*Comment, error) {
+	return nil, errNoMemComments
+}
+func (r *memRepo) ListCommentRevisions(context.Context, int64) ([]*CommentRevision, error) {
+	return nil, errNoMemComments
+}
+
 func (r *memRepo) linksWhere(keep func(memLink) bool) []Link {
 	r.mu.Lock()
 	defer r.mu.Unlock()

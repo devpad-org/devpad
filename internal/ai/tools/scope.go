@@ -26,6 +26,9 @@ type Scope struct {
 	// TaskMR is set in a task sandbox whose branch has an open merge
 	// request for the task the sandbox is working on.
 	TaskMR *TaskMRScope
+	// Task is set in the sandbox of a task that is not merged or
+	// cancelled.
+	Task *TaskScope
 }
 
 // ReviewScope is the pending review a review sandbox's agent is writing.
@@ -45,6 +48,11 @@ type ReviewScope struct {
 type TaskMRScope struct {
 	TaskID         int64
 	MergeRequestID int64
+}
+
+// TaskScope is the task a sandbox works on.
+type TaskScope struct {
+	TaskID int64
 }
 
 // ProjectWorkspace reports whether this is the user's own workspace for a
