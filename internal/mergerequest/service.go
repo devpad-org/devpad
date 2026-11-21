@@ -1694,10 +1694,15 @@ func autoMergeReason(err error) string {
 // approval, refuses this one. It never pushes upstream. When the project
 // merges into the target automatically but the merge is refused, the
 // review says why, so the user knows to merge it themselves.
+//
+// A merge devpad shutting down would cut short could leave the target
+// moved and the merge request open, so once begun it runs to the end, and
+// Shutdown waits for it. One not yet begun is left for the user.
 func (s *service) autoMerge(ctx context.Context, mr *MergeRequest, rv *Review) {
-	if mr.TaskID == 0 || mr.OpenedBy != AuthorTaskAgent {
+	if mr.TaskID == 0 || mr.OpenedBy != AuthorTaskAgent || ctx.Err() != nil {
 		return
 	}
+	ctx = context.WithoutCancel(ctx)
 	out, err := s.merge(ctx, mr.UserID, mr.ProjectID, mr.ID, MergeInput{}, MergedByAuto, func(open *MergeRequest) (string, error) {
 		return s.autoMergeable(ctx, open, rv.ID)
 	})
@@ -1707,11 +1712,11 @@ func (s *service) autoMerge(ctx context.Context, mr *MergeRequest, rv *Review) {
 		return
 	}
 	// A merge request merged or closed meanwhile has nothing to say.
-	if errors.Is(err, errNotAutoMerged) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalidState) || s.rootCtx.Err() != nil {
+	if errors.Is(err, errNotAutoMerged) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalidState) {
 		return
 	}
 	log.Printf("merge request %d: not merged automatically: %v", mr.ID, err)
-	if err := s.repo.SetAutoMergeError(context.WithoutCancel(ctx), rv.ID, autoMergeReason(err)); err != nil {
+	if err := s.repo.SetAutoMergeError(ctx, rv.ID, autoMergeReason(err)); err != nil {
 		log.Printf("review %d: %v", rv.ID, err)
 	}
 }

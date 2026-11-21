@@ -3016,3 +3016,27 @@ func TestGetSaysAnApprovalIsFinishing(t *testing.T) {
 		t.Fatalf("expected the refusal recorded, got %q", got.AutoMergeError)
 	}
 }
+
+// devpad shutting down while the repo merges doesn't cut the merge short,
+// so the merge request records what the repo did.
+func TestAutoMergeFinishesThroughShutdown(t *testing.T) {
+	e := autoMergeEnv(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	rv := e.startAgentReview(t, mr, AgentReviewInput{})
+	e.projects.onMerge = e.svc.rootCancel
+	e.approve(t, rv, nil)
+	waitFor(t, "the merge request to be merged", func() bool {
+		got, _ := e.svc.repo.GetByID(ctx, mr.ID)
+		return got.Status == StatusMerged
+	})
+	got, _ := e.svc.repo.GetByID(ctx, mr.ID)
+	if got.MergedBy != MergedByAuto || got.MergeSHA != "mergecommit" {
+		t.Fatalf("unexpected merge request: %+v", got)
+	}
+	waitFor(t, "the task closed as merged", func() bool {
+		e.tasks.mu.Lock()
+		defer e.tasks.mu.Unlock()
+		return len(e.tasks.merged) == 1
+	})
+}
