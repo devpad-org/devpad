@@ -38,6 +38,8 @@ export type MrIconName =
   | 'plus'
   | 'minus'
   | 'box'
+  | 'link'
+  | 'lock'
 
 withDefaults(defineProps<{ name: MrIconName; size?: number; strokeWidth?: number }>(), {
   size: 14,
@@ -166,6 +168,12 @@ withDefaults(defineProps<{ name: MrIconName; size?: number; strokeWidth?: number
     </template>
     <template v-else-if="name === 'minus'">
       <path d="M5 12h14" />
+    </template>
+    <template v-else-if="name === 'link'">
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+    </template>
+    <template v-else-if="name === 'lock'">
+      <rect width="16" height="10" x="4" y="11" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" />
     </template>
     <template v-else-if="name === 'box'">
       <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" /><path d="m3.3 7 8.7 5 8.7-5" /><path d="M12 22V12" />

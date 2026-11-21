@@ -33,10 +33,21 @@ export interface Task {
   // means no limit. costUsd counts only models with known prices.
   budgetUsd: number
   costUsd: number
+  // Links to the project's other tasks, by id. A task waits for those it is
+  // blockedBy; blocked says one of them is not merged yet, and
+  // startWhenUnblocked that its agent starts once none is.
+  blockedBy: number[]
+  blocks: number[]
+  related: number[]
+  blocked: boolean
+  startWhenUnblocked: boolean
   error: string
   createdAt: string
   updatedAt: string
 }
+
+// How a task is linked to another, from the first task's side.
+export type TaskLinkKind = 'blocked_by' | 'blocks' | 'related'
 
 export interface AgentSettings {
   agentId?: string
@@ -52,7 +63,15 @@ export const taskApi = {
   // Without budgetUsd the task gets the user's default budget; zero means no limit.
   create(
     projectId: number,
-    input: { title: string; body: string; start: boolean; baseBranch?: string; budgetUsd?: number } & AgentSettings,
+    input: {
+      title: string
+      body: string
+      start: boolean
+      baseBranch?: string
+      budgetUsd?: number
+      blockedBy?: number[]
+      related?: number[]
+    } & AgentSettings,
   ): Promise<{ task: Task }> {
     return apiClient.post(`/api/projects/${projectId}/tasks`, input)
   },
@@ -85,5 +104,20 @@ export const taskApi = {
 
   cancel(projectId: number, id: number): Promise<{ task: Task }> {
     return apiClient.post(`/api/projects/${projectId}/tasks/${id}/cancel`, {})
+  },
+
+  // Drops a blocked task's request to start when unblocked.
+  cancelStart(projectId: number, id: number): Promise<{ task: Task }> {
+    return apiClient.post(`/api/projects/${projectId}/tasks/${id}/cancel-start`, {})
+  },
+
+  link(projectId: number, id: number, kind: TaskLinkKind, otherId: number): Promise<{ task: Task }> {
+    return apiClient.post(`/api/projects/${projectId}/tasks/${id}/links`, { kind, taskId: otherId })
+  },
+
+  // Removes the link between two tasks, whichever kind it is. Both tasks'
+  // links change, and a task the link held back may start, so reload the list.
+  unlink(projectId: number, id: number, otherId: number): Promise<void> {
+    return apiClient.delete(`/api/projects/${projectId}/tasks/${id}/links/${otherId}`)
   },
 }

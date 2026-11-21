@@ -11,6 +11,7 @@ import AgentModelPicker from './AgentModelPicker.vue'
 import BudgetReached, { type SpentBudget } from './BudgetReached.vue'
 import MrIcon, { type MrIconName } from './MrIcon.vue'
 import StatusBadge from './StatusBadge.vue'
+import TaskLinks from './TaskLinks.vue'
 import { TASK_STAGES, TASK_STATUS } from './taskStatus'
 import { formatUsd } from '@/utils/cost'
 import { fullTime, timeAgo } from '@/utils/time'
@@ -95,6 +96,19 @@ async function checkoutBranch() {
 }
 
 const info = computed(() => TASK_STATUS[props.task?.status ?? 'todo'])
+// The tasks this one waits for that are not merged yet, as "#3, #5".
+const waitingOn = computed(() => {
+  const t = props.task
+  if (!t?.blocked) return ''
+  const merged = new Set(projectStore.tasks.filter((other) => other.status === 'merged').map((other) => other.id))
+  return t.blockedBy
+    .filter((id) => !merged.has(id))
+    .map((id) => `#${id}`)
+    .join(', ')
+})
+// The agent starts by itself once nothing blocks the task, so there is
+// nothing to start until the user changes their mind.
+const waitingToStart = computed(() => props.task?.status === 'todo' && props.task.startWhenUnblocked)
 const canStart = computed(() => props.task !== null && STARTABLE.has(props.task.status))
 const canCancel = computed(() => props.task !== null && props.task.status !== 'merged' && props.task.status !== 'cancelled')
 const canEdit = computed(() => props.task !== null && !ACTIVE.has(props.task.status) && props.task.status !== 'merged')
@@ -137,6 +151,8 @@ const statusHint = computed(() => {
   if (!t) return ''
   switch (t.status) {
     case 'todo':
+      if (t.startWhenUnblocked) return `Waiting for ${waitingOn.value || 'the tasks it is blocked by'} to be merged. The agent starts then.`
+      if (t.blocked) return `Blocked by ${waitingOn.value} until it's merged. Starting the agent now leaves it to start then.`
       return 'Not started. Hand it to an agent once the description says what you want.'
     case 'queued':
       return t.error || 'Waiting for a free sandbox.'
@@ -167,6 +183,15 @@ const extraWarning = computed(() => {
 const composer = computed(() => {
   switch (props.task?.status) {
     case 'todo':
+      if (props.task?.blocked) {
+        return {
+          title: 'Start an agent when unblocked',
+          hint: 'It starts by itself once every task this one is blocked by is merged.',
+          label: 'Extra instructions',
+          action: 'Start when unblocked',
+          icon: 'play' as MrIconName,
+        }
+      }
       return {
         title: 'Start an agent',
         hint: 'It works on its own branch in a sandbox and opens a merge request when done.',
@@ -294,6 +319,15 @@ function start() {
   })
 }
 
+function cancelStart() {
+  if (!props.task) return
+  const id = props.task.id
+  void run(async () => {
+    const res = await taskApi.cancelStart(props.projectId, id)
+    emit('changed', res.task)
+  })
+}
+
 function cancel() {
   if (!props.task) return
   const id = props.task.id
@@ -370,7 +404,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
             </li>
           </ol>
           <div class="status-banner">
-            <MrIcon :name="info.icon" :size="15" class="banner-icon" />
+            <MrIcon :name="task.status === 'todo' && task.blocked ? 'lock' : info.icon" :size="15" class="banner-icon" />
             <p class="banner-text">{{ statusHint }}</p>
             <div class="banner-actions">
               <RouterLink
@@ -381,6 +415,10 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 <MrIcon name="terminal" :size="13" />
                 Watch in sandbox
               </RouterLink>
+              <button v-if="waitingToStart" class="btn btn-secondary btn-sm" :disabled="busy" @click="cancelStart">
+                <MrIcon name="stop" :size="13" />
+                Don't start
+              </button>
               <button
                 v-if="mergeRequest && (task.status === 'in_review' || task.status === 'changes_requested')"
                 class="btn btn-primary btn-sm"
@@ -478,7 +516,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               @raise="raiseBudget"
             />
 
-            <section v-if="canStart && !editing" class="composer">
+            <section v-if="canStart && !editing && !waitingToStart" class="composer">
               <button v-if="!composerOpen" class="composer-toggle" @click="composerOpen = true">
                 <span class="avatar avatar-agent"><MrIcon name="bot" :size="13" /></span>
                 <span class="composer-toggle-text">
@@ -564,6 +602,8 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 <dd :title="fullTime(task.updatedAt)">{{ timeAgo(task.updatedAt) }}</dd>
               </dl>
             </section>
+
+            <TaskLinks :task="task" :project-id="projectId" />
 
             <section v-if="task.workspaceId || mergeRequest || branchPublished" class="side-section">
               <h3 class="side-title">Linked</h3>

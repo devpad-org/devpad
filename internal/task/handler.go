@@ -43,9 +43,14 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
+	links, err := h.service.Links(r.Context(), user.ID, projectID)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
 	items := make([]map[string]any, 0, len(tasks))
 	for _, t := range tasks {
-		items = append(items, taskResponse(t))
+		items = append(items, taskResponse(t, links[t.ID]))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": items})
 }
@@ -64,6 +69,8 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		Start      bool     `json:"start"`
 		BaseBranch string   `json:"baseBranch"`
 		BudgetUSD  *float64 `json:"budgetUsd"`
+		BlockedBy  []int64  `json:"blockedBy"`
+		Related    []int64  `json:"related"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -71,13 +78,13 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := h.service.Create(r.Context(), user.ID, projectID, CreateInput{
 		Title: req.Title, Body: req.Body, AgentSettings: req.settings(), Start: req.Start, BaseBranch: req.BaseBranch,
-		BudgetUSD: req.BudgetUSD,
+		BudgetUSD: req.BudgetUSD, BlockedBy: req.BlockedBy, Related: req.Related,
 	})
 	if err != nil {
 		handleServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"task": taskResponse(t)})
+	h.writeTask(w, r, http.StatusCreated, user.ID, t)
 }
 
 // HandleHandoff hands a conversation from the project workspace off to a
@@ -110,7 +117,7 @@ func (h *Handler) HandleHandoff(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"task": taskResponse(t)})
+	h.writeTask(w, r, http.StatusCreated, user.ID, t)
 }
 
 // HandleGet returns one task.
@@ -178,6 +185,39 @@ func (h *Handler) HandleCancel(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleCancelStart drops a blocked task's request to start when unblocked.
+func (h *Handler) HandleCancelStart(w http.ResponseWriter, r *http.Request) {
+	h.withTask(w, r, func(userID, projectID, taskID int64) (*Task, error) {
+		return h.service.CancelStart(r.Context(), userID, projectID, taskID)
+	})
+}
+
+// HandleLink links a task to another of the project's tasks.
+func (h *Handler) HandleLink(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Kind   LinkKind `json:"kind"`
+		TaskID int64    `json:"taskId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	h.withTask(w, r, func(userID, projectID, taskID int64) (*Task, error) {
+		return h.service.Link(r.Context(), userID, projectID, taskID, req.Kind, req.TaskID)
+	})
+}
+
+// HandleUnlink removes the link between two tasks.
+func (h *Handler) HandleUnlink(w http.ResponseWriter, r *http.Request) {
+	otherID, ok := pathID(w, r, "otherId")
+	if !ok {
+		return
+	}
+	h.withTask(w, r, func(userID, projectID, taskID int64) (*Task, error) {
+		return h.service.Unlink(r.Context(), userID, projectID, taskID, otherID)
+	})
+}
+
 // HandleDelete removes a task and its sandbox.
 func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
@@ -211,7 +251,17 @@ func (h *Handler) withTask(w http.ResponseWriter, r *http.Request, fn func(userI
 		handleServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"task": taskResponse(t)})
+	h.writeTask(w, r, http.StatusOK, user.ID, t)
+}
+
+// writeTask writes a task with its links.
+func (h *Handler) writeTask(w http.ResponseWriter, r *http.Request, status int, userID int64, t *Task) {
+	links, err := h.service.Links(r.Context(), userID, t.ProjectID)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, status, map[string]any{"task": taskResponse(t, links[t.ID])})
 }
 
 func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
@@ -231,7 +281,7 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "access denied")
 	case errors.Is(err, ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrInvalidState), errors.Is(err, project.ErrNotReady), errors.Is(err, project.ErrNoWorkspace):
+	case errors.Is(err, ErrInvalidState), errors.Is(err, ErrAlreadyLinked), errors.Is(err, project.ErrNotReady), errors.Is(err, project.ErrNoWorkspace):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		log.Printf("task handler: %v", err)
@@ -239,30 +289,43 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	}
 }
 
-func taskResponse(t *Task) map[string]any {
+func taskResponse(t *Task, links Links) map[string]any {
 	return map[string]any{
-		"id":             t.ID,
-		"projectId":      t.ProjectID,
-		"title":          t.Title,
-		"body":           t.Body,
-		"status":         t.Status,
-		"branch":         t.Branch,
-		"workspaceId":    t.WorkspaceID,
-		"conversationId": t.ConversationID,
-		"runId":          t.RunID,
-		"agentId":        t.AgentID,
-		"model":          t.Model,
-		"effort":         t.Effort,
-		"pendingMessage": t.PendingMessage,
-		"headSha":        t.HeadSHA,
-		"baseBranch":     t.BaseBranch,
-		"handedOff":      t.Handoff != "",
-		"budgetUsd":      t.BudgetUSD,
-		"costUsd":        t.CostUSD,
-		"error":          t.Error,
-		"createdAt":      t.CreatedAt,
-		"updatedAt":      t.UpdatedAt,
+		"blockedBy":          ids(links.BlockedBy),
+		"blocks":             ids(links.Blocks),
+		"related":            ids(links.Related),
+		"blocked":            links.Blocked,
+		"startWhenUnblocked": t.StartWhenUnblocked,
+		"id":                 t.ID,
+		"projectId":          t.ProjectID,
+		"title":              t.Title,
+		"body":               t.Body,
+		"status":             t.Status,
+		"branch":             t.Branch,
+		"workspaceId":        t.WorkspaceID,
+		"conversationId":     t.ConversationID,
+		"runId":              t.RunID,
+		"agentId":            t.AgentID,
+		"model":              t.Model,
+		"effort":             t.Effort,
+		"pendingMessage":     t.PendingMessage,
+		"headSha":            t.HeadSHA,
+		"baseBranch":         t.BaseBranch,
+		"handedOff":          t.Handoff != "",
+		"budgetUsd":          t.BudgetUSD,
+		"costUsd":            t.CostUSD,
+		"error":              t.Error,
+		"createdAt":          t.CreatedAt,
+		"updatedAt":          t.UpdatedAt,
 	}
+}
+
+// ids is a list of ids for JSON, never null.
+func ids(list []int64) []int64 {
+	if list == nil {
+		return []int64{}
+	}
+	return list
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

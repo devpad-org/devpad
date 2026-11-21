@@ -117,9 +117,20 @@ function select(task: Task) {
 }
 
 // A warning or the failure, under the title, where one explains the row.
+// A task to do has an error only when it could not start once unblocked.
 function note(task: Task): string {
   if (!task.error) return ''
-  return task.status === 'failed' || task.status === 'queued' || task.status === 'in_review' ? task.error : ''
+  return ['failed', 'queued', 'in_review', 'todo'].includes(task.status) ? task.error : ''
+}
+
+// The tasks a task to do still waits for, as "#3, #5".
+function waitingOn(task: Task): string {
+  if (task.status !== 'todo' || !task.blocked) return ''
+  const merged = new Set(store.tasks.filter((t) => t.status === 'merged').map((t) => t.id))
+  return task.blockedBy
+    .filter((id) => !merged.has(id))
+    .map((id) => `#${id}`)
+    .join(', ')
 }
 
 function overBudget(task: Task): boolean {
@@ -246,6 +257,16 @@ function created(task: Task) {
                   <span v-if="task.branch" class="mono ellipsis" :title="task.branch">{{ task.branch }}</span>
                   <span v-if="task.baseBranch" class="ellipsis" :title="`Started from ${task.baseBranch}`">from <span class="mono">{{ task.baseBranch }}</span></span>
                   <span v-if="task.handedOff">handed off</span>
+                  <span
+                    v-if="waitingOn(task)"
+                    class="row-blocked"
+                    :title="task.startWhenUnblocked
+                      ? `The agent starts once ${waitingOn(task)} is merged`
+                      : `Waits for ${waitingOn(task)} to be merged`"
+                  >
+                    <MrIcon name="lock" :size="11" />
+                    {{ task.startWhenUnblocked ? 'starts after' : 'blocked by' }} {{ waitingOn(task) }}
+                  </span>
                 </div>
                 <p v-if="note(task)" class="row-note" :class="{ 'row-note-error': task.status === 'failed' }" :title="task.error">
                   {{ note(task) }}
@@ -312,6 +333,13 @@ function created(task: Task) {
 <style scoped>
 .task-surface {
   --ide-header-icon: var(--accent-amber);
+}
+
+.row-blocked {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--warning);
 }
 
 .summary-working {

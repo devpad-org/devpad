@@ -39,6 +39,8 @@ var (
 	ErrNotFound     = errors.New("task not found")
 	ErrInvalidInput = errors.New("invalid input")
 	ErrInvalidState = errors.New("task cannot do that in its current status")
+	// ErrAlreadyLinked refuses a second link between two tasks.
+	ErrAlreadyLinked = errors.New("the tasks are already linked")
 )
 
 // Task is a unit of work in a project. An AI agent implements it in a
@@ -77,8 +79,12 @@ type Task struct {
 	// to models with known prices.
 	BudgetUSD float64
 	CostUSD   float64
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// StartWhenUnblocked marks a task to do that the user asked to start
+	// while tasks it is blocked by were not merged: its agent is queued once
+	// the last of them is.
+	StartWhenUnblocked bool
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // BranchName is the branch a task's sandbox works on.
@@ -125,6 +131,12 @@ type CreateInput struct {
 	BudgetUSD *float64
 	// Handoff is conversation context for the task's agent.
 	Handoff string
+	// BlockedBy are tasks of the project the new task waits for: its agent
+	// starts only once all of them are merged. With Start set and any of
+	// them not merged yet, the task is left to start when they are.
+	BlockedBy []int64
+	// Related are tasks of the project the new task is related to.
+	Related []int64
 }
 
 // HandoffInput hands a conversation from the project workspace off to a new
@@ -151,4 +163,56 @@ type UpdateInput struct {
 type StartInput struct {
 	AgentSettings
 	Message string
+}
+
+// LinkKind is how one task is linked to another, from the first task's side.
+type LinkKind string
+
+const (
+	// LinkBlockedBy: the task waits for the other to be merged.
+	LinkBlockedBy LinkKind = "blocked_by"
+	// LinkBlocks: the other task waits for this one to be merged.
+	LinkBlocks LinkKind = "blocks"
+	// LinkRelated: the tasks are related, which holds neither back.
+	LinkRelated LinkKind = "related"
+)
+
+// Link is a stored link between two tasks of a project. Blocks is false for
+// a related link, which is stored with the lower id as From.
+type Link struct {
+	From, To int64
+	Blocks   bool
+	// FromStatus is the status of the From task, which says whether a
+	// blocking link still holds To back.
+	FromStatus Status
+}
+
+// Links are one task's links to the project's other tasks.
+type Links struct {
+	BlockedBy []int64
+	Blocks    []int64
+	Related   []int64
+	// Blocked reports whether a task this one is blocked by is not merged.
+	Blocked bool
+}
+
+// linksOf gathers task id's side of the links.
+func linksOf(id int64, links []Link) Links {
+	var l Links
+	for _, link := range links {
+		switch {
+		case link.Blocks && link.To == id:
+			l.BlockedBy = append(l.BlockedBy, link.From)
+			if link.FromStatus != StatusMerged {
+				l.Blocked = true
+			}
+		case link.Blocks && link.From == id:
+			l.Blocks = append(l.Blocks, link.To)
+		case link.From == id:
+			l.Related = append(l.Related, link.To)
+		case link.To == id:
+			l.Related = append(l.Related, link.From)
+		}
+	}
+	return l
 }
