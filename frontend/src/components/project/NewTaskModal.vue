@@ -233,7 +233,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 placeholder="What should change, and how will we know it works? Markdown works."
               />
               <div v-else class="description-preview">
-                <MarkdownMessage v-if="body.trim()" :content="body" />
+                <MarkdownMessage v-if="body.trim()" :content="body" literal-html />
                 <p v-else class="muted">Nothing to preview yet.</p>
               </div>
             </div>

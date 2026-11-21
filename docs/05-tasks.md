@@ -9,7 +9,7 @@ There are two ways to work with AI in devpad. A **task** hands a change to a bac
 
 The **Tasks** surface lists the project's tasks, with what each has spent and its merge request. Press **New task**:
 
-- **Title** and **Description**: what should change, and how you'll know it works. The agent sees both, with the project's description.
+- **Title** and **Description**: what should change, and how you'll know it works. The agent sees both, with the project's description. Markdown works in the description, but HTML in it shows as the text it is, as it does in the **Feedback for the next run** a review leaves: the assistant can write a task and a review agent its feedback, and neither can hide anything there from you.
 - **Start from**: the branch the task's own branch is made from. It must be in the project, so publish it first.
 - **Agent**: the model and effort, which start from your [default models](/docs/ai#default-models).
 - **Linked tasks**: tasks it's **Blocked by**, whose work it builds on, and tasks it's **Related** to. See [Linked tasks](#linked-tasks).

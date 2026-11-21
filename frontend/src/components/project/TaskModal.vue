@@ -495,7 +495,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 </span>
               </div>
               <div class="description">
-                <MarkdownMessage v-if="task.body" :content="task.body" />
+                <MarkdownMessage v-if="task.body" :content="task.body" literal-html />
                 <div v-else class="empty-description">
                   <p class="muted">No description yet.</p>
                   <button v-if="canEdit" class="text-button" @click="startEditing()">Add one so the agent knows what to do</button>
@@ -509,7 +509,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 <h3 class="form-label">Feedback for the next run</h3>
               </div>
               <div class="feedback">
-                <MarkdownMessage :content="task.pendingMessage" />
+                <MarkdownMessage :content="task.pendingMessage" literal-html />
               </div>
             </section>
 
