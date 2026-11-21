@@ -10,6 +10,9 @@ export interface Project {
   // Every branch that changes only through merge requests, the default
   // first. Merge requests can target any of them.
   protectedBranches: string[]
+  // The protected branches a task's merge request merges into on its own
+  // once a review agent approves it.
+  autoMergeBranches: string[]
   upstreamUrl: string
   setupScript: string
   // The body of a Dockerfile devpad builds on its workspace image for the
@@ -69,6 +72,9 @@ export interface BranchesInput {
   defaultBranch: string
   // May include the default branch; it is always protected.
   protectedBranches: string[]
+  // Protected branches, of those above, that a task's merge request merges
+  // into once a review agent approves it. Left out, the project's are kept.
+  autoMergeBranches?: string[]
 }
 
 export interface PushResult {
@@ -362,7 +368,8 @@ export const projectApi = {
     return apiClient.delete(`/api/projects/${id}`)
   },
 
-  // Changes the default branch and the other protected branches.
+  // Changes the default branch, the other protected branches, and those
+  // merged into automatically.
   setBranches(id: number, input: BranchesInput): Promise<{ project: Project }> {
     return apiClient.put(`/api/projects/${id}/branches`, input)
   },

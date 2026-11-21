@@ -34,6 +34,9 @@ type Repository interface {
 	// lowers the stored total, so a total recorded late cannot undo a later
 	// one.
 	RecordReviewCost(ctx context.Context, id int64, spentUSD float64) error
+	// SetAutoMergeError records why a review's approval did not merge its
+	// merge request automatically. UpdateReview never writes it.
+	SetAutoMergeError(ctx context.Context, id int64, msg string) error
 
 	CreateComment(ctx context.Context, c *Comment) error
 	GetComment(ctx context.Context, id int64) (*Comment, error)
@@ -54,7 +57,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const mrColumns = `id, project_id, user_id, task_id, opened_by, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, created_at, updated_at`
+const mrColumns = `id, project_id, user_id, task_id, opened_by, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, merged_by, created_at, updated_at`
 
 func (r *repository) Create(ctx context.Context, mr *MergeRequest) error {
 	now := time.Now()
@@ -105,8 +108,8 @@ func (r *repository) ListByProjectID(ctx context.Context, projectID int64) ([]*M
 func (r *repository) Update(ctx context.Context, mr *MergeRequest) error {
 	now := time.Now()
 	if _, err := r.db.ExecContext(ctx,
-		`UPDATE merge_requests SET title = ?, description = ?, status = ?, head_sha = ?, base_sha = ?, merge_sha = ?, merged_at = ?, updated_at = ? WHERE id = ?`,
-		mr.Title, mr.Description, mr.Status, mr.HeadSHA, mr.BaseSHA, mr.MergeSHA, mr.MergedAt, now, mr.ID,
+		`UPDATE merge_requests SET title = ?, description = ?, status = ?, head_sha = ?, base_sha = ?, merge_sha = ?, merged_at = ?, merged_by = ?, updated_at = ? WHERE id = ?`,
+		mr.Title, mr.Description, mr.Status, mr.HeadSHA, mr.BaseSHA, mr.MergeSHA, mr.MergedAt, mr.MergedBy, now, mr.ID,
 	); err != nil {
 		return fmt.Errorf("updating merge request: %w", err)
 	}
@@ -162,7 +165,7 @@ func (r *repository) ListPushes(ctx context.Context, mergeRequestID int64) ([]*P
 	})
 }
 
-const reviewColumns = `id, merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, conversation_id, run_id, agent_id, model, effort, auto_fix, round, budget_usd, cost_usd, error, created_at, updated_at`
+const reviewColumns = `id, merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, conversation_id, run_id, agent_id, model, effort, auto_fix, round, budget_usd, cost_usd, error, auto_merge_error, created_at, updated_at`
 
 func (r *repository) CreateReview(ctx context.Context, rv *Review) error {
 	now := time.Now()
@@ -226,6 +229,13 @@ func (r *repository) UpdateReview(ctx context.Context, rv *Review) error {
 func (r *repository) RecordReviewCost(ctx context.Context, id int64, spentUSD float64) error {
 	if _, err := r.db.ExecContext(ctx, `UPDATE merge_request_reviews SET cost_usd = MAX(cost_usd, ?) WHERE id = ?`, spentUSD, id); err != nil {
 		return fmt.Errorf("recording review cost: %w", err)
+	}
+	return nil
+}
+
+func (r *repository) SetAutoMergeError(ctx context.Context, id int64, msg string) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE merge_request_reviews SET auto_merge_error = ?, updated_at = ? WHERE id = ?`, msg, time.Now(), id); err != nil {
+		return fmt.Errorf("recording why a review did not merge: %w", err)
 	}
 	return nil
 }
@@ -299,7 +309,7 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 	var mr MergeRequest
 	var taskID sql.NullInt64
 	var mergedAt sql.NullTime
-	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.OpenedBy, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
+	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.OpenedBy, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.MergedBy, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
@@ -313,7 +323,7 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 func scanReview(row rowScanner) (*Review, error) {
 	var rv Review
 	var workspaceID, conversationID, runID sql.NullInt64
-	if err := row.Scan(&rv.ID, &rv.MergeRequestID, &rv.Author, &rv.Status, &rv.Verdict, &rv.Body, &rv.HeadSHA, &rv.TargetSHA, &workspaceID, &conversationID, &runID, &rv.AgentID, &rv.Model, &rv.Effort, &rv.AutoFix, &rv.Round, &rv.BudgetUSD, &rv.CostUSD, &rv.Error, &rv.CreatedAt, &rv.UpdatedAt); err != nil {
+	if err := row.Scan(&rv.ID, &rv.MergeRequestID, &rv.Author, &rv.Status, &rv.Verdict, &rv.Body, &rv.HeadSHA, &rv.TargetSHA, &workspaceID, &conversationID, &runID, &rv.AgentID, &rv.Model, &rv.Effort, &rv.AutoFix, &rv.Round, &rv.BudgetUSD, &rv.CostUSD, &rv.Error, &rv.AutoMergeError, &rv.CreatedAt, &rv.UpdatedAt); err != nil {
 		return nil, err
 	}
 	rv.WorkspaceID, rv.ConversationID, rv.RunID = workspaceID.Int64, conversationID.Int64, runID.Int64

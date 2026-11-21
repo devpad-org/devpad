@@ -30,8 +30,8 @@ type Service interface {
 	Overviews(ctx context.Context, userID int64) ([]*Overview, []*WorkspaceLink, error)
 	Get(ctx context.Context, userID, projectID int64) (*Project, error)
 	Update(ctx context.Context, userID, projectID int64, in UpdateInput) (*Project, error)
-	// SetBranches changes the project's default branch and the other
-	// branches it protects.
+	// SetBranches changes the project's default branch, the other branches
+	// it protects, and those merge requests merge into automatically.
 	SetBranches(ctx context.Context, userID, projectID int64, in BranchesInput) (*Project, error)
 	// DeleteBranch deletes a branch that is not protected and that nothing
 	// is using, only while it still points at sha.
@@ -500,7 +500,8 @@ func (s *service) Update(ctx context.Context, userID, projectID int64, in Update
 // becomes protected while no sandbox owns it and nothing is publishing it,
 // and from then on no sandbox can claim it and the project workspace cannot
 // publish it. Open merge requests keep their targets; one whose target is no
-// longer protected cannot be merged.
+// longer protected cannot be merged. A branch that stops being protected
+// stops being merged into automatically.
 func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in BranchesInput) (*Project, error) {
 	unlock := s.lockBranches(projectID)
 	defer unlock()
@@ -550,6 +551,9 @@ func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in B
 			return nil, invalid("branch %q does not exist in the project", b)
 		}
 	}
+	if next.AutoMergeBranches, err = autoMergeBranches(p, next, in.AutoMergeBranches); err != nil {
+		return nil, err
+	}
 
 	// HEAD moves first: until the new branches are recorded, the repo
 	// refuses imports into the new default branch as well as the old.
@@ -567,8 +571,35 @@ func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in B
 		}
 		return nil, err
 	}
-	p.DefaultBranch, p.ProtectedBranches = next.DefaultBranch, next.ProtectedBranches
+	p.DefaultBranch, p.ProtectedBranches, p.AutoMergeBranches = next.DefaultBranch, next.ProtectedBranches, next.AutoMergeBranches
 	return p, nil
+}
+
+// autoMergeBranches works out which of next's protected branches merge
+// requests merge into automatically: those asked for, each of which must be
+// protected in next, or when none are asked for, p's that still are.
+func autoMergeBranches(p, next *Project, asked *[]string) ([]string, error) {
+	if asked == nil {
+		kept := []string{}
+		for _, b := range p.AutoMergeBranches {
+			if next.IsProtected(b) {
+				kept = append(kept, b)
+			}
+		}
+		return kept, nil
+	}
+	out := []string{}
+	for _, b := range *asked {
+		b = strings.TrimSpace(b)
+		if b == "" || slices.Contains(out, b) {
+			continue
+		}
+		if !next.IsProtected(b) {
+			return nil, invalid("%q is not protected, so merge requests cannot merge into it automatically", b)
+		}
+		out = append(out, b)
+	}
+	return out, nil
 }
 
 // DeleteBranch deletes a branch of the canonical repo, refusing a protected
@@ -668,7 +699,7 @@ func (s *service) protectBranches(ctx context.Context, p *Project, next *Project
 			}
 		}
 	}
-	return s.repo.SetBranches(ctx, p.ID, next.DefaultBranch, next.ProtectedBranches)
+	return s.repo.SetBranches(ctx, p.ID, next.DefaultBranch, next.ProtectedBranches, next.AutoMergeBranches)
 }
 
 // Delete removes every sandbox and the project workspace through the

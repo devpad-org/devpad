@@ -22,6 +22,9 @@ export interface MergeRequest {
   baseSha: string
   mergeSha: string
   mergedAt: string | null
+  // Who merged it: the user, or devpad once a review agent approved it.
+  // Empty until it is merged.
+  mergedBy: 'user' | 'auto' | ''
   createdAt: string
   updatedAt: string
   // A review agent is at work on it. Only the list sets it.
@@ -48,6 +51,9 @@ export interface Review {
   budgetUsd: number
   costUsd: number
   error: string
+  // Why the review's approval did not merge the change into a branch the
+  // project merges into automatically.
+  autoMergeError: string
   createdAt: string
   updatedAt: string
 }

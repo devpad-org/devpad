@@ -100,10 +100,11 @@ const {
     <section v-else class="card outcome-card" :class="`state-${mr.status}`">
       <span class="outcome-icon"><MrIcon :name="statusIcon" :size="18" /></span>
       <div v-if="mr.status === 'merged'">
-        <strong>Merged into {{ mr.targetBranch }}</strong>
+        <strong>{{ mr.mergedBy === 'auto' ? 'Merged automatically' : 'Merged' }} into {{ mr.targetBranch }}</strong>
         <p class="muted outcome-detail">
           as <span class="mono">{{ shortSha(mr.mergeSha) }}</span>
           <span :title="fullTime(mr.mergedAt)"> &middot; {{ timeAgo(mr.mergedAt) }}</span>
+          <template v-if="mr.mergedBy === 'auto'"> &middot; after a review agent approved it</template>
         </p>
       </div>
       <div v-else>

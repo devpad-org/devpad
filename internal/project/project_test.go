@@ -1309,6 +1309,85 @@ func TestPushRequiresUpstream(t *testing.T) {
 	}
 }
 
+func TestSetBranchesPicksBranchesToMergeIntoAutomatically(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "develop", SHA: "d"}, {Name: "feature", SHA: "f"}}
+	list := func(b ...string) *[]string { return &b }
+
+	if p.AutoMerges("main") {
+		t.Fatal("a new project must not merge into anything automatically")
+	}
+	got, err := e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop", ProtectedBranches: []string{"main"}, AutoMergeBranches: list("develop", " develop ")})
+	if err != nil {
+		t.Fatalf("set branches: %v", err)
+	}
+	if strings.Join(got.AutoMergeBranches, ",") != "develop" || !got.AutoMerges("develop") || got.AutoMerges("main") {
+		t.Fatalf("unexpected automatic merges: %v", got.AutoMergeBranches)
+	}
+	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); !stored.AutoMerges("develop") || stored.AutoMerges("main") {
+		t.Fatalf("automatic merges not stored: %v", stored.AutoMergeBranches)
+	}
+
+	// Leaving them out keeps them.
+	if got, err = e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop", ProtectedBranches: []string{"main"}}); err != nil || !got.AutoMerges("develop") {
+		t.Fatalf("expected develop kept, got %v (%v)", got, err)
+	}
+	// An unprotected branch is refused.
+	if _, err := e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop", AutoMergeBranches: list("main")}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for an unprotected branch, got %v", err)
+	}
+	// A branch that stops being protected stops being merged into.
+	if got, err = e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "main"}); err != nil || got.AutoMerges("develop") || len(got.AutoMergeBranches) != 0 {
+		t.Fatalf("expected develop dropped, got %+v (%v)", got, err)
+	}
+	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); len(stored.AutoMergeBranches) != 0 {
+		t.Fatalf("expected no automatic merges stored, got %v", stored.AutoMergeBranches)
+	}
+}
+
+// The branches endpoint keeps the automatic merges when a request leaves
+// them out, and reports them.
+func TestSetBranchesHandlerKeepsAutomaticMergesLeftOut(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "develop", SHA: "d"}}
+	id := strconv.FormatInt(p.ID, 10)
+	put := func(body string) []any {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/projects/"+id+"/branches", strings.NewReader(body))
+		req.SetPathValue("id", id)
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: e.userID}))
+		rec := httptest.NewRecorder()
+		NewHandler(e.svc).HandleSetBranches(rec, req)
+		var out struct {
+			Project map[string]any `json:"project"`
+		}
+		json.NewDecoder(rec.Body).Decode(&out)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT %s: %d", body, rec.Code)
+		}
+		list, ok := out.Project["autoMergeBranches"].([]any)
+		if !ok {
+			t.Fatalf("expected autoMergeBranches as a list, got %v", out.Project["autoMergeBranches"])
+		}
+		return list
+	}
+	if got := put(`{"defaultBranch":"develop","protectedBranches":["main"]}`); len(got) != 0 {
+		t.Fatalf("expected none, got %v", got)
+	}
+	if got := put(`{"defaultBranch":"develop","protectedBranches":["main"],"autoMergeBranches":["develop"]}`); len(got) != 1 || got[0] != "develop" {
+		t.Fatalf("expected develop, got %v", got)
+	}
+	if got := put(`{"defaultBranch":"develop","protectedBranches":["main"]}`); len(got) != 1 || got[0] != "develop" {
+		t.Fatalf("expected develop kept, got %v", got)
+	}
+	if got := put(`{"defaultBranch":"develop","protectedBranches":["main"],"autoMergeBranches":[]}`); len(got) != 0 {
+		t.Fatalf("expected an empty list to clear them, got %v", got)
+	}
+}
+
 func TestSetBranchesProtectsBranches(t *testing.T) {
 	e := setupTest(t)
 	ctx := context.Background()

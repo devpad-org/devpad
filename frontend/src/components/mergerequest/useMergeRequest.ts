@@ -427,7 +427,40 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     } else {
       list.push({ key: 'branch', tone: 'success', icon: 'branch', title: `Up to date with ${m.targetBranch}`, detail: `${plural(m.ahead, 'commit')} to merge.` })
     }
+    const auto = autoMergeCheck.value
+    if (auto) list.push(auto)
     return list
+  })
+
+  // A task's merge request into a branch the project merges into
+  // automatically merges once a review agent approves it. The check says so,
+  // or why the latest approval did not merge it. The project has no checks
+  // for the change to pass, so the approval is all that stands in the way.
+  const autoMerges = computed(() => {
+    const m = mr.value
+    return !!m && m.openedBy === 'task_agent' && (project.value?.autoMergeBranches ?? []).includes(m.targetBranch)
+  })
+  const autoMergeCheck = computed<Check | null>(() => {
+    const m = mr.value
+    if (!m || !autoMerges.value) return null
+    const latest = timelineReviews.value[timelineReviews.value.length - 1]
+    if (latest?.autoMergeError) {
+      return {
+        key: 'auto-merge',
+        tone: 'warning',
+        icon: 'warning',
+        title: 'Not merged automatically',
+        detail: `${latest.autoMergeError.replace(/^Not merged automatically: /, '')}. Merge it yourself, or have a review agent review it again.`,
+      }
+    }
+    const reviewer = project.value?.autoReview ? 'the automatic review' : 'a review agent you start'
+    return {
+      key: 'auto-merge',
+      tone: 'neutral',
+      icon: 'merged',
+      title: `Merges into ${m.targetBranch} automatically`,
+      detail: `Once ${reviewer} approves it, with no checks to pass first.`,
+    }
   })
 
   const strategyHint = computed(() => {

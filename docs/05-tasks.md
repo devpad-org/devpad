@@ -24,7 +24,7 @@ Each task works on a branch of its own, `task/<id>`, in a sandbox: a fresh works
 2. **Agent working**: the agent edits, runs and commits in the sandbox. **Watch in sandbox** opens it to follow along.
 3. **In review**: when the agent finishes, devpad collects its branch and opens a merge request into the default branch, or moves the open one to the new commit. If the agent made no commits, the task fails instead.
 4. **Changes requested**: you or a review asked for changes. **Send back to agent** sends the feedback, and the agent picks up where it left off, on the same branch.
-5. **Merged** or **Cancelled**.
+5. **Merged** or **Cancelled**. A task whose merge request targets a branch devpad [merges into automatically](/docs/branches#automatic-merges) is merged as soon as a review agent approves it.
 
 The sandbox stops after each round, freeing its slot, and keeps the branch and the agent's transcript for the next. **Cancel task** stops the agent and removes the sandbox; anything already published stays. A task that **Failed** can be started again with **Retry**, with another model if you like.
 

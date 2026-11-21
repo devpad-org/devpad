@@ -2,6 +2,7 @@ package project
 
 import (
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -68,6 +69,10 @@ type Project struct {
 	// ProtectedBranches are the branches besides the default that move only
 	// through merge requests; merge requests can target any of them.
 	ProtectedBranches []string
+	// AutoMergeBranches are the protected branches a task's merge request
+	// merges into on its own once a review agent approves it. Empty unless
+	// the user picks some.
+	AutoMergeBranches []string
 	UpstreamURL       string
 	// UpstreamVersion counts the changes to UpstreamURL since the project
 	// was made.
@@ -102,6 +107,12 @@ func (p *Project) IsProtected(branch string) bool {
 		}
 	}
 	return false
+}
+
+// AutoMerges reports whether a task's merge request into branch merges on
+// its own once a review agent approves it. Only a protected branch can.
+func (p *Project) AutoMerges(branch string) bool {
+	return p.IsProtected(branch) && slices.Contains(p.AutoMergeBranches, branch)
 }
 
 // Protected lists every protected branch, the default branch first.
@@ -148,6 +159,10 @@ type SandboxInput struct {
 type BranchesInput struct {
 	DefaultBranch     string
 	ProtectedBranches []string
+	// AutoMergeBranches are the protected branches, of those set here, that
+	// a task's merge request merges into once a review agent approves it.
+	// Nil keeps the project's, less any branch no longer protected.
+	AutoMergeBranches *[]string
 }
 
 // MergeInput merges Source into Target, a protected branch.

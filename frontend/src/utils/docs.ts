@@ -17,6 +17,7 @@ export const DOC_LINKS = {
   publishing: '/docs/branches#publishing',
   mergeRequests: '/docs/branches#merge-requests',
   reviews: '/docs/branches#reviews',
+  autoMerge: '/docs/branches#automatic-merges',
   tasks: '/docs/tasks',
   assistant: '/docs/tasks#the-assistant',
   services: '/docs/services',

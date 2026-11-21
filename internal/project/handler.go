@@ -148,8 +148,9 @@ func (h *Handler) HandleSetBranches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		DefaultBranch     string   `json:"defaultBranch"`
-		ProtectedBranches []string `json:"protectedBranches"`
+		DefaultBranch     string    `json:"defaultBranch"`
+		ProtectedBranches []string  `json:"protectedBranches"`
+		AutoMergeBranches *[]string `json:"autoMergeBranches"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -738,6 +739,9 @@ func projectResponse(p *Project) map[string]any {
 		"defaultBranch": p.DefaultBranch,
 		// Every protected branch, the default first.
 		"protectedBranches": p.Protected(),
+		// The protected branches a task's merge request merges into once a
+		// review agent approves it.
+		"autoMergeBranches": nonNil(p.AutoMergeBranches),
 		"upstreamUrl":       p.UpstreamURL,
 		"setupScript":       p.SetupScript,
 		"environment":       p.Environment,
@@ -900,4 +904,12 @@ func (h *Handler) HandleDismissConversionNotice(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"dismissed": true})
+}
+
+// nonNil keeps an empty list a list in JSON.
+func nonNil(list []string) []string {
+	if list == nil {
+		return []string{}
+	}
+	return list
 }

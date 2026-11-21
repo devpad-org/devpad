@@ -20,6 +20,9 @@ const store = useActiveProjectStore()
 
 const defaultBranch = ref('')
 const protectedSet = ref(new Set<string>())
+// The protected branches a task's merge request merges into once a review
+// agent approves it.
+const autoMergeSet = ref(new Set<string>())
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -34,6 +37,9 @@ const choices = computed(() => {
   const initial = new Set(store.protectedBranches)
   return [...names].sort((a, b) => Number(initial.has(b)) - Number(initial.has(a)) || a.localeCompare(b))
 })
+
+// The branches protected in the edits not yet saved, the default first.
+const protectedChoices = computed(() => [defaultBranch.value, ...choices.value.filter((b) => b !== defaultBranch.value && protectedSet.value.has(b))].filter(Boolean))
 
 const shas = computed(() => new Map(store.branches.map((b) => [b.name, b.sha])))
 
@@ -62,6 +68,7 @@ watch(
     if (!visible || !store.project) return
     defaultBranch.value = store.project.defaultBranch
     protectedSet.value = new Set(store.protectedBranches.filter((b) => b !== store.project?.defaultBranch))
+    autoMergeSet.value = new Set(store.project.autoMergeBranches ?? [])
     error.value = ''
     confirming.value = ''
     loading.value = true
@@ -91,6 +98,13 @@ function toggle(branch: string, on: boolean) {
   if (on) set.add(branch)
   else set.delete(branch)
   protectedSet.value = set
+}
+
+function toggleAutoMerge(branch: string, on: boolean) {
+  const set = new Set(autoMergeSet.value)
+  if (on) set.add(branch)
+  else set.delete(branch)
+  autoMergeSet.value = set
 }
 
 // The branch is deleted only while it is where the list shows it, so
@@ -124,6 +138,8 @@ async function save() {
     const res = await projectApi.setBranches(store.projectId, {
       defaultBranch: defaultBranch.value,
       protectedBranches: choices.value.filter((b) => protectedSet.value.has(b)),
+      // Only a protected branch can be merged into automatically.
+      autoMergeBranches: protectedChoices.value.filter((b) => autoMergeSet.value.has(b)),
     })
     store.setProject(res.project)
     emit('close')
@@ -201,6 +217,24 @@ async function save() {
               Deleting an unprotected branch happens at once, without Save.
             </p>
           </div>
+          <div class="form-group">
+            <span class="form-label">Merge automatically<DocLink topic="autoMerge" label="Automatic merges" /></span>
+            <div class="branch-list" role="group" aria-label="Merge automatically">
+              <div v-for="b in protectedChoices" :key="b" class="branch-row">
+                <label class="form-check branch-check">
+                  <input type="checkbox" :checked="autoMergeSet.has(b)" @change="toggleAutoMerge(b, ($event.target as HTMLInputElement).checked)" />
+                  <span class="mono">{{ b }}</span>
+                </label>
+              </div>
+            </div>
+            <p class="form-hint">
+              A task's merge request into a branch ticked here merges as soon as a review agent approves it, with no one looking first. Leave a branch unticked to review its merge
+              requests yourself; never tick a release branch such as <span class="mono">main</span>.
+            </p>
+            <p v-if="protectedChoices.some((b) => autoMergeSet.has(b))" class="notice notice-warning auto-merge-warning" role="note">
+              This project has no checks, so nothing but the review agent's judgment decides what merges. A change can carry text that tries to talk the review agent into approving it.
+            </p>
+          </div>
           <p v-if="error" class="form-error">{{ error }}</p>
           <div class="modal-actions">
             <button type="button" class="btn btn-secondary" @click="emit('close')">Cancel</button>
@@ -215,8 +249,8 @@ async function save() {
 <style scoped src="./shared.css"></style>
 <style scoped>
 .modal {
-  background: var(--bg-surface);
-  border: 0.5px solid var(--border-default);
+  background: var(--bg-elevated);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 440px;
@@ -228,7 +262,7 @@ async function save() {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-4) var(--space-5);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
 }
 
 .modal-title {
@@ -238,7 +272,7 @@ async function save() {
 
 .modal-close {
   font-size: 1.25rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   padding: var(--space-1);
   transition: color var(--transition-fast);
 }
@@ -257,9 +291,9 @@ async function save() {
   max-height: 220px;
   overflow-y: auto;
   padding: var(--space-1) var(--space-3);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  background: var(--bg-primary);
+  background: var(--bg-base);
 }
 
 .branch-row {
@@ -294,12 +328,12 @@ async function save() {
 .branch-note {
   margin-left: auto;
   font-size: 0.7rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .branch-delete {
   font-size: 0.7rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   padding: 0 var(--space-1);
   border-radius: var(--radius-sm);
   transition: color var(--transition-fast);
@@ -307,12 +341,16 @@ async function save() {
 
 .branch-delete:hover:not(:disabled),
 .branch-delete:focus-visible {
-  color: var(--accent-rose);
+  color: var(--error);
 }
 
 .branch-delete:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.auto-merge-warning {
+  margin: var(--space-2) 0 0;
 }
 
 .modal-actions {

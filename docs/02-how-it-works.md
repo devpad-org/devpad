@@ -48,7 +48,7 @@ Each task and each review gets a sandbox: a fresh workspace seeded from the cano
 
 - it has no SSH key, no route to the canonical repo, and no way to reach your project workspace or other sandboxes;
 - it can only change its own branch, and only by handing commits to devpad;
-- it can't merge, close a merge request, push upstream or move a protected branch: those stay with you.
+- it can't merge, close a merge request, push upstream or move a protected branch: those stay with you, unless you have devpad [merge automatically](/docs/branches#automatic-merges) what a review agent approves, which devpad does itself, by its own rules.
 
 Your project workspace has no SSH key either. Its `devpad` and `origin` remotes look like ordinary git remotes, but they're served by devpad, which applies the same rules as the Publish button.
 

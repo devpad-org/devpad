@@ -29,6 +29,17 @@ const (
 	AuthorAssistant Author = "assistant"
 )
 
+// MergedBy is who merged a merge request.
+type MergedBy string
+
+const (
+	MergedByUser MergedBy = "user"
+	// MergedByAuto is devpad merging a task's merge request once a review
+	// agent approved it, into a branch the project merges into
+	// automatically.
+	MergedByAuto MergedBy = "auto"
+)
+
 // ReviewStatus tracks an agent review from start to submission.
 type ReviewStatus string
 
@@ -95,9 +106,11 @@ type MergeRequest struct {
 	HeadSHA string
 	// BaseSHA is the merge base, recorded at merge time so the diff of a
 	// merged request can still be shown.
-	BaseSHA   string
-	MergeSHA  string
-	MergedAt  *time.Time
+	BaseSHA  string
+	MergeSHA string
+	MergedAt *time.Time
+	// MergedBy is empty until the merge request is merged.
+	MergedBy  MergedBy
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	// AgentReviewing says a review agent is at work on the merge request.
@@ -140,8 +153,11 @@ type Review struct {
 	BudgetUSD float64
 	CostUSD   float64
 	Error     string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// AutoMergeError says why an agent review's approval did not merge its
+	// merge request into a branch the project merges into automatically.
+	AutoMergeError string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // OverBudget reports whether the review's agent has spent its own budget.
