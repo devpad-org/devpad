@@ -710,7 +710,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .summary-item .mr-icon {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .branch-chip {
@@ -721,7 +721,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   padding: 2px var(--space-2);
   border-radius: var(--radius-sm);
   background: var(--bg-raised);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 0.72rem;
@@ -731,28 +731,28 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .branch-chip .mr-icon {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 /* Lifecycle: stepper plus a banner with what's next */
 .lifecycle {
   --tone: var(--text-secondary);
   --tone-bg: var(--bg-neutral);
-  --tone-border: var(--border-default);
+  --tone-border: var(--border-subtle);
   padding: var(--space-4) var(--space-5);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
 }
 
 .tone-active {
-  --tone: var(--accent-blue);
-  --tone-bg: color-mix(in srgb, var(--accent-blue) 12%, transparent);
-  --tone-border: color-mix(in srgb, var(--accent-blue) 30%, transparent);
+  --tone: var(--hue-blue);
+  --tone-bg: color-mix(in srgb, var(--hue-blue) 12%, transparent);
+  --tone-border: color-mix(in srgb, var(--hue-blue) 30%, transparent);
 }
 
 .tone-review {
-  --tone: var(--accent-purple);
-  --tone-bg: color-mix(in srgb, var(--accent-purple) 12%, transparent);
-  --tone-border: color-mix(in srgb, var(--accent-purple) 30%, transparent);
+  --tone: var(--hue-purple);
+  --tone-bg: color-mix(in srgb, var(--hue-purple) 12%, transparent);
+  --tone-border: color-mix(in srgb, var(--hue-purple) 30%, transparent);
 }
 
 .tone-attention {
@@ -799,7 +799,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   left: calc(-50% + 18px);
   height: 2px;
   border-radius: 1px;
-  background: var(--border-default);
+  background: var(--border-subtle);
 }
 
 .step-done + .step::before {
@@ -813,7 +813,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  border: 1px solid var(--border-default);
+  border: 1px solid var(--border-subtle);
   background: var(--bg-base);
   color: var(--text-dim);
   transition: all var(--transition-normal);
@@ -849,7 +849,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 .step-label {
   max-width: 100%;
   font-size: 0.72rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -923,7 +923,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .text-button {
-  color: var(--accent-blue);
+  color: var(--accent);
   font-size: 0.8rem;
 }
 
@@ -984,8 +984,8 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .avatar-agent {
-  color: var(--accent-purple);
-  background: color-mix(in srgb, var(--accent-purple) 16%, transparent);
+  color: var(--hue-purple);
+  background: color-mix(in srgb, var(--hue-purple) 16%, transparent);
 }
 
 .composer-head {
@@ -1046,7 +1046,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .details dt {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .details dd {
@@ -1126,8 +1126,8 @@ button.link-row:disabled {
 }
 
 .mr-open {
-  color: var(--accent-blue);
-  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  color: var(--hue-blue);
+  background: color-mix(in srgb, var(--hue-blue) 14%, transparent);
 }
 
 .mr-merged {
@@ -1149,7 +1149,7 @@ button.link-row:disabled {
 
 .link-sub {
   font-size: 0.7rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

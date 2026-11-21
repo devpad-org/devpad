@@ -347,7 +347,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .title-icon {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .title-input {
@@ -379,7 +379,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   overflow-y: auto;
   padding: var(--space-2) var(--space-3);
   background: var(--bg-base);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   font-size: 0.85rem;
 }
@@ -449,7 +449,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   left: var(--space-3);
   top: 50%;
   transform: translateY(-50%);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.85rem;
   pointer-events: none;
 }

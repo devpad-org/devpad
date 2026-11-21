@@ -332,7 +332,7 @@ function created(task: Task) {
 <style scoped src="./listTable.css"></style>
 <style scoped>
 .task-surface {
-  --ide-header-icon: var(--accent-amber);
+  --ide-header-icon: var(--warning);
 }
 
 .row-blocked {
@@ -343,7 +343,7 @@ function created(task: Task) {
 }
 
 .summary-working {
-  color: var(--accent-blue);
+  color: var(--hue-blue);
 }
 
 .col-progress {
@@ -372,18 +372,18 @@ function created(task: Task) {
   font-size: 0.72rem;
   color: var(--text-secondary);
   background: var(--bg-neutral);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   transition: border-color var(--transition-fast);
 }
 
 .mr-link:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-strong);
 }
 
 .mr-open {
-  color: var(--accent-blue);
-  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
-  border-color: color-mix(in srgb, var(--accent-blue) 30%, transparent);
+  color: var(--hue-blue);
+  background: color-mix(in srgb, var(--hue-blue) 12%, transparent);
+  border-color: color-mix(in srgb, var(--hue-blue) 30%, transparent);
 }
 
 .mr-merged {
@@ -411,7 +411,7 @@ function created(task: Task) {
 
 .cost-budget {
   font-size: 0.7rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .over-budget .cost-spent,
@@ -432,7 +432,7 @@ function created(task: Task) {
   display: block;
   height: 100%;
   border-radius: 2px;
-  background: var(--accent-blue);
+  background: var(--hue-blue);
 }
 
 .over-budget + .meter .meter-fill {
