@@ -7,7 +7,7 @@ import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
 import MrCommits from './MrCommits.vue'
 import MrThread from './MrThread.vue'
-import { authorIcon, authorName, errorText, plural, pushSummary, reviewAction, reviewIcon, reviewTone, shortSha } from './format'
+import { authorIcon, authorName, autoMergeReason, errorText, plural, pushSummary, reviewAction, reviewIcon, reviewTone, shortSha } from './format'
 import { useMergeRequest, type TimelineItem } from './useMergeRequest'
 
 // The merge request's timeline: opened with its first commits, each push of
@@ -115,7 +115,7 @@ async function submitComment() {
                 <span v-if="item.review.status === 'pending'" class="spinner spinner-sm" />
               </span>
             </div>
-            <div v-if="item.review.error || item.review.body || (item.review.workspaceId && item.review.status === 'pending')" class="card-body">
+            <div v-if="item.review.error || item.review.autoMergeError || item.review.body || (item.review.workspaceId && item.review.status === 'pending')" class="card-body">
               <BudgetReached
                 v-if="stoppedReview?.review.id === item.review.id"
                 :budgets="stoppedReview.stop.budgets"
@@ -126,6 +126,7 @@ async function submitComment() {
                 @raise="continueReview"
               />
               <p v-else-if="item.review.error" class="notice notice-error">{{ item.review.error }}</p>
+              <p v-if="item.review.autoMergeError" class="notice notice-warning">Not merged automatically: {{ autoMergeReason(item.review) }}.</p>
               <MarkdownMessage v-if="item.review.body" :content="item.review.body" />
               <RouterLink
                 v-if="item.review.workspaceId && item.review.status === 'pending'"

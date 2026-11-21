@@ -402,6 +402,7 @@ func mergeRequestResponse(mr *MergeRequest) map[string]any {
 		"baseSha":        mr.BaseSHA,
 		"mergeSha":       mr.MergeSHA,
 		"mergedAt":       mr.MergedAt,
+		"mergedBy":       mr.MergedBy,
 		"createdAt":      mr.CreatedAt,
 		"updatedAt":      mr.UpdatedAt,
 		"agentReviewing": mr.AgentReviewing,
@@ -426,8 +427,11 @@ func reviewResponse(rv *Review) map[string]any {
 		"budgetUsd":   rv.BudgetUSD,
 		"costUsd":     rv.CostUSD,
 		"error":       rv.Error,
-		"createdAt":   rv.CreatedAt,
-		"updatedAt":   rv.UpdatedAt,
+		// Why the review's approval did not merge the change automatically.
+		"autoMergeError": rv.AutoMergeError,
+		"finishing":      rv.Finishing(),
+		"createdAt":      rv.CreatedAt,
+		"updatedAt":      rv.UpdatedAt,
 	}
 }
 

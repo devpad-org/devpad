@@ -18,7 +18,7 @@ The default branch is always protected, and you can protect others with **Manage
 - is the only kind of branch devpad pushes [upstream](/docs/projects#upstream), and the only kind a sync fast-forwards;
 - can't be deleted.
 
-The **Branches** dialog also sets the **Default branch**, which tasks and your workspace start from and merge requests target unless you pick another. Changing it keeps the old default protected. Protection changes take effect when you press **Save**. A project can protect up to 20 branches besides its default.
+The **Branches** dialog also sets the **Default branch**, which tasks and your workspace start from and merge requests target unless you pick another. Changing it keeps the old default protected. Protection changes take effect when you press **Save**. A project can protect up to 20 branches besides its default. The dialog's **Merge automatically** list picks the protected branches devpad [merges into automatically](#automatic-merges).
 
 If you're on a protected branch in your workspace, Source Control says so and offers **New branch**: start a branch, publish it, and open a merge request.
 
@@ -81,7 +81,7 @@ A review spends from its own budget and, on a task's merge request, from the tas
 
 ## Merging {#merging}
 
-The merge card lists where the merge request stands: approvals, open threads, reviews or agents still at work, and conflicts. These are for you to weigh: merging isn't blocked by them, and only you can merge, since agents and the assistant have no way to. Pick a **Merge strategy**:
+The merge card lists where the merge request stands: approvals, open threads, reviews or agents still at work, and conflicts. These are for you to weigh: merging isn't blocked by them, and only you can merge, since agents and the assistant have no way to, unless the target is a branch devpad [merges into automatically](#automatic-merges). Pick a **Merge strategy**:
 
 - **Merge commit** keeps every commit and records a merge commit.
 - **Squash** combines the branch into a single commit. It isn't offered when the source is a protected branch.
@@ -92,3 +92,20 @@ With an upstream, **Push &lt;target&gt; upstream** (on by default) pushes the ta
 If the branch conflicts with its target, the card lists the conflicting files; on a task's merge request, **Ask the task's agent to resolve them** has the agent merge the target in. Merging a task's merge request marks the task **Merged**.
 
 **Close merge request** closes it without merging. It can't be reopened, and the branch stays.
+
+## Automatic merges {#automatic-merges}
+
+Under **Merge automatically** in the **Branches** dialog, tick the protected branches whose task merge requests should merge without you. None are ticked until you tick them, and a branch that stops being protected drops off the list. When a review agent approves a task's merge request into one of them, devpad merges it at once, with a merge commit, and marks the task **Merged**. It never pushes upstream: that stays with you.
+
+If you want to look at merge requests before they merge, don't tick their branch. Never tick a release branch such as `main`. The project has no checks, so the review agent's approval is the only thing standing between a change and the branch, and a change can carry text that tries to talk its reviewer into approving it. The review agent is told that approving merges the change, so it approves only what it could check.
+
+Devpad merges only what the review saw, so the approval doesn't merge the change when, by the time the review ends:
+
+- the branch has new commits, or the target has moved since the review read the change, even by another merge landing at the same moment;
+- another review, yours or an agent's, has started since;
+- a blocking thread is open;
+- the task isn't **In review**, for instance because it was sent back to its agent;
+- the review agent failed or was stopped after approving, or devpad restarted before it finished;
+- the merge fails, for instance on conflicts.
+
+Devpad merges once the review agent has finished, and until then the merge card says **Merging into &lt;target&gt; automatically**. If devpad stops after the agent finished but before it merged, it merges as it starts again. When the approval doesn't merge the change, the review says **Not merged automatically** and why, and so does the merge card while that review is the latest: merge it yourself, or have a review agent review it again. An approval that came before you ticked its branch doesn't merge the change either. Only merge requests devpad opens for tasks merge automatically; your own and the assistant's never do, and neither does your own approval, since you can merge it yourself. A merge request that devpad merged says **Merged automatically**, and so does its merge commit.

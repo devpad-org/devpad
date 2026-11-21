@@ -345,6 +345,7 @@ type repoMergeRequest struct {
 	Strategy          string `json:"strategy"`
 	Message           string `json:"message"`
 	ExpectedSourceSHA string `json:"expectedSourceSha"`
+	ExpectedTargetSHA string `json:"expectedTargetSha"`
 	Name              string `json:"name"`
 	Email             string `json:"email"`
 }
@@ -357,8 +358,9 @@ type repoMergeResult struct {
 }
 
 // handleRepoMerge merges source into target in the canonical repo. The
-// merge only happens if source is still at the commit devpad expects, and
-// target moves with a compare-and-swap, so neither can change underneath it.
+// merge only happens if source, and target when devpad names its commit,
+// are still at the commits devpad expects, and target moves with a
+// compare-and-swap, so neither can change underneath it.
 func handleRepoMerge(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
 	defer cancel()
@@ -399,6 +401,10 @@ func handleRepoMerge(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ExpectedSourceSHA != "" && req.ExpectedSourceSHA != sourceSHA {
 		writeErr(w, http.StatusConflict, fmt.Sprintf("%s moved to %s since it was reviewed", req.Source, sourceSHA[:12]))
+		return
+	}
+	if req.ExpectedTargetSHA != "" && req.ExpectedTargetSHA != targetSHA {
+		writeErr(w, http.StatusConflict, fmt.Sprintf("%s moved to %s since the change was reviewed against it", req.Target, targetSHA[:12]))
 		return
 	}
 	if gitExec(ctx, "merge-base", "--is-ancestor", sourceSHA, targetSHA) == nil {

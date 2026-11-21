@@ -189,7 +189,16 @@ func TestRepoMergeCreatesMergeCommit(t *testing.T) {
 	publish(t, canonical, sandbox, "task/1")
 	mainBefore := advanceMain(t, canonical, "other.txt", "main work")
 
-	rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/1", ExpectedSourceSHA: head, Name: "Reviewer", Email: "reviewer@example.com", Message: "Merge task 1"})
+	// A merge expecting main somewhere else is refused.
+	rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/1", ExpectedSourceSHA: head, ExpectedTargetSHA: strings.Repeat("b", 40)})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "since the change was reviewed against it") {
+		t.Fatalf("expected 409 for a moved target, got %d %s", rec.Code, rec.Body)
+	}
+	if got := runGit(t, canonical, "rev-parse", "main"); got != mainBefore {
+		t.Fatal("a merge refused for a moved target moved main")
+	}
+
+	rec = mergeRequest(t, canonical, repoMergeRequest{Source: "task/1", ExpectedSourceSHA: head, ExpectedTargetSHA: mainBefore, Name: "Reviewer", Email: "reviewer@example.com", Message: "Merge task 1"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("merge status %d: %s", rec.Code, rec.Body)
 	}
