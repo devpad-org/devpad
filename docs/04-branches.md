@@ -65,6 +65,8 @@ The merge request's **Overview** has its description, the merge card, and its **
 
 Each comment starts a thread that can be replied to and resolved. Resolved threads fold away. A thread marked **blocking** must be addressed before the change can merge: comments in a review that requests changes are blocking. The review agent resolves the threads a later commit addresses, and you can resolve or reopen any thread.
 
+So that an agent can't hide text from you that another agent would still read, HTML in a merge request's description, reviews and comments shows as the text it is, not rendered, and so does Markdown that would otherwise show nothing, such as a `[//]: # (...)` comment, or show only on hover, such as a link's title.
+
 ## Reviews {#reviews}
 
 **Review** on a merge request opens your review: a summary, the line comments you've added to it, and a verdict, **Comment**, **Approve** or **Request changes**. On a task's merge request, requesting changes records your feedback on the task, and **Send the feedback to the task's agent now** sends it straight away; otherwise use **Send back to agent** later.

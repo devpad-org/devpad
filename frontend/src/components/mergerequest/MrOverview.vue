@@ -20,7 +20,7 @@ const { mr } = useMergeRequest()
           <span class="field-head-end muted" :title="fullTime(mr.createdAt)">{{ timeAgo(mr.createdAt) }}</span>
         </div>
         <div class="description">
-          <MarkdownMessage v-if="mr.description" :content="mr.description" />
+          <MarkdownMessage v-if="mr.description" :content="mr.description" literal-html />
           <p v-else class="muted">No description provided.</p>
         </div>
       </section>

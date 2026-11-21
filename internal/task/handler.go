@@ -236,6 +236,121 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// HandleListComments returns a task's comments, oldest first.
+func (h *Handler) HandleListComments(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	comments, err := h.service.Comments(r.Context(), user.ID, projectID, taskID)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(comments))
+	for _, c := range comments {
+		items = append(items, commentResponse(c))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"comments": items})
+}
+
+// HandleAddComment leaves the user's comment on a task.
+func (h *Handler) HandleAddComment(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	c, err := h.service.AddComment(r.Context(), user.ID, projectID, taskID, AuthorUser, req.Body)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"comment": commentResponse(c)})
+}
+
+// HandleEditComment replaces the body of one of the user's comments on a
+// task, keeping the earlier versions.
+func (h *Handler) HandleEditComment(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	commentID, ok := pathID(w, r, "commentId")
+	if !ok {
+		return
+	}
+	var req struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	c, err := h.service.EditComment(r.Context(), user.ID, projectID, taskID, commentID, AuthorUser, req.Body)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"comment": commentResponse(c)})
+}
+
+// HandleCommentRevisions returns every version of a comment on a task,
+// oldest first.
+func (h *Handler) HandleCommentRevisions(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	commentID, ok := pathID(w, r, "commentId")
+	if !ok {
+		return
+	}
+	revisions, err := h.service.CommentRevisions(r.Context(), user.ID, projectID, taskID, commentID)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(revisions))
+	for _, v := range revisions {
+		items = append(items, map[string]any{"id": v.ID, "body": v.Body, "createdAt": v.CreatedAt})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"revisions": items})
+}
+
+func commentResponse(c *Comment) map[string]any {
+	return map[string]any{
+		"id":        c.ID,
+		"taskId":    c.TaskID,
+		"author":    c.Author,
+		"body":      c.Body,
+		"revisions": c.Revisions,
+		"createdAt": c.CreatedAt,
+		"updatedAt": c.UpdatedAt,
+	}
+}
+
+// taskPath reads the project and task ids from the path.
+func taskPath(w http.ResponseWriter, r *http.Request) (projectID, taskID int64, ok bool) {
+	if projectID, ok = pathID(w, r, "id"); !ok {
+		return 0, 0, false
+	}
+	if taskID, ok = pathID(w, r, "taskId"); !ok {
+		return 0, 0, false
+	}
+	return projectID, taskID, true
+}
+
 func (h *Handler) withTask(w http.ResponseWriter, r *http.Request, fn func(userID, projectID, taskID int64) (*Task, error)) {
 	user := auth.UserFromContext(r.Context())
 	projectID, ok := pathID(w, r, "id")
@@ -275,13 +390,15 @@ func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 
 func handleServiceError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, ErrNotFound), errors.Is(err, project.ErrNotFound):
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrCommentNotFound), errors.Is(err, project.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, project.ErrForbidden):
 		writeError(w, http.StatusForbidden, "access denied")
+	case errors.Is(err, ErrNotCommentAuthor):
+		writeError(w, http.StatusForbidden, "you can only edit your own comments")
 	case errors.Is(err, ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrInvalidState), errors.Is(err, ErrAlreadyLinked), errors.Is(err, project.ErrNotReady), errors.Is(err, project.ErrNoWorkspace):
+	case errors.Is(err, ErrInvalidState), errors.Is(err, ErrAlreadyLinked), errors.Is(err, ErrCommentLimit), errors.Is(err, project.ErrNotReady), errors.Is(err, project.ErrNoWorkspace):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		log.Printf("task handler: %v", err)

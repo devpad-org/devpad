@@ -9,7 +9,7 @@ There are two ways to work with AI in devpad. A **task** hands a change to a bac
 
 The **Tasks** surface lists the project's tasks, with what each has spent and its merge request. Press **New task**:
 
-- **Title** and **Description**: what should change, and how you'll know it works. The agent sees both, with the project's description.
+- **Title** and **Description**: what should change, and how you'll know it works. The agent sees both, with the project's description. Markdown works in the description, but HTML in it shows as the text it is, as it does in the **Feedback for the next run** a review leaves: the assistant can write a task and a review agent its feedback, and neither can hide anything there from you.
 - **Start from**: the branch the task's own branch is made from. It must be in the project, so publish it first.
 - **Agent**: the model and effort, which start from your [default models](/docs/ai#default-models).
 - **Linked tasks**: tasks it's **Blocked by**, whose work it builds on, and tasks it's **Related** to. See [Linked tasks](#linked-tasks).
@@ -32,6 +32,16 @@ A task that's blocked shows **blocked by #3** on the list. **Start agent** on it
 - A cancelled task never merges, so it can't block a task, and a task already blocked by one that's then cancelled keeps waiting until you remove the link. Deleting a task removes its links, which can let a task it blocked start.
 
 The agent of a linked task is told the titles and status of the tasks it's linked to: those it waited for, which are merged, those waiting for it, and related ones it should leave alone.
+
+## Comments {#comments}
+
+A task's **Comments**, below its description, are a discussion about the task. You, the task's agent and the [assistant](#the-assistant) can all comment, and each comment says who wrote it: **You**, **Task agent** or **Assistant**.
+
+- The task's agent is told to read its task's comments when it starts and again before it finishes, so a comment can add to a task or change it without rewriting its description. Your comments carry your word. The agent weighs the assistant's against the task.
+- The agent comments for you to see with the task: a question, a decision it made, or a problem it found outside the task. What a round did goes in its closing summary, as before.
+- Each author can edit only its own comments: the pencil edits yours, and an agent can't touch yours or another agent's. No one can delete a comment. Deleting the task deletes its comments with it.
+- Every version of a comment is kept. An edited comment shows **edited** and how many versions it has. Press it to see each one, from the **Original** to the **Current**. An agent's edited comment is highlighted, so you can check what it said before.
+- So that nothing is hidden from you, HTML in a comment shows as the text it is, not rendered, and so does Markdown that would otherwise show nothing, such as a `[//]: # (...)` comment. A link's title and an image's description, which a screen otherwise shows only on hover, show in brackets beside them. An agent's comment can't contain characters a screen doesn't show, such as zero-width or bidi control characters, whether written as themselves or as HTML references like `&#x200B;`.
 
 ## How a task runs {#how-a-task-runs}
 
@@ -56,10 +66,11 @@ A task's budget covers every run of its agent, across retries and rounds of feed
 The **AI** panel is the assistant: an agent working in your project workspace, beside you. Pick the **Agent** (the **Coding Agent**, the **Code Review Agent**, or one you've made under **AI Agents**), the **Model** and **Effort** below the message box.
 
 - It reads, edits and runs things in your workspace. It leaves its edits for you to review and commits only when you ask.
-- In a project workspace it can see the board: list tasks and merge requests, create, start and [link](#linked-tasks) tasks, send a task back to its agent, and comment on merge requests. It can add a link but never remove one.
+- In a project workspace it can see the board: list tasks and merge requests, create, start and [link](#linked-tasks) tasks, send a task back to its agent, read and leave [comments](#comments) on tasks, and comment on merge requests. It can add a link but never remove one, and edit only its own comments.
 - It can open a merge request from a published branch into a protected branch it names. It can't open one from the branch of a task that isn't merged or cancelled, which gets its merge request when the task's agent finishes, and it can't merge, close or approve a merge request.
 - It can publish a branch with `git push devpad`, with no more power than the Publish button.
 - It can answer questions about devpad itself from these docs.
+- Its replies, like all text in devpad, show only images devpad itself serves. An image from anywhere else shows as a link, **Image:** and its description, so that nothing an agent writes can make your browser send what's on the page to another site.
 - **Continue in background** hands the conversation to a background agent as a new task, in its own sandbox. It starts from your work on the current branch, or from the project's latest default branch, and gets the conversation so far.
 
 Each reply spends from your **Per assistant reply** budget, if you set one.

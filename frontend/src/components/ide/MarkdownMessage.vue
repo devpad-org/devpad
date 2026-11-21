@@ -3,8 +3,10 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
 import { writeClipboardText } from '@/utils/clipboard'
 
-const props = defineProps<{ content: string }>()
-const html = computed(() => renderMarkdown(props.content))
+// literalHtml shows raw HTML in the content as text, so nothing in it is
+// hidden from the reader.
+const props = defineProps<{ content: string; literalHtml?: boolean }>()
+const html = computed(() => renderMarkdown(props.content, props.literalHtml))
 const root = ref<HTMLElement | null>(null)
 
 const ICON_ATTRS = 'width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"'
@@ -81,6 +83,11 @@ async function onClick(event: MouseEvent): Promise<void> {
 </template>
 
 <style scoped>
+/* What an image or link says only on hover, shown beside it as text. */
+.markdown-body :deep(.md-note) {
+  color: var(--text-secondary);
+}
+
 .markdown-body :deep(.code-block) {
   position: relative;
 }

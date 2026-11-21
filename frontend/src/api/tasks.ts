@@ -46,6 +46,29 @@ export interface Task {
   updatedAt: string
 }
 
+// Who wrote a task comment: the user, the agent working on the task, or the
+// assistant in the project workspace.
+export type TaskCommentAuthor = 'user' | 'task_agent' | 'assistant'
+
+// A comment on a task. Its author can edit it, and every version is kept:
+// body is the latest, revisions counts them all, the first included.
+export interface TaskComment {
+  id: number
+  taskId: number
+  author: TaskCommentAuthor
+  body: string
+  revisions: number
+  createdAt: string
+  // When the latest version was written.
+  updatedAt: string
+}
+
+export interface TaskCommentRevision {
+  id: number
+  body: string
+  createdAt: string
+}
+
 // How a task is linked to another, from the first task's side.
 export type TaskLinkKind = 'blocked_by' | 'blocks' | 'related'
 
@@ -119,5 +142,24 @@ export const taskApi = {
   // links change, and a task the link held back may start, so reload the list.
   unlink(projectId: number, id: number, otherId: number): Promise<void> {
     return apiClient.delete(`/api/projects/${projectId}/tasks/${id}/links/${otherId}`)
+  },
+
+  comments(projectId: number, id: number): Promise<{ comments: TaskComment[] }> {
+    return apiClient.get(`/api/projects/${projectId}/tasks/${id}/comments`)
+  },
+
+  addComment(projectId: number, id: number, body: string): Promise<{ comment: TaskComment }> {
+    return apiClient.post(`/api/projects/${projectId}/tasks/${id}/comments`, { body })
+  },
+
+  // Replaces the text of one of the user's own comments; the earlier
+  // versions are kept.
+  editComment(projectId: number, id: number, commentId: number, body: string): Promise<{ comment: TaskComment }> {
+    return apiClient.put(`/api/projects/${projectId}/tasks/${id}/comments/${commentId}`, { body })
+  },
+
+  // Every version of a comment, oldest first.
+  commentRevisions(projectId: number, id: number, commentId: number): Promise<{ revisions: TaskCommentRevision[] }> {
+    return apiClient.get(`/api/projects/${projectId}/tasks/${id}/comments/${commentId}/revisions`)
   },
 }

@@ -160,7 +160,7 @@ function showLocation() {
             </button>
           </span>
         </div>
-        <MarkdownMessage :content="root.body" />
+        <MarkdownMessage :content="root.body" literal-html />
       </div>
 
       <div v-for="r in thread.replies" :key="r.id" class="note note-reply">
@@ -171,7 +171,7 @@ function showLocation() {
           <strong class="note-author">{{ authorName(r.author) }}</strong>
           <span class="muted" :title="fullTime(r.createdAt)">{{ timeAgo(r.createdAt) }}</span>
         </div>
-        <MarkdownMessage :content="r.body" />
+        <MarkdownMessage :content="r.body" literal-html />
       </div>
 
       <div v-if="isOpen" class="thread-footer">

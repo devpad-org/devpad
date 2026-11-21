@@ -1,6 +1,6 @@
 // Package runscope works out what an AI run's workspace is: a project's own
 // workspace, a task or review sandbox, or a standalone workspace, and the
-// review or merge request a sandbox is there for. It is the one place that
+// task, review or merge request a sandbox is there for. It is the one place that
 // decides; tool providers are handed the answer as an aitools.Scope.
 package runscope
 
@@ -27,17 +27,25 @@ type Sandboxes interface {
 	TaskMergeRequest(ctx context.Context, userID int64, ws *workspace.Workspace) (*aitools.TaskMRScope, error)
 }
 
+// Tasks finds the task a task sandbox works on.
+type Tasks interface {
+	// SandboxTask is the open task whose sandbox ws is, or nil when there
+	// is none; an error only when it could not find out.
+	SandboxTask(ctx context.Context, userID int64, ws *workspace.Workspace) (*aitools.TaskScope, error)
+}
+
 // Resolver resolves run scopes.
 type Resolver struct {
 	workspaces Workspaces
 	sandboxes  Sandboxes
+	tasks      Tasks
 }
 
 var _ aitools.ScopeResolver = (*Resolver)(nil)
 
 // New creates a resolver.
-func New(workspaces Workspaces, sandboxes Sandboxes) *Resolver {
-	return &Resolver{workspaces: workspaces, sandboxes: sandboxes}
+func New(workspaces Workspaces, sandboxes Sandboxes, tasks Tasks) *Resolver {
+	return &Resolver{workspaces: workspaces, sandboxes: sandboxes, tasks: tasks}
 }
 
 // Resolve works out the scope of a run in the workspace.
@@ -59,6 +67,9 @@ func (r *Resolver) Resolve(ctx context.Context, userID, workspaceID int64) (aito
 			return aitools.Scope{}, fmt.Errorf("finding the sandbox's review: %w", err)
 		}
 	case workspace.KindTask:
+		if s.Task, err = r.tasks.SandboxTask(ctx, userID, ws); err != nil {
+			return aitools.Scope{}, fmt.Errorf("finding the sandbox's task: %w", err)
+		}
 		if s.TaskMR, err = r.sandboxes.TaskMergeRequest(ctx, userID, ws); err != nil {
 			return aitools.Scope{}, fmt.Errorf("finding the task's merge request: %w", err)
 		}
