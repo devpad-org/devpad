@@ -127,7 +127,7 @@ async function submitComment() {
               />
               <p v-else-if="item.review.error" class="notice notice-error">{{ item.review.error }}</p>
               <p v-if="item.review.autoMergeError" class="notice notice-warning">Not merged automatically: {{ autoMergeReason(item.review) }}.</p>
-              <MarkdownMessage v-if="item.review.body" :content="item.review.body" />
+              <MarkdownMessage v-if="item.review.body" :content="item.review.body" literal-html />
               <RouterLink
                 v-if="item.review.workspaceId && item.review.status === 'pending'"
                 class="btn btn-secondary btn-sm watch-link"
