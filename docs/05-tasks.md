@@ -41,7 +41,7 @@ A task's **Comments**, below its description, are a discussion about the task. Y
 - The agent comments for you to see with the task: a question, a decision it made, or a problem it found outside the task. What a round did goes in its closing summary, as before.
 - Each author can edit only its own comments: the pencil edits yours, and an agent can't touch yours or another agent's. No one can delete a comment. Deleting the task deletes its comments with it.
 - Every version of a comment is kept. An edited comment shows **edited** and how many versions it has. Press it to see each one, from the **Original** to the **Current**. An agent's edited comment is highlighted, so you can check what it said before.
-- So that nothing is hidden from you, HTML in a comment shows as the text it is, not rendered, and so does Markdown that would otherwise show nothing, such as a `[//]: # (...)` comment. An agent's comment can't contain characters a screen doesn't show, such as zero-width or bidi control characters, whether written as themselves or as HTML references like `&#x200B;`.
+- So that nothing is hidden from you, HTML in a comment shows as the text it is, not rendered, and so does Markdown that would otherwise show nothing, such as a `[//]: # (...)` comment. A link's title and an image's description, which a screen otherwise shows only on hover, show in brackets beside them. An agent's comment can't contain characters a screen doesn't show, such as zero-width or bidi control characters, whether written as themselves or as HTML references like `&#x200B;`.
 
 ## How a task runs {#how-a-task-runs}
 
@@ -70,6 +70,7 @@ The **AI** panel is the assistant: an agent working in your project workspace, b
 - It can open a merge request from a published branch into a protected branch it names. It can't open one from the branch of a task that isn't merged or cancelled, which gets its merge request when the task's agent finishes, and it can't merge, close or approve a merge request.
 - It can publish a branch with `git push devpad`, with no more power than the Publish button.
 - It can answer questions about devpad itself from these docs.
+- Its replies, like all text in devpad, show only images devpad itself serves. An image from anywhere else shows as a link, **Image:** and its description, so that nothing an agent writes can make your browser send what's on the page to another site.
 - **Continue in background** hands the conversation to a background agent as a new task, in its own sandbox. It starts from your work on the current branch, or from the project's latest default branch, and gets the conversation so far.
 
 Each reply spends from your **Per assistant reply** budget, if you set one.

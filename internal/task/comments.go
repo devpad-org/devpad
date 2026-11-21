@@ -100,42 +100,54 @@ func commentBody(author Author, body string) (string, error) {
 	}
 	if author != AuthorUser {
 		if r, ok := invisibleIn(body); ok {
-			return "", invalid("the comment holds an invisible character, U+%04X; write only what the user can see", r)
+			return "", invalid("the comment holds an invisible character, U+%04X, where a screen does not show it; write only what the user can see", r)
 		}
 		// The browser decodes HTML character references, such as
 		// &#x200B; or &ZeroWidthSpace;, into the characters they name.
 		if r, ok := invisibleIn(html.UnescapeString(body)); ok {
-			return "", invalid("the comment holds an HTML character reference to an invisible character, U+%04X; write only what the user can see", r)
+			return "", invalid("the comment holds an HTML character reference to an invisible character, U+%04X, where a screen does not show it; write only what the user can see", r)
 		}
 	}
 	return body, nil
 }
 
-// invisibleIn returns the first invisible character in s.
+// invisibleIn returns the first character in s that a screen does not show
+// where it stands.
 func invisibleIn(s string) (rune, bool) {
-	i := strings.IndexFunc(s, invisible)
-	if i < 0 {
-		return 0, false
+	prev := rune(-1)
+	for _, r := range s {
+		if invisible(r, prev) {
+			return r, true
+		}
+		prev = r
 	}
-	r, _ := utf8.DecodeRuneInString(s[i:])
-	return r, true
+	return 0, false
 }
 
-// invisible reports whether r takes no visible space in text: a control or
-// format character (bidi controls, zero-width spaces, Unicode tags), or a
-// variation selector that does not pick an emoji's or text's presentation,
-// which can carry hidden bytes after a visible character. The zero-width
-// joiner stays, since emoji sequences need it.
-func invisible(r rune) bool {
-	switch {
-	case r == '\n' || r == '\r' || r == '\t' || r == '\u200d':
+// invisible reports whether r, after prev (-1 at the start), takes no
+// visible space: a control or format character (bidi controls, zero-width
+// spaces, Unicode tags), another default-ignorable one (such as a Hangul
+// filler), or a variation selector, any of which can carry hidden bytes
+// after a visible character. Emoji keep the few they need, one at a time:
+// U+FE0E or U+FE0F, which pick text or emoji presentation, right after a
+// visible character, and the zero-width joiner after one or after such a
+// selector.
+func invisible(r, prev rune) bool {
+	switch r {
+	case '\n', '\r', '\t':
 		return false
-	case unicode.Is(unicode.Cc, r), unicode.Is(unicode.Cf, r):
-		return true
-	case r >= 0xFE00 && r <= 0xFE0D, r >= 0xE0100 && r <= 0xE01EF:
-		return true
+	case '\uFE0E', '\uFE0F':
+		return !visibleBase(prev)
+	case '\u200D':
+		return !visibleBase(prev) && prev != '\uFE0E' && prev != '\uFE0F'
 	}
-	return false
+	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector)
+}
+
+// visibleBase reports whether a presentation selector or joiner may follow
+// r: r is a character that shows, not the start, a space or one of them.
+func visibleBase(r rune) bool {
+	return r >= 0 && !unicode.IsSpace(r) && r != '\u200D' && r != '\uFE0E' && r != '\uFE0F'
 }
 
 // SandboxTask is the task whose sandbox ws is, for a run's scope, or nil

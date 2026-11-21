@@ -225,6 +225,16 @@ func TestCommentRules(t *testing.T) {
 		"named zero-width":         "Looks&ZeroWidthSpace;good.",
 		"unterminated reference":   "Looks &#x202E doog.",
 		"referenced tags":          "Looks good.&#xE0049;&#xE0067;",
+		// Default-ignorable characters outside the format category.
+		"Hangul filler":             "Looks\u3164good.",
+		"combining grapheme joiner": "Looks\u034Fgood.",
+		"Mongolian selector":        "Looks\u180Bgood.",
+		// Presentation selectors and joiners only one at a time, after
+		// what they join or present.
+		"run of selectors":    "Looks good.\uFE0F\uFE0E\uFE0F",
+		"selector after text": "Looks good. \uFE0F",
+		"leading joiner":      "\u200DLooks good.",
+		"run of joiners":      "Looks\u200D\u200Dgood.",
 	}
 	for name, body := range hidden {
 		if _, err := e.svc.AddComment(ctx, owner, 1, task.ID, AuthorAssistant, body); !errors.Is(err, ErrInvalidInput) {
@@ -234,8 +244,14 @@ func TestCommentRules(t *testing.T) {
 			t.Errorf("%s from the user: %v", name, err)
 		}
 	}
-	if _, err := e.svc.AddComment(ctx, owner, 1, task.ID, AuthorTaskAgent, "Done 👩\u200d💻\r\n\tTests ✔\uFE0F pass."); err != nil {
-		t.Errorf("an emoji sequence, CRLF and a tab: %v", err)
+	for _, body := range []string{
+		"Done 👩\u200d💻\r\n\tTests ✔\uFE0F pass.",
+		"Fixed \u2764\uFE0F\u200D\U0001F525 and \U0001F3F3\uFE0F\u200D\U0001F308.",
+		"Step 1\uFE0F\u20E3 and \u263A\uFE0E.",
+	} {
+		if _, err := e.svc.AddComment(ctx, owner, 1, task.ID, AuthorTaskAgent, body); err != nil {
+			t.Errorf("emoji sequences in %q: %v", body, err)
+		}
 	}
 	if _, err := e.svc.AddComment(ctx, owner, 1, task.ID, AuthorTaskAgent, "Write &amp;#x200B; to get &#x200B;? No: &amp; &lt;b&gt; &#65;"); err == nil {
 		t.Error("a reference to an invisible character, beside escaped ones")

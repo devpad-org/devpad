@@ -66,6 +66,8 @@ watch(
     comments.value = []
     loaded.value = false
     draft.value = ''
+    posting.value = false
+    saving.value = false
     error.value = ''
     editingId.value = null
     historyOpen.value = new Set()
@@ -86,19 +88,24 @@ onUnmounted(() => {
   if (timer !== null) clearInterval(timer)
 })
 
+// The modal stays open when a linked task is opened from it, so a request
+// can come back after another task is shown; what it brings back belongs to
+// the task it was made for and is dropped.
 async function post() {
   const body = draft.value.trim()
   if (!body || posting.value) return
+  const id = props.task.id
   posting.value = true
   error.value = ''
   try {
-    const res = await taskApi.addComment(props.projectId, props.task.id, body)
+    const res = await taskApi.addComment(props.projectId, id, body)
+    if (props.task.id !== id) return
     comments.value = [...comments.value, res.comment]
     draft.value = ''
   } catch (e) {
-    error.value = errorText(e, 'Failed to add the comment')
+    if (props.task.id === id) error.value = errorText(e, 'Failed to add the comment')
   } finally {
-    posting.value = false
+    if (props.task.id === id) posting.value = false
   }
 }
 
@@ -120,17 +127,19 @@ async function saveEdit(c: TaskComment) {
     editingId.value = null
     return
   }
+  const id = props.task.id
   saving.value = true
   error.value = ''
   try {
-    const res = await taskApi.editComment(props.projectId, props.task.id, c.id, body)
+    const res = await taskApi.editComment(props.projectId, id, c.id, body)
+    if (props.task.id !== id) return
     comments.value = comments.value.map((other) => (other.id === c.id ? res.comment : other))
     editingId.value = null
     if (historyOpen.value.has(c.id)) void loadHistory(res.comment)
   } catch (e) {
-    error.value = errorText(e, 'Failed to save the comment')
+    if (props.task.id === id) error.value = errorText(e, 'Failed to save the comment')
   } finally {
-    saving.value = false
+    if (props.task.id === id) saving.value = false
   }
 }
 
@@ -170,8 +179,7 @@ function versions(c: TaskComment) {
 }
 
 function editedTitle(c: TaskComment): string {
-  const who = c.author === 'user' ? 'You' : AUTHORS[c.author]
-  return `${who} changed this comment ${timeAgo(c.updatedAt)}. Show all ${c.revisions} versions.`
+  return `${AUTHORS[c.author]} changed this comment ${timeAgo(c.updatedAt)}. Show all ${c.revisions} versions.`
 }
 </script>
 

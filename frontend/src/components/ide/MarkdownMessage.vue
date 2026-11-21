@@ -83,6 +83,11 @@ async function onClick(event: MouseEvent): Promise<void> {
 </template>
 
 <style scoped>
+/* What an image or link says only on hover, shown beside it as text. */
+.markdown-body :deep(.md-note) {
+  color: var(--text-secondary);
+}
+
 .markdown-body :deep(.code-block) {
   position: relative;
 }
