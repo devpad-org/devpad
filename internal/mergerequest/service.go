@@ -397,6 +397,9 @@ func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary 
 		return err
 	}
 	if mr == nil {
+		// A task's merge request targets the default branch. Tasks are
+		// blocked only by tasks merging into the branch they start from, and
+		// task's mergesInto assumes this target.
 		mr = &MergeRequest{
 			ProjectID: t.ProjectID, UserID: t.UserID, TaskID: t.ID, OpenedBy: AuthorTaskAgent, Title: t.Title, Description: summary,
 			SourceBranch: t.Branch, TargetBranch: p.DefaultBranch, Status: StatusOpen, HeadSHA: t.HeadSHA,

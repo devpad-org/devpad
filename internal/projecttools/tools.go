@@ -36,6 +36,7 @@ const (
 	listTasksTool          = "list_tasks"
 	getTaskTool            = "get_task"
 	createTaskTool         = "create_task"
+	linkTasksTool          = "link_tasks"
 	startTaskTool          = "start_task"
 	requestTaskChangesTool = "request_task_changes"
 	listMergeRequestsTool  = "list_merge_requests"
@@ -78,7 +79,7 @@ var definitions = []domain.ToolDefinition{
 		Type: "function",
 		Function: domain.ToolFunction{
 			Name:        getTaskTool,
-			Description: "Get one task: its description, status, branch, the agent working on it, any error, and its merge request.",
+			Description: "Get one task: its description, status, branch, the agent working on it, any error, its merge request, and the tasks it is linked to.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"integer","minimum":1}},"required":["task_id"]}`),
 		},
 	},
@@ -86,15 +87,23 @@ var definitions = []domain.ToolDefinition{
 		Type: "function",
 		Function: domain.ToolFunction{
 			Name:        createTaskTool,
-			Description: "Add a task to the project's board. With start=true a background agent starts on it in its own sandbox, which needs the user's approval. Write the body as complete instructions: the agent sees only the task, not this conversation.",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"title":{"type":"string","description":"A short title."},"body":{"type":"string","description":"What to do and why, in Markdown, with everything the agent needs."},"start":{"type":"boolean","description":"Start a background agent on the task now. Defaults to false."},"base_branch":{"type":"string","description":"Optional project branch to start from instead of the default branch. It must already be published to the project."},"agent_id":{"type":"string","description":"Optional agent id. Defaults to the built-in coding agent."},"model":{"type":"string","description":"Optional model id. Defaults to the model the user set for the agent, else the current model."},"effort":{"type":"string","description":"Optional thinking effort, such as low, medium or high."}},"required":["title","body"]}`),
+			Description: "Add a task to the project's board. With start=true a background agent starts on it in its own sandbox, which needs the user's approval; a task blocked by tasks not merged yet starts once they are. Write the body as complete instructions: the agent sees only the task, not this conversation.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"title":{"type":"string","description":"A short title."},"body":{"type":"string","description":"What to do and why, in Markdown, with everything the agent needs."},"start":{"type":"boolean","description":"Start a background agent on the task now, or once the tasks it is blocked by are merged. Defaults to false."},"blocked_by":{"type":"array","items":{"type":"integer","minimum":1},"description":"Optional ids of tasks whose work this one builds on: its agent starts only once they are all merged. Tasks merge into the default branch, so only a task starting from it can be blocked."},"related":{"type":"array","items":{"type":"integer","minimum":1},"description":"Optional ids of related tasks, shown with the task and to its agent. A related task holds nothing back."},"base_branch":{"type":"string","description":"Optional project branch to start from instead of the default branch. It must already be published to the project."},"agent_id":{"type":"string","description":"Optional agent id. Defaults to the built-in coding agent."},"model":{"type":"string","description":"Optional model id. Defaults to the model the user set for the agent, else the current model."},"effort":{"type":"string","description":"Optional thinking effort, such as low, medium or high."}},"required":["title","body"]}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: domain.ToolFunction{
+			Name:        linkTasksTool,
+			Description: "Link two tasks on the board. blocked_by makes task_id wait for other_task_id: its agent starts only once the other is merged, so only a task that has not started, and starts from the default branch that tasks merge into, can be blocked. blocks is the same the other way round. related only points the two at each other. Two tasks have at most one link; only the user removes one.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"integer","minimum":1},"kind":{"type":"string","enum":["blocked_by","blocks","related"]},"other_task_id":{"type":"integer","minimum":1}},"required":["task_id","kind","other_task_id"]}`),
 		},
 	},
 	{
 		Type: "function",
 		Function: domain.ToolFunction{
 			Name:        startTaskTool,
-			Description: "Start a background agent on a task that is to do, failed, or waiting for changes. Needs the user's approval.",
+			Description: "Start a background agent on a task that is to do, failed, or waiting for changes. A task blocked by tasks not merged yet starts once they are. Needs the user's approval.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"integer","minimum":1},"message":{"type":"string","description":"Optional extra instructions for the agent."},"agent_id":{"type":"string"},"model":{"type":"string","description":"Optional model id. Defaults to the task's model, then the model the user set for the agent, then the current model."},"effort":{"type":"string"}},"required":["task_id"]}`),
 		},
 	},
@@ -165,6 +174,8 @@ type Tasks interface {
 	List(ctx context.Context, userID, projectID int64) ([]*task.Task, error)
 	Get(ctx context.Context, userID, projectID, taskID int64) (*task.Task, error)
 	Create(ctx context.Context, userID, projectID int64, in task.CreateInput) (*task.Task, error)
+	Links(ctx context.Context, userID, projectID int64) (map[int64]task.Links, error)
+	Link(ctx context.Context, userID, projectID, taskID int64, kind task.LinkKind, otherID int64) (*task.Task, error)
 	Start(ctx context.Context, userID, projectID, taskID int64, in task.StartInput) (*task.Task, error)
 	RequestChanges(ctx context.Context, userID, projectID, taskID int64, feedback string, start bool) (*task.Task, error)
 }
@@ -255,6 +266,7 @@ You are the user's assistant in this workspace, not one of the project's backgro
 - The repo has a devpad remote. git fetch devpad refreshes the project's branches as devpad/<branch>, and git push devpad <branch> publishes a branch exactly as the IDE's Publish button does: never a protected branch, fast-forward only, and an open merge request for the branch moves to the new commit. Push only when the user asks you to publish. A plain git push goes to devpad too.
 - An origin remote, when there is one, is the project's upstream and read-only: git fetch origin fetches its latest branches as origin/<branch>, and pushing to it is refused. The project's protected branches reach the upstream only from the project panel, after a merge.
 - Background agents implement tasks from the project's board on their own branches. Use list_tasks, get_task, list_merge_requests and get_merge_request to see the board, and create_task to add work for them. Starting an agent (create_task with start, start_task, request_task_changes) asks the user first.
+- When work builds on another task's, make it blocked by that task (create_task's blocked_by, or link_tasks): its agent then starts only once that task is merged, from a branch that has its work. Tasks merge into the default branch, so only a task that starts from it can be blocked. Split a large change into tasks this way, rather than one task whose agent does it all.
 - create_merge_request opens a merge request from a published branch into a protected branch, and asks the user first. Open one only when the user asks, and name the target branch they want: if they haven't said which and the project has more than one protected branch, ask. The merge request takes the project's copy of the branch, so publish it first: asking you to open a merge request for a branch is asking you to publish it too, unless the user says otherwise. Publishing to it later moves the merge request to the new commit.
 - add_merge_request_comment comments on an open merge request or replies to one of its comments, for example to say how you addressed a review comment. Comments are shown as yours, not the user's.
 - Only the user merges, closes or approves merge requests. You have no tools for those.`)
@@ -276,16 +288,22 @@ func cleanBranch(name string) string {
 }
 
 type taskArgs struct {
-	TaskID     int64  `json:"task_id"`
-	Title      string `json:"title"`
-	Body       string `json:"body"`
-	Start      bool   `json:"start"`
-	BaseBranch string `json:"base_branch"`
-	Message    string `json:"message"`
-	Feedback   string `json:"feedback"`
-	AgentID    string `json:"agent_id"`
-	Model      string `json:"model"`
-	Effort     string `json:"effort"`
+	TaskID int64 `json:"task_id"`
+	// BlockedBy and Related are create_task's links.
+	BlockedBy []int64 `json:"blocked_by"`
+	Related   []int64 `json:"related"`
+	// Kind and OtherTaskID are link_tasks' link from TaskID.
+	Kind        string `json:"kind"`
+	OtherTaskID int64  `json:"other_task_id"`
+	Title       string `json:"title"`
+	Body        string `json:"body"`
+	Start       bool   `json:"start"`
+	BaseBranch  string `json:"base_branch"`
+	Message     string `json:"message"`
+	Feedback    string `json:"feedback"`
+	AgentID     string `json:"agent_id"`
+	Model       string `json:"model"`
+	Effort      string `json:"effort"`
 	// Status filters the list tools.
 	Status         string `json:"status"`
 	MergeRequestID int64  `json:"merge_request_id"`
@@ -354,9 +372,14 @@ func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest
 			return aitools.Approval{}, false, err
 		}
 		details = append(details, agentDetails(args.AgentID, model, effort)...)
+		summary := "Create a task on the board and start a background agent on it, in its own sandbox."
+		if waitsFor := p.unmergedTasks(ctx, req, proj, args.BlockedBy); len(waitsFor) > 0 {
+			details = append(details, domain.ApprovalDetail{Label: "Waits for", Value: strings.Join(waitsFor, "\n")})
+			summary = "Create a task on the board, and start a background agent on it in its own sandbox once the tasks it waits for are merged."
+		}
 		return aitools.Approval{
 			Title:   "Start a background agent",
-			Summary: "Create a task on the board and start a background agent on it, in its own sandbox.",
+			Summary: summary,
 			Details: details,
 		}, true, nil
 
@@ -382,9 +405,16 @@ func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest
 			return aitools.Approval{}, false, err
 		}
 		details = append(details, agentDetails(agentID, model, effort)...)
+		summary := fmt.Sprintf("Start a background agent on task #%d, in its own sandbox.", t.ID)
+		if t.Status == task.StatusTodo {
+			if links, err := p.tasks.Links(ctx, req.UserID, proj.ID); err == nil && links[t.ID].Blocked {
+				details = append(details, domain.ApprovalDetail{Label: "Waits for", Value: strings.Join(p.unmergedTasks(ctx, req, proj, links[t.ID].BlockedBy), "\n")})
+				summary = fmt.Sprintf("Start a background agent on task #%d, in its own sandbox, once the tasks it waits for are merged.", t.ID)
+			}
+		}
 		return aitools.Approval{
 			Title:   "Start a background agent",
-			Summary: fmt.Sprintf("Start a background agent on task #%d, in its own sandbox.", t.ID),
+			Summary: summary,
 			Details: details,
 		}, true, nil
 
@@ -442,6 +472,23 @@ func (p *Provider) ApprovalFor(ctx context.Context, req aitools.ExecutionRequest
 			Details: details,
 		}, true, nil
 	}
+}
+
+// unmergedTasks names those of the given tasks that are not merged, as the
+// approval of a start they hold back lists them.
+func (p *Provider) unmergedTasks(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, ids []int64) []string {
+	var out []string
+	for _, id := range ids {
+		t, err := p.tasks.Get(ctx, req.UserID, proj.ID, id)
+		if err != nil {
+			// The call itself is refused for a task not in the project.
+			continue
+		}
+		if t.Status != task.StatusMerged {
+			out = append(out, fmt.Sprintf("#%d %s", t.ID, clip(t.Title, maxSummaryBytes)))
+		}
+	}
+	return out
 }
 
 func unpublishedLabel(ahead int) string {
@@ -516,6 +563,8 @@ func (p *Provider) ExecuteTool(ctx context.Context, req aitools.ExecutionRequest
 		return p.getTask(ctx, req, proj, args.TaskID), true
 	case createTaskTool:
 		return p.createTask(ctx, req, proj, args), true
+	case linkTasksTool:
+		return p.linkTasks(ctx, req, proj, args), true
 	case startTaskTool:
 		return p.startTask(ctx, req, proj, args), true
 	case requestTaskChangesTool:
@@ -545,14 +594,41 @@ type taskSummary struct {
 	BaseBranch   string      `json:"baseBranch,omitempty"`
 	Error        string      `json:"error,omitempty"`
 	MergeRequest *mrRef      `json:"mergeRequest,omitempty"`
+	taskLinks
 }
 
-func summarizeTask(t *task.Task, mr *mergerequest.MergeRequest) taskSummary {
-	s := taskSummary{ID: t.ID, Title: t.Title, Status: t.Status, Branch: t.Branch, BaseBranch: t.BaseBranch, Error: clip(t.Error, maxSummaryBytes)}
+// taskLinks are a task's links as the tools show them.
+type taskLinks struct {
+	BlockedBy []int64 `json:"blockedBy,omitempty"`
+	Blocks    []int64 `json:"blocks,omitempty"`
+	Related   []int64 `json:"related,omitempty"`
+	// Blocked says that a task it is blocked by is not merged yet, and
+	// StartsWhenUnblocked that its agent starts once none is.
+	Blocked             bool `json:"blocked,omitempty"`
+	StartsWhenUnblocked bool `json:"startsWhenUnblocked,omitempty"`
+}
+
+func linksOf(t *task.Task, l task.Links) taskLinks {
+	return taskLinks{BlockedBy: l.BlockedBy, Blocks: l.Blocks, Related: l.Related, Blocked: l.Blocked, StartsWhenUnblocked: t.StartWhenUnblocked}
+}
+
+func summarizeTask(t *task.Task, mr *mergerequest.MergeRequest, links task.Links) taskSummary {
+	s := taskSummary{ID: t.ID, Title: t.Title, Status: t.Status, Branch: t.Branch, BaseBranch: t.BaseBranch, Error: clip(t.Error, maxSummaryBytes), taskLinks: linksOf(t, links)}
 	if mr != nil {
 		s.MergeRequest = &mrRef{ID: mr.ID, Status: mr.Status}
 	}
 	return s
+}
+
+// links are the project's task links, or none when they cannot be read:
+// they only add to what the tools show.
+func (p *Provider) links(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project) map[int64]task.Links {
+	links, err := p.tasks.Links(ctx, req.UserID, proj.ID)
+	if err != nil {
+		log.Printf("project tools: reading task links of project %d: %v", proj.ID, err)
+		return nil
+	}
+	return links
 }
 
 // mergeRequestsByTask maps each task to its newest merge request, open ones
@@ -584,6 +660,7 @@ func (p *Provider) listTasks(ctx context.Context, req aitools.ExecutionRequest, 
 		return toolError(req.ToolName, "listing tasks: %v", err)
 	}
 	byTask := p.mergeRequestsByTask(ctx, req.UserID, proj.ID)
+	links := p.links(ctx, req, proj)
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].ID > tasks[j].ID })
 	items := make([]taskSummary, 0)
 	total := 0
@@ -601,7 +678,7 @@ func (p *Provider) listTasks(ctx context.Context, req aitools.ExecutionRequest, 
 		}
 		total++
 		if len(items) < maxListedItems {
-			items = append(items, summarizeTask(t, byTask[t.ID]))
+			items = append(items, summarizeTask(t, byTask[t.ID], links[t.ID]))
 		}
 	}
 	return toolResult(req.ToolName, map[string]any{"status": status, "count": total, "tasks": items})
@@ -612,10 +689,10 @@ func (p *Provider) getTask(ctx context.Context, req aitools.ExecutionRequest, pr
 	if err != nil {
 		return taskError(req.ToolName, taskID, err)
 	}
-	return toolResult(req.ToolName, map[string]any{"task": taskDetail(t, p.mergeRequestsByTask(ctx, req.UserID, proj.ID)[t.ID])})
+	return toolResult(req.ToolName, map[string]any{"task": taskDetail(t, p.mergeRequestsByTask(ctx, req.UserID, proj.ID)[t.ID], p.links(ctx, req, proj)[t.ID])})
 }
 
-func taskDetail(t *task.Task, mr *mergerequest.MergeRequest) map[string]any {
+func taskDetail(t *task.Task, mr *mergerequest.MergeRequest, links task.Links) map[string]any {
 	detail := map[string]any{
 		"id":        t.ID,
 		"title":     t.Title,
@@ -641,6 +718,9 @@ func taskDetail(t *task.Task, mr *mergerequest.MergeRequest) map[string]any {
 	if mr != nil {
 		detail["mergeRequest"] = mrRef{ID: mr.ID, Title: mr.Title, Status: mr.Status}
 	}
+	if l := linksOf(t, links); l.BlockedBy != nil || l.Blocks != nil || l.Related != nil {
+		detail["links"] = l
+	}
 	return detail
 }
 
@@ -659,6 +739,8 @@ func (p *Provider) createTask(ctx context.Context, req aitools.ExecutionRequest,
 		Body:       args.Body,
 		Start:      args.Start,
 		BaseBranch: args.BaseBranch,
+		BlockedBy:  args.BlockedBy,
+		Related:    args.Related,
 		AgentSettings: task.AgentSettings{
 			AgentID: strings.TrimSpace(args.AgentID),
 			Model:   strings.TrimSpace(args.Model),
@@ -677,10 +759,39 @@ func (p *Provider) createTask(ctx context.Context, req aitools.ExecutionRequest,
 		return toolError(req.ToolName, "creating the task: %v", err)
 	}
 	message := fmt.Sprintf("Created task #%d.", t.ID)
-	if t.Status == task.StatusQueued {
+	switch {
+	case t.Status == task.StatusQueued:
 		message = fmt.Sprintf("Created task #%d and queued an agent on it. It works in its own sandbox and opens a merge request when done.", t.ID)
+	case t.StartWhenUnblocked:
+		message = fmt.Sprintf("Created task #%d. Its agent starts once the tasks it is blocked by are merged.", t.ID)
 	}
-	return toolResult(req.ToolName, map[string]any{"message": message, "task": summarizeTask(t, nil)})
+	return toolResult(req.ToolName, map[string]any{"message": message, "task": summarizeTask(t, nil, p.links(ctx, req, proj)[t.ID])})
+}
+
+func (p *Provider) linkTasks(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) domain.ToolResultPart {
+	kind := task.LinkKind(args.Kind)
+	switch kind {
+	case task.LinkBlockedBy, task.LinkBlocks, task.LinkRelated:
+	default:
+		return toolError(req.ToolName, "kind must be blocked_by, blocks or related")
+	}
+	t, err := p.tasks.Link(ctx, req.UserID, proj.ID, args.TaskID, kind, args.OtherTaskID)
+	if err != nil {
+		if errors.Is(err, task.ErrAlreadyLinked) {
+			return toolError(req.ToolName, "tasks #%d and #%d are already linked; only the user can remove a link", args.TaskID, args.OtherTaskID)
+		}
+		return taskError(req.ToolName, args.TaskID, err)
+	}
+	var message string
+	switch kind {
+	case task.LinkBlockedBy:
+		message = fmt.Sprintf("Task #%d now waits for task #%d to be merged.", args.TaskID, args.OtherTaskID)
+	case task.LinkBlocks:
+		message = fmt.Sprintf("Task #%d now waits for task #%d to be merged.", args.OtherTaskID, args.TaskID)
+	default:
+		message = fmt.Sprintf("Tasks #%d and #%d are now related.", args.TaskID, args.OtherTaskID)
+	}
+	return toolResult(req.ToolName, map[string]any{"message": message, "task": summarizeTask(t, nil, p.links(ctx, req, proj)[t.ID])})
 }
 
 func (p *Provider) startTask(ctx context.Context, req aitools.ExecutionRequest, proj *project.Project, args taskArgs) domain.ToolResultPart {
@@ -703,9 +814,13 @@ func (p *Provider) startTask(ctx context.Context, req aitools.ExecutionRequest, 
 	if err != nil {
 		return taskError(req.ToolName, args.TaskID, err)
 	}
+	message := fmt.Sprintf("Queued an agent on task #%d.", t.ID)
+	if t.StartWhenUnblocked {
+		message = fmt.Sprintf("Task #%d is blocked by tasks not merged yet. Its agent starts once they are.", t.ID)
+	}
 	return toolResult(req.ToolName, map[string]any{
-		"message": fmt.Sprintf("Queued an agent on task #%d.", t.ID),
-		"task":    summarizeTask(t, nil),
+		"message": message,
+		"task":    summarizeTask(t, nil, p.links(ctx, req, proj)[t.ID]),
 	})
 }
 
@@ -729,7 +844,7 @@ func (p *Provider) requestChanges(ctx context.Context, req aitools.ExecutionRequ
 	}
 	return toolResult(req.ToolName, map[string]any{
 		"message": message,
-		"task":    summarizeTask(t, nil),
+		"task":    summarizeTask(t, nil, p.links(ctx, req, proj)[t.ID]),
 	})
 }
 

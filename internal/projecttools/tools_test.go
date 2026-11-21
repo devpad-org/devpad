@@ -104,6 +104,30 @@ type fakeTasks struct {
 	started []task.StartInput
 	changes []string
 	nextID  int64
+	links   map[int64]task.Links
+	linked  []string
+}
+
+func (f *fakeTasks) Links(_ context.Context, _, projectID int64) (map[int64]task.Links, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.links, nil
+}
+
+func (f *fakeTasks) Link(_ context.Context, _, projectID, taskID int64, kind task.LinkKind, otherID int64) (*task.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[taskID]
+	other, otherOK := f.tasks[otherID]
+	if !ok || t.ProjectID != projectID {
+		return nil, task.ErrNotFound
+	}
+	if !otherOK || other.ProjectID != projectID {
+		return nil, fmt.Errorf("%w: task #%d is not in this project", task.ErrInvalidInput, otherID)
+	}
+	f.linked = append(f.linked, fmt.Sprintf("%d %s %d", taskID, kind, otherID))
+	clone := *t
+	return &clone, nil
 }
 
 func (f *fakeTasks) List(_ context.Context, _, projectID int64) ([]*task.Task, error) {
@@ -877,5 +901,74 @@ func TestMergeRequestApprovalShowsWhatWillOpen(t *testing.T) {
 	got = approval(`{"source_branch":"feature/cart","target_branch":"develop","title":"Cart"}`)
 	if !hasDetail(got, "Left out", "3 commits in your workspace that aren't published") {
 		t.Errorf("expected the unpublished commits on the card: %+v", got.Details)
+	}
+}
+
+func TestAssistantLinksTasks(t *testing.T) {
+	e := setup()
+	ctx := context.Background()
+	e.tasks.tasks[4] = &task.Task{ID: 4, ProjectID: 1, Title: "Add checkout", Status: task.StatusTodo, Branch: "task/4", StartWhenUnblocked: true}
+	e.tasks.links = map[int64]task.Links{
+		1: {Blocks: []int64{4}},
+		4: {BlockedBy: []int64{1, 2}, Blocked: true},
+	}
+
+	// Linking changes only the board, so it runs without asking.
+	if _, needed, err := e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: linkTasksTool, Arguments: json.RawMessage(`{"task_id":4,"kind":"related","other_task_id":2}`)}); needed || err != nil {
+		t.Fatalf("link_tasks must not need approval: %v %v", needed, err)
+	}
+	res, _ := e.call(t, owner, 10, linkTasksTool, `{"task_id":4,"kind":"blocks","other_task_id":1}`)
+	if res.IsError || !strings.Contains(res.Content, "Task #1 now waits for task #4") {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	for _, args := range []string{`{"task_id":4,"kind":"duplicates","other_task_id":1}`, `{"task_id":4,"kind":"related","other_task_id":3}`} {
+		if res, _ := e.call(t, owner, 10, linkTasksTool, args); !res.IsError {
+			t.Errorf("%s: expected an error, got %+v", args, res)
+		}
+	}
+	if len(e.tasks.linked) != 1 || e.tasks.linked[0] != "4 blocks 1" {
+		t.Fatalf("unexpected links made: %v", e.tasks.linked)
+	}
+
+	res, _ = e.call(t, owner, 10, listTasksTool, `{}`)
+	if !strings.Contains(res.Content, `"blockedBy":[1,2],"blocked":true,"startsWhenUnblocked":true`) || !strings.Contains(res.Content, `"blocks":[4]`) {
+		t.Fatalf("list_tasks does not show the links: %s", res.Content)
+	}
+	res, _ = e.call(t, owner, 10, getTaskTool, `{"task_id":4}`)
+	if !strings.Contains(res.Content, `"links":{"blockedBy":[1,2]`) {
+		t.Fatalf("get_task does not show the links: %s", res.Content)
+	}
+
+	// Starting a blocked task says what it waits for, leaving out what is
+	// merged already.
+	got, needed, err := e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: startTaskTool, Arguments: json.RawMessage(`{"task_id":4}`), Model: "assistant-model"})
+	if err != nil || !needed || !strings.Contains(got.Summary, "once the tasks it waits for are merged") {
+		t.Fatalf("unexpected approval: %+v %v %v", got, needed, err)
+	}
+	waits := ""
+	for _, d := range got.Details {
+		if d.Label == "Waits for" {
+			waits = d.Value
+		}
+	}
+	if waits != "#1 Add a cart" {
+		t.Fatalf("expected the approval to list the unmerged blocker, got %q", waits)
+	}
+
+	args, _ := json.Marshal(map[string]any{"title": "Pay", "body": "Take payment.", "start": true, "blocked_by": []int64{2}})
+	got, _, _ = e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: createTaskTool, Arguments: args, Model: "assistant-model"})
+	if strings.Contains(got.Summary, "once") {
+		t.Fatalf("a task blocked only by merged tasks starts now: %q", got.Summary)
+	}
+	args, _ = json.Marshal(map[string]any{"title": "Pay", "body": "Take payment.", "start": true, "blocked_by": []int64{1, 2}, "related": []int64{4}})
+	got, _, _ = e.approvalFor(ctx, aitools.ExecutionRequest{UserID: owner, WorkspaceID: 10, ToolName: createTaskTool, Arguments: args, Model: "assistant-model"})
+	if !strings.Contains(got.Summary, "once the tasks it waits for are merged") {
+		t.Fatalf("unexpected approval summary: %q", got.Summary)
+	}
+	if _, _ = e.approved(t, owner, 10, createTaskTool, string(args)); len(e.tasks.created) != 1 {
+		t.Fatalf("expected one task created, got %d", len(e.tasks.created))
+	}
+	if in := e.tasks.created[0]; len(in.BlockedBy) != 2 || len(in.Related) != 1 || in.Related[0] != 4 {
+		t.Fatalf("the links were not passed on: %+v", in)
 	}
 }

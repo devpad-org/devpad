@@ -12,9 +12,26 @@ The **Tasks** surface lists the project's tasks, with what each has spent and it
 - **Title** and **Description**: what should change, and how you'll know it works. The agent sees both, with the project's description.
 - **Start from**: the branch the task's own branch is made from. It must be in the project, so publish it first.
 - **Agent**: the model and effort, which start from your [default models](/docs/ai#default-models).
+- **Linked tasks**: tasks it's **Blocked by**, whose work it builds on, and tasks it's **Related** to. See [Linked tasks](#linked-tasks).
 - **Budget**: what agents may spend on the task across all their runs. Empty uses your default; 0 means no limit.
 
-**Create and start agent** hands it to an agent straight away. **Save as to do** keeps it on the list to start later with **Start agent**.
+**Create and start agent** hands it to an agent straight away, or, for a task blocked by tasks not merged yet, **Create, start when unblocked** leaves it to start once they are. **Save as to do** keeps it on the list to start later with **Start agent**.
+
+## Linked tasks {#linked-tasks}
+
+A task's **Linked tasks**, in its sidebar, are the other tasks of the project it's linked to. Press **+** to add one, and the **×** on a row to remove it. Two tasks have at most one link between them.
+
+- **Blocked by**: the task builds on another's work, so its agent waits until that task is merged. **Blocks** is the same link seen from the other task.
+- **Related to**: the tasks are shown on each other, and their agents are told about each other, but neither waits.
+
+A task that's blocked shows **blocked by #3** on the list. **Start agent** on it becomes **Start when unblocked**: the task stays to do, shows **starts after #3**, and its agent starts by itself once every task it's blocked by is merged, on a branch made from the latest of the branch it starts from. **Don't start** takes that back. If the agent can't start then, for example because the task's budget is spent, the task stays to do and says why.
+
+- Only a task that hasn't started can be blocked. Once its agent has started, its work no longer waits for anything.
+- A task's merge request merges into the project's default branch, so only a task that starts from the default branch can be blocked: from any other branch, its agent would start without the work it waited for.
+- A link that would make tasks wait for each other, directly or through other tasks, is refused.
+- A cancelled task never merges, so it can't block a task, and a task already blocked by one that's then cancelled keeps waiting until you remove the link. Deleting a task removes its links, which can let a task it blocked start.
+
+The agent of a linked task is told the titles and status of the tasks it's linked to: those it waited for, which are merged, those waiting for it, and related ones it should leave alone.
 
 ## How a task runs {#how-a-task-runs}
 
@@ -39,7 +56,7 @@ A task's budget covers every run of its agent, across retries and rounds of feed
 The **AI** panel is the assistant: an agent working in your project workspace, beside you. Pick the **Agent** (the **Coding Agent**, the **Code Review Agent**, or one you've made under **AI Agents**), the **Model** and **Effort** below the message box.
 
 - It reads, edits and runs things in your workspace. It leaves its edits for you to review and commits only when you ask.
-- In a project workspace it can see the board: list tasks and merge requests, create and start tasks, send a task back to its agent, and comment on merge requests.
+- In a project workspace it can see the board: list tasks and merge requests, create, start and [link](#linked-tasks) tasks, send a task back to its agent, and comment on merge requests. It can add a link but never remove one.
 - It can open a merge request from a published branch into a protected branch it names. It can't open one from the branch of a task that isn't merged or cancelled, which gets its merge request when the task's agent finishes, and it can't merge, close or approve a merge request.
 - It can publish a branch with `git push devpad`, with no more power than the Publish button.
 - It can answer questions about devpad itself from these docs.
@@ -52,7 +69,7 @@ Each reply spends from your **Per assistant reply** budget, if you set one.
 Some of an agent's tool calls wait for you before they run:
 
 - any command that uses `sudo`;
-- starting a background agent (creating and starting a task, or starting one) and sending a task back to its agent;
+- starting a background agent (creating and starting a task, or starting one) and sending a task back to its agent. For a task that's blocked, the card lists the tasks it **Waits for**, and the agent starts once they're merged;
 - the assistant opening a merge request: the card shows the branch, the branch it would merge into, whether an automatic review would start, and any commits in your workspace that aren't published and so would be left out.
 
 The call shows as a card with **Approve** and **Deny**, in the chat and in the inbox. An agent can also stop to ask you a question. Both appear in the **inbox** in the header, from every workspace and sandbox, so you can answer an agent without finding it first.

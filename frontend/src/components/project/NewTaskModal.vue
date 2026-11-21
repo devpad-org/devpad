@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import DocLink from '@/components/DocLink.vue'
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { taskApi, type Task } from '@/api/tasks'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
-import SelectMenu from '@/components/SelectMenu.vue'
+import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import AgentModelPicker from './AgentModelPicker.vue'
 import MrIcon from './MrIcon.vue'
+import { TASK_STATUS, canWaitFrom } from './taskStatus'
 
 // Creates a task, either left to do or handed to an agent at once. Closing
 // keeps the draft, so an accidental Escape loses nothing; creating clears it.
@@ -31,6 +32,9 @@ const effort = ref('')
 // The budget as typed, in USD; empty takes the default. v-model on a number
 // input stores a number once anything is typed.
 const budget = ref<number | string>('')
+// The tasks the new one waits for, and those it is related to.
+type LinkKey = 'blockedBy' | 'related'
+const links = reactive<Record<LinkKey, number[]>>({ blockedBy: [], related: [] })
 const busy = ref<'' | 'save' | 'start'>('')
 const error = ref('')
 const titleInput = ref<HTMLInputElement | null>(null)
@@ -60,6 +64,39 @@ watch(
   },
   { immediate: true },
 )
+
+const byId = computed(() => new Map(store.tasks.map((t) => [t.id, t])))
+
+// Whether the new task, from the branch picked to start from, can wait for
+// other tasks.
+const canWait = computed(() => canWaitFrom(base.value, defaultBranch.value))
+
+// Each kind of link, with the tasks it can be made to: any but one already
+// picked, and for a blocker any but a cancelled task, which never merges.
+const linkFields = computed(() => {
+  const taken = new Set([...links.blockedBy, ...links.related])
+  const options = (allowCancelled: boolean): SelectMenuOption<number>[] =>
+    store.tasks
+      .filter((t) => !taken.has(t.id) && (allowCancelled || t.status !== 'cancelled'))
+      .sort((a, b) => b.id - a.id)
+      .map((t) => ({ value: t.id, label: `#${t.id} ${t.title}`, description: TASK_STATUS[t.status].label }))
+  return [
+    { key: 'blockedBy' as const, label: 'Blocked by', options: options(false), disabled: !canWait.value },
+    { key: 'related' as const, label: 'Related', options: options(true), disabled: false },
+  ]
+})
+
+// Picking adds the task, and the picker goes back to none.
+function pick(key: LinkKey, id: number) {
+  if (id && !links[key].includes(id)) links[key] = [...links[key], id]
+}
+
+function unpick(key: LinkKey, id: number) {
+  links[key] = links[key].filter((other) => other !== id)
+}
+
+// Starting a task that waits for unmerged work leaves it to start then.
+const waits = computed(() => links.blockedBy.some((id) => byId.value.get(id)?.status !== 'merged'))
 
 function parsedBudget(): number | undefined | null {
   if (String(budget.value).trim() === '') return undefined
@@ -92,12 +129,16 @@ async function submit(start: boolean) {
       start,
       baseBranch: base.value && base.value !== defaultBranch.value ? base.value : undefined,
       budgetUsd,
+      blockedBy: links.blockedBy.length > 0 ? links.blockedBy : undefined,
+      related: links.related.length > 0 ? links.related : undefined,
       model: model.value || undefined,
       effort: effort.value || undefined,
     })
     title.value = ''
     body.value = ''
     budget.value = ''
+    links.blockedBy = []
+    links.related = []
     descriptionTab.value = 'write'
     emit('created', res.task)
   } catch (e) {
@@ -217,6 +258,43 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
             </section>
 
             <section class="side-section">
+              <h3 class="side-title">Linked tasks</h3>
+              <div v-for="field in linkFields" :key="field.key" class="link-field">
+                <span class="link-label">{{ field.label }}</span>
+                <ul v-if="links[field.key].length > 0" class="link-chips">
+                  <li v-for="id in links[field.key]" :key="id" class="link-chip">
+                    <span class="ellipsis" :title="byId.get(id)?.title">
+                      <span class="mono">#{{ id }}</span> {{ byId.get(id)?.title }}
+                    </span>
+                    <button
+                      type="button"
+                      class="link-chip-remove"
+                      :aria-label="`Remove task #${id}`"
+                      title="Remove"
+                      @click="unpick(field.key, id)"
+                    >
+                      <MrIcon name="close" :size="11" />
+                    </button>
+                  </li>
+                </ul>
+                <SelectMenu
+                  :model-value="0"
+                  :options="field.options"
+                  :title="field.label"
+                  variant="field"
+                  placeholder="Add a task"
+                  :disabled="field.disabled || field.options.length === 0"
+                  @update:model-value="pick(field.key, $event)"
+                />
+              </div>
+              <p v-if="canWait" class="form-hint">Its agent starts only once every task it's blocked by is merged.</p>
+              <p v-else class="form-hint">
+                Only a task that starts from <span class="mono">{{ defaultBranch }}</span>, which tasks merge into, can
+                be blocked by other tasks.
+              </p>
+            </section>
+
+            <section class="side-section">
               <h3 class="side-title">Agent</h3>
               <AgentModelPicker v-model:model="model" v-model:effort="effort" />
             </section>
@@ -252,7 +330,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
           <button type="submit" class="btn btn-primary" :disabled="!!busy || !model">
             <span v-if="busy === 'start'" class="spinner spinner-sm spinner-on-accent" />
             <MrIcon v-else name="play" :size="13" />
-            Create and start agent
+            {{ waits ? 'Create, start when unblocked' : 'Create and start agent' }}
           </button>
         </footer>
       </form>
@@ -269,7 +347,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .title-icon {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .title-input {
@@ -301,9 +379,65 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   overflow-y: auto;
   padding: var(--space-2) var(--space-3);
   background: var(--bg-base);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   font-size: 0.85rem;
+}
+
+.link-field + .link-field {
+  margin-top: var(--space-3);
+}
+
+.link-label {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.link-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: var(--space-2);
+  list-style: none;
+}
+
+.link-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 3px var(--space-1) 3px var(--space-2);
+  background: var(--bg-raised);
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+}
+
+.link-chip .ellipsis {
+  flex: 1;
+  min-width: 0;
+}
+
+.link-chip .mono {
+  color: var(--text-tertiary);
+}
+
+.link-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.link-chip-remove:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 .budget-field {
@@ -315,7 +449,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   left: var(--space-3);
   top: 50%;
   transform: translateY(-50%);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.85rem;
   pointer-events: none;
 }

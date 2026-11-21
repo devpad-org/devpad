@@ -11,6 +11,7 @@ import AgentModelPicker from './AgentModelPicker.vue'
 import BudgetReached, { type SpentBudget } from './BudgetReached.vue'
 import MrIcon, { type MrIconName } from './MrIcon.vue'
 import StatusBadge from './StatusBadge.vue'
+import TaskLinks from './TaskLinks.vue'
 import { TASK_STAGES, TASK_STATUS } from './taskStatus'
 import { formatUsd } from '@/utils/cost'
 import { fullTime, timeAgo } from '@/utils/time'
@@ -95,6 +96,24 @@ async function checkoutBranch() {
 }
 
 const info = computed(() => TASK_STATUS[props.task?.status ?? 'todo'])
+// The tasks this one waits for that are not merged yet.
+const waitingOn = computed(() => {
+  const t = props.task
+  if (!t?.blocked) return []
+  const merged = new Set(projectStore.tasks.filter((other) => other.status === 'merged').map((other) => other.id))
+  return t.blockedBy.filter((id) => !merged.has(id))
+})
+// "#3 is" or "#3 and #5 are", for the status hint. The board may not have
+// caught up with the task, so it falls back to naming none.
+const waitingPhrase = computed(() => {
+  const ids = waitingOn.value.map((id) => `#${id}`)
+  if (ids.length === 0) return "the tasks it's blocked by are"
+  if (ids.length === 1) return `${ids[0]} is`
+  return `${ids.slice(0, -1).join(', ')} and ${ids[ids.length - 1]} are`
+})
+// The agent starts by itself once nothing blocks the task, so there is
+// nothing to start until the user changes their mind.
+const waitingToStart = computed(() => props.task?.status === 'todo' && props.task.startWhenUnblocked)
 const canStart = computed(() => props.task !== null && STARTABLE.has(props.task.status))
 const canCancel = computed(() => props.task !== null && props.task.status !== 'merged' && props.task.status !== 'cancelled')
 const canEdit = computed(() => props.task !== null && !ACTIVE.has(props.task.status) && props.task.status !== 'merged')
@@ -137,6 +156,8 @@ const statusHint = computed(() => {
   if (!t) return ''
   switch (t.status) {
     case 'todo':
+      if (t.startWhenUnblocked) return `The agent starts once ${waitingPhrase.value} merged.`
+      if (t.blocked) return `Blocked until ${waitingPhrase.value} merged. Starting the agent now leaves it to start then.`
       return 'Not started. Hand it to an agent once the description says what you want.'
     case 'queued':
       return t.error || 'Waiting for a free sandbox.'
@@ -167,6 +188,15 @@ const extraWarning = computed(() => {
 const composer = computed(() => {
   switch (props.task?.status) {
     case 'todo':
+      if (props.task?.blocked) {
+        return {
+          title: 'Start an agent when unblocked',
+          hint: 'It starts by itself once every task this one is blocked by is merged.',
+          label: 'Extra instructions',
+          action: 'Start when unblocked',
+          icon: 'play' as MrIconName,
+        }
+      }
       return {
         title: 'Start an agent',
         hint: 'It works on its own branch in a sandbox and opens a merge request when done.',
@@ -294,6 +324,15 @@ function start() {
   })
 }
 
+function cancelStart() {
+  if (!props.task) return
+  const id = props.task.id
+  void run(async () => {
+    const res = await taskApi.cancelStart(props.projectId, id)
+    emit('changed', res.task)
+  })
+}
+
 function cancel() {
   if (!props.task) return
   const id = props.task.id
@@ -370,7 +409,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
             </li>
           </ol>
           <div class="status-banner">
-            <MrIcon :name="info.icon" :size="15" class="banner-icon" />
+            <MrIcon :name="task.status === 'todo' && task.blocked ? 'lock' : info.icon" :size="15" class="banner-icon" />
             <p class="banner-text">{{ statusHint }}</p>
             <div class="banner-actions">
               <RouterLink
@@ -381,6 +420,10 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 <MrIcon name="terminal" :size="13" />
                 Watch in sandbox
               </RouterLink>
+              <button v-if="waitingToStart" class="btn btn-secondary btn-sm" :disabled="busy" @click="cancelStart">
+                <MrIcon name="stop" :size="13" />
+                Don't start
+              </button>
               <button
                 v-if="mergeRequest && (task.status === 'in_review' || task.status === 'changes_requested')"
                 class="btn btn-primary btn-sm"
@@ -478,7 +521,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               @raise="raiseBudget"
             />
 
-            <section v-if="canStart && !editing" class="composer">
+            <section v-if="canStart && !editing && !waitingToStart" class="composer">
               <button v-if="!composerOpen" class="composer-toggle" @click="composerOpen = true">
                 <span class="avatar avatar-agent"><MrIcon name="bot" :size="13" /></span>
                 <span class="composer-toggle-text">
@@ -565,8 +608,10 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               </dl>
             </section>
 
+            <TaskLinks :task="task" :project-id="projectId" />
+
             <section v-if="task.workspaceId || mergeRequest || branchPublished" class="side-section">
-              <h3 class="side-title">Linked</h3>
+              <h3 class="side-title">Shortcuts</h3>
               <div class="links">
                 <button
                   v-if="branchPublished"
@@ -665,7 +710,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .summary-item .mr-icon {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .branch-chip {
@@ -676,7 +721,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   padding: 2px var(--space-2);
   border-radius: var(--radius-sm);
   background: var(--bg-raised);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 0.72rem;
@@ -686,28 +731,28 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .branch-chip .mr-icon {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 /* Lifecycle: stepper plus a banner with what's next */
 .lifecycle {
   --tone: var(--text-secondary);
   --tone-bg: var(--bg-neutral);
-  --tone-border: var(--border-default);
+  --tone-border: var(--border-subtle);
   padding: var(--space-4) var(--space-5);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
 }
 
 .tone-active {
-  --tone: var(--accent-blue);
-  --tone-bg: color-mix(in srgb, var(--accent-blue) 12%, transparent);
-  --tone-border: color-mix(in srgb, var(--accent-blue) 30%, transparent);
+  --tone: var(--hue-blue);
+  --tone-bg: color-mix(in srgb, var(--hue-blue) 12%, transparent);
+  --tone-border: color-mix(in srgb, var(--hue-blue) 30%, transparent);
 }
 
 .tone-review {
-  --tone: var(--accent-purple);
-  --tone-bg: color-mix(in srgb, var(--accent-purple) 12%, transparent);
-  --tone-border: color-mix(in srgb, var(--accent-purple) 30%, transparent);
+  --tone: var(--hue-purple);
+  --tone-bg: color-mix(in srgb, var(--hue-purple) 12%, transparent);
+  --tone-border: color-mix(in srgb, var(--hue-purple) 30%, transparent);
 }
 
 .tone-attention {
@@ -754,7 +799,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   left: calc(-50% + 18px);
   height: 2px;
   border-radius: 1px;
-  background: var(--border-default);
+  background: var(--border-subtle);
 }
 
 .step-done + .step::before {
@@ -768,7 +813,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  border: 1px solid var(--border-default);
+  border: 1px solid var(--border-subtle);
   background: var(--bg-base);
   color: var(--text-dim);
   transition: all var(--transition-normal);
@@ -804,7 +849,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 .step-label {
   max-width: 100%;
   font-size: 0.72rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -878,7 +923,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .text-button {
-  color: var(--accent-blue);
+  color: var(--accent);
   font-size: 0.8rem;
 }
 
@@ -939,8 +984,8 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .avatar-agent {
-  color: var(--accent-purple);
-  background: color-mix(in srgb, var(--accent-purple) 16%, transparent);
+  color: var(--hue-purple);
+  background: color-mix(in srgb, var(--hue-purple) 16%, transparent);
 }
 
 .composer-head {
@@ -1001,7 +1046,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .details dt {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .details dd {
@@ -1081,8 +1126,8 @@ button.link-row:disabled {
 }
 
 .mr-open {
-  color: var(--accent-blue);
-  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  color: var(--hue-blue);
+  background: color-mix(in srgb, var(--hue-blue) 14%, transparent);
 }
 
 .mr-merged {
@@ -1104,7 +1149,7 @@ button.link-row:disabled {
 
 .link-sub {
   font-size: 0.7rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

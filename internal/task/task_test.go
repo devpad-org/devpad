@@ -26,6 +26,9 @@ type memRepo struct {
 	mu     sync.Mutex
 	nextID int64
 	tasks  map[int64]Task
+	// links are stored as the SQLite repository stores them, with the
+	// project of each.
+	links []memLink
 	// costErr fails RecordCost when set.
 	costErr error
 }
@@ -104,11 +107,70 @@ func (r *memRepo) RecordCost(_ context.Context, id int64, spentUSD float64) erro
 	return nil
 }
 
+// Delete removes the task's links with it, as the foreign keys do.
 func (r *memRepo) Delete(_ context.Context, id int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tasks, id)
+	kept := r.links[:0]
+	for _, l := range r.links {
+		if l.From != id && l.To != id {
+			kept = append(kept, l)
+		}
+	}
+	r.links = kept
 	return nil
+}
+
+type memLink struct {
+	Link
+	projectID int64
+}
+
+func (r *memRepo) CreateLink(_ context.Context, projectID int64, link Link) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, l := range r.links {
+		if min(l.From, l.To) == min(link.From, link.To) && max(l.From, l.To) == max(link.From, link.To) {
+			return ErrAlreadyLinked
+		}
+	}
+	r.links = append(r.links, memLink{Link: Link{From: link.From, To: link.To, Blocks: link.Blocks}, projectID: projectID})
+	return nil
+}
+
+func (r *memRepo) DeleteLink(_ context.Context, a, b int64) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, l := range r.links {
+		if (l.From == a && l.To == b) || (l.From == b && l.To == a) {
+			r.links = append(r.links[:i], r.links[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (r *memRepo) ListLinks(_ context.Context, projectID int64) ([]Link, error) {
+	return r.linksWhere(func(l memLink) bool { return l.projectID == projectID }), nil
+}
+
+func (r *memRepo) LinksOf(_ context.Context, taskID int64) ([]Link, error) {
+	return r.linksWhere(func(l memLink) bool { return l.From == taskID || l.To == taskID }), nil
+}
+
+func (r *memRepo) linksWhere(keep func(memLink) bool) []Link {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []Link
+	for _, l := range r.links {
+		if keep(l) {
+			link := l.Link
+			link.FromStatus = r.tasks[l.From].Status
+			out = append(out, link)
+		}
+	}
+	return out
 }
 
 // fakeSandboxes plays both the project service and the workspace lifecycle.
