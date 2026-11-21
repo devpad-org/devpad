@@ -34,9 +34,13 @@ type Repository interface {
 	// lowers the stored total, so a total recorded late cannot undo a later
 	// one.
 	RecordReviewCost(ctx context.Context, id int64, spentUSD float64) error
-	// SetAutoMergeError records why a review's approval did not merge its
-	// merge request automatically. UpdateReview never writes it.
-	SetAutoMergeError(ctx context.Context, id int64, msg string) error
+	// ListUnsettledReviews lists the submitted agent reviews whose run's
+	// end devpad has not settled.
+	ListUnsettledReviews(ctx context.Context) ([]*Review, error)
+	// SettleRun records that devpad has settled the end of a submitted
+	// review's run, with why its approval did not merge the merge request
+	// automatically, or "". UpdateReview never writes either.
+	SettleRun(ctx context.Context, id int64, autoMergeError string) error
 
 	CreateComment(ctx context.Context, c *Comment) error
 	GetComment(ctx context.Context, id int64) (*Comment, error)
@@ -165,7 +169,7 @@ func (r *repository) ListPushes(ctx context.Context, mergeRequestID int64) ([]*P
 	})
 }
 
-const reviewColumns = `id, merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, conversation_id, run_id, agent_id, model, effort, auto_fix, round, budget_usd, cost_usd, error, auto_merge_error, created_at, updated_at`
+const reviewColumns = `id, merge_request_id, author, status, verdict, body, head_sha, target_sha, workspace_id, conversation_id, run_id, agent_id, model, effort, auto_fix, round, budget_usd, cost_usd, error, auto_merge_error, run_settled, created_at, updated_at`
 
 func (r *repository) CreateReview(ctx context.Context, rv *Review) error {
 	now := time.Now()
@@ -233,9 +237,17 @@ func (r *repository) RecordReviewCost(ctx context.Context, id int64, spentUSD fl
 	return nil
 }
 
-func (r *repository) SetAutoMergeError(ctx context.Context, id int64, msg string) error {
-	if _, err := r.db.ExecContext(ctx, `UPDATE merge_request_reviews SET auto_merge_error = ?, updated_at = ? WHERE id = ?`, msg, time.Now(), id); err != nil {
-		return fmt.Errorf("recording why a review did not merge: %w", err)
+func (r *repository) ListUnsettledReviews(ctx context.Context) ([]*Review, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+reviewColumns+` FROM merge_request_reviews WHERE author = 'agent' AND status = 'submitted' AND run_settled = 0 ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing unsettled reviews: %w", err)
+	}
+	return collect(rows, scanReview)
+}
+
+func (r *repository) SettleRun(ctx context.Context, id int64, autoMergeError string) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE merge_request_reviews SET run_settled = 1, auto_merge_error = ?, updated_at = ? WHERE id = ?`, autoMergeError, time.Now(), id); err != nil {
+		return fmt.Errorf("settling the review's run: %w", err)
 	}
 	return nil
 }
@@ -323,7 +335,7 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 func scanReview(row rowScanner) (*Review, error) {
 	var rv Review
 	var workspaceID, conversationID, runID sql.NullInt64
-	if err := row.Scan(&rv.ID, &rv.MergeRequestID, &rv.Author, &rv.Status, &rv.Verdict, &rv.Body, &rv.HeadSHA, &rv.TargetSHA, &workspaceID, &conversationID, &runID, &rv.AgentID, &rv.Model, &rv.Effort, &rv.AutoFix, &rv.Round, &rv.BudgetUSD, &rv.CostUSD, &rv.Error, &rv.AutoMergeError, &rv.CreatedAt, &rv.UpdatedAt); err != nil {
+	if err := row.Scan(&rv.ID, &rv.MergeRequestID, &rv.Author, &rv.Status, &rv.Verdict, &rv.Body, &rv.HeadSHA, &rv.TargetSHA, &workspaceID, &conversationID, &runID, &rv.AgentID, &rv.Model, &rv.Effort, &rv.AutoFix, &rv.Round, &rv.BudgetUSD, &rv.CostUSD, &rv.Error, &rv.AutoMergeError, &rv.RunSettled, &rv.CreatedAt, &rv.UpdatedAt); err != nil {
 		return nil, err
 	}
 	rv.WorkspaceID, rv.ConversationID, rv.RunID = workspaceID.Int64, conversationID.Int64, runID.Int64

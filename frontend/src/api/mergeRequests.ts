@@ -55,8 +55,7 @@ export interface Review {
   // project merges into automatically, in a few lowercase words.
   autoMergeError: string
   // The review agent's run has not ended, or devpad is still settling it,
-  // so its approval may yet merge the change. Only set on the latest review
-  // of an open merge request.
+  // so its approval may yet merge the change.
   finishing: boolean
   createdAt: string
   updatedAt: string

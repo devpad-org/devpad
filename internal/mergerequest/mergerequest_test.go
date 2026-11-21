@@ -2777,8 +2777,9 @@ func (e *env) mergeCount() int {
 	return len(e.projects.merges)
 }
 
-// approve has the review agent approve the change, then ends its run.
-func (e *env) approve(t *testing.T, rv *Review, before func()) {
+// approve has the review agent approve the change, then ends its run as
+// end says.
+func (e *env) approve(t *testing.T, rv *Review, end domain.AgentRunStatus, before func()) {
 	t.Helper()
 	if result, _ := e.tool(e.owner, rv.WorkspaceID, submitTool, `{"verdict":"approve","body":"Looks good."}`); result.IsError {
 		t.Fatalf("submit: %+v", result)
@@ -2786,7 +2787,23 @@ func (e *env) approve(t *testing.T, rv *Review, before func()) {
 	if before != nil {
 		before()
 	}
-	e.runs.finish(rv.RunID, domain.AgentRunCompleted, "")
+	msg := ""
+	if end == domain.AgentRunFailed {
+		msg = "provider error"
+	}
+	e.runs.finish(rv.RunID, end, msg)
+}
+
+// settled waits until devpad has settled the end of the review's run, and
+// with it decided whether its approval merges, and returns the review.
+func (e *env) settled(t *testing.T, rv *Review) *Review {
+	t.Helper()
+	var got *Review
+	waitFor(t, "the review's run to be settled", func() bool {
+		got, _ = e.svc.repo.GetReview(context.Background(), rv.ID)
+		return got != nil && got.RunSettled
+	})
+	return got
 }
 
 func TestAutoMergeMergesWhatTheReviewApproved(t *testing.T) {
@@ -2797,19 +2814,23 @@ func TestAutoMergeMergesWhatTheReviewApproved(t *testing.T) {
 	if !strings.Contains(e.runs.started()[0].Message.Text(), "Approving merges the change into `main` at once") {
 		t.Fatal("expected the review agent told that approving merges")
 	}
-	e.approve(t, rv, nil)
-	waitFor(t, "the automatic merge", func() bool { return e.mergeCount() == 1 })
-	waitFor(t, "the merge request to be merged", func() bool {
-		got, _ := e.svc.repo.GetByID(ctx, mr.ID)
-		return got.Status == StatusMerged
-	})
+	e.approve(t, rv, domain.AgentRunCompleted, nil)
+	if got := e.settled(t, rv); got.AutoMergeError != "" {
+		t.Fatalf("unexpected refusal: %q", got.AutoMergeError)
+	}
+	if e.mergeCount() != 1 {
+		t.Fatalf("expected one merge, got %+v", e.projects.merges)
+	}
 
-	want := project.MergeInput{Source: "task/1", Target: "main", Message: "Merge !1: Add a cart", ExpectedSourceSHA: "head1", ExpectedTargetSHA: mainTip}
+	want := project.MergeInput{
+		Source: "task/1", Target: "main", ExpectedSourceSHA: "head1", ExpectedTargetSHA: mainTip,
+		Message: "Merge !1: Add a cart\n\nMerged automatically by devpad after a review agent approved it.",
+	}
 	if e.projects.merges[0] != want {
 		t.Fatalf("merge input = %+v", e.projects.merges[0])
 	}
 	got, _ := e.svc.repo.GetByID(ctx, mr.ID)
-	if got.MergedBy != MergedByAuto || got.MergeSHA != "mergecommit" {
+	if got.Status != StatusMerged || got.MergedBy != MergedByAuto || got.MergeSHA != "mergecommit" {
 		t.Fatalf("unexpected merge request: %+v", got)
 	}
 	if len(e.projects.pushed) != 0 {
@@ -2819,7 +2840,8 @@ func TestAutoMergeMergesWhatTheReviewApproved(t *testing.T) {
 		t.Fatalf("expected the task closed as merged, got %v", e.tasks.merged)
 	}
 
-	// The user's merges say so.
+	// The user's merges say so, and their commits don't claim devpad merged
+	// them.
 	e.projects.branches = append(e.projects.branches, agent.RepoRef{Name: "feature", SHA: "f1"})
 	created, err := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Feature", SourceBranch: "feature"})
 	if err != nil {
@@ -2828,6 +2850,9 @@ func TestAutoMergeMergesWhatTheReviewApproved(t *testing.T) {
 	result, err := e.svc.Merge(ctx, e.owner, e.pid(), created.ID, MergeInput{})
 	if err != nil || result.MergeRequest.MergedBy != MergedByUser {
 		t.Fatalf("expected the user's merge recorded, got %+v (%v)", result, err)
+	}
+	if msg := e.projects.merges[1].Message; msg != fmt.Sprintf("Merge !%d: Feature", created.ID) {
+		t.Fatalf("unexpected message for the user's merge: %q", msg)
 	}
 }
 
@@ -2838,6 +2863,8 @@ func TestAutoMergeRefusals(t *testing.T) {
 		arrange func(e *env)
 		// before runs between the approval and its run ending.
 		before func(t *testing.T, e *env, mr *MergeRequest)
+		// end is how the review agent's run ends, completed unless set.
+		end domain.AgentRunStatus
 		// why is in the review's note, empty when nothing is said.
 		why string
 		// merges says the repo is asked to merge, and refuses.
@@ -2846,9 +2873,14 @@ func TestAutoMergeRefusals(t *testing.T) {
 		{name: "the project does not merge into the target automatically", arrange: func(e *env) {
 			e.projects.project.AutoMergeBranches = nil
 		}},
+		{name: "the project does not merge into the target, and the run failed", arrange: func(e *env) {
+			e.projects.project.AutoMergeBranches = nil
+		}, end: domain.AgentRunFailed},
 		{name: "the target is no longer protected", before: func(_ *testing.T, e *env, _ *MergeRequest) {
 			e.projects.project.DefaultBranch = "develop"
 		}},
+		{name: "the review agent's run failed after approving", end: domain.AgentRunFailed, why: "the review agent failed before it finished"},
+		{name: "the review agent was stopped after approving", end: domain.AgentRunCancelled, why: "the review agent was stopped before it finished"},
 		{name: "the target moved since the review read it", before: func(_ *testing.T, e *env, _ *MergeRequest) {
 			e.projects.mu.Lock()
 			e.projects.branches[0].SHA = "moved"
@@ -2896,23 +2928,20 @@ func TestAutoMergeRefusals(t *testing.T) {
 			if tt.arrange != nil {
 				tt.arrange(e)
 			}
+			end := tt.end
+			if end == "" {
+				end = domain.AgentRunCompleted
+			}
 			mr := e.openTaskMR(t)
 			rv := e.startAgentReview(t, mr, AgentReviewInput{})
-			e.approve(t, rv, func() {
+			e.approve(t, rv, end, func() {
 				if tt.before != nil {
 					tt.before(t, e, mr)
 				}
 			})
-			// The run ending stops the sandbox before any merge is tried, and
-			// the note is written after it.
-			waitFor(t, "the review sandbox to stop", func() bool { stopped, _ := e.workspaces.calls(); return len(stopped) == 1 })
-			if tt.why != "" {
-				waitFor(t, "the review to say why", func() bool {
-					got, _ := e.svc.repo.GetReview(ctx, rv.ID)
-					return got.AutoMergeError != ""
-				})
-			} else {
-				time.Sleep(20 * time.Millisecond)
+			note := e.settled(t, rv)
+			if stopped, _ := e.workspaces.calls(); len(stopped) != 1 {
+				t.Fatalf("expected the review sandbox stopped, got %v", stopped)
 			}
 			got, _ := e.svc.repo.GetByID(ctx, mr.ID)
 			if got.Status != StatusOpen || got.MergedBy != "" {
@@ -2921,7 +2950,6 @@ func TestAutoMergeRefusals(t *testing.T) {
 			if tried := e.mergeCount() != 0; tried != tt.merges {
 				t.Fatalf("expected a merge tried: %v, got %+v", tt.merges, e.projects.merges)
 			}
-			note, _ := e.svc.repo.GetReview(ctx, rv.ID)
 			if note.AutoMergeError != tt.why {
 				t.Fatalf("expected the note to say %q, got %q", tt.why, note.AutoMergeError)
 			}
@@ -2943,10 +2971,9 @@ func TestAutoMergeOnlyTakesTasksAndApprovals(t *testing.T) {
 		if strings.Contains(e.runs.started()[0].Message.Text(), "Approving merges") {
 			t.Fatal("the review agent must not be told approving merges a merge request that won't")
 		}
-		e.approve(t, rv, nil)
-		time.Sleep(20 * time.Millisecond)
-		if e.mergeCount() != 0 {
-			t.Fatalf("expected no merge, got %+v", e.projects.merges)
+		e.approve(t, rv, domain.AgentRunCompleted, nil)
+		if got := e.settled(t, rv); got.AutoMergeError != "" || e.mergeCount() != 0 {
+			t.Fatalf("expected no merge and nothing said, got %+v and %q", e.projects.merges, got.AutoMergeError)
 		}
 	})
 	t.Run("a comment verdict", func(t *testing.T) {
@@ -2957,27 +2984,28 @@ func TestAutoMergeOnlyTakesTasksAndApprovals(t *testing.T) {
 			t.Fatalf("submit: %+v", result)
 		}
 		e.runs.finish(rv.RunID, domain.AgentRunCompleted, "")
-		time.Sleep(20 * time.Millisecond)
-		if e.mergeCount() != 0 {
-			t.Fatalf("expected no merge, got %+v", e.projects.merges)
+		if got := e.settled(t, rv); got.AutoMergeError != "" || e.mergeCount() != 0 {
+			t.Fatalf("expected no merge and nothing said, got %+v and %q", e.projects.merges, got.AutoMergeError)
 		}
 	})
+	// The user's review has no run whose end could merge it, so nothing
+	// is left to wait for once it is recorded.
 	t.Run("the user's approval", func(t *testing.T) {
 		e := autoMergeEnv(t)
 		mr := e.openTaskMR(t)
-		if _, err := e.svc.Review(context.Background(), e.owner, e.pid(), mr.ID, ReviewInput{Verdict: VerdictApprove, Body: "Fine."}); err != nil {
+		rv, err := e.svc.Review(context.Background(), e.owner, e.pid(), mr.ID, ReviewInput{Verdict: VerdictApprove, Body: "Fine."})
+		if err != nil {
 			t.Fatalf("review: %v", err)
 		}
-		time.Sleep(20 * time.Millisecond)
-		if e.mergeCount() != 0 {
+		if rv.Finishing() || e.mergeCount() != 0 {
 			t.Fatalf("expected no merge, got %+v", e.projects.merges)
 		}
 	})
 }
 
-// Get says an approval may yet merge the change while its review's run has
-// not ended or devpad is still settling it, and not once that is done.
-func TestGetSaysAnApprovalIsFinishing(t *testing.T) {
+// An approval may yet merge the change while its review's run has not
+// ended or devpad is still settling it, and not once that is done.
+func TestAnApprovalIsFinishingUntilItsRunIsSettled(t *testing.T) {
 	e := autoMergeEnv(t)
 	ctx := context.Background()
 	mr := e.openTaskMR(t)
@@ -2988,14 +3016,14 @@ func TestGetSaysAnApprovalIsFinishing(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get: %v", err)
 		}
-		return d.Reviews[len(d.Reviews)-1].Finishing
+		return d.Reviews[len(d.Reviews)-1].Finishing()
 	}
 	if finishing() {
 		t.Fatal("a pending review is not finishing")
 	}
 	// Submitting takes the review's lock, so the test holds it only after.
 	var unlock func()
-	e.approve(t, rv, func() {
+	e.approve(t, rv, domain.AgentRunCompleted, func() {
 		if !finishing() {
 			t.Fatal("expected the approval finishing while its run goes on")
 		}
@@ -3011,9 +3039,11 @@ func TestGetSaysAnApprovalIsFinishing(t *testing.T) {
 		t.Fatal("expected the approval finishing while devpad settles its run")
 	}
 	unlock()
-	waitFor(t, "the run to be settled", func() bool { return !finishing() })
-	if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.AutoMergeError != "a blocking thread is open" {
+	if got := e.settled(t, rv); got.AutoMergeError != "a blocking thread is open" {
 		t.Fatalf("expected the refusal recorded, got %q", got.AutoMergeError)
+	}
+	if finishing() {
+		t.Fatal("expected the approval no longer finishing once settled")
 	}
 }
 
@@ -3025,18 +3055,53 @@ func TestAutoMergeFinishesThroughShutdown(t *testing.T) {
 	mr := e.openTaskMR(t)
 	rv := e.startAgentReview(t, mr, AgentReviewInput{})
 	e.projects.onMerge = e.svc.rootCancel
-	e.approve(t, rv, nil)
-	waitFor(t, "the merge request to be merged", func() bool {
-		got, _ := e.svc.repo.GetByID(ctx, mr.ID)
-		return got.Status == StatusMerged
-	})
+	e.approve(t, rv, domain.AgentRunCompleted, nil)
+	e.settled(t, rv)
 	got, _ := e.svc.repo.GetByID(ctx, mr.ID)
-	if got.MergedBy != MergedByAuto || got.MergeSHA != "mergecommit" {
+	if got.Status != StatusMerged || got.MergedBy != MergedByAuto || got.MergeSHA != "mergecommit" {
 		t.Fatalf("unexpected merge request: %+v", got)
 	}
-	waitFor(t, "the task closed as merged", func() bool {
-		e.tasks.mu.Lock()
-		defer e.tasks.mu.Unlock()
-		return len(e.tasks.merged) == 1
-	})
+	e.tasks.mu.Lock()
+	defer e.tasks.mu.Unlock()
+	if len(e.tasks.merged) != 1 {
+		t.Fatalf("expected the task closed as merged, got %v", e.tasks.merged)
+	}
+}
+
+// An approval devpad stopped before settling is settled as it starts
+// again: merged when its run completed, and refused when a restart cut
+// the run short.
+func TestReconcileSettlesApprovals(t *testing.T) {
+	for _, tt := range []struct {
+		name, status, runErr, why string
+	}{
+		{name: "the run completed", status: "completed"},
+		{name: "a restart cut the run short", status: "failed", runErr: domain.AgentRunInterruptedError, why: "devpad restarted before the review agent finished"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := autoMergeEnv(t)
+			ctx := context.Background()
+			mr := e.openTaskMR(t)
+			rv := e.startAgentReview(t, mr, AgentReviewInput{})
+			if result, _ := e.tool(e.owner, rv.WorkspaceID, submitTool, `{"verdict":"approve","body":"Looks good."}`); result.IsError {
+				t.Fatalf("submit: %+v", result)
+			}
+			// The run ends with no one told, as when devpad stops first.
+			e.db.Exec(`UPDATE ai_agent_runs SET status = ?, error = ? WHERE id = ?`, tt.status, tt.runErr, rv.RunID)
+			if got, _ := e.svc.repo.GetReview(ctx, rv.ID); !got.Finishing() {
+				t.Fatal("expected the approval unsettled")
+			}
+
+			if err := e.svc.Reconcile(ctx); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if got := e.settled(t, rv); got.AutoMergeError != tt.why {
+				t.Fatalf("expected the note to say %q, got %q", tt.why, got.AutoMergeError)
+			}
+			got, _ := e.svc.repo.GetByID(ctx, mr.ID)
+			if merged := got.Status == StatusMerged; merged != (tt.why == "") {
+				t.Fatalf("unexpected merge request: %+v", got)
+			}
+		})
+	}
 }

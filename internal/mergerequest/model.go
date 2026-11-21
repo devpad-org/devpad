@@ -156,13 +156,19 @@ type Review struct {
 	// AutoMergeError says why an agent review's approval did not merge its
 	// merge request into a branch the project merges into automatically.
 	AutoMergeError string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	// Finishing says the run of a submitted agent review has not ended or
-	// is still being settled, so its approval may yet merge the change.
-	// Only Get sets it, and only on the latest review of an open merge
-	// request.
-	Finishing bool
+	// RunSettled says devpad has settled the end of a submitted agent
+	// review's run: stopped its sandbox and decided whether its approval
+	// merges the change.
+	RunSettled bool
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+// Finishing reports whether the run of a submitted agent review has not
+// ended or devpad is still settling it, so its approval may yet merge the
+// change.
+func (rv *Review) Finishing() bool {
+	return rv.Author == AuthorAgent && rv.Status == ReviewSubmitted && !rv.RunSettled
 }
 
 // OverBudget reports whether the review's agent has spent its own budget.

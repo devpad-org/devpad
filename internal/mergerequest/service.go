@@ -175,10 +175,6 @@ type service struct {
 	// sub-agents a run leaves running, and a continued run share one limit.
 	// See forgetReviewBudgets.
 	reviewBudgets map[int64]*domain.Budget
-	// finishing holds the runs of reviews whose end devpad is still
-	// settling, which may merge the change, so Get can say a merge may yet
-	// come.
-	finishing map[int64]bool
 }
 
 // Deps are what a merge request Service is made from.
@@ -212,7 +208,6 @@ func NewService(d Deps) Service {
 		rootCancel:    cancel,
 		locks:         make(map[string]*sync.Mutex),
 		reviewBudgets: make(map[int64]*domain.Budget),
-		finishing:     make(map[int64]bool),
 	}
 }
 
@@ -556,9 +551,6 @@ func (s *service) Get(ctx context.Context, userID, projectID, mrID int64) (*Deta
 	d := &Detail{MergeRequest: mr}
 	if d.Reviews, err = s.repo.ListReviews(ctx, mr.ID); err != nil {
 		return nil, err
-	}
-	if n := len(d.Reviews); n > 0 && mr.Status == StatusOpen {
-		s.markFinishing(ctx, userID, d.Reviews[n-1])
 	}
 	if d.Comments, err = s.repo.ListComments(ctx, mr.ID); err != nil {
 		return nil, err
@@ -1580,49 +1572,32 @@ func (s *service) RunFinished(run domain.AgentRun) {
 	if run.ParentRunID != 0 {
 		return
 	}
-	s.mu.Lock()
-	s.finishing[run.ID] = true
-	s.mu.Unlock()
-	if !s.spawn(func(ctx context.Context) { s.finishReview(ctx, run) }) {
-		s.doneFinishing(run.ID)
-	}
+	s.spawn(func(ctx context.Context) { s.finishReview(ctx, run) })
 }
 
-func (s *service) doneFinishing(runID int64) {
-	s.mu.Lock()
-	delete(s.finishing, runID)
-	s.mu.Unlock()
-}
-
-// markFinishing sets rv.Finishing while the run of rv, a submitted agent
-// review whose end may merge the change, has not ended or is still being
-// settled. The run is read before the runs being settled, so a run that
-// ends meanwhile is seen in one or the other, except in the moment between
-// the runner recording its end and calling RunFinished.
-func (s *service) markFinishing(ctx context.Context, userID int64, rv *Review) {
-	if rv.Author != AuthorAgent || rv.Status != ReviewSubmitted || rv.RunID == 0 {
-		return
-	}
-	run, err := s.runs.GetRun(ctx, userID, rv.RunID)
-	if err != nil {
-		return
-	}
-	s.mu.Lock()
-	settling := s.finishing[rv.RunID]
-	s.mu.Unlock()
-	rv.Finishing = settling || !domain.AgentRunStatusTerminal(run.Status)
-}
-
-// finishReview settles the review whose run ended and, once its run is
-// over and its sandbox stopping, merges what an approving review approved
-// when the project merges into the target automatically. Merging takes the
-// merge request's lock, and then its reviews', so it waits until the
-// review's lock is released.
+// finishReview settles the review whose run ended. A submitted agent
+// review's approval then merges what it approved, when the project merges
+// into the target automatically, and the review records that its run's end
+// is settled, with why the approval did not merge. Merging takes the merge
+// request's lock, and then its reviews', so it waits until the review's
+// lock is released.
+//
+// A shutdown before then leaves the review unsettled, for Reconcile to
+// settle as devpad starts again. A merge devpad shutting down would cut
+// short could leave the target moved and the merge request open, so once
+// begun it runs to the end, and Shutdown waits for it.
 func (s *service) finishReview(ctx context.Context, run domain.AgentRun) {
-	defer s.doneFinishing(run.ID)
 	mr, rv := s.settleFinished(ctx, run)
-	if mr != nil && rv.Author == AuthorAgent && rv.Status == ReviewSubmitted && rv.Verdict == VerdictApprove {
-		s.autoMerge(ctx, mr, rv)
+	if mr == nil || rv.Author != AuthorAgent || rv.Status != ReviewSubmitted || ctx.Err() != nil {
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+	var reason string
+	if rv.Verdict == VerdictApprove {
+		reason = s.autoMerge(ctx, mr, rv, run)
+	}
+	if err := s.repo.SettleRun(ctx, rv.ID, reason); err != nil {
+		log.Printf("review %d: %v", rv.ID, err)
 	}
 }
 
@@ -1685,47 +1660,38 @@ func autoMergeReason(err error) string {
 }
 
 // autoMerge merges a task's merge request after the review agent's review
-// rv approved it, when its project merges into the target automatically.
-// It merges only what rv saw: rv must still be the latest review and of
-// the current head, the target must be at the commit rv compared the
-// change against, no blocking thread may be open, and the task must be
-// waiting for review. The repo merges only while the target is still at
-// that commit, so a merge into it meanwhile, by the user or another
-// approval, refuses this one. It never pushes upstream. When the project
-// merges into the target automatically but the merge is refused, the
-// review says why, so the user knows to merge it themselves.
-//
-// A merge devpad shutting down would cut short could leave the target
-// moved and the merge request open, so once begun it runs to the end, and
-// Shutdown waits for it. One not yet begun is left for the user.
-func (s *service) autoMerge(ctx context.Context, mr *MergeRequest, rv *Review) {
-	if mr.TaskID == 0 || mr.OpenedBy != AuthorTaskAgent || ctx.Err() != nil {
-		return
-	}
-	ctx = context.WithoutCancel(ctx)
-	out, err := s.merge(ctx, mr.UserID, mr.ProjectID, mr.ID, MergeInput{}, MergedByAuto, func(open *MergeRequest) (string, error) {
-		return s.autoMergeable(ctx, open, rv.ID)
-	})
+// rv approved it in run, when its project merges into the target
+// automatically. It merges only what rv saw: rv must still be the latest
+// review and of the current head, its run must have completed, the target
+// must be at the commit rv compared the change against, no blocking thread
+// may be open, and the task must be waiting for review. The repo merges
+// only while the target is still at that commit, so a merge into it
+// meanwhile, by the user or another approval, refuses this one. It never
+// pushes upstream. When the project merges into the target automatically
+// but the merge is refused, it returns why, for the review to tell the user
+// to merge it themselves.
+func (s *service) autoMerge(ctx context.Context, mr *MergeRequest, rv *Review, run domain.AgentRun) string {
+	out, err := s.merge(ctx, mr.UserID, mr.ProjectID, mr.ID, mergeOptions{by: MergedByAuto, check: func(open *MergeRequest) (string, error) {
+		return s.autoMergeable(ctx, open, rv.ID, run)
+	}})
 	if err == nil {
 		log.Printf("merge request %d: merged into %s automatically after review %d approved it", mr.ID, mr.TargetBranch, rv.ID)
 		s.followMerge(ctx, out.MergeRequest)
-		return
+		return ""
 	}
 	// A merge request merged or closed meanwhile has nothing to say.
 	if errors.Is(err, errNotAutoMerged) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalidState) {
-		return
+		return ""
 	}
 	log.Printf("merge request %d: not merged automatically: %v", mr.ID, err)
-	if err := s.repo.SetAutoMergeError(ctx, rv.ID, autoMergeReason(err)); err != nil {
-		log.Printf("review %d: %v", rv.ID, err)
-	}
+	return autoMergeReason(err)
 }
 
 // autoMergeable reports why mr, whose lock the caller holds, cannot merge
-// automatically on the approval of review reviewID, or else the commit of
-// the target the review read the change against, where the target must
-// still be when the repo merges.
-func (s *service) autoMergeable(ctx context.Context, mr *MergeRequest, reviewID int64) (string, error) {
+// automatically on the approval of review reviewID in run, or else the
+// commit of the target the review read the change against, where the
+// target must still be when the repo merges.
+func (s *service) autoMergeable(ctx context.Context, mr *MergeRequest, reviewID int64, run domain.AgentRun) (string, error) {
 	p, err := s.projects.Get(ctx, mr.UserID, mr.ProjectID)
 	if err != nil {
 		return "", err
@@ -1748,6 +1714,9 @@ func (s *service) autoMergeable(ctx context.Context, mr *MergeRequest, reviewID 
 		return "", errNotAutoMerged
 	case rv.HeadSHA != mr.HeadSHA:
 		return "", refuse("%s moved past the commit this review approved", mr.SourceBranch)
+	}
+	if why := runCutShort(run); why != "" {
+		return "", refusal(why)
 	}
 	comments, err := s.repo.ListComments(ctx, mr.ID)
 	if err != nil {
@@ -1775,6 +1744,22 @@ func (s *service) autoMergeable(ctx context.Context, mr *MergeRequest, reviewID 
 		return "", refuse("%s moved after this review read the change", mr.TargetBranch)
 	}
 	return rv.TargetSHA, nil
+}
+
+// runCutShort says why the run of an approving review did not complete, or
+// "" when it did. The approval of a review agent that failed or was stopped
+// after approving, even by a restart, does not merge the change.
+func runCutShort(run domain.AgentRun) string {
+	switch {
+	case run.Status == domain.AgentRunCompleted:
+		return ""
+	case run.Interrupted():
+		return "devpad restarted before the review agent finished"
+	case run.Status == domain.AgentRunCancelled:
+		return "the review agent was stopped before it finished"
+	default:
+		return "the review agent failed before it finished"
+	}
 }
 
 // settleReview handles a review agent's run ending. A review not yet
@@ -1823,7 +1808,7 @@ func (s *service) stopReviewSandbox(ctx context.Context, mr *MergeRequest, rv *R
 // branch. It fails if the source branch has moved since, so only what was
 // reviewed is merged. The task is closed and the review sandboxes removed.
 func (s *service) Merge(ctx context.Context, userID, projectID, mrID int64, in MergeInput) (*MergeResult, error) {
-	out, err := s.merge(ctx, userID, projectID, mrID, in, MergedByUser, nil)
+	out, err := s.merge(ctx, userID, projectID, mrID, mergeOptions{in: in, by: MergedByUser})
 	if err != nil {
 		return nil, err
 	}
@@ -1860,11 +1845,34 @@ func (s *service) canonicalSHA(ctx context.Context, userID, projectID int64, bra
 	return "", nil
 }
 
-// merge merges the open merge request for by. A guard, when given, runs
-// under the merge request's lock first and refuses the merge by failing;
-// otherwise it returns the commit the target must still be at when the
-// repo merges, or "" for wherever it is.
-func (s *service) merge(ctx context.Context, userID, projectID, mrID int64, in MergeInput, by MergedBy, guard func(*MergeRequest) (string, error)) (*MergeResult, error) {
+// mergeOptions say how merge merges a merge request.
+type mergeOptions struct {
+	// in is what the user asked for; an automatic merge leaves it empty.
+	in MergeInput
+	by MergedBy
+	// check, when set, runs under the merge request's lock before the repo
+	// merges, and refuses the merge by failing. Otherwise it returns the
+	// commit the target must still be at when the repo merges, or "" for
+	// wherever it is.
+	check func(*MergeRequest) (string, error)
+}
+
+// mergeMessage is the merge commit's message: the user's, or else one
+// naming the merge request, which says so when devpad merged it on a review
+// agent's approval.
+func mergeMessage(mr *MergeRequest, opts mergeOptions) string {
+	if message := strings.TrimSpace(opts.in.Message); message != "" {
+		return message
+	}
+	message := fmt.Sprintf("Merge !%d: %s", mr.ID, mr.Title)
+	if opts.by == MergedByAuto {
+		message += "\n\nMerged automatically by devpad after a review agent approved it."
+	}
+	return message
+}
+
+func (s *service) merge(ctx context.Context, userID, projectID, mrID int64, opts mergeOptions) (*MergeResult, error) {
+	in := opts.in
 	unlock := s.lock("mr", mrID)
 	defer unlock()
 	mr, err := s.getOpen(ctx, userID, projectID, mrID)
@@ -1875,24 +1883,20 @@ func (s *service) merge(ctx context.Context, userID, projectID, mrID int64, in M
 		return nil, fmt.Errorf("%w: nothing has been published to merge", ErrInvalidState)
 	}
 	var expectTarget string
-	if guard != nil {
-		if expectTarget, err = guard(mr); err != nil {
+	if opts.check != nil {
+		if expectTarget, err = opts.check(mr); err != nil {
 			return nil, err
 		}
 	}
-	message := strings.TrimSpace(in.Message)
-	if message == "" {
-		message = fmt.Sprintf("Merge !%d: %s", mr.ID, mr.Title)
-	}
 	result, err := s.projects.Merge(ctx, userID, projectID, project.MergeInput{
-		Source: mr.SourceBranch, Target: mr.TargetBranch, Strategy: in.Strategy, Message: message, ExpectedSourceSHA: mr.HeadSHA,
+		Source: mr.SourceBranch, Target: mr.TargetBranch, Strategy: in.Strategy, Message: mergeMessage(mr, opts), ExpectedSourceSHA: mr.HeadSHA,
 		ExpectedTargetSHA: expectTarget,
 	})
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now()
-	mr.Status, mr.MergeSHA, mr.BaseSHA, mr.MergedAt, mr.MergedBy = StatusMerged, result.SHA, result.MergeBase, &now, by
+	mr.Status, mr.MergeSHA, mr.BaseSHA, mr.MergedAt, mr.MergedBy = StatusMerged, result.SHA, result.MergeBase, &now, opts.by
 	if err := s.repo.Update(ctx, mr); err != nil {
 		return nil, err
 	}
@@ -2135,7 +2139,12 @@ func sendBackMessage(mr *MergeRequest, reviews []*Review, comments []*Comment, n
 // stopped: the agent runner fails interrupted runs at startup, so they
 // cannot submit any more. Reviews whose run had not started, such as those
 // waiting for a sandbox or continued after they stopped, start again.
+// Submitted reviews whose run's end was not settled, such as an approval
+// devpad stopped before merging, are settled now.
 func (s *service) Reconcile(ctx context.Context) error {
+	if err := s.settleSubmitted(ctx); err != nil {
+		return err
+	}
 	reviews, err := s.repo.ListPendingReviews(ctx)
 	if err != nil {
 		return err
@@ -2160,6 +2169,35 @@ func (s *service) Reconcile(ctx context.Context) error {
 			continue
 		}
 		if domain.AgentRunStatusTerminal(run.Status) {
+			s.RunFinished(*run)
+		}
+	}
+	return nil
+}
+
+// settleSubmitted settles the end of each submitted agent review's run that
+// devpad had not settled when it stopped. A run that is gone, with the
+// sandbox it ran in, cannot say how it ended, so its review is settled
+// without merging.
+func (s *service) settleSubmitted(ctx context.Context) error {
+	reviews, err := s.repo.ListUnsettledReviews(ctx)
+	if err != nil {
+		return err
+	}
+	for _, rv := range reviews {
+		mr, err := s.repo.GetByID(ctx, rv.MergeRequestID)
+		if err != nil || mr == nil {
+			continue
+		}
+		run, err := s.runs.GetRun(ctx, mr.UserID, rv.RunID)
+		switch {
+		case rv.RunID == 0 || errors.Is(err, domain.ErrAgentRunNotFound):
+			if err := s.repo.SettleRun(ctx, rv.ID, ""); err != nil {
+				log.Printf("review %d: %v", rv.ID, err)
+			}
+		case err != nil:
+			log.Printf("review %d: looking up its run: %v", rv.ID, err)
+		case domain.AgentRunStatusTerminal(run.Status):
 			s.RunFinished(*run)
 		}
 	}

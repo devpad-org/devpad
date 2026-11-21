@@ -464,9 +464,9 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
           spin: true,
         }
       }
-      // Its run ended without a merge and without a reason: the target
-      // was not merged into automatically then, or devpad restarted.
-      return notMerged(`it came before ${m.targetBranch} was merged into automatically, or devpad restarted as the review ended`)
+      // Devpad settled its run without a merge or a reason: the target was
+      // not merged into automatically then.
+      return notMerged(`it came before ${m.targetBranch} was merged into automatically`)
     }
     const reviewer = project.value?.autoReview ? 'the automatic review' : 'a review agent you start'
     return {
