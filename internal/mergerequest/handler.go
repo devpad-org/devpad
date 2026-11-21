@@ -429,6 +429,7 @@ func reviewResponse(rv *Review) map[string]any {
 		"error":       rv.Error,
 		// Why the review's approval did not merge the change automatically.
 		"autoMergeError": rv.AutoMergeError,
+		"finishing":      rv.Finishing,
 		"createdAt":      rv.CreatedAt,
 		"updatedAt":      rv.UpdatedAt,
 	}

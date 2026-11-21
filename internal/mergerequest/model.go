@@ -158,6 +158,11 @@ type Review struct {
 	AutoMergeError string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// Finishing says the run of a submitted agent review has not ended or
+	// is still being settled, so its approval may yet merge the change.
+	// Only Get sets it, and only on the latest review of an open merge
+	// request.
+	Finishing bool
 }
 
 // OverBudget reports whether the review's agent has spent its own budget.

@@ -40,6 +40,9 @@ type fakeProjects struct {
 	logs      [][2]string
 	merges    []project.MergeInput
 	mergeErr  error
+	// onMerge, when set, runs as a merge begins, before the repo looks at
+	// the target.
+	onMerge func()
 	// landed, when set, is where a merge leaves its target instead of the
 	// merge commit, as if another merge landed on top before anyone looked.
 	landed  string
@@ -166,6 +169,9 @@ func (f *fakeProjects) CreateSandbox(_ context.Context, userID, projectID int64,
 }
 
 func (f *fakeProjects) Merge(_ context.Context, _, _ int64, in project.MergeInput) (*agent.RepoMergeResult, error) {
+	if f.onMerge != nil {
+		f.onMerge()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.merges = append(f.merges, in)
@@ -175,6 +181,12 @@ func (f *fakeProjects) Merge(_ context.Context, _, _ int64, in project.MergeInpu
 	target := in.Target
 	if target == "" {
 		target = f.project.DefaultBranch
+	}
+	// The repo refuses a target that moved from where the merge expects it.
+	for _, b := range f.branches {
+		if b.Name == target && in.ExpectedTargetSHA != "" && b.SHA != in.ExpectedTargetSHA {
+			return nil, &agent.AgentError{StatusCode: http.StatusConflict, Message: target + " moved to " + b.SHA + " since the change was reviewed against it"}
+		}
 	}
 	// The target moves to the merge commit, as it does in the canonical repo.
 	moved := "mergecommit"
@@ -2792,7 +2804,7 @@ func TestAutoMergeMergesWhatTheReviewApproved(t *testing.T) {
 		return got.Status == StatusMerged
 	})
 
-	want := project.MergeInput{Source: "task/1", Target: "main", Message: "Merge !1: Add a cart", ExpectedSourceSHA: "head1"}
+	want := project.MergeInput{Source: "task/1", Target: "main", Message: "Merge !1: Add a cart", ExpectedSourceSHA: "head1", ExpectedTargetSHA: mainTip}
 	if e.projects.merges[0] != want {
 		t.Fatalf("merge input = %+v", e.projects.merges[0])
 	}
@@ -2828,6 +2840,8 @@ func TestAutoMergeRefusals(t *testing.T) {
 		before func(t *testing.T, e *env, mr *MergeRequest)
 		// why is in the review's note, empty when nothing is said.
 		why string
+		// merges says the repo is asked to merge, and refuses.
+		merges bool
 	}{
 		{name: "the project does not merge into the target automatically", arrange: func(e *env) {
 			e.projects.project.AutoMergeBranches = nil
@@ -2857,9 +2871,23 @@ func TestAutoMergeRefusals(t *testing.T) {
 		}, why: "a blocking thread is open"},
 		{name: "the merge fails", before: func(_ *testing.T, e *env, _ *MergeRequest) {
 			e.projects.mu.Lock()
-			e.projects.mergeErr = errors.New("conflicts in cart.go")
+			e.projects.mergeErr = &agent.AgentError{StatusCode: http.StatusConflict, Message: "task/1 conflicts with main", Conflicts: []string{"cart.go", "cart_test.go"}}
 			e.projects.mu.Unlock()
-		}, why: "Not merged automatically: conflicts in cart.go"},
+		}, why: "task/1 conflicts with main in cart.go, cart_test.go", merges: true},
+		{name: "the merge fails inside devpad", before: func(_ *testing.T, e *env, _ *MergeRequest) {
+			e.projects.mu.Lock()
+			e.projects.mergeErr = errors.New("sqlite: disk I/O error")
+			e.projects.mu.Unlock()
+		}, why: "devpad could not merge it", merges: true},
+		// Another merge into main lands after the checks but before the
+		// repo merges, so the repo sees main somewhere else.
+		{name: "the target moves as the merge begins", before: func(_ *testing.T, e *env, _ *MergeRequest) {
+			e.projects.onMerge = func() {
+				e.projects.mu.Lock()
+				e.projects.branches[0].SHA = "othermerge"
+				e.projects.mu.Unlock()
+			}
+		}, why: "main moved to othermerge since the change was reviewed against it", merges: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2890,11 +2918,11 @@ func TestAutoMergeRefusals(t *testing.T) {
 			if got.Status != StatusOpen || got.MergedBy != "" {
 				t.Fatalf("expected the merge request left open, got %+v", got)
 			}
-			if tt.name != "the merge fails" && e.mergeCount() != 0 {
-				t.Fatalf("expected no merge tried, got %+v", e.projects.merges)
+			if tried := e.mergeCount() != 0; tried != tt.merges {
+				t.Fatalf("expected a merge tried: %v, got %+v", tt.merges, e.projects.merges)
 			}
 			note, _ := e.svc.repo.GetReview(ctx, rv.ID)
-			if (tt.why == "") != (note.AutoMergeError == "") || !strings.Contains(note.AutoMergeError, tt.why) {
+			if note.AutoMergeError != tt.why {
 				t.Fatalf("expected the note to say %q, got %q", tt.why, note.AutoMergeError)
 			}
 		})
@@ -2945,4 +2973,46 @@ func TestAutoMergeOnlyTakesTasksAndApprovals(t *testing.T) {
 			t.Fatalf("expected no merge, got %+v", e.projects.merges)
 		}
 	})
+}
+
+// Get says an approval may yet merge the change while its review's run has
+// not ended or devpad is still settling it, and not once that is done.
+func TestGetSaysAnApprovalIsFinishing(t *testing.T) {
+	e := autoMergeEnv(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	rv := e.startAgentReview(t, mr, AgentReviewInput{})
+	finishing := func() bool {
+		t.Helper()
+		d, err := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		return d.Reviews[len(d.Reviews)-1].Finishing
+	}
+	if finishing() {
+		t.Fatal("a pending review is not finishing")
+	}
+	// Submitting takes the review's lock, so the test holds it only after.
+	var unlock func()
+	e.approve(t, rv, func() {
+		if !finishing() {
+			t.Fatal("expected the approval finishing while its run goes on")
+		}
+		// A blocking thread the user opens keeps the approval from merging,
+		// so the merge request stays open to look at.
+		if err := e.svc.repo.CreateComment(ctx, &Comment{MergeRequestID: mr.ID, Author: AuthorUser, Body: "No.", HeadSHA: "head1", Blocking: true}); err != nil {
+			t.Fatalf("comment: %v", err)
+		}
+		unlock = e.svc.lock("review", rv.ID)
+	})
+	// The run has ended, and settling it waits for the review's lock.
+	if !finishing() {
+		t.Fatal("expected the approval finishing while devpad settles its run")
+	}
+	unlock()
+	waitFor(t, "the run to be settled", func() bool { return !finishing() })
+	if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.AutoMergeError != "a blocking thread is open" {
+		t.Fatalf("expected the refusal recorded, got %q", got.AutoMergeError)
+	}
 }

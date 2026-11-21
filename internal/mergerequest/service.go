@@ -175,6 +175,10 @@ type service struct {
 	// sub-agents a run leaves running, and a continued run share one limit.
 	// See forgetReviewBudgets.
 	reviewBudgets map[int64]*domain.Budget
+	// finishing holds the runs of reviews whose end devpad is still
+	// settling, which may merge the change, so Get can say a merge may yet
+	// come.
+	finishing map[int64]bool
 }
 
 // Deps are what a merge request Service is made from.
@@ -208,6 +212,7 @@ func NewService(d Deps) Service {
 		rootCancel:    cancel,
 		locks:         make(map[string]*sync.Mutex),
 		reviewBudgets: make(map[int64]*domain.Budget),
+		finishing:     make(map[int64]bool),
 	}
 }
 
@@ -551,6 +556,9 @@ func (s *service) Get(ctx context.Context, userID, projectID, mrID int64) (*Deta
 	d := &Detail{MergeRequest: mr}
 	if d.Reviews, err = s.repo.ListReviews(ctx, mr.ID); err != nil {
 		return nil, err
+	}
+	if n := len(d.Reviews); n > 0 && mr.Status == StatusOpen {
+		s.markFinishing(ctx, userID, d.Reviews[n-1])
 	}
 	if d.Comments, err = s.repo.ListComments(ctx, mr.ID); err != nil {
 		return nil, err
@@ -1572,7 +1580,37 @@ func (s *service) RunFinished(run domain.AgentRun) {
 	if run.ParentRunID != 0 {
 		return
 	}
-	s.spawn(func(ctx context.Context) { s.finishReview(ctx, run) })
+	s.mu.Lock()
+	s.finishing[run.ID] = true
+	s.mu.Unlock()
+	if !s.spawn(func(ctx context.Context) { s.finishReview(ctx, run) }) {
+		s.doneFinishing(run.ID)
+	}
+}
+
+func (s *service) doneFinishing(runID int64) {
+	s.mu.Lock()
+	delete(s.finishing, runID)
+	s.mu.Unlock()
+}
+
+// markFinishing sets rv.Finishing while the run of rv, a submitted agent
+// review whose end may merge the change, has not ended or is still being
+// settled. The run is read before the runs being settled, so a run that
+// ends meanwhile is seen in one or the other, except in the moment between
+// the runner recording its end and calling RunFinished.
+func (s *service) markFinishing(ctx context.Context, userID int64, rv *Review) {
+	if rv.Author != AuthorAgent || rv.Status != ReviewSubmitted || rv.RunID == 0 {
+		return
+	}
+	run, err := s.runs.GetRun(ctx, userID, rv.RunID)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	settling := s.finishing[rv.RunID]
+	s.mu.Unlock()
+	rv.Finishing = settling || !domain.AgentRunStatusTerminal(run.Status)
 }
 
 // finishReview settles the review whose run ended and, once its run is
@@ -1581,6 +1619,7 @@ func (s *service) RunFinished(run domain.AgentRun) {
 // merge request's lock, and then its reviews', so it waits until the
 // review's lock is released.
 func (s *service) finishReview(ctx context.Context, run domain.AgentRun) {
+	defer s.doneFinishing(run.ID)
 	mr, rv := s.settleFinished(ctx, run)
 	if mr != nil && rv.Author == AuthorAgent && rv.Status == ReviewSubmitted && rv.Verdict == VerdictApprove {
 		s.autoMerge(ctx, mr, rv)
@@ -1612,19 +1651,54 @@ func (s *service) settleFinished(ctx context.Context, run domain.AgentRun) (*Mer
 // automatically, and so says nothing on the review.
 var errNotAutoMerged = errors.New("not merged automatically")
 
+// refusal is why an approval did not merge its change automatically, in
+// words for the user.
+type refusal string
+
+func (r refusal) Error() string { return string(r) }
+
+func refuse(format string, args ...any) error {
+	return refusal(fmt.Sprintf(format, args...))
+}
+
+// autoMergeReason says why an automatic merge failed, in words for the
+// user: a refusal as it is, and the repo's refusal, such as a conflict.
+// Anything else is only in the log.
+func autoMergeReason(err error) string {
+	var r refusal
+	var agentErr *agent.AgentError
+	switch {
+	case errors.As(err, &r):
+		return string(r)
+	case errors.As(err, &agentErr) && agentErr.StatusCode >= 400 && agentErr.StatusCode < 500:
+		if len(agentErr.Conflicts) > 0 {
+			return fmt.Sprintf("%s in %s", agentErr.Message, strings.Join(agentErr.Conflicts, ", "))
+		}
+		return agentErr.Message
+	case errors.Is(err, project.ErrInvalidInput):
+		return strings.TrimPrefix(err.Error(), project.ErrInvalidInput.Error()+": ")
+	case errors.Is(err, project.ErrNotReady):
+		return "the project's repo was not ready"
+	default:
+		return "devpad could not merge it"
+	}
+}
+
 // autoMerge merges a task's merge request after the review agent's review
 // rv approved it, when its project merges into the target automatically.
 // It merges only what rv saw: rv must still be the latest review and of
 // the current head, the target must be at the commit rv compared the
 // change against, no blocking thread may be open, and the task must be
-// waiting for review. It never pushes upstream. When the project merges
-// into the target automatically but the merge is refused, the review says
-// why, so the user knows to merge it themselves.
+// waiting for review. The repo merges only while the target is still at
+// that commit, so a merge into it meanwhile, by the user or another
+// approval, refuses this one. It never pushes upstream. When the project
+// merges into the target automatically but the merge is refused, the
+// review says why, so the user knows to merge it themselves.
 func (s *service) autoMerge(ctx context.Context, mr *MergeRequest, rv *Review) {
 	if mr.TaskID == 0 || mr.OpenedBy != AuthorTaskAgent {
 		return
 	}
-	out, err := s.merge(ctx, mr.UserID, mr.ProjectID, mr.ID, MergeInput{}, MergedByAuto, func(open *MergeRequest) error {
+	out, err := s.merge(ctx, mr.UserID, mr.ProjectID, mr.ID, MergeInput{}, MergedByAuto, func(open *MergeRequest) (string, error) {
 		return s.autoMergeable(ctx, open, rv.ID)
 	})
 	if err == nil {
@@ -1637,63 +1711,65 @@ func (s *service) autoMerge(ctx context.Context, mr *MergeRequest, rv *Review) {
 		return
 	}
 	log.Printf("merge request %d: not merged automatically: %v", mr.ID, err)
-	if err := s.repo.SetAutoMergeError(context.WithoutCancel(ctx), rv.ID, "Not merged automatically: "+err.Error()); err != nil {
+	if err := s.repo.SetAutoMergeError(context.WithoutCancel(ctx), rv.ID, autoMergeReason(err)); err != nil {
 		log.Printf("review %d: %v", rv.ID, err)
 	}
 }
 
 // autoMergeable reports why mr, whose lock the caller holds, cannot merge
-// automatically on the approval of review reviewID, or nil when it can.
-func (s *service) autoMergeable(ctx context.Context, mr *MergeRequest, reviewID int64) error {
+// automatically on the approval of review reviewID, or else the commit of
+// the target the review read the change against, where the target must
+// still be when the repo merges.
+func (s *service) autoMergeable(ctx context.Context, mr *MergeRequest, reviewID int64) (string, error) {
 	p, err := s.projects.Get(ctx, mr.UserID, mr.ProjectID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if mr.TaskID == 0 || mr.OpenedBy != AuthorTaskAgent || !p.AutoMerges(mr.TargetBranch) {
-		return errNotAutoMerged
+		return "", errNotAutoMerged
 	}
 	reviews, err := s.repo.ListReviews(ctx, mr.ID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(reviews) == 0 {
-		return errNotAutoMerged
+		return "", errNotAutoMerged
 	}
 	rv := reviews[len(reviews)-1]
 	switch {
 	case rv.ID != reviewID:
-		return errors.New("another review started after this one")
+		return "", refuse("another review started after this one")
 	case rv.Author != AuthorAgent || rv.Status != ReviewSubmitted || rv.Verdict != VerdictApprove:
-		return errNotAutoMerged
+		return "", errNotAutoMerged
 	case rv.HeadSHA != mr.HeadSHA:
-		return fmt.Errorf("%s moved past the commit this review approved", mr.SourceBranch)
+		return "", refuse("%s moved past the commit this review approved", mr.SourceBranch)
 	}
 	comments, err := s.repo.ListComments(ctx, mr.ID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	switch n := len(openBlocking(comments)); n {
 	case 0:
 	case 1:
-		return errors.New("a blocking thread is open")
+		return "", refuse("a blocking thread is open")
 	default:
-		return fmt.Errorf("%d blocking threads are open", n)
+		return "", refuse("%d blocking threads are open", n)
 	}
 	t, err := s.tasks.Get(ctx, mr.UserID, mr.ProjectID, mr.TaskID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if t.Status != task.StatusInReview {
-		return fmt.Errorf("its task is %s, not in review", strings.ReplaceAll(string(t.Status), "_", " "))
+		return "", refuse("its task is %s, not in review", strings.ReplaceAll(string(t.Status), "_", " "))
 	}
 	target, err := s.canonicalSHA(ctx, mr.UserID, mr.ProjectID, mr.TargetBranch)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if rv.TargetSHA == "" || target != rv.TargetSHA {
-		return fmt.Errorf("%s moved after this review read the change, so the review never saw it together with what is on %s now", mr.TargetBranch, mr.TargetBranch)
+		return "", refuse("%s moved after this review read the change", mr.TargetBranch)
 	}
-	return nil
+	return rv.TargetSHA, nil
 }
 
 // settleReview handles a review agent's run ending. A review not yet
@@ -1780,8 +1856,10 @@ func (s *service) canonicalSHA(ctx context.Context, userID, projectID int64, bra
 }
 
 // merge merges the open merge request for by. A guard, when given, runs
-// under the merge request's lock first and refuses the merge by failing.
-func (s *service) merge(ctx context.Context, userID, projectID, mrID int64, in MergeInput, by MergedBy, guard func(*MergeRequest) error) (*MergeResult, error) {
+// under the merge request's lock first and refuses the merge by failing;
+// otherwise it returns the commit the target must still be at when the
+// repo merges, or "" for wherever it is.
+func (s *service) merge(ctx context.Context, userID, projectID, mrID int64, in MergeInput, by MergedBy, guard func(*MergeRequest) (string, error)) (*MergeResult, error) {
 	unlock := s.lock("mr", mrID)
 	defer unlock()
 	mr, err := s.getOpen(ctx, userID, projectID, mrID)
@@ -1791,8 +1869,9 @@ func (s *service) merge(ctx context.Context, userID, projectID, mrID int64, in M
 	if mr.HeadSHA == "" {
 		return nil, fmt.Errorf("%w: nothing has been published to merge", ErrInvalidState)
 	}
+	var expectTarget string
 	if guard != nil {
-		if err := guard(mr); err != nil {
+		if expectTarget, err = guard(mr); err != nil {
 			return nil, err
 		}
 	}
@@ -1802,6 +1881,7 @@ func (s *service) merge(ctx context.Context, userID, projectID, mrID int64, in M
 	}
 	result, err := s.projects.Merge(ctx, userID, projectID, project.MergeInput{
 		Source: mr.SourceBranch, Target: mr.TargetBranch, Strategy: in.Strategy, Message: message, ExpectedSourceSHA: mr.HeadSHA,
+		ExpectedTargetSHA: expectTarget,
 	})
 	if err != nil {
 		return nil, err

@@ -20,7 +20,7 @@ import { taskApi } from '@/api/tasks'
 import { branchActionError } from '@/components/project/branchErrors'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useAiModelStore } from '@/stores/aiModels'
-import { STRATEGIES, authorName, dirName, errorText, plural, type Author, type Tone } from './format'
+import { STRATEGIES, authorName, autoMergeReason, dirName, errorText, plural, type Author, type Tone } from './format'
 
 const NOTICE_MS = 6000
 // Comparing the workspace's branch reads both repos, so polling does it at
@@ -433,9 +433,10 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   })
 
   // A task's merge request into a branch the project merges into
-  // automatically merges once a review agent approves it. The check says so,
-  // or why the latest approval did not merge it. The project has no checks
-  // for the change to pass, so the approval is all that stands in the way.
+  // automatically merges once a review agent approves it and its run ends.
+  // The check says so, that the latest approval is about to merge it, or
+  // that it did not and why. The project has no checks for the change to
+  // pass, so the approval is all that stands in the way.
   const autoMerges = computed(() => {
     const m = mr.value
     return !!m && m.openedBy === 'task_agent' && (project.value?.autoMergeBranches ?? []).includes(m.targetBranch)
@@ -444,14 +445,28 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     const m = mr.value
     if (!m || !autoMerges.value) return null
     const latest = timelineReviews.value[timelineReviews.value.length - 1]
-    if (latest?.autoMergeError) {
-      return {
-        key: 'auto-merge',
-        tone: 'warning',
-        icon: 'warning',
-        title: 'Not merged automatically',
-        detail: `${latest.autoMergeError.replace(/^Not merged automatically: /, '')}. Merge it yourself, or have a review agent review it again.`,
+    const notMerged = (why: string): Check => ({
+      key: 'auto-merge',
+      tone: 'warning',
+      icon: 'warning',
+      title: 'Not merged automatically',
+      detail: `The review agent's approval didn't merge it: ${why}. Merge it yourself, or have a review agent review it again.`,
+    })
+    if (latest?.autoMergeError) return notMerged(autoMergeReason(latest))
+    if (latest?.author === 'agent' && latest.status === 'submitted' && latest.verdict === 'approve') {
+      if (latest.finishing) {
+        return {
+          key: 'auto-merge',
+          tone: 'active',
+          icon: 'merged',
+          title: `Merging into ${m.targetBranch} automatically`,
+          detail: 'The review agent approved it; devpad merges it once the agent finishes.',
+          spin: true,
+        }
       }
+      // Its run ended without a merge and without a reason: the target
+      // was not merged into automatically then, or devpad restarted.
+      return notMerged(`it came before ${m.targetBranch} was merged into automatically, or devpad restarted as the review ended`)
     }
     const reviewer = project.value?.autoReview ? 'the automatic review' : 'a review agent you start'
     return {

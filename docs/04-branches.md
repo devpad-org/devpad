@@ -101,10 +101,10 @@ If you want to look at merge requests before they merge, don't tick their branch
 
 Devpad merges only what the review saw, so the approval doesn't merge the change when, by the time the review ends:
 
-- the branch has new commits, or the target has moved since the review read the change;
+- the branch has new commits, or the target has moved since the review read the change, even by another merge landing at the same moment;
 - another review, yours or an agent's, has started since;
 - a blocking thread is open;
 - the task isn't **In review**, for instance because it was sent back to its agent;
 - the merge fails, for instance on conflicts.
 
-The merge card then says **Not merged automatically** and why: merge it yourself, or have a review agent review it again. Only merge requests devpad opens for tasks merge automatically; your own and the assistant's never do, and neither does your own approval, since you can merge it yourself. A merge request that devpad merged says **Merged automatically**.
+Devpad merges once the review agent has finished, and until then the merge card says **Merging into &lt;target&gt; automatically**. When the approval doesn't merge the change, the review says **Not merged automatically** and why, and so does the merge card while that review is the latest: merge it yourself, or have a review agent review it again. An approval that came before you ticked its branch, or whose review was ending as devpad restarted, doesn't merge the change either. Only merge requests devpad opens for tasks merge automatically; your own and the assistant's never do, and neither does your own approval, since you can merge it yourself. A merge request that devpad merged says **Merged automatically**.

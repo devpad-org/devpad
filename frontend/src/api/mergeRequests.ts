@@ -52,8 +52,12 @@ export interface Review {
   costUsd: number
   error: string
   // Why the review's approval did not merge the change into a branch the
-  // project merges into automatically.
+  // project merges into automatically, in a few lowercase words.
   autoMergeError: string
+  // The review agent's run has not ended, or devpad is still settling it,
+  // so its approval may yet merge the change. Only set on the latest review
+  // of an open merge request.
+  finishing: boolean
   createdAt: string
   updatedAt: string
 }

@@ -175,6 +175,10 @@ type MergeInput struct {
 	Message  string
 	// ExpectedSourceSHA refuses the merge if Source has moved past it.
 	ExpectedSourceSHA string
+	// ExpectedTargetSHA, when set, refuses the merge unless Target is still
+	// at it when the repo merges, so nothing merged into Target meanwhile is
+	// merged with the change unseen.
+	ExpectedTargetSHA string
 }
 
 // WorkspaceBranchStatus says how a branch of the project workspace compares

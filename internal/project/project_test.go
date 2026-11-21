@@ -1258,11 +1258,11 @@ func TestMergeCommitsAsUserIntoDefaultBranch(t *testing.T) {
 	p := e.createProject(t, CreateInput{Name: "proj"})
 	ctx := context.Background()
 
-	result, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: "task/1", Strategy: "squash", ExpectedSourceSHA: "abc"})
+	result, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: "task/1", Strategy: "squash", ExpectedSourceSHA: "abc", ExpectedTargetSHA: "def"})
 	if err != nil || result.SHA != "merged" {
 		t.Fatalf("merge: %+v %v", result, err)
 	}
-	want := agent.RepoMergeRequest{Source: "task/1", Target: "main", Strategy: "squash", ExpectedSourceSHA: "abc", Name: "owner", Email: "owner@example.com"}
+	want := agent.RepoMergeRequest{Source: "task/1", Target: "main", Strategy: "squash", ExpectedSourceSHA: "abc", ExpectedTargetSHA: "def", Name: "owner", Email: "owner@example.com"}
 	if got := e.repoAgent.merges; len(got) != 1 || got[0] != want {
 		t.Fatalf("merge request = %+v", got)
 	}

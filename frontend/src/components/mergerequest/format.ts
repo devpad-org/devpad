@@ -92,6 +92,12 @@ export function reviewIcon(review: Review): MrIconName {
   return 'comment'
 }
 
+// Why a review's approval did not merge the change automatically, ready to
+// end a sentence with a full stop.
+export function autoMergeReason(review: Review): string {
+  return review.autoMergeError.trim().replace(/[.\s]+$/, '')
+}
+
 export function reviewAction(review: Review): string {
   if (review.status === 'pending') return review.workspaceId ? 'is reviewing the change' : 'is waiting for a sandbox'
   if (review.status === 'failed') return 'could not finish the review'
