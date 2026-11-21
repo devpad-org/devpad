@@ -27,6 +27,7 @@ A task's **Linked tasks**, in its sidebar, are the other tasks of the project it
 A task that's blocked shows **blocked by #3** on the list. **Start agent** on it becomes **Start when unblocked**: the task stays to do, shows **starts after #3**, and its agent starts by itself once every task it's blocked by is merged, on a branch made from the latest of the branch it starts from. **Don't start** takes that back. If the agent can't start then, for example because the task's budget is spent, the task stays to do and says why.
 
 - Only a task that hasn't started can be blocked. Once its agent has started, its work no longer waits for anything.
+- A task's merge request merges into the project's default branch, so only a task that starts from the default branch can be blocked: from any other branch, its agent would start without the work it waited for.
 - A link that would make tasks wait for each other, directly or through other tasks, is refused.
 - A cancelled task never merges, so it can't block a task, and a task already blocked by one that's then cancelled keeps waiting until you remove the link. Deleting a task removes its links, which can let a task it blocked start.
 

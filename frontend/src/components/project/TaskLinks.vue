@@ -5,7 +5,7 @@ import DocLink from '@/components/DocLink.vue'
 import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import MrIcon from './MrIcon.vue'
-import { TASK_STATUS } from './taskStatus'
+import { TASK_STATUS, canWaitFrom } from './taskStatus'
 
 // A task's links to the project's other tasks, in the task modal's sidebar:
 // the tasks it waits for, those waiting for it, and related ones. A row
@@ -45,7 +45,10 @@ const groups = computed(() =>
 )
 
 const linked = computed(() => new Set([...props.task.blockedBy, ...props.task.blocks, ...props.task.related]))
-const canWait = computed(() => props.task.status === 'todo')
+const defaultBranch = computed(() => store.project?.defaultBranch ?? '')
+// Only a task to do that starts from the branch tasks merge into can wait.
+const waits = (t: Task) => t.status === 'todo' && canWaitFrom(t.baseBranch, defaultBranch.value)
+const canWait = computed(() => waits(props.task))
 
 const kindOptions = computed<SelectMenuOption<TaskLinkKind>[]>(() => [
   {
@@ -53,7 +56,9 @@ const kindOptions = computed<SelectMenuOption<TaskLinkKind>[]>(() => [
     label: 'Blocked by',
     description: canWait.value
       ? 'Its agent starts only once that task is merged'
-      : 'Only a task that has not started can wait for another',
+      : props.task.status !== 'todo'
+        ? 'Only a task that has not started can wait for another'
+        : `Only a task that starts from ${defaultBranch.value}, which tasks merge into, can wait for another`,
     disabled: !canWait.value,
   },
   { value: 'blocks', label: 'Blocks', description: "That task's agent starts only once this one is merged" },
@@ -66,7 +71,7 @@ const candidates = computed<SelectMenuOption<number>[]>(() =>
     .filter((t) => t.id !== props.task.id && !linked.value.has(t.id))
     .filter((t) => {
       if (kind.value === 'blocked_by') return t.status !== 'cancelled'
-      if (kind.value === 'blocks') return t.status === 'todo'
+      if (kind.value === 'blocks') return waits(t)
       return true
     })
     .sort((a, b) => b.id - a.id)
@@ -105,10 +110,9 @@ function link() {
   if (!otherId.value) return
   const id = props.task.id
   void act(async () => {
-    const res = await taskApi.link(props.projectId, id, kind.value, otherId.value)
-    store.upsertTask(res.task)
+    await taskApi.link(props.projectId, id, kind.value, otherId.value)
     adding.value = false
-    // The other task's links changed too.
+    // The other task's links changed too, so the whole board reloads.
     await store.refresh()
   })
 }
@@ -202,7 +206,7 @@ function waitsOn(t: Task | null): boolean {
         :disabled="candidates.length === 0"
       />
       <p v-if="candidates.length === 0" class="form-hint">
-        {{ kind === 'blocks' ? 'No other task is still to do.' : 'No other task to link.' }}
+        {{ kind === 'blocks' ? `No other task to do starts from ${defaultBranch}.` : 'No other task to link.' }}
       </p>
       <div class="link-form-actions">
         <button type="button" class="btn btn-secondary btn-sm" :disabled="busy" @click="adding = false">Cancel</button>

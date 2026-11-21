@@ -338,7 +338,7 @@ func (s *service) Create(ctx context.Context, userID, projectID int64, in Create
 			return nil, invalid("%v", err)
 		}
 	}
-	links, err := s.newTaskLinks(ctx, userID, projectID, in)
+	links, err := s.newTaskLinks(ctx, p, userID, in)
 	if err != nil {
 		return nil, err
 	}

@@ -7,7 +7,7 @@ import SelectMenu, { type SelectMenuOption } from '@/components/SelectMenu.vue'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import AgentModelPicker from './AgentModelPicker.vue'
 import MrIcon from './MrIcon.vue'
-import { TASK_STATUS } from './taskStatus'
+import { TASK_STATUS, canWaitFrom } from './taskStatus'
 
 // Creates a task, either left to do or handed to an agent at once. Closing
 // keeps the draft, so an accidental Escape loses nothing; creating clears it.
@@ -67,6 +67,10 @@ watch(
 
 const byId = computed(() => new Map(store.tasks.map((t) => [t.id, t])))
 
+// Whether the new task, from the branch picked to start from, can wait for
+// other tasks.
+const canWait = computed(() => canWaitFrom(base.value, defaultBranch.value))
+
 // Each kind of link, with the tasks it can be made to: any but one already
 // picked, and for a blocker any but a cancelled task, which never merges.
 const linkFields = computed(() => {
@@ -77,8 +81,8 @@ const linkFields = computed(() => {
       .sort((a, b) => b.id - a.id)
       .map((t) => ({ value: t.id, label: `#${t.id} ${t.title}`, description: TASK_STATUS[t.status].label }))
   return [
-    { key: 'blockedBy' as const, label: 'Blocked by', options: options(false) },
-    { key: 'related' as const, label: 'Related', options: options(true) },
+    { key: 'blockedBy' as const, label: 'Blocked by', options: options(false), disabled: !canWait.value },
+    { key: 'related' as const, label: 'Related', options: options(true), disabled: false },
   ]
 })
 
@@ -279,11 +283,15 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                   :title="field.label"
                   variant="field"
                   placeholder="Add a task"
-                  :disabled="field.options.length === 0"
+                  :disabled="field.disabled || field.options.length === 0"
                   @update:model-value="pick(field.key, $event)"
                 />
               </div>
-              <p class="form-hint">Its agent starts only once every task it's blocked by is merged.</p>
+              <p v-if="canWait" class="form-hint">Its agent starts only once every task it's blocked by is merged.</p>
+              <p v-else class="form-hint">
+                Only a task that starts from <span class="mono">{{ defaultBranch }}</span>, which tasks merge into, can
+                be blocked by other tasks.
+              </p>
             </section>
 
             <section class="side-section">

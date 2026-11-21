@@ -96,15 +96,20 @@ async function checkoutBranch() {
 }
 
 const info = computed(() => TASK_STATUS[props.task?.status ?? 'todo'])
-// The tasks this one waits for that are not merged yet, as "#3, #5".
+// The tasks this one waits for that are not merged yet.
 const waitingOn = computed(() => {
   const t = props.task
-  if (!t?.blocked) return ''
+  if (!t?.blocked) return []
   const merged = new Set(projectStore.tasks.filter((other) => other.status === 'merged').map((other) => other.id))
-  return t.blockedBy
-    .filter((id) => !merged.has(id))
-    .map((id) => `#${id}`)
-    .join(', ')
+  return t.blockedBy.filter((id) => !merged.has(id))
+})
+// "#3 is" or "#3 and #5 are", for the status hint. The board may not have
+// caught up with the task, so it falls back to naming none.
+const waitingPhrase = computed(() => {
+  const ids = waitingOn.value.map((id) => `#${id}`)
+  if (ids.length === 0) return "the tasks it's blocked by are"
+  if (ids.length === 1) return `${ids[0]} is`
+  return `${ids.slice(0, -1).join(', ')} and ${ids[ids.length - 1]} are`
 })
 // The agent starts by itself once nothing blocks the task, so there is
 // nothing to start until the user changes their mind.
@@ -151,8 +156,8 @@ const statusHint = computed(() => {
   if (!t) return ''
   switch (t.status) {
     case 'todo':
-      if (t.startWhenUnblocked) return `Waiting for ${waitingOn.value || 'the tasks it is blocked by'} to be merged. The agent starts then.`
-      if (t.blocked) return `Blocked by ${waitingOn.value} until it's merged. Starting the agent now leaves it to start then.`
+      if (t.startWhenUnblocked) return `The agent starts once ${waitingPhrase.value} merged.`
+      if (t.blocked) return `Blocked until ${waitingPhrase.value} merged. Starting the agent now leaves it to start then.`
       return 'Not started. Hand it to an agent once the description says what you want.'
     case 'queued':
       return t.error || 'Waiting for a free sandbox.'
@@ -606,7 +611,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
             <TaskLinks :task="task" :project-id="projectId" />
 
             <section v-if="task.workspaceId || mergeRequest || branchPublished" class="side-section">
-              <h3 class="side-title">Linked</h3>
+              <h3 class="side-title">Shortcuts</h3>
               <div class="links">
                 <button
                   v-if="branchPublished"

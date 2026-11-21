@@ -17,3 +17,11 @@ export const TASK_STATUS: Record<TaskStatus, { step: number; tone: TaskTone; ico
   merged: { step: 3, tone: 'success', icon: 'merged', label: 'Merged' },
   cancelled: { step: 3, tone: 'neutral', icon: 'ban', label: 'Cancelled' },
 }
+
+// Whether a task starting from base can wait for other tasks. A task's merge
+// request merges into the project's default branch, so only a task that
+// starts from it would find their work there; the server refuses the rest.
+// A task's baseBranch is '' when it starts from the default branch.
+export function canWaitFrom(base: string, defaultBranch: string): boolean {
+  return base === '' || base === defaultBranch
+}

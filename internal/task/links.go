@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+
+	"github.com/devpad-org/devpad/internal/project"
 )
 
 // A blocking link holds a task to do back: Start leaves it to start when
@@ -15,7 +17,8 @@ import (
 // waits again, and the tasks it waited for are all merged by then. A
 // cancelled task blocks for good, until the user removes the link, so
 // cancelling a task never lets the work that waited for it go ahead by
-// mistake.
+// mistake. A task waits only for work that lands on the branch it starts
+// from, so it is blocked only by tasks that merge into that branch.
 
 func (s *service) Links(ctx context.Context, userID, projectID int64) (map[int64]Links, error) {
 	if _, err := s.projects.Get(ctx, userID, projectID); err != nil {
@@ -63,6 +66,10 @@ func (s *service) Link(ctx context.Context, userID, projectID, taskID int64, kin
 		return nil, err
 	}
 	if link.Blocks {
+		p, err := s.projects.Get(ctx, userID, projectID)
+		if err != nil {
+			return nil, err
+		}
 		blocker, blocked := t, other
 		if link.From == other.ID {
 			blocker, blocked = other, t
@@ -72,6 +79,9 @@ func (s *service) Link(ctx context.Context, userID, projectID, taskID int64, kin
 		}
 		if blocker.Status == StatusCancelled {
 			return nil, cancelledBlocker(blocker)
+		}
+		if err := buildsOn(p, blocker, fmt.Sprintf("task #%d", blocked.ID), blocked.BaseBranch); err != nil {
+			return nil, err
 		}
 	}
 	unlockLinks := s.lockLinks(projectID)
@@ -140,7 +150,7 @@ type pendingLink struct {
 
 // newTaskLinks checks the links a new task is created with, before it is
 // stored, so a link that cannot be made leaves no task behind.
-func (s *service) newTaskLinks(ctx context.Context, userID, projectID int64, in CreateInput) ([]pendingLink, error) {
+func (s *service) newTaskLinks(ctx context.Context, p *project.Project, userID int64, in CreateInput) ([]pendingLink, error) {
 	seen := map[int64]bool{}
 	var out []pendingLink
 	add := func(id int64, blocks bool) error {
@@ -148,12 +158,17 @@ func (s *service) newTaskLinks(ctx context.Context, userID, projectID int64, in 
 			return invalid("task #%d is linked more than once", id)
 		}
 		seen[id] = true
-		other, err := s.linkTarget(ctx, userID, projectID, id)
+		other, err := s.linkTarget(ctx, userID, p.ID, id)
 		if err != nil {
 			return err
 		}
 		if blocks && other.Status == StatusCancelled {
 			return cancelledBlocker(other)
+		}
+		if blocks {
+			if err := buildsOn(p, other, "the new task", in.BaseBranch); err != nil {
+				return err
+			}
 		}
 		out = append(out, pendingLink{other: other, blocks: blocks})
 		return nil
@@ -171,8 +186,9 @@ func (s *service) newTaskLinks(ctx context.Context, userID, projectID int64, in 
 	return out, nil
 }
 
-// linkNew stores a new task's links. A new task blocks nothing yet, so
-// the links cannot close a cycle.
+// linkNew stores a new task's links. The task was listed from the moment it
+// was stored, so a link made from another task since may already have it
+// block something: each blocking link is checked for a cycle like any other.
 func (s *service) linkNew(ctx context.Context, t *Task, links []pendingLink) error {
 	if len(links) == 0 {
 		return nil
@@ -181,14 +197,22 @@ func (s *service) linkNew(ctx context.Context, t *Task, links []pendingLink) err
 	defer unlock()
 	unlockLinks := s.lockLinks(t.ProjectID)
 	defer unlockLinks()
+	existing, err := s.repo.ListLinks(ctx, t.ProjectID)
+	if err != nil {
+		return err
+	}
 	for _, l := range links {
 		link := Link{From: l.other.ID, To: t.ID, Blocks: true}
 		if !l.blocks {
 			link = Link{From: min(t.ID, l.other.ID), To: max(t.ID, l.other.ID)}
 		}
+		if link.Blocks && waitsFor(existing, link.From, link.To) {
+			return invalid("task #%d already waits for the new task, so it cannot block it as well", link.From)
+		}
 		if err := s.repo.CreateLink(ctx, t.ProjectID, link); err != nil {
 			return err
 		}
+		existing = append(existing, link)
 	}
 	return nil
 }
@@ -205,6 +229,33 @@ func (s *service) linkTarget(ctx context.Context, userID, projectID, id int64) (
 
 func cancelledBlocker(t *Task) error {
 	return fmt.Errorf("%w: task #%d is cancelled, so it will never be merged", ErrInvalidState, t.ID)
+}
+
+// buildsOn refuses to make a task blocked by one whose work would not be
+// on the branch it starts from, base as a task stores it or as requested
+// for a new one. who names the blocked task in the error.
+func buildsOn(p *project.Project, blocker *Task, who, base string) error {
+	from, into := startsFrom(p, base), mergesInto(p, blocker)
+	if from == into {
+		return nil
+	}
+	return invalid("task #%d merges into %s, but %s starts from %s, so it would start without that work", blocker.ID, into, who, from)
+}
+
+// startsFrom is the branch a task's own branch is made from: its base, or
+// the project's default branch when it has none.
+func startsFrom(p *project.Project, base string) string {
+	if base = strings.TrimSpace(base); base != "" {
+		return base
+	}
+	return p.DefaultBranch
+}
+
+// mergesInto is the branch a task's merge request merges into. That is
+// always the project's default branch for now; were a task's merge request
+// to target its base instead, this is what would change.
+func mergesInto(p *project.Project, _ *Task) string {
+	return p.DefaultBranch
 }
 
 // waitsFor reports whether task waiter is blocked by task blocker, directly
@@ -254,8 +305,13 @@ func (s *service) unblock(projectID int64) {
 			}
 			return
 		}
+		// The list is read without the tasks' locks, so a Start that saw a
+		// blocker not merged yet may still be about to leave its task to
+		// start when unblocked. Every task to do is checked again under its
+		// lock, which waits for that Start, rather than skipped by a flag
+		// read too early.
 		for _, t := range tasks {
-			if t.Status == StatusTodo && t.StartWhenUnblocked {
+			if t.Status == StatusTodo {
 				s.startIfUnblocked(ctx, t.ID)
 			}
 		}

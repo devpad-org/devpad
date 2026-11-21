@@ -204,10 +204,15 @@ func TestReconcileStartsTasksABlockerMergedBefore(t *testing.T) {
 
 func TestLinkRules(t *testing.T) {
 	e := setup(t)
+	e.sandboxes.set(func(f *fakeSandboxes) { f.branches = []string{"feature"} })
 	ctx := context.Background()
 	a := e.createNamed(t, "A", CreateInput{})
 	b := e.createNamed(t, "B", CreateInput{})
 	c := e.createNamed(t, "C", CreateInput{})
+	d := e.createNamed(t, "D", CreateInput{})
+	// Tasks merge into main whatever they start from.
+	onFeature := e.createNamed(t, "On feature", CreateInput{BaseBranch: "feature"})
+	alsoOnFeature := e.createNamed(t, "Also on feature", CreateInput{BaseBranch: "feature"})
 	started := e.createNamed(t, "Started", CreateInput{})
 	e.start(t, started.ID, StartInput{})
 	cancelled := e.createNamed(t, "Cancelled", CreateInput{})
@@ -235,6 +240,11 @@ func TestLinkRules(t *testing.T) {
 		{"already linked another way", owner, b.ID, LinkRelated, a.ID, ErrAlreadyLinked},
 		{"blocking a started task", owner, started.ID, LinkBlockedBy, a.ID, ErrInvalidState},
 		{"blocked by a cancelled task", owner, a.ID, LinkBlockedBy, cancelled.ID, ErrInvalidState},
+		{"blocking a task that starts from another branch", owner, onFeature.ID, LinkBlockedBy, d.ID, ErrInvalidInput},
+		{"blocking it the other way", owner, d.ID, LinkBlocks, onFeature.ID, ErrInvalidInput},
+		{"both starting from a branch neither merges into", owner, onFeature.ID, LinkBlocks, alsoOnFeature.ID, ErrInvalidInput},
+		{"related across branches", owner, onFeature.ID, LinkRelated, alsoOnFeature.ID, nil},
+		{"blocking a task that starts from where it merges", owner, onFeature.ID, LinkBlocks, d.ID, nil},
 		{"another project's task", owner, a.ID, LinkRelated, elsewhere.ID, ErrInvalidInput},
 		{"another user's task", stranger, a.ID, LinkRelated, c.ID, ErrNotFound},
 		{"a started task blocking", owner, started.ID, LinkBlocks, a.ID, nil},
@@ -264,6 +274,7 @@ func TestLinkRules(t *testing.T) {
 
 func TestCreateChecksItsLinksFirst(t *testing.T) {
 	e := setup(t)
+	e.sandboxes.set(func(f *fakeSandboxes) { f.branches = []string{"feature"} })
 	ctx := context.Background()
 	a := e.createNamed(t, "A", CreateInput{})
 	cancelled := e.createNamed(t, "Cancelled", CreateInput{})
@@ -276,6 +287,7 @@ func TestCreateChecksItsLinksFirst(t *testing.T) {
 		"one task twice":    {BlockedBy: []int64{a.ID}, Related: []int64{a.ID}},
 		"and starting":      {BlockedBy: []int64{99}, Start: true},
 		"a related unknown": {Related: []int64{99}},
+		"another base":      {BlockedBy: []int64{a.ID}, BaseBranch: "feature"},
 	} {
 		in.Title, in.Model = "New", "claude-opus-5-5"
 		if _, err := e.svc.Create(ctx, owner, 1, in); err == nil {
@@ -290,6 +302,26 @@ func TestCreateChecksItsLinksFirst(t *testing.T) {
 	links, _ := e.svc.Links(ctx, owner, 1)
 	if got := links[related.ID]; len(got.Related) != 1 || got.Related[0] != a.ID || got.Blocked {
 		t.Fatalf("unexpected links: %+v", got)
+	}
+}
+
+// A task is listed as soon as it is stored, so before Create links it,
+// another task may already have been made to wait for it.
+func TestNewTaskLinksRefuseACycleMadeMeanwhile(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	newTask := e.createNamed(t, "New", CreateInput{})
+	x := e.createNamed(t, "X", CreateInput{})
+	y := e.createNamed(t, "Y", CreateInput{})
+	e.link(t, newTask.ID, LinkBlocks, x.ID)
+	e.link(t, x.ID, LinkBlocks, y.ID)
+
+	err := e.svc.linkNew(ctx, newTask, []pendingLink{{other: y, blocks: true}})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected the cycle to be refused, got %v", err)
+	}
+	if links, _ := e.repo.LinksOf(ctx, y.ID); len(links) != 1 {
+		t.Fatalf("a refused link was stored: %+v", links)
 	}
 }
 
