@@ -681,7 +681,7 @@ func handleAPINotFound(w http.ResponseWriter, r *http.Request) {
 // never reach the app, and applies per-route body size limits to prevent
 // memory exhaustion.
 func buildHandler(appMux, previewHandler http.Handler, cfg Config) http.Handler {
-	app := denyFraming(sameOriginGuard(appMux, appOrigins(cfg)))
+	app := appSecurityHeaders(sameOriginGuard(appMux, appOrigins(cfg)))
 	return requestBodyLimit(hostRouter(app, previewHandler, cfg.PreviewDomain))
 }
 
@@ -722,13 +722,25 @@ func newCipher(key string) (*encrypt.Cipher, error) {
 	return cipher, nil
 }
 
-// denyFraming stops other pages, previews included, from framing the app. A
-// framed app would load with the user's session and its own requests pass the
-// same-origin guard, so a preview could overlay it and trick the user into
+// appContentSecurityPolicy is the policy every app response carries.
+//
+// frame-ancestors stops other pages, previews included, from framing the app.
+// A framed app would load with the user's session and its own requests pass
+// the same-origin guard, so a preview could overlay it and trick the user into
 // clicking Merge or Approve.
-func denyFraming(next http.Handler) http.Handler {
+//
+// img-src keeps the page from loading images from anywhere but devpad itself,
+// so no image (one in text an agent wrote, say) can carry data to another
+// server or tell it the page was viewed. data: covers images devpad builds
+// in the page (the tab icon, the 2FA QR code, the editor's), and blob: the
+// previews of images being attached.
+const appContentSecurityPolicy = "frame-ancestors 'none'; img-src 'self' data: blob:"
+
+// appSecurityHeaders sets the app's Content-Security-Policy and, for browsers
+// without frame-ancestors, X-Frame-Options.
+func appSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", appContentSecurityPolicy)
 		w.Header().Set("X-Frame-Options", "DENY")
 		next.ServeHTTP(w, r)
 	})
