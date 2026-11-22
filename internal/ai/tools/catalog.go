@@ -224,14 +224,14 @@ func AgentTools() []domain.ToolDefinition {
 			Function: domain.ToolFunction{
 				Name:        "spawn_sub_agent",
 				Description: "Start a child AI agent run for an independent subtask. The child appears nested under this run in the Agent Runs sidebar. Use agent_id from list_available_agents to assign the best purpose-built agent. Use wait_for_result only when you need this single child's final answer before continuing; otherwise keep the returned runId and call wait_for_sub_agents later.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"Complete instructions for the child agent, including all necessary context, scope, and expected output."},"agent_id":{"type":"string","description":"Optional agent ID from list_available_agents. Defaults to the built-in coding agent."},"model":{"type":"string","description":"Optional model ID. Defaults to the model the user set for the agent, else the current model."},"wait_for_result":{"type":"boolean","description":"When true, wait for the child run to finish and return its final text in the summary field. Defaults to false."},"timeout_seconds":{"type":"integer","description":"Maximum seconds to wait when wait_for_result is true. Defaults to 600, which is also the maximum."}},"required":["prompt"]}`),
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"Complete instructions for the child agent, including all necessary context, scope, and expected output."},"agent_id":{"type":"string","description":"Optional agent ID from list_available_agents. Defaults to the built-in coding agent."},"model":{"type":"string","description":"Optional model ID from the models list_available_agents returns, all from the current model's provider: another provider's model is refused. Defaults to the agent's model in that list."},"effort":{"type":"string","description":"Optional reasoning effort, one of the efforts list_available_agents gives for the chosen model. Defaults to the agent's effort in that list when the child runs on the agent's model, else the model's default effort."},"wait_for_result":{"type":"boolean","description":"When true, wait for the child run to finish and return its final text in the summary field. Defaults to false."},"timeout_seconds":{"type":"integer","description":"Maximum seconds to wait when wait_for_result is true. Defaults to 600, which is also the maximum."}},"required":["prompt"]}`),
 			},
 		},
 		{
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "list_available_agents",
-				Description: "List the AI agents available in this workspace for the current user. Use this before coordinating specialized sub-agents so you can pass the best agent_id to spawn_sub_agent.",
+				Description: "List the AI agents and models available to sub-agents in this workspace: each agent's purpose and the model and effort it runs on by default, and the models a sub-agent can use, with their prices, supported efforts and whether they accept images. Use this before spawn_sub_agent to pick the best agent_id and a model and effort suited to the subtask.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			},
 		},
@@ -275,6 +275,7 @@ Sub-agents:
 - Use spawn_sub_agent proactively when a task has independent research, review, implementation, or verification subtasks that can make progress without sharing live context.
 - You may run up to 3 child agents concurrently for a parent run. Use parallel fan-out for independent subtasks, then call wait_for_sub_agents before synthesizing their results.
 - When coordinating specialized work, call list_available_agents first, choose the best purpose-built agent, and pass its id as spawn_sub_agent.agent_id.
+- Match the model to the subtask: list_available_agents also lists the models a sub-agent can use and what each costs. A cheaper or faster model, or a lower effort, often suits searching, summarizing, or mechanical edits; keep a stronger model for subtle design, debugging, or review. Leave model and effort unset to use the agent's defaults.
 - Make each sub-agent prompt self-contained: include the goal, relevant constraints, and the expected result.
 - By default the tool returns a child run ID immediately. Set wait_for_result=true when you need the child's answer before continuing; the result will include a summary field with the child's final response.
 - For parallel fan-out/fan-in work, call spawn_sub_agent multiple times with wait_for_result=false, keep the returned runIds, then call wait_for_sub_agents with those runIds when you need all child results.

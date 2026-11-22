@@ -39,6 +39,7 @@ type WorkspaceExecutor struct {
 	childRunner ChildAgentRunner
 	agentLister AgentLister
 	defaults    AgentDefaults
+	models      ModelCatalog
 	summarizer  FileSummarizer
 	images      ImageStore
 
@@ -66,6 +67,14 @@ func (e *WorkspaceExecutor) SetAgentLister(lister AgentLister) {
 // when spawn_sub_agent names no model.
 func (e *WorkspaceExecutor) SetAgentDefaults(defaults AgentDefaults) {
 	e.defaults = defaults
+}
+
+// SetModels wires the model catalog, which list_available_agents lists the
+// models a child can use from, and which tells spawn_sub_agent whether an
+// agent's default model is from the parent's provider and an effort suits a
+// model.
+func (e *WorkspaceExecutor) SetModels(models ModelCatalog) {
+	e.models = models
 }
 
 // AddProvider routes calls for a provider's workspace-specific tools.

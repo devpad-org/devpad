@@ -87,11 +87,12 @@ func NewModule(db *sql.DB, workspaces Workspaces, keys app.KeyCipher) *Module {
 		Usage:       usageService,
 	})
 	agentRuns := storage.NewAgentRunRepository(db)
-	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService).WithImageLoader(attachmentService)
+	agentRunService := app.NewAgentRunService(context.Background(), agentRuns, chatService, conversationService).WithAgentService(agentService).WithImageLoader(attachmentService).WithModels(catalogService)
 	toolExecutor.SetFileSummarizer(filesummary.NewChatSummarizer(chatService, summaryModelService, agentRunService))
 	toolExecutor.SetChildAgentRunner(childAgentRunStarter{runs: agentRunService})
 	toolExecutor.SetAgentLister(agentService)
 	toolExecutor.SetAgentDefaults(agentDefaultsService)
+	toolExecutor.SetModels(catalogService)
 
 	return &Module{
 		CatalogService:      catalogService,

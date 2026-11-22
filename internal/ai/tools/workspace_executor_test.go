@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"slices"
 	"strings"
 	"testing"
 
@@ -573,12 +574,51 @@ func (s stubAgentDefaults) DefaultsFor(_ context.Context, _ int64, agentID, _ st
 	return nil, nil
 }
 
+// stubModels is a model catalog by model ID.
+type stubModels map[string]domain.ModelInfo
+
+func (m stubModels) FindModel(id string) (domain.Model, error) {
+	info, ok := m[id]
+	if !ok {
+		return domain.Model{}, domain.ErrModelNotFound
+	}
+	return info.Model, nil
+}
+
+func (m stubModels) ListModels(context.Context, int64) ([]domain.ModelInfo, error) {
+	ids := make([]string, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	out := make([]domain.ModelInfo, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, m[id])
+	}
+	return out, nil
+}
+
+// modelsByProvider makes a catalog of models the user has keys for, from
+// model IDs to their providers.
+func modelsByProvider(providers map[string]string) stubModels {
+	m := stubModels{}
+	for id, provider := range providers {
+		m[id] = domain.ModelInfo{Model: domain.Model{ID: id, Name: id, ProviderID: provider}, Configured: true}
+	}
+	return m
+}
+
 // A child without a model runs the user's default for its agent with that
-// effort. Only a child on the parent's model takes the parent's thinking.
+// effort, when it is from the parent's provider. Only a child on the parent's
+// model takes the parent's thinking.
 func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
 	var got []ChildAgentRunRequest
 	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
-	executor.SetAgentDefaults(stubAgentDefaults{domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "user-review", Effort: "low"}})
+	executor.SetAgentDefaults(stubAgentDefaults{
+		domain.ReviewAgentID:  {AgentID: domain.ReviewAgentID, Model: "user-review", Effort: "low"},
+		domain.DefaultAgentID: {AgentID: domain.DefaultAgentID, Model: "elsewhere", Effort: "low"},
+	})
+	executor.SetModels(modelsByProvider(map[string]string{"parent-model": "a", "user-review": "a", "picked": "a", "elsewhere": "b"}))
 	executor.SetChildAgentRunner(stubChildAgentRunner{startFn: func(_ context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error) {
 		got = append(got, req)
 		return &ChildAgentRun{ID: int64(len(got)), AgentID: req.AgentID, Model: req.Model, Status: "queued"}, nil
@@ -587,6 +627,7 @@ func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
 	for _, args := range []string{
 		`{"prompt":"review","agent_id":"review"}`,
 		`{"prompt":"review","agent_id":"review","model":"picked"}`,
+		`{"prompt":"review","agent_id":"review","model":"user-review"}`,
 		`{"prompt":"code"}`,
 		`{"prompt":"code","model":"parent-model"}`,
 	} {
@@ -605,10 +646,191 @@ func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
 	if got[1].Model != "picked" || got[1].Thinking != nil {
 		t.Errorf("expected the picked model without the parent's thinking, got %+v %+v", got[1], got[1].Thinking)
 	}
-	for _, child := range got[2:] {
+	// Naming the default's model still takes the default's effort.
+	if got[2].Model != "user-review" || got[2].Thinking == nil || got[2].Thinking.Effort != "low" {
+		t.Errorf("expected the review agent's default effort on its named model, got %+v %+v", got[2], got[2].Thinking)
+	}
+	// The coding agent's default is another provider's model, so the child
+	// runs on the parent's.
+	for _, child := range got[3:] {
 		if child.Model != "parent-model" || child.Thinking == nil || child.Thinking.Effort != "max" {
 			t.Errorf("expected the parent's model and thinking, got %+v %+v", child, child.Thinking)
 		}
+	}
+}
+
+// An effort the agent picks must be one its child's model supports.
+func TestWorkspaceExecutor_SpawnSubAgentTakesAnEffortTheModelSupports(t *testing.T) {
+	var got []ChildAgentRunRequest
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	models := modelsByProvider(map[string]string{"parent-model": "a", "small": "a"})
+	models["small"] = domain.ModelInfo{Model: domain.Model{ID: "small", ProviderID: "a", Thinking: domain.ThinkingCapability{Supported: true, SupportedEfforts: []string{"low", "high"}}}, Configured: true}
+	executor.SetModels(models)
+	executor.SetChildAgentRunner(stubChildAgentRunner{startFn: func(_ context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error) {
+		got = append(got, req)
+		return &ChildAgentRun{ID: int64(len(got)), Model: req.Model, Status: "queued"}, nil
+	}})
+	spawn := func(args string) domain.ToolResultPart {
+		req := toolReq(7, 9, "spawn_sub_agent", []byte(args))
+		req.CurrentRunID = 101
+		req.Model = "parent-model"
+		req.Thinking = &domain.ThinkingConfig{Effort: "max"}
+		return executor.ExecuteTool(context.Background(), req)
+	}
+
+	if result := spawn(`{"prompt":"find it","model":"small","effort":"low"}`); result.IsError {
+		t.Fatalf("expected a supported effort to start the child, got %+v", result)
+	}
+	if len(got) != 1 || got[0].Model != "small" || got[0].Thinking == nil || got[0].Thinking.Effort != "low" {
+		t.Fatalf("expected the child on small at low effort, got %+v", got)
+	}
+	for _, args := range []string{
+		`{"prompt":"find it","model":"small","effort":"max"}`,
+		`{"prompt":"find it","effort":"low"}`,
+	} {
+		result := spawn(args)
+		if !result.IsError || !strings.Contains(result.Content, "effort") {
+			t.Fatalf("%s: expected the effort to be refused, got %+v", args, result)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected no child for a refused effort, got %d", len(got))
+	}
+}
+
+// The listing gives each agent the model its child runs on by default, and
+// the models a child can use: the current model's provider's, which the
+// user has a key for.
+func TestWorkspaceExecutor_ListAvailableAgentsListsTheModelsAChildCanUse(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetAgentLister(stubAgentLister{listFn: func(context.Context, int64, int64) ([]domain.Agent, error) {
+		return []domain.Agent{domain.DefaultAgent(), {ID: domain.ReviewAgentID, Name: "Code Review Agent", IsBuiltIn: true}}, nil
+	}})
+	executor.SetAgentDefaults(stubAgentDefaults{domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "small", Effort: "low"}})
+	executor.SetModels(stubModels{
+		"parent-model": {Model: domain.Model{ID: "parent-model", Name: "Parent", ProviderID: "a", Vision: true}, Configured: true},
+		"small": {Model: domain.Model{
+			ID: "small", Name: "Small", ProviderID: "a",
+			Thinking: domain.ThinkingCapability{Supported: true, SupportedEfforts: []string{"low", "high"}, DefaultEffort: "high"},
+			Pricing:  &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1, Output: 5}},
+		}, Configured: true},
+		"elsewhere": {Model: domain.Model{ID: "elsewhere", ProviderID: "b"}, Configured: true},
+	})
+
+	req := toolReq(7, 9, "list_available_agents", []byte(`{}`))
+	req.Model = "parent-model"
+	req.Thinking = &domain.ThinkingConfig{Effort: "max"}
+	result := executor.ExecuteTool(context.Background(), req)
+	if result.IsError {
+		t.Fatalf("expected list success, got %+v", result)
+	}
+
+	var payload struct {
+		Agents []struct {
+			ID     string `json:"id"`
+			Model  string `json:"model"`
+			Effort string `json:"effort"`
+		} `json:"agents"`
+		CurrentModel string `json:"currentModel"`
+		Models       []struct {
+			ID            string   `json:"id"`
+			Current       bool     `json:"current"`
+			Vision        bool     `json:"vision"`
+			Efforts       []string `json:"efforts"`
+			DefaultEffort string   `json:"defaultEffort"`
+			InputPrice    *float64 `json:"inputUsdPerMillionTokens"`
+			OutputPrice   *float64 `json:"outputUsdPerMillionTokens"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("decoding list result: %v", err)
+	}
+	if payload.CurrentModel != "parent-model" {
+		t.Errorf("expected the current model, got %q", payload.CurrentModel)
+	}
+	if len(payload.Agents) != 2 || payload.Agents[0].Model != "parent-model" || payload.Agents[0].Effort != "max" ||
+		payload.Agents[1].Model != "small" || payload.Agents[1].Effort != "low" {
+		t.Errorf("expected each agent's default model and effort, got %+v", payload.Agents)
+	}
+	if len(payload.Models) != 2 {
+		t.Fatalf("expected only the current provider's models, got %+v", payload.Models)
+	}
+	parent, small := payload.Models[0], payload.Models[1]
+	if parent.ID != "parent-model" || !parent.Current || !parent.Vision || parent.InputPrice != nil {
+		t.Errorf("unexpected current model entry: %+v", parent)
+	}
+	if small.ID != "small" || small.Current || small.DefaultEffort != "high" || !slices.Equal(small.Efforts, []string{"low", "high"}) ||
+		small.InputPrice == nil || *small.InputPrice != 1 || small.OutputPrice == nil || *small.OutputPrice != 5 {
+		t.Errorf("unexpected small model entry: %+v", small)
+	}
+}
+
+// failingAgentDefaults fails to look up the defaults of the agents it names.
+type failingAgentDefaults map[string]bool
+
+func (f failingAgentDefaults) DefaultsFor(_ context.Context, _ int64, agentID, _ string) (*domain.AgentDefaults, error) {
+	if f[agentID] {
+		return nil, errors.New("defaults unavailable")
+	}
+	return nil, nil
+}
+
+// An agent whose defaults fail to load is still listed, with why its model is
+// missing, and the other agents and the models are listed as usual.
+func TestWorkspaceExecutor_ListAvailableAgentsListsAgentsWhoseDefaultsFail(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetAgentLister(stubAgentLister{listFn: func(context.Context, int64, int64) ([]domain.Agent, error) {
+		return []domain.Agent{domain.DefaultAgent(), {ID: domain.ReviewAgentID, Name: "Code Review Agent", IsBuiltIn: true}}, nil
+	}})
+	executor.SetAgentDefaults(failingAgentDefaults{domain.ReviewAgentID: true})
+	executor.SetModels(modelsByProvider(map[string]string{"parent-model": "a"}))
+
+	req := toolReq(7, 9, "list_available_agents", []byte(`{}`))
+	req.Model = "parent-model"
+	result := executor.ExecuteTool(context.Background(), req)
+	if result.IsError {
+		t.Fatalf("expected list success, got %+v", result)
+	}
+	var payload struct {
+		Agents []struct {
+			ID         string `json:"id"`
+			Model      string `json:"model"`
+			ModelError string `json:"modelError"`
+		} `json:"agents"`
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("decoding list result: %v", err)
+	}
+	if len(payload.Agents) != 2 || payload.Agents[0].Model != "parent-model" || payload.Agents[0].ModelError != "" {
+		t.Fatalf("expected the coding agent on the parent's model, got %+v", payload.Agents)
+	}
+	if review := payload.Agents[1]; review.ID != domain.ReviewAgentID || review.Model != "" || !strings.Contains(review.ModelError, "defaults unavailable") {
+		t.Errorf("expected the review agent without a model and with the error, got %+v", review)
+	}
+	if len(payload.Models) != 1 || payload.Models[0].ID != "parent-model" {
+		t.Errorf("expected the models to be listed, got %+v", payload.Models)
+	}
+}
+
+// A provider without the user's key offers no models, even the current
+// model's provider's other models.
+func TestWorkspaceExecutor_ListAvailableAgentsLeavesOutModelsWithoutAKey(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetAgentLister(stubAgentLister{listFn: func(context.Context, int64, int64) ([]domain.Agent, error) {
+		return []domain.Agent{domain.DefaultAgent()}, nil
+	}})
+	models := modelsByProvider(map[string]string{"parent-model": "a"})
+	models["unkeyed"] = domain.ModelInfo{Model: domain.Model{ID: "unkeyed", ProviderID: "a"}}
+	executor.SetModels(models)
+
+	req := toolReq(7, 9, "list_available_agents", []byte(`{}`))
+	req.Model = "parent-model"
+	result := executor.ExecuteTool(context.Background(), req)
+	if result.IsError || strings.Contains(result.Content, "unkeyed") {
+		t.Fatalf("expected the unkeyed model to be left out, got %+v", result)
 	}
 }
 

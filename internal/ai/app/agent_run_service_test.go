@@ -354,9 +354,26 @@ func newConversationRunner(t *testing.T, repo *fakeAgentRunRepository, streamAge
 	t.Helper()
 	conversations := newFakeConversationService()
 	conversations.addConversation(testConversationID, testUserID, testWorkspaceID, turns...)
-	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{streamAgentFn: streamAgentFn}, conversations)
+	service := NewAgentRunService(context.Background(), repo, fakeRunnerChatService{streamAgentFn: streamAgentFn}, conversations).WithModels(testModels)
 	t.Cleanup(func() { shutdownRunner(t, service) })
 	return service, conversations
+}
+
+// providerModels maps each model ID a test knows to its provider.
+type providerModels map[string]string
+
+func (m providerModels) FindModel(id string) (domain.Model, error) {
+	provider, ok := m[id]
+	if !ok {
+		return domain.Model{}, domain.ErrModelNotFound
+	}
+	return domain.Model{ID: id, Name: id, ProviderID: provider}, nil
+}
+
+var testModels = providerModels{
+	testModel:       "openai",
+	"gpt-5.4-mini":  "openai",
+	"claude-sonnet": "anthropic",
 }
 
 func streamFrom(events <-chan domain.ClientEvent) func(context.Context, AgentChatRequest) (<-chan domain.ClientEvent, error) {
@@ -1024,6 +1041,65 @@ func TestAgentRunService_StartChildRunPersistsParentRun(t *testing.T) {
 	}
 	if got := turnSummary(child.InputTurns); len(got) != 1 || got[0] != "user:child" {
 		t.Fatalf("expected the child to start from its prompt, got %v", got)
+	}
+}
+
+// A sub-agent runs on a model of its parent's provider: another provider's
+// model is refused before the run is made.
+func TestAgentRunService_StartChildRunKeepsTheParentsProvider(t *testing.T) {
+	repo := newFakeAgentRunRepository()
+	var started []string
+	service, _ := newConversationRunner(t, repo, func(_ context.Context, req AgentChatRequest) (<-chan domain.ClientEvent, error) {
+		started = append(started, req.Model)
+		ch := make(chan domain.ClientEvent, 1)
+		ch <- domain.ClientEvent{Done: true}
+		close(ch)
+		return ch, nil
+	})
+
+	parent := &domain.AgentRun{UserID: testUserID, WorkspaceID: testWorkspaceID, Model: testModel, Status: domain.AgentRunRunning}
+	if err := repo.CreateRun(context.Background(), parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	start := func(model string) error {
+		_, err := service.StartChildRun(context.Background(), parent.ID, StartChildAgentRunRequest{
+			UserID:      testUserID,
+			WorkspaceID: testWorkspaceID,
+			Model:       model,
+			Prompt:      "child",
+		})
+		return err
+	}
+
+	if err := start("gpt-5.4-mini"); err != nil {
+		t.Fatalf("expected a child on the parent's provider to start, got %v", err)
+	}
+	if err := start("claude-sonnet"); !errors.Is(err, domain.ErrSubAgentProvider) {
+		t.Fatalf("expected another provider's model to be refused, got %v", err)
+	}
+	if err := start("unknown-model"); !errors.Is(err, domain.ErrModelNotFound) {
+		t.Fatalf("expected an unknown model to be refused, got %v", err)
+	}
+	_, err := service.StartChildRun(context.Background(), parent.ID, StartChildAgentRunRequest{
+		UserID:      testUserID,
+		WorkspaceID: testWorkspaceID,
+		Model:       "gpt-5.4-mini",
+		Prompt:      "child",
+		Thinking:    &domain.ThinkingConfig{Effort: "high"},
+	})
+	if !errors.Is(err, domain.ErrThinkingEffortNotSupported) {
+		t.Fatalf("expected an effort the model does not support to be refused, got %v", err)
+	}
+
+	if len(started) != 1 || started[0] != "gpt-5.4-mini" {
+		t.Fatalf("expected only the same-provider child to start, got %v", started)
+	}
+	runs, err := repo.ListRuns(context.Background(), testUserID, testWorkspaceID)
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("expected no run to be made for a refused child, got %d runs", len(runs))
 	}
 }
 

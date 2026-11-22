@@ -34,6 +34,25 @@ type availableAgentPayload struct {
 	Scope     string `json:"scope"`
 	IsDefault bool   `json:"isDefault"`
 	IsGlobal  bool   `json:"isGlobal"`
+	// Model and Effort are what a child of the agent runs on when
+	// spawn_sub_agent names neither.
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
+	// ModelError says why Model and Effort are missing.
+	ModelError string `json:"modelError,omitempty"`
+}
+
+// subAgentModelPayload is a model a child of the run can use.
+type subAgentModelPayload struct {
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Current       bool     `json:"current,omitempty"`
+	Vision        bool     `json:"vision"`
+	Efforts       []string `json:"efforts,omitempty"`
+	DefaultEffort string   `json:"defaultEffort,omitempty"`
+	// Prices are in US dollars per million tokens, left out when unknown.
+	InputPrice  *float64 `json:"inputUsdPerMillionTokens,omitempty"`
+	OutputPrice *float64 `json:"outputUsdPerMillionTokens,omitempty"`
 }
 
 func (e *WorkspaceExecutor) listAvailableAgents(ctx context.Context, req ExecutionRequest) domain.ToolResultPart {
@@ -54,20 +73,125 @@ func (e *WorkspaceExecutor) listAvailableAgents(ctx context.Context, req Executi
 
 	payload := make([]availableAgentPayload, 0, len(agents))
 	for _, agent := range agents {
-		payload = append(payload, availableAgentPayload{
+		entry := availableAgentPayload{
 			ID:        agent.ID,
 			Name:      agent.Name,
 			Purpose:   agent.Purpose,
 			Scope:     agentScope(agent),
 			IsDefault: agent.IsDefault,
 			IsGlobal:  agent.IsGlobal,
-		})
+		}
+		// One agent's defaults failing to load leaves the rest listable.
+		if model, thinking, err := e.childModel(ctx, req, agent.ID, "", ""); err != nil {
+			entry.ModelError = err.Error()
+		} else {
+			entry.Model = model
+			if thinking != nil {
+				entry.Effort = thinking.Effort
+			}
+		}
+		payload = append(payload, entry)
+	}
+
+	models, err := e.subAgentModels(ctx, req)
+	if err != nil {
+		return toolFailure("list_available_agents", "Error: %v", err)
 	}
 
 	return marshalToolResponse("list_available_agents", map[string]any{
-		"agents":  payload,
-		"message": "Use an agent id as spawn_sub_agent.agent_id to assign a child run to that agent.",
+		"agents":       payload,
+		"currentModel": req.Model,
+		"models":       models,
+		"message": "Use an agent id as spawn_sub_agent.agent_id to assign a child run to that agent. " +
+			"A child runs on its agent's model and effort unless you pass one of these models as spawn_sub_agent.model, " +
+			"and an effort that model supports as spawn_sub_agent.effort. Only these models, from the current model's provider, can run a child.",
 	})
+}
+
+// subAgentModels lists the models a child of the run can use: those of the
+// run's own model's provider, which the user has a key for.
+func (e *WorkspaceExecutor) subAgentModels(ctx context.Context, req ExecutionRequest) ([]subAgentModelPayload, error) {
+	if e.models == nil {
+		return nil, nil
+	}
+	current, err := e.models.FindModel(req.Model)
+	if err != nil {
+		return nil, fmt.Errorf("looking up the current model %s: %w", req.Model, err)
+	}
+	all, err := e.models.ListModels(ctx, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("listing models: %w", err)
+	}
+	models := []subAgentModelPayload{}
+	for _, m := range all {
+		if m.ProviderID != current.ProviderID || !m.Configured {
+			continue
+		}
+		entry := subAgentModelPayload{
+			ID:            m.ID,
+			Name:          m.Name,
+			Current:       m.ID == current.ID,
+			Vision:        m.Vision,
+			Efforts:       m.Thinking.SupportedEfforts,
+			DefaultEffort: m.Thinking.DefaultEffort,
+		}
+		if m.Pricing != nil {
+			// Pricing is already per million tokens.
+			input, output := m.Pricing.Input, m.Pricing.Output
+			entry.InputPrice, entry.OutputPrice = &input, &output
+		}
+		models = append(models, entry)
+	}
+	return models, nil
+}
+
+// childModel picks what a child of agentID runs on: model when it is named,
+// else the user's default for the agent when that is from the parent's
+// provider, else the parent's model. An effort, when given, must be one the
+// picked model supports. Without one, a child on the default's model takes
+// the default's effort (whether or not model named it), one on the parent's
+// model the parent's thinking, and any other its model's default. The run
+// service refuses a child on another provider's model, so naming one fails
+// there.
+func (e *WorkspaceExecutor) childModel(ctx context.Context, req ExecutionRequest, agentID, model, effort string) (string, *domain.ThinkingConfig, error) {
+	// The default matters when it picks the model or, without an effort,
+	// the effort.
+	var def *domain.AgentDefaults
+	if e.defaults != nil && (model == "" || effort == "") {
+		d, err := e.defaults.DefaultsFor(ctx, req.UserID, agentID, "")
+		if err != nil {
+			return "", nil, fmt.Errorf("looking up the agent's default model: %w", err)
+		}
+		if d != nil && e.sameProvider(d.Model, req.Model) {
+			def = d
+		}
+	}
+	if model == "" {
+		model = req.Model
+		if def != nil {
+			model = def.Model
+		}
+	}
+	if effort != "" {
+		if e.models == nil {
+			return "", nil, errors.New("cannot check the effort: no model catalog is available")
+		}
+		m, err := e.models.FindModel(model)
+		if err != nil {
+			return "", nil, fmt.Errorf("looking up model %s: %w", model, err)
+		}
+		if err := domain.ValidateThinkingEffort(m, effort); err != nil {
+			return "", nil, fmt.Errorf("effort %q for %s: %w", effort, model, err)
+		}
+		return model, &domain.ThinkingConfig{Effort: effort}, nil
+	}
+	if def != nil && model == def.Model && def.Effort != "" {
+		return model, &domain.ThinkingConfig{Effort: def.Effort}, nil
+	}
+	if model == req.Model {
+		return model, cloneThinking(req.Thinking), nil
+	}
+	return model, nil, nil
 }
 
 func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequest, params map[string]any) domain.ToolResultPart {
@@ -90,29 +214,11 @@ func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequ
 		agentID = domain.DefaultAgentID
 	}
 
-	// A child without a model runs the one the user set for its agent, with
-	// that effort, else the parent's. Only a child on the parent's model
-	// takes the parent's thinking; any other uses its model's default.
 	model, _ := params["model"].(string)
-	model = strings.TrimSpace(model)
-	var thinking *domain.ThinkingConfig
-	if model == "" && e.defaults != nil {
-		d, err := e.defaults.DefaultsFor(ctx, req.UserID, agentID, "")
-		if err != nil {
-			return toolFailure("spawn_sub_agent", "Error: looking up the agent's default model: %v", err)
-		}
-		if d != nil {
-			model = d.Model
-			if d.Effort != "" {
-				thinking = &domain.ThinkingConfig{Effort: d.Effort}
-			}
-		}
-	}
-	if model == "" {
-		model = req.Model
-	}
-	if model == req.Model && thinking == nil {
-		thinking = cloneThinking(req.Thinking)
+	effort, _ := params["effort"].(string)
+	model, thinking, err := e.childModel(ctx, req, agentID, strings.TrimSpace(model), strings.TrimSpace(effort))
+	if err != nil {
+		return toolFailure("spawn_sub_agent", "Error: %v", err)
 	}
 
 	child, err := e.childRunner.StartChildAgentRun(ctx, ChildAgentRunRequest{
@@ -180,6 +286,23 @@ func agentScope(agent domain.Agent) string {
 	default:
 		return "workspace"
 	}
+}
+
+// sameProvider reports whether two models are from the same provider. It is
+// false when either cannot be found.
+func (e *WorkspaceExecutor) sameProvider(a, b string) bool {
+	if e.models == nil {
+		return false
+	}
+	ma, err := e.models.FindModel(a)
+	if err != nil {
+		return false
+	}
+	mb, err := e.models.FindModel(b)
+	if err != nil {
+		return false
+	}
+	return ma.ProviderID == mb.ProviderID
 }
 
 func (e *WorkspaceExecutor) waitForSubAgents(ctx context.Context, req ExecutionRequest, params map[string]any) domain.ToolResultPart {

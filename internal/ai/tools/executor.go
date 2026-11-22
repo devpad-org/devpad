@@ -58,6 +58,14 @@ type AgentDefaults interface {
 	DefaultsFor(ctx context.Context, userID int64, agentID, effort string) (*domain.AgentDefaults, error)
 }
 
+// ModelCatalog looks up models and lists those a user can pick.
+type ModelCatalog interface {
+	FindModel(modelID string) (domain.Model, error)
+	// ListModels returns every model, with whether the user has a key for
+	// its provider.
+	ListModels(ctx context.Context, userID int64) ([]domain.ModelInfo, error)
+}
+
 // ImageStore keeps the images tools return, so the run's transcript can
 // refer to them.
 type ImageStore interface {

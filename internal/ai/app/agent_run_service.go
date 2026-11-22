@@ -94,6 +94,7 @@ type agentRunService struct {
 	conversations ConversationService
 	agents        AgentService
 	images        ImageLoader
+	models        ModelFinder
 	broker        agentEventBroker
 
 	rootCtx    context.Context
@@ -166,6 +167,14 @@ func (s *agentRunService) WithAgentService(agents AgentService) *agentRunService
 // run's input turns refer to.
 func (s *agentRunService) WithImageLoader(images ImageLoader) *agentRunService {
 	s.images = images
+	return s
+}
+
+// WithModels configures the catalog that tells which provider a model is
+// from. A run starts sub-agents only with one: a sub-agent runs on a model of
+// its parent's provider.
+func (s *agentRunService) WithModels(models ModelFinder) *agentRunService {
+	s.models = models
 	return s
 }
 
@@ -293,7 +302,8 @@ func (s *agentRunService) claimConversation(ctx context.Context, req StartAgentR
 }
 
 // StartChildRun starts a sub-agent run for a tool call in a parent run. It
-// shares the parent's budget, if the parent has one.
+// runs on a model of the parent's provider and shares the parent's budget, if
+// the parent has one.
 func (s *agentRunService) StartChildRun(ctx context.Context, parentRunID int64, req StartChildAgentRunRequest) (*domain.AgentRun, error) {
 	if parentRunID <= 0 {
 		return nil, domain.ErrAgentRunNotFound
@@ -307,6 +317,9 @@ func (s *agentRunService) StartChildRun(ctx context.Context, parentRunID int64, 
 	}
 	if parent.WorkspaceID != req.WorkspaceID {
 		return nil, fmt.Errorf("parent run workspace mismatch: %w", domain.ErrAgentRunNotFound)
+	}
+	if err := s.checkChildModel(parent.Model, req); err != nil {
+		return nil, err
 	}
 	if err := s.ensureChildRunCapacity(ctx, req.UserID, req.WorkspaceID, parentRunID); err != nil {
 		return nil, err
@@ -331,6 +344,29 @@ func (s *agentRunService) StartChildRun(ctx context.Context, parentRunID int64, 
 		return nil, fmt.Errorf("creating agent run: %w", err)
 	}
 	return s.launchRun(ctx, run, agent, nil, s.budgetForRun(parentRunID))
+}
+
+// checkChildModel refuses a sub-agent on a model of another provider than
+// its parent's, or with thinking its model does not support.
+func (s *agentRunService) checkChildModel(parentModel string, req StartChildAgentRunRequest) error {
+	if s.models == nil {
+		return errors.New("sub-agents are not available: no model catalog is configured")
+	}
+	parent, err := s.models.FindModel(parentModel)
+	if err != nil {
+		return fmt.Errorf("looking up the parent run's model %s: %w", parentModel, err)
+	}
+	child, err := s.models.FindModel(req.Model)
+	if err != nil {
+		return fmt.Errorf("looking up the sub-agent's model %s: %w", req.Model, err)
+	}
+	if child.ProviderID != parent.ProviderID {
+		return fmt.Errorf("%w: %s is a %s model, and this run's model %s is a %s model", domain.ErrSubAgentProvider, child.ID, child.ProviderID, parent.ID, parent.ProviderID)
+	}
+	if err := domain.ValidateThinkingRequest(child, domain.ChatRequest{Thinking: req.Thinking}); err != nil {
+		return fmt.Errorf("the sub-agent's thinking on %s: %w", child.ID, err)
+	}
+	return nil
 }
 
 // launchRun starts a stored run in the background. A nil recorder means the
