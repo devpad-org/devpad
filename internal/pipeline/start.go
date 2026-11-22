@@ -16,6 +16,12 @@ import (
 // target's. Its record holds the jobs as resolved, so it runs exactly those,
 // whatever changes meanwhile, and two starts that would test the same thing
 // are one pipeline.
+//
+// Everything a pipeline is resolved from is read under its project's start
+// lock, which also covers finding the same pipeline and superseding others:
+// a start that takes the lock after another reads commits and a setting at
+// least as new, so it never supersedes a newer commit's pipeline with an
+// older one's.
 
 func (s *service) Start(ctx context.Context, in StartInput) (*Pipeline, bool, error) {
 	return s.start(ctx, in, 0)
@@ -27,6 +33,12 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 	if in.Trigger == "" {
 		return nil, false, fmt.Errorf("%w: a pipeline needs a trigger", ErrInvalidInput)
 	}
+	// The project is the user's before anyone takes its lock.
+	if _, err := s.projects.Get(ctx, in.UserID, in.ProjectID); err != nil {
+		return nil, false, err
+	}
+	unlock := s.lockStarts(in.ProjectID)
+	defer unlock()
 	p, err := s.projects.Get(ctx, in.UserID, in.ProjectID)
 	if err != nil {
 		return nil, false, err
@@ -51,24 +63,23 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 	next.CreatedAt = s.now()
 	setJobs(next, resolved)
 
-	unlock := s.lockStarts(p.ID)
-	defer unlock()
-	statuses := []Status{StatusQueued, StatusRunning}
+	statuses := unfinishedStatuses
 	if in.ReuseResult {
-		statuses = append(statuses, resultStatuses...)
+		statuses = countingStatuses
 	}
 	same, err := s.repo.FindSame(ctx, next, statuses)
 	if err != nil {
 		return nil, false, err
 	}
-	s.supersede(next.key())
-	if same != nil && !s.stopping(same.ID) {
-		return same, false, nil
+	created := same == nil || s.stopping(same.ID)
+	if created {
+		if err := s.create(ctx, next); err != nil {
+			return nil, false, err
+		}
+		same = next
 	}
-	if err := s.create(ctx, next); err != nil {
-		return nil, false, err
-	}
-	return next, true, nil
+	s.supersede(same, in.StopStale)
+	return same, created, nil
 }
 
 // subjectOf reads what in asks to test: the pipeline it would be, with its
@@ -174,15 +185,17 @@ func setJobs(p *Pipeline, r *Resolved) {
 	}
 }
 
-// supersede replaces every queued pipeline of the same subject that tests
-// something else: the newer commits, or jobs, are what count. One that has
-// started is left to finish. The caller holds the subject's start lock.
-func (s *service) supersede(next key) {
+// supersede has current replace every queued pipeline of its subject that
+// tests something else: the newer commits, or jobs, are what count. One that
+// has started is left to finish, unless stale asks to stop those too. The
+// caller holds the project's start lock.
+func (s *service) supersede(current *Pipeline, stale bool) {
+	k, cause := current.key(), supersededBy(current.ID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, a := range s.active {
-		if a.subject == next.subject && a.key != next && !a.started {
-			a.stop(errSuperseded)
+		if a.subject == k.subject && a.key != k && (!a.started || stale) {
+			a.stop(cause)
 		}
 	}
 }

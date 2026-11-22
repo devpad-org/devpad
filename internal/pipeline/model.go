@@ -46,8 +46,9 @@ const (
 	StatusNotConfigured Status = "not_configured"
 	// StatusCancelled was stopped before it finished.
 	StatusCancelled Status = "cancelled"
-	// StatusSuperseded was replaced, before it started, by a pipeline of the
-	// same branch or merge request that tests something newer.
+	// StatusSuperseded was replaced by a pipeline of the same branch or
+	// merge request that tests something else: before it started, or while
+	// it ran when the start that replaced it asked (StartInput.StopStale).
 	StatusSuperseded Status = "superseded"
 	// StatusInterrupted was queued or running when devpad stopped; a new
 	// pipeline runs it again.
@@ -63,11 +64,28 @@ func (s Status) Finished() bool {
 // they tested, rather than having been stopped or having failed to run.
 var resultStatuses = []Status{StatusPassed, StatusFailed, StatusInvalid, StatusConflict, StatusNotConfigured}
 
+// unfinishedStatuses are those of pipelines still to end.
+var unfinishedStatuses = []Status{StatusQueued, StatusRunning}
+
+// countingStatuses are those of pipelines that count for what they test:
+// one still to say how the commits stand, or one that said. One that was
+// cancelled, superseded or interrupted, or could not run, said nothing, so
+// it never hides an older one that did.
+var countingStatuses = append(slices.Clone(unfinishedStatuses), resultStatuses...)
+
 // HasResult reports whether a pipeline that ended in status s says
 // something of the commits it tested, so that running the same jobs on them
 // again would only say it again.
 func (s Status) HasResult() bool {
 	return slices.Contains(resultStatuses, s)
+}
+
+// Counts reports whether a pipeline in status s counts for what it tests:
+// it has not finished, or it finished with a result. Reusing a result
+// (StartInput.ReuseResult) and the latest pipeline of a merge request
+// (Service.LatestForMergeRequest) both go by it, so they always agree.
+func (s Status) Counts() bool {
+	return slices.Contains(countingStatuses, s)
 }
 
 // JobStatus is where a job of a pipeline is, or how it ended.
@@ -217,6 +235,26 @@ type key struct {
 
 func (p *Pipeline) key() key {
 	return key{subject: p.subject(), head: p.HeadSHA, target: p.TargetSHA, configHash: p.ConfigHash}
+}
+
+// MergeRequestKey names what a merge request's pipeline tests: its head
+// merged onto a target commit, with the jobs of the pipeline at that commit.
+type MergeRequestKey struct {
+	MergeRequestID int64
+	HeadSHA        string
+	TargetSHA      string
+	// ConfigHash is Resolved.Hash of the pipeline Resolve finds at TargetSHA
+	// now, so that a pass of jobs the pipeline no longer has never counts.
+	ConfigHash string
+}
+
+// probe is a pipeline of the project testing what k names, to look up
+// others that test the same.
+func (k MergeRequestKey) probe(projectID int64) *Pipeline {
+	return &Pipeline{
+		ProjectID: projectID, Kind: KindMergeRequest, MergeRequestID: k.MergeRequestID,
+		HeadSHA: k.HeadSHA, TargetSHA: k.TargetSHA, ConfigHash: k.ConfigHash,
+	}
 }
 
 // subject is what a pipeline is of: a branch or a merge request of a

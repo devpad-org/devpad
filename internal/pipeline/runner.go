@@ -355,14 +355,13 @@ func stoppedStatus(cause error) (Status, bool) {
 }
 
 // stopReason is what a stopped pipeline or job records as why, beyond its
-// status: nothing when the user cancelled it.
+// status: nothing when the user cancelled it, and for one superseded the
+// pipeline that replaced it.
 func stopReason(cause error) string {
-	switch {
-	case errors.Is(cause, errCancelled), errors.Is(cause, errSuperseded):
+	if errors.Is(cause, errCancelled) {
 		return ""
-	default:
-		return cause.Error()
 	}
+	return cause.Error()
 }
 
 // recordContext is a context for recording how something ended, which

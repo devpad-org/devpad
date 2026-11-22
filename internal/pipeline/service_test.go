@@ -3,10 +3,13 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/project"
 )
 
@@ -101,7 +104,7 @@ func TestNewerCommitSupersedesAQueuedPipeline(t *testing.T) {
 	e.projects.setBranch("develop", sha(3))
 	e.projects.setFile(sha(3), ".devpad/pipeline.yml", jobsYAML)
 	newer := e.start(StartInput{Branch: "develop"})
-	if got := e.wait(old.ID); got.Status != StatusSuperseded || got.Error != "" || got.StartedAt != nil {
+	if got := e.wait(old.ID); got.Status != StatusSuperseded || got.Error != fmt.Sprintf("replaced by pipeline %d", newer.ID) || got.StartedAt != nil {
 		t.Fatalf("expected the queued pipeline superseded: %+v", got)
 	}
 	close(gate)
@@ -226,7 +229,7 @@ func TestGetAndListAreTheOwnersOnly(t *testing.T) {
 	if _, err := e.svc.List(ctx, e.stranger, e.project, ListFilter{}); !errors.Is(err, project.ErrForbidden) {
 		t.Fatalf("a stranger's list: %v", err)
 	}
-	if latest, err := e.svc.LatestForMergeRequest(ctx, e.stranger, e.project, e.mr, mr.HeadSHA, mr.TargetSHA); !errors.Is(err, project.ErrForbidden) || latest != nil {
+	if latest, err := e.svc.LatestForMergeRequest(ctx, e.stranger, e.project, MergeRequestKey{MergeRequestID: e.mr, HeadSHA: mr.HeadSHA, TargetSHA: mr.TargetSHA, ConfigHash: mr.ConfigHash}); !errors.Is(err, project.ErrForbidden) || latest != nil {
 		t.Fatalf("a stranger's latest: %+v %v", latest, err)
 	}
 	if _, err := e.svc.Cancel(ctx, e.stranger, e.project, branch.ID); !errors.Is(err, project.ErrForbidden) {
@@ -275,5 +278,163 @@ func TestHeadMovingBackGetsANewPipelineNotTheSupersededOne(t *testing.T) {
 	close(e.projects.envGate)
 	if got := e.wait(back.ID); got.Status != StatusPassed || got.HeadSHA != sha(30) {
 		t.Fatalf("back: %+v", got)
+	}
+}
+
+// slowReadProjects holds the first read of a commit's pipeline until release
+// is closed, closing reached once it holds it.
+type slowReadProjects struct {
+	*fakeProjects
+	commit  string
+	reached chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *slowReadProjects) ReadAt(ctx context.Context, userID, projectID int64, in agent.RepoReadRequest) (*agent.RepoRead, error) {
+	if in.Rev == s.commit {
+		s.once.Do(func() {
+			close(s.reached)
+			<-s.release
+		})
+	}
+	return s.fakeProjects.ReadAt(ctx, userID, projectID, in)
+}
+
+func TestAStartReadsItsCommitsUnderTheProjectsStartLock(t *testing.T) {
+	e := setup(t)
+	e.projects.envGate = make(chan struct{}) // keeps pipelines queued
+	slow := &slowReadProjects{fakeProjects: e.projects, commit: sha(2), reached: make(chan struct{}), release: make(chan struct{})}
+	e.svc.projects = slow
+	start := func() <-chan *Pipeline {
+		done := make(chan *Pipeline, 1)
+		go func() {
+			p, _, err := e.svc.Start(context.Background(), StartInput{UserID: e.owner, ProjectID: e.project, Branch: "develop", Trigger: TriggerUser})
+			if err != nil {
+				t.Errorf("start: %v", err)
+			}
+			done <- p
+		}()
+		return done
+	}
+	// The first start has read develop at sha(2) when the branch moves and
+	// a second start reads it.
+	olderDone := start()
+	<-slow.reached
+	e.projects.setBranch("develop", sha(3))
+	e.projects.setFile(sha(3), ".devpad/pipeline.yml", jobsYAML)
+	newerDone := start()
+	close(slow.release)
+	older, newer := <-olderDone, <-newerDone
+	if older == nil || newer == nil {
+		t.FailNow()
+	}
+	if older.HeadSHA != sha(2) || newer.HeadSHA != sha(3) {
+		t.Fatalf("older tests %s, newer %s", older.HeadSHA, newer.HeadSHA)
+	}
+	// The branch's tip is the one left to test.
+	if got := e.wait(older.ID); got.Status != StatusSuperseded {
+		t.Fatalf("older: %+v", got)
+	}
+	if got, _ := e.svc.repo.Get(context.Background(), newer.ID); got.Status != StatusQueued {
+		t.Fatalf("newer: %+v", got)
+	}
+	close(e.projects.envGate)
+	if got := e.wait(newer.ID); got.Status != StatusPassed {
+		t.Fatalf("newer: %+v", got)
+	}
+}
+
+func TestReuseAndTheMergeRequestGateCountTheSamePipelines(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	// The target has no pipeline file, so the jobs are the project's setting.
+	e.projects.mu.Lock()
+	e.projects.files[sha(2)] = map[string]string{}
+	e.projects.mu.Unlock()
+	latest := func(of *Pipeline) *Pipeline {
+		t.Helper()
+		key := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: of.ConfigHash}
+		got, err := e.svc.LatestForMergeRequest(ctx, e.owner, e.project, key)
+		if err != nil || got == nil {
+			t.Fatalf("latest: %+v %v", got, err)
+		}
+		return got
+	}
+	automatic := func() *Pipeline { return e.start(StartInput{MergeRequestID: e.mr, ReuseResult: true}) }
+	strictJobs, laxJobs := "jobs:\n  strict:\n    run: fail 1\n", "jobs:\n  lax:\n    run: pass\n"
+
+	// The setting's jobs fail; other jobs pass; then the first jobs are back.
+	e.projects.project.PipelineConfig = strictJobs
+	strict := e.wait(automatic().ID)
+	e.projects.project.PipelineConfig = laxJobs
+	lax := e.wait(automatic().ID)
+	e.projects.project.PipelineConfig = strictJobs
+	if again := automatic(); again.ID != strict.ID {
+		t.Fatalf("expected the strict jobs' result reused, got %+v", again)
+	}
+	// The gate sees the failure of the jobs the pipeline has, never the
+	// pass of others.
+	if got := latest(strict); got.ID != strict.ID || got.Status != StatusFailed {
+		t.Fatalf("the strict jobs' latest: %+v", got)
+	}
+	if got := latest(lax); got.ID != lax.ID || got.Status != StatusPassed {
+		t.Fatalf("the lax jobs' latest: %+v", got)
+	}
+
+	// A run by hand runs again, and while it runs it is the latest.
+	e.projects.project.PipelineConfig = laxJobs
+	e.projects.envGate = make(chan struct{})
+	byHand := e.start(StartInput{MergeRequestID: e.mr})
+	if byHand.ID == lax.ID {
+		t.Fatal("a run by hand reused a result")
+	}
+	if got := latest(lax); got.ID != byHand.ID {
+		t.Fatalf("expected the unfinished run latest, got %+v", got)
+	}
+	// Cancelled, it hides the pass from neither.
+	if _, err := e.svc.Cancel(ctx, e.owner, e.project, byHand.ID); err != nil {
+		t.Fatal(err)
+	}
+	close(e.projects.envGate)
+	if got := latest(lax); got.ID != lax.ID {
+		t.Fatalf("a cancelled run hid the pass: %+v", got)
+	}
+	if got := automatic(); got.ID != lax.ID {
+		t.Fatalf("expected the pass reused after a cancelled run, got %+v", got)
+	}
+	// Nor does one that could not run.
+	e.projects.envErr = errors.New("project gone")
+	broken := e.wait(e.start(StartInput{MergeRequestID: e.mr}).ID)
+	e.projects.envErr = nil
+	if broken.Status != StatusError {
+		t.Fatalf("expected an error: %+v", broken)
+	}
+	if got := latest(lax); got.ID != lax.ID {
+		t.Fatalf("a run that could not run hid the pass: %+v", got)
+	}
+	if got := automatic(); got.ID != lax.ID {
+		t.Fatalf("expected the pass reused after an error, got %+v", got)
+	}
+}
+
+func TestStopStaleStopsAStartedPipelineOfOtherCommits(t *testing.T) {
+	e := setup(t)
+	e.projects.setFile(sha(2), ".devpad/pipeline.yml", "jobs:\n  forever:\n    run: hang\n")
+	old := e.start(StartInput{MergeRequestID: e.mr})
+	e.awaitScript("forever")
+	e.mrs.mrs[e.mr].HeadSHA = sha(31)
+	next := e.start(StartInput{MergeRequestID: e.mr, StopStale: true})
+	want := fmt.Sprintf("replaced by pipeline %d", next.ID)
+	got := e.wait(old.ID)
+	if got.Status != StatusSuperseded || got.Error != want || got.StartedAt == nil {
+		t.Fatalf("expected the started pipeline superseded: %+v", got)
+	}
+	if j := got.Jobs[0]; j.Status != JobCancelled || j.Error != want {
+		t.Fatalf("its job: %+v", j)
+	}
+	e.awaitScript("forever")
+	if _, err := e.svc.Cancel(context.Background(), e.owner, e.project, next.ID); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -84,22 +84,27 @@ func latestBySubject(pipelines []*Pipeline) []*Pipeline {
 }
 
 // rerun starts again the pipeline of the branch or merge request an
-// interrupted pipeline was of, unless it no longer runs one.
+// interrupted pipeline was of, unless it no longer runs one, or its commits
+// and jobs now are those of a pipeline that counts, such as one that
+// finished with a result before devpad stopped.
 func (s *service) rerun(ctx context.Context, p *Pipeline) {
-	in := StartInput{UserID: p.UserID, ProjectID: p.ProjectID, Trigger: TriggerRestart}
+	in := StartInput{UserID: p.UserID, ProjectID: p.ProjectID, Trigger: TriggerRestart, ReuseResult: true}
 	if p.Kind == KindMergeRequest {
 		in.MergeRequestID = p.MergeRequestID
 	} else {
 		in.Branch = p.Branch
 	}
-	next, _, err := s.start(ctx, in, p.ID)
-	if err != nil {
+	next, created, err := s.start(ctx, in, p.ID)
+	switch {
+	case err != nil:
 		if ctx.Err() == nil {
 			log.Printf("pipeline %d: not running it again after it was interrupted: %v", p.ID, err)
 		}
-		return
+	case created:
+		log.Printf("pipeline %d: interrupted, running it again as pipeline %d", p.ID, next.ID)
+	default:
+		log.Printf("pipeline %d: interrupted; pipeline %d tests its subject as it is now", p.ID, next.ID)
 	}
-	log.Printf("pipeline %d: interrupted, running it again as pipeline %d", p.ID, next.ID)
 }
 
 // removeLeftBundles removes the bundles a devpad that stopped left in its

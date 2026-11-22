@@ -23,7 +23,10 @@ type Service interface {
 	// A pipeline already queued or running that tests the same commits with
 	// the same jobs is returned instead, with created false. Any pipeline of
 	// the same branch or merge request still queued that tests something
-	// else is superseded.
+	// else is superseded. It reads the merge request and the canonical repo,
+	// so it is never to be called inside a database transaction, and the
+	// merge request lookup it makes (MergeRequests) takes no lock a caller
+	// of Start may hold.
 	Start(ctx context.Context, in StartInput) (p *Pipeline, created bool, err error)
 	// Cancel stops a queued or running pipeline, and waits a while for its
 	// jobs to be stopped and removed.
@@ -36,9 +39,12 @@ type Service interface {
 	// JobOutput reads a job's output from offset on: live while the job
 	// runs, and what is kept of it after.
 	JobOutput(ctx context.Context, userID, projectID, pipelineID, jobID, offset int64) (*Output, error)
-	// LatestForMergeRequest returns the newest pipeline of the merge request
-	// that tested head merged onto target, or nil when none has.
-	LatestForMergeRequest(ctx context.Context, userID, projectID, mergeRequestID int64, head, target string) (*Pipeline, error)
+	// LatestForMergeRequest returns the newest pipeline of what key names
+	// that counts (Status.Counts): one queued or running, or one finished
+	// with a result, which a later one cancelled, superseded or interrupted
+	// never hides. It is nil when there is none. A Start with ReuseResult
+	// returns this same pipeline when it has finished.
+	LatestForMergeRequest(ctx context.Context, userID, projectID int64, key MergeRequestKey) (*Pipeline, error)
 	// AddListener adds one of those told each time a pipeline finishes.
 	AddListener(l Listener)
 	// ProjectDeleting stops the project's pipelines before the project goes.
@@ -61,10 +67,16 @@ type StartInput struct {
 	// MergeRequestID is the merge request, when Branch is empty.
 	MergeRequestID int64
 	Trigger        Trigger
-	// ReuseResult returns the newest pipeline that tested the same commits
-	// with the same jobs and has a result (Status.HasResult), rather than
-	// running them again.
+	// ReuseResult returns the newest pipeline of the same commits and jobs
+	// that counts (Status.Counts), a finished one with a result included,
+	// rather than running them again. Without it, a finished pipeline is
+	// never returned: the user's Run again always runs.
 	ReuseResult bool
+	// StopStale also stops the subject's pipelines that have started and
+	// test something else, which this start makes stale, as it stops the
+	// queued ones: each is recorded superseded by the pipeline Start
+	// returns.
+	StopStale bool
 }
 
 // Listener is told each time a pipeline finishes, however it ended. It is
@@ -145,13 +157,18 @@ const (
 	sweepInterval = 10 * time.Minute
 )
 
-// Why a pipeline's context ends.
+// Why a pipeline's context ends. A pipeline superseded ends with
+// supersededBy, which names the pipeline that replaced it.
 var (
 	errCancelled      = errors.New("cancelled")
-	errSuperseded     = errors.New("replaced by a pipeline of newer commits")
+	errSuperseded     = errors.New("replaced")
 	errShutdown       = errors.New("devpad is stopping")
 	errProjectDeleted = errors.New("the project is being deleted")
 )
+
+func supersededBy(pipelineID int64) error {
+	return fmt.Errorf("%w by pipeline %d", errSuperseded, pipelineID)
+}
 
 type service struct {
 	repo     Repository
@@ -294,12 +311,12 @@ func (s *service) List(ctx context.Context, userID, projectID int64, f ListFilte
 	return s.repo.List(ctx, projectID, f)
 }
 
-func (s *service) LatestForMergeRequest(ctx context.Context, userID, projectID, mergeRequestID int64, head, target string) (*Pipeline, error) {
+func (s *service) LatestForMergeRequest(ctx context.Context, userID, projectID int64, key MergeRequestKey) (*Pipeline, error) {
 	if _, err := s.projects.Get(ctx, userID, projectID); err != nil {
 		return nil, err
 	}
-	p, err := s.repo.LatestForMergeRequest(ctx, mergeRequestID, head, target)
-	if err != nil || p == nil || p.ProjectID != projectID || p.UserID != userID {
+	p, err := s.repo.FindSame(ctx, key.probe(projectID), countingStatuses)
+	if err != nil || p == nil || p.UserID != userID {
 		return nil, err
 	}
 	return p, nil

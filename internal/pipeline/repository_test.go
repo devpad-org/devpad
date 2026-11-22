@@ -125,6 +125,31 @@ func TestRepositoryFindsTheSamePipeline(t *testing.T) {
 	if same, _ := repo.FindSame(ctx, probe, []Status{StatusPassed}); same != nil {
 		t.Errorf("found a queued pipeline as passed")
 	}
+
+	// A merge request's pipeline is the same only for the same pair of
+	// commits and jobs.
+	mr := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "c0ffee0000000008", Kind: KindMergeRequest, MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigSource: SourceFile, ConfigHash: "h1", Status: StatusPassed, Trigger: TriggerUser, CreatedAt: time.Now().UTC()}
+	if err := repo.Create(ctx, mr); err != nil {
+		t.Fatal(err)
+	}
+	key := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: "h1"}
+	if same, err := repo.FindSame(ctx, key.probe(e.project), countingStatuses); err != nil || same == nil || same.ID != mr.ID {
+		t.Fatalf("same merge request pipeline: %+v %v", same, err)
+	}
+	for name, change := range map[string]func(*MergeRequestKey){
+		"another head":   func(k *MergeRequestKey) { k.HeadSHA = sha(31) },
+		"another target": func(k *MergeRequestKey) { k.TargetSHA = sha(1) },
+		"other jobs":     func(k *MergeRequestKey) { k.ConfigHash = "h2" },
+	} {
+		k := key
+		change(&k)
+		if same, _ := repo.FindSame(ctx, k.probe(e.project), countingStatuses); same != nil {
+			t.Errorf("%s: found %d", name, same.ID)
+		}
+	}
+	if same, _ := repo.FindSame(ctx, key.probe(e.project+1), countingStatuses); same != nil {
+		t.Errorf("found another project's pipeline")
+	}
 }
 
 func TestRepositoryInterruptsUnfinishedPipelines(t *testing.T) {

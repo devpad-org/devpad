@@ -22,10 +22,6 @@ type Repository interface {
 	// same subject, commits and jobs, and stands at one of statuses, with
 	// its jobs and their scripts, or nil.
 	FindSame(ctx context.Context, p *Pipeline, statuses []Status) (*Pipeline, error)
-	// LatestForMergeRequest returns the newest pipeline of a merge request
-	// that tested head merged onto target, with its jobs and their scripts,
-	// or nil.
-	LatestForMergeRequest(ctx context.Context, mergeRequestID int64, head, target string) (*Pipeline, error)
 
 	// MarkStarted records that a queued pipeline started on image,
 	// reporting false when it was no longer queued.
@@ -182,19 +178,31 @@ func (r *repository) FindSame(ctx context.Context, p *Pipeline, statuses []Statu
 	if len(statuses) == 0 {
 		return nil, nil
 	}
-	query := `SELECT ` + pipelineColumns + ` FROM pipelines
-		WHERE project_id = ? AND kind = ? AND branch = ? AND COALESCE(merge_request_id, 0) = ? AND head_sha = ? AND target_sha = ? AND config_hash = ?
-		AND status IN (` + placeholders(len(statuses)) + `) ORDER BY id DESC LIMIT 1`
-	args := []any{p.ProjectID, p.Kind, p.Branch, p.MergeRequestID, p.HeadSHA, p.TargetSHA, p.ConfigHash}
-	for _, s := range statuses {
-		args = append(args, s)
-	}
+	query, args := findSameQuery(p, statuses)
 	return r.one(ctx, query, args...)
 }
 
-func (r *repository) LatestForMergeRequest(ctx context.Context, mergeRequestID int64, head, target string) (*Pipeline, error) {
-	return r.one(ctx, `SELECT `+pipelineColumns+` FROM pipelines WHERE merge_request_id = ? AND head_sha = ? AND target_sha = ? ORDER BY id DESC LIMIT 1`,
-		mergeRequestID, head, target)
+// findSameQuery selects the newest pipeline testing what p tests at one of
+// statuses: through the index of a branch's commits, or of a merge
+// request's pairs of commits, so it reads only pipelines of those commits
+// however many the project keeps.
+func findSameQuery(p *Pipeline, statuses []Status) (string, []any) {
+	var query string
+	var args []any
+	if p.Kind == KindMergeRequest {
+		query = `SELECT ` + pipelineColumns + ` FROM pipelines
+			WHERE merge_request_id = ? AND head_sha = ? AND target_sha = ? AND project_id = ? AND config_hash = ?`
+		args = []any{p.MergeRequestID, p.HeadSHA, p.TargetSHA, p.ProjectID, p.ConfigHash}
+	} else {
+		query = `SELECT ` + pipelineColumns + ` FROM pipelines
+			WHERE project_id = ? AND kind = 'branch' AND branch = ? AND head_sha = ? AND config_hash = ?`
+		args = []any{p.ProjectID, p.Branch, p.HeadSHA, p.ConfigHash}
+	}
+	query += ` AND status IN (` + placeholders(len(statuses)) + `) ORDER BY id DESC LIMIT 1`
+	for _, s := range statuses {
+		args = append(args, s)
+	}
+	return query, args
 }
 
 // one reads the pipeline a query selects, with its jobs and their scripts,

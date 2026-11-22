@@ -42,9 +42,14 @@ CREATE TABLE pipelines (
         OR (kind = 'merge_request' AND branch = '' AND merge_request_id IS NOT NULL AND target_sha != ''))
 );
 
+-- A project's, a branch's and a merge request's pipelines, newest first;
+-- those of a branch's commit and of a merge request's pair of commits, to
+-- find one testing the same.
 CREATE INDEX idx_pipelines_project ON pipelines(project_id, id);
 CREATE INDEX idx_pipelines_branch ON pipelines(project_id, branch, id) WHERE kind = 'branch';
-CREATE INDEX idx_pipelines_merge_request ON pipelines(merge_request_id, head_sha, target_sha, id);
+CREATE INDEX idx_pipelines_merge_request ON pipelines(merge_request_id, id);
+CREATE INDEX idx_pipelines_branch_commit ON pipelines(project_id, branch, head_sha, id) WHERE kind = 'branch';
+CREATE INDEX idx_pipelines_merge_request_commits ON pipelines(merge_request_id, head_sha, target_sha, id);
 CREATE INDEX idx_pipelines_unfinished ON pipelines(status) WHERE status IN ('queued', 'running');
 CREATE INDEX idx_pipelines_pinned ON pipelines(ref_pinned) WHERE ref_pinned = 1;
 

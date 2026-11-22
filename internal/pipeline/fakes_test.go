@@ -206,9 +206,11 @@ type fakeDocker struct {
 	// devpad's.
 	leftovers []container.JobResource
 	removed   []container.Job
-	clones    [][]string
-	scripts   []string
-	running   int
+	// sweeps counts the listings of every pipeline's resources.
+	sweeps  int
+	clones  [][]string
+	scripts []string
+	running int
 	// maxRunning is the most scripts that ran at once.
 	maxRunning int
 	// gates hold block scripts, one per job name; allOpen opens every one,
@@ -388,6 +390,14 @@ func (f *fakeDocker) ExecJob(ctx context.Context, containerID string, spec conta
 func (f *fakeDocker) ListJobResources(_ context.Context, sel container.Job) ([]container.JobResource, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if sel == (container.Job{}) {
+		f.sweeps++
+	}
+	return f.list(sel), nil
+}
+
+// list lists what Docker has of the jobs sel selects. The caller holds mu.
+func (f *fakeDocker) list(sel container.Job) []container.JobResource {
 	var out []container.JobResource
 	for job := range f.networks {
 		out = append(out, container.JobResource{Kind: container.JobResourceNetwork, Name: job.NetworkName(), Job: job})
@@ -402,7 +412,7 @@ func (f *fakeDocker) ListJobResources(_ context.Context, sel container.Job) ([]c
 			selected = append(selected, r)
 		}
 	}
-	return selected, nil
+	return selected
 }
 
 func (f *fakeDocker) RemoveJobResources(_ context.Context, sel container.Job) error {
@@ -438,8 +448,16 @@ func selects(sel, job container.Job) bool {
 
 // left lists what Docker still has of pipeline uid, or of every pipeline.
 func (f *fakeDocker) left(uid string) []container.JobResource {
-	resources, _ := f.ListJobResources(context.Background(), container.Job{Pipeline: uid})
-	return resources
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.list(container.Job{Pipeline: uid})
+}
+
+// sweepsDone reports how many times every pipeline's resources were listed.
+func (f *fakeDocker) sweepsDone() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sweeps
 }
 
 // fakeServices are the project's services, of which a job gets copies.

@@ -200,12 +200,15 @@ func TestMergeRequestPipelineTestsTheMergeWithTheTargetsJobs(t *testing.T) {
 	for _, c := range e.docker.containers {
 		t.Errorf("container left: %+v", c)
 	}
-	latest, err := e.svc.LatestForMergeRequest(context.Background(), e.owner, e.project, e.mr, sha(30), sha(2))
+	key := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: got.ConfigHash}
+	latest, err := e.svc.LatestForMergeRequest(context.Background(), e.owner, e.project, key)
 	if err != nil || latest == nil || latest.ID != p.ID {
 		t.Fatalf("latest for the pair: %+v %v", latest, err)
 	}
-	if other, err := e.svc.LatestForMergeRequest(context.Background(), e.owner, e.project, e.mr, sha(30), sha(1)); err != nil || other != nil {
-		t.Fatalf("latest for another target: %+v %v", other, err)
+	other := key
+	other.TargetSHA = sha(1)
+	if latest, err := e.svc.LatestForMergeRequest(context.Background(), e.owner, e.project, other); err != nil || latest != nil {
+		t.Fatalf("latest for another target: %+v %v", latest, err)
 	}
 }
 
@@ -535,6 +538,42 @@ func TestReconcileAfterACrash(t *testing.T) {
 		if got, _ := repo.Get(ctx, p.ID); got.RefPinned {
 			t.Errorf("pipeline %d still recorded as pinned", p.ID)
 		}
+	}
+}
+
+// awaitReconciled waits until Reconcile's background work has run its
+// pipelines again: it sweeps once before that and again each sweepInterval,
+// which the caller set short.
+func (e *env) awaitReconciled() {
+	e.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for e.docker.sweepsDone() < 2 {
+		if time.Now().After(deadline) {
+			e.t.Fatal("Reconcile never swept twice")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestReconcileDoesNotRerunWhatAlreadyHasAResult(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	// develop's tip passed while an older commit's pipeline still ran when
+	// devpad stopped.
+	passed := e.wait(e.start(StartInput{Branch: "develop"}).ID)
+	old := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "cccccccccccccc01", Kind: KindBranch, Branch: "develop", HeadSHA: sha(7), ConfigSource: SourceFile, Status: StatusRunning, Trigger: TriggerUser, CreatedAt: time.Now()}
+	if err := e.svc.repo.Create(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	e.svc = e.newService()
+	e.svc.sweepInterval = time.Millisecond
+	if err := e.svc.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	e.awaitReconciled()
+	all, _ := e.svc.repo.List(ctx, e.project, ListFilter{})
+	if len(all) != 2 || all[0].ID != old.ID || all[0].Status != StatusInterrupted || all[1].ID != passed.ID {
+		t.Fatalf("expected develop's tip left with its pass: %+v", all)
 	}
 }
 
