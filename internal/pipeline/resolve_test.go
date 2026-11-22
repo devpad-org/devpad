@@ -245,7 +245,7 @@ func TestHandleSetConfig(t *testing.T) {
 		req.SetPathValue("id", "7")
 		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 3}))
 		rec := httptest.NewRecorder()
-		NewHandler(settings).HandleSetConfig(rec, req)
+		NewHandler(settings, nil).HandleSetConfig(rec, req)
 		var out map[string]any
 		json.NewDecoder(bytes.NewReader(rec.Body.Bytes())).Decode(&out)
 		return rec.Code, out

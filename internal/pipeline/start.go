@@ -1,0 +1,262 @@
+package pipeline
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"strings"
+
+	"github.com/devpad-org/devpad/internal/project"
+)
+
+// A pipeline is resolved when it starts: the commits it tests are those of
+// its branch or merge request then, and its jobs those of the pipeline at
+// the commit they are read from, the branch's or the merge request's
+// target's. Its record holds the jobs as resolved, so it runs exactly those,
+// whatever changes meanwhile, and two starts that would test the same thing
+// are one pipeline.
+
+func (s *service) Start(ctx context.Context, in StartInput) (*Pipeline, bool, error) {
+	return s.start(ctx, in, 0)
+}
+
+// start starts a pipeline, recording it as running again rerunOf when that
+// is set.
+func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pipeline, bool, error) {
+	if in.Trigger == "" {
+		return nil, false, fmt.Errorf("%w: a pipeline needs a trigger", ErrInvalidInput)
+	}
+	p, err := s.projects.Get(ctx, in.UserID, in.ProjectID)
+	if err != nil {
+		return nil, false, err
+	}
+	if p.Status != project.StatusReady {
+		return nil, false, project.ErrNotReady
+	}
+	next, err := s.subjectOf(ctx, p, in)
+	if err != nil {
+		return nil, false, err
+	}
+	resolved, err := Resolve(ctx, s.projects, p, configCommit(next))
+	if err != nil {
+		return nil, false, err
+	}
+	uid, err := newUID()
+	if err != nil {
+		return nil, false, err
+	}
+	next.UID, next.Trigger, next.RerunOf = uid, in.Trigger, rerunOf
+	next.ConfigSource, next.ConfigPath, next.ConfigHash = resolved.Source, resolved.Path, resolved.Hash
+	next.CreatedAt = s.now()
+	setJobs(next, resolved)
+
+	unlock := s.lockStarts(p.ID)
+	defer unlock()
+	statuses := []Status{StatusQueued, StatusRunning}
+	if in.ReuseResult {
+		statuses = append(statuses, resultStatuses...)
+	}
+	same, err := s.repo.FindSame(ctx, next, statuses)
+	if err != nil {
+		return nil, false, err
+	}
+	s.supersede(next.key())
+	if same != nil && !s.stopping(same.ID) {
+		return same, false, nil
+	}
+	if err := s.create(ctx, next); err != nil {
+		return nil, false, err
+	}
+	return next, true, nil
+}
+
+// subjectOf reads what in asks to test: the pipeline it would be, with its
+// subject and commits filled in.
+func (s *service) subjectOf(ctx context.Context, p *project.Project, in StartInput) (*Pipeline, error) {
+	branch := strings.TrimSpace(in.Branch)
+	switch {
+	case branch != "" && in.MergeRequestID != 0, branch == "" && in.MergeRequestID == 0:
+		return nil, fmt.Errorf("%w: a pipeline tests a branch or a merge request", ErrInvalidInput)
+	case branch != "":
+		return s.branchSubject(ctx, p, branch)
+	default:
+		return s.mergeRequestSubject(ctx, p, in.UserID, in.MergeRequestID)
+	}
+}
+
+// branchSubject is a pipeline of a protected branch's current commit, read
+// with that commit's pipeline. An unprotected branch is its author's to
+// change, an agent's as often as not, so its pipeline file proves nothing.
+func (s *service) branchSubject(ctx context.Context, p *project.Project, branch string) (*Pipeline, error) {
+	if !p.IsProtected(branch) {
+		return nil, fmt.Errorf("%w: only protected branches run pipelines; %s is not protected", ErrInvalidInput, branch)
+	}
+	sha, err := s.branchCommit(ctx, p, branch)
+	if err != nil {
+		return nil, err
+	}
+	return &Pipeline{ProjectID: p.ID, UserID: p.UserID, Kind: KindBranch, Branch: branch, HeadSHA: sha}, nil
+}
+
+// mergeRequestSubject is a pipeline of an open merge request's head merged
+// onto its target's current commit, read with the target commit's pipeline:
+// the source is the change an agent wrote, so it never decides the jobs that
+// grade it.
+func (s *service) mergeRequestSubject(ctx context.Context, p *project.Project, userID, mrID int64) (*Pipeline, error) {
+	mr, err := s.mrs.PipelineMergeRequest(ctx, userID, p.ID, mrID)
+	if err != nil {
+		return nil, err
+	}
+	if mr == nil {
+		return nil, ErrMergeRequestNotFound
+	}
+	if !mr.Open {
+		return nil, fmt.Errorf("%w: the merge request is no longer open", ErrInvalidState)
+	}
+	if !p.IsProtected(mr.TargetBranch) {
+		return nil, fmt.Errorf("%w: the merge request's target %s is no longer protected", ErrInvalidState, mr.TargetBranch)
+	}
+	if !project.IsCommitHash(mr.HeadSHA) {
+		return nil, fmt.Errorf("%w: the merge request has no head commit yet", ErrInvalidState)
+	}
+	target, err := s.branchCommit(ctx, p, mr.TargetBranch)
+	if err != nil {
+		return nil, err
+	}
+	return &Pipeline{
+		ProjectID: p.ID, UserID: p.UserID, Kind: KindMergeRequest,
+		MergeRequestID: mr.ID, SourceBranch: mr.SourceBranch, TargetBranch: mr.TargetBranch,
+		HeadSHA: mr.HeadSHA, TargetSHA: target,
+	}, nil
+}
+
+// branchCommit is the commit a branch of the canonical repo is at.
+func (s *service) branchCommit(ctx context.Context, p *project.Project, branch string) (string, error) {
+	refs, err := s.projects.Branches(ctx, p.UserID, p.ID)
+	if err != nil {
+		return "", err
+	}
+	for _, b := range refs.Branches {
+		if b.Name == branch {
+			if !project.IsCommitHash(b.SHA) {
+				return "", fmt.Errorf("branch %s is at %q, which is not a commit hash", branch, b.SHA)
+			}
+			return b.SHA, nil
+		}
+	}
+	return "", fmt.Errorf("%w: the project has no branch %s", ErrInvalidInput, branch)
+}
+
+// configCommit is the commit a pipeline's jobs are read at: the branch's
+// own, or the merge request's target's.
+func configCommit(p *Pipeline) string {
+	if p.Kind == KindMergeRequest {
+		return p.TargetSHA
+	}
+	return p.HeadSHA
+}
+
+// setJobs gives a pipeline its jobs as resolved, all queued, or makes it
+// finished at once when there is nothing to run: a pipeline that does not
+// parse, or none at all.
+func setJobs(p *Pipeline, r *Resolved) {
+	switch {
+	case r.Invalid != nil:
+		p.Status, p.Error, p.FinishedAt = StatusInvalid, r.Invalid.Error(), &p.CreatedAt
+	case r.Config == nil:
+		p.Status, p.FinishedAt = StatusNotConfigured, &p.CreatedAt
+	default:
+		p.Status = StatusQueued
+		for i, job := range r.Config.Jobs {
+			p.Jobs = append(p.Jobs, &JobRun{Job: job, Position: i, Status: JobQueued})
+		}
+	}
+}
+
+// supersede replaces every queued pipeline of the same subject that tests
+// something else: the newer commits, or jobs, are what count. One that has
+// started is left to finish. The caller holds the subject's start lock.
+func (s *service) supersede(next key) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.active {
+		if a.subject == next.subject && a.key != next && !a.started {
+			a.stop(errSuperseded)
+		}
+	}
+}
+
+// stopping reports whether a pipeline is being stopped, though it may not
+// have recorded so yet, so that it is no longer the one testing what it
+// tests.
+func (s *service) stopping(pipelineID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := s.active[pipelineID]
+	return a != nil && a.stopping
+}
+
+// create records a new pipeline and, unless it finished at once, starts
+// running it; one that did is announced.
+func (s *service) create(ctx context.Context, p *Pipeline) error {
+	if p.Status.Finished() {
+		if err := s.repo.Create(ctx, p); err != nil {
+			return err
+		}
+		s.announce(p.ID)
+		return nil
+	}
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return ErrShuttingDown
+	}
+	if err := s.repo.Create(ctx, p); err != nil {
+		return err
+	}
+	s.launch(p.clone())
+	return nil
+}
+
+// launch runs a queued pipeline in the background. The run owns p, which no
+// one else may then touch.
+func (s *service) launch(p *Pipeline) {
+	ctx, cancel := context.WithCancelCause(s.rootCtx)
+	a := &activePipeline{id: p.ID, subject: p.subject(), key: p.key(), cancel: cancel, done: make(chan struct{})}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		cancel(errShutdown)
+		// Left queued for the next start's Reconcile.
+		return
+	}
+	s.active[p.ID] = a
+	s.wg.Add(1)
+	s.mu.Unlock()
+	go func() {
+		defer s.wg.Done()
+		defer s.forget(a)
+		defer cancel(nil)
+		s.run(ctx, a, p)
+	}()
+}
+
+// forget drops a pipeline that has ended from the active ones.
+func (s *service) forget(a *activePipeline) {
+	s.mu.Lock()
+	delete(s.active, a.id)
+	s.mu.Unlock()
+	close(a.done)
+}
+
+// newUID makes a pipeline's UID: random, so that no other devpad sharing the
+// Docker daemon makes the same.
+func newUID() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("making a pipeline id: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
