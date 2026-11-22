@@ -91,12 +91,12 @@ func TestJobContainerGetsTheBundleImageAndCloneCommands(t *testing.T) {
 		{"git", "fetch", "-q", "--no-tags", "/tmp/pipeline.bundle", "refs/devpad/pipelines/" + p.UID},
 		{"git", "checkout", "-q", "--detach", "FETCH_HEAD"},
 	}
-	if len(e.docker.clones) != 2*len(want) {
+	if len(e.docker.clones) != len(p.Jobs) {
 		t.Fatalf("clone commands: %v", e.docker.clones)
 	}
-	for i, cmd := range e.docker.clones {
-		if !slices.Equal(cmd, want[i%len(want)]) {
-			t.Errorf("clone command %d: %v, want %v", i, cmd, want[i%len(want)])
+	for name, cmds := range e.docker.clones {
+		if !slices.EqualFunc(cmds, want, slices.Equal) {
+			t.Errorf("job %s cloned with %v, want %v", name, cmds, want)
 		}
 	}
 }

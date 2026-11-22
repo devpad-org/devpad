@@ -213,8 +213,9 @@ type fakeDocker struct {
 	leftovers []container.JobResource
 	removed   []container.Job
 	// sweeps counts the listings of every pipeline's resources.
-	sweeps  int
-	clones  [][]string
+	sweeps int
+	// clones are the clone commands run, by job name: jobs clone at once.
+	clones  map[string][][]string
 	scripts []string
 	running int
 	// maxRunning is the most scripts that ran at once.
@@ -289,6 +290,7 @@ func newFakeDocker() *fakeDocker {
 		networks:   map[container.Job]bool{},
 		containers: map[string]*fakeContainer{},
 		gates:      map[string]*fakeGate{},
+		clones:     map[string][][]string{},
 		started:    make(chan string, 1000),
 	}
 }
@@ -335,7 +337,7 @@ func (f *fakeDocker) ExecJob(ctx context.Context, containerID string, spec conta
 		return container.ExecResult{ExitCode: -1}, errors.New("no such container")
 	}
 	if spec.Cmd[0] == "git" {
-		f.clones = append(f.clones, spec.Cmd)
+		f.clones[c.job.Name] = append(f.clones[c.job.Name], spec.Cmd)
 		fails := f.cloneFails
 		f.mu.Unlock()
 		if fails {
@@ -354,12 +356,17 @@ func (f *fakeDocker) ExecJob(ctx context.Context, containerID string, spec conta
 		f.running--
 		f.mu.Unlock()
 	}()
+	word, arg, _ := strings.Cut(script, " ")
+	if word == "block" && arg != "" {
+		// Printed before the script is said to have started, so what a
+		// blocked job printed is there to read.
+		fmt.Fprintln(out, arg)
+	}
 	select {
 	case f.started <- c.job.Name:
 	default:
 	}
 
-	word, arg, _ := strings.Cut(script, " ")
 	switch word {
 	case "pass":
 		return container.ExecResult{}, nil
@@ -377,9 +384,6 @@ func (f *fakeDocker) ExecJob(ctx context.Context, containerID string, spec conta
 		out.Write([]byte(strings.Repeat("x", n)))
 		return container.ExecResult{}, nil
 	case "block":
-		if arg != "" {
-			fmt.Fprintln(out, arg)
-		}
 		select {
 		case <-f.gate(c.job.Name):
 			fmt.Fprintln(out, "released")
