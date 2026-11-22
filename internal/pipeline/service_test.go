@@ -160,10 +160,10 @@ func TestJobOutputIsLiveThenStored(t *testing.T) {
 	if err != nil || live.Done || live.Offset != 0 || !strings.Contains(string(live.Data), "devpad: running the job\n") || live.Next != int64(len(live.Data)) {
 		t.Fatalf("live: %+v %v", live, err)
 	}
-	close(e.docker.gate)
+	e.docker.open("talk")
 	e.wait(p.ID)
 	rest, err := e.svc.JobOutput(ctx, e.owner, e.project, p.ID, jobID, live.Next)
-	if err != nil || !rest.Done || rest.Offset != live.Next || string(rest.Data) != "devpad: the job passed\n" {
+	if err != nil || !rest.Done || rest.Offset != live.Next || string(rest.Data) != "released\ndevpad: the job passed\n" {
 		t.Fatalf("rest: %+v %q %v", rest, rest.Data, err)
 	}
 	if end, _ := e.svc.JobOutput(ctx, e.owner, e.project, p.ID, jobID, rest.Next+100); !end.Done || len(end.Data) != 0 || end.Next != rest.Next {

@@ -120,13 +120,3 @@ func (s *jobSlots) forgetIdle(projectID int64, p *projectSlots) {
 		delete(s.projects, projectID)
 	}
 }
-
-// running reports how many of the project's slots are in use.
-func (s *jobSlots) running(projectID int64) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if p := s.projects[projectID]; p != nil {
-		return p.used
-	}
-	return 0
-}

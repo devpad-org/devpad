@@ -190,7 +190,8 @@ func (f *fakeMergeRequests) PipelineMergeRequest(_ context.Context, _, _ int64, 
 //	fail N        exits N
 //	oom           exits 137 after the container ran out of memory
 //	hang          runs until stopped
-//	block         runs until gate is closed
+//	block [TEXT]  prints TEXT, runs until its job's gate opens, then prints
+//	              "released" and exits 0
 //	print N       prints N bytes and exits 0
 type fakeDocker struct {
 	mu         sync.Mutex
@@ -210,10 +211,63 @@ type fakeDocker struct {
 	running   int
 	// maxRunning is the most scripts that ran at once.
 	maxRunning int
-	gate       chan struct{}
+	// gates hold block scripts, one per job name; allOpen opens every one,
+	// those made later too.
+	gates   map[string]*fakeGate
+	allOpen bool
 	// started receives each job's name as its script starts, while it has
 	// room.
 	started chan string
+}
+
+type fakeGate struct {
+	ch     chan struct{}
+	opened bool
+}
+
+// gate is what holds the block scripts of jobs named name.
+func (f *fakeDocker) gate(name string) chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gateLocked(name).ch
+}
+
+func (f *fakeDocker) gateLocked(name string) *fakeGate {
+	g := f.gates[name]
+	if g == nil {
+		g = &fakeGate{ch: make(chan struct{})}
+		f.gates[name] = g
+		if f.allOpen {
+			g.opened = true
+			close(g.ch)
+		}
+	}
+	return g
+}
+
+// open lets the block scripts of jobs named names end.
+func (f *fakeDocker) open(names ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, name := range names {
+		if g := f.gateLocked(name); !g.opened {
+			g.opened = true
+			close(g.ch)
+		}
+	}
+}
+
+// openAll lets every block script end, now and from now on.
+func (f *fakeDocker) openAll() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.allOpen = true
+	for _, g := range f.gates {
+		if !g.opened {
+			g.opened = true
+			close(g.ch)
+		}
+	}
 }
 
 type fakeContainer struct {
@@ -226,7 +280,7 @@ func newFakeDocker() *fakeDocker {
 	return &fakeDocker{
 		networks:   map[container.Job]bool{},
 		containers: map[string]*fakeContainer{},
-		gate:       make(chan struct{}),
+		gates:      map[string]*fakeGate{},
 		started:    make(chan string, 1000),
 	}
 }
@@ -315,8 +369,12 @@ func (f *fakeDocker) ExecJob(ctx context.Context, containerID string, spec conta
 		out.Write([]byte(strings.Repeat("x", n)))
 		return container.ExecResult{}, nil
 	case "block":
+		if arg != "" {
+			fmt.Fprintln(out, arg)
+		}
 		select {
-		case <-f.gate:
+		case <-f.gate(c.job.Name):
+			fmt.Fprintln(out, "released")
 			return container.ExecResult{}, nil
 		case <-ctx.Done():
 			return container.ExecResult{ExitCode: -1}, context.Cause(ctx)
@@ -573,13 +631,21 @@ func (e *env) waitIdle(id int64) {
 // awaitScript waits for a job's script to start.
 func (e *env) awaitScript(name string) {
 	e.t.Helper()
+	if got := e.nextScript(); got != name {
+		e.t.Fatalf("job %s started, want %s", got, name)
+	}
+}
+
+// nextScript waits for the next job's script to start, and returns the
+// job's name.
+func (e *env) nextScript() string {
+	e.t.Helper()
 	select {
 	case got := <-e.docker.started:
-		if got != name {
-			e.t.Fatalf("job %s started, want %s", got, name)
-		}
+		return got
 	case <-time.After(10 * time.Second):
-		e.t.Fatalf("job %s never started", name)
+		e.t.Fatal("no job's script started")
+		return ""
 	}
 }
 

@@ -344,19 +344,40 @@ func TestAtMostThreeJobsOfAProjectRunAtOnceOldestPipelineFirst(t *testing.T) {
 	e.projects.setFile(sha(2), ".devpad/pipeline.yml", four)
 	e.projects.setFile(sha(1), ".devpad/pipeline.yml", "jobs:\n  other:\n    run: block\n")
 	first := e.start(StartInput{Branch: "develop"})
+	running := map[string]bool{}
 	for range 3 {
-		<-e.docker.started
+		running[e.nextScript()] = true
 	}
+	var waiting string
+	for _, name := range []string{"a", "b", "c", "d"} {
+		if !running[name] {
+			waiting = name
+		}
+	}
+	// The second pipeline waits for a slot, behind the first's job that has
+	// none.
 	second := e.start(StartInput{Branch: "main"})
-	// The second waits for a slot, behind the first's fourth job.
-	time.Sleep(50 * time.Millisecond)
+	awaitWaiters(t, e.svc.slots, e.project, 2)
 	if got, _ := e.svc.repo.Get(context.Background(), second.ID); got.Status != StatusQueued {
 		t.Fatalf("second pipeline %s with no slot free", got.Status)
 	}
 	if n := e.svc.slots.running(e.project); n != 3 {
 		t.Fatalf("%d slots in use", n)
 	}
-	close(e.docker.gate)
+
+	// One slot that frees goes to the first pipeline's waiting job.
+	for name := range running {
+		e.docker.open(name)
+		break
+	}
+	if got := e.nextScript(); got != waiting {
+		t.Fatalf("the freed slot went to %s, want the first pipeline's %s", got, waiting)
+	}
+	if got, _ := e.svc.repo.Get(context.Background(), second.ID); got.Status != StatusQueued {
+		t.Fatalf("second pipeline %s before the first's jobs all had a slot", got.Status)
+	}
+
+	e.docker.openAll()
 	if p := e.wait(first.ID); p.Status != StatusPassed {
 		t.Fatalf("first: %+v", p)
 	}
@@ -365,13 +386,6 @@ func TestAtMostThreeJobsOfAProjectRunAtOnceOldestPipelineFirst(t *testing.T) {
 	}
 	if e.docker.maxRunning != 3 || len(e.docker.scripts) != 5 {
 		t.Fatalf("%d of %d jobs ran at once", e.docker.maxRunning, len(e.docker.scripts))
-	}
-	// A freed slot went to the first pipeline's last job before the second
-	// pipeline.
-	firstDone, _ := e.svc.repo.Get(context.Background(), first.ID)
-	secondDone, _ := e.svc.repo.Get(context.Background(), second.ID)
-	if d := job(t, firstDone, "d").StartedAt; secondDone.StartedAt.Before(*d) {
-		t.Errorf("the second pipeline started at %v, before the first's job d at %v", secondDone.StartedAt, d)
 	}
 }
 

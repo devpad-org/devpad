@@ -32,11 +32,9 @@ func TestSlotsGoToTheOldestPipelineFirst(t *testing.T) {
 		}()
 	}
 	wait("newer", 12, 0)
-	time.Sleep(10 * time.Millisecond)
 	wait("older's second", 10, 3)
-	time.Sleep(10 * time.Millisecond)
 	wait("older's first", 10, 2)
-	time.Sleep(10 * time.Millisecond)
+	awaitWaiters(t, slots, 1, 3)
 
 	a()
 	a() // freeing twice frees once
@@ -68,7 +66,7 @@ func TestSlotWaitEndsWithItsContext(t *testing.T) {
 		_, err := slots.acquire(ctx, 1, 2, 0)
 		done <- err
 	}()
-	time.Sleep(10 * time.Millisecond)
+	awaitWaiters(t, slots, 1, 1)
 	cancel(why)
 	if err := <-done; !errors.Is(err, why) {
 		t.Fatalf("got %v, want the cause", err)
@@ -83,4 +81,36 @@ func TestSlotWaitEndsWithItsContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	again()
+}
+
+// running reports how many of the project's slots are in use.
+func (s *jobSlots) running(projectID int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p := s.projects[projectID]; p != nil {
+		return p.used
+	}
+	return 0
+}
+
+// waiters reports how many jobs of the project wait for a slot.
+func (s *jobSlots) waiters(projectID int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p := s.projects[projectID]; p != nil {
+		return len(p.waiting)
+	}
+	return 0
+}
+
+// awaitWaiters waits until n jobs of the project wait for a slot.
+func awaitWaiters(t *testing.T, s *jobSlots, projectID int64, n int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for s.waiters(projectID) != n {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d jobs wait for a slot, want %d", s.waiters(projectID), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
