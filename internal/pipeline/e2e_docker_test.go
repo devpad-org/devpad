@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -138,13 +139,14 @@ func TestPipelineRunsInDocker(t *testing.T) {
 	}
 	waitInactive(t, svc, got.UID)
 
-	output := func(name string) string {
-		out, err := svc.JobOutput(ctx, userID, p.ID, got.ID, job(t, got, name).ID, 0)
+	read := func(name string) *Output {
+		out, err := svc.JobOutput(ctx, userID, p.ID, got.ID, OutputRequest{JobID: job(t, got, name).ID})
 		if err != nil {
 			t.Fatal(err)
 		}
-		return string(out.Data)
+		return out
 	}
+	output := func(name string) string { return string(read(name).Data) }
 	if got.Status != StatusFailed || got.TestedSHA != got.HeadSHA || got.Image != container.WorkspaceImage {
 		t.Fatalf("pipeline: %+v", got)
 	}
@@ -154,6 +156,14 @@ func TestPipelineRunsInDocker(t *testing.T) {
 	}
 	if db := job(t, got, "db"); db.Status != JobPassed || !strings.Contains(output("db"), "reached postgres\n") {
 		t.Errorf("db: %+v\n%s", db, output("db"))
+	}
+	// devpad's notes are kept apart from what the jobs print.
+	var notes []string
+	for _, n := range read("db").Notes {
+		notes = append(notes, n.Text)
+	}
+	if !slices.Contains(notes, "starting postgres and waiting until it is ready") || notes[len(notes)-1] != "the job passed" || strings.Contains(output("db"), "devpad: ") {
+		t.Errorf("db's notes %q, output %q", notes, output("db"))
 	}
 	if fails := job(t, got, "fails"); fails.Status != JobFailed || fails.ExitCode == nil || *fails.ExitCode != 3 || !strings.Contains(output("fails"), "about to fail\n") {
 		t.Errorf("fails: %+v\n%s", fails, output("fails"))

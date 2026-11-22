@@ -301,3 +301,19 @@ type JobRun struct {
 func (j *JobRun) OutputKept() bool {
 	return j.OutputBytes == 0 || j.KeptBytes > 0
 }
+
+// Note is one of devpad's own notes on a job: a step of setting it up, or
+// how it ended. Notes are kept apart from what the job prints, so nothing a
+// job prints can pass for one.
+type Note struct {
+	At   time.Time `json:"at"`
+	Text string    `json:"text"`
+}
+
+// JobLog is what is kept of what a job told: the end of its output, Total
+// the bytes it printed in all, and devpad's notes on it.
+type JobLog struct {
+	Output []byte
+	Total  int64
+	Notes  []Note
+}

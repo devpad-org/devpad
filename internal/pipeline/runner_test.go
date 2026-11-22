@@ -32,12 +32,19 @@ func TestBranchPipelineRunsItsJobsAndCleansUp(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", got)
 	}
 	for _, j := range got.Jobs {
-		if j.Status != JobPassed || j.ExitCode == nil || *j.ExitCode != 0 || j.StartedAt == nil || j.FinishedAt == nil || j.OutputBytes == 0 || !j.OutputKept() {
+		if j.Status != JobPassed || j.ExitCode == nil || *j.ExitCode != 0 || j.StartedAt == nil || j.FinishedAt == nil || !j.OutputKept() {
 			t.Errorf("job %s: %+v", j.Name, j)
 		}
 	}
-	if out := e.output(got, "build"); !strings.Contains(out, "built\n") || !strings.Contains(out, "devpad: cloning the commit under test") || !strings.HasSuffix(out, "devpad: the job passed\n") {
+	if b := job(t, got, "build"); b.OutputBytes != int64(len("built\n")) || b.KeptBytes != b.OutputBytes {
+		t.Errorf("build kept %d of %d bytes", b.KeptBytes, b.OutputBytes)
+	}
+	// The output is only what the job printed; devpad's notes are apart.
+	if out := e.output(got, "build"); out != "built\n" {
 		t.Errorf("build's output:\n%s", out)
+	}
+	if notes := e.notes(got, "build"); !slices.Contains(notes, "cloning the commit under test into /workspace") || notes[len(notes)-1] != "the job passed" {
+		t.Errorf("build's notes: %q", notes)
 	}
 
 	// The commit itself was pinned, bundled once, and given to each job;
@@ -110,8 +117,8 @@ func TestFailingJobFailsThePipelineAndTheOthersStillRun(t *testing.T) {
 	if j := job(t, p, "oom"); j.Status != JobOutOfMemory || *j.ExitCode != 137 || !strings.Contains(j.Error, "ran out of memory") {
 		t.Errorf("oom: %+v", j)
 	}
-	if out := e.output(p, "lint"); !strings.Contains(out, "it broke\n") || !strings.HasSuffix(out, "devpad: the job exited with 3\n") {
-		t.Errorf("lint's output:\n%s", out)
+	if out, notes := e.output(p, "lint"), e.notes(p, "lint"); out != "it broke\n" || notes[len(notes)-1] != "the job exited with 3" {
+		t.Errorf("lint's output %q, notes %q", out, notes)
 	}
 }
 
@@ -142,8 +149,8 @@ func TestCancelStopsARunningJob(t *testing.T) {
 	if got.Status != StatusCancelled || got.Error != "" {
 		t.Fatalf("expected cancelled, got %+v", got)
 	}
-	if j := job(t, got, "forever"); j.Status != JobCancelled || !strings.Contains(e.output(got, "forever"), "devpad: the job was stopped") {
-		t.Errorf("forever: %+v", j)
+	if j, notes := job(t, got, "forever"), e.notes(got, "forever"); j.Status != JobCancelled || !strings.HasPrefix(notes[len(notes)-1], "the job was stopped") {
+		t.Errorf("forever: %+v, notes %q", j, notes)
 	}
 	// The job waiting for the only slot never ran.
 	if j := job(t, got, "later"); j.Status != JobSkipped || j.StartedAt != nil {
@@ -297,8 +304,8 @@ func TestJobWaitsForANetworkWhileDockerHasNoPool(t *testing.T) {
 	if p.Status != StatusPassed {
 		t.Fatalf("expected a pass once a pool freed: %+v", p)
 	}
-	if out := e.output(p, "test"); strings.Count(out, "no address pool left") != 1 {
-		t.Errorf("expected one line saying it waited:\n%s", out)
+	if notes := e.notes(p, "test"); strings.Count(strings.Join(notes, "\n"), "no address pool left") != 1 {
+		t.Errorf("expected one note saying it waited: %q", notes)
 	}
 }
 
@@ -403,8 +410,8 @@ func TestShutdownLeavesRunningPipelinesForReconcile(t *testing.T) {
 	if stopped.Status != StatusRunning || stopped.Jobs[0].Status != JobRunning {
 		t.Fatalf("expected it left running for Reconcile: %+v %+v", stopped, stopped.Jobs[0])
 	}
-	if stopped.Jobs[0].OutputBytes == 0 {
-		t.Errorf("expected the output it had kept")
+	if notes := e.notes(stopped, "forever"); !slices.Contains(notes, "running the job") {
+		t.Errorf("expected what it had told kept: %q", notes)
 	}
 	if left := e.docker.left(""); len(left) != 0 {
 		t.Errorf("left in Docker: %+v", left)
@@ -621,7 +628,7 @@ func TestDeletingTheProjectStopsItsPipelines(t *testing.T) {
 // broken database would.
 type failingFinishJob struct{ Repository }
 
-func (failingFinishJob) FinishJob(context.Context, *JobRun, []byte) error {
+func (failingFinishJob) FinishJob(context.Context, *JobRun, JobLog) error {
 	return errors.New("database is locked")
 }
 
@@ -636,7 +643,7 @@ func TestAFinishedPipelineKeepsNoUnfinishedJob(t *testing.T) {
 		if j.Status != JobError || j.Error != lostJob || j.FinishedAt == nil {
 			t.Errorf("job %s: %+v", j.Name, j)
 		}
-		if out, err := e.svc.JobOutput(context.Background(), e.owner, e.project, p.ID, j.ID, 0); err != nil || !out.Done {
+		if out, err := e.svc.JobOutput(context.Background(), e.owner, e.project, p.ID, OutputRequest{JobID: j.ID}); err != nil || !out.Done {
 			t.Errorf("job %s's output: %+v %v", j.Name, out, err)
 		}
 	}
@@ -831,7 +838,7 @@ func TestCancelSettlesAPipelineNoRunHolds(t *testing.T) {
 	if a, b := got.Jobs[0], got.Jobs[1]; a.Status != JobCancelled || a.FinishedAt == nil || b.Status != JobSkipped {
 		t.Fatalf("jobs: %+v %+v", a, b)
 	}
-	if out, err := e.svc.JobOutput(ctx, e.owner, e.project, stuck.ID, got.Jobs[0].ID, 0); err != nil || !out.Done {
+	if out, err := e.svc.JobOutput(ctx, e.owner, e.project, stuck.ID, OutputRequest{JobID: got.Jobs[0].ID}); err != nil || !out.Done {
 		t.Fatalf("output: %+v %v", out, err)
 	}
 }

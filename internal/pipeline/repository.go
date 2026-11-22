@@ -44,15 +44,14 @@ type Repository interface {
 
 	// StartJob records that a queued job started.
 	StartJob(ctx context.Context, jobID int64, at time.Time) error
-	// FinishJob records how a job ended, with the end of its output and how
-	// much it printed in all.
-	FinishJob(ctx context.Context, j *JobRun, output []byte) error
-	// SaveJobOutput records the end of a job's output and how much it
-	// printed in all, leaving its status as it is.
-	SaveJobOutput(ctx context.Context, jobID int64, output []byte, total int64) error
-	// JobOutput returns a pipeline's job with what is kept of its output,
+	// FinishJob records how a job ended, with what it told, setting its
+	// OutputBytes and KeptBytes.
+	FinishJob(ctx context.Context, j *JobRun, told JobLog) error
+	// SaveJobLog records what a job told, leaving its status as it is.
+	SaveJobLog(ctx context.Context, jobID int64, told JobLog) error
+	// JobLog returns a pipeline's job with what is kept of what it told,
 	// or nil when the pipeline has no such job.
-	JobOutput(ctx context.Context, pipelineID, jobID int64) (*JobRun, []byte, error)
+	JobLog(ctx context.Context, pipelineID, jobID int64) (*JobRun, *JobLog, error)
 	// PruneOutputs clears the output of every job of the project's
 	// pipelines but its keep newest.
 	PruneOutputs(ctx context.Context, projectID int64, keep int) error
@@ -317,37 +316,61 @@ func (r *repository) StartJob(ctx context.Context, jobID int64, at time.Time) er
 	return nil
 }
 
-func (r *repository) FinishJob(ctx context.Context, j *JobRun, output []byte) error {
-	if output == nil {
-		output = []byte{}
+func (r *repository) FinishJob(ctx context.Context, j *JobRun, told JobLog) error {
+	output, notes, err := encodeLog(told)
+	if err != nil {
+		return err
 	}
 	if _, err := r.db.ExecContext(ctx,
-		`UPDATE pipeline_jobs SET status = ?, exit_code = ?, error = ?, output = ?, output_bytes = ?, finished_at = ? WHERE id = ?`,
-		j.Status, j.ExitCode, j.Error, output, j.OutputBytes, j.FinishedAt, j.ID); err != nil {
+		`UPDATE pipeline_jobs SET status = ?, exit_code = ?, error = ?, output = ?, output_bytes = ?, notes = ?, finished_at = ? WHERE id = ?`,
+		j.Status, j.ExitCode, j.Error, output, told.Total, notes, j.FinishedAt, j.ID); err != nil {
 		return fmt.Errorf("finishing job: %w", err)
 	}
-	j.KeptBytes = int64(len(output))
+	j.OutputBytes, j.KeptBytes = told.Total, int64(len(output))
 	return nil
 }
 
-func (r *repository) SaveJobOutput(ctx context.Context, jobID int64, output []byte, total int64) error {
+func (r *repository) SaveJobLog(ctx context.Context, jobID int64, told JobLog) error {
+	output, notes, err := encodeLog(told)
+	if err != nil {
+		return err
+	}
+	if _, err := r.db.ExecContext(ctx, `UPDATE pipeline_jobs SET output = ?, output_bytes = ?, notes = ? WHERE id = ?`, output, told.Total, notes, jobID); err != nil {
+		return fmt.Errorf("keeping what the job told: %w", err)
+	}
+	return nil
+}
+
+// encodeLog is a job's output and notes as their columns hold them.
+func encodeLog(told JobLog) ([]byte, string, error) {
+	output := told.Output
 	if output == nil {
 		output = []byte{}
 	}
-	if _, err := r.db.ExecContext(ctx, `UPDATE pipeline_jobs SET output = ?, output_bytes = ? WHERE id = ?`, output, total, jobID); err != nil {
-		return fmt.Errorf("keeping job output: %w", err)
+	notes := told.Notes
+	if notes == nil {
+		notes = []Note{}
 	}
-	return nil
+	b, err := json.Marshal(notes)
+	if err != nil {
+		return nil, "", fmt.Errorf("encoding the job's notes: %w", err)
+	}
+	return output, string(b), nil
 }
 
-func (r *repository) JobOutput(ctx context.Context, pipelineID, jobID int64) (*JobRun, []byte, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT `+jobColumns(false)+`, output FROM pipeline_jobs WHERE id = ? AND pipeline_id = ?`, jobID, pipelineID)
-	var output []byte
-	j, err := oneOrNil(scanJob(row, false, &output))
+func (r *repository) JobLog(ctx context.Context, pipelineID, jobID int64) (*JobRun, *JobLog, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT `+jobColumns(false)+`, output, notes FROM pipeline_jobs WHERE id = ? AND pipeline_id = ?`, jobID, pipelineID)
+	var told JobLog
+	var notes string
+	j, err := oneOrNil(scanJob(row, false, &told.Output, &notes))
 	if err != nil || j == nil {
 		return nil, nil, err
 	}
-	return j, output, nil
+	if err := json.Unmarshal([]byte(notes), &told.Notes); err != nil {
+		return nil, nil, fmt.Errorf("decoding the job's notes: %w", err)
+	}
+	told.Total = j.OutputBytes
+	return j, &told, nil
 }
 
 func (r *repository) PruneOutputs(ctx context.Context, projectID int64, keep int) error {

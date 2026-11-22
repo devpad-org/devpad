@@ -6,7 +6,9 @@
 // the bundle of what its pipeline tests. Devpad clones the bundle into
 // /workspace, runs the job's script under its timeout, and reads how it
 // ended from Docker, never from anything the job prints. Everything the job
-// made is removed after, whatever happened.
+// made is removed after, whatever happened. Devpad's own notes on each step
+// go to the Recorder apart from what the job prints, so the job can never
+// print one.
 //
 // The package knows nothing of pipelines' records: the pipeline package
 // decides when a job runs and what its outcome means for its pipeline.
@@ -58,6 +60,14 @@ type Spec struct {
 	Services []string
 	// Bundle is the git bundle of what the pipeline tests.
 	Bundle Bundle
+}
+
+// Recorder hears a job as it runs: Write gets what the job prints, its
+// clone's and its script's output, and Note devpad's own notes on it, each
+// step of setting it up and how it ended.
+type Recorder interface {
+	io.Writer
+	Note(text string)
 }
 
 // Bundle is a git bundle on the host holding what a pipeline tests at its
@@ -149,33 +159,33 @@ func New(runtime Runtime, services Services, cfg Config) *Runner {
 // errTimedOut is the cause of a script's context when its time is up.
 var errTimedOut = errors.New("the job ran out of time")
 
-// Run runs a job, writing to out what it prints, with a line from devpad
+// Run runs a job, writing to rec what it prints, with a note from devpad
 // before each step of setting it up and one saying how it ended. It always
 // removes what the job made before it returns. When ctx ends first the
 // outcome is Stopped, whatever the job was doing.
-func (r *Runner) Run(ctx context.Context, spec Spec, out io.Writer) Result {
+func (r *Runner) Run(ctx context.Context, spec Spec, rec Recorder) Result {
 	if err := spec.validate(); err != nil {
-		return r.ended(out, Result{Outcome: Error, Error: err.Error()})
+		return r.ended(rec, Result{Outcome: Error, Error: err.Error()})
 	}
 	defer r.cleanup(ctx, spec.Job)
 
-	if err := r.createNetwork(ctx, spec.Job, out); err != nil {
-		return r.setupFailed(ctx, out, err)
+	if err := r.createNetwork(ctx, spec.Job, rec); err != nil {
+		return r.setupFailed(ctx, rec, err)
 	}
-	services, err := r.startServices(ctx, spec, out)
+	services, err := r.startServices(ctx, spec, rec)
 	if err != nil {
-		return r.setupFailed(ctx, out, err)
+		return r.setupFailed(ctx, rec, err)
 	}
 	defer r.removeServices(ctx, spec.Job, services)
 
-	containerID, err := r.startContainer(ctx, spec, services, out)
+	containerID, err := r.startContainer(ctx, spec, services, rec)
 	if err != nil {
-		return r.setupFailed(ctx, out, err)
+		return r.setupFailed(ctx, rec, err)
 	}
-	if result, ok := r.clone(ctx, spec, containerID, out); !ok {
-		return r.ended(out, result)
+	if result, ok := r.clone(ctx, spec, containerID, rec); !ok {
+		return r.ended(rec, result)
 	}
-	return r.ended(out, r.runScript(ctx, spec, containerID, out))
+	return r.ended(rec, r.runScript(ctx, spec, containerID, rec))
 }
 
 func (s Spec) validate() error {
@@ -195,8 +205,8 @@ func (s Spec) validate() error {
 
 // createNetwork makes the job's network, waiting while Docker has no
 // address pool left for it: other networks, such as other jobs', free them.
-func (r *Runner) createNetwork(ctx context.Context, job container.Job, out io.Writer) error {
-	say(out, "creating the job's network")
+func (r *Runner) createNetwork(ctx context.Context, job container.Job, rec Recorder) error {
+	note(rec, "creating the job's network")
 	deadline := time.Now().Add(r.cfg.NetworkWait)
 	waiting := false
 	for {
@@ -208,7 +218,7 @@ func (r *Runner) createNetwork(ctx context.Context, job container.Job, out io.Wr
 			return fmt.Errorf("%w; waited %s for one: Docker's default-address-pools setting decides how many networks it can make", err, r.cfg.NetworkWait)
 		}
 		if !waiting {
-			say(out, "Docker has no address pool left for another network; waiting for one to be freed")
+			note(rec, "Docker has no address pool left for another network; waiting for one to be freed")
 			waiting = true
 		}
 		select {
@@ -219,11 +229,11 @@ func (r *Runner) createNetwork(ctx context.Context, job container.Job, out io.Wr
 	}
 }
 
-func (r *Runner) startServices(ctx context.Context, spec Spec, out io.Writer) (*wsservice.JobServices, error) {
+func (r *Runner) startServices(ctx context.Context, spec Spec, rec Recorder) (*wsservice.JobServices, error) {
 	if len(spec.Services) == 0 {
 		return &wsservice.JobServices{}, nil
 	}
-	say(out, "starting %s and waiting until %s ready", strings.Join(spec.Services, ", "), plural(len(spec.Services), "it is", "they are"))
+	note(rec, "starting %s and waiting until %s ready", strings.Join(spec.Services, ", "), plural(len(spec.Services), "it is", "they are"))
 	types := make([]wsservice.ServiceType, len(spec.Services))
 	for i, t := range spec.Services {
 		types[i] = wsservice.ServiceType(t)
@@ -231,12 +241,12 @@ func (r *Runner) startServices(ctx context.Context, spec Spec, out io.Writer) (*
 	return r.services.StartJobServices(ctx, wsservice.JobServicesRequest{ProjectID: spec.ProjectID, Types: types, Job: spec.Job})
 }
 
-func (r *Runner) startContainer(ctx context.Context, spec Spec, services *wsservice.JobServices, out io.Writer) (string, error) {
+func (r *Runner) startContainer(ctx context.Context, spec Spec, services *wsservice.JobServices, rec Recorder) (string, error) {
 	image := spec.Image
 	if image == "" {
 		image = container.WorkspaceImage
 	}
-	say(out, "starting the job's container from %s", image)
+	note(rec, "starting the job's container from %s", image)
 	bundle, err := os.Open(spec.Bundle.Path)
 	if err != nil {
 		return "", fmt.Errorf("opening the bundle: %w", err)
@@ -267,12 +277,12 @@ func cloneCommands(pipelineUID string) [][]string {
 
 // clone clones the bundle into the container's /workspace, reporting false
 // with the job's result when it could not.
-func (r *Runner) clone(ctx context.Context, spec Spec, containerID string, out io.Writer) (Result, bool) {
-	say(out, "cloning the commit under test into /workspace")
+func (r *Runner) clone(ctx context.Context, spec Spec, containerID string, rec Recorder) (Result, bool) {
+	note(rec, "cloning the commit under test into /workspace")
 	cloneCtx, cancel := context.WithTimeoutCause(ctx, r.cfg.CloneTimeout, errCloneTimedOut)
 	defer cancel()
 	for _, cmd := range cloneCommands(spec.Job.Pipeline) {
-		res, err := r.runtime.ExecJob(cloneCtx, containerID, container.ExecSpec{Cmd: cmd, WorkingDir: "/workspace"}, out)
+		res, err := r.runtime.ExecJob(cloneCtx, containerID, container.ExecSpec{Cmd: cmd, WorkingDir: "/workspace"}, rec)
 		switch {
 		case ctx.Err() != nil:
 			return stopped(ctx), false
@@ -290,11 +300,11 @@ func (r *Runner) clone(ctx context.Context, spec Spec, containerID string, out i
 var errCloneTimedOut = errors.New("cloning ran out of time")
 
 // runScript runs the job's script under its timeout, and says how it ended.
-func (r *Runner) runScript(ctx context.Context, spec Spec, containerID string, out io.Writer) Result {
-	say(out, "running the job")
+func (r *Runner) runScript(ctx context.Context, spec Spec, containerID string, rec Recorder) Result {
+	note(rec, "running the job")
 	runCtx, cancel := context.WithTimeoutCause(ctx, spec.Timeout, errTimedOut)
 	defer cancel()
-	res, err := r.runtime.ExecJob(runCtx, containerID, container.ExecSpec{Cmd: container.JobScript(spec.Run), WorkingDir: "/workspace"}, out)
+	res, err := r.runtime.ExecJob(runCtx, containerID, container.ExecSpec{Cmd: container.JobScript(spec.Run), WorkingDir: "/workspace"}, rec)
 	switch {
 	case ctx.Err() != nil:
 		return stopped(ctx)
@@ -317,30 +327,30 @@ func (r *Runner) runScript(ctx context.Context, spec Spec, containerID string, o
 // setupFailed is the result of a job that could not be set up: Stopped when
 // ctx ended, which is likely why, and otherwise an error saying what failed,
 // which the errors of each step already name.
-func (r *Runner) setupFailed(ctx context.Context, out io.Writer, err error) Result {
+func (r *Runner) setupFailed(ctx context.Context, rec Recorder, err error) Result {
 	if ctx.Err() != nil {
-		return r.ended(out, stopped(ctx))
+		return r.ended(rec, stopped(ctx))
 	}
 	msg := err.Error()
 	if errors.Is(err, wsservice.ErrNotProjectService) || errors.Is(err, wsservice.ErrInvalidType) {
 		msg += ": add it to the project's services, or take it out of the job"
 	}
-	return r.ended(out, Result{Outcome: Error, Error: msg})
+	return r.ended(rec, Result{Outcome: Error, Error: msg})
 }
 
 func stopped(ctx context.Context) Result {
 	return Result{Outcome: Stopped, Error: context.Cause(ctx).Error()}
 }
 
-// ended writes devpad's line saying how the job ended, and returns result.
-func (r *Runner) ended(out io.Writer, result Result) Result {
+// ended notes how the job ended, and returns result.
+func (r *Runner) ended(rec Recorder, result Result) Result {
 	switch result.Outcome {
 	case Passed:
-		say(out, "the job passed")
+		note(rec, "the job passed")
 	case Stopped:
-		say(out, "the job was stopped: %s", result.Error)
+		note(rec, "the job was stopped: %s", result.Error)
 	default:
-		say(out, "%s", result.Error)
+		note(rec, "%s", result.Error)
 	}
 	return result
 }
@@ -365,9 +375,9 @@ func (r *Runner) cleanup(ctx context.Context, job container.Job) {
 	}
 }
 
-// say writes one of devpad's own lines into a job's output.
-func say(out io.Writer, format string, args ...any) {
-	fmt.Fprintf(out, "devpad: "+format+"\n", args...)
+// note gives the recorder one of devpad's own notes on a job.
+func note(rec Recorder, format string, args ...any) {
+	rec.Note(fmt.Sprintf(format, args...))
 }
 
 func plural(n int, one, many string) string {

@@ -682,11 +682,26 @@ func job(t *testing.T, p *Pipeline, name string) *JobRun {
 // output reads all that is kept of a job's output.
 func (e *env) output(p *Pipeline, name string) string {
 	e.t.Helper()
-	out, err := e.svc.JobOutput(context.Background(), e.owner, e.project, p.ID, job(e.t, p, name).ID, 0)
+	return string(e.read(p, name).Data)
+}
+
+// notes reads devpad's notes on a job.
+func (e *env) notes(p *Pipeline, name string) []string {
+	e.t.Helper()
+	var texts []string
+	for _, n := range e.read(p, name).Notes {
+		texts = append(texts, n.Text)
+	}
+	return texts
+}
+
+func (e *env) read(p *Pipeline, name string) *Output {
+	e.t.Helper()
+	out, err := e.svc.JobOutput(context.Background(), e.owner, e.project, p.ID, OutputRequest{JobID: job(e.t, p, name).ID})
 	if err != nil {
 		e.t.Fatalf("output of %s: %v", name, err)
 	}
-	return string(out.Data)
+	return out
 }
 
 // tempFiles lists the files left in the env's temporary directory.

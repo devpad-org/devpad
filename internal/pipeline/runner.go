@@ -226,14 +226,14 @@ func (s *service) runJobs(ctx context.Context, p *Pipeline, bundle jobrun.Bundle
 }
 
 // runJob runs one job and records how it ended. A job stopped because
-// devpad is stopping keeps only its output, and its status for Reconcile.
+// devpad is stopping keeps only what it told, and its status for Reconcile.
 func (s *service) runJob(ctx context.Context, p *Pipeline, j *JobRun, bundle jobrun.Bundle) {
 	if ctx.Err() != nil {
 		return
 	}
-	out := newOutputBuffer(MaxJobOutput)
+	live := newJobLog(MaxJobOutput, s.now)
 	s.mu.Lock()
-	s.live[j.ID] = out
+	s.live[j.ID] = live
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
@@ -254,24 +254,24 @@ func (s *service) runJob(ctx context.Context, p *Pipeline, j *JobRun, bundle job
 		Timeout:   j.Timeout,
 		Services:  j.Services,
 		Bundle:    bundle,
-	}, out)
+	}, live)
 
-	kept, total := out.snapshot()
+	told := live.snapshot()
 	recordCtx, cancel := s.recordContext(ctx)
 	defer cancel()
 	status, ok := jobStatus(res.Outcome, context.Cause(ctx))
 	if !ok {
-		if err := s.repo.SaveJobOutput(recordCtx, j.ID, kept, total); err != nil {
-			log.Printf("pipeline %d job %s: keeping its output: %v", p.ID, j.Name, err)
+		if err := s.repo.SaveJobLog(recordCtx, j.ID, told); err != nil {
+			log.Printf("pipeline %d job %s: keeping what it told: %v", p.ID, j.Name, err)
 		}
 		return
 	}
 	finished := s.now()
-	j.Status, j.ExitCode, j.Error, j.OutputBytes, j.FinishedAt = status, res.ExitCode, res.Error, total, &finished
+	j.Status, j.ExitCode, j.Error, j.FinishedAt = status, res.ExitCode, res.Error, &finished
 	if status == JobCancelled {
 		j.Error = stopReason(context.Cause(ctx))
 	}
-	if err := s.repo.FinishJob(recordCtx, j, kept); err != nil {
+	if err := s.repo.FinishJob(recordCtx, j, told); err != nil {
 		log.Printf("pipeline %d job %s: recording how it ended: %v", p.ID, j.Name, err)
 		// Its record still has it running, which its pipeline's finish
 		// settles as this, so the pipeline's outcome counts it so too.

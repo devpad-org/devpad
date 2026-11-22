@@ -61,8 +61,12 @@ func TestPipelineEndpoints(t *testing.T) {
 		t.Fatalf("again: %d %v", code, out)
 	}
 	code, out = e.serve(e.owner, http.MethodGet, fmt.Sprintf("%s/%d/jobs/%d/output?offset=0", base, id, jobID), "")
-	if code != http.StatusOK || out["done"] != false || !strings.Contains(out["data"].(string), "devpad: running the job") || out["next"].(float64) <= 0 {
+	notes, _ := out["notes"].([]any)
+	if code != http.StatusOK || out["done"] != false || out["data"] != "" || out["next"] != float64(0) || len(notes) == 0 {
 		t.Fatalf("live output: %d %v", code, out)
+	}
+	if last := notes[len(notes)-1].(map[string]any); last["text"] != "running the job" || last["at"] == "" {
+		t.Fatalf("live notes: %v", notes)
 	}
 
 	code, out = e.serve(e.owner, http.MethodPost, fmt.Sprintf("%s/%d/cancel", base, id), "")

@@ -161,9 +161,12 @@ func (h *Handler) HandleCancel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"pipeline": pipelineResponse(p, true)})
 }
 
-// HandleJobOutput returns a job's output from the offset asked for: a
-// client polls it, asking each time from the next offset it was given,
-// until it is told the job is done.
+// HandleJobOutput returns a job's output from the offset asked for, with
+// all devpad's notes on the job so far, which are never part of the output:
+// a client polls it, asking each time from the next offset it was given
+// (never offset plus the length of data, which is sent as a JSON string, in
+// which bytes that are not UTF-8 become U+FFFD), until it is told the job is
+// done.
 func (h *Handler) HandleJobOutput(w http.ResponseWriter, r *http.Request) {
 	user, projectID, pipelineID, ok := params(w, r)
 	if !ok {
@@ -182,10 +185,14 @@ func (h *Handler) HandleJobOutput(w http.ResponseWriter, r *http.Request) {
 		}
 		offset = n
 	}
-	out, err := h.pipelines.JobOutput(r.Context(), user.ID, projectID, pipelineID, jobID, offset)
+	out, err := h.pipelines.JobOutput(r.Context(), user.ID, projectID, pipelineID, OutputRequest{JobID: jobID, Offset: offset})
 	if err != nil {
 		handleServiceError(w, err)
 		return
+	}
+	notes := out.Notes
+	if notes == nil {
+		notes = []Note{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"offset":  out.Offset,
@@ -193,6 +200,7 @@ func (h *Handler) HandleJobOutput(w http.ResponseWriter, r *http.Request) {
 		"next":    out.Next,
 		"done":    out.Done,
 		"dropped": out.Dropped,
+		"notes":   notes,
 	})
 }
 

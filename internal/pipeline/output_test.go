@@ -29,15 +29,16 @@ func TestReadOutputByOffset(t *testing.T) {
 	kept := []byte(whole[4:]) // the second byte of é onward
 	total := int64(len(whole))
 
-	got := readOutput(kept, total, 0, true)
+	log := func(kept []byte, total int64) JobLog { return JobLog{Output: kept, Total: total} }
+	got := readOutput(log(kept, total), 0, true)
 	if !got.Dropped || got.Offset != 5 || string(got.Data) != "def" || got.Next != total {
 		t.Fatalf("from 0: %+v %q", got, got.Data)
 	}
-	got = readOutput(kept, total, 6, true)
+	got = readOutput(log(kept, total), 6, true)
 	if got.Dropped || got.Offset != 6 || string(got.Data) != "ef" {
 		t.Fatalf("from 6: %+v", got)
 	}
-	got = readOutput(kept, total, 100, true)
+	got = readOutput(log(kept, total), 100, true)
 	if got.Offset != total || len(got.Data) != 0 || got.Next != total {
 		t.Fatalf("past the end: %+v", got)
 	}
@@ -45,17 +46,17 @@ func TestReadOutputByOffset(t *testing.T) {
 	// A running job's output that ends partway through a character is read
 	// up to it, and the rest comes next time.
 	running := []byte("ok é")
-	got = readOutput(running[:len(running)-1], int64(len(running)-1), 0, false)
+	got = readOutput(log(running[:len(running)-1], int64(len(running)-1)), 0, false)
 	if string(got.Data) != "ok " || got.Next != 3 {
 		t.Fatalf("cut character: %+v %q", got, got.Data)
 	}
-	got = readOutput(running, int64(len(running)), got.Next, false)
+	got = readOutput(log(running, int64(len(running))), got.Next, false)
 	if string(got.Data) != "é" || got.Next != int64(len(running)) {
 		t.Fatalf("rest: %+v %q", got, got.Data)
 	}
 	// Bytes that are no character at all are passed on, not held back.
 	junk := []byte{'a', 0xff, 0xfe}
-	if got := readOutput(junk, 3, 0, false); len(got.Data) != 3 {
+	if got := readOutput(log(junk, 3), 0, false); len(got.Data) != 3 {
 		t.Fatalf("junk: %+v", got)
 	}
 }

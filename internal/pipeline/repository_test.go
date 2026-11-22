@@ -48,7 +48,8 @@ func TestRepositoryRecordsAPipelineThroughItsRun(t *testing.T) {
 	}
 	code, finished := 2, time.Now()
 	a.Status, a.ExitCode, a.Error, a.OutputBytes, a.FinishedAt = JobFailed, &code, "exited 2", 12, &finished
-	if err := repo.FinishJob(ctx, a, []byte("last bytes")); err != nil {
+	at := time.Now().UTC().Truncate(time.Second)
+	if err := repo.FinishJob(ctx, a, JobLog{Output: []byte("last bytes"), Total: 12, Notes: []Note{{At: at, Text: "running the job"}}}); err != nil {
 		t.Fatal(err)
 	}
 	p.Status, p.FinishedAt, p.ConflictPaths = StatusFailed, &finished, nil
@@ -71,9 +72,9 @@ func TestRepositoryRecordsAPipelineThroughItsRun(t *testing.T) {
 	if b := got.Jobs[1]; b.Status != JobSkipped || b.StartedAt != nil || b.FinishedAt == nil || b.ExitCode != nil {
 		t.Fatalf("job b: %+v", b)
 	}
-	j, output, err := repo.JobOutput(ctx, p.ID, a.ID)
-	if err != nil || string(output) != "last bytes" || j.ID != a.ID {
-		t.Fatalf("output: %q %+v %v", output, j, err)
+	j, told, err := repo.JobLog(ctx, p.ID, a.ID)
+	if err != nil || string(told.Output) != "last bytes" || told.Total != 12 || j.ID != a.ID || len(told.Notes) != 1 || told.Notes[0].Text != "running the job" || !told.Notes[0].At.Equal(at) {
+		t.Fatalf("log: %+v %+v %v", told, j, err)
 	}
 }
 

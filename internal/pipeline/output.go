@@ -1,15 +1,52 @@
 package pipeline
 
 import (
+	"slices"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
-// A job's output is everything it printed, devpad's own lines about setting
-// it up included. Offsets are byte positions in all of it, from 0, so a
-// client polling a running job asks for what came after what it has, and
-// the same offsets keep working once the job has finished and only the end
-// of its output is kept.
+// A job's output is everything it printed, its clone's and its script's,
+// and nothing of devpad's: devpad's notes on setting it up and on how it
+// ended are kept apart, so the job cannot forge one. Offsets are byte
+// positions in the output, from 0, so a client polling a running job asks
+// for what came after what it has, and the same offsets keep working once
+// the job has finished and only the end of its output is kept. Each read
+// also carries every note so far.
+
+// jobLog is what a running job has told so far: its output, of which it
+// keeps the end, and devpad's notes on it. It is the job's
+// jobrun.Recorder, safe for one writer and any number of readers.
+type jobLog struct {
+	out *outputBuffer
+	now func() time.Time
+
+	mu    sync.Mutex
+	notes []Note
+}
+
+func newJobLog(limit int, now func() time.Time) *jobLog {
+	return &jobLog{out: newOutputBuffer(limit), now: now}
+}
+
+func (l *jobLog) Write(p []byte) (int, error) {
+	return l.out.Write(p)
+}
+
+func (l *jobLog) Note(text string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.notes = append(l.notes, Note{At: l.now(), Text: text})
+}
+
+// snapshot is a copy of what the job has told so far.
+func (l *jobLog) snapshot() JobLog {
+	kept, total := l.out.snapshot()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return JobLog{Output: kept, Total: total, Notes: slices.Clone(l.notes)}
+}
 
 // outputBuffer is a running job's output: it keeps the last limit bytes
 // written to it and counts them all. It is safe for one writer and any
@@ -70,17 +107,20 @@ type Output struct {
 	// was over MaxJobOutput before the end, or is gone with an old
 	// pipeline's.
 	Dropped bool
+	// Notes are all devpad's notes on the job so far.
+	Notes []Note
 }
 
-// readOutput returns what is kept of a job's output from offset on. kept is
-// the end of the output, total how much there was in all. A job still
-// running may be partway through a character, so its part ends before one
-// that is cut off and the next read gets it whole. A part that starts where
-// the kept output was cut skips to the next whole character.
-func readOutput(kept []byte, total, offset int64, done bool) *Output {
+// readOutput returns what is kept of a job's output from offset on, with
+// every note. A job still running may be partway through a character, so
+// its part ends before one that is cut off and the next read gets it whole.
+// A part that starts where the kept output was cut skips to the next whole
+// character.
+func readOutput(log JobLog, offset int64, done bool) *Output {
+	kept, total := log.Output, log.Total
 	start := total - int64(len(kept))
 	offset = max(offset, 0)
-	out := &Output{Done: done}
+	out := &Output{Done: done, Notes: log.Notes}
 	if offset > total {
 		offset = total
 	}

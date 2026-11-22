@@ -38,9 +38,9 @@ type Service interface {
 	List(ctx context.Context, userID, projectID int64, f ListFilter) ([]*Pipeline, error)
 	// Get returns a pipeline of the project with its jobs and their scripts.
 	Get(ctx context.Context, userID, projectID, pipelineID int64) (*Pipeline, error)
-	// JobOutput reads a job's output from offset on: live while the job
-	// runs, and what is kept of it after.
-	JobOutput(ctx context.Context, userID, projectID, pipelineID, jobID, offset int64) (*Output, error)
+	// JobOutput reads a job's output from an offset on, with devpad's notes
+	// on the job: live while the job runs, and what is kept of them after.
+	JobOutput(ctx context.Context, userID, projectID, pipelineID int64, req OutputRequest) (*Output, error)
 	// LatestForMergeRequest returns the newest pipeline of what key names
 	// that counts (Status.Counts): one queued or running, or one finished
 	// with a result, which a later one cancelled, superseded or interrupted
@@ -93,6 +93,13 @@ type StartInput struct {
 	StopStale bool
 }
 
+// OutputRequest asks for a pipeline's job's output from Offset on: 0, or the
+// Next of the last read.
+type OutputRequest struct {
+	JobID  int64
+	Offset int64
+}
+
 // Listener is told each time a pipeline finishes, however it ended
 // (Service.AddListener says how often and in what order). It is told from a
 // goroutine of its own, never from inside a call to the Service, so it may
@@ -140,7 +147,7 @@ type MergeRequest struct {
 
 // JobRunner runs one job in a container of its own; jobrun.Runner is one.
 type JobRunner interface {
-	Run(ctx context.Context, spec jobrun.Spec, out io.Writer) jobrun.Result
+	Run(ctx context.Context, spec jobrun.Spec, rec jobrun.Recorder) jobrun.Result
 }
 
 // JobResources lists and removes what pipelines' jobs made in Docker;
@@ -219,8 +226,8 @@ type service struct {
 	// deleting holds the projects being deleted, whose pipelines no longer
 	// start.
 	deleting map[int64]bool
-	// live holds the output of each job running now.
-	live map[int64]*outputBuffer
+	// live holds what each job running now has told.
+	live map[int64]*jobLog
 	// startLocks serialize starting each project's pipelines.
 	startLocks map[int64]*sync.Mutex
 	listeners  []Listener
@@ -275,7 +282,7 @@ func NewService(d Deps) Service {
 		rootCancel:    cancel,
 		runs:          make(map[string]*activePipeline),
 		deleting:      make(map[int64]bool),
-		live:          make(map[int64]*outputBuffer),
+		live:          make(map[int64]*jobLog),
 		startLocks:    make(map[int64]*sync.Mutex),
 	}
 }
@@ -362,28 +369,27 @@ func (s *service) LatestForMergeRequest(ctx context.Context, userID, projectID i
 	return p, nil
 }
 
-func (s *service) JobOutput(ctx context.Context, userID, projectID, pipelineID, jobID, offset int64) (*Output, error) {
+func (s *service) JobOutput(ctx context.Context, userID, projectID, pipelineID int64, req OutputRequest) (*Output, error) {
 	p, err := s.get(ctx, userID, projectID, pipelineID)
 	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
-	buf := s.live[jobID]
+	live := s.live[req.JobID]
 	s.mu.Unlock()
-	// A job's live buffer is recorded before it leaves the map, so a job
-	// not in it has either not started or has all its output stored.
-	if buf != nil && jobOf(p, jobID) {
-		kept, total := buf.snapshot()
-		return readOutput(kept, total, offset, false), nil
+	// A job's live log is recorded before it leaves the map, so a job not
+	// in it has either not started or has all it told stored.
+	if live != nil && jobOf(p, req.JobID) {
+		return readOutput(live.snapshot(), req.Offset, false), nil
 	}
-	j, output, err := s.repo.JobOutput(ctx, p.ID, jobID)
+	j, told, err := s.repo.JobLog(ctx, p.ID, req.JobID)
 	if err != nil {
 		return nil, err
 	}
 	if j == nil {
 		return nil, ErrJobNotFound
 	}
-	return readOutput(output, j.OutputBytes, offset, j.Status.Finished()), nil
+	return readOutput(*told, req.Offset, j.Status.Finished()), nil
 }
 
 // jobOf reports whether a job is one of p's.

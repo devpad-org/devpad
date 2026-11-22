@@ -60,7 +60,9 @@ CREATE INDEX idx_pipelines_unannounced ON pipelines(id) WHERE announced_at IS NU
 -- A pipeline's jobs, in the order its file lists them, each as it was
 -- resolved when the pipeline started. output is the end of what the job
 -- printed, as raw bytes, and output_bytes all it printed: output is empty
--- with output_bytes above zero once it is no longer kept.
+-- with output_bytes above zero once it is no longer kept. notes are
+-- devpad's own notes on the job, kept apart from its output so that the job
+-- cannot forge one: a JSON list of {"at", "text"}.
 CREATE TABLE pipeline_jobs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     pipeline_id  INTEGER  NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
@@ -76,6 +78,7 @@ CREATE TABLE pipeline_jobs (
     error        TEXT     NOT NULL DEFAULT '',
     output       BLOB     NOT NULL DEFAULT x'',
     output_bytes INTEGER  NOT NULL DEFAULT 0,
+    notes        TEXT     NOT NULL DEFAULT '[]',
     started_at   DATETIME,
     finished_at  DATETIME,
     UNIQUE (pipeline_id, name),

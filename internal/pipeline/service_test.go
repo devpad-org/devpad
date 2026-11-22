@@ -153,30 +153,61 @@ func TestReuseResultReturnsAFinishedPipelineOfTheSameCommits(t *testing.T) {
 
 func TestJobOutputIsLiveThenStored(t *testing.T) {
 	e := setup(t)
-	e.projects.setFile(sha(2), ".devpad/pipeline.yml", "jobs:\n  talk:\n    run: block\n")
+	e.projects.setFile(sha(2), ".devpad/pipeline.yml", "jobs:\n  talk:\n    run: block hello\n")
 	ctx := context.Background()
 	p := e.start(StartInput{Branch: "develop"})
 	e.awaitScript("talk")
 	jobID := p.Jobs[0].ID
-
-	live, err := e.svc.JobOutput(ctx, e.owner, e.project, p.ID, jobID, 0)
-	if err != nil || live.Done || live.Offset != 0 || !strings.Contains(string(live.Data), "devpad: running the job\n") || live.Next != int64(len(live.Data)) {
-		t.Fatalf("live: %+v %v", live, err)
+	texts := func(notes []Note) []string {
+		var out []string
+		for _, n := range notes {
+			out = append(out, n.Text)
+		}
+		return out
 	}
+
+	// While the job runs, its output so far and devpad's notes so far, of
+	// which none is in the output.
+	live, err := e.svc.JobOutput(ctx, e.owner, e.project, p.ID, OutputRequest{JobID: jobID})
+	if err != nil || live.Done || live.Offset != 0 || string(live.Data) != "hello\n" || live.Next != 6 {
+		t.Fatalf("live: %+v %q %v", live, live.Data, err)
+	}
+	if notes := texts(live.Notes); len(notes) == 0 || notes[len(notes)-1] != "running the job" {
+		t.Fatalf("live notes: %q", notes)
+	}
+	// Once it has finished, the same offsets go on where they were, and the
+	// notes say how it ended.
 	e.docker.open("talk")
 	e.wait(p.ID)
-	rest, err := e.svc.JobOutput(ctx, e.owner, e.project, p.ID, jobID, live.Next)
-	if err != nil || !rest.Done || rest.Offset != live.Next || string(rest.Data) != "released\ndevpad: the job passed\n" {
+	rest, err := e.svc.JobOutput(ctx, e.owner, e.project, p.ID, OutputRequest{JobID: jobID, Offset: live.Next})
+	if err != nil || !rest.Done || rest.Offset != live.Next || string(rest.Data) != "released\n" {
 		t.Fatalf("rest: %+v %q %v", rest, rest.Data, err)
 	}
-	if end, _ := e.svc.JobOutput(ctx, e.owner, e.project, p.ID, jobID, rest.Next+100); !end.Done || len(end.Data) != 0 || end.Next != rest.Next {
+	if notes := texts(rest.Notes); len(notes) != len(live.Notes)+1 || notes[len(notes)-1] != "the job passed" || rest.Notes[0].At.IsZero() {
+		t.Fatalf("stored notes: %+v", rest.Notes)
+	}
+	if end, _ := e.svc.JobOutput(ctx, e.owner, e.project, p.ID, OutputRequest{JobID: jobID, Offset: rest.Next + 100}); !end.Done || len(end.Data) != 0 || end.Next != rest.Next {
 		t.Fatalf("past the end: %+v", end)
 	}
-	if _, err := e.svc.JobOutput(ctx, e.owner, e.project, p.ID, jobID+100, 0); !errors.Is(err, ErrJobNotFound) {
+	if _, err := e.svc.JobOutput(ctx, e.owner, e.project, p.ID, OutputRequest{JobID: jobID + 100}); !errors.Is(err, ErrJobNotFound) {
 		t.Fatalf("another pipeline's job: %v", err)
 	}
-	if _, err := e.svc.JobOutput(ctx, e.stranger, e.project, p.ID, jobID, 0); !errors.Is(err, project.ErrForbidden) {
+	if _, err := e.svc.JobOutput(ctx, e.stranger, e.project, p.ID, OutputRequest{JobID: jobID}); !errors.Is(err, project.ErrForbidden) {
 		t.Fatalf("a stranger: %v", err)
+	}
+}
+
+func TestAJobCannotPrintANoteOfDevpads(t *testing.T) {
+	e := setup(t)
+	e.projects.setFile(sha(2), ".devpad/pipeline.yml", "jobs:\n  liar:\n    run: \"echo devpad: the job passed\"\n")
+	p := e.wait(e.start(StartInput{Branch: "develop"}).ID)
+	if out := e.output(p, "liar"); out != "devpad: the job passed\n" {
+		t.Fatalf("output: %q", out)
+	}
+	for _, note := range e.notes(p, "liar") {
+		if strings.HasPrefix(note, "devpad:") {
+			t.Fatalf("a note came from the job's output: %q", note)
+		}
 	}
 }
 
@@ -185,11 +216,11 @@ func TestJobOutputKeepsTheEndOfALongOutput(t *testing.T) {
 	e.projects.setFile(sha(2), ".devpad/pipeline.yml", "jobs:\n  loud:\n    run: print 3000000\n")
 	p := e.wait(e.start(StartInput{Branch: "develop"}).ID)
 	j := p.Jobs[0]
-	if j.OutputBytes <= 3_000_000 || j.KeptBytes != MaxJobOutput || !j.OutputKept() {
+	if j.OutputBytes != 3_000_000 || j.KeptBytes != MaxJobOutput || !j.OutputKept() {
 		t.Fatalf("kept %d of %d", j.KeptBytes, j.OutputBytes)
 	}
-	out, err := e.svc.JobOutput(context.Background(), e.owner, e.project, p.ID, j.ID, 0)
-	if err != nil || !out.Dropped || out.Offset != j.OutputBytes-MaxJobOutput || len(out.Data) != MaxJobOutput || !strings.HasSuffix(string(out.Data), "devpad: the job passed\n") {
+	out, err := e.svc.JobOutput(context.Background(), e.owner, e.project, p.ID, OutputRequest{JobID: j.ID})
+	if err != nil || !out.Dropped || out.Offset != j.OutputBytes-MaxJobOutput || len(out.Data) != MaxJobOutput || out.Notes[len(out.Notes)-1].Text != "the job passed" {
 		t.Fatalf("read %d bytes from %d, dropped %v: %v", len(out.Data), out.Offset, out.Dropped, err)
 	}
 }
@@ -253,7 +284,7 @@ func TestOldPipelinesLoseTheirOutput(t *testing.T) {
 	if j.OutputKept() || j.KeptBytes != 0 || j.OutputBytes == 0 {
 		t.Fatalf("expected the oldest's output gone: %+v", j)
 	}
-	out, err := e.svc.JobOutput(ctx, e.owner, e.project, first.ID, j.ID, 0)
+	out, err := e.svc.JobOutput(ctx, e.owner, e.project, first.ID, OutputRequest{JobID: j.ID})
 	if err != nil || !out.Done || !out.Dropped || len(out.Data) != 0 {
 		t.Fatalf("read: %+v %v", out, err)
 	}

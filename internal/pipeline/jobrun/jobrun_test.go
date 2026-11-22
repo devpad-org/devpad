@@ -119,6 +119,14 @@ func newRunner(t *testing.T, run func(ctx context.Context, out io.Writer) (conta
 	return r, rt, svc, spec
 }
 
+// recorder keeps what a job prints and devpad's notes on it apart.
+type recorder struct {
+	bytes.Buffer
+	notes []string
+}
+
+func (r *recorder) Note(text string) { r.notes = append(r.notes, text) }
+
 func exits(code int, oom bool) func(context.Context, io.Writer) (container.ExecResult, error) {
 	return func(_ context.Context, out io.Writer) (container.ExecResult, error) {
 		fmt.Fprintln(out, "ok")
@@ -128,8 +136,8 @@ func exits(code int, oom bool) func(context.Context, io.Writer) (container.ExecR
 
 func TestRunSetsUpRunsAndRemovesAJob(t *testing.T) {
 	r, rt, _, spec := newRunner(t, exits(0, false))
-	var out bytes.Buffer
-	res := r.Run(context.Background(), spec, &out)
+	var rec recorder
+	res := r.Run(context.Background(), spec, &rec)
 	if res.Outcome != Passed || res.ExitCode == nil || *res.ExitCode != 0 || res.Error != "" {
 		t.Fatalf("result: %+v", res)
 	}
@@ -146,10 +154,20 @@ func TestRunSetsUpRunsAndRemovesAJob(t *testing.T) {
 	if rt.spec.Lifetime != 100*time.Millisecond+time.Minute+lifetimeMargin {
 		t.Errorf("lifetime %s", rt.spec.Lifetime)
 	}
-	for _, line := range []string{"devpad: creating the job's network\n", "devpad: starting postgres and waiting until it is ready\n", "ok\n", "devpad: the job passed\n"} {
-		if !strings.Contains(out.String(), line) {
-			t.Errorf("expected %q in:\n%s", line, out.String())
-		}
+	// The job's output is only what it printed; devpad's notes are apart.
+	if rec.String() != "ok\n" {
+		t.Errorf("output: %q", rec.String())
+	}
+	want = []string{
+		"creating the job's network",
+		"starting postgres and waiting until it is ready",
+		"starting the job's container from " + container.WorkspaceImage,
+		"cloning the commit under test into /workspace",
+		"running the job",
+		"the job passed",
+	}
+	if strings.Join(rec.notes, "|") != strings.Join(want, "|") {
+		t.Errorf("notes:\n%q\nwant\n%q", rec.notes, want)
 	}
 }
 
@@ -170,13 +188,17 @@ func TestRunTellsHowAScriptEnded(t *testing.T) {
 	}
 	for _, tc := range tests {
 		r, _, _, spec := newRunner(t, tc.run)
-		res := r.Run(context.Background(), spec, io.Discard)
+		var rec recorder
+		res := r.Run(context.Background(), spec, &rec)
 		code := -1
 		if res.ExitCode != nil {
 			code = *res.ExitCode
 		}
 		if res.Outcome != tc.outcome || code != tc.code || res.Error != tc.err {
 			t.Errorf("%s: %+v (exit %d)", tc.name, res, code)
+		}
+		if last := rec.notes[len(rec.notes)-1]; tc.err != "" && last != tc.err {
+			t.Errorf("%s: last note %q", tc.name, last)
 		}
 	}
 }
@@ -187,7 +209,7 @@ func TestRunStopsAScriptAtItsTimeout(t *testing.T) {
 		return container.ExecResult{ExitCode: -1}, context.Cause(ctx)
 	})
 	spec.Timeout = 20 * time.Millisecond
-	res := r.Run(context.Background(), spec, io.Discard)
+	res := r.Run(context.Background(), spec, &recorder{})
 	if res.Outcome != TimedOut || res.ExitCode != nil || res.Error != "the job ran for longer than its timeout of 20ms" {
 		t.Fatalf("result: %+v", res)
 	}
@@ -204,13 +226,13 @@ func TestRunIsStoppedWithItsContext(t *testing.T) {
 		<-ctx.Done()
 		return container.ExecResult{ExitCode: -1}, context.Cause(ctx)
 	})
-	var out bytes.Buffer
-	res := r.Run(ctx, spec, &out)
+	var rec recorder
+	res := r.Run(ctx, spec, &rec)
 	if res.Outcome != Stopped || res.Error != why.Error() {
 		t.Fatalf("result: %+v", res)
 	}
-	if !strings.HasSuffix(out.String(), "devpad: the job was stopped: cancelled by the user\n") {
-		t.Errorf("output:\n%s", out.String())
+	if last := rec.notes[len(rec.notes)-1]; last != "the job was stopped: cancelled by the user" {
+		t.Errorf("last note %q", last)
 	}
 	if last := rt.calls[len(rt.calls)-1]; last != "remove test" {
 		t.Fatalf("not cleaned up: %v", rt.calls)
@@ -221,7 +243,7 @@ func TestRunReportsWhatCouldNotBeSetUp(t *testing.T) {
 	t.Run("a service the project lacks", func(t *testing.T) {
 		r, rt, svc, spec := newRunner(t, exits(0, false))
 		svc.err = fmt.Errorf("redis: %w", wsservice.ErrNotProjectService)
-		res := r.Run(context.Background(), spec, io.Discard)
+		res := r.Run(context.Background(), spec, &recorder{})
 		if res.Outcome != Error || res.Error != "redis: the project has no such service: add it to the project's services, or take it out of the job" {
 			t.Fatalf("result: %+v", res)
 		}
@@ -232,19 +254,19 @@ func TestRunReportsWhatCouldNotBeSetUp(t *testing.T) {
 	t.Run("no network pool for too long", func(t *testing.T) {
 		r, rt, _, spec := newRunner(t, exits(0, false))
 		rt.noPool = 1 << 30
-		var out bytes.Buffer
-		res := r.Run(context.Background(), spec, &out)
+		var rec recorder
+		res := r.Run(context.Background(), spec, &rec)
 		if res.Outcome != Error || !strings.Contains(res.Error, "no address pool left") || !strings.Contains(res.Error, "default-address-pools") {
 			t.Fatalf("result: %+v", res)
 		}
-		if strings.Count(out.String(), "waiting for one to be freed") != 1 {
-			t.Errorf("output:\n%s", out.String())
+		if strings.Count(strings.Join(rec.notes, "\n"), "waiting for one to be freed") != 1 || rec.Len() != 0 {
+			t.Errorf("notes %q, output %q", rec.notes, rec.String())
 		}
 	})
 	t.Run("a container Docker cannot start", func(t *testing.T) {
 		r, rt, _, spec := newRunner(t, exits(0, false))
 		rt.startErr = errors.New("creating the job's container: no such image")
-		res := r.Run(context.Background(), spec, io.Discard)
+		res := r.Run(context.Background(), spec, &recorder{})
 		if res.Outcome != Error || res.Error != "creating the job's container: no such image" {
 			t.Fatalf("result: %+v", res)
 		}
@@ -255,7 +277,7 @@ func TestRunReportsWhatCouldNotBeSetUp(t *testing.T) {
 	t.Run("a clone that takes too long", func(t *testing.T) {
 		r, rt, _, spec := newRunner(t, exits(0, false))
 		rt.cloneHang = true
-		res := r.Run(context.Background(), spec, io.Discard)
+		res := r.Run(context.Background(), spec, &recorder{})
 		if res.Outcome != Error || res.Error != "cloning the commit under test took over 100ms" {
 			t.Fatalf("result: %+v", res)
 		}
@@ -263,7 +285,7 @@ func TestRunReportsWhatCouldNotBeSetUp(t *testing.T) {
 	t.Run("nothing to clone", func(t *testing.T) {
 		r, rt, _, spec := newRunner(t, exits(0, false))
 		spec.Bundle = Bundle{}
-		if res := r.Run(context.Background(), spec, io.Discard); res.Outcome != Error || len(rt.calls) != 0 {
+		if res := r.Run(context.Background(), spec, &recorder{}); res.Outcome != Error || len(rt.calls) != 0 {
 			t.Fatalf("result: %+v, calls %v", res, rt.calls)
 		}
 	})
