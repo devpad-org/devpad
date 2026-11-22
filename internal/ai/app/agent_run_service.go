@@ -318,7 +318,7 @@ func (s *agentRunService) StartChildRun(ctx context.Context, parentRunID int64, 
 	if parent.WorkspaceID != req.WorkspaceID {
 		return nil, fmt.Errorf("parent run workspace mismatch: %w", domain.ErrAgentRunNotFound)
 	}
-	if err := s.checkChildProvider(parent.Model, req.Model); err != nil {
+	if err := s.checkChildModel(parent.Model, req); err != nil {
 		return nil, err
 	}
 	if err := s.ensureChildRunCapacity(ctx, req.UserID, req.WorkspaceID, parentRunID); err != nil {
@@ -346,9 +346,9 @@ func (s *agentRunService) StartChildRun(ctx context.Context, parentRunID int64, 
 	return s.launchRun(ctx, run, agent, nil, s.budgetForRun(parentRunID))
 }
 
-// checkChildProvider refuses a sub-agent on a model of another provider
-// than its parent's.
-func (s *agentRunService) checkChildProvider(parentModel, childModel string) error {
+// checkChildModel refuses a sub-agent on a model of another provider than
+// its parent's, or with thinking its model does not support.
+func (s *agentRunService) checkChildModel(parentModel string, req StartChildAgentRunRequest) error {
 	if s.models == nil {
 		return errors.New("sub-agents are not available: no model catalog is configured")
 	}
@@ -356,12 +356,15 @@ func (s *agentRunService) checkChildProvider(parentModel, childModel string) err
 	if err != nil {
 		return fmt.Errorf("looking up the parent run's model %s: %w", parentModel, err)
 	}
-	child, err := s.models.FindModel(childModel)
+	child, err := s.models.FindModel(req.Model)
 	if err != nil {
-		return fmt.Errorf("looking up the sub-agent's model %s: %w", childModel, err)
+		return fmt.Errorf("looking up the sub-agent's model %s: %w", req.Model, err)
 	}
 	if child.ProviderID != parent.ProviderID {
 		return fmt.Errorf("%w: %s is a %s model, and this run's model %s is a %s model", domain.ErrSubAgentProvider, child.ID, child.ProviderID, parent.ID, parent.ProviderID)
+	}
+	if err := domain.ValidateThinkingRequest(child, domain.ChatRequest{Thinking: req.Thinking}); err != nil {
+		return fmt.Errorf("the sub-agent's thinking on %s: %w", child.ID, err)
 	}
 	return nil
 }

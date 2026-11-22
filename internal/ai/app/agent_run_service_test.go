@@ -1080,6 +1080,16 @@ func TestAgentRunService_StartChildRunKeepsTheParentsProvider(t *testing.T) {
 	if err := start("unknown-model"); !errors.Is(err, domain.ErrModelNotFound) {
 		t.Fatalf("expected an unknown model to be refused, got %v", err)
 	}
+	_, err := service.StartChildRun(context.Background(), parent.ID, StartChildAgentRunRequest{
+		UserID:      testUserID,
+		WorkspaceID: testWorkspaceID,
+		Model:       "gpt-5.4-mini",
+		Prompt:      "child",
+		Thinking:    &domain.ThinkingConfig{Effort: "high"},
+	})
+	if !errors.Is(err, domain.ErrThinkingEffortNotSupported) {
+		t.Fatalf("expected an effort the model does not support to be refused, got %v", err)
+	}
 
 	if len(started) != 1 || started[0] != "gpt-5.4-mini" {
 		t.Fatalf("expected only the same-provider child to start, got %v", started)
