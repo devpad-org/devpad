@@ -9,7 +9,9 @@
 -- ref_pinned says the canonical repo may still hold its ref: it is set
 -- before the pin and cleared once the ref is deleted, so a ref a crash left
 -- is always found. trigger is what started it; the application decides
--- which there are.
+-- which there are. announced_at is when every listener had been told it
+-- finished, so that a devpad that stopped first tells them after its
+-- restart.
 CREATE TABLE pipelines (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id       INTEGER  NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -38,6 +40,7 @@ CREATE TABLE pipelines (
     created_at       DATETIME NOT NULL,
     started_at       DATETIME,
     finished_at      DATETIME,
+    announced_at     DATETIME,
     CHECK ((kind = 'branch' AND branch != '' AND merge_request_id IS NULL AND target_sha = '')
         OR (kind = 'merge_request' AND branch = '' AND merge_request_id IS NOT NULL AND target_sha != ''))
 );
@@ -52,6 +55,7 @@ CREATE INDEX idx_pipelines_branch_commit ON pipelines(project_id, branch, head_s
 CREATE INDEX idx_pipelines_merge_request_commits ON pipelines(merge_request_id, head_sha, target_sha, id);
 CREATE INDEX idx_pipelines_unfinished ON pipelines(status) WHERE status IN ('queued', 'running');
 CREATE INDEX idx_pipelines_pinned ON pipelines(ref_pinned) WHERE ref_pinned = 1;
+CREATE INDEX idx_pipelines_unannounced ON pipelines(id) WHERE announced_at IS NULL AND status NOT IN ('queued', 'running');
 
 -- A pipeline's jobs, in the order its file lists them, each as it was
 -- resolved when the pipeline started. output is the end of what the job

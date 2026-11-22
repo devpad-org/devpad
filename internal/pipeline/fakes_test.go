@@ -95,6 +95,12 @@ func (f *fakeProjects) AwaitEnvironment(ctx context.Context, _, _ int64) (*proje
 	return env, err
 }
 
+func (f *fakeProjects) ProjectEnvironment(context.Context, int64, int64) (*project.Environment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.env, f.envErr
+}
+
 func (f *fakeProjects) PinPipeline(_ context.Context, _, _ int64, pin agent.PipelinePin) (*agent.PipelinePinResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -618,7 +624,7 @@ func (e *env) wait(id int64) *Pipeline {
 			e.t.Fatalf("get %d: %v", id, err)
 		}
 		if p != nil && p.Status.Finished() {
-			e.waitIdle(id)
+			e.waitIdle(p.UID)
 			return p
 		}
 		if time.Now().After(deadline) {
@@ -628,19 +634,13 @@ func (e *env) wait(id int64) *Pipeline {
 	}
 }
 
-// waitIdle waits until the service no longer runs a pipeline.
-func (e *env) waitIdle(id int64) {
+// waitIdle waits until the service no longer runs the pipeline uid names.
+func (e *env) waitIdle(uid string) {
 	e.t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
-	for {
-		e.svc.mu.Lock()
-		_, active := e.svc.active[id]
-		e.svc.mu.Unlock()
-		if !active {
-			return
-		}
+	for e.svc.hasRun(uid) {
 		if time.Now().After(deadline) {
-			e.t.Fatalf("pipeline %d is still active", id)
+			e.t.Fatalf("pipeline %s is still running", uid)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

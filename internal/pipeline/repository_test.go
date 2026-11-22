@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -168,7 +169,13 @@ func TestRepositoryInterruptsUnfinishedPipelines(t *testing.T) {
 	if err := repo.StartJob(ctx, queued.Jobs[1].ID, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	interrupted, err := repo.InterruptUnfinished(ctx, "stopped", time.Now())
+	unfinished, err := repo.ListUnfinished(ctx)
+	if err != nil || len(unfinished) != 1 || unfinished[0].ID != queued.ID {
+		t.Fatalf("unfinished: %+v %v", unfinished, err)
+	}
+	// One that finished since it was listed is left as it is.
+	done.Status = StatusQueued
+	interrupted, err := repo.Interrupt(ctx, []*Pipeline{unfinished[0], done}, "stopped", time.Now())
 	if err != nil || len(interrupted) != 1 || interrupted[0].ID != queued.ID || interrupted[0].Status != StatusInterrupted {
 		t.Fatalf("interrupted: %+v %v", interrupted, err)
 	}
@@ -176,9 +183,10 @@ func TestRepositoryInterruptsUnfinishedPipelines(t *testing.T) {
 	if got.Status != StatusInterrupted || got.Error != "stopped" || got.Jobs[0].Status != JobInterrupted || got.Jobs[1].Status != JobSkipped {
 		t.Fatalf("got %+v %+v %+v", got, got.Jobs[0], got.Jobs[1])
 	}
-	statuses, err := repo.StatusesByUID(ctx, []string{queued.UID, done.UID, "unknown"})
-	if err != nil || len(statuses) != 2 || statuses[queued.UID] != StatusInterrupted || statuses[done.UID] != StatusPassed {
-		t.Fatalf("statuses: %v %v", statuses, err)
+	records, err := repo.RecordsByUID(ctx, []string{queued.UID, done.UID, "unknown"})
+	want := map[string]UIDRecord{queued.UID: {ProjectID: e.project, Status: StatusInterrupted}, done.UID: {ProjectID: e.project, Status: StatusPassed}}
+	if err != nil || !maps.Equal(records, want) {
+		t.Fatalf("records: %v %v", records, err)
 	}
 	pinned, err := repo.ListPinnedFinished(ctx)
 	if err != nil || len(pinned) != 1 || pinned[0].ID != done.ID {

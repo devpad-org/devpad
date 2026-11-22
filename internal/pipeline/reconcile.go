@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/devpad-org/devpad/internal/container"
@@ -15,8 +16,13 @@ import (
 // pipelines queued or running in the database; Shutdown records nothing, so
 // both end the same way. The next devpad's Reconcile marks them interrupted
 // and runs each branch's or merge request's pipeline again, at its commits
-// then, and removes what they left: their jobs' containers and networks, by
-// their labels, and their refs in the canonical repo.
+// then, unless those have a result already, and removes what they left:
+// their jobs' containers and networks, by their labels, and their refs in
+// the canonical repo. It also tells the listeners of every pipeline that
+// finished without their all being told, which is how a pipeline that
+// finished as devpad stopped is announced at least once. A pipeline this
+// process runs is never taken for one left behind: its run is known from
+// before its record is made.
 //
 // Removing is driven by the database, never by what Docker has alone:
 // another devpad sharing the Docker daemon may be running pipelines of its
@@ -30,17 +36,29 @@ import (
 // ended.
 const interruptedReason = "devpad stopped before it finished"
 
-// bundlePattern names the files pipelines' bundles are kept in.
-const bundlePattern = "devpad-pipeline-*.bundle"
+// A pipeline's bundle is kept in a file named by its UID, so that what
+// removes the bundles a devpad that stopped left knows a running
+// pipeline's.
+const (
+	bundlePrefix  = "devpad-pipeline-"
+	bundleSuffix  = ".bundle"
+	bundlePattern = bundlePrefix + "*" + bundleSuffix
+)
+
+func bundleName(uid string) string {
+	return bundlePrefix + uid + bundleSuffix
+}
 
 func (s *service) Reconcile(ctx context.Context) error {
-	interrupted, err := s.repo.InterruptUnfinished(ctx, interruptedReason, s.now())
+	interrupted, err := s.interruptLeft(ctx)
 	if err != nil {
 		return fmt.Errorf("interrupting unfinished pipelines: %w", err)
 	}
 	s.removeLeftBundles()
-	for _, p := range interrupted {
-		s.announce(p.ID)
+	if unannounced, err := s.repo.ListUnannounced(ctx); err != nil {
+		log.Printf("pipelines: listing those to announce: %v", err)
+	} else {
+		s.announce(unannounced...)
 	}
 	reruns := latestBySubject(interrupted)
 	s.spawn(func(ctx context.Context) {
@@ -60,6 +78,26 @@ func (s *service) Reconcile(ctx context.Context) error {
 		}
 	})
 	return nil
+}
+
+// interruptLeft marks interrupted every pipeline a devpad that stopped left
+// queued or running, and returns them as they now are. A record no run of
+// this process holds was left so: a run holds its record from before it is
+// made.
+func (s *service) interruptLeft(ctx context.Context) ([]*Pipeline, error) {
+	unfinished, err := s.repo.ListUnfinished(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var left []*Pipeline
+	s.mu.Lock()
+	for _, p := range unfinished {
+		if s.runs[p.UID] == nil {
+			left = append(left, p)
+		}
+	}
+	s.mu.Unlock()
+	return s.repo.Interrupt(ctx, left, interruptedReason, s.now())
 }
 
 // latestBySubject keeps the newest of pipelines of each branch or merge
@@ -108,7 +146,7 @@ func (s *service) rerun(ctx context.Context, p *Pipeline) {
 }
 
 // removeLeftBundles removes the bundles a devpad that stopped left in its
-// own directory, which no pipeline of this one uses yet. In a directory it
+// own directory, never one of a pipeline this one runs. In a directory it
 // may share, such as the system's temporary one, it removes nothing.
 func (s *service) removeLeftBundles() {
 	if !s.ownsBundleDir {
@@ -120,6 +158,10 @@ func (s *service) removeLeftBundles() {
 		return
 	}
 	for _, path := range left {
+		uid := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), bundlePrefix), bundleSuffix)
+		if s.hasRun(uid) {
+			continue
+		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			log.Printf("pipelines: removing a bundle left behind: %v", err)
 		}
@@ -133,8 +175,17 @@ func (s *service) sweep(ctx context.Context) {
 }
 
 // sweepDocker removes the containers and networks of jobs whose pipeline
-// the database has and shows finished.
+// the database has and shows finished, and no run of this process holds.
 func (s *service) sweepDocker(ctx context.Context) {
+	s.removeJobResources(ctx, func(uid string, rec UIDRecord) bool {
+		return rec.Status.Finished() && !s.hasRun(uid)
+	})
+}
+
+// removeJobResources removes what pipelines' jobs have in Docker, for each
+// pipeline the database has that remove picks. A pipeline it does not have,
+// such as another devpad's, it leaves alone.
+func (s *service) removeJobResources(ctx context.Context, remove func(uid string, rec UIDRecord) bool) {
 	resources, err := s.docker.ListJobResources(ctx, container.Job{})
 	if err != nil {
 		if ctx.Err() == nil {
@@ -153,14 +204,14 @@ func (s *service) sweepDocker(ctx context.Context) {
 	if len(uids) == 0 {
 		return
 	}
-	statuses, err := s.repo.StatusesByUID(ctx, uids)
+	records, err := s.repo.RecordsByUID(ctx, uids)
 	if err != nil {
 		log.Printf("pipelines: reading which pipelines left something in Docker: %v", err)
 		return
 	}
 	for _, uid := range uids {
-		status, ours := statuses[uid]
-		if !ours || !status.Finished() {
+		rec, ours := records[uid]
+		if !ours || !remove(uid, rec) {
 			continue
 		}
 		cleanupCtx, cancel := context.WithTimeout(ctx, cleanupTimeout)
@@ -182,36 +233,59 @@ func (s *service) sweepRefs(ctx context.Context) {
 		return
 	}
 	for _, p := range pinned {
+		if s.hasRun(p.UID) {
+			continue
+		}
 		cleanupCtx, cancel := context.WithTimeout(ctx, cleanupTimeout)
 		s.unpin(cleanupCtx, p)
 		cancel()
 	}
 }
 
-// ProjectDeleting stops every pipeline of the project, and waits a while
-// for their jobs to be removed.
+// ProjectDeleting stops every pipeline of the project and starts none until
+// the deletion ends, waits a while for their jobs to be removed, then
+// removes whatever the project's pipelines still have in Docker, such as
+// what a create cut short made late: once the project is gone, so are its
+// pipelines' records, and the sweep leaves alone what it finds no record of.
 func (s *service) ProjectDeleting(ctx context.Context, projectID int64) {
 	s.mu.Lock()
+	s.deleting[projectID] = true
 	var stopping []*activePipeline
-	for _, a := range s.active {
+	for _, a := range s.runs {
 		if a.subject.projectID == projectID {
 			a.stop(errProjectDeleted)
 			stopping = append(stopping, a)
 		}
 	}
 	s.mu.Unlock()
+	if !s.awaitRuns(ctx, stopping) && ctx.Err() == nil {
+		log.Printf("project %d: its pipelines are still stopping after %s", projectID, s.cancelWait)
+	}
+	s.removeJobResources(ctx, func(_ string, rec UIDRecord) bool { return rec.ProjectID == projectID })
+}
+
+// ProjectDeleteEnded starts the project's pipelines again, should it stay.
+func (s *service) ProjectDeleteEnded(projectID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.deleting, projectID)
+}
+
+// awaitRuns waits, at most cancelWait in all, for runs to end, reporting
+// false when some had not.
+func (s *service) awaitRuns(ctx context.Context, runs []*activePipeline) bool {
 	timer := time.NewTimer(s.cancelWait)
 	defer timer.Stop()
-	for _, a := range stopping {
+	for _, a := range runs {
 		select {
 		case <-a.done:
 		case <-timer.C:
-			log.Printf("project %d: its pipelines are still stopping after %s", projectID, s.cancelWait)
-			return
+			return false
 		case <-ctx.Done():
-			return
+			return false
 		}
 	}
+	return true
 }
 
 func (s *service) Shutdown(ctx context.Context) error {

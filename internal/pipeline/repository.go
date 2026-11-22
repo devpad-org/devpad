@@ -32,9 +32,15 @@ type Repository interface {
 	// SetTested records the commit the pipeline's jobs got.
 	SetTested(ctx context.Context, id int64, sha string) error
 	// Finish records how an unfinished pipeline ended: its status, error,
-	// conflicting paths and finish time. Every job still queued is skipped.
-	// It reports false when the pipeline had already finished.
+	// conflicting paths and finish time. Every job still queued is skipped,
+	// and every one still running ends with it: cancelled when the pipeline
+	// was cancelled or superseded, with its error, and otherwise an error
+	// (lostJob), so a finished pipeline has no unfinished job. It reports
+	// false when the pipeline had already finished.
 	Finish(ctx context.Context, p *Pipeline) (bool, error)
+	// MarkAnnounced records that every listener was told a pipeline
+	// finished.
+	MarkAnnounced(ctx context.Context, id int64, at time.Time) error
 
 	// StartJob records that a queued job started.
 	StartJob(ctx context.Context, jobID int64, at time.Time) error
@@ -51,16 +57,34 @@ type Repository interface {
 	// pipelines but its keep newest.
 	PruneOutputs(ctx context.Context, projectID int64, keep int) error
 
-	// InterruptUnfinished marks every queued or running pipeline
-	// interrupted, with reason, its running jobs interrupted and its other
-	// unfinished jobs skipped, and returns those pipelines as they now are.
-	InterruptUnfinished(ctx context.Context, reason string, at time.Time) ([]*Pipeline, error)
-	// StatusesByUID returns the status of each pipeline of uids there is.
-	StatusesByUID(ctx context.Context, uids []string) (map[string]Status, error)
+	// ListUnfinished lists the queued and running pipelines, without their
+	// jobs.
+	ListUnfinished(ctx context.Context) ([]*Pipeline, error)
+	// Interrupt marks interrupted, with reason, each of pipelines that is
+	// still unfinished, its running jobs interrupted and its other
+	// unfinished jobs skipped, and returns those it marked as they now are.
+	Interrupt(ctx context.Context, pipelines []*Pipeline, reason string, at time.Time) ([]*Pipeline, error)
+	// ListUnannounced lists the finished pipelines not every listener has
+	// been told of, oldest first.
+	ListUnannounced(ctx context.Context) ([]int64, error)
+	// RecordsByUID returns what the database has of each pipeline of uids
+	// it has.
+	RecordsByUID(ctx context.Context, uids []string) (map[string]UIDRecord, error)
 	// ListPinnedFinished lists the finished pipelines whose ref the
 	// canonical repo may still hold.
 	ListPinnedFinished(ctx context.Context) ([]*Pipeline, error)
 }
+
+// UIDRecord is what the database has of a pipeline found by its UID.
+type UIDRecord struct {
+	ProjectID int64
+	Status    Status
+}
+
+// lostJob is the error of a job whose pipeline finished while the job's
+// record still had it running: devpad lost track of it, such as when it
+// could not record how the job ended.
+const lostJob = "devpad could not record how the job ended"
 
 // ListFilter narrows a project's pipelines.
 type ListFilter struct {
@@ -89,7 +113,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const pipelineColumns = `id, project_id, user_id, uid, kind, branch, merge_request_id, source_branch, target_branch, head_sha, target_sha, tested_sha, config_source, config_path, config_hash, image, status, error, conflict_paths, trigger, rerun_of, ref_pinned, created_at, started_at, finished_at`
+const pipelineColumns = `id, project_id, user_id, uid, kind, branch, merge_request_id, source_branch, target_branch, head_sha, target_sha, tested_sha, config_source, config_path, config_hash, image, status, error, conflict_paths, trigger, rerun_of, ref_pinned, created_at, started_at, finished_at, announced_at`
 
 func (r *repository) Create(ctx context.Context, p *Pipeline) error {
 	paths, err := jsonList(p.ConflictPaths)
@@ -264,10 +288,25 @@ func (r *repository) Finish(ctx context.Context, p *Pipeline) (bool, error) {
 		JobSkipped, p.FinishedAt, p.ID, JobQueued); err != nil {
 		return false, fmt.Errorf("skipping jobs: %w", err)
 	}
+	running, why := JobError, lostJob
+	if p.Status == StatusCancelled || p.Status == StatusSuperseded {
+		running, why = JobCancelled, p.Error
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE pipeline_jobs SET status = ?, error = ?, finished_at = ? WHERE pipeline_id = ? AND status = ?`,
+		running, why, p.FinishedAt, p.ID, JobRunning); err != nil {
+		return false, fmt.Errorf("ending running jobs: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("committing pipeline: %w", err)
 	}
 	return true, nil
+}
+
+func (r *repository) MarkAnnounced(ctx context.Context, id int64, at time.Time) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE pipelines SET announced_at = ? WHERE id = ?`, at, id); err != nil {
+		return fmt.Errorf("recording the pipeline announced: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) StartJob(ctx context.Context, jobID int64, at time.Time) error {
@@ -321,41 +360,77 @@ func (r *repository) PruneOutputs(ctx context.Context, projectID int64, keep int
 	return nil
 }
 
-func (r *repository) InterruptUnfinished(ctx context.Context, reason string, at time.Time) ([]*Pipeline, error) {
+// listUnfinishedQuery names the statuses as the partial index of unfinished
+// pipelines does, so it reads only that index.
+const listUnfinishedQuery = `SELECT ` + pipelineColumns + ` FROM pipelines WHERE status IN ('queued', 'running') ORDER BY id`
+
+func (r *repository) ListUnfinished(ctx context.Context) ([]*Pipeline, error) {
+	rows, err := r.db.QueryContext(ctx, listUnfinishedQuery)
+	if err != nil {
+		return nil, fmt.Errorf("listing unfinished pipelines: %w", err)
+	}
+	return collect(rows, scanPipeline)
+}
+
+func (r *repository) Interrupt(ctx context.Context, pipelines []*Pipeline, reason string, at time.Time) ([]*Pipeline, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT `+pipelineColumns+` FROM pipelines WHERE status IN (?, ?) ORDER BY id`, StatusQueued, StatusRunning)
-	if err != nil {
-		return nil, fmt.Errorf("listing unfinished pipelines: %w", err)
-	}
-	pipelines, err := collect(rows, scanPipeline)
-	if err != nil {
-		return nil, err
-	}
+	var interrupted []*Pipeline
 	for _, p := range pipelines {
+		res, err := tx.ExecContext(ctx, `UPDATE pipelines SET status = ?, error = ?, finished_at = ? WHERE id = ? AND status IN (?, ?)`,
+			StatusInterrupted, reason, at, p.ID, StatusQueued, StatusRunning)
+		if err != nil {
+			return nil, fmt.Errorf("interrupting pipeline: %w", err)
+		}
+		if ok, err := affected(res); err != nil {
+			return nil, err
+		} else if !ok {
+			continue
+		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE pipeline_jobs SET status = CASE status WHEN ? THEN ? ELSE ? END, finished_at = ? WHERE pipeline_id = ? AND status IN (?, ?)`,
 			JobRunning, JobInterrupted, JobSkipped, at, p.ID, JobQueued, JobRunning); err != nil {
 			return nil, fmt.Errorf("interrupting jobs: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE pipelines SET status = ?, error = ?, finished_at = ? WHERE id = ?`,
-			StatusInterrupted, reason, at, p.ID); err != nil {
-			return nil, fmt.Errorf("interrupting pipeline: %w", err)
-		}
-		finished := at
-		p.Status, p.Error, p.FinishedAt = StatusInterrupted, reason, &finished
+		marked, finished := *p, at
+		marked.Status, marked.Error, marked.FinishedAt = StatusInterrupted, reason, &finished
+		interrupted = append(interrupted, &marked)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("committing interruptions: %w", err)
 	}
-	return pipelines, nil
+	return interrupted, nil
 }
 
-func (r *repository) StatusesByUID(ctx context.Context, uids []string) (map[string]Status, error) {
-	statuses := make(map[string]Status, len(uids))
+// listUnannouncedQuery names the statuses as the partial index of
+// unannounced pipelines does, so it reads only that index.
+const listUnannouncedQuery = `SELECT id FROM pipelines WHERE announced_at IS NULL AND status NOT IN ('queued', 'running') ORDER BY id`
+
+func (r *repository) ListUnannounced(ctx context.Context) ([]int64, error) {
+	rows, err := r.db.QueryContext(ctx, listUnannouncedQuery)
+	if err != nil {
+		return nil, fmt.Errorf("listing unannounced pipelines: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning pipeline id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating rows: %w", err)
+	}
+	return ids, nil
+}
+
+func (r *repository) RecordsByUID(ctx context.Context, uids []string) (map[string]UIDRecord, error) {
+	records := make(map[string]UIDRecord, len(uids))
 	// SQLite allows many more, but a sweep never needs one query to name
 	// them all.
 	const batch = 500
@@ -365,26 +440,26 @@ func (r *repository) StatusesByUID(ctx context.Context, uids []string) (map[stri
 		for i, uid := range part {
 			args[i] = uid
 		}
-		rows, err := r.db.QueryContext(ctx, `SELECT uid, status FROM pipelines WHERE uid IN (`+placeholders(len(part))+`)`, args...)
+		rows, err := r.db.QueryContext(ctx, `SELECT uid, project_id, status FROM pipelines WHERE uid IN (`+placeholders(len(part))+`)`, args...)
 		if err != nil {
-			return nil, fmt.Errorf("reading pipeline statuses: %w", err)
+			return nil, fmt.Errorf("reading pipelines by uid: %w", err)
 		}
 		for rows.Next() {
 			var uid string
-			var status Status
-			if err := rows.Scan(&uid, &status); err != nil {
+			var rec UIDRecord
+			if err := rows.Scan(&uid, &rec.ProjectID, &rec.Status); err != nil {
 				rows.Close()
-				return nil, fmt.Errorf("scanning pipeline status: %w", err)
+				return nil, fmt.Errorf("scanning pipeline: %w", err)
 			}
-			statuses[uid] = status
+			records[uid] = rec
 		}
 		err = rows.Err()
 		rows.Close()
 		if err != nil {
-			return nil, fmt.Errorf("reading pipeline statuses: %w", err)
+			return nil, fmt.Errorf("reading pipelines by uid: %w", err)
 		}
 	}
-	return statuses, nil
+	return records, nil
 }
 
 func (r *repository) ListPinnedFinished(ctx context.Context) ([]*Pipeline, error) {
@@ -442,15 +517,15 @@ func scanPipeline(row rowScanner) (*Pipeline, error) {
 	var p Pipeline
 	var mergeRequestID, rerunOf sql.NullInt64
 	var paths string
-	var started, finished sql.NullTime
-	if err := row.Scan(&p.ID, &p.ProjectID, &p.UserID, &p.UID, &p.Kind, &p.Branch, &mergeRequestID, &p.SourceBranch, &p.TargetBranch, &p.HeadSHA, &p.TargetSHA, &p.TestedSHA, &p.ConfigSource, &p.ConfigPath, &p.ConfigHash, &p.Image, &p.Status, &p.Error, &paths, &p.Trigger, &rerunOf, &p.RefPinned, &p.CreatedAt, &started, &finished); err != nil {
+	var started, finished, announced sql.NullTime
+	if err := row.Scan(&p.ID, &p.ProjectID, &p.UserID, &p.UID, &p.Kind, &p.Branch, &mergeRequestID, &p.SourceBranch, &p.TargetBranch, &p.HeadSHA, &p.TargetSHA, &p.TestedSHA, &p.ConfigSource, &p.ConfigPath, &p.ConfigHash, &p.Image, &p.Status, &p.Error, &paths, &p.Trigger, &rerunOf, &p.RefPinned, &p.CreatedAt, &started, &finished, &announced); err != nil {
 		return nil, err
 	}
 	p.MergeRequestID, p.RerunOf = mergeRequestID.Int64, rerunOf.Int64
 	if err := json.Unmarshal([]byte(paths), &p.ConflictPaths); err != nil {
 		return nil, fmt.Errorf("decoding conflicting paths: %w", err)
 	}
-	p.StartedAt, p.FinishedAt = timePtr(started), timePtr(finished)
+	p.StartedAt, p.FinishedAt, p.AnnouncedAt = timePtr(started), timePtr(finished), timePtr(announced)
 	return &p, nil
 }
 

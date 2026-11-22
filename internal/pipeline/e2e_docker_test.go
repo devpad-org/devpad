@@ -136,7 +136,7 @@ func TestPipelineRunsInDocker(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	waitInactive(t, svc, got.ID)
+	waitInactive(t, svc, got.UID)
 
 	output := func(name string) string {
 		out, err := svc.JobOutput(ctx, userID, p.ID, got.ID, job(t, got, name).ID, 0)
@@ -226,18 +226,12 @@ func randomSuffix() string {
 	return hex.EncodeToString(b)
 }
 
-func waitInactive(t *testing.T, svc *service, id int64) {
+func waitInactive(t *testing.T, svc *service, uid string) {
 	t.Helper()
 	deadline := time.Now().Add(time.Minute)
-	for {
-		svc.mu.Lock()
-		_, active := svc.active[id]
-		svc.mu.Unlock()
-		if !active {
-			return
-		}
+	for svc.hasRun(uid) {
 		if time.Now().After(deadline) {
-			t.Fatalf("pipeline %d is still active", id)
+			t.Fatalf("pipeline %s is still running", uid)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

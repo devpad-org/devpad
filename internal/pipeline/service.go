@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -29,7 +30,8 @@ type Service interface {
 	// of Start may hold.
 	Start(ctx context.Context, in StartInput) (p *Pipeline, created bool, err error)
 	// Cancel stops a queued or running pipeline, and waits a while for its
-	// jobs to be stopped and removed.
+	// jobs to be stopped and removed. It refuses while devpad stops, which
+	// leaves every pipeline for Reconcile.
 	Cancel(ctx context.Context, userID, projectID, pipelineID int64) (*Pipeline, error)
 	// List lists a project's pipelines, newest first, with their jobs but
 	// not their scripts.
@@ -45,12 +47,24 @@ type Service interface {
 	// never hides. It is nil when there is none. A Start with ReuseResult
 	// returns this same pipeline when it has finished.
 	LatestForMergeRequest(ctx context.Context, userID, projectID int64, key MergeRequestKey) (*Pipeline, error)
-	// AddListener adds one of those told each time a pipeline finishes.
+	// AddListener adds a Listener, told each time a pipeline finishes.
+	// Listeners are to be added before Reconcile, which tells them of the
+	// pipelines that finished without every listener being told, such as
+	// when devpad stopped first. A listener is told of each pipeline at
+	// least once but maybe more often, and of a subject's pipelines in any
+	// order, so it re-reads what it acts on, such as LatestForMergeRequest
+	// for a merge request's current key, rather than trusting the pipeline
+	// it is told of to be the latest. It is never told on a context that
+	// has ended.
 	AddListener(l Listener)
-	// ProjectDeleting stops the project's pipelines before the project goes.
+	// ProjectDeleting stops the project's pipelines before the project goes,
+	// and starts none until ProjectDeleteEnded.
 	project.DeleteHook
 	// Reconcile settles the pipelines a previous devpad left unfinished and
-	// runs them again, and removes what finished pipelines left behind.
+	// runs them again, tells the listeners what they were not told, and
+	// removes what finished pipelines left behind. It never touches a
+	// pipeline this process runs, but it is to come before anything that
+	// starts pipelines, so that each is run once.
 	Reconcile(ctx context.Context) error
 	// Shutdown stops every pipeline, leaving them to Reconcile, and waits
 	// for their jobs to be removed.
@@ -79,9 +93,11 @@ type StartInput struct {
 	StopStale bool
 }
 
-// Listener is told each time a pipeline finishes, however it ended. It is
-// told from a goroutine of its own, never from inside a call to the
-// Service, so it may call the Service, or anything that does.
+// Listener is told each time a pipeline finishes, however it ended
+// (Service.AddListener says how often and in what order). It is told from a
+// goroutine of its own, never from inside a call to the Service, so it may
+// call the Service, or anything that does, and it is to return once it has
+// acted, or when ctx ends.
 type Listener interface {
 	PipelineFinished(ctx context.Context, p *Pipeline)
 }
@@ -95,6 +111,9 @@ type Projects interface {
 	// AwaitEnvironment waits for a build of the project's environment in
 	// progress, and pulls its services' images.
 	AwaitEnvironment(ctx context.Context, userID, projectID int64) (*project.Environment, error)
+	// ProjectEnvironment is how the project's environment stands now: the
+	// image new workspaces get, or nil when it has none.
+	ProjectEnvironment(ctx context.Context, userID, projectID int64) (*project.Environment, error)
 	PinPipeline(ctx context.Context, userID, projectID int64, pin agent.PipelinePin) (*agent.PipelinePinResult, error)
 	PipelineBundle(ctx context.Context, userID, projectID int64, pipelineID string, w io.Writer) (int64, error)
 	DeletePipelineRef(ctx context.Context, userID, projectID int64, pipelineID string) error
@@ -192,8 +211,14 @@ type service struct {
 
 	mu     sync.Mutex
 	closed bool
-	// active holds each pipeline this process is running or has queued.
-	active map[int64]*activePipeline
+	// runs holds each pipeline this process has queued or is running, by
+	// its UID, from before its record is made until its run has ended.
+	// Nothing that settles what a devpad that stopped left, interrupting a
+	// pipeline or removing what it made, touches one of these.
+	runs map[string]*activePipeline
+	// deleting holds the projects being deleted, whose pipelines no longer
+	// start.
+	deleting map[int64]bool
 	// live holds the output of each job running now.
 	live map[int64]*outputBuffer
 	// startLocks serialize starting each project's pipelines.
@@ -203,13 +228,19 @@ type service struct {
 
 // activePipeline is a pipeline this process is running or has queued.
 type activePipeline struct {
-	id      int64
+	uid     string
 	subject subject
 	key     key
-	cancel  context.CancelCauseFunc
-	done    chan struct{}
+	// ctx is its run's, which cancel ends with a cause saying why, and done
+	// closes once the run has ended.
+	ctx    context.Context
+	cancel context.CancelCauseFunc
+	done   chan struct{}
+	// id is the pipeline's, once its record is made.
+	id int64
 	// started says it has left the queue, so it can no longer be
-	// superseded; stopping that it has been told to stop.
+	// superseded but by a start that stops stale ones; stopping that it
+	// has been told to stop.
 	started  bool
 	stopping bool
 }
@@ -242,7 +273,8 @@ func NewService(d Deps) Service {
 		sweepInterval: sweepInterval,
 		rootCtx:       ctx,
 		rootCancel:    cancel,
-		active:        make(map[int64]*activePipeline),
+		runs:          make(map[string]*activePipeline),
+		deleting:      make(map[int64]bool),
 		live:          make(map[int64]*outputBuffer),
 		startLocks:    make(map[int64]*sync.Mutex),
 	}
@@ -252,6 +284,14 @@ func (s *service) AddListener(l Listener) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.listeners = append(s.listeners, l)
+}
+
+// hasRun reports whether this process has queued or is running the pipeline
+// uid names.
+func (s *service) hasRun(uid string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runs[uid] != nil
 }
 
 // spawn runs fn in the background unless the service is shutting down.
@@ -365,14 +405,19 @@ func (s *service) Cancel(ctx context.Context, userID, projectID, pipelineID int6
 		return nil, fmt.Errorf("%w: it has already %s", ErrInvalidState, finishedWord(p.Status))
 	}
 	s.mu.Lock()
-	a := s.active[p.ID]
+	if s.closed {
+		s.mu.Unlock()
+		return nil, ErrShuttingDown
+	}
+	a := s.runs[p.UID]
 	if a != nil {
 		a.stop(errCancelled)
 	}
 	s.mu.Unlock()
 	if a == nil {
-		// Unfinished but run by no one here: it ended as it was read, or
-		// devpad is stopping. Finish records nothing over an end.
+		// Unfinished, but no run of this process holds it: it ended as it
+		// was read, or its run could not record how. Finish records nothing
+		// over an end.
 		s.finish(ctx, p, StatusCancelled, "")
 		return s.get(ctx, userID, projectID, pipelineID)
 	}
@@ -424,27 +469,54 @@ func (s *service) finish(ctx context.Context, p *Pipeline, status Status, reason
 	s.announce(p.ID)
 }
 
-// announce tells the listeners that a pipeline finished, from a goroutine
-// of its own, with the pipeline as recorded.
-func (s *service) announce(pipelineID int64) {
-	s.mu.Lock()
-	listeners := append([]Listener(nil), s.listeners...)
-	s.mu.Unlock()
-	if len(listeners) == 0 {
+// announce tells the listeners that pipelines finished, from a goroutine of
+// its own, each pipeline as recorded, and records each announced once they
+// have all been told. What it does not get to, as when devpad stops first,
+// the next Reconcile announces.
+func (s *service) announce(pipelineIDs ...int64) {
+	if len(pipelineIDs) == 0 {
 		return
 	}
 	s.spawn(func(ctx context.Context) {
-		for _, l := range listeners {
-			// Each listener gets its own copy, so none sees what another
-			// changes.
-			p, err := s.repo.Get(ctx, pipelineID)
-			if err != nil || p == nil {
-				if err != nil && ctx.Err() == nil {
-					log.Printf("pipeline %d: reading it to announce it finished: %v", pipelineID, err)
-				}
+		s.mu.Lock()
+		listeners := slices.Clone(s.listeners)
+		s.mu.Unlock()
+		for _, id := range pipelineIDs {
+			if !s.tell(ctx, listeners, id) {
 				return
 			}
-			l.PipelineFinished(ctx, p)
 		}
 	})
+}
+
+// tell tells each listener that a pipeline finished, then records it
+// announced. It reports false when ctx ended first, which leaves the
+// pipeline unannounced.
+func (s *service) tell(ctx context.Context, listeners []Listener, pipelineID int64) bool {
+	for _, l := range listeners {
+		if ctx.Err() != nil {
+			return false
+		}
+		// Each listener gets its own copy, so none sees what another
+		// changes.
+		p, err := s.repo.Get(ctx, pipelineID)
+		if err != nil {
+			if ctx.Err() != nil {
+				return false
+			}
+			log.Printf("pipeline %d: reading it to announce it finished: %v", pipelineID, err)
+			return true
+		}
+		if p == nil {
+			return true
+		}
+		l.PipelineFinished(ctx, p)
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	if err := s.repo.MarkAnnounced(ctx, pipelineID, s.now()); err != nil && ctx.Err() == nil {
+		log.Printf("pipeline %d: recording it announced: %v", pipelineID, err)
+	}
+	return true
 }

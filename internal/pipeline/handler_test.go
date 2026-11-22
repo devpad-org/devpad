@@ -111,4 +111,16 @@ func TestPipelineEndpoints(t *testing.T) {
 			t.Errorf("%s: %d %v, want %d", tc.name, code, out, tc.want)
 		}
 	}
+
+	// A project being deleted starts none, and nothing starts while devpad
+	// stops.
+	e.svc.ProjectDeleting(context.Background(), e.project)
+	if code, out := e.serve(e.owner, http.MethodPost, base, `{"branch":"develop"}`); code != http.StatusConflict {
+		t.Errorf("start while the project is deleted: %d %v", code, out)
+	}
+	e.svc.ProjectDeleteEnded(e.project)
+	e.shutdown()
+	if code, out := e.serve(e.owner, http.MethodPost, base, `{"branch":"develop"}`); code != http.StatusServiceUnavailable {
+		t.Errorf("start while devpad stops: %d %v", code, out)
+	}
 }

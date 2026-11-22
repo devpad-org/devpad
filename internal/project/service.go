@@ -178,10 +178,13 @@ type BranchGuard interface {
 
 // DeleteHook is told when a project is being deleted, before its
 // workspaces and its repo go, so that it can stop what it runs for the
-// project, such as its pipelines. It returns once that has stopped, or it
-// gave up waiting.
+// project, such as its pipelines, and start nothing more for it. It returns
+// once that has stopped, or it gave up waiting. It is told again once the
+// deletion has ended, whether the project went or the deletion failed and
+// the project stays.
 type DeleteHook interface {
 	ProjectDeleting(ctx context.Context, projectID int64)
+	ProjectDeleteEnded(projectID int64)
 }
 
 // KeyRotator replaces a user's devpad SSH key, returning the new public key.
@@ -778,6 +781,11 @@ func (s *service) Delete(ctx context.Context, userID, projectID int64) error {
 	for _, h := range hooks {
 		h.ProjectDeleting(ctx, p.ID)
 	}
+	defer func() {
+		for _, h := range hooks {
+			h.ProjectDeleteEnded(p.ID)
+		}
+	}()
 
 	sandboxes, err := s.workspaces.ListByProject(ctx, userID, p.ID)
 	if err != nil {

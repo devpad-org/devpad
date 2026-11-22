@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/devpad-org/devpad/internal/agent"
@@ -13,22 +14,26 @@ import (
 	"github.com/devpad-org/devpad/internal/pipeline/jobrun"
 )
 
-// A pipeline runs in a goroutine of its own, the only one that records its
-// status once it is queued; cancelling or superseding it only ends its
-// context, with a cause saying why, and the run records what that means.
+// A pipeline runs in a goroutine of its own, which records how it went;
+// cancelling, superseding or deleting its project only ends its context,
+// with a cause saying why, and the run records what that means. Only what
+// no run holds is settled otherwise: Cancel finishes an unfinished pipeline
+// whose run ended without recording so, and Reconcile one a devpad that
+// stopped left.
 //
 // It waits, still queued, for a build of the project's environment and then
-// for a job slot. With one it is running: the repo container pins what it
-// tests, devpad bundles that once, and its jobs run, the first on the slot
-// it holds and each other on a slot of its own, every one whatever the
-// others do. Then the bundle and the pin go, and anything its jobs left in
-// Docker, and only then is it recorded as finished, so that nothing removing
-// what finished pipelines left can race a job still running.
+// for a job slot. With one it is running, on the image new workspaces of
+// the project get then: the repo container pins what it tests, devpad
+// bundles that once into this devpad's bundle directory, and its jobs run,
+// the first on the slot it holds and each other on a slot of its own, every
+// one whatever the others do. Then the bundle and the pin go, and anything
+// its jobs left in Docker, and only then is it recorded as finished, so that
+// nothing removing what finished pipelines left can race a job still
+// running.
 
 // run runs a queued pipeline to its end.
 func (s *service) run(ctx context.Context, a *activePipeline, p *Pipeline) {
-	image, ok := s.awaitEnvironment(ctx, p)
-	if !ok {
+	if !s.awaitEnvironment(ctx, p) {
 		return
 	}
 	release, err := s.slots.acquire(ctx, p.ProjectID, p.ID, 0)
@@ -36,7 +41,7 @@ func (s *service) run(ctx context.Context, a *activePipeline, p *Pipeline) {
 		s.stopped(ctx, p)
 		return
 	}
-	started, err := s.begin(ctx, a, p, image)
+	started, err := s.begin(ctx, a, p)
 	if !started {
 		release()
 		if err != nil {
@@ -50,28 +55,34 @@ func (s *service) run(ctx context.Context, a *activePipeline, p *Pipeline) {
 }
 
 // awaitEnvironment waits for a build of the project's environment in
-// progress, as a new sandbox does, and returns the image the jobs run on.
-// It reports false when the pipeline ended meanwhile.
-func (s *service) awaitEnvironment(ctx context.Context, p *Pipeline) (string, bool) {
-	env, err := s.projects.AwaitEnvironment(ctx, p.UserID, p.ProjectID)
+// progress, and for its services' images, as a new sandbox does. It reports
+// false when the pipeline ended meanwhile.
+func (s *service) awaitEnvironment(ctx context.Context, p *Pipeline) bool {
+	_, err := s.projects.AwaitEnvironment(ctx, p.UserID, p.ProjectID)
 	if ctx.Err() != nil {
 		s.stopped(ctx, p)
-		return "", false
+		return false
 	}
 	if err != nil {
 		s.conclude(ctx, p, StatusError, fmt.Sprintf("waiting for the project's environment: %v", err))
-		return "", false
+		return false
 	}
-	if env != nil && env.Image != "" {
-		return env.Image, true
-	}
-	return container.WorkspaceImage, true
+	return true
 }
 
-// begin takes a pipeline out of the queue, unless it was cancelled or
-// superseded first, and records it as running on image. It reports false,
-// with no error, when the pipeline ended first.
-func (s *service) begin(ctx context.Context, a *activePipeline, p *Pipeline, image string) (bool, error) {
+// begin takes a pipeline that holds a job slot out of the queue, unless it
+// was cancelled or superseded first, and records it as running on the image
+// new workspaces of its project get now: read once the slot is held, since
+// builds while it waited may have replaced, and pruned, the one it would
+// have had. It reports false, with no error, when the pipeline ended first.
+func (s *service) begin(ctx context.Context, a *activePipeline, p *Pipeline) (bool, error) {
+	image, err := s.image(ctx, p)
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, nil
+		}
+		return false, err
+	}
 	s.mu.Lock()
 	if ctx.Err() != nil {
 		s.mu.Unlock()
@@ -86,6 +97,18 @@ func (s *service) begin(ctx context.Context, a *activePipeline, p *Pipeline, ima
 	}
 	p.Status, p.Image, p.StartedAt = StatusRunning, image, &started
 	return true, nil
+}
+
+// image is the image new workspaces of the pipeline's project get now.
+func (s *service) image(ctx context.Context, p *Pipeline) (string, error) {
+	env, err := s.projects.ProjectEnvironment(ctx, p.UserID, p.ProjectID)
+	if err != nil {
+		return "", fmt.Errorf("reading the project's environment: %w", err)
+	}
+	if env != nil && env.Image != "" {
+		return env.Image, nil
+	}
+	return container.WorkspaceImage, nil
 }
 
 // runStarted runs a pipeline that holds its first job slot, which release
@@ -152,7 +175,13 @@ func (s *service) pin(ctx context.Context, p *Pipeline) (string, *agent.MergeCon
 // bundle writes a bundle of what the pipeline tests to a file of its own,
 // which every job's container is given a copy of.
 func (s *service) bundle(ctx context.Context, p *Pipeline) (jobrun.Bundle, error) {
-	f, err := os.CreateTemp(s.bundleDir, bundlePattern)
+	if s.ownsBundleDir {
+		// Made again, should something that clears caches have removed it.
+		if err := os.MkdirAll(s.bundleDir, 0o700); err != nil {
+			return jobrun.Bundle{}, fmt.Errorf("making the bundles' directory: %w", err)
+		}
+	}
+	f, err := os.OpenFile(filepath.Join(s.bundleDir, bundleName(p.UID)), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return jobrun.Bundle{}, fmt.Errorf("creating the bundle's file: %w", err)
 	}
@@ -244,6 +273,9 @@ func (s *service) runJob(ctx context.Context, p *Pipeline, j *JobRun, bundle job
 	}
 	if err := s.repo.FinishJob(recordCtx, j, kept); err != nil {
 		log.Printf("pipeline %d job %s: recording how it ended: %v", p.ID, j.Name, err)
+		// Its record still has it running, which its pipeline's finish
+		// settles as this, so the pipeline's outcome counts it so too.
+		j.Status, j.Error = JobError, lostJob
 	}
 }
 

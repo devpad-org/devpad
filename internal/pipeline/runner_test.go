@@ -149,7 +149,7 @@ func TestCancelStopsARunningJob(t *testing.T) {
 	if j := job(t, got, "later"); j.Status != JobSkipped || j.StartedAt != nil {
 		t.Errorf("later: %+v", j)
 	}
-	e.waitIdle(p.ID)
+	e.waitIdle(p.UID)
 	if left := e.docker.left(""); len(left) != 0 {
 		t.Errorf("left in Docker: %+v", left)
 	}
@@ -415,6 +415,11 @@ func TestShutdownLeavesRunningPipelinesForReconcile(t *testing.T) {
 	if _, _, err := e.svc.Start(context.Background(), StartInput{UserID: e.owner, ProjectID: e.project, Branch: "main", Trigger: TriggerUser}); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("starting while shut down: %v", err)
 	}
+	// Nor is it cancelled meanwhile, which would leave its job running in a
+	// finished pipeline.
+	if _, err := e.svc.Cancel(context.Background(), e.owner, e.project, p.ID); !errors.Is(err, ErrShuttingDown) {
+		t.Fatalf("cancelling while shut down: %v", err)
+	}
 
 	// The next devpad interrupts it and runs the branch again.
 	e.projects.setFile(sha(2), ".devpad/pipeline.yml", "jobs:\n  forever:\n    run: pass\n")
@@ -602,12 +607,231 @@ func TestDeletingTheProjectStopsItsPipelines(t *testing.T) {
 	p := e.start(StartInput{Branch: "develop"})
 	e.awaitScript("forever")
 	e.svc.ProjectDeleting(context.Background(), e.project)
-	e.waitIdle(p.ID)
+	e.waitIdle(p.UID)
 	got, _ := e.svc.repo.Get(context.Background(), p.ID)
 	if got.Status != StatusCancelled || got.Error != errProjectDeleted.Error() || got.Jobs[0].Status != JobCancelled {
 		t.Fatalf("expected it cancelled: %+v %+v", got, got.Jobs[0])
 	}
 	if left := e.docker.left(""); len(left) != 0 {
 		t.Errorf("left in Docker: %+v", left)
+	}
+}
+
+// failingFinishJob is the repository with FinishJob failing, as a busy or
+// broken database would.
+type failingFinishJob struct{ Repository }
+
+func (failingFinishJob) FinishJob(context.Context, *JobRun, []byte) error {
+	return errors.New("database is locked")
+}
+
+func TestAFinishedPipelineKeepsNoUnfinishedJob(t *testing.T) {
+	e := setup(t)
+	e.svc.repo = failingFinishJob{e.svc.repo}
+	p := e.wait(e.start(StartInput{Branch: "develop"}).ID)
+	if p.Status != StatusError {
+		t.Fatalf("expected an error, as its jobs' ends went unrecorded: %+v", p)
+	}
+	for _, j := range p.Jobs {
+		if j.Status != JobError || j.Error != lostJob || j.FinishedAt == nil {
+			t.Errorf("job %s: %+v", j.Name, j)
+		}
+		if out, err := e.svc.JobOutput(context.Background(), e.owner, e.project, p.ID, j.ID, 0); err != nil || !out.Done {
+			t.Errorf("job %s's output: %+v %v", j.Name, out, err)
+		}
+	}
+}
+
+func TestReconcileSparesThePipelinesThisProcessRuns(t *testing.T) {
+	e := setup(t)
+	e.projects.setFile(sha(2), ".devpad/pipeline.yml", "jobs:\n  forever:\n    run: block\n")
+	p := e.start(StartInput{Branch: "develop"})
+	e.awaitScript("forever")
+	e.svc.sweepInterval = time.Millisecond
+	if err := e.svc.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.awaitReconciled()
+	if got, _ := e.svc.repo.Get(context.Background(), p.ID); got.Status != StatusRunning {
+		t.Fatalf("Reconcile took a running pipeline for one left behind: %+v", got)
+	}
+	if files := e.tempFiles(); !slices.Equal(files, []string{bundleName(p.UID)}) {
+		t.Fatalf("expected the running pipeline's bundle kept, found %v", files)
+	}
+	if all, _ := e.svc.repo.List(context.Background(), e.project, ListFilter{}); len(all) != 1 {
+		t.Fatalf("Reconcile ran its branch again: %+v", all)
+	}
+	e.docker.mu.Lock()
+	removed := slices.Clone(e.docker.removed)
+	e.docker.mu.Unlock()
+	if len(removed) != 0 {
+		t.Fatalf("the sweep removed what a running job has: %+v", removed)
+	}
+	e.docker.open("forever")
+	if got := e.wait(p.ID); got.Status != StatusPassed {
+		t.Fatalf("expected it to run to its end: %+v", got)
+	}
+}
+
+// blockingListener holds each pipeline it is told of until its context
+// ends, as a listener told while devpad stops does.
+type blockingListener struct {
+	told chan *Pipeline
+}
+
+func (l *blockingListener) PipelineFinished(ctx context.Context, p *Pipeline) {
+	l.told <- p
+	<-ctx.Done()
+}
+
+func TestListenersAreToldAgainOfWhatTheyWereNotAllTold(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	slow := &blockingListener{told: make(chan *Pipeline, 10)}
+	e.svc.AddListener(slow)
+	p := e.wait(e.start(StartInput{Branch: "develop"}).ID)
+	if told := <-slow.told; told.ID != p.ID {
+		t.Fatalf("told of %d", told.ID)
+	}
+	// devpad stops before the slow listener returns.
+	e.shutdown()
+	if got, _ := e.svc.repo.Get(ctx, p.ID); got.AnnouncedAt != nil {
+		t.Fatalf("recorded announced before every listener was told: %+v", got)
+	}
+	// And a pipeline that finished without being announced at all, as when
+	// devpad crashed right after recording it.
+	crashed := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "dddddddddddddd01", Kind: KindBranch, Branch: "main", HeadSHA: sha(1), ConfigSource: SourceFile, Status: StatusPassed, Trigger: TriggerUser, CreatedAt: time.Now()}
+	if err := e.svc.repo.Create(ctx, crashed); err != nil {
+		t.Fatal(err)
+	}
+
+	e.svc = e.newService()
+	listener := e.listener
+	for len(listener.finished) > 0 {
+		<-listener.finished
+	}
+	if err := e.svc.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	told := map[int64]bool{}
+	for range 2 {
+		select {
+		case got := <-listener.finished:
+			told[got.ID] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("listeners told only of %v", told)
+		}
+	}
+	if !told[p.ID] || !told[crashed.ID] {
+		t.Fatalf("listeners told of %v", told)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		a, _ := e.svc.repo.Get(ctx, p.ID)
+		b, _ := e.svc.repo.Get(ctx, crashed.ID)
+		if a.AnnouncedAt != nil && b.AnnouncedAt != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("never recorded announced: %v %v", a.AnnouncedAt, b.AnnouncedAt)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Once announced, a restart tells no one again.
+	e.svc = e.newService()
+	if err := e.svc.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-listener.finished:
+		t.Fatalf("told again of %d", got.ID)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestADeletedProjectStartsNoPipelines(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	// A pipeline that finished, and what a create cut short made for it
+	// late, which the sweep could not find once the project's records go.
+	done := e.wait(e.start(StartInput{Branch: "develop"}).ID)
+	late := container.Job{Pipeline: done.UID, Name: "build"}
+	another := container.Job{Pipeline: "0ther0devpad0002", Name: "a"}
+	e.docker.mu.Lock()
+	e.docker.leftovers = []container.JobResource{
+		{Kind: container.JobResourceContainer, ID: "x1", Name: late.ContainerName(), Job: late},
+		{Kind: container.JobResourceContainer, ID: "x2", Name: another.ContainerName(), Job: another},
+	}
+	e.docker.mu.Unlock()
+
+	e.svc.ProjectDeleting(ctx, e.project)
+	if left := e.docker.left(done.UID); len(left) != 0 {
+		t.Errorf("the project's pipeline still has %+v", left)
+	}
+	if left := e.docker.left(another.Pipeline); len(left) != 1 {
+		t.Errorf("another devpad's container was touched: %+v", left)
+	}
+	if _, _, err := e.svc.Start(ctx, StartInput{UserID: e.owner, ProjectID: e.project, Branch: "main", Trigger: TriggerUser}); !errors.Is(err, project.ErrDeleting) {
+		t.Fatalf("started a pipeline of a project being deleted: %v", err)
+	}
+	// A deletion that fails leaves the project to run pipelines again.
+	e.svc.ProjectDeleteEnded(e.project)
+	if got := e.wait(e.start(StartInput{Branch: "main"}).ID); got.Status != StatusPassed {
+		t.Fatalf("after the deletion ended: %+v", got)
+	}
+}
+
+func TestAPipelineRunsOnTheImageOfWhenItGetsASlot(t *testing.T) {
+	e := setup(t)
+	e.projects.env = &project.Environment{Image: "devpad-project-1:old"}
+	e.svc.slots = newJobSlots(1)
+	e.projects.setFile(sha(1), ".devpad/pipeline.yml", "jobs:\n  hold:\n    run: block\n")
+	holding := e.start(StartInput{Branch: "main"})
+	e.awaitScript("hold")
+	waiting := e.start(StartInput{Branch: "develop"})
+	awaitWaiters(t, e.svc.slots, e.project, 1)
+	// A build replaces the image while the pipeline waits for its slot.
+	e.projects.mu.Lock()
+	e.projects.env = &project.Environment{Image: "devpad-project-1:new"}
+	e.projects.mu.Unlock()
+	e.docker.open("hold")
+	if got := e.wait(holding.ID); got.Image != "devpad-project-1:old" {
+		t.Fatalf("the first pipeline ran on %s", got.Image)
+	}
+	if got := e.wait(waiting.ID); got.Status != StatusPassed || got.Image != "devpad-project-1:new" {
+		t.Fatalf("expected the waiting pipeline on the new image: %+v", got)
+	}
+}
+
+func TestTheBundlesDirectoryIsMadeAgainWhenItIsGone(t *testing.T) {
+	e := setup(t)
+	e.tempDir = filepath.Join(e.tempDir, "bundles")
+	e.svc = e.newService()
+	if got := e.wait(e.start(StartInput{Branch: "develop"}).ID); got.Status != StatusPassed {
+		t.Fatalf("expected a pass: %+v", got)
+	}
+	if info, err := os.Stat(e.tempDir); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("bundles' directory: %v %v", info, err)
+	}
+}
+
+func TestCancelSettlesAPipelineNoRunHolds(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	// A run that ended without recording how, as when the database failed.
+	stuck := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "eeeeeeeeeeeeee01", Kind: KindBranch, Branch: "develop", HeadSHA: sha(2), ConfigSource: SourceFile, Status: StatusRunning, Trigger: TriggerUser, CreatedAt: time.Now(),
+		Jobs: []*JobRun{{Job: Job{Name: "a", Run: "pass", Timeout: time.Minute}, Position: 0, Status: JobRunning}, {Job: Job{Name: "b", Run: "pass", Timeout: time.Minute}, Position: 1, Status: JobQueued}}}
+	if err := e.svc.repo.Create(ctx, stuck); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.svc.Cancel(ctx, e.owner, e.project, stuck.ID)
+	if err != nil || got.Status != StatusCancelled {
+		t.Fatalf("cancel: %+v %v", got, err)
+	}
+	if a, b := got.Jobs[0], got.Jobs[1]; a.Status != JobCancelled || a.FinishedAt == nil || b.Status != JobSkipped {
+		t.Fatalf("jobs: %+v %+v", a, b)
+	}
+	if out, err := e.svc.JobOutput(ctx, e.owner, e.project, stuck.ID, got.Jobs[0].ID, 0); err != nil || !out.Done {
+		t.Fatalf("output: %+v %v", out, err)
 	}
 }

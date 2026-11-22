@@ -222,6 +222,12 @@ func New(cfg Config) (*Server, error) {
 	// about devpad from.
 	aiModule.AddToolProvider(docs.NewProvider(userRepo))
 
+	// Pipelines first: their Reconcile settles what the last devpad left
+	// and needs nothing else settled, and the reconciles after it may start
+	// pipelines, which must not be taken for ones left behind.
+	if err := pipelineService.Reconcile(context.Background()); err != nil {
+		log.Printf("reconciling interrupted pipelines: %v", err)
+	}
 	if err := projectService.Reconcile(context.Background()); err != nil {
 		log.Printf("finishing interrupted workspace conversions: %v", err)
 	}
@@ -230,9 +236,6 @@ func New(cfg Config) (*Server, error) {
 	}
 	if err := mrService.Reconcile(context.Background()); err != nil {
 		log.Printf("reconciling pending reviews: %v", err)
-	}
-	if err := pipelineService.Reconcile(context.Background()); err != nil {
-		log.Printf("reconciling interrupted pipelines: %v", err)
 	}
 
 	// Preview layer

@@ -207,6 +207,9 @@ type Pipeline struct {
 	CreatedAt  time.Time
 	StartedAt  *time.Time
 	FinishedAt *time.Time
+	// AnnouncedAt is when every listener had been told it finished; nil
+	// until then.
+	AnnouncedAt *time.Time
 	// Jobs are the pipeline's jobs in their file's order, when read with it.
 	Jobs []*JobRun
 }

@@ -71,7 +71,7 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 	if err != nil {
 		return nil, false, err
 	}
-	created := same == nil || s.stopping(same.ID)
+	created := same == nil || s.stopping(same.UID)
 	if created {
 		if err := s.create(ctx, next); err != nil {
 			return nil, false, err
@@ -193,75 +193,97 @@ func (s *service) supersede(current *Pipeline, stale bool) {
 	k, cause := current.key(), supersededBy(current.ID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, a := range s.active {
+	for _, a := range s.runs {
 		if a.subject == k.subject && a.key != k && (!a.started || stale) {
 			a.stop(cause)
 		}
 	}
 }
 
-// stopping reports whether a pipeline is being stopped, though it may not
-// have recorded so yet, so that it is no longer the one testing what it
-// tests.
-func (s *service) stopping(pipelineID int64) bool {
+// stopping reports whether the pipeline uid names is being stopped, though
+// it may not have recorded so yet, so that it is no longer the one testing
+// what it tests.
+func (s *service) stopping(uid string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	a := s.active[pipelineID]
+	a := s.runs[uid]
 	return a != nil && a.stopping
 }
 
-// create records a new pipeline and, unless it finished at once, starts
-// running it; one that did is announced.
+// create records a new pipeline and, unless it finished at once, runs it in
+// the background; one that did is announced. Neither happens while devpad
+// stops or the project is being deleted.
 func (s *service) create(ctx context.Context, p *Pipeline) error {
 	if p.Status.Finished() {
+		s.mu.Lock()
+		err := s.admit(p.ProjectID)
+		s.mu.Unlock()
+		if err != nil {
+			return err
+		}
 		if err := s.repo.Create(ctx, p); err != nil {
 			return err
 		}
 		s.announce(p.ID)
 		return nil
 	}
-	s.mu.Lock()
-	closed := s.closed
-	s.mu.Unlock()
-	if closed {
-		return ErrShuttingDown
-	}
-	if err := s.repo.Create(ctx, p); err != nil {
+	a, err := s.reserve(p)
+	if err != nil {
 		return err
 	}
-	s.launch(p.clone())
+	if err := s.repo.Create(ctx, p); err != nil {
+		s.forget(a)
+		return err
+	}
+	s.mu.Lock()
+	a.id = p.ID
+	s.mu.Unlock()
+	// The run owns its own copy, which no one else touches.
+	run := p.clone()
+	go func() {
+		defer s.forget(a)
+		s.run(a.ctx, a, run)
+	}()
 	return nil
 }
 
-// launch runs a queued pipeline in the background. The run owns p, which no
-// one else may then touch.
-func (s *service) launch(p *Pipeline) {
-	ctx, cancel := context.WithCancelCause(s.rootCtx)
-	a := &activePipeline{id: p.ID, subject: p.subject(), key: p.key(), cancel: cancel, done: make(chan struct{})}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		cancel(errShutdown)
-		// Left queued for the next start's Reconcile.
-		return
+// admit refuses a new pipeline of the project while devpad stops or the
+// project is being deleted. The caller holds mu.
+func (s *service) admit(projectID int64) error {
+	switch {
+	case s.closed:
+		return ErrShuttingDown
+	case s.deleting[projectID]:
+		return project.ErrDeleting
 	}
-	s.active[p.ID] = a
-	s.wg.Add(1)
-	s.mu.Unlock()
-	go func() {
-		defer s.wg.Done()
-		defer s.forget(a)
-		defer cancel(nil)
-		s.run(ctx, a, p)
-	}()
+	return nil
 }
 
-// forget drops a pipeline that has ended from the active ones.
+// reserve makes the run of a queued pipeline whose record is yet to be
+// made, so that what settles a devpad that stopped never takes the record
+// for one it left. Shutdown waits for the run, and stopping the project's
+// pipelines stops it, from then on.
+func (s *service) reserve(p *Pipeline) (*activePipeline, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.admit(p.ProjectID); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancelCause(s.rootCtx)
+	a := &activePipeline{uid: p.UID, subject: p.subject(), key: p.key(), ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	s.runs[p.UID] = a
+	s.wg.Add(1)
+	return a, nil
+}
+
+// forget drops a run that has ended, or never began.
 func (s *service) forget(a *activePipeline) {
 	s.mu.Lock()
-	delete(s.active, a.id)
+	delete(s.runs, a.uid)
 	s.mu.Unlock()
+	a.cancel(nil)
 	close(a.done)
+	s.wg.Done()
 }
 
 // newUID makes a pipeline's UID: random, so that no other devpad sharing the

@@ -234,8 +234,10 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "access denied")
 	case errors.Is(err, ErrInvalidInput), errors.Is(err, project.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrInvalidState), errors.Is(err, project.ErrNotReady), errors.Is(err, ErrShuttingDown):
+	case errors.Is(err, ErrInvalidState), errors.Is(err, project.ErrNotReady), errors.Is(err, project.ErrDeleting):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrShuttingDown):
+		writeError(w, http.StatusServiceUnavailable, err.Error())
 	case errors.As(err, &agentErr):
 		project.WriteAgentError(w, agentErr)
 	default:

@@ -1756,6 +1756,9 @@ func TestDeleteRemovesSandboxesThenRepo(t *testing.T) {
 	if len(hook.told) != 1 || hook.told[0] != p.ID || !hook.first {
 		t.Fatalf("delete hook told %v, before anything went: %v", hook.told, hook.first)
 	}
+	if len(hook.ended) != 1 || hook.ended[0] != p.ID {
+		t.Fatalf("delete hook told the deletion ended for %v", hook.ended)
+	}
 	if len(e.workspaces.deleted) != 2 {
 		t.Fatalf("expected 2 sandboxes deleted, got %v", e.workspaces.deleted)
 	}
@@ -1767,17 +1770,46 @@ func TestDeleteRemovesSandboxesThenRepo(t *testing.T) {
 	}
 }
 
+func TestDeleteThatFailsTellsItsHooksItEnded(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{}); err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	hook := &recordingDeleteHook{before: func() bool { return true }}
+	e.svc.AddDeleteHook(hook)
+	e.workspaces.mu.Lock()
+	e.workspaces.deleteErr = errors.New("docker unreachable")
+	e.workspaces.mu.Unlock()
+	if err := e.svc.Delete(ctx, e.userID, p.ID); err == nil {
+		t.Fatal("expected the delete to fail")
+	}
+	// The project stays, and so may start what its hooks run again.
+	if len(hook.told) != 1 || len(hook.ended) != 1 || hook.ended[0] != p.ID {
+		t.Fatalf("delete hook told %v, ended %v", hook.told, hook.ended)
+	}
+	if _, err := e.svc.Get(ctx, e.userID, p.ID); err != nil {
+		t.Fatalf("expected the project to stay: %v", err)
+	}
+}
+
 // recordingDeleteHook records the projects it is told are being deleted,
-// and whether before held each time.
+// and whether before held each time, and those whose deletion ended.
 type recordingDeleteHook struct {
 	before func() bool
 	told   []int64
 	first  bool
+	ended  []int64
 }
 
 func (h *recordingDeleteHook) ProjectDeleting(_ context.Context, projectID int64) {
 	h.told = append(h.told, projectID)
 	h.first = h.before()
+}
+
+func (h *recordingDeleteHook) ProjectDeleteEnded(projectID int64) {
+	h.ended = append(h.ended, projectID)
 }
 
 func TestMigrationEnforcesSandboxBranchOwnership(t *testing.T) {
