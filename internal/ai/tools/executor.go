@@ -58,6 +58,11 @@ type AgentDefaults interface {
 	DefaultsFor(ctx context.Context, userID int64, agentID, effort string) (*domain.AgentDefaults, error)
 }
 
+// ModelFinder looks up a model by ID.
+type ModelFinder interface {
+	FindModel(modelID string) (domain.Model, error)
+}
+
 // ImageStore keeps the images tools return, so the run's transcript can
 // refer to them.
 type ImageStore interface {

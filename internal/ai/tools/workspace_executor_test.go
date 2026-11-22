@@ -573,12 +573,27 @@ func (s stubAgentDefaults) DefaultsFor(_ context.Context, _ int64, agentID, _ st
 	return nil, nil
 }
 
+type stubModels map[string]string
+
+func (m stubModels) FindModel(id string) (domain.Model, error) {
+	provider, ok := m[id]
+	if !ok {
+		return domain.Model{}, domain.ErrModelNotFound
+	}
+	return domain.Model{ID: id, ProviderID: provider}, nil
+}
+
 // A child without a model runs the user's default for its agent with that
-// effort. Only a child on the parent's model takes the parent's thinking.
+// effort, when it is from the parent's provider. Only a child on the parent's
+// model takes the parent's thinking.
 func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
 	var got []ChildAgentRunRequest
 	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
-	executor.SetAgentDefaults(stubAgentDefaults{domain.ReviewAgentID: {AgentID: domain.ReviewAgentID, Model: "user-review", Effort: "low"}})
+	executor.SetAgentDefaults(stubAgentDefaults{
+		domain.ReviewAgentID:  {AgentID: domain.ReviewAgentID, Model: "user-review", Effort: "low"},
+		domain.DefaultAgentID: {AgentID: domain.DefaultAgentID, Model: "elsewhere", Effort: "low"},
+	})
+	executor.SetModels(stubModels{"parent-model": "a", "user-review": "a", "picked": "a", "elsewhere": "b"})
 	executor.SetChildAgentRunner(stubChildAgentRunner{startFn: func(_ context.Context, req ChildAgentRunRequest) (*ChildAgentRun, error) {
 		got = append(got, req)
 		return &ChildAgentRun{ID: int64(len(got)), AgentID: req.AgentID, Model: req.Model, Status: "queued"}, nil
@@ -605,6 +620,8 @@ func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
 	if got[1].Model != "picked" || got[1].Thinking != nil {
 		t.Errorf("expected the picked model without the parent's thinking, got %+v %+v", got[1], got[1].Thinking)
 	}
+	// The coding agent's default is another provider's model, so the child
+	// runs on the parent's.
 	for _, child := range got[2:] {
 		if child.Model != "parent-model" || child.Thinking == nil || child.Thinking.Effort != "max" {
 			t.Errorf("expected the parent's model and thinking, got %+v %+v", child, child.Thinking)

@@ -18,6 +18,7 @@ var (
 	ErrAgentRunNotActive              = errors.New("agent run is not active")
 	ErrAgentNotFound                  = errors.New("AI agent not found")
 	ErrAgentNotEditable               = errors.New("AI agent cannot be edited")
+	ErrSubAgentProvider               = errors.New("a sub-agent must run on a model from the same provider as the agent that starts it")
 	ErrAttachmentNotFound             = errors.New("image attachment not found")
 	ErrInvalidImage                   = errors.New("invalid image")
 )

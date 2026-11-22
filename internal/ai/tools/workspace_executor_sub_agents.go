@@ -91,8 +91,10 @@ func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequ
 	}
 
 	// A child without a model runs the one the user set for its agent, with
-	// that effort, else the parent's. Only a child on the parent's model
-	// takes the parent's thinking; any other uses its model's default.
+	// that effort, when it is from the parent's provider, else the parent's.
+	// Only a child on the parent's model takes the parent's thinking; any
+	// other uses its model's default. The run service refuses a child on
+	// another provider's model, so one named here fails.
 	model, _ := params["model"].(string)
 	model = strings.TrimSpace(model)
 	var thinking *domain.ThinkingConfig
@@ -101,7 +103,7 @@ func (e *WorkspaceExecutor) spawnSubAgent(ctx context.Context, req ExecutionRequ
 		if err != nil {
 			return toolFailure("spawn_sub_agent", "Error: looking up the agent's default model: %v", err)
 		}
-		if d != nil {
+		if d != nil && e.sameProvider(d.Model, req.Model) {
 			model = d.Model
 			if d.Effort != "" {
 				thinking = &domain.ThinkingConfig{Effort: d.Effort}
@@ -180,6 +182,23 @@ func agentScope(agent domain.Agent) string {
 	default:
 		return "workspace"
 	}
+}
+
+// sameProvider reports whether two models are from the same provider. It is
+// false when either cannot be found.
+func (e *WorkspaceExecutor) sameProvider(a, b string) bool {
+	if e.models == nil {
+		return false
+	}
+	ma, err := e.models.FindModel(a)
+	if err != nil {
+		return false
+	}
+	mb, err := e.models.FindModel(b)
+	if err != nil {
+		return false
+	}
+	return ma.ProviderID == mb.ProviderID
 }
 
 func (e *WorkspaceExecutor) waitForSubAgents(ctx context.Context, req ExecutionRequest, params map[string]any) domain.ToolResultPart {
