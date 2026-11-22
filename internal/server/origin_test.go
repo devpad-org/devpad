@@ -196,9 +196,9 @@ func TestBuildHandlerWiring(t *testing.T) {
 		h.ServeHTTP(rec, r)
 		return rec
 	}
-	assertFramingDenied := func(t *testing.T, rec *httptest.ResponseRecorder) {
+	assertSecurityHeaders := func(t *testing.T, rec *httptest.ResponseRecorder) {
 		t.Helper()
-		if got := rec.Header().Get("Content-Security-Policy"); got != "frame-ancestors 'none'" {
+		if got := rec.Header().Get("Content-Security-Policy"); got != "frame-ancestors 'none'; img-src 'self' data: blob:" {
 			t.Fatalf("Content-Security-Policy = %q", got)
 		}
 		if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
@@ -206,26 +206,26 @@ func TestBuildHandlerWiring(t *testing.T) {
 		}
 	}
 
-	t.Run("app pages cannot be framed", func(t *testing.T) {
+	t.Run("app pages cannot be framed or load outside images", func(t *testing.T) {
 		r := httptest.NewRequest(http.MethodGet, "/projects/1", nil)
 		r.Host = "devpad.example.com"
 		rec := serve(r)
 		if !reached || rec.Code != http.StatusOK {
 			t.Fatalf("reached=%v status=%d", reached, rec.Code)
 		}
-		assertFramingDenied(t, rec)
+		assertSecurityHeaders(t, rec)
 	})
 
-	t.Run("refusals carry frame headers too", func(t *testing.T) {
+	t.Run("refusals carry security headers too", func(t *testing.T) {
 		r := guardRequest{secFetch: "same-site", origin: "https://3-8080.preview.example.com", contentType: "application/json", body: "{}"}.build()
 		rec := serve(r)
 		if reached || rec.Code != http.StatusForbidden {
 			t.Fatalf("same-site POST: reached=%v status=%d, want refused", reached, rec.Code)
 		}
-		assertFramingDenied(t, rec)
+		assertSecurityHeaders(t, rec)
 	})
 
-	t.Run("previews are not given app frame headers", func(t *testing.T) {
+	t.Run("previews are not given app security headers", func(t *testing.T) {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.Host = "3-8080.preview.example.com"
 		rec := serve(r)
@@ -233,7 +233,7 @@ func TestBuildHandlerWiring(t *testing.T) {
 			t.Fatal("preview host reached the app")
 		}
 		if rec.Header().Get("Content-Security-Policy") != "" || rec.Header().Get("X-Frame-Options") != "" {
-			t.Fatalf("preview response got app frame headers: %v", rec.Header())
+			t.Fatalf("preview response got app security headers: %v", rec.Header())
 		}
 	})
 

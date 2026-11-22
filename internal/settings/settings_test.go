@@ -354,6 +354,9 @@ func TestHandler_TOTPSetup(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"url"`) {
 		t.Errorf("expected url in response, got: %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"qrCode":"data:image/svg+xml;base64,`) {
+		t.Errorf("expected an SVG QR code in response, got: %s", rec.Body.String())
+	}
 }
 
 func TestService_UserPreferences_DefaultAndUpdate(t *testing.T) {

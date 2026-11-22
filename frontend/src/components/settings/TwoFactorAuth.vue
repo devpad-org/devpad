@@ -154,7 +154,7 @@ async function disable() {
 
         <div class="qr-container">
           <img
-            :src="'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(setup.url)"
+            :src="setup.qrCode"
             alt="TOTP QR code"
             class="qr-code"
           />

@@ -74,7 +74,8 @@ func (h *Handler) HandleGetMFAStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"totpEnabled": enabled})
 }
 
-// HandleTOTPSetup generates a new TOTP secret and returns the provisioning URL.
+// HandleTOTPSetup generates a new TOTP secret and returns the provisioning URL
+// and a QR code of it.
 func (h *Handler) HandleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
@@ -91,10 +92,16 @@ func (h *Handler) HandleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to generate TOTP setup")
 		return
 	}
+	qrCode, err := totpQRCode(url)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate TOTP setup")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"secret": secret,
 		"url":    url,
+		"qrCode": qrCode,
 	})
 }
 
