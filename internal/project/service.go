@@ -631,7 +631,7 @@ func (s *service) DeleteBranch(ctx context.Context, userID, projectID int64, bra
 	if !validBranchName(branch) {
 		return nil, invalid("branch is not a valid branch name")
 	}
-	if !hashPattern.MatchString(sha) {
+	if !IsCommitHash(sha) {
 		return nil, invalid("sha must be the full commit hash the branch is deleted at")
 	}
 	if p.IsProtected(branch) {
@@ -723,8 +723,7 @@ func (s *service) SetPipelineConfig(ctx context.Context, userID, projectID int64
 	if err := s.repo.SetPipelineConfig(ctx, p.ID, config); err != nil {
 		return nil, err
 	}
-	p.PipelineConfig = config
-	return p, nil
+	return s.Get(ctx, userID, projectID)
 }
 
 // Delete removes every sandbox and the project workspace through the
@@ -1278,9 +1277,15 @@ func (s *service) Push(ctx context.Context, userID, projectID int64, branch stri
 
 var hashPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
+// IsCommitHash reports whether s is a full commit hash, SHA-1 or SHA-256,
+// in lowercase hex.
+func IsCommitHash(s string) bool {
+	return hashPattern.MatchString(s)
+}
+
 // validRev accepts a branch name or a full commit hash.
 func validRev(rev string) bool {
-	return hashPattern.MatchString(rev) || validBranchName(rev)
+	return IsCommitHash(rev) || validBranchName(rev)
 }
 
 func randomHex(n int) (string, error) {

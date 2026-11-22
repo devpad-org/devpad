@@ -30,7 +30,8 @@ func NewHandler(settings Settings) *Handler {
 }
 
 // HandleSetConfig sets the pipeline a project's commits without a pipeline
-// file run, refusing YAML that does not parse. Blank clears it.
+// file run, refusing YAML that does not parse. Blank clears it. It answers
+// with the project, as the project's other settings do.
 func (h *Handler) HandleSetConfig(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	projectID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -66,7 +67,7 @@ func (h *Handler) HandleSetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"config": p.PipelineConfig})
+	writeJSON(w, http.StatusOK, map[string]any{"project": project.Response(p)})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

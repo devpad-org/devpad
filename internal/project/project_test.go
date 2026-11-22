@@ -1400,9 +1400,16 @@ func TestSetPipelineConfig(t *testing.T) {
 	p := e.createProject(t, CreateInput{Name: "proj"})
 	const config = "jobs:\n  test:\n    run: make test\n"
 
+	before, _ := e.svc.Get(ctx, e.userID, p.ID)
+	time.Sleep(2 * time.Millisecond)
 	got, err := e.svc.SetPipelineConfig(ctx, e.userID, p.ID, config)
 	if err != nil || got.PipelineConfig != config {
 		t.Fatalf("set: %+v (%v)", got, err)
+	}
+	// It answers with the project as stored, so with when it changed.
+	stored, _ := e.svc.Get(ctx, e.userID, p.ID)
+	if !got.UpdatedAt.Equal(stored.UpdatedAt) || !got.UpdatedAt.After(before.UpdatedAt) {
+		t.Fatalf("updated at %v, stored %v, before %v", got.UpdatedAt, stored.UpdatedAt, before.UpdatedAt)
 	}
 	if _, err := e.svc.Update(ctx, e.userID, p.ID, UpdateInput{Name: "renamed"}); err != nil {
 		t.Fatalf("update: %v", err)
@@ -1415,6 +1422,25 @@ func TestSetPipelineConfig(t *testing.T) {
 	}
 	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); stored.PipelineConfig != config {
 		t.Fatalf("another user changed it to %q", stored.PipelineConfig)
+	}
+}
+
+// Creating a project records its pipeline settings with the rest of it.
+func TestCreateRecordsPipelineSettings(t *testing.T) {
+	ctx := context.Background()
+	e := setupTest(t)
+	repo := NewRepository(e.db.Conn())
+	const config = "jobs:\n  test:\n    run: make test\n"
+	p := &Project{UserID: e.userID, Name: "proj", DefaultBranch: "main", PipelineBranches: []string{"main"}, PipelineConfig: config, MaxSandboxes: 1, Status: StatusReady}
+	if err := repo.Create(ctx, p); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := repo.GetByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if strings.Join(got.PipelineBranches, ",") != "main" || got.PipelineConfig != config {
+		t.Fatalf("pipeline branches %v, config %q", got.PipelineBranches, got.PipelineConfig)
 	}
 }
 

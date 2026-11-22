@@ -105,10 +105,14 @@ func insertProject(ctx context.Context, db execer, p *Project) error {
 	if err != nil {
 		return err
 	}
+	pipelines, err := branchList(p.PipelineBranches)
+	if err != nil {
+		return err
+	}
 	now := time.Now()
 	result, err := db.ExecContext(ctx,
-		`INSERT INTO projects (user_id, name, description, default_branch, protected_branches, auto_merge_branches, upstream_url, setup_script, environment, max_sandboxes, auto_review, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.UserID, p.Name, p.Description, p.DefaultBranch, protected, autoMerge, p.UpstreamURL, p.SetupScript, p.Environment, p.MaxSandboxes, p.AutoReview, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, p.RepoAgentToken, now, now,
+		`INSERT INTO projects (user_id, name, description, default_branch, protected_branches, auto_merge_branches, pipeline_branches, pipeline_config, upstream_url, setup_script, environment, max_sandboxes, auto_review, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.UserID, p.Name, p.Description, p.DefaultBranch, protected, autoMerge, pipelines, p.PipelineConfig, p.UpstreamURL, p.SetupScript, p.Environment, p.MaxSandboxes, p.AutoReview, p.Status, p.Error, p.RepoContainerID, p.RepoVolumeName, p.RepoNetworkName, p.RepoAgentToken, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting project: %w", err)

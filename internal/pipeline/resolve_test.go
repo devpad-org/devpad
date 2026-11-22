@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -54,26 +55,31 @@ const validYAML = "jobs:\n  test:\n    run: make test\n"
 func TestResolveFindsTheCommitsPipeline(t *testing.T) {
 	ctx := context.Background()
 	other := "jobs:\n  lint:\n    run: make lint\n"
+	broken := "jobs:\n  test:\n    script: make\n"
+	huge := "jobs:\n  a:\n    run: " + strings.Repeat("x", MaxConfigBytes) + "\n"
 	tests := []struct {
 		name    string
 		files   map[string]string
 		setting string
 		source  Source
 		path    string
-		// hashOf is the YAML the jobs came from.
-		hashOf string
-		job    string
+		// hash is the pipeline's: of its jobs when it parses, else of its
+		// YAML.
+		hash string
+		job  string
 		// invalid is in the reason the pipeline cannot run, if it can't.
 		invalid string
 	}{
-		{name: "file", files: map[string]string{".devpad/pipeline.yml": validYAML}, setting: other, source: SourceFile, path: ".devpad/pipeline.yml", hashOf: validYAML, job: "test"},
-		{name: "yaml extension", files: map[string]string{".devpad/pipeline.yaml": validYAML}, source: SourceFile, path: ".devpad/pipeline.yaml", hashOf: validYAML, job: "test"},
-		{name: "setting", setting: other, source: SourceProject, hashOf: other, job: "lint"},
+		{name: "file", files: map[string]string{".devpad/pipeline.yml": validYAML}, setting: other, source: SourceFile, path: ".devpad/pipeline.yml", hash: jobsHashOf(t, validYAML), job: "test"},
+		{name: "yaml extension", files: map[string]string{".devpad/pipeline.yaml": validYAML}, source: SourceFile, path: ".devpad/pipeline.yaml", hash: jobsHashOf(t, validYAML), job: "test"},
+		{name: "setting", setting: other, source: SourceProject, hash: jobsHashOf(t, other), job: "lint"},
 		{name: "none", setting: " \n", source: SourceNone},
-		{name: "file that doesn't parse never falls back", files: map[string]string{".devpad/pipeline.yml": "jobs:\n  test:\n    script: make\n"}, setting: other, source: SourceFile, path: ".devpad/pipeline.yml", hashOf: "jobs:\n  test:\n    script: make\n", invalid: `.devpad/pipeline.yml: line 3: job test: unknown key "script"`},
-		{name: "both files", files: map[string]string{".devpad/pipeline.yml": validYAML, ".devpad/pipeline.yaml": other}, source: SourceFile, path: ".devpad/pipeline.yml", invalid: "both .devpad/pipeline.yml and .devpad/pipeline.yaml exist"},
-		{name: "setting that doesn't parse", setting: "jobs: {}\n", source: SourceProject, hashOf: "jobs: {}\n", invalid: "the project's pipeline: line 1: jobs is empty"},
-		{name: "file over the limit", files: map[string]string{".devpad/pipeline.yml": "jobs:\n  a:\n    run: " + strings.Repeat("x", MaxConfigBytes) + "\n"}, source: SourceFile, path: ".devpad/pipeline.yml", hashOf: "jobs:\n  a:\n    run: " + strings.Repeat("x", MaxConfigBytes) + "\n", invalid: "over the limit of 64 KB"},
+		{name: "file that doesn't parse never falls back", files: map[string]string{".devpad/pipeline.yml": broken}, setting: other, source: SourceFile, path: ".devpad/pipeline.yml", hash: hash([]byte(broken)), invalid: `.devpad/pipeline.yml: line 3: job test: unknown key "script"`},
+		{name: "empty file never falls back", files: map[string]string{".devpad/pipeline.yml": ""}, setting: other, source: SourceFile, path: ".devpad/pipeline.yml", hash: hash(nil), invalid: ".devpad/pipeline.yml: the pipeline is empty"},
+		{name: "file of comments never falls back", files: map[string]string{".devpad/pipeline.yaml": "# later\n"}, setting: other, source: SourceFile, path: ".devpad/pipeline.yaml", hash: hash([]byte("# later\n")), invalid: "the pipeline is empty"},
+		{name: "both files", files: map[string]string{".devpad/pipeline.yml": validYAML, ".devpad/pipeline.yaml": other}, setting: other, source: SourceFile, path: ".devpad/pipeline.yml", invalid: "both .devpad/pipeline.yml and .devpad/pipeline.yaml exist"},
+		{name: "setting that doesn't parse", setting: "jobs: {}\n", source: SourceProject, hash: hash([]byte("jobs: {}\n")), invalid: "the project's pipeline: line 1: jobs is empty"},
+		{name: "file over the limit", files: map[string]string{".devpad/pipeline.yml": huge}, source: SourceFile, path: ".devpad/pipeline.yml", hash: hash([]byte(huge)), invalid: "over the limit of 64 KB"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,19 +89,15 @@ func TestResolveFindsTheCommitsPipeline(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolve: %v", err)
 			}
-			want := []agent.RepoReadRequest{{Rev: commit, Files: Files, MaxBytes: MaxConfigBytes + 1}}
+			want := []agent.RepoReadRequest{{Rev: commit, Files: Files(), MaxBytes: 1}}
 			if !reflect.DeepEqual(repo.asked, want) {
 				t.Fatalf("asked %+v, want %+v", repo.asked, want)
 			}
 			if got.Source != tt.source || got.Path != tt.path {
 				t.Fatalf("source %s %q, want %s %q", got.Source, got.Path, tt.source, tt.path)
 			}
-			wantHash := ""
-			if tt.hashOf != "" {
-				wantHash = hash([]byte(tt.hashOf))
-			}
-			if got.SHA256 != wantHash {
-				t.Fatalf("hash %q, want %q", got.SHA256, wantHash)
+			if got.Hash != tt.hash {
+				t.Fatalf("hash %q, want %q", got.Hash, tt.hash)
 			}
 			if tt.invalid != "" {
 				if got.Invalid == nil || !strings.Contains(got.Invalid.Error(), tt.invalid) || got.Config != nil {
@@ -126,8 +128,61 @@ func TestResolveRefusesAFileTooLargeToRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if got.Source != SourceFile || got.Invalid == nil || got.SHA256 != "" {
+	if got.Source != SourceFile || got.Invalid == nil || got.Hash != "" || !strings.Contains(got.Invalid.Error(), "too large to read") {
 		t.Fatalf("expected an invalid file, got %+v", got)
+	}
+}
+
+// jobsHashOf is the hash of the jobs yaml names.
+func jobsHashOf(t *testing.T, yaml string) string {
+	t.Helper()
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse %q: %v", yaml, err)
+	}
+	return JobsHash(cfg.Jobs)
+}
+
+// A pipeline's hash is of what its jobs do, so rewriting the YAML without
+// changing them keeps it, and changing any of them changes it.
+func TestJobsHashIsOfTheJobs(t *testing.T) {
+	const base = "jobs:\n  backend:\n    run: go test ./...\n    services: [postgres]\n  frontend:\n    run: npm test\n"
+	want := jobsHashOf(t, base)
+	for _, same := range []string{
+		"# The pipeline.\njobs:\n  backend:   # Go\n    run: go test ./...\n    services:\n      - postgres\n\n  frontend:\n    run: \"npm test\"\n",
+		"jobs: {backend: {services: [postgres], run: 'go test ./...'}, frontend: {run: npm test, timeout: 10m, services: []}}\n",
+		"jobs:\n  backend:\n    run: &go go test ./...\n    services: [postgres]\n    timeout: 600s\n  frontend:\n    run: npm test\n",
+	} {
+		if got := jobsHashOf(t, same); got != want {
+			t.Errorf("hash of %q differs", same)
+		}
+	}
+	for _, other := range []string{
+		"jobs:\n  frontend:\n    run: npm test\n  backend:\n    run: go test ./...\n    services: [postgres]\n",
+		"jobs:\n  backend:\n    run: go test -v ./...\n    services: [postgres]\n  frontend:\n    run: npm test\n",
+		"jobs:\n  backend:\n    run: go test ./...\n  frontend:\n    run: npm test\n",
+		"jobs:\n  backend:\n    run: go test ./...\n    services: [postgres]\n  frontend:\n    run: npm test\n    timeout: 11m\n",
+		"jobs:\n  api:\n    run: go test ./...\n    services: [postgres]\n  frontend:\n    run: npm test\n",
+	} {
+		if got := jobsHashOf(t, other); got == want {
+			t.Errorf("hash of %q is the same", other)
+		}
+	}
+}
+
+// A broken file's hash is of its YAML, so a pipeline that failed on one
+// broken file is told apart from one that fails on another.
+func TestResolveHashesABrokenFile(t *testing.T) {
+	hashOf := func(yaml string) string {
+		t.Helper()
+		got, err := Resolve(context.Background(), &fakeRepo{files: map[string]string{".devpad/pipeline.yml": yaml}}, &project.Project{}, commit)
+		if err != nil || got.Invalid == nil {
+			t.Fatalf("expected %q invalid, got %+v (%v)", yaml, got, err)
+		}
+		return got.Hash
+	}
+	if hashOf("jobs:\n  a:\n    script: make\n") == hashOf("jobs:\n  a:\n    script: make test\n") {
+		t.Fatal("two broken files hash the same")
 	}
 }
 
@@ -184,16 +239,20 @@ func (f *fakeSettings) SetPipelineConfig(_ context.Context, userID, projectID in
 }
 
 func TestHandleSetConfig(t *testing.T) {
-	put := func(settings *fakeSettings, body string) (int, map[string]string) {
+	put := func(settings *fakeSettings, body string) (int, map[string]any) {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodPut, "/api/projects/7/pipeline", strings.NewReader(body))
 		req.SetPathValue("id", "7")
 		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: 3}))
 		rec := httptest.NewRecorder()
 		NewHandler(settings).HandleSetConfig(rec, req)
-		var out map[string]string
+		var out map[string]any
 		json.NewDecoder(bytes.NewReader(rec.Body.Bytes())).Decode(&out)
 		return rec.Code, out
+	}
+	config := func(out map[string]any) any {
+		project, _ := out["project"].(map[string]any)
+		return project["pipelineConfig"]
 	}
 	body := func(config string) string {
 		b, _ := json.Marshal(map[string]string{"config": config})
@@ -201,10 +260,10 @@ func TestHandleSetConfig(t *testing.T) {
 	}
 
 	settings := &fakeSettings{}
-	if code, out := put(settings, body(validYAML)); code != http.StatusOK || out["config"] != validYAML || settings.config != validYAML {
+	if code, out := put(settings, body(validYAML)); code != http.StatusOK || config(out) != validYAML || settings.config != validYAML {
 		t.Fatalf("valid: %d %v, stored %q", code, out, settings.config)
 	}
-	if code, out := put(settings, body("jobs:\n  a:\n    scrpit: make\n")); code != http.StatusBadRequest || !strings.Contains(out["error"], `line 3: job a: unknown key "scrpit"`) || settings.calls != 1 {
+	if code, out := put(settings, body("jobs:\n  a:\n    scrpit: make\n")); code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(out["error"]), `line 3: job a: unknown key "scrpit"`) || settings.calls != 1 {
 		t.Fatalf("invalid: %d %v after %d calls", code, out, settings.calls)
 	}
 	// Blank clears it.

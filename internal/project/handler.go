@@ -33,7 +33,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(projects))
 	for _, p := range projects {
-		items = append(items, projectResponse(p))
+		items = append(items, Response(p))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"projects": items})
 }
@@ -94,7 +94,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"project": projectResponse(p)})
+	writeJSON(w, http.StatusCreated, map[string]any{"project": Response(p)})
 }
 
 // HandleGet returns a single project.
@@ -109,7 +109,7 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"project": projectResponse(p)})
+	writeJSON(w, http.StatusOK, map[string]any{"project": Response(p)})
 }
 
 // HandleUpdate updates a project's editable fields.
@@ -136,7 +136,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"project": projectResponse(p)})
+	writeJSON(w, http.StatusOK, map[string]any{"project": Response(p)})
 }
 
 // HandleSetBranches changes a project's default branch and the other
@@ -162,7 +162,7 @@ func (h *Handler) HandleSetBranches(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"project": projectResponse(p)})
+	writeJSON(w, http.StatusOK, map[string]any{"project": Response(p)})
 }
 
 // HandleDeleteBranch deletes a branch of the project, only while it points
@@ -390,7 +390,7 @@ func (h *Handler) HandleSetUpstream(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"project": projectResponse(p)})
+	writeJSON(w, http.StatusOK, map[string]any{"project": Response(p)})
 }
 
 // HandleSyncUpstream fetches the upstream and fast-forwards the protected
@@ -732,7 +732,9 @@ func WriteAgentError(w http.ResponseWriter, err *agent.AgentError) {
 	}
 }
 
-func projectResponse(p *Project) map[string]any {
+// Response is a project as the API returns it, for every endpoint that
+// answers with a project, including those of other packages.
+func Response(p *Project) map[string]any {
 	return map[string]any{
 		"id":            p.ID,
 		"name":          p.Name,
@@ -841,7 +843,7 @@ func (h *Handler) HandleConvertWorkspace(w http.ResponseWriter, r *http.Request)
 		stripped = []agent.CredentialItem{}
 	}
 	body := map[string]any{
-		"project":       projectResponse(result.Project),
+		"project":       Response(result.Project),
 		"inPlace":       result.InPlace,
 		"workspace":     nil,
 		"ssh":           result.SSH,

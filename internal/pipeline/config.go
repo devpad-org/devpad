@@ -16,8 +16,10 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -29,6 +31,8 @@ const (
 	MaxJobs = 20
 	// DefaultTimeout is how long a job may run when it does not say.
 	DefaultTimeout = 10 * time.Minute
+	// MinTimeout is the shortest a job may ask to run.
+	MinTimeout = time.Second
 	// MaxTimeout is the longest a job may ask to run.
 	MaxTimeout = time.Hour
 	// maxJobServices caps the services one job asks for.
@@ -51,7 +55,8 @@ type Job struct {
 	// Timeout is how long the job may run before it is stopped and fails.
 	Timeout time.Duration
 	// Services are the types of the project's services the job gets fresh
-	// copies of, such as postgres.
+	// copies of, such as postgres. Nil when it has none, however the file
+	// says so.
 	Services []string
 }
 
@@ -97,7 +102,7 @@ func Parse(data []byte) (*Config, error) {
 	var jobs *yaml.Node
 	for _, f := range fields {
 		if f.key != "jobs" {
-			return nil, at(f.keyNode, "unknown key %q: a pipeline has only jobs", f.key)
+			return nil, at(f.keyNode, "unknown key %s: a pipeline has only jobs", quote(f.key))
 		}
 		jobs = f.value
 	}
@@ -124,7 +129,7 @@ func parseJobs(n *yaml.Node) (*Config, error) {
 	cfg := &Config{Jobs: make([]Job, 0, len(fields))}
 	for _, f := range fields {
 		if !jobNamePattern.MatchString(f.key) {
-			return nil, at(f.keyNode, "%q can't name a job: use up to 40 lowercase letters, digits, - and _, starting with a letter or digit", f.key)
+			return nil, at(f.keyNode, "%s can't name a job: use up to 40 lowercase letters, digits, - and _, starting with a letter or digit", quote(f.key))
 		}
 		job, err := parseJob(f.key, f.value)
 		if err != nil {
@@ -170,7 +175,7 @@ func parseJob(name string, n *yaml.Node) (Job, error) {
 			}
 			job.Services = services
 		default:
-			return Job{}, at(f.keyNode, "%s: unknown key %q: a job has run, timeout and services", what, f.key)
+			return Job{}, at(f.keyNode, "%s: unknown key %s: a job has run, timeout and services", what, quote(f.key))
 		}
 	}
 	if !hasRun {
@@ -188,8 +193,8 @@ func parseTimeout(v *yaml.Node) (time.Duration, error) {
 	switch {
 	case err != nil:
 		return 0, errors.New(want)
-	case d <= 0:
-		return 0, errors.New("timeout must be longer than nothing")
+	case d < MinTimeout:
+		return 0, fmt.Errorf("timeout must be at least %s", formatDuration(MinTimeout))
 	case d > MaxTimeout:
 		return 0, fmt.Errorf("timeout can be at most %s", formatDuration(MaxTimeout))
 	}
@@ -207,15 +212,15 @@ func parseServices(what string, n *yaml.Node) ([]string, error) {
 	if len(v.Content) > maxJobServices {
 		return nil, at(n, "%s: a job can have at most %d services", what, maxJobServices)
 	}
-	services := make([]string, 0, len(v.Content))
+	var services []string
 	for _, item := range v.Content {
 		s := deref(item)
-		if s.Kind != yaml.ScalarNode || !serviceTypePattern.MatchString(s.Value) {
+		if s.Kind != yaml.ScalarNode || s.ShortTag() != "!!str" || !serviceTypePattern.MatchString(s.Value) {
 			return nil, at(item, "%s: services lists the project's services by type, such as postgres", what)
 		}
 		for _, have := range services {
 			if have == s.Value {
-				return nil, at(item, "%s lists the service %s twice", what, s.Value)
+				return nil, at(item, "%s lists the service %s twice", what, quote(s.Value))
 			}
 		}
 		services = append(services, s.Value)
@@ -232,7 +237,9 @@ type field struct {
 
 // mapping lists a mapping's keys in order, refusing anything else, keys
 // that are not plain names, a key given twice and merge keys, whose fields
-// would come from somewhere a reader of the job does not see.
+// would come from somewhere a reader of the job does not see. A key is text
+// or digits (a job may be named 2024): one YAML reads as something else,
+// such as true, null or a tagged value, has to be quoted to be a name.
 func mapping(n *yaml.Node, what string) ([]field, error) {
 	m := deref(n)
 	if m.Kind != yaml.MappingNode {
@@ -247,8 +254,10 @@ func mapping(n *yaml.Node, what string) ([]field, error) {
 			return nil, at(k, "%s has a key that is not a name", what)
 		case k.ShortTag() == "!!merge":
 			return nil, at(k, "%s: merge keys (<<) aren't supported; write the fields out", what)
+		case k.ShortTag() != "!!str" && k.ShortTag() != "!!int":
+			return nil, at(k, "%s has a key that is not a name: %s (quote it to use it as one)", what, quote(k.Value))
 		case seen[k.Value]:
-			return nil, at(k, "%s has %q twice", what, k.Value)
+			return nil, at(k, "%s has %s twice", what, quote(k.Value))
 		}
 		seen[k.Value] = true
 		fields = append(fields, field{key: k.Value, keyNode: k, value: m.Content[i+1]})
@@ -271,6 +280,22 @@ func at(n *yaml.Node, format string, args ...any) error {
 		return fmt.Errorf("line %d: %s", n.Line, msg)
 	}
 	return errors.New(msg)
+}
+
+// maxQuoted is the most of a file's own text an error quotes: a key can be
+// as long as the file, and the error goes wherever the pipeline's result
+// does.
+const maxQuoted = 64
+
+// quote is s for an error, quoted with anything unprintable escaped, and
+// cut short after maxQuoted runes. Every string from the file that goes in
+// an error goes through it.
+func quote(s string) string {
+	if utf8.RuneCountInString(s) <= maxQuoted {
+		return strconv.Quote(s)
+	}
+	r := []rune(s)
+	return strconv.Quote(string(r[:maxQuoted])) + "…"
 }
 
 // syntaxError is the YAML parser's error, without its package's name.
