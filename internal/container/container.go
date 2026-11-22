@@ -152,8 +152,8 @@ type SidecarSpec struct {
 	// NoRestart leaves a sidecar that exits stopped, as a job's services
 	// are: Docker otherwise restarts it unless it was stopped.
 	NoRestart bool
-	// Limits, when set, bound the sidecar, as JobServiceLimits do a job's
-	// services.
+	// Limits, when set, bound the sidecar, as DefaultJobServiceLimits do a
+	// job's services.
 	Limits Limits
 }
 

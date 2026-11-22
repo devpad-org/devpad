@@ -92,11 +92,17 @@ type Limits struct {
 	Pids     int64
 }
 
-// The limits of a pipeline job's container, and of each of its services.
-var (
-	JobLimits        = Limits{Memory: 4 << 30, NanoCPUs: 2_000_000_000, Pids: 4096}
-	JobServiceLimits = Limits{Memory: 2 << 30, NanoCPUs: 1_000_000_000, Pids: 2048}
-)
+// DefaultJobLimits are what a pipeline job's container gets unless told
+// otherwise.
+func DefaultJobLimits() Limits {
+	return Limits{Memory: 4 << 30, NanoCPUs: 2_000_000_000, Pids: 4096}
+}
+
+// DefaultJobServiceLimits are what each of a pipeline job's services gets,
+// less memory than any service needs.
+func DefaultJobServiceLimits() Limits {
+	return Limits{Memory: 2 << 30, NanoCPUs: 1_000_000_000, Pids: 2048}
+}
 
 func (l Limits) resources() container.Resources {
 	r := container.Resources{Memory: l.Memory, MemorySwap: l.Memory, NanoCPUs: l.NanoCPUs}
@@ -173,7 +179,7 @@ type JobContainerSpec struct {
 	Env []string
 	// Files are put in, owned by root, before it starts.
 	Files []JobFile
-	// Limits bound the job; zero means JobLimits.
+	// Limits bound the job; zero means DefaultJobLimits.
 	Limits Limits
 	// Lifetime is how long the container lives. It stops itself then,
 	// ending whatever still runs in it, even with no devpad to stop it, so
@@ -186,7 +192,7 @@ func (s *JobContainerSpec) validate() error {
 		return err
 	}
 	if s.Limits == (Limits{}) {
-		s.Limits = JobLimits
+		s.Limits = DefaultJobLimits()
 	}
 	if s.Limits.Memory <= 0 || s.Limits.NanoCPUs <= 0 || s.Limits.Pids <= 0 {
 		return errors.New("a job's container needs memory, CPU and process limits")

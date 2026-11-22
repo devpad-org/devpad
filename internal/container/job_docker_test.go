@@ -174,7 +174,7 @@ if sudo -n true 2>/dev/null; then echo got-root; fi`
 	// its alias on the job's network.
 	sidecarID, err := m.CreateSidecar(ctx, SidecarSpec{
 		Name: job.ServiceName("svc"), Image: WorkspaceImage, Network: job.NetworkName(), NetworkAlias: "svc",
-		Labels: job.Labels(), NoRestart: true, Limits: JobServiceLimits,
+		Labels: job.Labels(), NoRestart: true, Limits: DefaultJobServiceLimits(),
 	})
 	if err != nil {
 		t.Fatalf("sidecar: %v", err)
@@ -184,7 +184,7 @@ if sudo -n true 2>/dev/null; then echo got-root; fi`
 		t.Fatalf("inspect sidecar: %v", err)
 	}
 	shc := info.Container.HostConfig
-	if shc.Memory != JobServiceLimits.Memory || shc.NanoCPUs != JobServiceLimits.NanoCPUs || shc.PidsLimit == nil || *shc.PidsLimit != JobServiceLimits.Pids || !shc.RestartPolicy.IsNone() {
+	if shc.Memory != DefaultJobServiceLimits().Memory || shc.NanoCPUs != DefaultJobServiceLimits().NanoCPUs || shc.PidsLimit == nil || *shc.PidsLimit != DefaultJobServiceLimits().Pids || !shc.RestartPolicy.IsNone() {
 		t.Errorf("unexpected sidecar host config: %+v %v", shc.Resources, shc.RestartPolicy)
 	}
 	if ep := info.Container.NetworkSettings.Networks[job.NetworkName()]; ep == nil || !strings.Contains(strings.Join(ep.Aliases, ","), "svc") {

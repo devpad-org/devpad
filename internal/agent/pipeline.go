@@ -11,18 +11,15 @@ import (
 	"net/url"
 	"regexp"
 
+	"github.com/devpad-org/devpad/internal/gitbundle"
 	"github.com/devpad-org/devpad/internal/pipelineid"
 )
 
-// MaxBundleBytes caps the bundles devpad moves: the agent's cap on those it
-// accepts, and the host's on a pipeline's, which no agent receives.
-const MaxBundleBytes = 512 << 20
+// ErrBundleTooLarge is returned for a bundle over gitbundle.MaxBytes.
+var ErrBundleTooLarge = fmt.Errorf("the bundle is over %d MB", gitbundle.MaxBytes>>20)
 
-// ErrBundleTooLarge is returned for a bundle over MaxBundleBytes.
-var ErrBundleTooLarge = fmt.Errorf("the bundle is over %d MB", MaxBundleBytes>>20)
-
-// bundleLimit is MaxBundleBytes, which tests lower.
-var bundleLimit int64 = MaxBundleBytes
+// bundleLimit is gitbundle.MaxBytes, which tests lower.
+var bundleLimit int64 = gitbundle.MaxBytes
 
 var fullHashPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
@@ -105,7 +102,7 @@ func (c *Client) RepoPinPipeline(ctx context.Context, pin PipelinePin) (*Pipelin
 }
 
 // RepoPipelineBundle writes a bundle of what a pipeline tests to w, and
-// returns its size. Past MaxBundleBytes it stops with ErrBundleTooLarge,
+// returns its size. Past gitbundle.MaxBytes it stops with ErrBundleTooLarge,
 // having written part of it.
 func (c *Client) RepoPipelineBundle(ctx context.Context, id string, w io.Writer) (int64, error) {
 	if !pipelineid.Valid(id) {

@@ -32,8 +32,11 @@ type ExecResult struct {
 }
 
 // oomSettle is how long ExecJob gives Docker to record an out-of-memory kill
-// that a failed command's exit may have overtaken.
+// that a failed command's exit may have overtaken, and oomInspectTimeout
+// bounds asking.
 var oomSettle = 250 * time.Millisecond
+
+const oomInspectTimeout = 10 * time.Second
 
 // JobScript is the command that runs script as a pipeline job does: with
 // bash, in a login shell's environment (so with the image's PATH and the
@@ -77,23 +80,34 @@ func (m *manager) ExecJob(ctx context.Context, containerID string, spec ExecSpec
 	if err != nil {
 		return ExecResult{ExitCode: -1}, err
 	}
-	// Docker records an out-of-memory kill on the container, whichever of
-	// its processes it was, from an event of its own that can come after
-	// the command's exit.
-	result := ExecResult{ExitCode: code}
+	return ExecResult{ExitCode: code, OOMKilled: m.oomKilled(ctx, containerID, code)}, nil
+}
+
+// oomKilled reports whether Docker has recorded the container running out
+// of memory, whichever of its processes was killed. It records it from an
+// event of its own, which can come after the command's exit, so for a
+// command that failed it looks again a moment later. The command's exit
+// code is known either way, so a container Docker cannot say anything about
+// counts as not killed. It asks on a context of its own, since the job's may
+// have ended with the command.
+func (m *manager) oomKilled(ctx context.Context, containerID string, exitCode int) bool {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), oomInspectTimeout)
+	defer cancel()
 	for attempt := 0; ; attempt++ {
 		info, err := m.cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 		if err != nil {
-			return result, fmt.Errorf("reading how the job's container stands: %w", err)
+			return false
 		}
-		result.OOMKilled = info.Container.State != nil && info.Container.State.OOMKilled
-		if result.OOMKilled || code == 0 || attempt > 0 {
-			return result, nil
+		if st := info.Container.State; st != nil && st.OOMKilled {
+			return true
+		}
+		if exitCode == 0 || attempt > 0 {
+			return false
 		}
 		select {
 		case <-time.After(oomSettle):
 		case <-ctx.Done():
-			return result, nil
+			return false
 		}
 	}
 }

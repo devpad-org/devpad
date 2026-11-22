@@ -28,7 +28,7 @@ func (s *service) PinPipeline(ctx context.Context, userID, projectID int64, pin 
 }
 
 // PipelineBundle writes a bundle of what a pipeline tests to w, and returns
-// its size, refusing one over agent.MaxBundleBytes.
+// its size, refusing one over gitbundle.MaxBytes.
 func (s *service) PipelineBundle(ctx context.Context, userID, projectID int64, pipelineID string, w io.Writer) (int64, error) {
 	if !pipelineid.Valid(pipelineID) {
 		return 0, invalid("pipeline id %q is not one devpad gives", pipelineID)

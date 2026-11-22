@@ -50,10 +50,10 @@ func TestStartJobServicesGivesTheJobFreshCopies(t *testing.T) {
 	}
 	// Each is limited as a job's service, SQL Server with the memory it
 	// needs.
-	if got := cm.sidecars[0].Limits; got != containerpkg.JobServiceLimits {
+	if got := cm.sidecars[0].Limits; got != containerpkg.DefaultJobServiceLimits() {
 		t.Errorf("postgres limits %+v", got)
 	}
-	if got := cm.sidecars[1].Limits; got.Memory != 3<<30 || got.NanoCPUs != containerpkg.JobServiceLimits.NanoCPUs || got.Pids != containerpkg.JobServiceLimits.Pids {
+	if got := cm.sidecars[1].Limits; got.Memory != 3<<30 || got.NanoCPUs != containerpkg.DefaultJobServiceLimits().NanoCPUs || got.Pids != containerpkg.DefaultJobServiceLimits().Pids {
 		t.Errorf("sqlserver limits %+v", got)
 	}
 	if !slices.Contains(cm.sidecars[1].Env, "ACCEPT_EULA=Y") {

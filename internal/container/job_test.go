@@ -87,7 +87,7 @@ func TestJobContainerSpecValidation(t *testing.T) {
 	if err := ok.validate(); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	if ok.Limits != JobLimits {
+	if ok.Limits != DefaultJobLimits() {
 		t.Fatalf("expected the job limits by default, got %+v", ok.Limits)
 	}
 	for name, change := range map[string]func(*JobContainerSpec){

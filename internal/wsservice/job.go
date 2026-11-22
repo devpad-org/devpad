@@ -36,7 +36,7 @@ type JobServices struct {
 // StartJobServices starts a fresh copy of each service a pipeline job names
 // on the job's network, and waits until each passes its health check. Every
 // copy is the job's alone, with a password of its own, no volume and
-// container.JobServiceLimits, and nothing records it but its labels: a job
+// container.DefaultJobServiceLimits, and nothing records it but its labels: a job
 // is not a workspace, so it has no workspace_services rows. It refuses,
 // before starting any, a service the project does not have, one this Docker
 // host cannot run, and one whose licence terms changed since the project
@@ -151,7 +151,7 @@ func (s *service) startJobServices(ctx context.Context, job container.Job, copie
 // jobServiceLimits bound a job's copy of a service: a job's services'
 // limits, with more memory for one that needs it.
 func jobServiceLimits(def definition) container.Limits {
-	limits := container.JobServiceLimits
+	limits := container.DefaultJobServiceLimits()
 	limits.Memory = max(limits.Memory, def.minMemory)
 	return limits
 }
