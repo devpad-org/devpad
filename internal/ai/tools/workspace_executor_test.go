@@ -627,6 +627,7 @@ func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
 	for _, args := range []string{
 		`{"prompt":"review","agent_id":"review"}`,
 		`{"prompt":"review","agent_id":"review","model":"picked"}`,
+		`{"prompt":"review","agent_id":"review","model":"user-review"}`,
 		`{"prompt":"code"}`,
 		`{"prompt":"code","model":"parent-model"}`,
 	} {
@@ -645,9 +646,13 @@ func TestWorkspaceExecutor_SpawnSubAgentUsesTheAgentsDefaults(t *testing.T) {
 	if got[1].Model != "picked" || got[1].Thinking != nil {
 		t.Errorf("expected the picked model without the parent's thinking, got %+v %+v", got[1], got[1].Thinking)
 	}
+	// Naming the default's model still takes the default's effort.
+	if got[2].Model != "user-review" || got[2].Thinking == nil || got[2].Thinking.Effort != "low" {
+		t.Errorf("expected the review agent's default effort on its named model, got %+v %+v", got[2], got[2].Thinking)
+	}
 	// The coding agent's default is another provider's model, so the child
 	// runs on the parent's.
-	for _, child := range got[2:] {
+	for _, child := range got[3:] {
 		if child.Model != "parent-model" || child.Thinking == nil || child.Thinking.Effort != "max" {
 			t.Errorf("expected the parent's model and thinking, got %+v %+v", child, child.Thinking)
 		}
@@ -707,7 +712,7 @@ func TestWorkspaceExecutor_ListAvailableAgentsListsTheModelsAChildCanUse(t *test
 		"small": {Model: domain.Model{
 			ID: "small", Name: "Small", ProviderID: "a",
 			Thinking: domain.ThinkingCapability{Supported: true, SupportedEfforts: []string{"low", "high"}, DefaultEffort: "high"},
-			Pricing:  &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1e-6, Output: 5e-6}},
+			Pricing:  &domain.Pricing{TokenPrices: domain.TokenPrices{Input: 1, Output: 5}},
 		}, Configured: true},
 		"elsewhere": {Model: domain.Model{ID: "elsewhere", ProviderID: "b"}, Configured: true},
 	})
@@ -757,6 +762,56 @@ func TestWorkspaceExecutor_ListAvailableAgentsListsTheModelsAChildCanUse(t *test
 	if small.ID != "small" || small.Current || small.DefaultEffort != "high" || !slices.Equal(small.Efforts, []string{"low", "high"}) ||
 		small.InputPrice == nil || *small.InputPrice != 1 || small.OutputPrice == nil || *small.OutputPrice != 5 {
 		t.Errorf("unexpected small model entry: %+v", small)
+	}
+}
+
+// failingAgentDefaults fails to look up the defaults of the agents it names.
+type failingAgentDefaults map[string]bool
+
+func (f failingAgentDefaults) DefaultsFor(_ context.Context, _ int64, agentID, _ string) (*domain.AgentDefaults, error) {
+	if f[agentID] {
+		return nil, errors.New("defaults unavailable")
+	}
+	return nil, nil
+}
+
+// An agent whose defaults fail to load is still listed, with why its model is
+// missing, and the other agents and the models are listed as usual.
+func TestWorkspaceExecutor_ListAvailableAgentsListsAgentsWhoseDefaultsFail(t *testing.T) {
+	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
+	executor.SetAgentLister(stubAgentLister{listFn: func(context.Context, int64, int64) ([]domain.Agent, error) {
+		return []domain.Agent{domain.DefaultAgent(), {ID: domain.ReviewAgentID, Name: "Code Review Agent", IsBuiltIn: true}}, nil
+	}})
+	executor.SetAgentDefaults(failingAgentDefaults{domain.ReviewAgentID: true})
+	executor.SetModels(modelsByProvider(map[string]string{"parent-model": "a"}))
+
+	req := toolReq(7, 9, "list_available_agents", []byte(`{}`))
+	req.Model = "parent-model"
+	result := executor.ExecuteTool(context.Background(), req)
+	if result.IsError {
+		t.Fatalf("expected list success, got %+v", result)
+	}
+	var payload struct {
+		Agents []struct {
+			ID         string `json:"id"`
+			Model      string `json:"model"`
+			ModelError string `json:"modelError"`
+		} `json:"agents"`
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("decoding list result: %v", err)
+	}
+	if len(payload.Agents) != 2 || payload.Agents[0].Model != "parent-model" || payload.Agents[0].ModelError != "" {
+		t.Fatalf("expected the coding agent on the parent's model, got %+v", payload.Agents)
+	}
+	if review := payload.Agents[1]; review.ID != domain.ReviewAgentID || review.Model != "" || !strings.Contains(review.ModelError, "defaults unavailable") {
+		t.Errorf("expected the review agent without a model and with the error, got %+v", review)
+	}
+	if len(payload.Models) != 1 || payload.Models[0].ID != "parent-model" {
+		t.Errorf("expected the models to be listed, got %+v", payload.Models)
 	}
 }
 
