@@ -81,19 +81,28 @@ func TestJobFiltersSelectByLabel(t *testing.T) {
 	}
 }
 
-func TestJobContainerSpecNeedsLimits(t *testing.T) {
-	ok := JobContainerSpec{Job: Job{Pipeline: "1", Name: "a"}, Memory: 1, NanoCPUs: 1, Pids: 1, Lifetime: time.Minute}
+func TestJobContainerSpecValidation(t *testing.T) {
+	ok := JobContainerSpec{Job: Job{Pipeline: "1", Name: "a"}, Lifetime: time.Minute,
+		Files: []JobFile{{Path: "/tmp/pipeline.bundle", Mode: 0o644, Content: strings.NewReader("")}}}
 	if err := ok.validate(); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
+	if ok.Limits != JobLimits {
+		t.Fatalf("expected the job limits by default, got %+v", ok.Limits)
+	}
 	for name, change := range map[string]func(*JobContainerSpec){
-		"no memory":   func(s *JobContainerSpec) { s.Memory = 0 },
-		"no cpu":      func(s *JobContainerSpec) { s.NanoCPUs = 0 },
-		"no pids":     func(s *JobContainerSpec) { s.Pids = 0 },
-		"no lifetime": func(s *JobContainerSpec) { s.Lifetime = 0 },
-		"bad job":     func(s *JobContainerSpec) { s.Job.Name = "A" },
+		"no memory":     func(s *JobContainerSpec) { s.Limits = Limits{NanoCPUs: 1, Pids: 1} },
+		"no cpu":        func(s *JobContainerSpec) { s.Limits = Limits{Memory: 1, Pids: 1} },
+		"no pids":       func(s *JobContainerSpec) { s.Limits = Limits{Memory: 1, NanoCPUs: 1} },
+		"no lifetime":   func(s *JobContainerSpec) { s.Lifetime = 0 },
+		"bad job":       func(s *JobContainerSpec) { s.Job.Name = "A" },
+		"relative file": func(s *JobContainerSpec) { s.Files[0].Path = "tmp/x" },
+		"unclean file":  func(s *JobContainerSpec) { s.Files[0].Path = "/tmp/../etc/x" },
+		"root":          func(s *JobContainerSpec) { s.Files[0].Path = "/" },
+		"no content":    func(s *JobContainerSpec) { s.Files[0].Content = nil },
 	} {
 		spec := ok
+		spec.Files = []JobFile{ok.Files[0]}
 		change(&spec)
 		if spec.validate() == nil {
 			t.Errorf("%s: expected it refused", name)
@@ -101,9 +110,51 @@ func TestJobContainerSpecNeedsLimits(t *testing.T) {
 	}
 }
 
+func TestJobResourcesAreTheJobsByName(t *testing.T) {
+	labels := Job{Pipeline: "7", Name: "test"}.Labels()
+	sidecar := Job{Pipeline: "7", Name: "test"}.Labels()
+	sidecar[labelSidecar] = "true"
+	tests := []struct {
+		name   string
+		kind   JobResourceKind
+		labels map[string]string
+		want   bool
+	}{
+		{"devpad-job-7.test", JobResourceContainer, labels, true},
+		{"devpad-job-7.test.postgres", JobResourceContainer, sidecar, true},
+		{"devpad-job-7.test", JobResourceNetwork, labels, true},
+		// A workspace whose image carried the labels is not the job's.
+		{"devpad-ws-12", JobResourceContainer, labels, false},
+		{"devpad-job-7.test-other", JobResourceContainer, labels, false},
+		{"devpad-job-8.test", JobResourceContainer, labels, false},
+		{"devpad-net-12", JobResourceNetwork, labels, false},
+		{"devpad-job-7.test.postgres", JobResourceNetwork, labels, false},
+		{"devpad-job-7.test", JobResourceContainer, map[string]string{LabelPipeline: "7"}, false},
+	}
+	for _, tt := range tests {
+		r, ok := jobResource(tt.kind, "id", tt.name, tt.labels)
+		if ok != tt.want {
+			t.Errorf("%s %s: listed %v, want %v", tt.kind, tt.name, ok, tt.want)
+		}
+		if ok && (r.Job != Job{Pipeline: "7", Name: "test"} || r.Sidecar != (tt.labels[labelSidecar] == "true")) {
+			t.Errorf("%s: unexpected resource %+v", tt.name, r)
+		}
+	}
+}
+
+func TestJobNetworkErrorTellsARanOutPool(t *testing.T) {
+	pool := errors.New("Error response from daemon: all predefined address pools have been fully subnetted: could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network")
+	if err := jobNetworkError(pool); !errors.Is(err, ErrNoNetworkPool) || !errors.Is(err, pool) {
+		t.Fatalf("expected ErrNoNetworkPool wrapping Docker's error, got %v", err)
+	}
+	if err := jobNetworkError(errors.New("network with name x already exists")); errors.Is(err, ErrNoNetworkPool) {
+		t.Fatalf("expected another failure kept apart, got %v", err)
+	}
+}
+
 func TestFileArchiveStreamsOneFile(t *testing.T) {
 	content := strings.Repeat("bundle", 1000)
-	archive := FileArchive("pipeline.bundle", 0o644, int64(len(content)), strings.NewReader(content))
+	archive := fileArchive("pipeline.bundle", 0o644, int64(len(content)), strings.NewReader(content))
 	defer archive.Close()
 	tr := tar.NewReader(archive)
 	hdr, err := tr.Next()
@@ -122,7 +173,7 @@ func TestFileArchiveStreamsOneFile(t *testing.T) {
 	}
 
 	// Content shorter than it was said to be fails the stream.
-	short := FileArchive("x", 0o644, 10, strings.NewReader("abc"))
+	short := fileArchive("x", 0o644, 10, strings.NewReader("abc"))
 	defer short.Close()
 	if _, err := io.ReadAll(short); err == nil {
 		t.Fatal("expected a short file to fail the archive")

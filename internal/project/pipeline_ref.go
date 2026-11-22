@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/pipelineid"
 )
 
 // A pipeline tests a commit as its canonical repo holds it: a commit of a
@@ -15,7 +16,7 @@ import (
 
 // PinPipeline pins what a pipeline tests. A source that does not merge onto
 // its target comes back as the answer's Conflict, not an error.
-func (s *service) PinPipeline(ctx context.Context, userID, projectID int64, pin agent.PipelinePin) (*agent.PipelineCommit, error) {
+func (s *service) PinPipeline(ctx context.Context, userID, projectID int64, pin agent.PipelinePin) (*agent.PipelinePinResult, error) {
 	if err := pin.Validate(); err != nil {
 		return nil, invalid("%s", err)
 	}
@@ -29,7 +30,7 @@ func (s *service) PinPipeline(ctx context.Context, userID, projectID int64, pin 
 // PipelineBundle writes a bundle of what a pipeline tests to w, and returns
 // its size, refusing one over agent.MaxBundleBytes.
 func (s *service) PipelineBundle(ctx context.Context, userID, projectID int64, pipelineID string, w io.Writer) (int64, error) {
-	if !agent.ValidPipelineID(pipelineID) {
+	if !pipelineid.Valid(pipelineID) {
 		return 0, invalid("pipeline id %q is not one devpad gives", pipelineID)
 	}
 	c, err := s.readyRepoAgent(ctx, userID, projectID)
@@ -41,7 +42,7 @@ func (s *service) PipelineBundle(ctx context.Context, userID, projectID int64, p
 
 // DeletePipelineRef deletes what a pipeline pinned, if anything.
 func (s *service) DeletePipelineRef(ctx context.Context, userID, projectID int64, pipelineID string) error {
-	if !agent.ValidPipelineID(pipelineID) {
+	if !pipelineid.Valid(pipelineID) {
 		return invalid("pipeline id %q is not one devpad gives", pipelineID)
 	}
 	c, err := s.readyRepoAgent(ctx, userID, projectID)

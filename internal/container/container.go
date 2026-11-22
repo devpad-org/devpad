@@ -107,6 +107,7 @@ type Manager interface {
 	// RemoveSidecar removes a sidecar container and the anonymous volumes
 	// its image declared. A sidecar's data is in its named volume, so an
 	// anonymous one holds nothing worth keeping and would otherwise leak.
+	// One already gone is removed.
 	RemoveSidecar(ctx context.Context, containerID string) error
 	// SidecarHealth reports whether a sidecar is running and what its
 	// health check says.
@@ -114,30 +115,6 @@ type Manager interface {
 	// DaemonArch returns the Docker daemon's CPU architecture in Go's
 	// naming, such as amd64 or arm64.
 	DaemonArch(ctx context.Context) (string, error)
-
-	// Pipeline jobs; see job.go.
-
-	// CreateJobNetwork creates a job's own bridge network, which devpad
-	// never joins.
-	CreateJobNetwork(ctx context.Context, job Job) error
-	// StartJobContainer creates and starts a job's container on its
-	// network.
-	StartJobContainer(ctx context.Context, spec JobContainerSpec) (containerID string, err error)
-	// ExecJob runs a command in a job's container, streaming its output to
-	// out, and returns its exit code. When ctx ends first it kills the
-	// container.
-	ExecJob(ctx context.Context, containerID string, spec ExecSpec, out io.Writer) (exitCode int, err error)
-	// CopyToContainer extracts a tar stream into a directory of a
-	// container.
-	CopyToContainer(ctx context.Context, containerID, dir string, archive io.Reader) error
-	// ListJobResources lists the containers and networks of pipeline jobs
-	// by their labels: with sel empty every pipeline's, with only its
-	// Pipeline set one pipeline's, or one job's.
-	ListJobResources(ctx context.Context, sel Job) ([]JobResource, error)
-	// RemoveJobResources removes what ListJobResources lists for sel, which
-	// names a pipeline: containers with their anonymous volumes, then
-	// networks.
-	RemoveJobResources(ctx context.Context, sel Job) error
 }
 
 // SidecarHealth is a sidecar's state as Docker reports it.
@@ -175,6 +152,9 @@ type SidecarSpec struct {
 	// NoRestart leaves a sidecar that exits stopped, as a job's services
 	// are: Docker otherwise restarts it unless it was stopped.
 	NoRestart bool
+	// Limits, when set, bound the sidecar, as JobServiceLimits do a job's
+	// services.
+	Limits Limits
 }
 
 // SidecarHealthStartPeriod is how long a sidecar has to pass its first
@@ -212,8 +192,9 @@ type manager struct {
 	attached map[string]bool
 }
 
-// NewManager creates a new container Manager using the default Docker client.
-func NewManager() (Manager, error) {
+// NewManager creates a new container Manager using the default Docker
+// client, which runs pipeline jobs too.
+func NewManager() (Docker, error) {
 	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("creating docker client: %w", err)
@@ -337,7 +318,7 @@ func (m *manager) Remove(ctx context.Context, containerID string) error {
 }
 
 func (m *manager) RemoveSidecar(ctx context.Context, containerID string) error {
-	if _, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
+	if _, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil && !isNotFound(err) {
 		return fmt.Errorf("removing sidecar container: %w", err)
 	}
 	return nil
@@ -731,6 +712,7 @@ func (m *manager) CreateSidecar(ctx context.Context, spec SidecarSpec) (string, 
 		HostConfig: &container.HostConfig{
 			RestartPolicy: restart,
 			Mounts:        mounts,
+			Resources:     spec.Limits.resources(),
 		},
 		NetworkingConfig: networkingConfig,
 		Name:             spec.Name,

@@ -48,20 +48,17 @@ func TestJobServicesWithDocker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("services: %v", err)
 	}
-	id, err := cm.StartJobContainer(ctx, containerpkg.JobContainerSpec{
-		Job: job, Env: services.Env,
-		Memory: 512 << 20, NanoCPUs: 1_000_000_000, Pids: 256, Lifetime: time.Minute,
-	})
+	id, err := cm.StartJobContainer(ctx, containerpkg.JobContainerSpec{Job: job, Env: services.Env, Lifetime: time.Minute})
 	if err != nil {
 		t.Fatalf("container: %v", err)
 	}
 	var out bytes.Buffer
-	code, err := cm.ExecJob(ctx, id, containerpkg.ExecSpec{Cmd: containerpkg.JobScript(`exec 3<>"/dev/tcp/$POSTGRES_HOST/$POSTGRES_PORT"; echo reached "$POSTGRES_HOST"`)}, &out)
-	if err != nil || code != 0 {
-		t.Fatalf("reaching postgres from the job: %d %v\n%s", code, err, out.String())
+	res, err := cm.ExecJob(ctx, id, containerpkg.ExecSpec{Cmd: containerpkg.JobScript(`exec 3<>"/dev/tcp/$POSTGRES_HOST/$POSTGRES_PORT"; echo reached "$POSTGRES_HOST"`)}, &out)
+	if err != nil || res.ExitCode != 0 {
+		t.Fatalf("reaching postgres from the job: %+v %v\n%s", res, err, out.String())
 	}
 
-	if err := svc.RemoveJobServices(ctx, job); err != nil {
+	if err := svc.RemoveJobServices(ctx, services); err != nil {
 		t.Fatalf("removing: %v", err)
 	}
 	resources, err := cm.ListJobResources(ctx, job)

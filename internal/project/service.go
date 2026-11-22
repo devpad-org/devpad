@@ -57,7 +57,7 @@ type Service interface {
 	// PinPipeline pins what a pipeline tests in the canonical repo, never
 	// moving a branch; PipelineBundle writes a bundle of it, and
 	// DeletePipelineRef forgets it. See pipeline_ref.go.
-	PinPipeline(ctx context.Context, userID, projectID int64, pin agent.PipelinePin) (*agent.PipelineCommit, error)
+	PinPipeline(ctx context.Context, userID, projectID int64, pin agent.PipelinePin) (*agent.PipelinePinResult, error)
 	PipelineBundle(ctx context.Context, userID, projectID int64, pipelineID string, w io.Writer) (int64, error)
 	DeletePipelineRef(ctx context.Context, userID, projectID int64, pipelineID string) error
 	Merge(ctx context.Context, userID, projectID int64, in MergeInput) (*agent.RepoMergeResult, error)

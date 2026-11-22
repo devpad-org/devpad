@@ -93,8 +93,8 @@ type Service interface {
 	// pipeline job names, on the job's network, and waits until they are
 	// ready. They belong to no workspace.
 	StartJobServices(ctx context.Context, req JobServicesRequest) (*JobServices, error)
-	// RemoveJobServices removes a pipeline job's services.
-	RemoveJobServices(ctx context.Context, job container.Job) error
+	// RemoveJobServices removes the services StartJobServices started.
+	RemoveJobServices(ctx context.Context, services *JobServices) error
 }
 
 // AwaitReady waits up to readyTimeout for a workspace's services to be
@@ -585,8 +585,7 @@ func (s *service) Provision(ctx context.Context, workspaceID, projectID int64, n
 			continue
 		}
 		if errors.Is(err, ErrLicenseOutdated) {
-			// Adding the service again is how the user accepts the new terms.
-			return fmt.Errorf("adding the project's %s service: %w; remove it from the project's services and add it again to accept the new terms", ps.ServiceType, err)
+			return outdatedLicenseError("adding", ps.ServiceType, err)
 		}
 		if err != nil {
 			return fmt.Errorf("adding the project's %s service: %w", ps.ServiceType, err)
@@ -674,7 +673,7 @@ func (s *service) awaitReady(ctx context.Context, svc startedService) error {
 			if errors.Is(context.Cause(ctx), errReadyTimeout) {
 				return fmt.Errorf("the %s service was not ready after %s", svc.serviceType, s.readyTimeout)
 			}
-			return ctx.Err()
+			return context.Cause(ctx)
 		case <-ticker.C:
 		}
 	}
@@ -718,6 +717,13 @@ func (s *service) AdoptWorkspaceServices(ctx context.Context, workspaceID, proje
 		}
 	}
 	return nil
+}
+
+// outdatedLicenseError says that a project's service cannot be copied, as
+// doing says, under terms changed since the project accepted them, and how
+// the user accepts the new ones: by adding the service again.
+func outdatedLicenseError(doing string, serviceType ServiceType, err error) error {
+	return fmt.Errorf("%s the project's %s service: %w; remove it from the project's services and add it again to accept the new terms", doing, serviceType, err)
 }
 
 // generatePassword returns a cryptographically random alphanumeric string of

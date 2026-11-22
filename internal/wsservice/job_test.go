@@ -48,6 +48,14 @@ func TestStartJobServicesGivesTheJobFreshCopies(t *testing.T) {
 			t.Errorf("%s: no health check", typ)
 		}
 	}
+	// Each is limited as a job's service, SQL Server with the memory it
+	// needs.
+	if got := cm.sidecars[0].Limits; got != containerpkg.JobServiceLimits {
+		t.Errorf("postgres limits %+v", got)
+	}
+	if got := cm.sidecars[1].Limits; got.Memory != 3<<30 || got.NanoCPUs != containerpkg.JobServiceLimits.NanoCPUs || got.Pids != containerpkg.JobServiceLimits.Pids {
+		t.Errorf("sqlserver limits %+v", got)
+	}
 	if !slices.Contains(cm.sidecars[1].Env, "ACCEPT_EULA=Y") {
 		t.Errorf("expected SQL Server deployed under the project's acceptance")
 	}
@@ -83,7 +91,7 @@ func TestStartJobServicesGivesTheJobFreshCopies(t *testing.T) {
 	}
 
 	// Tearing one job's down leaves the other's.
-	if err := svc.RemoveJobServices(ctx, job); err != nil {
+	if err := svc.RemoveJobServices(ctx, got); err != nil {
 		t.Fatalf("removing: %v", err)
 	}
 	if !slices.Equal(cm.removedSidecar, []string{"devpad-job-7.backend.postgres-container", "devpad-job-7.backend.sqlserver-container"}) {
@@ -172,23 +180,10 @@ func TestStartJobServicesWithNoneStartsNothing(t *testing.T) {
 	if err != nil || len(got.Env) != 0 || cm.sidecarCreates != 0 {
 		t.Fatalf("expected nothing, got %+v %v", got, err)
 	}
+	if err := svc.RemoveJobServices(context.Background(), got); err != nil || len(cm.removedSidecar) != 0 {
+		t.Fatalf("removing none: %v %v", err, cm.removedSidecar)
+	}
 	if _, err := svc.StartJobServices(context.Background(), JobServicesRequest{ProjectID: 1, Job: containerpkg.Job{Pipeline: "7", Name: "Bad.Name"}}); err == nil {
 		t.Fatal("expected a job Docker cannot name refused")
-	}
-}
-
-func TestRemoveJobServicesLeavesTheJobsOtherResources(t *testing.T) {
-	job := containerpkg.Job{Pipeline: "7", Name: "test"}
-	cm := &fakeContainerManager{jobResources: []containerpkg.JobResource{
-		{Kind: containerpkg.JobContainer, ID: "job-container", Job: job},
-		{Kind: containerpkg.JobNetwork, ID: "job-network", Job: job},
-		{Kind: containerpkg.JobContainer, ID: "svc", Job: job, Sidecar: true},
-		{Kind: containerpkg.JobContainer, ID: "other-svc", Job: containerpkg.Job{Pipeline: "8", Name: "test"}, Sidecar: true},
-	}}
-	if err := NewService(&fakeRepository{}, cm).RemoveJobServices(context.Background(), job); err != nil {
-		t.Fatalf("removing: %v", err)
-	}
-	if !slices.Equal(cm.removedSidecar, []string{"svc"}) || len(cm.removed) != 0 {
-		t.Fatalf("expected only the job's service removed, got sidecars %v containers %v", cm.removedSidecar, cm.removed)
 	}
 }

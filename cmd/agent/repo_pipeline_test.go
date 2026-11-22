@@ -15,18 +15,19 @@ import (
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/pipelineid"
 )
 
-func pinPipeline(t *testing.T, canonical string, req repoPipelinePin) (int, repoPipelineCommit, string) {
+func pinPipeline(t *testing.T, canonical string, req repoPipelinePin) (int, repoPipelinePinResult, string) {
 	t.Helper()
 	body, _ := json.Marshal(req)
 	rec := repoRequest(t, canonical, handleRepoPinPipeline, http.MethodPost, "/api/repo/pipeline-ref", bytes.NewReader(body))
-	var got repoPipelineCommit
+	var got repoPipelinePinResult
 	json.Unmarshal(rec.Body.Bytes(), &got)
 	return rec.Code, got, rec.Body.String()
 }
 
-func mustPin(t *testing.T, canonical string, req repoPipelinePin) repoPipelineCommit {
+func mustPin(t *testing.T, canonical string, req repoPipelinePin) repoPipelinePinResult {
 	t.Helper()
 	code, got, body := pinPipeline(t, canonical, req)
 	if code != http.StatusOK || got.Conflict != nil {
@@ -55,7 +56,7 @@ func cloneLikeAJob(t *testing.T, canonical, id string) string {
 	}
 	job := t.TempDir()
 	runGit(t, job, "init", "-q")
-	runGit(t, job, "fetch", "-q", "--no-tags", bundle, pipelineRefPrefix+id)
+	runGit(t, job, "fetch", "-q", "--no-tags", bundle, pipelineid.Ref(id))
 	runGit(t, job, "checkout", "-q", "-b", "tested", "FETCH_HEAD")
 	return job
 }
@@ -201,12 +202,17 @@ func TestPinPipelineMergeReportsWhatDoesNotMerge(t *testing.T) {
 	target := advanceMain(t, canonical, "shared.txt", "main's version")
 	before := branchRefs(t, canonical)
 
+	// An earlier pin of the id goes, so nothing stale is bundled for it.
+	mustPin(t, canonical, repoPipelinePin{ID: "3", Commit: target})
 	code, got, body := pinPipeline(t, canonical, repoPipelinePin{ID: "3", Source: source, Target: target})
 	if code != http.StatusOK || got.Conflict == nil || !slices.Equal(got.Conflict.Paths, []string{"shared.txt"}) || got.Ref != "" || got.SHA != "" {
 		t.Fatalf("expected a conflict in shared.txt, got %d %s", code, body)
 	}
 	if out, err := gitOutputIn(context.Background(), canonical, "rev-parse", "--verify", "--quiet", "refs/devpad/pipelines/3"); err == nil {
 		t.Fatalf("expected nothing pinned, got %s", out)
+	}
+	if rec := repoRequest(t, canonical, handleRepoPipelineBundle, http.MethodGet, "/api/repo/pipeline-bundle?id=3", nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("expected no bundle after a conflict, got %d", rec.Code)
 	}
 	if after := branchRefs(t, canonical); after != before {
 		t.Fatalf("branches moved:\n%s\nwant\n%s", after, before)
@@ -352,7 +358,7 @@ func TestPipelineClientAgainstTheAgent(t *testing.T) {
 	ctx := context.Background()
 
 	pinned, err := c.RepoPinPipeline(ctx, agent.PipelinePin{ID: "5", Commit: source})
-	if err != nil || pinned.SHA != source || pinned.Ref != agent.PipelineRefPrefix+"5" {
+	if err != nil || pinned.SHA != source || pinned.Ref != pipelineid.Ref("5") {
 		t.Fatalf("pin: %+v %v", pinned, err)
 	}
 	var bundle bytes.Buffer
@@ -369,5 +375,29 @@ func TestPipelineClientAgainstTheAgent(t *testing.T) {
 	}
 	if _, err := c.RepoPipelineBundle(ctx, "5", &bundle); err == nil {
 		t.Fatal("expected no bundle once deleted")
+	}
+}
+
+// Only git's no is no: a commit it cannot read is an error, never a
+// conflict or "not an ancestor".
+func TestGitAnswerTellsNoFromFailure(t *testing.T) {
+	canonical := initCanonical(t)
+	withWorkspaceRoot(t, canonical)
+	ctx := context.Background()
+	main := runGit(t, canonical, "rev-parse", "main")
+	if yes, err := isAncestor(ctx, main, main); err != nil || !yes {
+		t.Fatalf("a commit is its own ancestor: %v %v", yes, err)
+	}
+	missing := strings.Repeat("ab", 20)
+	if _, err := isAncestor(ctx, missing, main); err == nil {
+		t.Fatal("expected an unreadable commit to be an error")
+	}
+	if _, err := haveMergeBase(ctx, main, missing); err == nil {
+		t.Fatal("expected an unreadable commit to be an error")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := isAncestor(cancelled, main, main); err == nil {
+		t.Fatal("expected a stopped check to be an error")
 	}
 }

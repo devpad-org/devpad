@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -130,21 +129,6 @@ func (m *mockContainerManager) PullImage(context.Context, string) error { return
 func (m *mockContainerManager) DaemonArch(context.Context) (string, error) {
 	return "amd64", nil
 }
-
-func (m *mockContainerManager) CreateJobNetwork(context.Context, container.Job) error { return nil }
-func (m *mockContainerManager) StartJobContainer(context.Context, container.JobContainerSpec) (string, error) {
-	return "", nil
-}
-func (m *mockContainerManager) ExecJob(context.Context, string, container.ExecSpec, io.Writer) (int, error) {
-	return 0, nil
-}
-func (m *mockContainerManager) CopyToContainer(context.Context, string, string, io.Reader) error {
-	return nil
-}
-func (m *mockContainerManager) ListJobResources(context.Context, container.Job) ([]container.JobResource, error) {
-	return nil, nil
-}
-func (m *mockContainerManager) RemoveJobResources(context.Context, container.Job) error { return nil }
 
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()

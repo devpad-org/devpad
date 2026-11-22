@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/devpad-org/devpad/internal/agent"
 )
 
 // Repo endpoints move commits between a project's canonical bare repo and its
@@ -23,8 +25,9 @@ const (
 	repoTimeout = 10 * time.Minute
 
 	// maxBundleBytes caps bundles accepted from devpad. Bundles from sandboxes
-	// are untrusted, so this bounds disk use in the receiving container.
-	maxBundleBytes = 512 << 20
+	// are untrusted, so this bounds disk use in the receiving container. The
+	// host holds bundles no agent receives to the same cap.
+	maxBundleBytes = agent.MaxBundleBytes
 
 	quarantineRefPrefix = "refs/devpad/quarantine/"
 )

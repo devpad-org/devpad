@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/pipelineid"
 )
 
 func TestPipelineRefsGoToTheRepoContainer(t *testing.T) {
@@ -19,7 +20,7 @@ func TestPipelineRefsGoToTheRepoContainer(t *testing.T) {
 
 	pin := agent.PipelinePin{ID: "12", Source: source, Target: target}
 	got, err := e.svc.PinPipeline(ctx, e.userID, p.ID, pin)
-	if err != nil || got.Ref != agent.PipelineRefPrefix+"12" {
+	if err != nil || got.Ref != pipelineid.Ref("12") {
 		t.Fatalf("pin: %+v %v", got, err)
 	}
 	var bundle bytes.Buffer

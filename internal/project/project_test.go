@@ -24,6 +24,7 @@ import (
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/container"
 	appdb "github.com/devpad-org/devpad/internal/database"
+	"github.com/devpad-org/devpad/internal/pipelineid"
 	"github.com/devpad-org/devpad/internal/workspace"
 	"github.com/mattn/go-sqlite3"
 )
@@ -216,21 +217,6 @@ func (f *fakeContainers) PullImage(context.Context, string) error { return nil }
 func (f *fakeContainers) DaemonArch(context.Context) (string, error) {
 	return "amd64", nil
 }
-
-func (f *fakeContainers) CreateJobNetwork(context.Context, container.Job) error { return nil }
-func (f *fakeContainers) StartJobContainer(context.Context, container.JobContainerSpec) (string, error) {
-	return "", nil
-}
-func (f *fakeContainers) ExecJob(context.Context, string, container.ExecSpec, io.Writer) (int, error) {
-	return 0, nil
-}
-func (f *fakeContainers) CopyToContainer(context.Context, string, string, io.Reader) error {
-	return nil
-}
-func (f *fakeContainers) ListJobResources(context.Context, container.Job) ([]container.JobResource, error) {
-	return nil, nil
-}
-func (f *fakeContainers) RemoveJobResources(context.Context, container.Job) error { return nil }
 
 // fakeRepoAgent stands in for the agent in a project's repo container.
 type fakeRepoAgent struct {
@@ -440,13 +426,13 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/repo/pipeline-ref":
 		if r.Method == http.MethodDelete {
 			a.pipelineDeletes = append(a.pipelineDeletes, r.URL.Query().Get("id"))
-			json.NewEncoder(w).Encode(map[string]string{"ref": agent.PipelineRefPrefix + r.URL.Query().Get("id")})
+			json.NewEncoder(w).Encode(map[string]string{"ref": pipelineid.Ref(r.URL.Query().Get("id"))})
 			return
 		}
 		var pin agent.PipelinePin
 		json.NewDecoder(r.Body).Decode(&pin)
 		a.pins = append(a.pins, pin)
-		json.NewEncoder(w).Encode(agent.PipelineCommit{Ref: agent.PipelineRefPrefix + pin.ID, SHA: strings.Repeat("e", 40)})
+		json.NewEncoder(w).Encode(agent.PipelinePinResult{Ref: pipelineid.Ref(pin.ID), SHA: strings.Repeat("e", 40)})
 	case "/api/repo/pipeline-bundle":
 		w.Write([]byte("bundle-of-pipeline-" + r.URL.Query().Get("id")))
 	case "/api/repo/import-initial":

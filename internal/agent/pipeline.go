@@ -10,15 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+
+	"github.com/devpad-org/devpad/internal/pipelineid"
 )
 
-// PipelineRefPrefix is where a project's canonical repo keeps what each
-// pipeline tests, as refs/devpad/pipelines/<id>.
-const PipelineRefPrefix = "refs/devpad/pipelines/"
-
-// MaxBundleBytes caps a bundle devpad takes in: the agent's own cap on the
-// bundles it accepts, which pipeline bundles, received by no agent, are held
-// to on the host.
+// MaxBundleBytes caps the bundles devpad moves: the agent's cap on those it
+// accepts, and the host's on a pipeline's, which no agent receives.
 const MaxBundleBytes = 512 << 20
 
 // ErrBundleTooLarge is returned for a bundle over MaxBundleBytes.
@@ -27,15 +24,7 @@ var ErrBundleTooLarge = fmt.Errorf("the bundle is over %d MB", MaxBundleBytes>>2
 // bundleLimit is MaxBundleBytes, which tests lower.
 var bundleLimit int64 = MaxBundleBytes
 
-var (
-	// pipelineIDPattern matches the agent's own rule for pipeline ids.
-	pipelineIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
-	fullHashPattern   = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
-)
-
-// ValidPipelineID reports whether id can name a pipeline's ref: lowercase
-// letters, digits and hyphens, at most 64.
-func ValidPipelineID(id string) bool { return pipelineIDPattern.MatchString(id) }
+var fullHashPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
 // PipelinePin says what a pipeline tests: Commit as it is, or the trial
 // merge of Source onto Target, the tree a merge, squash or fast-forward of
@@ -49,7 +38,7 @@ type PipelinePin struct {
 
 // Validate refuses a pin the agent would.
 func (p PipelinePin) Validate() error {
-	if !ValidPipelineID(p.ID) {
+	if !pipelineid.Valid(p.ID) {
 		return fmt.Errorf("pipeline id %q must be lowercase letters, digits and hyphens", p.ID)
 	}
 	var hashes []string
@@ -69,8 +58,9 @@ func (p PipelinePin) Validate() error {
 	return nil
 }
 
-// PipelineCommit is what a pipeline tests, pinned in the canonical repo.
-type PipelineCommit struct {
+// PipelinePinResult is what a pipeline tests, pinned in the canonical repo,
+// or why there is nothing to test.
+type PipelinePinResult struct {
 	// Ref holds SHA until the pin is deleted.
 	Ref string `json:"ref,omitempty"`
 	// SHA is the commit tested. For a merge it is the target when it
@@ -91,7 +81,7 @@ type MergeConflict struct {
 
 // RepoPinPipeline pins what a pipeline tests to its ref, replacing an
 // earlier pin of the same id. It never moves a branch.
-func (c *Client) RepoPinPipeline(ctx context.Context, pin PipelinePin) (*PipelineCommit, error) {
+func (c *Client) RepoPinPipeline(ctx context.Context, pin PipelinePin) (*PipelinePinResult, error) {
 	if err := pin.Validate(); err != nil {
 		return nil, err
 	}
@@ -104,11 +94,11 @@ func (c *Client) RepoPinPipeline(ctx context.Context, pin PipelinePin) (*Pipelin
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	var result PipelineCommit
+	var result PipelinePinResult
 	if err := c.doRepoJSON(req, "repo pin pipeline", &result); err != nil {
 		return nil, err
 	}
-	if result.Conflict == nil && (result.Ref != PipelineRefPrefix+pin.ID || !fullHashPattern.MatchString(result.SHA)) {
+	if result.Conflict == nil && (result.Ref != pipelineid.Ref(pin.ID) || !fullHashPattern.MatchString(result.SHA)) {
 		return nil, fmt.Errorf("repo pin pipeline: unexpected answer %+v", result)
 	}
 	return &result, nil
@@ -118,7 +108,7 @@ func (c *Client) RepoPinPipeline(ctx context.Context, pin PipelinePin) (*Pipelin
 // returns its size. Past MaxBundleBytes it stops with ErrBundleTooLarge,
 // having written part of it.
 func (c *Client) RepoPipelineBundle(ctx context.Context, id string, w io.Writer) (int64, error) {
-	if !ValidPipelineID(id) {
+	if !pipelineid.Valid(id) {
 		return 0, fmt.Errorf("pipeline id %q must be lowercase letters, digits and hyphens", id)
 	}
 	body, err := c.repoBundle(ctx, "/api/repo/pipeline-bundle", url.Values{"id": {id}})
@@ -128,7 +118,7 @@ func (c *Client) RepoPipelineBundle(ctx context.Context, id string, w io.Writer)
 	defer body.Close()
 	n, err := io.Copy(w, io.LimitReader(body, bundleLimit+1))
 	if err != nil {
-		return n, fmt.Errorf("reading the pipeline's bundle: %w", err)
+		return n, fmt.Errorf("copying the pipeline's bundle: %w", err)
 	}
 	if n > bundleLimit {
 		return n, ErrBundleTooLarge
@@ -138,7 +128,7 @@ func (c *Client) RepoPipelineBundle(ctx context.Context, id string, w io.Writer)
 
 // RepoDeletePipelineRef deletes a pipeline's ref, if it has one.
 func (c *Client) RepoDeletePipelineRef(ctx context.Context, id string) error {
-	if !ValidPipelineID(id) {
+	if !pipelineid.Valid(id) {
 		return fmt.Errorf("pipeline id %q must be lowercase letters, digits and hyphens", id)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/api/repo/pipeline-ref?"+url.Values{"id": {id}}.Encode(), nil)

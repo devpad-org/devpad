@@ -21,15 +21,31 @@ type ExecSpec struct {
 	Env []string
 }
 
+// ExecResult is how a command in a job's container ended.
+type ExecResult struct {
+	ExitCode int
+	// OOMKilled says the container ran out of memory since it started, so
+	// the kernel killed a process of it, which is likely why a command that
+	// failed did: 137 for the process itself, or whatever a parent made of
+	// its child being killed.
+	OOMKilled bool
+}
+
+// oomSettle is how long ExecJob gives Docker to record an out-of-memory kill
+// that a failed command's exit may have overtaken.
+var oomSettle = 250 * time.Millisecond
+
 // JobScript is the command that runs script as a pipeline job does: with
-// bash, in a login shell's environment (so with the image's PATH and
-// whatever ~/.profile sets), stopping at the first command that fails, a
-// pipeline's included, and exiting with the script's own status. The login
-// shell only sets up the environment and then makes way for a plain bash: a
-// login shell runs ~/.bash_logout when the script calls exit, under its
-// errexit, which on Debian's turns exit 0 or exit 3 into 1.
+// bash, in a login shell's environment (so with the image's PATH and the
+// variables ~/.profile exports, though not the functions it defines),
+// stopping at the first command that fails, a pipeline's included, and
+// exiting with the script's own status. The login shell only sets up the
+// environment and then makes way for a plain bash: a login shell runs
+// ~/.bash_logout when the script calls exit, under its errexit, which on
+// Debian's turns exit 0 or exit 3 into 1. The script is always the command,
+// even when it starts with a dash.
 func JobScript(script string) []string {
-	return []string{"bash", "-lc", `exec bash -eo pipefail -c "$1"`, "bash", script}
+	return []string{"bash", "-lc", `exec bash -eo pipefail -c -- "$1"`, "bash", script}
 }
 
 var (
@@ -46,8 +62,8 @@ var (
 const execKillTimeout = 30 * time.Second
 
 // ExecJob runs a command in a job's container and waits for it to exit,
-// writing what it prints, stdout and stderr together and in order, to out as
-// it comes, and returns its exit code. out is never written after ExecJob
+// writing what it prints, stdout and stderr together, each in order, to out
+// as it comes, and returns how it ended. out is never written after ExecJob
 // returns, and its errors are ignored, so a failing writer cannot stall the
 // command.
 //
@@ -56,7 +72,33 @@ const execKillTimeout = 30 * time.Second
 // context.Cause(ctx); the container is then only good for removing. It does
 // the same when it loses the command's output while the command may still
 // be running.
-func (m *manager) ExecJob(ctx context.Context, containerID string, spec ExecSpec, out io.Writer) (int, error) {
+func (m *manager) ExecJob(ctx context.Context, containerID string, spec ExecSpec, out io.Writer) (ExecResult, error) {
+	code, err := m.execJob(ctx, containerID, spec, out)
+	if err != nil {
+		return ExecResult{ExitCode: -1}, err
+	}
+	// Docker records an out-of-memory kill on the container, whichever of
+	// its processes it was, from an event of its own that can come after
+	// the command's exit.
+	result := ExecResult{ExitCode: code}
+	for attempt := 0; ; attempt++ {
+		info, err := m.cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+		if err != nil {
+			return result, fmt.Errorf("reading how the job's container stands: %w", err)
+		}
+		result.OOMKilled = info.Container.State != nil && info.Container.State.OOMKilled
+		if result.OOMKilled || code == 0 || attempt > 0 {
+			return result, nil
+		}
+		select {
+		case <-time.After(oomSettle):
+		case <-ctx.Done():
+			return result, nil
+		}
+	}
+}
+
+func (m *manager) execJob(ctx context.Context, containerID string, spec ExecSpec, out io.Writer) (int, error) {
 	if len(spec.Cmd) == 0 {
 		return -1, errors.New("running a command in a job: no command")
 	}
@@ -196,23 +238,11 @@ func (i ignoreErrors) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// CopyToContainer extracts a tar stream into dir, which must exist, in a
-// container. Files are owned as the archive says, root by default.
-func (m *manager) CopyToContainer(ctx context.Context, containerID, dir string, archive io.Reader) error {
-	if _, err := m.cli.CopyToContainer(ctx, containerID, client.CopyToContainerOptions{
-		DestinationPath: dir,
-		Content:         archive,
-	}); err != nil {
-		return fmt.Errorf("copying into the container: %w", err)
-	}
-	return nil
-}
-
-// FileArchive is a tar stream holding one file, name, of size bytes read
+// fileArchive is a tar stream holding one file, name, of size bytes read
 // from content, made as it is read so that a large file is never held in
 // memory. Reading it fails if content holds fewer bytes. The caller closes
 // it, which stops reading content.
-func FileArchive(name string, mode, size int64, content io.Reader) io.ReadCloser {
+func fileArchive(name string, mode, size int64, content io.Reader) io.ReadCloser {
 	r, w := io.Pipe()
 	go func() {
 		tw := tar.NewWriter(w)
