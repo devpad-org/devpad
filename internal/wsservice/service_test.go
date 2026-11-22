@@ -2,7 +2,9 @@ package wsservice
 
 import (
 	"context"
+	"io"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -181,6 +183,9 @@ type fakeContainerManager struct {
 	// pulled are the images pulled, in order; pullErr fails each pull.
 	pulled  []string
 	pullErr error
+	// jobResources are what ListJobResources finds besides the sidecars
+	// created with a job's labels.
+	jobResources []containerpkg.JobResource
 }
 
 func (m *fakeContainerManager) PullImage(_ context.Context, ref string) error {
@@ -311,6 +316,43 @@ func (m *fakeContainerManager) CreateSidecar(_ context.Context, spec containerpk
 		return m.sidecarID, nil
 	}
 	return spec.Name + "-container", nil
+}
+
+func (m *fakeContainerManager) CreateJobNetwork(context.Context, containerpkg.Job) error { return nil }
+func (m *fakeContainerManager) StartJobContainer(context.Context, containerpkg.JobContainerSpec) (string, error) {
+	return "", nil
+}
+func (m *fakeContainerManager) ExecJob(context.Context, string, containerpkg.ExecSpec, io.Writer) (int, error) {
+	return 0, nil
+}
+func (m *fakeContainerManager) CopyToContainer(context.Context, string, string, io.Reader) error {
+	return nil
+}
+
+// ListJobResources finds the sidecars created with sel's labels and not
+// removed since, and jobResources.
+func (m *fakeContainerManager) ListJobResources(_ context.Context, sel containerpkg.Job) ([]containerpkg.JobResource, error) {
+	matches := func(j containerpkg.Job) bool {
+		return (sel.Pipeline == "" || j.Pipeline == sel.Pipeline) && (sel.Name == "" || j.Name == sel.Name)
+	}
+	var out []containerpkg.JobResource
+	for _, spec := range m.sidecars {
+		job := containerpkg.Job{Pipeline: spec.Labels[containerpkg.LabelPipeline], Name: spec.Labels[containerpkg.LabelJob]}
+		id := spec.Name + "-container"
+		if job.Pipeline == "" || !matches(job) || slices.Contains(m.removedSidecar, id) {
+			continue
+		}
+		out = append(out, containerpkg.JobResource{Kind: containerpkg.JobContainer, ID: id, Name: spec.Name, Job: job, Sidecar: true})
+	}
+	for _, r := range m.jobResources {
+		if matches(r.Job) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+func (m *fakeContainerManager) RemoveJobResources(context.Context, containerpkg.Job) error {
+	return nil
 }
 
 func (m *fakeContainerManager) DaemonArch(context.Context) (string, error) {

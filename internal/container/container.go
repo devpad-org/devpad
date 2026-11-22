@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"sync"
 	"time"
 
@@ -113,6 +114,30 @@ type Manager interface {
 	// DaemonArch returns the Docker daemon's CPU architecture in Go's
 	// naming, such as amd64 or arm64.
 	DaemonArch(ctx context.Context) (string, error)
+
+	// Pipeline jobs; see job.go.
+
+	// CreateJobNetwork creates a job's own bridge network, which devpad
+	// never joins.
+	CreateJobNetwork(ctx context.Context, job Job) error
+	// StartJobContainer creates and starts a job's container on its
+	// network.
+	StartJobContainer(ctx context.Context, spec JobContainerSpec) (containerID string, err error)
+	// ExecJob runs a command in a job's container, streaming its output to
+	// out, and returns its exit code. When ctx ends first it kills the
+	// container.
+	ExecJob(ctx context.Context, containerID string, spec ExecSpec, out io.Writer) (exitCode int, err error)
+	// CopyToContainer extracts a tar stream into a directory of a
+	// container.
+	CopyToContainer(ctx context.Context, containerID, dir string, archive io.Reader) error
+	// ListJobResources lists the containers and networks of pipeline jobs
+	// by their labels: with sel empty every pipeline's, with only its
+	// Pipeline set one pipeline's, or one job's.
+	ListJobResources(ctx context.Context, sel Job) ([]JobResource, error)
+	// RemoveJobResources removes what ListJobResources lists for sel, which
+	// names a pipeline: containers with their anonymous volumes, then
+	// networks.
+	RemoveJobResources(ctx context.Context, sel Job) error
 }
 
 // SidecarHealth is a sidecar's state as Docker reports it.
@@ -142,6 +167,14 @@ type SidecarSpec struct {
 	// tell when the service accepts connections, in Docker's form:
 	// {"CMD", args...} or {"CMD-SHELL", command}.
 	Healthcheck []string
+	// NetworkAlias, when set, is another name the sidecar goes by on
+	// Network.
+	NetworkAlias string
+	// Labels are added to devpad's own, such as a pipeline job's.
+	Labels map[string]string
+	// NoRestart leaves a sidecar that exits stopped, as a job's services
+	// are: Docker otherwise restarts it unless it was stopped.
+	NoRestart bool
 }
 
 // SidecarHealthStartPeriod is how long a sidecar has to pass its first
@@ -635,6 +668,9 @@ func (m *manager) pullImageIfNeeded(ctx context.Context, imageName string) error
 }
 
 func (m *manager) CreateSidecar(ctx context.Context, spec SidecarSpec) (string, error) {
+	if spec.NetworkAlias != "" && spec.Network == "" {
+		return "", fmt.Errorf("sidecar %s has a network alias but no network", spec.Name)
+	}
 	if err := m.pullImageIfNeeded(ctx, spec.Image); err != nil {
 		return "", fmt.Errorf("pulling sidecar image: %w", err)
 	}
@@ -653,11 +689,24 @@ func (m *manager) CreateSidecar(ctx context.Context, spec SidecarSpec) (string, 
 
 	var networkingConfig *network.NetworkingConfig
 	if spec.Network != "" {
+		endpoint := &network.EndpointSettings{}
+		if spec.NetworkAlias != "" {
+			endpoint.Aliases = []string{spec.NetworkAlias}
+		}
 		networkingConfig = &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
-				spec.Network: {},
+				spec.Network: endpoint,
 			},
 		}
+	}
+
+	labels := map[string]string{}
+	maps.Copy(labels, spec.Labels)
+	labels[labelManaged] = "true"
+	labels[labelSidecar] = "true"
+	restart := container.RestartPolicy{Name: container.RestartPolicyUnlessStopped}
+	if spec.NoRestart {
+		restart = container.RestartPolicy{Name: container.RestartPolicyDisabled}
 	}
 
 	var healthcheck *container.HealthConfig
@@ -677,13 +726,10 @@ func (m *manager) CreateSidecar(ctx context.Context, spec SidecarSpec) (string, 
 			Image:       spec.Image,
 			Env:         spec.Env,
 			Healthcheck: healthcheck,
-			Labels: map[string]string{
-				"devpad.managed": "true",
-				"devpad.sidecar": "true",
-			},
+			Labels:      labels,
 		},
 		HostConfig: &container.HostConfig{
-			RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+			RestartPolicy: restart,
 			Mounts:        mounts,
 		},
 		NetworkingConfig: networkingConfig,

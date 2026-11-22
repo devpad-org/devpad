@@ -217,6 +217,21 @@ func (f *fakeContainers) DaemonArch(context.Context) (string, error) {
 	return "amd64", nil
 }
 
+func (f *fakeContainers) CreateJobNetwork(context.Context, container.Job) error { return nil }
+func (f *fakeContainers) StartJobContainer(context.Context, container.JobContainerSpec) (string, error) {
+	return "", nil
+}
+func (f *fakeContainers) ExecJob(context.Context, string, container.ExecSpec, io.Writer) (int, error) {
+	return 0, nil
+}
+func (f *fakeContainers) CopyToContainer(context.Context, string, string, io.Reader) error {
+	return nil
+}
+func (f *fakeContainers) ListJobResources(context.Context, container.Job) ([]container.JobResource, error) {
+	return nil, nil
+}
+func (f *fakeContainers) RemoveJobResources(context.Context, container.Job) error { return nil }
+
 // fakeRepoAgent stands in for the agent in a project's repo container.
 type fakeRepoAgent struct {
 	mu        sync.Mutex
@@ -264,6 +279,10 @@ type fakeRepoAgent struct {
 	// origin is the repo's upstream URL. Fetches, fast-forwards and pushes
 	// that expect another are refused, as the real repo refuses them.
 	origin string
+	// pins records each pipeline pinned, and pipelineDeletes each pipeline
+	// ref deleted.
+	pins            []agent.PipelinePin
+	pipelineDeletes []string
 }
 
 // expectsOrigin refuses a request that expects another upstream than the
@@ -418,6 +437,18 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/repo/compare":
 		q := r.URL.Query()
 		json.NewEncoder(w).Encode(agent.RepoComparison{Base: q.Get("base"), Head: q.Get("head"), Ahead: a.ahead[q.Get("head")]})
+	case "/api/repo/pipeline-ref":
+		if r.Method == http.MethodDelete {
+			a.pipelineDeletes = append(a.pipelineDeletes, r.URL.Query().Get("id"))
+			json.NewEncoder(w).Encode(map[string]string{"ref": agent.PipelineRefPrefix + r.URL.Query().Get("id")})
+			return
+		}
+		var pin agent.PipelinePin
+		json.NewDecoder(r.Body).Decode(&pin)
+		a.pins = append(a.pins, pin)
+		json.NewEncoder(w).Encode(agent.PipelineCommit{Ref: agent.PipelineRefPrefix + pin.ID, SHA: strings.Repeat("e", 40)})
+	case "/api/repo/pipeline-bundle":
+		w.Write([]byte("bundle-of-pipeline-" + r.URL.Query().Get("id")))
 	case "/api/repo/import-initial":
 		if a.initialErr != "" {
 			w.WriteHeader(http.StatusBadRequest)

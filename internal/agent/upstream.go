@@ -118,7 +118,7 @@ func (c *Client) RepoUpstreamRefs(ctx context.Context) (*RepoRefs, error) {
 // RepoBundleUpstream streams one bundle of the upstream's copies of
 // branches, as last fetched.
 func (c *Client) RepoBundleUpstream(ctx context.Context, branches []string) (io.ReadCloser, error) {
-	return c.repoBundle(ctx, url.Values{"branch": branches, "ns": {"upstream"}})
+	return c.repoBundle(ctx, "/api/repo/bundle", url.Values{"branch": branches, "ns": {"upstream"}})
 }
 
 // RepoFetchUpstreamBases refreshes origin/<branch> in a project workspace

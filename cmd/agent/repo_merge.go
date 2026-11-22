@@ -460,11 +460,23 @@ func handleRepoMerge(w http.ResponseWriter, r *http.Request) {
 
 // mergeTree computes the merged tree of two commits without a working tree.
 // It returns the conflicted paths instead of a tree when the merge is not clean.
+// Merges and the trial merges pipelines test both use it, so a pipeline
+// tests the tree a merge lands.
+//
+// The commits' .gitattributes never apply: attributes are read from the
+// empty tree, so content cannot choose a merge driver or how files merge.
+// A bare repo reads none from content today; this keeps it so whatever git's
+// default becomes. Drivers themselves are config, which only devpad writes.
 func mergeTree(ctx context.Context, ours, theirs string) (string, []string, error) {
-	cmd := gitCommand(ctx, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", ours, theirs)
+	empty, err := gitOutput(ctx, "hash-object", "-t", "tree", "/dev/null")
+	if err != nil {
+		return "", nil, fmt.Errorf("finding the empty tree: %s", strings.TrimSpace(empty))
+	}
+	cmd := gitCommand(ctx, "-c", "attr.tree="+strings.TrimSpace(empty), "-c", "core.hooksPath=/dev/null",
+		"merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", ours, theirs)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	fields := strings.Split(strings.TrimSuffix(stdout.String(), "\x00"), "\x00")
 	var exitErr *exec.ExitError
 	switch {

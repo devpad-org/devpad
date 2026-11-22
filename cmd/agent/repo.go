@@ -236,6 +236,11 @@ func handleRepoBundle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	writeBundle(ctx, w, refs)
+}
+
+// writeBundle streams a bundle of refs, which must exist.
+func writeBundle(ctx context.Context, w http.ResponseWriter, refs []string) {
 	// Write to a temp file first so a git failure can still be reported as an
 	// error status instead of a truncated bundle.
 	path, cleanup, err := tempBundlePath()

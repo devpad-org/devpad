@@ -95,11 +95,11 @@ func (c *Client) RepoBundle(ctx context.Context, branch string) (io.ReadCloser, 
 // RepoBundleBranches streams one bundle of several branches. The caller must
 // close it.
 func (c *Client) RepoBundleBranches(ctx context.Context, branches []string) (io.ReadCloser, error) {
-	return c.repoBundle(ctx, url.Values{"branch": branches})
+	return c.repoBundle(ctx, "/api/repo/bundle", url.Values{"branch": branches})
 }
 
-func (c *Client) repoBundle(ctx context.Context, q url.Values) (io.ReadCloser, error) {
-	u := c.baseURL + "/api/repo/bundle?" + q.Encode()
+func (c *Client) repoBundle(ctx context.Context, path string, q url.Values) (io.ReadCloser, error) {
+	u := c.baseURL + path + "?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
