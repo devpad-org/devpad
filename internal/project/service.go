@@ -129,6 +129,8 @@ type Service interface {
 	SetUpstreamHook(h UpstreamHook)
 	// AddBranchGuard adds one of those asked before a branch is deleted.
 	AddBranchGuard(g BranchGuard)
+	// AddDeleteHook adds one of those told before a project is deleted.
+	AddDeleteHook(h DeleteHook)
 	// SetSidecarServices registers the services of the project's
 	// workspaces, which a sandbox waits for before its setup script.
 	SetSidecarServices(svc SidecarServices)
@@ -172,6 +174,14 @@ type UpstreamHook interface {
 // branch, so its answer still holds when the branch is gone.
 type BranchGuard interface {
 	GuardDeleteBranch(ctx context.Context, userID, projectID int64, branch string, del func() error) error
+}
+
+// DeleteHook is told when a project is being deleted, before its
+// workspaces and its repo go, so that it can stop what it runs for the
+// project, such as its pipelines. It returns once that has stopped, or it
+// gave up waiting.
+type DeleteHook interface {
+	ProjectDeleting(ctx context.Context, projectID int64)
 }
 
 // KeyRotator replaces a user's devpad SSH key, returning the new public key.
@@ -236,6 +246,7 @@ type service struct {
 	publishHook  PublishHook
 	upstreamHook UpstreamHook
 	branchGuards []BranchGuard
+	deleteHooks  []DeleteHook
 	sidecars     SidecarServices
 	// preparations holds the sandboxes being readied for their agent:
 	// waiting for their services, then starting their setup script.
@@ -309,6 +320,12 @@ func (s *service) AddBranchGuard(g BranchGuard) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.branchGuards = append(s.branchGuards, g)
+}
+
+func (s *service) AddDeleteHook(h DeleteHook) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleteHooks = append(s.deleteHooks, h)
 }
 
 var branchNamePattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
@@ -733,12 +750,12 @@ func (s *service) SetPipelineConfig(ctx context.Context, userID, projectID int64
 	return s.Get(ctx, userID, projectID)
 }
 
-// Delete removes every sandbox and the project workspace through the
-// workspace lifecycle, then the repo container and the project. Published
-// branches are lost with the repo. Sandbox creations and publishes in flight
-// make it fail; once it starts, new ones are refused, and it waits for an
-// open of the project workspace to finish, so the list of workspaces it
-// removes is final before the repo goes.
+// Delete tells its delete hooks, then removes every sandbox and the project
+// workspace through the workspace lifecycle, then the repo container and the
+// project. Published branches are lost with the repo. Sandbox creations and
+// publishes in flight make it fail; once it starts, new ones are refused,
+// and it waits for an open of the project workspace to finish, so the list
+// of workspaces it removes is final before the repo goes.
 func (s *service) Delete(ctx context.Context, userID, projectID int64) error {
 	p, err := s.Get(ctx, userID, projectID)
 	if err != nil {
@@ -754,6 +771,12 @@ func (s *service) Delete(ctx context.Context, userID, projectID int64) error {
 	// changed the project, such as recording its repo container.
 	if p, err = s.Get(ctx, userID, projectID); err != nil {
 		return err
+	}
+	s.mu.Lock()
+	hooks := append([]DeleteHook(nil), s.deleteHooks...)
+	s.mu.Unlock()
+	for _, h := range hooks {
+		h.ProjectDeleting(ctx, p.ID)
 	}
 
 	sandboxes, err := s.workspaces.ListByProject(ctx, userID, p.ID)

@@ -27,6 +27,9 @@ type Service interface {
 	// project's workspace, recorded as the assistant's.
 	AssistantCreate(ctx context.Context, userID, projectID int64, in CreateInput) (*MergeRequest, error)
 	Get(ctx context.Context, userID, projectID, mrID int64) (*Detail, error)
+	// Lookup returns the merge request alone, without what Get adds to it,
+	// for other services that only need its branches and head.
+	Lookup(ctx context.Context, userID, projectID, mrID int64) (*MergeRequest, error)
 	Diff(ctx context.Context, userID, projectID, mrID int64) (*agent.RepoDiff, error)
 	// Commits lists the commits the merge request proposes, newest first.
 	Commits(ctx context.Context, userID, projectID, mrID int64) (*agent.RepoLog, error)
@@ -574,6 +577,10 @@ func (s *service) Get(ctx context.Context, userID, projectID, mrID int64) (*Deta
 		}
 	}
 	return d, nil
+}
+
+func (s *service) Lookup(ctx context.Context, userID, projectID, mrID int64) (*MergeRequest, error) {
+	return s.get(ctx, userID, projectID, mrID)
 }
 
 // Diff lists the files the merge request changes. A merged request diffs

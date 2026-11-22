@@ -3113,3 +3113,19 @@ func TestReconcileSettlesApprovals(t *testing.T) {
 		})
 	}
 }
+
+func TestLookupIsTheOwnersMergeRequestAlone(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	got, err := e.svc.Lookup(ctx, e.owner, e.pid(), mr.ID)
+	if err != nil || got.ID != mr.ID || got.HeadSHA != "head1" || got.TargetBranch != mr.TargetBranch || got.Status != StatusOpen {
+		t.Fatalf("lookup: %+v %v", got, err)
+	}
+	if _, err := e.svc.Lookup(ctx, e.stranger, e.pid(), mr.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a stranger's lookup: %v", err)
+	}
+	if _, err := e.svc.Lookup(ctx, e.owner, e.pid()+1, mr.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another project's lookup: %v", err)
+	}
+}

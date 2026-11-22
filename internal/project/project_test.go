@@ -1747,8 +1747,14 @@ func TestDeleteRemovesSandboxesThenRepo(t *testing.T) {
 		}
 	}
 
+	// A delete hook, such as the pipelines', is told before anything goes.
+	hook := &recordingDeleteHook{before: func() bool { return len(e.workspaces.deleted) == 0 && len(e.containers.removed) == 0 }}
+	e.svc.AddDeleteHook(hook)
 	if err := e.svc.Delete(ctx, e.userID, p.ID); err != nil {
 		t.Fatalf("delete: %v", err)
+	}
+	if len(hook.told) != 1 || hook.told[0] != p.ID || !hook.first {
+		t.Fatalf("delete hook told %v, before anything went: %v", hook.told, hook.first)
 	}
 	if len(e.workspaces.deleted) != 2 {
 		t.Fatalf("expected 2 sandboxes deleted, got %v", e.workspaces.deleted)
@@ -1759,6 +1765,19 @@ func TestDeleteRemovesSandboxesThenRepo(t *testing.T) {
 	if _, err := e.svc.Get(ctx, e.userID, p.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected project gone, got %v", err)
 	}
+}
+
+// recordingDeleteHook records the projects it is told are being deleted,
+// and whether before held each time.
+type recordingDeleteHook struct {
+	before func() bool
+	told   []int64
+	first  bool
+}
+
+func (h *recordingDeleteHook) ProjectDeleting(_ context.Context, projectID int64) {
+	h.told = append(h.told, projectID)
+	h.first = h.before()
 }
 
 func TestMigrationEnforcesSandboxBranchOwnership(t *testing.T) {
