@@ -103,6 +103,37 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"pipelines": items})
 }
 
+// HandleLatest returns the newest pipeline of each branch (branch=, as
+// often as needed) and merge request (mergeRequestId=) asked for that has
+// one, for the badges beside them.
+func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	projectID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	f := LatestFilter{Branches: q["branch"]}
+	for _, v := range q["mergeRequestId"] {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid mergeRequestId")
+			return
+		}
+		f.MergeRequestIDs = append(f.MergeRequestIDs, id)
+	}
+	pipelines, err := h.pipelines.Latest(r.Context(), user.ID, projectID, f)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(pipelines))
+	for _, p := range pipelines {
+		items = append(items, pipelineResponse(p, false))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pipelines": items})
+}
+
 // HandleStart starts a pipeline of a protected branch's current commit, or
 // of an open merge request. It answers 202 with a new pipeline, or 200 with
 // one already queued or running that tests the same.

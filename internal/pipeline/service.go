@@ -36,6 +36,11 @@ type Service interface {
 	// List lists a project's pipelines, newest first, with their jobs but
 	// not their scripts.
 	List(ctx context.Context, userID, projectID int64, f ListFilter) ([]*Pipeline, error)
+	// Latest returns the newest pipeline, whatever its status, of each
+	// branch and merge request of the project f names that has one, with
+	// their jobs but not their scripts: what a branch's or a merge
+	// request's pipeline badge shows.
+	Latest(ctx context.Context, userID, projectID int64, f LatestFilter) ([]*Pipeline, error)
 	// Get returns a pipeline of the project with its jobs and their scripts.
 	Get(ctx context.Context, userID, projectID, pipelineID int64) (*Pipeline, error)
 	// JobOutput reads a job's output from an offset on, with devpad's notes
@@ -362,6 +367,21 @@ func (s *service) List(ctx context.Context, userID, projectID int64, f ListFilte
 		return nil, fmt.Errorf("%w: limit, before and mergeRequestId must not be negative", ErrInvalidInput)
 	}
 	return s.repo.List(ctx, projectID, f)
+}
+
+func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestFilter) ([]*Pipeline, error) {
+	if _, err := s.projects.Get(ctx, userID, projectID); err != nil {
+		return nil, err
+	}
+	if len(f.Branches)+len(f.MergeRequestIDs) > MaxLatestSubjects {
+		return nil, fmt.Errorf("%w: at most %d branches and merge requests at once", ErrInvalidInput, MaxLatestSubjects)
+	}
+	for _, id := range f.MergeRequestIDs {
+		if id <= 0 {
+			return nil, fmt.Errorf("%w: invalid merge request id %d", ErrInvalidInput, id)
+		}
+	}
+	return s.repo.Latest(ctx, projectID, f)
 }
 
 func (s *service) LatestForMergeRequest(ctx context.Context, userID, projectID int64, key MergeRequestKey) (*Pipeline, error) {

@@ -600,6 +600,7 @@ func registerRoutes(mux *http.ServeMux, h routeHandlers) {
 	mux.Handle("PUT /api/projects/{id}/pipeline", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleSetConfig)))
 	mux.Handle("GET /api/projects/{id}/pipelines", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleList)))
 	mux.Handle("POST /api/projects/{id}/pipelines", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleStart)))
+	mux.Handle("GET /api/projects/{id}/pipelines/latest", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleLatest)))
 	mux.Handle("GET /api/projects/{id}/pipelines/{pipelineId}", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleGet)))
 	mux.Handle("POST /api/projects/{id}/pipelines/{pipelineId}/cancel", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleCancel)))
 	mux.Handle("GET /api/projects/{id}/pipelines/{pipelineId}/jobs/{jobId}/output", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleJobOutput)))

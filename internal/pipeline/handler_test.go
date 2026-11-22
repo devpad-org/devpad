@@ -20,6 +20,7 @@ func (e *env) serve(user int64, method, target, body string) (int, map[string]an
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/projects/{id}/pipelines", h.HandleList)
 	mux.HandleFunc("POST /api/projects/{id}/pipelines", h.HandleStart)
+	mux.HandleFunc("GET /api/projects/{id}/pipelines/latest", h.HandleLatest)
 	mux.HandleFunc("GET /api/projects/{id}/pipelines/{pipelineId}", h.HandleGet)
 	mux.HandleFunc("POST /api/projects/{id}/pipelines/{pipelineId}/cancel", h.HandleCancel)
 	mux.HandleFunc("GET /api/projects/{id}/pipelines/{pipelineId}/jobs/{jobId}/output", h.HandleJobOutput)
@@ -91,6 +92,12 @@ func TestPipelineEndpoints(t *testing.T) {
 		t.Fatalf("the list carries scripts: %v", list[0])
 	}
 
+	code, out = e.serve(e.owner, http.MethodGet, fmt.Sprintf("%s/latest?branch=main&branch=develop&mergeRequestId=%d", base, e.mr), "")
+	latest := out["pipelines"].([]any)
+	if code != http.StatusOK || len(latest) != 1 || int64(latest[0].(map[string]any)["id"].(float64)) != id {
+		t.Fatalf("latest: %d %v", code, out)
+	}
+
 	for _, tc := range []struct {
 		name   string
 		user   int64
@@ -105,6 +112,9 @@ func TestPipelineEndpoints(t *testing.T) {
 		{"an unprotected branch", e.owner, http.MethodPost, base, `{"branch":"feature"}`, http.StatusBadRequest},
 		{"a missing merge request", e.owner, http.MethodPost, base, `{"mergeRequestId":999}`, http.StatusNotFound},
 		{"a bad body", e.owner, http.MethodPost, base, `branch`, http.StatusBadRequest},
+		{"a stranger's latest", e.stranger, http.MethodGet, base + "/latest?branch=develop", "", http.StatusForbidden},
+		{"a bad merge request id", e.owner, http.MethodGet, base + "/latest?mergeRequestId=x", "", http.StatusBadRequest},
+		{"too many at once", e.owner, http.MethodGet, base + "/latest?" + strings.Repeat("branch=b&", MaxLatestSubjects+1), "", http.StatusBadRequest},
 		{"a bad limit", e.owner, http.MethodGet, base + "?limit=1000", "", http.StatusBadRequest},
 		{"a bad offset", e.owner, http.MethodGet, fmt.Sprintf("%s/%d/jobs/%d/output?offset=-1", base, id, jobID), "", http.StatusBadRequest},
 		{"a missing pipeline", e.owner, http.MethodGet, fmt.Sprintf("%s/%d", base, id+50), "", http.StatusNotFound},

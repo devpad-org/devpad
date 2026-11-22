@@ -18,6 +18,10 @@ type Repository interface {
 	// List lists a project's pipelines, newest first, with their jobs but
 	// not their scripts.
 	List(ctx context.Context, projectID int64, f ListFilter) ([]*Pipeline, error)
+	// Latest returns the newest pipeline of each branch and merge request
+	// of the project f names that has one, with their jobs but not their
+	// scripts: a branch's first, in f's order, then a merge request's.
+	Latest(ctx context.Context, projectID int64, f LatestFilter) ([]*Pipeline, error)
 	// FindSame returns the newest pipeline that tests what p tests, the
 	// same subject, commits and jobs, and stands at one of statuses, with
 	// its jobs and their scripts, or nil.
@@ -103,6 +107,17 @@ const (
 	DefaultListLimit = 50
 	MaxListLimit     = 100
 )
+
+// LatestFilter names the branches and merge requests of a project whose
+// newest pipeline to read.
+type LatestFilter struct {
+	Branches        []string
+	MergeRequestIDs []int64
+}
+
+// MaxLatestSubjects caps the branches and merge requests one LatestFilter
+// names.
+const MaxLatestSubjects = 100
 
 type repository struct {
 	db *sql.DB
@@ -203,6 +218,73 @@ func listQuery(projectID int64, f ListFilter) (string, []any) {
 	}
 	query += ` ORDER BY id DESC LIMIT ?`
 	return query, append(args, min(limit, MaxListLimit))
+}
+
+func (r *repository) Latest(ctx context.Context, projectID int64, f LatestFilter) ([]*Pipeline, error) {
+	query, args := latestQuery(projectID, f)
+	if query == "" {
+		return nil, nil
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading the latest pipelines: %w", err)
+	}
+	found, err := collect(rows, scanPipeline)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.loadJobs(ctx, found, false); err != nil {
+		return nil, err
+	}
+	branches := make(map[string]*Pipeline)
+	mrs := make(map[int64]*Pipeline)
+	for _, p := range found {
+		if p.Kind == KindBranch {
+			branches[p.Branch] = p
+		} else {
+			mrs[p.MergeRequestID] = p
+		}
+	}
+	out := make([]*Pipeline, 0, len(found))
+	for _, b := range f.Branches {
+		if p := branches[b]; p != nil {
+			out = append(out, p)
+			delete(branches, b)
+		}
+	}
+	for _, id := range f.MergeRequestIDs {
+		if p := mrs[id]; p != nil {
+			out = append(out, p)
+			delete(mrs, id)
+		}
+	}
+	return out, nil
+}
+
+// latestQuery selects the newest pipeline of each branch and merge request
+// f names, through the index of a branch's and of a merge request's
+// pipelines. A merge request's pipelines are all of its project, so the
+// project is checked on the one found. It is empty when f names none.
+func latestQuery(projectID int64, f LatestFilter) (string, []any) {
+	var parts []string
+	var args []any
+	if len(f.Branches) > 0 {
+		parts = append(parts, `SELECT `+pipelineColumns+` FROM pipelines WHERE id IN (
+			SELECT MAX(id) FROM pipelines WHERE project_id = ? AND kind = 'branch' AND branch IN (`+placeholders(len(f.Branches))+`) GROUP BY branch)`)
+		args = append(args, projectID)
+		for _, b := range f.Branches {
+			args = append(args, b)
+		}
+	}
+	if len(f.MergeRequestIDs) > 0 {
+		parts = append(parts, `SELECT `+pipelineColumns+` FROM pipelines WHERE id IN (
+			SELECT MAX(id) FROM pipelines WHERE merge_request_id IN (`+placeholders(len(f.MergeRequestIDs))+`) GROUP BY merge_request_id) AND project_id = ?`)
+		for _, id := range f.MergeRequestIDs {
+			args = append(args, id)
+		}
+		args = append(args, projectID)
+	}
+	return strings.Join(parts, ` UNION ALL `), args
 }
 
 func (r *repository) FindSame(ctx context.Context, p *Pipeline, statuses []Status) (*Pipeline, error) {

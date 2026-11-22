@@ -219,6 +219,8 @@ func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 		{"the pinned", listPinnedFinishedQuery, "idx_pipelines_pinned", nil},
 		{"those to prune", keptOutputsQuery, "idx_pipelines_keeping_output", []any{e.project, KeptOutputs}},
 		{"the pipelines' jobs", jobsQuery(true, 2), "sqlite_autoindex_pipeline_jobs_2", []any{1, 2}},
+		{"the latest of branches", "", "idx_pipelines_branch", nil},
+		{"the latest of merge requests", "", "idx_pipelines_merge_request", nil},
 	}
 	tests[0].query, tests[0].args = findSameQuery(branch, countingStatuses)
 	tests[1].query, tests[1].args = findSameQuery(mr, countingStatuses)
@@ -226,6 +228,8 @@ func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 	tests[3].query, tests[3].args = query(listQuery(e.project, ListFilter{Before: 100, Limit: 10}))
 	tests[4].query, tests[4].args = query(listQuery(e.project, ListFilter{Branch: "develop"}))
 	tests[5].query, tests[5].args = query(listQuery(e.project, ListFilter{MergeRequestID: e.mr}))
+	tests[11].query, tests[11].args = query(latestQuery(e.project, LatestFilter{Branches: []string{"develop", "main"}}))
+	tests[12].query, tests[12].args = query(latestQuery(e.project, LatestFilter{MergeRequestIDs: []int64{e.mr, e.mr + 1}}))
 	for _, tc := range tests {
 		rows, err := e.db.Query("EXPLAIN QUERY PLAN "+tc.query, tc.args...)
 		if err != nil {
@@ -243,7 +247,8 @@ func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 		rows.Close()
 		all := strings.Join(plan, "; ")
 		for _, step := range plan {
-			if strings.Contains(step, "TEMP B-TREE") || ((strings.HasPrefix(step, "SCAN ") || strings.HasPrefix(step, "SEARCH ")) && !strings.Contains(step, "INDEX")) {
+			indexed := strings.Contains(step, "INDEX") || strings.Contains(step, "USING INTEGER PRIMARY KEY")
+			if strings.Contains(step, "TEMP B-TREE") || ((strings.HasPrefix(step, "SCAN ") || strings.HasPrefix(step, "SEARCH ")) && !indexed) {
 				t.Errorf("%s reads more than it needs: %s", tc.name, all)
 			}
 		}
@@ -308,5 +313,59 @@ func TestRepositoryPrunesTheOutputOfFinishedPipelinesPastTheNewest(t *testing.T)
 	}
 	if kept(started[0]) || !kept(started[2]) {
 		t.Fatalf("after the oldest finished, kept: %v %v", kept(started[0]), kept(started[2]))
+	}
+}
+
+func TestRepositoryLatestIsEachSubjectsNewestOfTheProject(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	repo := e.svc.repo
+	create := func(p *Pipeline) *Pipeline {
+		t.Helper()
+		if err := repo.Create(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	mrPipeline := func(uid string, projectID, mrID int64, head string) *Pipeline {
+		p := e.branchPipeline(uid, "", head)
+		p.ProjectID, p.Kind, p.MergeRequestID, p.SourceBranch, p.TargetBranch, p.TargetSHA = projectID, KindMergeRequest, mrID, "feature", "develop", sha(2)
+		return p
+	}
+	create(e.branchPipeline("a000000000000001", "develop", sha(2)))
+	newestDevelop := create(e.branchPipeline("a000000000000002", "develop", sha(3)))
+	main := create(e.branchPipeline("a000000000000003", "main", sha(1)))
+	create(mrPipeline("a000000000000004", e.project, e.mr, sha(30)))
+	newestMR := create(mrPipeline("a000000000000005", e.project, e.mr, sha(31)))
+
+	// Another project's merge request is never this project's to read.
+	res, err := e.db.Exec(`INSERT INTO projects (user_id, name, status) VALUES (?, 'other', 'ready')`, e.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _ := res.LastInsertId()
+	res, err = e.db.Exec(`INSERT INTO merge_requests (project_id, user_id, title, source_branch, target_branch, status, head_sha) VALUES (?, ?, 'x', 'feature', 'develop', 'open', ?)`, other, e.owner, sha(40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherMR, _ := res.LastInsertId()
+	create(mrPipeline("a000000000000006", other, otherMR, sha(40)))
+
+	got, err := repo.Latest(ctx, e.project, LatestFilter{Branches: []string{"main", "develop", "gone"}, MergeRequestIDs: []int64{otherMR, e.mr}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]int64, 0, len(got))
+	for _, p := range got {
+		ids = append(ids, p.ID)
+	}
+	if want := []int64{main.ID, newestDevelop.ID, newestMR.ID}; !slices.Equal(ids, want) {
+		t.Fatalf("latest: %v, want %v", ids, want)
+	}
+	if len(got[0].Jobs) != 2 || got[0].Jobs[0].Run != "" {
+		t.Fatalf("expected jobs without their scripts: %+v", got[0].Jobs)
+	}
+	if none, err := repo.Latest(ctx, e.project, LatestFilter{}); err != nil || len(none) != 0 {
+		t.Fatalf("nothing asked: %v %v", none, err)
 	}
 }
