@@ -243,8 +243,6 @@ type activePipeline struct {
 	ctx    context.Context
 	cancel context.CancelCauseFunc
 	done   chan struct{}
-	// id is the pipeline's, once its record is made.
-	id int64
 	// started says it has left the queue, so it can no longer be
 	// superseded but by a start that stops stale ones; stopping that it
 	// has been told to stop.
@@ -427,19 +425,14 @@ func (s *service) Cancel(ctx context.Context, userID, projectID, pipelineID int6
 		s.finish(ctx, p, StatusCancelled, "")
 		return s.get(ctx, userID, projectID, pipelineID)
 	}
-	s.awaitEnd(ctx, a)
+	s.awaitEnd(ctx, a, p.ID)
 	return s.get(ctx, userID, projectID, pipelineID)
 }
 
-// awaitEnd waits a while for an active pipeline to end.
-func (s *service) awaitEnd(ctx context.Context, a *activePipeline) {
-	timer := time.NewTimer(s.cancelWait)
-	defer timer.Stop()
-	select {
-	case <-a.done:
-	case <-timer.C:
-		log.Printf("pipeline %d: still stopping after %s", a.id, s.cancelWait)
-	case <-ctx.Done():
+// awaitEnd waits a while for the run of a pipeline to end.
+func (s *service) awaitEnd(ctx context.Context, a *activePipeline, pipelineID int64) {
+	if !s.awaitRuns(ctx, []*activePipeline{a}) && ctx.Err() == nil {
+		log.Printf("pipeline %d: still stopping after %s", pipelineID, s.cancelWait)
 	}
 }
 

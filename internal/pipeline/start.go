@@ -235,9 +235,6 @@ func (s *service) create(ctx context.Context, p *Pipeline) error {
 		s.forget(a)
 		return err
 	}
-	s.mu.Lock()
-	a.id = p.ID
-	s.mu.Unlock()
 	// The run owns its own copy, which no one else touches.
 	run := p.clone()
 	go func() {

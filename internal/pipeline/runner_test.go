@@ -422,6 +422,12 @@ func TestShutdownLeavesRunningPipelinesForReconcile(t *testing.T) {
 	if _, _, err := e.svc.Start(context.Background(), StartInput{UserID: e.owner, ProjectID: e.project, Branch: "main", Trigger: TriggerUser}); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("starting while shut down: %v", err)
 	}
+	// Not even one that would finish at once, which no listener would hear
+	// of until a restart.
+	e.projects.setBranch("main", sha(9))
+	if _, _, err := e.svc.Start(context.Background(), StartInput{UserID: e.owner, ProjectID: e.project, Branch: "main", Trigger: TriggerUser}); !errors.Is(err, ErrShuttingDown) {
+		t.Fatalf("starting one with no pipeline while shut down: %v", err)
+	}
 	// Nor is it cancelled meanwhile, which would leave its job running in a
 	// finished pipeline.
 	if _, err := e.svc.Cancel(context.Background(), e.owner, e.project, p.ID); !errors.Is(err, ErrShuttingDown) {
