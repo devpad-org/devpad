@@ -576,13 +576,13 @@ func (e *env) awaitReconciled() {
 func TestReconcileDoesNotRerunWhatAlreadyHasAResult(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
-	// develop's tip passed while an older commit's pipeline still ran when
-	// devpad stopped.
-	passed := e.wait(e.start(StartInput{Branch: "develop"}).ID)
+	// An older commit's pipeline still ran when devpad stopped, after the
+	// pipeline of develop's tip, started later, had passed.
 	old := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "cccccccccccccc01", Kind: KindBranch, Branch: "develop", HeadSHA: sha(7), ConfigSource: SourceFile, Status: StatusRunning, Trigger: TriggerUser, CreatedAt: time.Now()}
 	if err := e.svc.repo.Create(ctx, old); err != nil {
 		t.Fatal(err)
 	}
+	passed := e.wait(e.start(StartInput{Branch: "develop"}).ID)
 	e.svc = e.newService()
 	e.svc.sweepInterval = time.Millisecond
 	if err := e.svc.Reconcile(ctx); err != nil {
@@ -590,8 +590,32 @@ func TestReconcileDoesNotRerunWhatAlreadyHasAResult(t *testing.T) {
 	}
 	e.awaitReconciled()
 	all, _ := e.svc.repo.List(ctx, e.project, ListFilter{})
-	if len(all) != 2 || all[0].ID != old.ID || all[0].Status != StatusInterrupted || all[1].ID != passed.ID {
+	if len(all) != 2 || all[0].ID != passed.ID || all[1].ID != old.ID || all[1].Status != StatusInterrupted {
 		t.Fatalf("expected develop's tip left with its pass: %+v", all)
+	}
+}
+
+func TestAnInterruptedRunAgainRunsAgainAfterARestart(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	passed := e.wait(e.start(StartInput{Branch: "develop"}).ID)
+	// The user ran develop's tip again, with the same jobs, and devpad
+	// stopped while it ran.
+	again := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "cccccccccccccc02", Kind: KindBranch, Branch: "develop", HeadSHA: passed.HeadSHA, ConfigSource: passed.ConfigSource, ConfigPath: passed.ConfigPath, ConfigHash: passed.ConfigHash, Status: StatusRunning, Trigger: TriggerUser, CreatedAt: time.Now()}
+	if err := e.svc.repo.Create(ctx, again); err != nil {
+		t.Fatal(err)
+	}
+	e.svc = e.newService()
+	if err := e.svc.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The pass it was to repeat does not stand in for it.
+	rerun := e.awaitRerun(again.ID)
+	if rerun.HeadSHA != passed.HeadSHA || rerun.ConfigHash != passed.ConfigHash || rerun.Trigger != TriggerRestart {
+		t.Fatalf("unexpected rerun: %+v", rerun)
+	}
+	if got := e.wait(rerun.ID); got.Status != StatusPassed {
+		t.Fatalf("rerun: %+v", got)
 	}
 }
 

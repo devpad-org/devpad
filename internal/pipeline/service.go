@@ -228,8 +228,9 @@ type service struct {
 	deleting map[int64]bool
 	// live holds what each job running now has told.
 	live map[int64]*jobLog
-	// startLocks serialize starting each project's pipelines.
-	startLocks map[int64]*sync.Mutex
+	// startLocks serialize starting each project's pipelines, one per
+	// project: a channel of one slot, held by the start that filled it.
+	startLocks map[int64]chan struct{}
 	listeners  []Listener
 }
 
@@ -281,7 +282,7 @@ func NewService(d Deps) Service {
 		runs:          make(map[string]*activePipeline),
 		deleting:      make(map[int64]bool),
 		live:          make(map[int64]*jobLog),
-		startLocks:    make(map[int64]*sync.Mutex),
+		startLocks:    make(map[int64]chan struct{}),
 	}
 }
 
@@ -314,17 +315,24 @@ func (s *service) spawn(fn func(ctx context.Context)) bool {
 	return true
 }
 
-// lockStarts serializes starting the project's pipelines.
-func (s *service) lockStarts(projectID int64) func() {
+// lockStarts takes the project's start lock, which serializes starting its
+// pipelines, and returns what frees it. A start holds it while it reads the
+// repo, so one waiting for it gives up when ctx ends; another project's
+// starts never wait for it.
+func (s *service) lockStarts(ctx context.Context, projectID int64) (func(), error) {
 	s.mu.Lock()
 	l, ok := s.startLocks[projectID]
 	if !ok {
-		l = &sync.Mutex{}
+		l = make(chan struct{}, 1)
 		s.startLocks[projectID] = l
 	}
 	s.mu.Unlock()
-	l.Lock()
-	return l.Unlock
+	select {
+	case l <- struct{}{}:
+		return func() { <-l }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("waiting for the project's other pipeline starts: %w", context.Cause(ctx))
+	}
 }
 
 // get returns a pipeline of the user's project, with its jobs.

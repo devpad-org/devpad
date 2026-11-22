@@ -37,7 +37,10 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 	if _, err := s.projects.Get(ctx, in.UserID, in.ProjectID); err != nil {
 		return nil, false, err
 	}
-	unlock := s.lockStarts(in.ProjectID)
+	unlock, err := s.lockStarts(ctx, in.ProjectID)
+	if err != nil {
+		return nil, false, err
+	}
 	defer unlock()
 	p, err := s.projects.Get(ctx, in.UserID, in.ProjectID)
 	if err != nil {
@@ -70,6 +73,11 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 	same, err := s.repo.FindSame(ctx, next, statuses)
 	if err != nil {
 		return nil, false, err
+	}
+	// A run again never reuses a result from before the pipeline it runs
+	// again, which was started despite it, as the user's Run again is.
+	if same != nil && rerunOf != 0 && same.ID < rerunOf && same.Status.Finished() {
+		same = nil
 	}
 	created := same == nil || s.stopping(same.UID)
 	if created {

@@ -123,8 +123,10 @@ func latestBySubject(pipelines []*Pipeline) []*Pipeline {
 
 // rerun starts again the pipeline of the branch or merge request an
 // interrupted pipeline was of, unless it no longer runs one, or its commits
-// and jobs now are those of a pipeline that counts, such as one that
-// finished with a result before devpad stopped.
+// and jobs now are those of a pipeline that counts and is newer than the
+// interrupted one, such as a newer commit's that finished with a result
+// before devpad stopped. An older result is the one an interrupted Run
+// again was to repeat, so it runs again.
 func (s *service) rerun(ctx context.Context, p *Pipeline) {
 	in := StartInput{UserID: p.UserID, ProjectID: p.ProjectID, Trigger: TriggerRestart, ReuseResult: true}
 	if p.Kind == KindMergeRequest {

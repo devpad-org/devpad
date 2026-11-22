@@ -469,3 +469,40 @@ func TestStopStaleStopsAStartedPipelineOfOtherCommits(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAStartWaitingForItsProjectsLockGivesUpWithItsContext(t *testing.T) {
+	e := setup(t)
+	e.projects.envGate = make(chan struct{}) // keeps pipelines queued
+	slow := &slowReadProjects{fakeProjects: e.projects, commit: sha(2), reached: make(chan struct{}), release: make(chan struct{})}
+	e.svc.projects = slow
+	first := make(chan error, 1)
+	go func() {
+		_, _, err := e.svc.Start(context.Background(), StartInput{UserID: e.owner, ProjectID: e.project, Branch: "develop", Trigger: TriggerUser})
+		first <- err
+	}()
+	// The first start holds the project's start lock while the repo is slow
+	// to answer.
+	<-slow.reached
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, _, err := e.svc.Start(ctx, StartInput{UserID: e.owner, ProjectID: e.project, Branch: "main", Trigger: TriggerUser}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a start whose context ended went on waiting: %v", err)
+	}
+	// Another project's starts never wait for this one's.
+	other, cancelOther := context.WithTimeout(context.Background(), time.Second)
+	defer cancelOther()
+	unlock, err := e.svc.lockStarts(other, e.project+1)
+	if err != nil {
+		t.Fatalf("another project's start lock: %v", err)
+	}
+	unlock()
+
+	close(slow.release)
+	if err := <-first; err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	if all, _ := e.svc.repo.List(context.Background(), e.project, ListFilter{}); len(all) != 1 || all[0].Branch != "develop" {
+		t.Fatalf("expected only the first start's pipeline: %+v", all)
+	}
+	close(e.projects.envGate)
+}
