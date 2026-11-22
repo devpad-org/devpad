@@ -23,8 +23,9 @@ type Repository interface {
 	// its jobs and their scripts, or nil.
 	FindSame(ctx context.Context, p *Pipeline, statuses []Status) (*Pipeline, error)
 
-	// MarkStarted records that a queued pipeline started on image,
-	// reporting false when it was no longer queued.
+	// MarkStarted records that a queued pipeline started on image, and so
+	// may keep its jobs' output, reporting false when it was no longer
+	// queued.
 	MarkStarted(ctx context.Context, id int64, image string, at time.Time) (bool, error)
 	// SetRefPinned records whether the canonical repo may hold the
 	// pipeline's ref.
@@ -53,7 +54,7 @@ type Repository interface {
 	// or nil when the pipeline has no such job.
 	JobLog(ctx context.Context, pipelineID, jobID int64) (*JobRun, *JobLog, error)
 	// PruneOutputs clears the output of every job of the project's
-	// pipelines but its keep newest.
+	// finished pipelines but its keep newest that started.
 	PruneOutputs(ctx context.Context, projectID int64, keep int) error
 
 	// ListUnfinished lists the queued and running pipelines, without their
@@ -163,6 +164,25 @@ func (r *repository) Get(ctx context.Context, id int64) (*Pipeline, error) {
 }
 
 func (r *repository) List(ctx context.Context, projectID int64, f ListFilter) ([]*Pipeline, error) {
+	query, args := listQuery(projectID, f)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing pipelines: %w", err)
+	}
+	pipelines, err := collect(rows, scanPipeline)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.loadJobs(ctx, pipelines, false); err != nil {
+		return nil, err
+	}
+	return pipelines, nil
+}
+
+// listQuery selects a page of the project's pipelines f picks, newest first,
+// through the index of the project's, the branch's or the merge request's
+// pipelines.
+func listQuery(projectID int64, f ListFilter) (string, []any) {
 	query := `SELECT ` + pipelineColumns + ` FROM pipelines WHERE project_id = ?`
 	args := []any{projectID}
 	if f.Branch != "" {
@@ -182,19 +202,7 @@ func (r *repository) List(ctx context.Context, projectID int64, f ListFilter) ([
 		limit = DefaultListLimit
 	}
 	query += ` ORDER BY id DESC LIMIT ?`
-	args = append(args, min(limit, MaxListLimit))
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("listing pipelines: %w", err)
-	}
-	pipelines, err := collect(rows, scanPipeline)
-	if err != nil {
-		return nil, err
-	}
-	if err := r.loadJobs(ctx, pipelines, false); err != nil {
-		return nil, err
-	}
-	return pipelines, nil
+	return query, append(args, min(limit, MaxListLimit))
 }
 
 func (r *repository) FindSame(ctx context.Context, p *Pipeline, statuses []Status) (*Pipeline, error) {
@@ -242,7 +250,7 @@ func (r *repository) one(ctx context.Context, query string, args ...any) (*Pipel
 }
 
 func (r *repository) MarkStarted(ctx context.Context, id int64, image string, at time.Time) (bool, error) {
-	res, err := r.db.ExecContext(ctx, `UPDATE pipelines SET status = ?, image = ?, started_at = ? WHERE id = ? AND status = ?`,
+	res, err := r.db.ExecContext(ctx, `UPDATE pipelines SET status = ?, image = ?, started_at = ?, keeps_output = 1 WHERE id = ? AND status = ?`,
 		StatusRunning, image, at, id, StatusQueued)
 	if err != nil {
 		return false, fmt.Errorf("starting pipeline: %w", err)
@@ -373,12 +381,49 @@ func (r *repository) JobLog(ctx context.Context, pipelineID, jobID int64) (*JobR
 	return j, &told, nil
 }
 
+// keptOutputsQuery lists the project's pipelines that still keep output
+// past its newest keep, through the index of those alone: one prune after
+// each finish leaves it a few to read, however many the project has had.
+const keptOutputsQuery = `SELECT id, status FROM pipelines WHERE project_id = ? AND keeps_output = 1 ORDER BY id DESC LIMIT -1 OFFSET ?`
+
 func (r *repository) PruneOutputs(ctx context.Context, projectID int64, keep int) error {
-	if _, err := r.db.ExecContext(ctx,
-		`UPDATE pipeline_jobs SET output = x'' WHERE length(output) > 0 AND pipeline_id IN (
-			SELECT id FROM pipelines WHERE project_id = ? ORDER BY id DESC LIMIT -1 OFFSET ?)`,
-		projectID, keep); err != nil {
-		return fmt.Errorf("pruning pipeline output: %w", err)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, keptOutputsQuery, projectID, keep)
+	if err != nil {
+		return fmt.Errorf("listing pipelines to prune: %w", err)
+	}
+	var old []int64
+	for rows.Next() {
+		var id int64
+		var status Status
+		if err := rows.Scan(&id, &status); err != nil {
+			rows.Close()
+			return fmt.Errorf("scanning pipeline: %w", err)
+		}
+		// One still running prunes itself once it finishes.
+		if status.Finished() {
+			old = append(old, id)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return fmt.Errorf("listing pipelines to prune: %w", err)
+	}
+	for _, id := range old {
+		if _, err := tx.ExecContext(ctx, `UPDATE pipeline_jobs SET output = x'' WHERE pipeline_id = ?`, id); err != nil {
+			return fmt.Errorf("pruning pipeline output: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE pipelines SET keeps_output = 0 WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("pruning pipeline output: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing the prune: %w", err)
 	}
 	return nil
 }
@@ -485,9 +530,11 @@ func (r *repository) RecordsByUID(ctx context.Context, uids []string) (map[strin
 	return records, nil
 }
 
+// listPinnedFinishedQuery reads only the index of pinned pipelines.
+const listPinnedFinishedQuery = `SELECT ` + pipelineColumns + ` FROM pipelines WHERE ref_pinned = 1 AND status NOT IN ('queued', 'running') ORDER BY id`
+
 func (r *repository) ListPinnedFinished(ctx context.Context) ([]*Pipeline, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT `+pipelineColumns+` FROM pipelines WHERE ref_pinned = 1 AND status NOT IN (?, ?) ORDER BY id`,
-		StatusQueued, StatusRunning)
+	rows, err := r.db.QueryContext(ctx, listPinnedFinishedQuery)
 	if err != nil {
 		return nil, fmt.Errorf("listing pinned pipelines: %w", err)
 	}
@@ -503,6 +550,11 @@ func jobColumns(withScript bool) string {
 	return `id, pipeline_id, position, name, ` + run + `, timeout_ms, services, status, exit_code, error, output_bytes, length(output), started_at, finished_at`
 }
 
+// jobsQuery selects the jobs of n pipelines, in their files' order.
+func jobsQuery(withScripts bool, n int) string {
+	return `SELECT ` + jobColumns(withScripts) + ` FROM pipeline_jobs WHERE pipeline_id IN (` + placeholders(n) + `) ORDER BY pipeline_id, position`
+}
+
 // loadJobs reads the jobs of pipelines, in their file's order.
 func (r *repository) loadJobs(ctx context.Context, pipelines []*Pipeline, withScripts bool) error {
 	if len(pipelines) == 0 {
@@ -515,8 +567,7 @@ func (r *repository) loadJobs(ctx context.Context, pipelines []*Pipeline, withSc
 		p.Jobs = []*JobRun{}
 		args = append(args, p.ID)
 	}
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT `+jobColumns(withScripts)+` FROM pipeline_jobs WHERE pipeline_id IN (`+placeholders(len(args))+`) ORDER BY pipeline_id, position`, args...)
+	rows, err := r.db.QueryContext(ctx, jobsQuery(withScripts, len(args)), args...)
 	if err != nil {
 		return fmt.Errorf("listing pipeline jobs: %w", err)
 	}

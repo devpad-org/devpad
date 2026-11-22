@@ -141,8 +141,8 @@ const (
 	MaxRunningJobs = 3
 	// MaxJobOutput is how much of the end of a job's output is kept.
 	MaxJobOutput = 1 << 20
-	// KeptOutputs is how many of a project's newest pipelines keep their
-	// jobs' output.
+	// KeptOutputs is how many of a project's newest pipelines that started
+	// keep their jobs' output.
 	KeptOutputs = 50
 )
 

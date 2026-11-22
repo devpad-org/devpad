@@ -11,7 +11,9 @@
 -- is always found. trigger is what started it; the application decides
 -- which there are. announced_at is when every listener had been told it
 -- finished, so that a devpad that stopped first tells them after its
--- restart.
+-- restart. keeps_output says its jobs' output may still be stored: it is
+-- set when the pipeline starts and cleared once the output is pruned, so
+-- pruning reads only the pipelines that still keep some.
 CREATE TABLE pipelines (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id       INTEGER  NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -37,6 +39,7 @@ CREATE TABLE pipelines (
     trigger          TEXT     NOT NULL,
     rerun_of         INTEGER  REFERENCES pipelines(id) ON DELETE SET NULL,
     ref_pinned       INTEGER  NOT NULL DEFAULT 0,
+    keeps_output     INTEGER  NOT NULL DEFAULT 0,
     created_at       DATETIME NOT NULL,
     started_at       DATETIME,
     finished_at      DATETIME,
@@ -53,9 +56,13 @@ CREATE INDEX idx_pipelines_branch ON pipelines(project_id, branch, id) WHERE kin
 CREATE INDEX idx_pipelines_merge_request ON pipelines(merge_request_id, id);
 CREATE INDEX idx_pipelines_branch_commit ON pipelines(project_id, branch, head_sha, id) WHERE kind = 'branch';
 CREATE INDEX idx_pipelines_merge_request_commits ON pipelines(merge_request_id, head_sha, target_sha, id);
-CREATE INDEX idx_pipelines_unfinished ON pipelines(status) WHERE status IN ('queued', 'running');
-CREATE INDEX idx_pipelines_pinned ON pipelines(ref_pinned) WHERE ref_pinned = 1;
+-- The few pipelines each sweep or prune is after, so none reads the rest;
+-- and those a pipeline runs again, so deleting one is no scan.
+CREATE INDEX idx_pipelines_unfinished ON pipelines(id) WHERE status IN ('queued', 'running');
+CREATE INDEX idx_pipelines_pinned ON pipelines(id) WHERE ref_pinned = 1;
 CREATE INDEX idx_pipelines_unannounced ON pipelines(id) WHERE announced_at IS NULL AND status NOT IN ('queued', 'running');
+CREATE INDEX idx_pipelines_keeping_output ON pipelines(project_id, id) WHERE keeps_output = 1;
+CREATE INDEX idx_pipelines_rerun_of ON pipelines(rerun_of) WHERE rerun_of IS NOT NULL;
 
 -- A pipeline's jobs, in the order its file lists them, each as it was
 -- resolved when the pipeline started. output is the end of what the job

@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -192,5 +193,120 @@ func TestRepositoryInterruptsUnfinishedPipelines(t *testing.T) {
 	pinned, err := repo.ListPinnedFinished(ctx)
 	if err != nil || len(pinned) != 1 || pinned[0].ID != done.ID {
 		t.Fatalf("pinned: %+v %v", pinned, err)
+	}
+}
+
+// TestRepositoryQueriesUseTheirIndexes keeps every query that runs often,
+// or over every pipeline there is, reading through an index: none scans the
+// table or sorts what it read, so none grows with the pipelines kept.
+func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
+	e := setup(t)
+	branch := e.branchPipeline("", "develop", sha(2))
+	mr := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: "h1"}.probe(e.project)
+	query := func(q string, args []any) (string, []any) { return q, args }
+	tests := []struct {
+		name, query, index string
+		args               []any
+	}{
+		{"the same branch pipeline", "", "idx_pipelines_branch_commit", nil},
+		{"the same merge request pipeline", "", "idx_pipelines_merge_request_commits", nil},
+		{"the project's pipelines", "", "idx_pipelines_project", nil},
+		{"a page back", "", "idx_pipelines_project", nil},
+		{"a branch's pipelines", "", "idx_pipelines_branch", nil},
+		{"a merge request's pipelines", "", "idx_pipelines_merge_request", nil},
+		{"the unfinished", listUnfinishedQuery, "idx_pipelines_unfinished", nil},
+		{"the unannounced", listUnannouncedQuery, "idx_pipelines_unannounced", nil},
+		{"the pinned", listPinnedFinishedQuery, "idx_pipelines_pinned", nil},
+		{"those to prune", keptOutputsQuery, "idx_pipelines_keeping_output", []any{e.project, KeptOutputs}},
+		{"the pipelines' jobs", jobsQuery(true, 2), "sqlite_autoindex_pipeline_jobs_2", []any{1, 2}},
+	}
+	tests[0].query, tests[0].args = findSameQuery(branch, countingStatuses)
+	tests[1].query, tests[1].args = findSameQuery(mr, countingStatuses)
+	tests[2].query, tests[2].args = query(listQuery(e.project, ListFilter{}))
+	tests[3].query, tests[3].args = query(listQuery(e.project, ListFilter{Before: 100, Limit: 10}))
+	tests[4].query, tests[4].args = query(listQuery(e.project, ListFilter{Branch: "develop"}))
+	tests[5].query, tests[5].args = query(listQuery(e.project, ListFilter{MergeRequestID: e.mr}))
+	for _, tc := range tests {
+		rows, err := e.db.Query("EXPLAIN QUERY PLAN "+tc.query, tc.args...)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		var plan []string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			plan = append(plan, detail)
+		}
+		rows.Close()
+		all := strings.Join(plan, "; ")
+		for _, step := range plan {
+			if strings.Contains(step, "TEMP B-TREE") || ((strings.HasPrefix(step, "SCAN ") || strings.HasPrefix(step, "SEARCH ")) && !strings.Contains(step, "INDEX")) {
+				t.Errorf("%s reads more than it needs: %s", tc.name, all)
+			}
+		}
+		if !strings.Contains(all, "INDEX "+tc.index+" ") && !strings.HasSuffix(all, "INDEX "+tc.index) {
+			t.Errorf("%s does not use %s: %s", tc.name, tc.index, all)
+		}
+	}
+}
+
+func TestRepositoryPrunesTheOutputOfFinishedPipelinesPastTheNewest(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	repo := e.svc.repo
+	// Three pipelines that started, the oldest still running, and one that
+	// never did.
+	var started []*Pipeline
+	for i, uid := range []string{"f00d000000000001", "f00d000000000002", "f00d000000000003"} {
+		p := e.branchPipeline(uid, "develop", sha(10+i))
+		if err := repo.Create(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := repo.MarkStarted(ctx, p.ID, "img", time.Now()); !ok || err != nil {
+			t.Fatalf("start: %v %v", ok, err)
+		}
+		for _, j := range p.Jobs {
+			if err := repo.SaveJobLog(ctx, j.ID, JobLog{Output: []byte("out"), Total: 3}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if i > 0 {
+			finished := time.Now()
+			p.Status, p.FinishedAt = StatusPassed, &finished
+			if _, err := repo.Finish(ctx, p); err != nil {
+				t.Fatal(err)
+			}
+		}
+		started = append(started, p)
+	}
+	if err := repo.Create(ctx, e.branchPipeline("f00d000000000004", "develop", sha(20))); err != nil {
+		t.Fatal(err)
+	}
+	kept := func(p *Pipeline) bool {
+		got, _ := repo.Get(ctx, p.ID)
+		return got.Jobs[0].OutputKept()
+	}
+
+	// The newest that started keeps its output; the next, finished, loses
+	// it; the oldest is still running, so it keeps it until it finishes.
+	if err := repo.PruneOutputs(ctx, e.project, 1); err != nil {
+		t.Fatal(err)
+	}
+	if !kept(started[2]) || kept(started[1]) || !kept(started[0]) {
+		t.Fatalf("kept: %v %v %v", kept(started[0]), kept(started[1]), kept(started[2]))
+	}
+	finished := time.Now()
+	started[0].Status, started[0].FinishedAt = StatusPassed, &finished
+	if _, err := repo.Finish(ctx, started[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.PruneOutputs(ctx, e.project, 1); err != nil {
+		t.Fatal(err)
+	}
+	if kept(started[0]) || !kept(started[2]) {
+		t.Fatalf("after the oldest finished, kept: %v %v", kept(started[0]), kept(started[2]))
 	}
 }
