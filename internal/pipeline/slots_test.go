@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -19,9 +20,14 @@ func TestSlotsGoToTheOldestPipelineFirst(t *testing.T) {
 	}
 	other()
 
+	// Each waiter says it was granted a slot before freeing it, so the
+	// order said is the order granted; done is once all have freed theirs.
 	order := make(chan string, 3)
+	var done sync.WaitGroup
 	wait := func(name string, pipeline int64, position int) {
+		done.Add(1)
 		go func() {
+			defer done.Done()
 			release, err := slots.acquire(ctx, 1, pipeline, position)
 			if err != nil {
 				t.Errorf("%s: %v", name, err)
@@ -47,6 +53,7 @@ func TestSlotsGoToTheOldestPipelineFirst(t *testing.T) {
 	if got := <-order; got != "newer" {
 		t.Fatalf("third went to %s", got)
 	}
+	done.Wait()
 	if n := slots.running(1); n != 1 {
 		t.Fatalf("%d slots in use, want 1", n)
 	}
