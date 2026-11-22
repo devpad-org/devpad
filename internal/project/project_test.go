@@ -1347,6 +1347,77 @@ func TestSetBranchesPicksBranchesToMergeIntoAutomatically(t *testing.T) {
 	}
 }
 
+func TestSetBranchesPicksBranchesThatRunThePipeline(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "develop", SHA: "d"}, {Name: "feature", SHA: "f"}}
+	list := func(b ...string) *[]string { return &b }
+
+	if p.RunsPipelines("main") || len(p.PipelineBranches) != 0 {
+		t.Fatal("a new project must not run its pipeline anywhere")
+	}
+	got, err := e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{
+		DefaultBranch: "develop", ProtectedBranches: []string{"main"}, AutoMergeBranches: list("develop"), PipelineBranches: list("main", " develop ", "main"),
+	})
+	if err != nil {
+		t.Fatalf("set branches: %v", err)
+	}
+	if strings.Join(got.PipelineBranches, ",") != "main,develop" || !got.RunsPipelines("develop") || !got.RunsPipelines("main") {
+		t.Fatalf("unexpected pipeline branches: %v", got.PipelineBranches)
+	}
+	stored, _ := e.svc.Get(ctx, e.userID, p.ID)
+	if strings.Join(stored.PipelineBranches, ",") != "main,develop" || strings.Join(stored.AutoMergeBranches, ",") != "develop" {
+		t.Fatalf("not stored: pipelines %v, automatic merges %v", stored.PipelineBranches, stored.AutoMergeBranches)
+	}
+
+	// Leaving them out keeps them.
+	if got, err = e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop", ProtectedBranches: []string{"main"}}); err != nil || len(got.PipelineBranches) != 2 {
+		t.Fatalf("expected both kept, got %v (%v)", got.PipelineBranches, err)
+	}
+	// An unprotected branch is refused.
+	if _, err := e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop", PipelineBranches: list("feature")}); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "cannot run the pipeline") {
+		t.Fatalf("expected ErrInvalidInput for an unprotected branch, got %v", err)
+	}
+	// A branch that stops being protected stops running the pipeline.
+	if got, err = e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop"}); err != nil || got.RunsPipelines("main") || strings.Join(got.PipelineBranches, ",") != "develop" {
+		t.Fatalf("expected main dropped, got %v (%v)", got.PipelineBranches, err)
+	}
+	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); strings.Join(stored.PipelineBranches, ",") != "develop" {
+		t.Fatalf("expected only develop stored, got %v", stored.PipelineBranches)
+	}
+	// An empty list clears them.
+	if got, err = e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop", PipelineBranches: list()}); err != nil || len(got.PipelineBranches) != 0 {
+		t.Fatalf("expected none, got %v (%v)", got.PipelineBranches, err)
+	}
+}
+
+// The project keeps its pipeline setting apart from its other fields, so
+// saving them from a stale copy cannot undo it.
+func TestSetPipelineConfig(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	const config = "jobs:\n  test:\n    run: make test\n"
+
+	got, err := e.svc.SetPipelineConfig(ctx, e.userID, p.ID, config)
+	if err != nil || got.PipelineConfig != config {
+		t.Fatalf("set: %+v (%v)", got, err)
+	}
+	if _, err := e.svc.Update(ctx, e.userID, p.ID, UpdateInput{Name: "renamed"}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); stored.PipelineConfig != config || stored.Name != "renamed" {
+		t.Fatalf("stored %q, name %q", stored.PipelineConfig, stored.Name)
+	}
+	if _, err := e.svc.SetPipelineConfig(ctx, e.otherID, p.ID, ""); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for another user, got %v", err)
+	}
+	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); stored.PipelineConfig != config {
+		t.Fatalf("another user changed it to %q", stored.PipelineConfig)
+	}
+}
+
 // The branches endpoint keeps the automatic merges when a request leaves
 // them out, and reports them.
 func TestSetBranchesHandlerKeepsAutomaticMergesLeftOut(t *testing.T) {
@@ -1385,6 +1456,54 @@ func TestSetBranchesHandlerKeepsAutomaticMergesLeftOut(t *testing.T) {
 	}
 	if got := put(`{"defaultBranch":"develop","protectedBranches":["main"],"autoMergeBranches":[]}`); len(got) != 0 {
 		t.Fatalf("expected an empty list to clear them, got %v", got)
+	}
+}
+
+// The branches endpoint takes the branches that run the pipeline, keeps
+// them when a request leaves them out, and reports them with the
+// project's pipeline setting.
+func TestSetBranchesHandlerTakesPipelineBranches(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "develop", SHA: "d"}}
+	id := strconv.FormatInt(p.ID, 10)
+	put := func(body string) map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/projects/"+id+"/branches", strings.NewReader(body))
+		req.SetPathValue("id", id)
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: e.userID}))
+		rec := httptest.NewRecorder()
+		NewHandler(e.svc).HandleSetBranches(rec, req)
+		var out struct {
+			Project map[string]any `json:"project"`
+		}
+		json.NewDecoder(rec.Body).Decode(&out)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT %s: %d", body, rec.Code)
+		}
+		return out.Project
+	}
+	branches := func(project map[string]any) string {
+		t.Helper()
+		list, ok := project["pipelineBranches"].([]any)
+		if !ok {
+			t.Fatalf("expected pipelineBranches as a list, got %v", project["pipelineBranches"])
+		}
+		names := make([]string, 0, len(list))
+		for _, b := range list {
+			names = append(names, b.(string))
+		}
+		return strings.Join(names, ",")
+	}
+	got := put(`{"defaultBranch":"develop","protectedBranches":["main"]}`)
+	if branches(got) != "" || got["pipelineConfig"] != "" {
+		t.Fatalf("expected none and no setting, got %v", got)
+	}
+	if got := put(`{"defaultBranch":"develop","protectedBranches":["main"],"pipelineBranches":["main"]}`); branches(got) != "main" {
+		t.Fatalf("expected main, got %v", got["pipelineBranches"])
+	}
+	if got := put(`{"defaultBranch":"develop","protectedBranches":["main"]}`); branches(got) != "main" {
+		t.Fatalf("expected main kept, got %v", got["pipelineBranches"])
 	}
 }
 

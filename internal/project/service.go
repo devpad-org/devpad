@@ -31,8 +31,13 @@ type Service interface {
 	Get(ctx context.Context, userID, projectID int64) (*Project, error)
 	Update(ctx context.Context, userID, projectID int64, in UpdateInput) (*Project, error)
 	// SetBranches changes the project's default branch, the other branches
-	// it protects, and those merge requests merge into automatically.
+	// it protects, those merge requests merge into automatically, and those
+	// that run the pipeline.
 	SetBranches(ctx context.Context, userID, projectID int64, in BranchesInput) (*Project, error)
+	// SetPipelineConfig records the project's pipeline for commits without
+	// a pipeline file. It stores the text as it is: the caller checks it
+	// parses, and a pipeline that runs it fails if it does not.
+	SetPipelineConfig(ctx context.Context, userID, projectID int64, config string) (*Project, error)
 	// DeleteBranch deletes a branch that is not protected and that nothing
 	// is using, only while it still points at sha.
 	DeleteBranch(ctx context.Context, userID, projectID int64, branch, sha string) (*agent.RepoBranch, error)
@@ -501,7 +506,7 @@ func (s *service) Update(ctx context.Context, userID, projectID int64, in Update
 // and from then on no sandbox can claim it and the project workspace cannot
 // publish it. Open merge requests keep their targets; one whose target is no
 // longer protected cannot be merged. A branch that stops being protected
-// stops being merged into automatically.
+// stops being merged into automatically and running the pipeline.
 func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in BranchesInput) (*Project, error) {
 	unlock := s.lockBranches(projectID)
 	defer unlock()
@@ -551,7 +556,10 @@ func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in B
 			return nil, invalid("branch %q does not exist in the project", b)
 		}
 	}
-	if next.AutoMergeBranches, err = autoMergeBranches(p, next, in.AutoMergeBranches); err != nil {
+	if next.AutoMergeBranches, err = protectedSubset(p.AutoMergeBranches, next, in.AutoMergeBranches, "merge requests cannot merge into it automatically"); err != nil {
+		return nil, err
+	}
+	if next.PipelineBranches, err = protectedSubset(p.PipelineBranches, next, in.PipelineBranches, "it cannot run the pipeline"); err != nil {
 		return nil, err
 	}
 
@@ -571,17 +579,20 @@ func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in B
 		}
 		return nil, err
 	}
-	p.DefaultBranch, p.ProtectedBranches, p.AutoMergeBranches = next.DefaultBranch, next.ProtectedBranches, next.AutoMergeBranches
+	p.DefaultBranch, p.ProtectedBranches = next.DefaultBranch, next.ProtectedBranches
+	p.AutoMergeBranches, p.PipelineBranches = next.AutoMergeBranches, next.PipelineBranches
 	return p, nil
 }
 
-// autoMergeBranches works out which of next's protected branches merge
-// requests merge into automatically: those asked for, each of which must be
-// protected in next, or when none are asked for, p's that still are.
-func autoMergeBranches(p, next *Project, asked *[]string) ([]string, error) {
+// protectedSubset works out a list of next's protected branches, such as
+// those merge requests merge into automatically: those asked for, each of
+// which must be protected in next, or when none are asked for, those of
+// current that still are. refusal says why an unprotected branch can't be
+// on the list.
+func protectedSubset(current []string, next *Project, asked *[]string, refusal string) ([]string, error) {
 	if asked == nil {
 		kept := []string{}
-		for _, b := range p.AutoMergeBranches {
+		for _, b := range current {
 			if next.IsProtected(b) {
 				kept = append(kept, b)
 			}
@@ -595,7 +606,7 @@ func autoMergeBranches(p, next *Project, asked *[]string) ([]string, error) {
 			continue
 		}
 		if !next.IsProtected(b) {
-			return nil, invalid("%q is not protected, so merge requests cannot merge into it automatically", b)
+			return nil, invalid("%q is not protected, so %s", b, refusal)
 		}
 		out = append(out, b)
 	}
@@ -699,7 +710,21 @@ func (s *service) protectBranches(ctx context.Context, p *Project, next *Project
 			}
 		}
 	}
-	return s.repo.SetBranches(ctx, p.ID, next.DefaultBranch, next.ProtectedBranches, next.AutoMergeBranches)
+	return s.repo.SetBranches(ctx, p.ID, Branches{
+		Default: next.DefaultBranch, Protected: next.ProtectedBranches, AutoMerge: next.AutoMergeBranches, Pipelines: next.PipelineBranches,
+	})
+}
+
+func (s *service) SetPipelineConfig(ctx context.Context, userID, projectID int64, config string) (*Project, error) {
+	p, err := s.Get(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repo.SetPipelineConfig(ctx, p.ID, config); err != nil {
+		return nil, err
+	}
+	p.PipelineConfig = config
+	return p, nil
 }
 
 // Delete removes every sandbox and the project workspace through the

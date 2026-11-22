@@ -45,10 +45,13 @@ type Repository interface {
 	// built. Update never writes it, so a build ending meanwhile is kept.
 	SetEnvironmentImage(ctx context.Context, projectID int64, image string) error
 	// SetBranches records a project's default branch, the other branches it
-	// protects, and those of them a task's merge request merges into once a
-	// review agent approves it. Update never writes them, so a stale copy of
-	// a project cannot undo a change.
-	SetBranches(ctx context.Context, projectID int64, defaultBranch string, protected, autoMerge []string) error
+	// protects, those of them a task's merge request merges into once a
+	// review agent approves it, and those that run the pipeline. Update
+	// never writes them, so a stale copy of a project cannot undo a change.
+	SetBranches(ctx context.Context, projectID int64, b Branches) error
+	// SetPipelineConfig records the project's pipeline for commits without
+	// a pipeline file; Update never writes it, for the same reason.
+	SetPipelineConfig(ctx context.Context, projectID int64, config string) error
 	// SetUpstreamURL records a project's upstream and counts the change;
 	// Update never writes it, for the same reason.
 	SetUpstreamURL(ctx context.Context, projectID int64, upstreamURL string) error
@@ -64,6 +67,15 @@ type Repository interface {
 	DeleteBuild(ctx context.Context, projectID int64) error
 }
 
+// Branches are a project's branch settings, which SetBranches records
+// together.
+type Branches struct {
+	Default   string
+	Protected []string
+	AutoMerge []string
+	Pipelines []string
+}
+
 type repository struct {
 	db *sql.DB
 }
@@ -73,7 +85,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const projectColumns = `id, user_id, name, description, default_branch, protected_branches, auto_merge_branches, upstream_url, upstream_version, setup_script, environment, environment_image, max_sandboxes, auto_review, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at`
+const projectColumns = `id, user_id, name, description, default_branch, protected_branches, auto_merge_branches, pipeline_branches, pipeline_config, upstream_url, upstream_version, setup_script, environment, environment_image, max_sandboxes, auto_review, status, error, repo_container_id, repo_volume_name, repo_network_name, repo_agent_token, created_at, updated_at`
 
 // execer is a database or a transaction.
 type execer interface {
@@ -173,8 +185,8 @@ type rowScanner interface {
 
 func scanProject(row rowScanner) (*Project, error) {
 	p := &Project{}
-	var protected, autoMerge string
-	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Description, &p.DefaultBranch, &protected, &autoMerge, &p.UpstreamURL, &p.UpstreamVersion, &p.SetupScript, &p.Environment, &p.EnvironmentImage, &p.MaxSandboxes, &p.AutoReview, &p.Status, &p.Error, &p.RepoContainerID, &p.RepoVolumeName, &p.RepoNetworkName, &p.RepoAgentToken, &p.CreatedAt, &p.UpdatedAt)
+	var protected, autoMerge, pipelines string
+	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Description, &p.DefaultBranch, &protected, &autoMerge, &pipelines, &p.PipelineConfig, &p.UpstreamURL, &p.UpstreamVersion, &p.SetupScript, &p.Environment, &p.EnvironmentImage, &p.MaxSandboxes, &p.AutoReview, &p.Status, &p.Error, &p.RepoContainerID, &p.RepoVolumeName, &p.RepoNetworkName, &p.RepoAgentToken, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +195,9 @@ func scanProject(row rowScanner) (*Project, error) {
 	}
 	if err := json.Unmarshal([]byte(autoMerge), &p.AutoMergeBranches); err != nil {
 		return nil, fmt.Errorf("decoding automatic merge branches: %w", err)
+	}
+	if err := json.Unmarshal([]byte(pipelines), &p.PipelineBranches); err != nil {
+		return nil, fmt.Errorf("decoding pipeline branches: %w", err)
 	}
 	return p, nil
 }
@@ -199,17 +214,24 @@ func branchList(branches []string) (string, error) {
 	return string(b), nil
 }
 
-func (r *repository) SetBranches(ctx context.Context, projectID int64, defaultBranch string, protected, autoMerge []string) error {
-	list, err := branchList(protected)
-	if err != nil {
-		return err
+func (r *repository) SetBranches(ctx context.Context, projectID int64, b Branches) error {
+	var lists [3]string
+	for i, branches := range [][]string{b.Protected, b.AutoMerge, b.Pipelines} {
+		list, err := branchList(branches)
+		if err != nil {
+			return err
+		}
+		lists[i] = list
 	}
-	autoList, err := branchList(autoMerge)
-	if err != nil {
-		return err
-	}
-	if _, err := r.db.ExecContext(ctx, `UPDATE projects SET default_branch = ?, protected_branches = ?, auto_merge_branches = ?, updated_at = ? WHERE id = ?`, defaultBranch, list, autoList, time.Now(), projectID); err != nil {
+	if _, err := r.db.ExecContext(ctx, `UPDATE projects SET default_branch = ?, protected_branches = ?, auto_merge_branches = ?, pipeline_branches = ?, updated_at = ? WHERE id = ?`, b.Default, lists[0], lists[1], lists[2], time.Now(), projectID); err != nil {
 		return fmt.Errorf("recording branches: %w", err)
+	}
+	return nil
+}
+
+func (r *repository) SetPipelineConfig(ctx context.Context, projectID int64, config string) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE projects SET pipeline_config = ?, updated_at = ? WHERE id = ?`, config, time.Now(), projectID); err != nil {
+		return fmt.Errorf("recording pipeline: %w", err)
 	}
 	return nil
 }

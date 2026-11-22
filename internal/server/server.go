@@ -21,6 +21,7 @@ import (
 	"github.com/devpad-org/devpad/internal/encrypt"
 	"github.com/devpad-org/devpad/internal/gitbridge"
 	"github.com/devpad-org/devpad/internal/mergerequest"
+	"github.com/devpad-org/devpad/internal/pipeline"
 	"github.com/devpad-org/devpad/internal/preview"
 	"github.com/devpad-org/devpad/internal/project"
 	"github.com/devpad-org/devpad/internal/projecttools"
@@ -124,6 +125,7 @@ func New(cfg Config) (*Server, error) {
 	projectService.SetSidecarServices(wsServiceService)
 	workspaceService.SetStartHook(projectService)
 	projectServicesHandler := wsservice.NewProjectHandler(wsServiceService, projectService, workspaceService)
+	pipelineHandler := pipeline.NewHandler(projectService)
 
 	// AI layer
 	aiModule := ai.NewModule(db.Conn(), workspaceService, cipher)
@@ -230,6 +232,7 @@ func New(cfg Config) (*Server, error) {
 		wsServices:      wsServiceHandler,
 		projectServices: projectServicesHandler,
 		project:         projectHandler,
+		pipeline:        pipelineHandler,
 		task:            taskHandler,
 		mr:              mrHandler,
 		gitBridge:       gitBridgeHandler,
@@ -443,6 +446,7 @@ type routeHandlers struct {
 	workspace       *workspace.Handler
 	wsServices      *wsservice.Handler
 	projectServices *wsservice.ProjectHandler
+	pipeline        *pipeline.Handler
 	project         *project.Handler
 	task            *task.Handler
 	mr              *mergerequest.Handler
@@ -555,6 +559,7 @@ func registerRoutes(mux *http.ServeMux, h routeHandlers) {
 	mux.Handle("GET /api/projects/{id}/branches", h.authMiddleware.RequireAuth(http.HandlerFunc(h.project.HandleBranches)))
 	mux.Handle("PUT /api/projects/{id}/branches", h.authMiddleware.RequireAuth(http.HandlerFunc(h.project.HandleSetBranches)))
 	mux.Handle("DELETE /api/projects/{id}/branches/{branch...}", h.authMiddleware.RequireAuth(http.HandlerFunc(h.project.HandleDeleteBranch)))
+	mux.Handle("PUT /api/projects/{id}/pipeline", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleSetConfig)))
 	mux.Handle("GET /api/projects/{id}/sandboxes", h.authMiddleware.RequireAuth(http.HandlerFunc(h.project.HandleListSandboxes)))
 	mux.Handle("POST /api/projects/{id}/sandboxes", h.authMiddleware.RequireAuth(http.HandlerFunc(h.project.HandleCreateSandbox)))
 	mux.Handle("POST /api/projects/{id}/sandboxes/{workspaceId}/publish", h.authMiddleware.RequireAuth(http.HandlerFunc(h.project.HandlePublishSandbox)))

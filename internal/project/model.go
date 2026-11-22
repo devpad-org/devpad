@@ -73,7 +73,14 @@ type Project struct {
 	// merges into on its own once a review agent approves it. Empty unless
 	// the user picks some.
 	AutoMergeBranches []string
-	UpstreamURL       string
+	// PipelineBranches are the protected branches that run the project's
+	// pipeline on each new commit, and on each merge request into them.
+	// Empty unless the user picks some.
+	PipelineBranches []string
+	// PipelineConfig is the pipeline, in the format of .devpad/pipeline.yml,
+	// for a commit that has no such file. Empty means none.
+	PipelineConfig string
+	UpstreamURL    string
 	// UpstreamVersion counts the changes to UpstreamURL since the project
 	// was made.
 	UpstreamVersion int64
@@ -113,6 +120,13 @@ func (p *Project) IsProtected(branch string) bool {
 // its own once a review agent approves it. Only a protected branch can.
 func (p *Project) AutoMerges(branch string) bool {
 	return p.IsProtected(branch) && slices.Contains(p.AutoMergeBranches, branch)
+}
+
+// RunsPipelines reports whether branch runs the project's pipeline on each
+// new commit and on each merge request into it. Only a protected branch
+// can.
+func (p *Project) RunsPipelines(branch string) bool {
+	return p.IsProtected(branch) && slices.Contains(p.PipelineBranches, branch)
 }
 
 // Protected lists every protected branch, the default branch first.
@@ -163,6 +177,10 @@ type BranchesInput struct {
 	// a task's merge request merges into once a review agent approves it.
 	// Nil keeps the project's, less any branch no longer protected.
 	AutoMergeBranches *[]string
+	// PipelineBranches are the protected branches, of those set here, that
+	// run the project's pipeline. Nil keeps the project's, less any branch
+	// no longer protected.
+	PipelineBranches *[]string
 }
 
 // MergeInput merges Source into Target, a protected branch.
