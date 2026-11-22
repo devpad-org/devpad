@@ -10,8 +10,10 @@ import (
 // pipelines. A slot that frees goes to the job waiting that belongs to the
 // oldest pipeline, the first in its file of that pipeline's, so a project's
 // pipelines finish in the order they were started rather than all slowly
-// together. A pipeline holds a slot from when it starts until its last job
-// ends, which also bounds how many of a project's pipelines run at once.
+// together. A pipeline starts only with a slot, and its jobs wait behind
+// only older pipelines', so a project's running pipelines outnumber its
+// slots only when an older one, late to the queue, takes a slot ahead of a
+// running pipeline's remaining jobs.
 type jobSlots struct {
 	capacity int
 
