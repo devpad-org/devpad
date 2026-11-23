@@ -624,3 +624,47 @@ func TestNoAgentToolMerges(t *testing.T) {
 		}
 	}
 }
+
+// A change to the pipeline file never merges automatically, even with its
+// pipeline passed: merged on an agent's approval, it would weaken or remove
+// the gate of every merge request after it. The user merges it.
+func TestAutoMergeNeverTakesAChangeToThePipelineFile(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		file agent.RepoDiffFile
+		why  string
+	}{
+		{name: "adding it", file: agent.RepoDiffFile{Path: ".devpad/pipeline.yml", Status: "A"}, why: ".devpad/pipeline.yml"},
+		{name: "changing it", file: agent.RepoDiffFile{Path: ".devpad/pipeline.yaml", Status: "M"}, why: ".devpad/pipeline.yaml"},
+		{name: "deleting it", file: agent.RepoDiffFile{Path: ".devpad/pipeline.yml", Status: "D"}, why: ".devpad/pipeline.yml"},
+		{name: "renaming it away", file: agent.RepoDiffFile{Path: "ci/pipeline.yml", OldPath: ".devpad/pipeline.yml", Status: "R"}, why: ".devpad/pipeline.yml"},
+		{name: "renaming another onto it", file: agent.RepoDiffFile{Path: ".devpad/pipeline.yml", OldPath: "ci/pipeline.yml", Status: "R"}, why: ".devpad/pipeline.yml"},
+		{name: "another file of .devpad", file: agent.RepoDiffFile{Path: ".devpad/skills/x/SKILL.md", Status: "A"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := autoMergeEnv(t)
+			ctx := context.Background()
+			e.projects.files = append(e.projects.files, tt.file)
+			mr := e.openTaskMR(t)
+			rv := e.startAgentReview(t, mr, AgentReviewInput{})
+			e.gate.set(passedOn(3, "head1", mainTip))
+			e.approve(t, rv, domain.AgentRunCompleted, nil)
+			note := e.settled(t, rv)
+			got, _ := e.svc.repo.GetByID(ctx, mr.ID)
+			if tt.why == "" {
+				if got.Status != StatusMerged || note.AutoMergeError != "" {
+					t.Fatalf("expected a merge, got %+v, %q", got, note.AutoMergeError)
+				}
+				return
+			}
+			want := "it changes " + tt.why + ", which devpad never merges by itself"
+			if got.Status != StatusOpen || e.mergeCount() != 0 || note.AutoMergeError != want {
+				t.Fatalf("expected it left for the user, saying %q; got %+v, %q", want, got, note.AutoMergeError)
+			}
+			// The user merges it.
+			if _, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{}); err != nil {
+				t.Fatalf("the user's merge: %v", err)
+			}
+		})
+	}
+}

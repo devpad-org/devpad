@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 
 	"github.com/devpad-org/devpad/internal/agent"
@@ -123,7 +124,8 @@ func (s *service) decideApproval(ctx context.Context, mr *MergeRequest, reviewID
 // on the approval of review reviewID in run, or says why not. It merges
 // only what the review saw: the review must still be the latest and of the
 // current head, its run must have completed, no blocking thread may be
-// open, and the task must be waiting for review. Then the pipeline gate:
+// open, the task must be waiting for review, and the change must leave the
+// pipeline file alone (changedPipelineFile). Then the pipeline gate:
 // when a pipeline guards the target, it must have passed on the change
 // merged onto the target as it is now, which tests what the review could
 // not, so the target moving after the review no longer refuses it; one
@@ -176,6 +178,13 @@ func (s *service) autoMergeable(ctx context.Context, mr *MergeRequest, reviewID 
 	if t.Status != task.StatusInReview {
 		return nil, refuse("its task is %s, not in review", strings.ReplaceAll(string(t.Status), "_", " "))
 	}
+	file, err := s.changedPipelineFile(ctx, mr)
+	if err != nil {
+		return nil, err
+	}
+	if file != "" {
+		return nil, refuse("it changes %s, which devpad never merges by itself", file)
+	}
 	gate, err := s.readGate(ctx, mr)
 	if err != nil {
 		return nil, err
@@ -196,6 +205,27 @@ func (s *service) autoMergeable(ctx context.Context, mr *MergeRequest, reviewID 
 		return nil, refuse("%s moved after this review read the change", mr.TargetBranch)
 	}
 	return &admission{targetSHA: rv.TargetSHA}, nil
+}
+
+// changedPipelineFile names the pipeline file mr's change adds, changes,
+// renames or deletes, or "" when it touches none. A change to the jobs that
+// grade it, or to whether any do, is the user's to merge: merged on an
+// agent's approval, it would weaken or remove the gate of every merge
+// request after it.
+func (s *service) changedPipelineFile(ctx context.Context, mr *MergeRequest) (string, error) {
+	diff, err := s.projects.Diff(ctx, mr.UserID, mr.ProjectID, mr.TargetBranch, mr.HeadSHA)
+	if err != nil {
+		return "", fmt.Errorf("reading what the change touches: %w", err)
+	}
+	pipelineFiles := project.PipelineFiles()
+	for _, f := range diff.Files {
+		for _, path := range []string{f.Path, f.OldPath} {
+			if path != "" && slices.Contains(pipelineFiles, path) {
+				return path, nil
+			}
+		}
+	}
+	return "", nil
 }
 
 // runCutShort says why the run of an approving review did not complete, or

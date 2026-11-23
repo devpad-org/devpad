@@ -15,7 +15,7 @@ import (
 
 // Files are where a commit keeps its pipeline, of which it may have one.
 func Files() []string {
-	return []string{".devpad/pipeline.yml", ".devpad/pipeline.yaml"}
+	return project.PipelineFiles()
 }
 
 // Source says where a pipeline's jobs came from.

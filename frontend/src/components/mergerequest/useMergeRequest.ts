@@ -25,7 +25,7 @@ import { branchActionError } from '@/components/project/branchErrors'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useAiModelStore } from '@/stores/aiModels'
 import type { Pipeline } from '@/api/pipelines'
-import { PIPELINE_COPY } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_COPY, PIPELINE_FILES } from '@/components/pipeline/pipelineFormat'
 import { STRATEGIES, authorName, autoMergeReason, dirName, errorText, plural, type Author, type Tone } from './format'
 import { createMrPipelines } from './useMrPipelines'
 
@@ -479,6 +479,11 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
       detail: `The review agent's approval didn't merge it: ${why}. Merge it yourself, or have a review agent review it again.`,
     })
     if (latest?.autoMergeError) return notMerged(autoMergeReason(latest))
+    // A change to the pipeline file is the user's to merge, approved or not.
+    const pipelineFile = diff.value?.files.flatMap((f) => [f.path, f.oldPath ?? '']).find((p) => PIPELINE_FILES.includes(p))
+    if (pipelineFile) {
+      return { key: 'auto-merge', tone: 'warning', icon: 'warning', title: "Won't merge automatically", detail: PIPELINE_COPY.autoMergePipelineFile(pipelineFile) }
+    }
     const gate = pipelines.gate.value
     if (latest?.author === 'agent' && latest.status === 'submitted' && latest.verdict === 'approve') {
       if (latest.finishing) {

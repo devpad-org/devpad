@@ -109,6 +109,7 @@ Devpad merges only what the review saw, so the approval doesn't merge the change
 - another review, yours or an agent's, has started since;
 - a blocking thread is open;
 - the task isn't **In review**, for instance because it was sent back to its agent;
+- it adds, changes, renames or deletes the pipeline file, `.devpad/pipeline.yml` or `.devpad/pipeline.yaml`: a change to the jobs that grade merge requests, or to whether any do, is yours to merge, and the merge card says **Won't merge automatically** from the start;
 - the review agent failed or was stopped after approving, or devpad restarted before it finished;
 - the pipeline that guards the branch failed, found the change doesn't merge, couldn't run or was cancelled;
 - the merge fails, for instance on conflicts.

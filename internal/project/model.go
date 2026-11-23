@@ -129,6 +129,13 @@ func (p *Project) RunsPipelines(branch string) bool {
 	return p.IsProtected(branch) && slices.Contains(p.PipelineBranches, branch)
 }
 
+// PipelineFiles are where a commit keeps its pipeline, of which it may have
+// one: internal/pipeline reads them, and an automatic merge never takes a
+// change to them.
+func PipelineFiles() []string {
+	return []string{".devpad/pipeline.yml", ".devpad/pipeline.yaml"}
+}
+
 // Protected lists every protected branch, the default branch first.
 func (p *Project) Protected() []string {
 	return append([]string{p.DefaultBranch}, p.ProtectedBranches...)

@@ -45,12 +45,16 @@ export const PIPELINE_COPY = {
   autoMergeUnguarded: (reviewer: string, target: string) =>
     `Once ${reviewer} approves it. No pipeline guards ${target}, so nothing but the review agent's judgment decides what merges.`,
   autoMergeWaiting: (target: string) => `The review agent approved it; devpad merges it into ${target} once its pipeline passes.`,
+  autoMergePipelineFile: (file: string) => `It changes ${file}, which devpad never merges by itself: merge it yourself once you've looked at the change to its jobs.`,
   // In the Branches dialog, under Merge automatically.
   autoMergeUnguardedWarning: (branches: string) =>
     `No pipeline guards ${branches}, so nothing but the review agent's judgment decides what merges. A change can carry text that tries to talk the review agent into approving it. Tick a branch under Run pipelines, with a pipeline configured, for its merge requests to pass the pipeline first.`,
   autoMergeGuardedHint: (branches: string) =>
     `A pipeline guards ${branches}: a task's merge request merges only once its pipeline passes too. A pipeline can't tell a weakened test from a sound one, so the review agent's judgment still counts.`,
 } as const
+
+// Where a commit keeps its pipeline, as the server's project.PipelineFiles.
+export const PIPELINE_FILES = ['.devpad/pipeline.yml', '.devpad/pipeline.yaml']
 
 // How the merge gate stood when you merged over it, to follow "merged
 // although".
