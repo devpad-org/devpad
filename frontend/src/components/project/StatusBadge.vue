@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-const props = defineProps<{ status: string }>()
+// A status as a pill. Its tone and label come from the status, unless the
+// caller, which knows better what the status means, gives them.
+const props = defineProps<{ status: string; tone?: string; label?: string }>()
 
 const TONES: Record<string, string> = {
   ready: 'success',
@@ -22,14 +24,14 @@ const TONES: Record<string, string> = {
   error: 'error',
 }
 
-const tone = computed(() => TONES[props.status] ?? 'neutral')
+const tone = computed(() => props.tone ?? TONES[props.status] ?? 'neutral')
 const LABELS: Record<string, string> = {
   approve: 'approved',
   comment: 'commented',
   request_changes: 'changes requested',
 }
 
-const label = computed(() => LABELS[props.status] ?? props.status.replace(/_/g, ' '))
+const label = computed(() => props.label ?? LABELS[props.status] ?? props.status.replace(/_/g, ' '))
 </script>
 
 <template>
@@ -45,7 +47,7 @@ const label = computed(() => LABELS[props.status] ?? props.status.replace(/_/g, 
   font-size: 0.7rem;
   font-weight: 500;
   white-space: nowrap;
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   color: var(--text-secondary);
   background: var(--bg-neutral);
 }
@@ -57,21 +59,27 @@ const label = computed(() => LABELS[props.status] ?? props.status.replace(/_/g, 
 }
 
 .tone-active {
-  color: var(--accent-blue);
-  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
-  border-color: color-mix(in srgb, var(--accent-blue) 30%, transparent);
+  color: var(--hue-blue);
+  background: color-mix(in srgb, var(--hue-blue) 12%, transparent);
+  border-color: color-mix(in srgb, var(--hue-blue) 30%, transparent);
 }
 
 .tone-review {
-  color: var(--accent-purple);
-  background: color-mix(in srgb, var(--accent-purple) 12%, transparent);
-  border-color: color-mix(in srgb, var(--accent-purple) 30%, transparent);
+  color: var(--hue-purple);
+  background: color-mix(in srgb, var(--hue-purple) 12%, transparent);
+  border-color: color-mix(in srgb, var(--hue-purple) 30%, transparent);
 }
 
 .tone-attention {
   color: var(--attention);
   background: var(--attention-bg);
   border-color: var(--attention-border);
+}
+
+.tone-warning {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
 }
 
 .tone-error {

@@ -13,6 +13,12 @@ export interface Project {
   // The protected branches a task's merge request merges into on its own
   // once a review agent approves it.
   autoMergeBranches: string[]
+  // The protected branches that run the project's pipeline, and whose
+  // merge requests do.
+  pipelineBranches: string[]
+  // The pipeline, in the format of .devpad/pipeline.yml, for commits that
+  // have no pipeline file; empty for none.
+  pipelineConfig: string
   upstreamUrl: string
   setupScript: string
   // The body of a Dockerfile devpad builds on its workspace image for the
@@ -75,6 +81,9 @@ export interface BranchesInput {
   // Protected branches, of those above, that a task's merge request merges
   // into once a review agent approves it. Left out, the project's are kept.
   autoMergeBranches?: string[]
+  // Protected branches, of those above, that run the project's pipeline.
+  // Left out, the project's are kept.
+  pipelineBranches?: string[]
 }
 
 export interface PushResult {
