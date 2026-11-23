@@ -1908,7 +1908,6 @@ func (s *service) mergeLocked(ctx context.Context, userID, projectID, mrID int64
 	if err := s.repo.Update(ctx, mr); err != nil {
 		return nil, err
 	}
-	s.settleApprovalsOf(ctx, mr)
 	s.ended(ctx, mr)
 	s.removeReviewSandboxes(ctx, mr, "the merge request was merged")
 	if mr.TaskID != 0 {
@@ -1916,6 +1915,9 @@ func (s *service) mergeLocked(ctx context.Context, userID, projectID, mrID int64
 			log.Printf("merge request %d: closing task %d: %v", mr.ID, mr.TaskID, err)
 		}
 	}
+	// Once the merge is done, task closed included, no approval of it is
+	// left to decide.
+	s.settleApprovalsOf(ctx, mr)
 
 	out := &MergeResult{MergeRequest: mr}
 	if in.Push {
