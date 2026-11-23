@@ -150,8 +150,8 @@ func TestMergeRequestPipelineEndsTellsOfMergeRequestPipelines(t *testing.T) {
 	got := &endedMergeRequests{}
 	a := mergeRequestPipelineEnds{mrs: got}
 	a.PipelineFinished(ctx, &pipeline.Pipeline{ID: 1, UserID: 1, ProjectID: 2, Kind: pipeline.KindBranch, Branch: "develop"})
-	a.PipelineFinished(ctx, &pipeline.Pipeline{ID: 2, UserID: 1, ProjectID: 2, Kind: pipeline.KindMergeRequest, MergeRequestID: 5})
-	if len(got.ends) != 1 || got.ends[0] != (mergerequest.PipelineEnd{UserID: 1, ProjectID: 2, MergeRequestID: 5}) {
+	a.PipelineFinished(ctx, &pipeline.Pipeline{ID: 2, UserID: 1, ProjectID: 2, Kind: pipeline.KindMergeRequest, MergeRequestID: 5, Status: pipeline.StatusFailed})
+	if len(got.ends) != 1 || got.ends[0] != (mergerequest.PipelineEnd{UserID: 1, ProjectID: 2, MergeRequestID: 5, PipelineID: 2, Status: "failed"}) {
 		t.Fatalf("told %+v", got.ends)
 	}
 }

@@ -1,10 +1,13 @@
 -- A merge the user made although the merge request's pipeline had not let
--- it through: the merge gate's state then, such as 'failed' or 'running',
--- and the pipeline that stood, if any. Empty when the merge didn't override
--- the gate. Only the user overrides it, so only a merge by the user has one.
+-- it through: the merge gate's state then, one of those the user can merge
+-- over, and the pipeline that stood, if any. Empty when the merge didn't
+-- override the gate. Only the user overrides it, so only a merge by the
+-- user has one, and only an override names a pipeline.
 ALTER TABLE merge_requests ADD COLUMN pipeline_override TEXT NOT NULL DEFAULT ''
-    CHECK (pipeline_override = '' OR (status = 'merged' AND merged_by = 'user'));
-ALTER TABLE merge_requests ADD COLUMN pipeline_override_id INTEGER REFERENCES pipelines(id) ON DELETE SET NULL;
+    CHECK (pipeline_override IN ('', 'queued', 'running', 'not_run', 'out_of_date', 'failed', 'invalid', 'error', 'cancelled')
+        AND (pipeline_override = '' OR (status = 'merged' AND merged_by = 'user')));
+ALTER TABLE merge_requests ADD COLUMN pipeline_override_id INTEGER REFERENCES pipelines(id) ON DELETE SET NULL
+    CHECK (pipeline_override_id IS NULL OR pipeline_override != '');
 
 -- The few merge requests that name a pipeline, so deleting pipelines scans
 -- none of the rest.

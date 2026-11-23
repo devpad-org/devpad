@@ -112,7 +112,9 @@ func (a mergeRequestPipelineEnds) PipelineFinished(ctx context.Context, p *pipel
 	if p.Kind != pipeline.KindMergeRequest {
 		return
 	}
-	a.mrs.PipelineFinished(ctx, mergerequest.PipelineEnd{UserID: p.UserID, ProjectID: p.ProjectID, MergeRequestID: p.MergeRequestID})
+	a.mrs.PipelineFinished(ctx, mergerequest.PipelineEnd{
+		UserID: p.UserID, ProjectID: p.ProjectID, MergeRequestID: p.MergeRequestID, PipelineID: p.ID, Status: string(p.Status),
+	})
 }
 
 // pipelineBundleDir is where this devpad keeps its pipelines' bundles: a

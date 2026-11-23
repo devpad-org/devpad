@@ -285,12 +285,14 @@ func TestOverrideOnlyWhereTheGateIsShutByItsPipeline(t *testing.T) {
 	}
 }
 
-// Only a merge by the user can have overridden the gate, which the
-// database holds to whatever writes it.
+// Only a merge by the user can have overridden the gate, over a state it
+// can be overridden in, and only an override names a pipeline: the
+// database holds whatever writes it to that.
 func TestOnlyTheUsersMergeRecordsAnOverride(t *testing.T) {
 	e := autoMergeEnv(t)
 	ctx := context.Background()
 	mr := e.openTaskMR(t)
+	pipelineID := e.pipelineRow(t, mr.ID, "failed")
 	now := time.Now()
 	mr.Status, mr.MergeSHA, mr.MergedAt, mr.MergedBy = StatusMerged, "mergecommit", &now, MergedByAuto
 	mr.PipelineOverride = &PipelineOverride{State: "failed"}
@@ -298,6 +300,16 @@ func TestOnlyTheUsersMergeRecordsAnOverride(t *testing.T) {
 		t.Fatal("expected an automatic merge refused an override")
 	}
 	mr.MergedBy = MergedByUser
+	for _, state := range []string{"passed", "unguarded", "conflict", "closed", "nonsense"} {
+		mr.PipelineOverride = &PipelineOverride{State: state}
+		if err := e.svc.repo.Update(ctx, mr); err == nil {
+			t.Fatalf("expected an override of %q refused", state)
+		}
+	}
+	if _, err := e.db.Exec(`UPDATE merge_requests SET pipeline_override_id = ? WHERE id = ?`, pipelineID, mr.ID); err == nil {
+		t.Fatal("expected a pipeline named without an override refused")
+	}
+	mr.PipelineOverride = &PipelineOverride{State: "failed", PipelineID: pipelineID}
 	if err := e.svc.repo.Update(ctx, mr); err != nil {
 		t.Fatalf("the user's: %v", err)
 	}
