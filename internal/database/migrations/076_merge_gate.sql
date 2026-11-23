@@ -12,7 +12,9 @@ ALTER TABLE merge_requests ADD COLUMN pipeline_override_id INTEGER REFERENCES pi
 -- list is checked by triggers rather than in the column's CHECK, which
 -- SQLite changes only by rebuilding merge_requests, whose rows so many
 -- tables reference: a migration that changes the list drops these two and
--- creates them again.
+-- creates them again. Triggers go with their table: a migration that
+-- rebuilds merge_requests must create these two again, or the list is no
+-- longer checked at all.
 CREATE TRIGGER merge_requests_pipeline_override_insert BEFORE INSERT ON merge_requests
 WHEN NEW.pipeline_override NOT IN ('', 'queued', 'running', 'not_run', 'out_of_date', 'failed', 'invalid', 'error', 'cancelled')
 BEGIN

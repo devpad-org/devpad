@@ -106,12 +106,30 @@
 //
 // # Lock order
 //
-// A merge request's lock comes before its task's lock, which comes before
-// the project's branch and publish locks. Start, and with it the project's
-// start lock, is never taken under any of them: only HTTP handlers,
-// Reconcile and the automatic-run workers call it. Under a merge request's
-// or a task's lock, code only reads pipelines (MergeRequestStatus and its
-// Gate, Report, BranchPipeline, none of which takes the start lock:
+// Outermost first:
+//
+//   - The project's branch lock (lockBranches: SetBranches, DeleteBranch,
+//     upstream syncs), whose branch moves are told once it is released.
+//     Under it only DeleteBranch's branch guards take more: the merge
+//     request service's per-project "sources" lock, then the task
+//     service's per-project "bases" lock, then the deletion.
+//   - The merge request service's per-task "task" lock (a task's merge
+//     request opening or moving), then one merge request's "mr" lock at a
+//     time (a merge follows the branch it merged into only once it has
+//     released its own), then its reviews' "review" locks, then the task
+//     service's task lock (two at once only lowest id first), then its
+//     "links" lock. The task service never calls the merge request service
+//     under a lock. The project service takes only its leaf mu for what
+//     these call of it; its workspace lock is for project workspace
+//     operations and deletion alone, under none of them.
+//
+// Start, and with it the project's start lock, is taken under none of
+// these: only HTTP handlers, Reconcile and the automatic-run workers call
+// it, and under the start lock it takes no other service's lock: it reads
+// the project, the canonical repo and merge requests' rows, and tells its
+// listeners only from its own goroutines. Under a merge request's, review's or
+// task's lock, code only reads pipelines (MergeRequestStatus and its Gate,
+// Report, BranchPipeline, none of which takes the start lock:
 // TestReadsUnderAMergeRequestsLockNeverWaitForTheStartLock), queues work
 // (MergeRequestMoved, BranchMoved) or ends contexts (MergeRequestEnded).
 // The Service's own mutexes (mu, autoQueue's, jobSlots', the resolve and

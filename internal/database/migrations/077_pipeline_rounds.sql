@@ -20,7 +20,9 @@ ALTER TABLE tasks ADD COLUMN pipeline_held TEXT NOT NULL DEFAULT '';
 -- Why a failure can wait for the user (task.PipelineHold), checked by
 -- triggers rather than a CHECK on the column, which SQLite changes only by
 -- rebuilding tasks, whose rows so many tables reference: a migration that
--- adds a reason drops these two and creates them again.
+-- adds a reason drops these two and creates them again. Triggers go with
+-- their table: a migration that rebuilds tasks must create these two again,
+-- or the reasons are no longer checked at all.
 CREATE TRIGGER tasks_pipeline_held_insert BEFORE INSERT ON tasks
 WHEN NEW.pipeline_held NOT IN ('', 'limit', 'stuck', 'budget', 'not_started')
 BEGIN
