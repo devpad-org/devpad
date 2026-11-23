@@ -596,7 +596,10 @@ func (f *fakeWorkspaces) ListByProject(_ context.Context, userID, projectID int6
 	var out []*workspace.Workspace
 	for _, ws := range f.byID {
 		if ws.ProjectID == projectID && ws.UserID == userID {
-			out = append(out, ws)
+			// A copy, as the repository reads each afresh: the caller may
+			// change it while another reads its own.
+			copied := *ws
+			out = append(out, &copied)
 		}
 	}
 	return out, nil
