@@ -180,6 +180,14 @@ func New(cfg Config) (*Server, error) {
 		BundleDir:     pipelineBundleDir(cfg.DBPath),
 	})
 	projectService.AddDeleteHook(pipelineService)
+	// Ticked branches and the merge requests into them run their pipelines
+	// by themselves: the project tells of branches moving and settings
+	// changing, the merge requests of opening and of their heads moving.
+	// Each listener only queues the run, so it may be told under the
+	// teller's locks; the pipelines start once Reconcile has run.
+	projectService.AddBranchListener(pipelineService)
+	projectService.AddSettingsListener(pipelineService)
+	mrService.AddHeadListener(mergeRequestPipelines{pipelines: pipelineService})
 	pipelineHandler := pipeline.NewHandler(projectService, pipelineService)
 
 	// What each run's workspace is, which every tool provider is told. It is

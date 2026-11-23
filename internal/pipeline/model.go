@@ -73,6 +73,14 @@ var unfinishedStatuses = []Status{StatusQueued, StatusRunning}
 // it never hides an older one that did.
 var countingStatuses = append(slices.Clone(unfinishedStatuses), resultStatuses...)
 
+// settledStatuses are those of pipelines devpad never runs again by itself
+// for the same commits and jobs (StartInput.Automatic): those that count,
+// one the user cancelled, and one devpad could not run, which running again
+// could only repeat until something changes. Only one superseded, a
+// setting changed back say, or interrupted, which Reconcile runs again, is
+// left out.
+var settledStatuses = append(slices.Clone(countingStatuses), StatusError, StatusCancelled)
+
 // HasResult reports whether a pipeline that ended in status s says
 // something of the commits it tested, so that running the same jobs on them
 // again would only say it again.
@@ -133,6 +141,29 @@ const (
 	// TriggerRestart is devpad running a pipeline again that its restart
 	// interrupted.
 	TriggerRestart Trigger = "restart"
+
+	// The rest are devpad's automatic runs (auto.go), of ticked branches
+	// and merge requests into them.
+
+	// TriggerOpened is a merge request opening.
+	TriggerOpened Trigger = "opened"
+	// TriggerSourceMoved is a merge request's branch getting new commits.
+	TriggerSourceMoved Trigger = "source_moved"
+	// TriggerTargetMoved is the branch a merge request merges into moving.
+	TriggerTargetMoved Trigger = "target_moved"
+	// TriggerMerged is a merge request merging into the branch.
+	TriggerMerged Trigger = "merged"
+	// TriggerUpstream is the branch fast-forwarding from the upstream.
+	TriggerUpstream Trigger = "upstream"
+	// TriggerTicked is the user ticking the branch, or the merge request's
+	// target, to run pipelines.
+	TriggerTicked Trigger = "ticked"
+	// TriggerSetting is the user changing the project's pipeline setting.
+	TriggerSetting Trigger = "setting"
+	// TriggerCatchUp is devpad starting and finding nothing had tested the
+	// commits and jobs as they are, as when it was not running when they
+	// changed.
+	TriggerCatchUp Trigger = "catch_up"
 )
 
 const (

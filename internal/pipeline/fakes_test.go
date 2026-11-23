@@ -1,12 +1,14 @@
 package pipeline
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -147,6 +149,31 @@ func (f *fakeProjects) DeletePipelineRef(_ context.Context, _, _ int64, uid stri
 	return nil
 }
 
+func (f *fakeProjects) ListPipelineProjects(context.Context) ([]*project.Project, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.project.Status != project.StatusReady || len(f.project.PipelineBranches) == 0 {
+		return nil, nil
+	}
+	p := f.project
+	return []*project.Project{&p}, nil
+}
+
+// setProject changes the project as change says.
+func (f *fakeProjects) setProject(change func(p *project.Project)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	change(&f.project)
+}
+
+// current is the project as it now is.
+func (f *fakeProjects) current() *project.Project {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p := f.project
+	return &p
+}
+
 func (f *fakeProjects) setBranch(name, sha string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -172,13 +199,28 @@ func (f *fakeProjects) pinned() map[string]string {
 	return out
 }
 
-// fakeMergeRequests are the project's merge requests.
+// fakeMergeRequests are the project's merge requests. While gate is open
+// (non-nil and not closed), each lookup of one waits on it, and is counted
+// in lookups.
 type fakeMergeRequests struct {
-	mu  sync.Mutex
-	mrs map[int64]*MergeRequest
+	mu      sync.Mutex
+	mrs     map[int64]*MergeRequest
+	gate    chan struct{}
+	lookups int
 }
 
-func (f *fakeMergeRequests) PipelineMergeRequest(_ context.Context, _, _ int64, id int64) (*MergeRequest, error) {
+func (f *fakeMergeRequests) PipelineMergeRequest(ctx context.Context, _, _ int64, id int64) (*MergeRequest, error) {
+	f.mu.Lock()
+	f.lookups++
+	gate := f.gate
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	mr, ok := f.mrs[id]
@@ -187,6 +229,54 @@ func (f *fakeMergeRequests) PipelineMergeRequest(_ context.Context, _, _ int64, 
 	}
 	copied := *mr
 	return &copied, nil
+}
+
+func (f *fakeMergeRequests) PipelineMergeRequestsInto(_ context.Context, _, _ int64, target string) ([]*MergeRequest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []*MergeRequest
+	for _, mr := range f.mrs {
+		if mr.Open && mr.TargetBranch == target {
+			copied := *mr
+			out = append(out, &copied)
+		}
+	}
+	slices.SortFunc(out, func(a, b *MergeRequest) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
+// set records a merge request as it now is.
+func (f *fakeMergeRequests) set(mr MergeRequest) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mrs[mr.ID] = &mr
+}
+
+// setHead moves a merge request's head.
+func (f *fakeMergeRequests) setHead(id int64, head string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mrs[id].HeadSHA = head
+}
+
+// hold makes lookups wait until the returned func is called.
+func (f *fakeMergeRequests) hold() (release func()) {
+	gate := make(chan struct{})
+	f.mu.Lock()
+	f.gate = gate
+	f.mu.Unlock()
+	return func() {
+		f.mu.Lock()
+		f.gate = nil
+		f.mu.Unlock()
+		close(gate)
+	}
+}
+
+func (f *fakeMergeRequests) lookupCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lookups
 }
 
 // fakeDocker runs jobs' commands by what their scripts say:

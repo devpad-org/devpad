@@ -22,7 +22,9 @@ import (
 // finished without their all being told, which is how a pipeline that
 // finished as devpad stopped is announced at least once. A pipeline this
 // process runs is never taken for one left behind: its run is known from
-// before its record is made.
+// before its record is made. Once the interrupted pipelines have run
+// again, automatic runs begin, with a catch-up on every ticked branch and
+// merge request into one (auto.go), for what moved while devpad was down.
 //
 // Removing is driven by the database, never by what Docker has alone:
 // another devpad sharing the Docker daemon may be running pipelines of its
@@ -66,6 +68,12 @@ func (s *service) Reconcile(ctx context.Context) error {
 		for _, p := range reruns {
 			s.rerun(ctx, p)
 		}
+		// Automatic runs start once every interrupted pipeline has run
+		// again, so none is run twice. The catch-up on what changed while
+		// devpad was down queues behind the runs it was told of since it
+		// started, and joins those of the same branches and merge requests.
+		s.catchUp(ctx)
+		s.beginAutomatic()
 		ticker := time.NewTicker(s.sweepInterval)
 		defer ticker.Stop()
 		for {

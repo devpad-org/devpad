@@ -30,8 +30,23 @@ export type JobStatus =
   | 'interrupted'
 
 // user: started by hand; restart: devpad running again one its restart
-// interrupted. Later versions may add more.
-export type PipelineTrigger = 'user' | 'restart' | (string & {})
+// interrupted. The rest are devpad's own runs of ticked branches and merge
+// requests into them: a merge request opening, its branch getting new
+// commits, its target moving; a merge into the branch, a fast-forward from
+// the upstream; the user ticking the branch, changing the pipeline setting;
+// and devpad catching up as it starts. Later versions may add more.
+export type PipelineTrigger =
+  | 'user'
+  | 'restart'
+  | 'opened'
+  | 'source_moved'
+  | 'target_moved'
+  | 'merged'
+  | 'upstream'
+  | 'ticked'
+  | 'setting'
+  | 'catch_up'
+  | (string & {})
 
 // Where the jobs came from: a file at the commit read (a branch's own, or a
 // merge request's target's), the project's setting, or neither.

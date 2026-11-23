@@ -4,19 +4,29 @@ import { shortSha } from '@/components/mergerequest/format'
 
 // Presentation helpers shared by the pipeline components.
 
-// What the app says of pipelines starting only by hand and gating nothing,
-// in one place for when devpad starts them on its own and merging waits on
-// them. The docs say the same in docs/09-pipelines.md (the introduction,
+// What the app says of when devpad starts pipelines by itself, and of their
+// gating nothing yet, in one place for when merging waits on them. The docs
+// say the same in docs/09-pipelines.md (the introduction, #automatic-runs,
 // #branches and #merge-requests), docs/04-branches.md (the Run pipelines
-// list) and docs/03-projects.md (the Pipelines surface).
+// list) and docs/03-projects.md (the Pipelines surface and the pipeline
+// setting).
 export const PIPELINE_COPY = {
   // Beside where pipelines are run.
-  startedByHand: "Devpad doesn't start pipelines on its own yet: run them here, or from a merge request.",
+  automaticRuns: 'Devpad runs ticked branches and the merge requests into them by itself. Run any protected branch here, or a merge request from its page.',
   // Under the Run pipelines ticks.
   tickedBranches:
-    "The Project page shows each ticked branch's latest pipeline. Devpad doesn't start pipelines on its own yet: run them on any protected branch, or on a merge request into one, from the Pipelines surface or the merge request.",
-  // On a merge request without a pipeline.
-  mergeRequestNone: "No pipeline has run on this merge request yet. Run one here: devpad doesn't start them on its own yet.",
+    "Devpad runs a ticked branch's pipeline on each new commit and when you tick it, and a merge request's into it when it opens, when its branch gets new commits and when the ticked branch moves. Merge requests into other protected branches run only when you start them. The Project page shows each ticked branch's latest pipeline.",
+  // On a merge request into a ticked branch without a pipeline.
+  mergeRequestNoneAutomatic: (target: string) =>
+    `No pipeline has run on this merge request yet. Devpad runs one by itself when it opens, when its branch gets new commits and when ${target} moves, but never again on the same commits after you cancelled its pipeline or it couldn't run: run it here then.`,
+  // On a merge request into a branch not ticked to run pipelines.
+  mergeRequestNone: (target: string) =>
+    `No pipeline has run on this merge request yet. ${target} isn't ticked under Run pipelines, so devpad doesn't run its merge requests by itself: run one here.`,
+  // On the Pipeline setting card, with the branches ticked, or none.
+  settingTicked: (branches: string) =>
+    `Devpad runs ${branches} and the merge requests into them by itself, and runs them again when this setting changes the jobs they get. Other protected branches, and merge requests into them, run by hand.`,
+  settingUnticked:
+    'Pipelines run by hand on any protected branch and on merge requests into one. Tick branches under Run pipelines in Manage branches for devpad to run them, and the merge requests into them, by itself.',
   // What a merge request's pipeline decides.
   notGating: "A pipeline's result doesn't block merging yet: it is there for you to weigh.",
 } as const
@@ -98,12 +108,30 @@ export function commitsLabel(p: Pipeline): string {
   return `${shortSha(p.headSha)} onto ${p.targetBranch} at ${shortSha(p.targetSha)}`
 }
 
+// What started a pipeline: the user, or what devpad ran it by itself for.
 export function triggerLabel(p: Pipeline): string {
+  const ticked = p.kind === 'branch' ? p.branch : p.targetBranch
   switch (p.trigger) {
     case 'user':
       return 'Run by you'
     case 'restart':
       return p.rerunOf ? `Run again after devpad restarted, for #${p.rerunOf}` : 'Run again after devpad restarted'
+    case 'opened':
+      return 'Started when the merge request opened'
+    case 'source_moved':
+      return `Started when ${p.sourceBranch} got new commits`
+    case 'target_moved':
+      return `Started when ${p.targetBranch} moved`
+    case 'merged':
+      return `Started by a merge into ${p.branch}`
+    case 'upstream':
+      return `Started when ${p.branch} was fast-forwarded from the upstream`
+    case 'ticked':
+      return `Started when you ticked ${ticked} to run pipelines`
+    case 'setting':
+      return "Started when the project's pipeline setting changed"
+    case 'catch_up':
+      return 'Started as devpad started, since nothing had tested these commits'
     default:
       return `Started by ${p.trigger}`
   }

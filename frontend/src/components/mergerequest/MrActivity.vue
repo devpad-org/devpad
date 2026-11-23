@@ -6,7 +6,7 @@ import BudgetReached from '@/components/project/BudgetReached.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
 import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
-import { PIPELINE_OUTCOME, PIPELINE_STATUS, sourceLabel } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_OUTCOME, PIPELINE_STATUS, sourceLabel, triggerLabel } from '@/components/pipeline/pipelineFormat'
 import MrCommits from './MrCommits.vue'
 import MrThread from './MrThread.vue'
 import { authorIcon, authorName, autoMergeReason, errorText, plural, pushSummary, reviewAction, reviewIcon, reviewTone, shortSha } from './format'
@@ -169,7 +169,7 @@ async function submitComment() {
             <button type="button" class="pipeline-link" :title="`Show pipeline #${item.pipeline.id} above`" @click="showPipeline(item.pipeline.id)">Pipeline #{{ item.pipeline.id }}</button>
             {{ PIPELINE_OUTCOME[item.pipeline.status] }}
             on <span class="mono">{{ shortSha(item.pipeline.headSha) }}</span>
-            <span class="muted"> &middot; {{ sourceLabel(item.pipeline) }}</span>
+            <span class="muted"> &middot; {{ triggerLabel(item.pipeline) }} &middot; {{ sourceLabel(item.pipeline) }}</span>
             <span class="muted" :title="fullTime(item.pipeline.createdAt)"> &middot; {{ timeAgo(item.pipeline.createdAt) }}</span>
           </span>
         </li>

@@ -28,13 +28,43 @@ func (a pipelineMergeRequests) PipelineMergeRequest(ctx context.Context, userID,
 	if err != nil {
 		return nil, err
 	}
+	return pipelineMergeRequest(mr), nil
+}
+
+func (a pipelineMergeRequests) PipelineMergeRequestsInto(ctx context.Context, userID, projectID int64, target string) ([]*pipeline.MergeRequest, error) {
+	mrs, err := a.mrs.ListOpenInto(ctx, userID, projectID, target)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*pipeline.MergeRequest, 0, len(mrs))
+	for _, mr := range mrs {
+		out = append(out, pipelineMergeRequest(mr))
+	}
+	return out, nil
+}
+
+func pipelineMergeRequest(mr *mergerequest.MergeRequest) *pipeline.MergeRequest {
 	return &pipeline.MergeRequest{
 		ID:           mr.ID,
 		SourceBranch: mr.SourceBranch,
 		TargetBranch: mr.TargetBranch,
 		HeadSHA:      mr.HeadSHA,
 		Open:         mr.Status == mergerequest.StatusOpen,
-	}, nil
+	}
+}
+
+// mergeRequestPipelines tells the pipeline service each time a merge
+// request opens or its head moves, so that one into a ticked branch runs
+// its pipeline. The merge request service owns the listener, and never
+// imports the pipeline package, so the two meet here too.
+type mergeRequestPipelines struct {
+	pipelines pipeline.Service
+}
+
+func (a mergeRequestPipelines) MergeRequestHeadMoved(ctx context.Context, m mergerequest.HeadMove) {
+	a.pipelines.MergeRequestMoved(ctx, pipeline.MergeRequestMove{
+		UserID: m.UserID, ProjectID: m.ProjectID, MergeRequestID: m.MergeRequestID, Opened: m.Opened,
+	})
 }
 
 // pipelineBundleDir is where this devpad keeps its pipelines' bundles: a

@@ -67,7 +67,10 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 	setJobs(next, resolved)
 
 	statuses := unfinishedStatuses
-	if in.ReuseResult {
+	switch {
+	case in.Automatic:
+		statuses = settledStatuses
+	case in.ReuseResult:
 		statuses = countingStatuses
 	}
 	same, err := s.repo.FindSame(ctx, next, statuses)

@@ -18,7 +18,7 @@ The default branch is always protected, and you can protect others with **Manage
 - is the only kind of branch devpad pushes [upstream](/docs/projects#upstream), and the only kind a sync fast-forwards;
 - can't be deleted.
 
-The **Branches** dialog also sets the **Default branch**, which tasks and your workspace start from and merge requests target unless you pick another. Changing it keeps the old default protected. Protection changes take effect when you press **Save**. A project can protect up to 20 branches besides its default. The dialog's **Merge automatically** list picks the protected branches devpad [merges into automatically](#automatic-merges). Its **Run pipelines** list picks the protected branches whose [pipelines](/docs/pipelines#branches) the Project page follows.
+The **Branches** dialog also sets the **Default branch**, which tasks and your workspace start from and merge requests target unless you pick another. Changing it keeps the old default protected. Protection changes take effect when you press **Save**. A project can protect up to 20 branches besides its default. The dialog's **Merge automatically** list picks the protected branches devpad [merges into automatically](#automatic-merges). Its **Run pipelines** list picks the protected branches devpad [runs pipelines on](/docs/pipelines#automatic-runs) by itself, on each new commit and on each merge request into them, and whose latest result the Project page shows.
 
 If you're on a protected branch in your workspace, Source Control says so and offers **New branch**: start a branch, publish it, and open a merge request.
 

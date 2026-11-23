@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import DocLink from '@/components/DocLink.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import PipelineView from '@/components/pipeline/PipelineView.vue'
@@ -8,9 +9,13 @@ import { useMergeRequest } from './useMergeRequest'
 
 // The merge request's pipeline: its latest, or one picked from the
 // activity, with its jobs, where they came from and their output, and a way
-// to run it by hand. Its jobs come from the target branch, never the change.
-const { mr, projectId, isOpen, pipelines } = useMergeRequest()
+// to run it by hand, which devpad also does by itself into a ticked branch.
+// Its jobs come from the target branch, never the change.
+const { mr, project, projectId, isOpen, pipelines } = useMergeRequest()
 const { latest, status, shownId, shownStale, shownPipeline, pickedId, loaded, starting, startError } = pipelines
+
+// Devpad runs the pipeline by itself when the target is ticked to run them.
+const runsByItself = computed(() => !!mr.value && (project.value?.pipelineBranches ?? []).includes(mr.value.targetBranch))
 
 // Run again shows the pipeline it started, the latest.
 function started() {
@@ -53,7 +58,7 @@ function started() {
       </p>
       <PipelineView v-if="shownId !== null" :key="shownId" :project-id="projectId" :pipeline-id="shownId" :active="true" compact @started="started" />
       <p v-else-if="loaded" class="muted empty">
-        {{ PIPELINE_COPY.mergeRequestNone }} Its jobs come from <span class="mono">.devpad/pipeline.yml</span> on
+        {{ runsByItself ? PIPELINE_COPY.mergeRequestNoneAutomatic(mr.targetBranch) : PIPELINE_COPY.mergeRequestNone(mr.targetBranch) }} Its jobs come from <span class="mono">.devpad/pipeline.yml</span> on
         <span class="mono">{{ mr.targetBranch }}</span>, or the project's pipeline setting, and test this branch merged onto it.
       </p>
       <p v-if="loaded" class="muted empty">{{ PIPELINE_COPY.notGating }}</p>

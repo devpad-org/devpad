@@ -145,7 +145,7 @@ async function run() {
             {{ b }}
           </button>
         </div>
-        <span class="toolbar-hint">{{ PIPELINE_COPY.startedByHand }}</span>
+        <span class="toolbar-hint">{{ PIPELINE_COPY.automaticRuns }}</span>
       </div>
       <p v-if="startError" class="notice notice-error surface-notice">{{ startError }}</p>
       <p v-if="error" class="notice notice-error surface-notice">{{ error }}</p>

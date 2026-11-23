@@ -2,6 +2,7 @@
 import MrIcon from '@/components/project/MrIcon.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import { pipelineApi } from '@/api/pipelines'
+import { PIPELINE_COPY } from '@/components/pipeline/pipelineFormat'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import ProjectCard from './ProjectCard.vue'
 import type { CardStatus } from './card'
@@ -129,9 +130,7 @@ function onKeydown(e: KeyboardEvent) {
         Not set: a commit without a pipeline file has no pipeline, and devpad says <strong>No pipeline configured</strong> rather than that it passed.
       </p>
       <p class="card-note">
-        Pipelines run by hand on any protected branch and on merge requests into one.
-        <template v-if="ticked.length">Shown on the Project page: <span class="mono">{{ ticked.join(', ') }}</span>.</template>
-        <template v-else>Tick branches under Run pipelines in Manage branches to show their latest result here.</template>
+        {{ ticked.length ? PIPELINE_COPY.settingTicked(ticked.join(', ')) : PIPELINE_COPY.settingUnticked }}
       </p>
     </template>
 

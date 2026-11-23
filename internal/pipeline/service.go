@@ -70,6 +70,15 @@ type Service interface {
 	// it is told of to be the latest. It is never told on a context that
 	// has ended.
 	AddListener(l Listener)
+	// BranchMoved, ProjectSettingsChanged and MergeRequestMoved are told
+	// what changed, by the project and, through server.go, the merge
+	// request service, so that devpad runs the pipelines of ticked branches
+	// and of the open merge requests into them by itself (auto.go). Each
+	// only queues the run and returns at once, so it may be told under the
+	// caller's locks.
+	project.BranchListener
+	project.SettingsListener
+	MergeRequestMoved(ctx context.Context, m MergeRequestMove)
 	// ProjectDeleting stops the project's pipelines before the project goes,
 	// and starts none until ProjectDeleteEnded.
 	project.DeleteHook
@@ -77,7 +86,9 @@ type Service interface {
 	// runs them again, tells the listeners what they were not told, and
 	// removes what finished pipelines left behind. It never touches a
 	// pipeline this process runs, but it is to come before anything that
-	// starts pipelines, so that each is run once.
+	// starts pipelines, so that each is run once. Automatic runs start only
+	// after it has run those again, with a catch-up on every ticked branch
+	// and merge request into one.
 	Reconcile(ctx context.Context) error
 	// Shutdown stops every pipeline, leaving them to Reconcile, and waits
 	// for their jobs to be removed.
@@ -104,6 +115,12 @@ type StartInput struct {
 	// queued ones: each is recorded superseded by the pipeline Start
 	// returns.
 	StopStale bool
+	// Automatic is a start devpad makes by itself. It reuses results as
+	// ReuseResult does, and also returns, rather than repeats, the newest
+	// pipeline of the same commits and jobs that the user cancelled or that
+	// devpad could not run (StatusCancelled, StatusError): devpad runs
+	// those commits and jobs again only when the user asks.
+	Automatic bool
 }
 
 // OutputRequest asks for a pipeline's job's output from Offset on: 0, or the
@@ -137,6 +154,9 @@ type Projects interface {
 	PinPipeline(ctx context.Context, userID, projectID int64, pin agent.PipelinePin) (*agent.PipelinePinResult, error)
 	PipelineBundle(ctx context.Context, userID, projectID int64, pipelineID string, w io.Writer) (int64, error)
 	DeletePipelineRef(ctx context.Context, userID, projectID int64, pipelineID string) error
+	// ListPipelineProjects lists every user's ready projects that tick a
+	// branch to run pipelines, for the catch-up as devpad starts.
+	ListPipelineProjects(ctx context.Context) ([]*project.Project, error)
 }
 
 // MergeRequests looks up the merge requests pipelines test.
@@ -145,6 +165,10 @@ type MergeRequests interface {
 	// project, or nil when the project has no such merge request of the
 	// user's.
 	PipelineMergeRequest(ctx context.Context, userID, projectID, mergeRequestID int64) (*MergeRequest, error)
+	// PipelineMergeRequestsInto returns the open merge requests of the
+	// user's project into a branch, whose pipelines run again when it
+	// moves.
+	PipelineMergeRequestsInto(ctx context.Context, userID, projectID int64, target string) ([]*MergeRequest, error)
 }
 
 // MergeRequest is what a pipeline needs to know of a merge request.
@@ -222,6 +246,8 @@ type service struct {
 	slots         *jobSlots
 	now           func() time.Time
 	resolved      resolveCache
+	// auto holds the automatic runs waiting for a worker (auto.go).
+	auto *autoQueue
 
 	cancelWait    time.Duration
 	sweepInterval time.Duration
@@ -288,6 +314,7 @@ func NewService(d Deps) Service {
 		bundleDir:     bundleDir,
 		ownsBundleDir: d.BundleDir != "",
 		slots:         newJobSlots(MaxRunningJobs),
+		auto:          newAutoQueue(autoWorkers, maxAutoPending),
 		now:           func() time.Time { return time.Now().UTC() },
 		cancelWait:    cancelWait,
 		sweepInterval: sweepInterval,

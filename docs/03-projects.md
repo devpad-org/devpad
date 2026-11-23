@@ -30,7 +30,7 @@ Opening a project opens its IDE. The activity bar on the left switches between:
 - **Explorer**: the files in `/workspace`.
 - **Source Control**: changes, commits, branches, and [publishing](/docs/branches#publishing).
 - **Tasks**, **Merge requests** and **Agents**: the board, the project's merge requests, and the agents' runs.
-- **Pipelines**: the project's [pipelines](/docs/pipelines), each with its jobs and their output, and **Run pipeline** to start one on a protected branch. Devpad doesn't start them on its own yet.
+- **Pipelines**: the project's [pipelines](/docs/pipelines), each with its jobs and their output, and **Run pipeline** to start one on a protected branch. Devpad also [runs them by itself](/docs/pipelines#automatic-runs) on the branches ticked under **Run pipelines** and on the merge requests into them.
 - **Workspace Info**: the container's status and processes, with buttons to restart and stop it.
 - **Database Services**: the workspace's [services](/docs/services).
 - **Project**: a page of its own with the project's open tasks, merge requests and sandboxes at a glance, its protected branches and upstream, how new workspaces are made: its environment, services and setup script, in that order, and its [pipeline setting](/docs/pipelines#project-setting), the jobs a commit without a pipeline file runs.
