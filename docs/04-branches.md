@@ -18,7 +18,7 @@ The default branch is always protected, and you can protect others with **Manage
 - is the only kind of branch devpad pushes [upstream](/docs/projects#upstream), and the only kind a sync fast-forwards;
 - can't be deleted.
 
-The **Branches** dialog also sets the **Default branch**, which tasks and your workspace start from and merge requests target unless you pick another. Changing it keeps the old default protected. Protection changes take effect when you press **Save**. A project can protect up to 20 branches besides its default. The dialog's **Merge automatically** list picks the protected branches devpad [merges into automatically](#automatic-merges).
+The **Branches** dialog also sets the **Default branch**, which tasks and your workspace start from and merge requests target unless you pick another. Changing it keeps the old default protected. Protection changes take effect when you press **Save**. A project can protect up to 20 branches besides its default. The dialog's **Merge automatically** list picks the protected branches devpad [merges into automatically](#automatic-merges). Its **Run pipelines** list picks the protected branches whose [pipelines](/docs/pipelines#branches) the Project page follows.
 
 If you're on a protected branch in your workspace, Source Control says so and offers **New branch**: start a branch, publish it, and open a merge request.
 
@@ -83,7 +83,7 @@ A review spends from its own budget and, on a task's merge request, from the tas
 
 ## Merging {#merging}
 
-The merge card lists where the merge request stands: approvals, open threads, reviews or agents still at work, and conflicts. These are for you to weigh: merging isn't blocked by them, and only you can merge, since agents and the assistant have no way to, unless the target is a branch devpad [merges into automatically](#automatic-merges). Pick a **Merge strategy**:
+The merge card lists where the merge request stands: approvals, open threads, reviews or agents still at work, conflicts, and its latest [pipeline](/docs/pipelines#merge-requests). These are for you to weigh: merging isn't blocked by them, and only you can merge, since agents and the assistant have no way to, unless the target is a branch devpad [merges into automatically](#automatic-merges). Pick a **Merge strategy**:
 
 - **Merge commit** keeps every commit and records a merge commit.
 - **Squash** combines the branch into a single commit. It isn't offered when the source is a protected branch.
