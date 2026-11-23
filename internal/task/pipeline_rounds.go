@@ -39,6 +39,12 @@ const (
 	HoldNotStarted PipelineHold = "not_started"
 )
 
+// PipelineHolds lists every hold, none included, as migration 077's
+// triggers on tasks.pipeline_held and the app's PipelineHold do.
+func PipelineHolds() []PipelineHold {
+	return []PipelineHold{HoldNone, HoldLimit, HoldStuck, HoldBudget, HoldNotStarted}
+}
+
 // PipelineRounds is how a task's automatic pipeline rounds stand.
 type PipelineRounds struct {
 	// Count is how many rounds in a row devpad sent the task back for its

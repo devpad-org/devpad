@@ -98,7 +98,8 @@ func (g *Gate) Clear() bool { return g.State == GateUnguarded || g.State == Gate
 // the gate is shut by its pipeline, not by its no longer merging at all,
 // nor by its branch not merging onto the target, which the merge itself
 // would refuse just as the pipeline's trial merge did. Migration 076's
-// CHECK on merge_requests.pipeline_override lists the same states.
+// triggers on merge_requests.pipeline_override list the same states
+// (TestTheDatabaseKeepsOverridesOfTheOverridableStatesAlone).
 func (g *Gate) Overridable() bool {
 	return !g.Clear() && g.State != GateClosed && g.State != GateConflict
 }

@@ -159,3 +159,28 @@ func TestGateFollowsTheMergeRequest(t *testing.T) {
 func jobNamed(name string, status JobStatus) *JobRun {
 	return &JobRun{Job: Job{Name: name}, Status: status}
 }
+
+// The database keeps a merge over the gate in exactly the states Overridable
+// lets the user merge over (migration 076's triggers), inserted or updated.
+func TestTheDatabaseKeepsOverridesOfTheOverridableStatesAlone(t *testing.T) {
+	e := setup(t)
+	if _, err := e.db.Exec(`UPDATE merge_requests SET status = 'merged', merged_by = 'user' WHERE id = ?`, e.mr); err != nil {
+		t.Fatal(err)
+	}
+	keeps := func(s GateState, want bool) {
+		t.Helper()
+		_, err := e.db.Exec(`UPDATE merge_requests SET pipeline_override = ? WHERE id = ?`, s, e.mr)
+		if (err == nil) != want {
+			t.Errorf("an override of %s: %v, want it kept %v", s, err, want)
+		}
+		_, err = e.db.Exec(`INSERT INTO merge_requests (project_id, user_id, title, source_branch, target_branch, status, merged_by, pipeline_override) VALUES (?, ?, 'x', 'feature', 'develop', 'merged', 'user', ?)`, e.project, e.owner, s)
+		if (err == nil) != want {
+			t.Errorf("a merge request inserted with an override of %s: %v, want it kept %v", s, err, want)
+		}
+	}
+	for _, s := range GateStates() {
+		keeps(s, (&Gate{State: s}).Overridable())
+	}
+	keeps("", true)
+	keeps("nonsense", false)
+}

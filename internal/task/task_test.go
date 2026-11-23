@@ -1943,6 +1943,24 @@ func TestRepositoryAgainstMigratedSchema(t *testing.T) {
 	if _, err := conn.Exec(`UPDATE tasks SET status = 'bogus' WHERE id = ?`, task.ID); err == nil {
 		t.Fatal("expected the status CHECK constraint to reject an unknown status")
 	}
+	// The database keeps every hold devpad has, and only those.
+	for _, held := range PipelineHolds() {
+		task.PipelineRounds.Held = held
+		if err := repo.Update(ctx, task); err != nil {
+			t.Fatalf("holding %q: %v", held, err)
+		}
+	}
+	task.PipelineRounds.Held = "nonsense"
+	if err := repo.Update(ctx, task); err == nil {
+		t.Fatal("expected an unknown hold refused")
+	}
+	if _, err := conn.Exec(`INSERT INTO tasks (project_id, user_id, title, body, status, pipeline_held) VALUES (?, ?, 't', 'b', 'todo', 'nonsense')`, projectID, userID); err == nil {
+		t.Fatal("expected a task inserted with an unknown hold refused")
+	}
+	task.PipelineRounds.Held = HoldNone
+	if err := repo.Update(ctx, task); err != nil {
+		t.Fatalf("holding nothing: %v", err)
+	}
 
 	// Deleting the sandbox clears the links but keeps the task.
 	mustExec(`DELETE FROM workspaces WHERE id = ?`, wsID)

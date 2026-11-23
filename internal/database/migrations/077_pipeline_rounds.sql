@@ -15,8 +15,22 @@ ALTER TABLE tasks ADD COLUMN pipeline_rounds INTEGER NOT NULL DEFAULT 0 CHECK (p
 ALTER TABLE tasks ADD COLUMN pipeline_fingerprint TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN pipeline_sent_head TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN pipeline_decided_id INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE tasks ADD COLUMN pipeline_held TEXT NOT NULL DEFAULT ''
-    CHECK (pipeline_held IN ('', 'limit', 'stuck', 'budget', 'not_started'));
+ALTER TABLE tasks ADD COLUMN pipeline_held TEXT NOT NULL DEFAULT '';
+
+-- Why a failure can wait for the user (task.PipelineHold), checked by
+-- triggers rather than a CHECK on the column, which SQLite changes only by
+-- rebuilding tasks, whose rows so many tables reference: a migration that
+-- adds a reason drops these two and creates them again.
+CREATE TRIGGER tasks_pipeline_held_insert BEFORE INSERT ON tasks
+WHEN NEW.pipeline_held NOT IN ('', 'limit', 'stuck', 'budget', 'not_started')
+BEGIN
+    SELECT RAISE(ABORT, 'a task''s pipeline hold names a reason devpad knows');
+END;
+CREATE TRIGGER tasks_pipeline_held_update BEFORE UPDATE OF pipeline_held ON tasks
+WHEN NEW.pipeline_held NOT IN ('', 'limit', 'stuck', 'budget', 'not_started')
+BEGIN
+    SELECT RAISE(ABORT, 'a task''s pipeline hold names a reason devpad knows');
+END;
 
 -- When the task's pending message quotes a pipeline's job output, devpad's
 -- own summary of that failure (the pipeline, its failed jobs' names and
