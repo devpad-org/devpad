@@ -30,10 +30,15 @@ func (f lookupMergeRequests) ListOpenInto(context.Context, int64, int64, string)
 type movedPipelines struct {
 	pipeline.Service
 	moves []pipeline.MergeRequestMove
+	ends  []pipeline.MergeRequestEnd
 }
 
 func (f *movedPipelines) MergeRequestMoved(_ context.Context, m pipeline.MergeRequestMove) {
 	f.moves = append(f.moves, m)
+}
+
+func (f *movedPipelines) MergeRequestEnded(_ context.Context, m pipeline.MergeRequestEnd) {
+	f.ends = append(f.ends, m)
 }
 
 func TestPipelineMergeRequestsListsThoseIntoABranch(t *testing.T) {
@@ -62,6 +67,10 @@ func TestMergeRequestPipelinesTellsOfEachHeadMove(t *testing.T) {
 	if len(got.moves) != 2 || got.moves[0] != want[0] || got.moves[1] != want[1] {
 		t.Fatalf("told %+v", got.moves)
 	}
+	a.MergeRequestEnded(ctx, mergerequest.End{UserID: 1, ProjectID: 2, MergeRequestID: 3, Merged: true})
+	if len(got.ends) != 1 || got.ends[0] != (pipeline.MergeRequestEnd{UserID: 1, ProjectID: 2, MergeRequestID: 3, Merged: true}) {
+		t.Fatalf("told %+v", got.ends)
+	}
 }
 
 func TestPipelineMergeRequestsShowsWhatPipelinesNeed(t *testing.T) {
@@ -73,8 +82,8 @@ func TestPipelineMergeRequestsShowsWhatPipelinesNeed(t *testing.T) {
 	}
 	merged := *open
 	merged.Status = mergerequest.StatusMerged
-	if got, _ := (pipelineMergeRequests{lookupMergeRequests{mr: &merged}}).PipelineMergeRequest(ctx, 1, 2, 4); got.Open {
-		t.Fatalf("a merged merge request is open: %+v", got)
+	if got, _ := (pipelineMergeRequests{lookupMergeRequests{mr: &merged}}).PipelineMergeRequest(ctx, 1, 2, 4); got.Open || !got.Merged {
+		t.Fatalf("a merged merge request: %+v", got)
 	}
 	if got, err := (pipelineMergeRequests{lookupMergeRequests{err: mergerequest.ErrNotFound}}).PipelineMergeRequest(ctx, 1, 2, 4); got != nil || err != nil {
 		t.Fatalf("missing: %+v %v", got, err)

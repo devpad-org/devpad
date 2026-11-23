@@ -75,10 +75,13 @@ type Service interface {
 	// request service, so that devpad runs the pipelines of ticked branches
 	// and of the open merge requests into them by itself (auto.go). Each
 	// only queues the run and returns at once, so it may be told under the
-	// caller's locks.
+	// caller's locks. MergeRequestEnded stops the pipelines of a merge
+	// request that closed or merged; it only ends their contexts, so it may
+	// be told under the merge request's lock.
 	project.BranchListener
 	project.SettingsListener
 	MergeRequestMoved(ctx context.Context, m MergeRequestMove)
+	MergeRequestEnded(ctx context.Context, m MergeRequestEnd)
 	// ProjectDeleting stops the project's pipelines before the project goes,
 	// and starts none until ProjectDeleteEnded.
 	project.DeleteHook
@@ -117,9 +120,9 @@ type StartInput struct {
 	StopStale bool
 	// Automatic is a start devpad makes by itself. It reuses results as
 	// ReuseResult does, and also returns, rather than repeats, the newest
-	// pipeline of the same commits and jobs that the user cancelled or that
-	// devpad could not run (StatusCancelled, StatusError): devpad runs
-	// those commits and jobs again only when the user asks.
+	// pipeline of the same commits and jobs that the user cancelled, or that
+	// devpad could not run once errorRetries more have not either: devpad
+	// runs those commits and jobs again only when the user asks.
 	Automatic bool
 }
 
@@ -178,8 +181,9 @@ type MergeRequest struct {
 	TargetBranch string
 	// HeadSHA is the source commit the merge request proposes.
 	HeadSHA string
-	// Open says it can still be merged.
-	Open bool
+	// Open says it can still be merged; Merged that it was.
+	Open   bool
+	Merged bool
 }
 
 // JobRunner runs one job in a container of its own; jobrun.Runner is one.
@@ -246,8 +250,10 @@ type service struct {
 	slots         *jobSlots
 	now           func() time.Time
 	resolved      resolveCache
-	// auto holds the automatic runs waiting for a worker (auto.go).
-	auto *autoQueue
+	// auto holds the automatic runs waiting for a worker (auto.go), and
+	// autoStartTimeout bounds each.
+	auto             *autoQueue
+	autoStartTimeout time.Duration
 
 	cancelWait    time.Duration
 	sweepInterval time.Duration
@@ -289,6 +295,10 @@ type activePipeline struct {
 	// has been told to stop.
 	started  bool
 	stopping bool
+	// automatic says devpad started it by itself, and target is its merge
+	// request's target, so that a branch no longer ticked stops it.
+	automatic bool
+	target    string
 }
 
 // stop ends the pipeline's context with cause, which its run records the
@@ -305,26 +315,29 @@ func NewService(d Deps) Service {
 	if bundleDir == "" {
 		bundleDir = os.TempDir()
 	}
-	return &service{
-		repo:          d.Repo,
-		projects:      d.Projects,
-		mrs:           d.MergeRequests,
-		jobs:          d.Jobs,
-		docker:        d.Docker,
-		bundleDir:     bundleDir,
-		ownsBundleDir: d.BundleDir != "",
-		slots:         newJobSlots(MaxRunningJobs),
-		auto:          newAutoQueue(autoWorkers, maxAutoPending),
-		now:           func() time.Time { return time.Now().UTC() },
-		cancelWait:    cancelWait,
-		sweepInterval: sweepInterval,
-		rootCtx:       ctx,
-		rootCancel:    cancel,
-		runs:          make(map[string]*activePipeline),
-		deleting:      make(map[int64]bool),
-		live:          make(map[int64]*jobLog),
-		startLocks:    make(map[int64]chan struct{}),
+	s := &service{
+		repo:             d.Repo,
+		projects:         d.Projects,
+		mrs:              d.MergeRequests,
+		jobs:             d.Jobs,
+		docker:           d.Docker,
+		bundleDir:        bundleDir,
+		ownsBundleDir:    d.BundleDir != "",
+		slots:            newJobSlots(MaxRunningJobs),
+		auto:             newAutoQueue(autoWorkers, maxAutoPending, autoMinInterval),
+		autoStartTimeout: autoStartTimeout,
+		now:              func() time.Time { return time.Now().UTC() },
+		cancelWait:       cancelWait,
+		sweepInterval:    sweepInterval,
+		rootCtx:          ctx,
+		rootCancel:       cancel,
+		runs:             make(map[string]*activePipeline),
+		deleting:         make(map[int64]bool),
+		live:             make(map[int64]*jobLog),
+		startLocks:       make(map[int64]chan struct{}),
 	}
+	s.auto.startWorker = s.startAutoWorker
+	return s
 }
 
 func (s *service) AddListener(l Listener) {
@@ -413,6 +426,22 @@ type LatestPipelines struct {
 	// such as while its container is down: the pipelines still count, but
 	// whether a branch's is of its current commit is not known.
 	BranchTips map[string]string
+	// Branches says how each branch asked for stands now, by name: whether
+	// it runs automatically, and, when it can be read, its settled
+	// pipeline.
+	Branches map[string]*BranchStanding
+	// MergeRequestsAutomatic says, by ID, whether devpad runs each merge
+	// request asked for by itself.
+	MergeRequestsAutomatic map[int64]bool
+}
+
+// BranchStanding is how a branch stands for pipelines now.
+type BranchStanding struct {
+	// Automatic says devpad runs its pipelines by itself.
+	Automatic bool
+	// Settled is, when no pipeline of its current commit and jobs counts,
+	// the newest that ended without a result on them, or nil.
+	Settled *SettledPipeline
 }
 
 func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestFilter) (*LatestPipelines, error) {
@@ -433,8 +462,15 @@ func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestF
 		return nil, err
 	}
 	out := &LatestPipelines{Pipelines: found}
+	if out.MergeRequestsAutomatic, err = s.mergeRequestsAutomatic(ctx, p, f.MergeRequestIDs); err != nil {
+		return nil, err
+	}
 	if len(f.Branches) == 0 {
 		return out, nil
+	}
+	out.Branches = make(map[string]*BranchStanding, len(f.Branches))
+	for _, b := range f.Branches {
+		out.Branches[b] = &BranchStanding{Automatic: branchRunsAutomatically(p, b)}
 	}
 	refs, err := s.projects.Branches(ctx, p.UserID, p.ID)
 	if err != nil {
@@ -445,9 +481,45 @@ func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestF
 	for _, b := range refs.Branches {
 		if slices.Contains(f.Branches, b.Name) {
 			out.BranchTips[b.Name] = b.SHA
+			s.settleBranch(ctx, p, b.Name, b.SHA, out.Branches[b.Name])
 		}
 	}
 	return out, nil
+}
+
+// mergeRequestsAutomatic says of each merge request whether devpad runs it
+// by itself.
+func (s *service) mergeRequestsAutomatic(ctx context.Context, p *project.Project, ids []int64) (map[int64]bool, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		mr, err := s.mrs.PipelineMergeRequest(ctx, p.UserID, p.ID, id)
+		if err != nil {
+			return nil, err
+		}
+		out[id] = mergeRequestRunsAutomatically(p, mr)
+	}
+	return out, nil
+}
+
+// settleBranch fills in the settled pipeline of a branch at tip, unless
+// its pipeline at tip cannot be read, which only leaves the badge without
+// it.
+func (s *service) settleBranch(ctx context.Context, p *project.Project, branch, tip string, st *BranchStanding) {
+	if !project.IsCommitHash(tip) || !p.IsProtected(branch) {
+		return
+	}
+	resolved, err := s.resolveCached(ctx, p, tip)
+	if err != nil {
+		log.Printf("pipeline: project %d's %s for its badge: %v", p.ID, branch, err)
+		return
+	}
+	probe := &Pipeline{ProjectID: p.ID, Kind: KindBranch, Branch: branch, HeadSHA: tip, ConfigHash: resolved.Hash}
+	if st.Settled, err = s.settledOf(ctx, probe, st.Automatic); err != nil {
+		log.Printf("pipeline: project %d's %s for its badge: %v", p.ID, branch, err)
+	}
 }
 
 func (s *service) LatestForMergeRequest(ctx context.Context, userID, projectID int64, key MergeRequestKey) (*Pipeline, error) {

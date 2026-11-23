@@ -27,6 +27,9 @@ type Repository interface {
 	// same subject, commits and jobs, and stands at one of statuses, with
 	// its jobs and their scripts, or nil.
 	FindSame(ctx context.Context, p *Pipeline, statuses []Status) (*Pipeline, error)
+	// CountSame counts the pipelines that test what p tests and stand at
+	// one of statuses.
+	CountSame(ctx context.Context, p *Pipeline, statuses []Status) (int, error)
 
 	// MarkStarted records that a queued pipeline started on image, and so
 	// may keep its jobs' output, reporting false when it was no longer
@@ -312,27 +315,51 @@ func (r *repository) FindSame(ctx context.Context, p *Pipeline, statuses []Statu
 	return r.one(ctx, query, args...)
 }
 
+func (r *repository) CountSame(ctx context.Context, p *Pipeline, statuses []Status) (int, error) {
+	if len(statuses) == 0 {
+		return 0, nil
+	}
+	query, args := countSameQuery(p, statuses)
+	var n int
+	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting pipelines: %w", err)
+	}
+	return n, nil
+}
+
 // findSameQuery selects the newest pipeline testing what p tests at one of
-// statuses: through the index of a branch's commits, or of a merge
-// request's pairs of commits, so it reads only pipelines of those commits
-// however many the project keeps.
+// statuses.
 func findSameQuery(p *Pipeline, statuses []Status) (string, []any) {
-	var query string
+	where, args := sameWhere(p, statuses)
+	return `SELECT ` + pipelineColumns + ` FROM pipelines WHERE ` + where + ` ORDER BY id DESC LIMIT 1`, args
+}
+
+// countSameQuery counts the pipelines testing what p tests at one of
+// statuses.
+func countSameQuery(p *Pipeline, statuses []Status) (string, []any) {
+	where, args := sameWhere(p, statuses)
+	return `SELECT COUNT(*) FROM pipelines WHERE ` + where, args
+}
+
+// sameWhere picks the pipelines testing what p tests at one of statuses:
+// through the index of a branch's commits, or of a merge request's pairs of
+// commits, so it reads only pipelines of those commits however many the
+// project keeps.
+func sameWhere(p *Pipeline, statuses []Status) (string, []any) {
+	var where string
 	var args []any
 	if p.Kind == KindMergeRequest {
-		query = `SELECT ` + pipelineColumns + ` FROM pipelines
-			WHERE merge_request_id = ? AND head_sha = ? AND target_sha = ? AND project_id = ? AND config_hash = ?`
+		where = `merge_request_id = ? AND head_sha = ? AND target_sha = ? AND project_id = ? AND config_hash = ?`
 		args = []any{p.MergeRequestID, p.HeadSHA, p.TargetSHA, p.ProjectID, p.ConfigHash}
 	} else {
-		query = `SELECT ` + pipelineColumns + ` FROM pipelines
-			WHERE project_id = ? AND kind = 'branch' AND branch = ? AND head_sha = ? AND config_hash = ?`
+		where = `project_id = ? AND kind = 'branch' AND branch = ? AND head_sha = ? AND config_hash = ?`
 		args = []any{p.ProjectID, p.Branch, p.HeadSHA, p.ConfigHash}
 	}
-	query += ` AND status IN (` + placeholders(len(statuses)) + `) ORDER BY id DESC LIMIT 1`
+	where += ` AND status IN (` + placeholders(len(statuses)) + `)`
 	for _, s := range statuses {
 		args = append(args, s)
 	}
-	return query, args
+	return where, args
 }
 
 // one reads the pipeline a query selects, with its jobs and their scripts,

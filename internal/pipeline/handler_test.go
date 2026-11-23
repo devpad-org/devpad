@@ -100,9 +100,22 @@ func TestPipelineEndpoints(t *testing.T) {
 	if latest := out["pipelines"].([]any); code != http.StatusOK || len(latest) != 0 || tips["develop"] != sha(2) || tips["main"] != sha(1) || len(tips) != 2 {
 		t.Fatalf("latest: %d %v", code, out)
 	}
+	// develop's commit has its pipeline cancelled, which the badge says;
+	// neither branch nor the merge request runs by itself.
+	branches, _ := out["branches"].(map[string]any)
+	develop, _ := branches["develop"].(map[string]any)
+	settled, _ := develop["settled"].(map[string]any)
+	if develop["automatic"] != false || settled == nil || settled["retrying"] != false || !strings.Contains(fmt.Sprint(settled["reason"]), "was cancelled") ||
+		settled["pipeline"].(map[string]any)["id"] != float64(id) || branches["main"].(map[string]any)["settled"] != nil {
+		t.Fatalf("latest branches: %v", branches)
+	}
+	if auto, _ := out["mergeRequestsAutomatic"].(map[string]any); auto[fmt.Sprint(e.mr)] != false {
+		t.Fatalf("latest merge requests: %v", out["mergeRequestsAutomatic"])
+	}
 
 	code, out = e.serve(e.owner, http.MethodGet, fmt.Sprintf("/api/projects/%d/merge-requests/%d/pipeline", e.project, e.mr), "")
-	if st, _ := out["status"].(map[string]any); code != http.StatusOK || st["open"] != true || st["configured"] != true || st["passed"] != false || st["current"] != nil || st["targetSha"] != sha(2) || st["source"] != "file" {
+	if st, _ := out["status"].(map[string]any); code != http.StatusOK || st["open"] != true || st["configured"] != true || st["passed"] != false || st["current"] != nil || st["targetSha"] != sha(2) || st["source"] != "file" ||
+		st["automatic"] != false || st["settled"] != nil {
 		t.Fatalf("merge request status: %d %v", code, out)
 	}
 	// One that can no longer merge has no pipeline to run.

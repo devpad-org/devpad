@@ -44,7 +44,7 @@ Only protected branches and merge requests into them run pipelines. Anyone who c
 - **A protected branch's pipeline** tests the branch's current commit, with the pipeline file in that commit.
 - **A merge request's pipeline** tests its branch merged onto the target branch's current commit, so it also catches two merge requests that pass alone but break once both land. Its jobs come from the target branch's pipeline file, never the change's, so a task's agent can't rewrite the jobs that grade its work. A branch that doesn't merge cleanly makes the pipeline **Doesn't merge** without running anything.
 
-Under **Run pipelines** in the **Branches** dialog, tick the protected branches devpad [runs pipelines on by itself](#automatic-runs). The Project page shows the result of each ticked branch's latest pipeline beside it, skipping pipelines that were cancelled, replaced, interrupted or couldn't run, and says **Out of date** once the branch has moved past it. A protected branch you don't tick, and the merge requests into it, run pipelines only when you start them.
+Under **Run pipelines** in the **Branches** dialog, tick the protected branches devpad [runs pipelines on by itself](#automatic-runs). The Project page shows the result of each ticked branch's latest pipeline beside it, skipping pipelines that were cancelled, replaced, interrupted or couldn't run, and says **Out of date** once the branch has moved past it. When the last pipeline of the branch's current commit was cancelled or couldn't run, it says **Cancelled** or **Couldn't run** instead, and why when you point at it. A protected branch you don't tick, and the merge requests into it, run pipelines only when you start them.
 
 To run a pipeline, press **Run pipeline** on the **Pipelines** surface and pick a protected branch, or press **Run pipeline** on a merge request's **Pipeline** card (**Run pipeline again** once it has one). Starting one that is already queued or running for the same commits shows that one instead. **Run again** on a finished pipeline runs its branch or merge request again at the commits it is at now, and **Cancel** stops a queued or running one.
 
@@ -53,12 +53,16 @@ To run a pipeline, press **Run pipeline** on the **Pipelines** surface and pick 
 A pipeline's result counts only for the commits and jobs it tested, so devpad runs one again by itself whenever they change for a ticked branch or a merge request into one:
 
 - **A ticked branch** runs its new commit after each merge into it and each fast-forward from the upstream, the only ways a protected branch moves, and its current commit when you tick it.
-- **A merge request into a ticked branch** runs when it opens, whether a task's agent, you or the assistant opened it; when its branch gets new commits, from a task's agent finishing a round, a publish or `git push devpad` from your workspace, or a merge into it; and when the ticked branch moves, since it then merges onto another commit. Ticking its target runs it too.
+- **A merge request into a ticked branch** runs when it opens, whether a task's agent, you or the assistant opened it; when its branch gets new commits, from a task's agent finishing a round, a publish or `git push devpad` from your workspace, or, for a release such as `develop` into `main`, a merge into `develop` or a fast-forward of `develop` from the upstream; and when the ticked branch moves, since it then merges onto another commit. Ticking its target runs it too.
 - **Changing the pipeline setting** runs again the ticked branches and merge requests whose jobs come from it. Those with a pipeline file get the same jobs, so nothing runs for them.
 
 A pipeline devpad starts by itself says what started it, such as **Started when develop moved**; one you start says **Run by you**.
 
-When a ticked branch moves again before its pipeline started, the newer commit's pipeline **Replaces** it; one already running finishes, so the branch's history shows each result. A merge request's pipeline that is out of date is replaced even while it runs, since only the newest result can count. Devpad never runs a pipeline because another ended, and doesn't run again by itself a pipeline you cancelled or that couldn't run, on the same commits and jobs: press **Run again** once you have fixed what stopped it. As devpad starts, it runs any ticked branch or merge request into one that has no pipeline of its commits and jobs as they are, such as one that moved while devpad was down, and **Started as devpad started** says so.
+Devpad starts a branch's or a merge request's pipeline at most once every 30 seconds. When it moves again sooner, as when an agent pushes several times in a row, devpad waits until the 30 seconds are up and then runs its newest commits. What you do yourself, ticking a branch or changing the setting, runs at once.
+
+When a ticked branch moves again before its pipeline started, the newer commit's pipeline **Replaces** it; one already running finishes, so the branch's history shows each result. A merge request's pipeline that is out of date is replaced even while it runs, since only the newest result can count. Closing or merging a merge request stops its pipelines, and unticking a branch stops the pipelines devpad started of it and of the merge requests into it that are still queued; each says why it was **Replaced**.
+
+Devpad never runs a pipeline because another ended. It doesn't run again by itself a pipeline you cancelled, on the same commits and jobs, and runs one that couldn't run once more within 10 minutes, then leaves it to you. Until you press **Run again** or the commits change, the merge request's **Pipeline** card and merge card, and a ticked branch's badge, say **Pipeline cancelled** or **Pipeline couldn't run**, with why. As devpad starts, and every 10 minutes after, it runs any ticked branch or merge request into one that has no pipeline of its commits and jobs as they are, such as one that moved while devpad was down, and **Started when devpad caught up** says so.
 
 ## How jobs run {#how-jobs-run}
 
@@ -85,7 +89,7 @@ A pipeline is:
 - **Invalid**: its pipeline file or setting doesn't parse;
 - **Doesn't merge**: the merge request's branch conflicts with its target;
 - **No pipeline**: the commit has no pipeline file and the project no setting;
-- **Cancelled**, **Replaced** by a newer pipeline of the same branch before it ran, or of the same merge request, or **Interrupted** by devpad stopping.
+- **Cancelled**, **Replaced** by a newer pipeline of the same branch before it ran, or of the same merge request, or because it no longer had anything to test, or **Interrupted** by devpad stopping.
 
 A job is queued, running, passed, failed, timed out, out of memory, error, cancelled, interrupted, or skipped when its pipeline ended before it ran.
 

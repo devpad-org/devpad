@@ -13,14 +13,37 @@ import (
 	"github.com/devpad-org/devpad/internal/project"
 )
 
-// recordingHeadListener records each head move it is told of, as "!<id>
-// opened" or "!<id> moved". It takes the moved merge request's lock, the
-// task's lock and the project's sources lock as it is told, so a move told
-// while any of them is held never returns, and the test times out.
+// recordingHeadListener records what it is told, as "!<id> opened",
+// "!<id> moved", "!<id> closed" or "!<id> merged". It takes the moved
+// merge request's lock, the task's lock and the project's sources lock as
+// it is told of a head moving, so a move told while any of them is held
+// never returns, and the test times out. It checks an end is told while
+// the merge request's lock is held, so that it comes before anything else
+// can change the merge request.
 type recordingHeadListener struct {
 	svc   *service
 	mu    sync.Mutex
 	moves []string
+	// unlocked records an end told without the merge request's lock.
+	unlocked bool
+}
+
+func (l *recordingHeadListener) MergeRequestEnded(_ context.Context, m End) {
+	l.svc.mu.Lock()
+	lock := l.svc.locks[fmt.Sprintf("mr:%d", m.MergeRequestID)]
+	l.svc.mu.Unlock()
+	held := lock != nil && !lock.TryLock()
+	if lock != nil && !held {
+		lock.Unlock()
+	}
+	what := "closed"
+	if m.Merged {
+		what = "merged"
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.unlocked = l.unlocked || !held
+	l.moves = append(l.moves, fmt.Sprintf("!%d %s", m.MergeRequestID, what))
 }
 
 func (l *recordingHeadListener) MergeRequestHeadMoved(_ context.Context, m HeadMove) {
@@ -49,7 +72,7 @@ func (l *recordingHeadListener) told() string {
 
 func (e *env) listenHeads() *recordingHeadListener {
 	l := &recordingHeadListener{svc: e.svc}
-	e.svc.AddHeadListener(l)
+	e.svc.AddListener(l)
 	return l
 }
 
@@ -163,7 +186,7 @@ func TestMergesTellHeadListenersOfTheReleaseTheyMove(t *testing.T) {
 			t.Errorf("merge: %v", err)
 		}
 	})
-	if got, want := l.told(), fmt.Sprintf("!%d moved", release.ID); got != want {
+	if got, want := l.told(), fmt.Sprintf("!%d merged, !%d moved", feature.ID, release.ID); got != want {
 		t.Fatalf("told %q, want %q", got, want)
 	}
 	if got, _ := e.svc.repo.GetByID(ctx, release.ID); got.HeadSHA != "mergecommit" {
@@ -197,5 +220,32 @@ func TestListOpenInto(t *testing.T) {
 	}
 	if _, err := e.svc.ListOpenInto(ctx, e.stranger, e.pid(), "develop"); err == nil {
 		t.Fatal("expected another user refused")
+	}
+}
+
+// Closing or merging a merge request tells the listeners while its lock is
+// held, so the pipelines of it stop before anything else can happen to it.
+func TestEndsTellListenersUnderTheLock(t *testing.T) {
+	e := setup(t)
+	e.gitFlow()
+	ctx := context.Background()
+	feature, _ := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Feature", SourceBranch: "feature"})
+	staging, _ := e.svc.Create(ctx, e.owner, e.pid(), CreateInput{Title: "Staging", SourceBranch: "staging"})
+	l := e.listenHeads()
+	if _, err := e.svc.Close(ctx, e.owner, e.pid(), staging.ID); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), feature.ID, MergeInput{}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	// A close refused tells nobody.
+	if _, err := e.svc.Close(ctx, e.owner, e.pid(), staging.ID); err == nil {
+		t.Fatal("expected closing a closed merge request refused")
+	}
+	if got, want := l.told(), fmt.Sprintf("!%d closed, !%d merged", staging.ID, feature.ID); got != want {
+		t.Fatalf("told %q, want %q", got, want)
+	}
+	if l.unlocked {
+		t.Fatal("an end was told without the merge request's lock")
 	}
 }

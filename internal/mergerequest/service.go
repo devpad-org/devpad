@@ -68,9 +68,9 @@ type Service interface {
 	// the project workspace to the new commit, as it does for a protected
 	// branch fast-forwarded from the upstream.
 	project.BranchListener
-	// AddHeadListener adds one of those told each time a merge request
-	// opens or its head moves.
-	AddHeadListener(l HeadListener)
+	// AddListener adds one of those told each time a merge request opens,
+	// its head moves, or it closes or merges.
+	AddListener(l Listener)
 	// GuardDeleteBranch refuses deleting a branch an open merge request
 	// comes from.
 	GuardDeleteBranch(ctx context.Context, userID, projectID int64, branch string, del func() error) error
@@ -176,10 +176,10 @@ type service struct {
 	rootCancel context.CancelFunc
 	wg         sync.WaitGroup
 
-	mu            sync.Mutex
-	closed        bool
-	locks         map[string]*sync.Mutex
-	headListeners []HeadListener
+	mu        sync.Mutex
+	closed    bool
+	locks     map[string]*sync.Mutex
+	listeners []Listener
 	// reviewBudgets holds the budget of each agent review that has run since
 	// devpad started and could still be continued, so its runs, the
 	// sub-agents a run leaves running, and a continued run share one limit.
@@ -187,15 +187,27 @@ type service struct {
 	reviewBudgets map[int64]*domain.Budget
 }
 
-// HeadListener is told each time a merge request opens, or its head moves to
-// new commits: a task's agent finishing a round, a publish from the project
-// workspace, or a merge or fast-forward into its branch. It is told once
-// the change is recorded, on the goroutine that made it, when the merge
-// request service holds no lock, but it is to return at once all the same,
-// handing anything slow to a goroutine of its own: the round, publish or
-// merge that moved the head waits for it.
-type HeadListener interface {
+// Listener is told of a merge request's life, each time once it is
+// recorded, on the goroutine that changed it, and is to return at once,
+// handing anything slow to a goroutine of its own:
+//   - MergeRequestHeadMoved when it opens, or its head moves to new
+//     commits: a task's agent finishing a round, a publish from the project
+//     workspace, or a merge or fast-forward into its branch. It is told when
+//     the merge request service holds no lock; the round, publish or merge
+//     that moved the head waits for it.
+//   - MergeRequestEnded when it closes or merges, while the service still
+//     holds its lock, so a listener only takes note there.
+type Listener interface {
 	MergeRequestHeadMoved(ctx context.Context, m HeadMove)
+	MergeRequestEnded(ctx context.Context, m End)
+}
+
+// End is a merge request closing, or merging.
+type End struct {
+	UserID         int64
+	ProjectID      int64
+	MergeRequestID int64
+	Merged         bool
 }
 
 // HeadMove is a merge request opening at its head, or its head moving.
@@ -242,21 +254,33 @@ func NewService(d Deps) Service {
 	}
 }
 
-func (s *service) AddHeadListener(l HeadListener) {
+func (s *service) AddListener(l Listener) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.headListeners = append(s.headListeners, l)
+	s.listeners = append(s.listeners, l)
 }
 
-// headMoved tells the head listeners a merge request opened or its head
-// moved. The caller holds none of the service's locks.
-func (s *service) headMoved(ctx context.Context, mr *MergeRequest, opened bool) {
+func (s *service) listening() []Listener {
 	s.mu.Lock()
-	listeners := slices.Clone(s.headListeners)
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.listeners)
+}
+
+// headMoved tells the listeners a merge request opened or its head moved.
+// The caller holds none of the service's locks.
+func (s *service) headMoved(ctx context.Context, mr *MergeRequest, opened bool) {
 	m := HeadMove{UserID: mr.UserID, ProjectID: mr.ProjectID, MergeRequestID: mr.ID, Opened: opened}
-	for _, l := range listeners {
+	for _, l := range s.listening() {
 		l.MergeRequestHeadMoved(ctx, m)
+	}
+}
+
+// ended tells the listeners a merge request closed or merged, once that is
+// recorded. The caller holds the merge request's lock.
+func (s *service) ended(ctx context.Context, mr *MergeRequest) {
+	m := End{UserID: mr.UserID, ProjectID: mr.ProjectID, MergeRequestID: mr.ID, Merged: mr.Status == StatusMerged}
+	for _, l := range s.listening() {
+		l.MergeRequestEnded(ctx, m)
 	}
 }
 
@@ -365,7 +389,9 @@ func (s *service) create(ctx context.Context, userID, projectID int64, in Create
 	if err := s.openAtHead(ctx, mr); err != nil {
 		return nil, err
 	}
-	s.headMoved(ctx, mr, true)
+	// The merge request is open whether or not the request that opened it
+	// is still there.
+	s.headMoved(context.WithoutCancel(ctx), mr, true)
 	s.autoReview(ctx, p, mr)
 	return mr, nil
 }
@@ -1995,6 +2021,7 @@ func (s *service) merge(ctx context.Context, userID, projectID, mrID int64, opts
 	if err := s.repo.Update(ctx, mr); err != nil {
 		return nil, err
 	}
+	s.ended(ctx, mr)
 	s.removeReviewSandboxes(ctx, mr, "the merge request was merged")
 	if mr.TaskID != 0 {
 		if _, err := s.tasks.Merged(ctx, userID, projectID, mr.TaskID); err != nil && !errors.Is(err, task.ErrNotFound) {
@@ -2026,6 +2053,7 @@ func (s *service) Close(ctx context.Context, userID, projectID, mrID int64) (*Me
 	if err := s.repo.Update(ctx, mr); err != nil {
 		return nil, err
 	}
+	s.ended(ctx, mr)
 	s.removeReviewSandboxes(ctx, mr, "the merge request was closed")
 	return mr, nil
 }

@@ -50,13 +50,15 @@ func pipelineMergeRequest(mr *mergerequest.MergeRequest) *pipeline.MergeRequest 
 		TargetBranch: mr.TargetBranch,
 		HeadSHA:      mr.HeadSHA,
 		Open:         mr.Status == mergerequest.StatusOpen,
+		Merged:       mr.Status == mergerequest.StatusMerged,
 	}
 }
 
 // mergeRequestPipelines tells the pipeline service each time a merge
 // request opens or its head moves, so that one into a ticked branch runs
-// its pipeline. The merge request service owns the listener, and never
-// imports the pipeline package, so the two meet here too.
+// its pipeline, and when it closes or merges, so that its pipelines stop.
+// The merge request service owns the listener, and never imports the
+// pipeline package, so the two meet here too.
 type mergeRequestPipelines struct {
 	pipelines pipeline.Service
 }
@@ -64,6 +66,12 @@ type mergeRequestPipelines struct {
 func (a mergeRequestPipelines) MergeRequestHeadMoved(ctx context.Context, m mergerequest.HeadMove) {
 	a.pipelines.MergeRequestMoved(ctx, pipeline.MergeRequestMove{
 		UserID: m.UserID, ProjectID: m.ProjectID, MergeRequestID: m.MergeRequestID, Opened: m.Opened,
+	})
+}
+
+func (a mergeRequestPipelines) MergeRequestEnded(ctx context.Context, m mergerequest.End) {
+	a.pipelines.MergeRequestEnded(ctx, pipeline.MergeRequestEnd{
+		UserID: m.UserID, ProjectID: m.ProjectID, MergeRequestID: m.MergeRequestID, Merged: m.Merged,
 	})
 }
 

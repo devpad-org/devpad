@@ -73,13 +73,21 @@ var unfinishedStatuses = []Status{StatusQueued, StatusRunning}
 // it never hides an older one that did.
 var countingStatuses = append(slices.Clone(unfinishedStatuses), resultStatuses...)
 
-// settledStatuses are those of pipelines devpad never runs again by itself
-// for the same commits and jobs (StartInput.Automatic): those that count,
-// one the user cancelled, and one devpad could not run, which running again
-// could only repeat until something changes. Only one superseded, a
-// setting changed back say, or interrupted, which Reconcile runs again, is
-// left out.
-var settledStatuses = append(slices.Clone(countingStatuses), StatusError, StatusCancelled)
+// endedStatuses are those of pipelines that ended without a result for a
+// reason that holds for their commits and jobs: the user cancelled them, or
+// devpad could not run them. Devpad never runs again by itself the commits
+// and jobs of one cancelled, and of one that could not run only errorRetries
+// times (StartInput.Automatic). One superseded or interrupted says nothing
+// of its commits.
+var endedStatuses = []Status{StatusCancelled, StatusError}
+
+// errorRetries is how many times devpad runs again by itself the commits and
+// jobs of a pipeline that could not run (StatusError): once, at the next
+// event of its branch or merge request or the next catch-up, never because
+// a pipeline ended. It counts the pipelines of those commits and jobs the
+// database has that ended so, so no restart or catch-up resets it, and an
+// error that repeats, such as a bundle too large, stops there.
+const errorRetries = 1
 
 // HasResult reports whether a pipeline that ended in status s says
 // something of the commits it tested, so that running the same jobs on them
@@ -160,11 +168,29 @@ const (
 	TriggerTicked Trigger = "ticked"
 	// TriggerSetting is the user changing the project's pipeline setting.
 	TriggerSetting Trigger = "setting"
-	// TriggerCatchUp is devpad starting and finding nothing had tested the
-	// commits and jobs as they are, as when it was not running when they
-	// changed.
+	// TriggerCatchUp is devpad finding nothing had tested the commits and
+	// jobs as they are, as when it was not running when they changed, or
+	// could not start the pipeline then: as it starts, and every
+	// sweepInterval.
 	TriggerCatchUp Trigger = "catch_up"
 )
+
+// Automatic reports whether devpad started a pipeline with trigger t by
+// itself, rather than the user or a restart running one again.
+func (t Trigger) Automatic() bool {
+	switch t {
+	case TriggerOpened, TriggerSourceMoved, TriggerTargetMoved, TriggerMerged, TriggerUpstream, TriggerTicked, TriggerSetting, TriggerCatchUp:
+		return true
+	}
+	return false
+}
+
+// byUser reports whether an automatic run for t answers something the user
+// just did, ticking a branch or changing the setting, which goes at once
+// rather than wait for autoMinInterval.
+func (t Trigger) byUser() bool {
+	return t == TriggerTicked || t == TriggerSetting
+}
 
 const (
 	// MaxRunningJobs is how many jobs of one project run at once, across

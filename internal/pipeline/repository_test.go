@@ -222,6 +222,8 @@ func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 		{"the pipelines' jobs", jobsQuery(true, 2), "sqlite_autoindex_pipeline_jobs_2", []any{1, 2}},
 		{"the latest of branches", "", "idx_pipelines_branch", nil},
 		{"the latest of merge requests", "", "idx_pipelines_merge_request", nil},
+		{"counting a branch's errors", "", "idx_pipelines_branch_commit", nil},
+		{"counting a merge request's errors", "", "idx_pipelines_merge_request_commits", nil},
 	}
 	tests[0].query, tests[0].args = findSameQuery(branch, countingStatuses)
 	tests[1].query, tests[1].args = findSameQuery(mr, countingStatuses)
@@ -231,6 +233,8 @@ func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 	tests[5].query, tests[5].args = query(listQuery(e.project, ListFilter{MergeRequestID: e.mr}))
 	tests[11].query, tests[11].args = query(latestQuery(e.project, LatestFilter{Branches: []string{"develop", "main"}}))
 	tests[12].query, tests[12].args = query(latestQuery(e.project, LatestFilter{MergeRequestIDs: []int64{e.mr, e.mr + 1}}))
+	tests[13].query, tests[13].args = countSameQuery(branch, []Status{StatusError})
+	tests[14].query, tests[14].args = countSameQuery(mr, []Status{StatusError})
 	for _, tc := range tests {
 		rows, err := e.db.Query("EXPLAIN QUERY PLAN "+tc.query, tc.args...)
 		if err != nil {

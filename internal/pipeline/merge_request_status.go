@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/devpad-org/devpad/internal/project"
@@ -35,6 +36,82 @@ type MergeRequestStatus struct {
 	// Latest is the merge request's newest pipeline that counts, whatever
 	// it tested: Current, or an older result to show as out of date.
 	Latest *Pipeline
+	// Automatic says devpad runs the merge request's pipelines by itself:
+	// it is open, into a branch ticked to run them.
+	Automatic bool
+	// Settled is, when no pipeline of Key counts, the newest of Key that
+	// ended without a result, cancelled or unable to run, with why and
+	// whether devpad runs Key once more: what the merge request shows
+	// rather than "no pipeline yet", and what the merge gate names when it
+	// refuses. Nil otherwise.
+	Settled *SettledPipeline
+}
+
+// SettledPipeline is a pipeline of the commits and jobs a branch or merge
+// request has now that ended without a result, when none of those counts.
+type SettledPipeline struct {
+	Pipeline *Pipeline
+	// Retrying says devpad runs those commits and jobs once more by itself,
+	// at the next event or catch-up: the pipeline could not run, the
+	// errorRetries are not used up, and its subject runs automatically.
+	Retrying bool
+	// Reason says, in a sentence for the user, why no result counts and
+	// what happens next.
+	Reason string
+}
+
+// settledOf is the SettledPipeline of what probe tests, or nil when one of
+// it counts or none ended without a result. automatic says its subject
+// runs by itself.
+func (s *service) settledOf(ctx context.Context, probe *Pipeline, automatic bool) (*SettledPipeline, error) {
+	current, err := s.repo.FindSame(ctx, probe, countingStatuses)
+	if err != nil || current != nil {
+		return nil, err
+	}
+	return s.settledWithout(ctx, probe, automatic)
+}
+
+// settledWithout is settledOf for what probe tests when none of it counts.
+func (s *service) settledWithout(ctx context.Context, probe *Pipeline, automatic bool) (*SettledPipeline, error) {
+	ended, retry, err := s.settled(ctx, probe)
+	if err != nil || ended == nil {
+		return nil, err
+	}
+	retrying := retry && automatic
+	return &SettledPipeline{Pipeline: ended, Retrying: retrying, Reason: s.settledReason(ended, retrying, automatic)}, nil
+}
+
+// settledReason says why pipeline p of a subject's commits and jobs as they
+// are now leaves them without a result, and whether devpad runs them again.
+func (s *service) settledReason(p *Pipeline, retrying, automatic bool) string {
+	if p.Status == StatusCancelled {
+		if automatic {
+			return fmt.Sprintf("Pipeline #%d was cancelled on these commits, so devpad won't run them again by itself: run it again.", p.ID)
+		}
+		return fmt.Sprintf("Pipeline #%d was cancelled on these commits: run it again.", p.ID)
+	}
+	why := fmt.Sprintf("Pipeline #%d couldn't run on these commits: %s.", p.ID, strings.TrimSuffix(noResultError(p), "."))
+	switch {
+	case retrying:
+		return why + fmt.Sprintf(" Devpad runs them once more by itself within %d minutes.", int(s.sweepInterval.Minutes()+0.5))
+	case automatic:
+		return why + " Devpad won't run them again by itself: run it again once the cause is fixed."
+	}
+	return why + " Run it again once the cause is fixed."
+}
+
+// noResultError is why a pipeline that could not run could not: its own
+// error, or else its first job that could not be set up.
+func noResultError(p *Pipeline) string {
+	if p.Error != "" {
+		return p.Error
+	}
+	for _, j := range p.Jobs {
+		if j.Status == JobError && j.Error != "" {
+			return "job " + j.Name + ": " + j.Error
+		}
+	}
+	return "devpad could not run it"
 }
 
 // Passed reports whether the merge request's pipeline passed on its head
@@ -88,6 +165,7 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 	if len(latest) > 0 {
 		st.Latest = latest[0]
 	}
+	st.Automatic = mergeRequestRunsAutomatically(p, mr)
 	if !mr.Open || !p.IsProtected(mr.TargetBranch) || !project.IsCommitHash(mr.HeadSHA) {
 		return st, nil
 	}
@@ -107,6 +185,11 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 	}
 	if st.Current, err = s.LatestForMergeRequest(ctx, userID, projectID, st.Key); err != nil {
 		return nil, err
+	}
+	if st.Current == nil {
+		if st.Settled, err = s.settledWithout(ctx, st.Key.probe(projectID), st.Automatic); err != nil {
+			return nil, err
+		}
 	}
 	return st, nil
 }

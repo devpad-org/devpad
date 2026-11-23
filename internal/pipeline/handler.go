@@ -133,7 +133,32 @@ func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 	}
 	// The commit each branch asked for is at now, to tell a branch's
 	// pipeline of an older commit; null when the repo could not be read.
-	writeJSON(w, http.StatusOK, map[string]any{"pipelines": items, "branchTips": latest.BranchTips})
+	branches := make(map[string]any, len(latest.Branches))
+	for name, st := range latest.Branches {
+		branches[name] = map[string]any{"automatic": st.Automatic, "settled": settledResponse(st.Settled)}
+	}
+	automatic := make(map[string]bool, len(latest.MergeRequestsAutomatic))
+	for id, auto := range latest.MergeRequestsAutomatic {
+		automatic[strconv.FormatInt(id, 10)] = auto
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pipelines":  items,
+		"branchTips": latest.BranchTips,
+		// Whether each branch asked for runs pipelines by itself, and the
+		// pipeline of its current commit and jobs that ended without a
+		// result when none of them counts.
+		"branches": branches,
+		// Whether devpad runs each merge request asked for by itself.
+		"mergeRequestsAutomatic": automatic,
+	})
+}
+
+// settledResponse is a SettledPipeline as the app reads it, or null.
+func settledResponse(st *SettledPipeline) any {
+	if st == nil {
+		return nil
+	}
+	return map[string]any{"pipeline": pipelineResponse(st.Pipeline, false), "retrying": st.Retrying, "reason": st.Reason}
 }
 
 // HandleMergeRequestStatus says how a merge request stands for pipelines
@@ -173,6 +198,8 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 		"passed":     st.Passed(),
 		"current":    pipelineOrNil(st.Current),
 		"latest":     pipelineOrNil(st.Latest),
+		"automatic":  st.Automatic,
+		"settled":    settledResponse(st.Settled),
 	}})
 }
 

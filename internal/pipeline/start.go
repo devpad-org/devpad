@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/devpad-org/devpad/internal/project"
@@ -66,14 +67,7 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 	next.CreatedAt = s.now()
 	setJobs(next, resolved)
 
-	statuses := unfinishedStatuses
-	switch {
-	case in.Automatic:
-		statuses = settledStatuses
-	case in.ReuseResult:
-		statuses = countingStatuses
-	}
-	same, err := s.repo.FindSame(ctx, next, statuses)
+	same, err := s.reusable(ctx, next, in)
 	if err != nil {
 		return nil, false, err
 	}
@@ -91,6 +85,44 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 	}
 	s.supersede(same, in.StopStale)
 	return same, created, nil
+}
+
+// reusable finds the pipeline a start of next returns rather than make
+// one: one queued or running of the same commits and jobs; with
+// ReuseResult, or Automatic, one that counts; and with Automatic one that
+// ended without a result that devpad doesn't run again by itself
+// (settled).
+func (s *service) reusable(ctx context.Context, next *Pipeline, in StartInput) (*Pipeline, error) {
+	statuses := unfinishedStatuses
+	if in.ReuseResult || in.Automatic {
+		statuses = countingStatuses
+	}
+	same, err := s.repo.FindSame(ctx, next, statuses)
+	if err != nil || same != nil || !in.Automatic {
+		return same, err
+	}
+	ended, retry, err := s.settled(ctx, next)
+	if err != nil || retry {
+		return nil, err
+	}
+	return ended, nil
+}
+
+// settled returns the newest pipeline testing what p tests that ended
+// without a result (endedStatuses), or nil, and whether devpad is to run
+// those commits and jobs once more by itself: never after the user
+// cancelled them, and after an error only while the database holds no more
+// than errorRetries of them.
+func (s *service) settled(ctx context.Context, p *Pipeline) (ended *Pipeline, retry bool, err error) {
+	ended, err = s.repo.FindSame(ctx, p, endedStatuses)
+	if err != nil || ended == nil || ended.Status != StatusError {
+		return ended, false, err
+	}
+	failed, err := s.repo.CountSame(ctx, p, []Status{StatusError})
+	if err != nil {
+		return nil, false, err
+	}
+	return ended, failed <= errorRetries, nil
 }
 
 // subjectOf reads what in asks to test: the pipeline it would be, with its
@@ -202,6 +234,11 @@ func setJobs(p *Pipeline, r *Resolved) {
 // caller holds the project's start lock.
 func (s *service) supersede(current *Pipeline, stale bool) {
 	k, cause := current.key(), supersededBy(current.ID)
+	if slices.Contains(endedStatuses, current.Status) {
+		// What replaces them is a pipeline that ended without a result,
+		// which the commits and jobs as they are now keep (settled).
+		cause = staleCause("what it tests is no longer current")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, a := range s.runs {
@@ -278,7 +315,10 @@ func (s *service) reserve(p *Pipeline) (*activePipeline, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancelCause(s.rootCtx)
-	a := &activePipeline{uid: p.UID, subject: p.subject(), key: p.key(), ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	a := &activePipeline{
+		uid: p.UID, subject: p.subject(), key: p.key(), ctx: ctx, cancel: cancel, done: make(chan struct{}),
+		automatic: p.Trigger.Automatic(), target: p.TargetBranch,
+	}
 	s.runs[p.UID] = a
 	s.wg.Add(1)
 	return a, nil

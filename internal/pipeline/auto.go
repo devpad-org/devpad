@@ -32,23 +32,38 @@ import (
 // replaces only one still queued, and lets one running finish, so the
 // branch's history shows each result.
 //
+// A pipeline whose subject stops needing it stops too: a merge request
+// that closes or merges stops all its pipelines (MergeRequestEnded), a
+// branch no longer ticked the automatic pipelines of it and of the merge
+// requests into it that have yet to start, and each automatic pipeline,
+// as it gets a job slot, checks its subject still runs by itself (begin).
+//
 // Nothing runs in reaction to a pipeline ending, so no pipeline ever starts
 // another. What can start pipelines through a workspace an agent works in,
-// a task's round or git push devpad, only moves a merge request's head,
-// which gitbridge and the task's rounds pace: per key at most one run is
-// read at a time with one more waiting, each merge request start leaves one
+// a task's round or git push devpad, only moves a merge request's head:
+// per key at most one run is read at a time with one more waiting, at most
+// one start each autoMinInterval, each merge request start leaves one
 // pipeline of it running, and a project runs at most MaxRunningJobs jobs.
+// What a run could not start, such as when the repo could not be read, the
+// catch-up every sweepInterval starts later, through the same queue.
 
 const (
 	// autoWorkers bounds the workers making automatic runs, across every
 	// project.
 	autoWorkers = 4
 	// maxAutoPending bounds the automatic runs waiting for a worker. Past
-	// it a run is dropped, to be caught up on when devpad next starts.
+	// it a run is dropped, to be caught up on later.
 	maxAutoPending = 4096
-	// autoStartTimeout bounds one automatic start, which reads the
-	// project's repo and waits for the project's other starts.
-	autoStartTimeout = 2 * time.Minute
+	// autoMinInterval is the least time between two automatic starts of
+	// one branch or merge request, but for what the user just did. A run
+	// that comes sooner waits, and reads the newest commits when it goes.
+	autoMinInterval = 30 * time.Second
+	// autoStartTimeout bounds one automatic start. A project's automatic
+	// runs go one at a time, so a start waits for the project's start lock
+	// only behind one by hand or a restart's re-run, and this covers that
+	// and its own reads of the repo, which may first start the repo
+	// container. A run it cuts short the next catch-up starts.
+	autoStartTimeout = 5 * time.Minute
 )
 
 // MergeRequestMove is a merge request opening, or its head moving to new
@@ -61,19 +76,44 @@ type MergeRequestMove struct {
 	Opened bool
 }
 
-// runsAutomatically is the one rule for what devpad runs by itself, read
-// from the project as it is now: the pipeline of a protected branch ticked
-// to run pipelines (Project.RunsPipelines), and of an open merge request
-// into one. mr, when set, is the merge request whose pipeline it would be;
-// otherwise branch is the branch's.
-func runsAutomatically(p *project.Project, branch string, mr *MergeRequest) bool {
-	if p == nil || p.Status != project.StatusReady {
-		return false
+// branchRunsAutomatically and mergeRequestRunsAutomatically are the one
+// rule for what devpad runs by itself, read from the project as it is now:
+// the pipeline of a protected branch ticked to run pipelines
+// (Project.RunsPipelines), and of an open merge request into one.
+func branchRunsAutomatically(p *project.Project, branch string) bool {
+	return p != nil && p.Status == project.StatusReady && p.RunsPipelines(branch)
+}
+
+func mergeRequestRunsAutomatically(p *project.Project, mr *MergeRequest) bool {
+	return mr != nil && mr.Open && branchRunsAutomatically(p, mr.TargetBranch)
+}
+
+// MergeRequestEnd is a merge request closing or merging.
+type MergeRequestEnd struct {
+	UserID         int64
+	ProjectID      int64
+	MergeRequestID int64
+	Merged         bool
+}
+
+// staleCause ends a pipeline superseded, saying why it has nothing left to
+// test: its merge request ended, or its subject no longer runs pipelines by
+// itself. Like any superseded pipeline, it never counts as one that could
+// not run.
+type staleCause string
+
+func (c staleCause) Error() string { return string(c) }
+func (c staleCause) Unwrap() error { return errSuperseded }
+
+func noLongerAutomatic(branch string) staleCause {
+	return staleCause(branch + " no longer runs pipelines by itself")
+}
+
+func mergeRequestEnded(merged bool) staleCause {
+	if merged {
+		return "the merge request was merged"
 	}
-	if mr != nil {
-		return mr.Open && p.RunsPipelines(mr.TargetBranch)
-	}
-	return p.RunsPipelines(branch)
+	return "the merge request was closed"
 }
 
 // BranchMoved queues the runs of a protected branch that a merge or a
@@ -103,9 +143,16 @@ func (s *service) BranchMoved(_ context.Context, m project.BranchMove) {
 // ticked branch: each with the open merge requests into it. Those whose
 // jobs do not come from the setting resolve to the same jobs as before,
 // so only what used the setting runs again.
+// A branch no longer ticked stops the automatic pipelines of it, and of the
+// merge requests into it, that have yet to start.
 func (s *service) ProjectSettingsChanged(_ context.Context, before, after *project.Project) {
 	if before == nil || after == nil {
 		return
+	}
+	for _, b := range before.PipelineBranches {
+		if before.RunsPipelines(b) && !after.RunsPipelines(b) {
+			s.stopQueuedAutomatic(after.ID, b)
+		}
 	}
 	for _, b := range after.PipelineBranches {
 		if after.RunsPipelines(b) && !before.RunsPipelines(b) {
@@ -130,6 +177,38 @@ func (s *service) MergeRequestMoved(_ context.Context, m MergeRequestMove) {
 		trigger = TriggerOpened
 	}
 	s.queueAuto(&autoRun{key: mergeRequestKey(m.ProjectID, m.MergeRequestID), userID: m.UserID, trigger: trigger})
+}
+
+// MergeRequestEnded stops every pipeline of a merge request that closed or
+// merged, by hand or not: what it would say no longer matters. It only
+// ends their contexts, so it may be told under the merge request's lock.
+func (s *service) MergeRequestEnded(_ context.Context, m MergeRequestEnd) {
+	sub := subject{projectID: m.ProjectID, kind: KindMergeRequest, mergeRequestID: m.MergeRequestID}
+	cause := mergeRequestEnded(m.Merged)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.runs {
+		if a.subject == sub {
+			a.stop(cause)
+		}
+	}
+}
+
+// stopQueuedAutomatic stops the automatic pipelines of a branch no longer
+// ticked, and of the merge requests into it, that have yet to start. One
+// already running finishes.
+func (s *service) stopQueuedAutomatic(projectID int64, branch string) {
+	cause := noLongerAutomatic(branch)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.runs {
+		if !a.automatic || a.started || a.subject.projectID != projectID {
+			continue
+		}
+		if (a.subject.kind == KindBranch && a.subject.branch == branch) || (a.subject.kind == KindMergeRequest && a.target == branch) {
+			a.stop(cause)
+		}
+	}
 }
 
 func mergeRequestKey(projectID, mergeRequestID int64) autoKey {
@@ -165,8 +244,8 @@ func (s *service) queueAuto(r *autoRun) {
 }
 
 // beginAutomatic lets automatic runs start, those that waited first. It
-// comes once Reconcile has settled what the last devpad left, so that no
-// automatic start is taken for one of those.
+// comes once Reconcile has interrupted what the last devpad left, so that
+// no automatic start is taken for one of those.
 func (s *service) beginAutomatic() {
 	for n := s.auto.begin(); n > 0; n-- {
 		s.startAutoWorker()
@@ -192,11 +271,11 @@ func (s *service) autoWorker(ctx context.Context) {
 	}
 }
 
-// makeAutoRun reads what r is of as it is now and, when runsAutomatically
-// says so, starts its pipeline, or for an autoInto run queues the runs of
+// makeAutoRun reads what r is of as it is now and, when that runs by
+// itself, starts its pipeline, or for an autoInto run queues the runs of
 // the merge requests into the branch.
 func (s *service) makeAutoRun(ctx context.Context, r *autoRun) {
-	ctx, cancel := context.WithTimeout(ctx, autoStartTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.autoStartTimeout)
 	defer cancel()
 	p, err := s.projects.Get(ctx, r.userID, r.key.projectID)
 	if err != nil {
@@ -205,7 +284,7 @@ func (s *service) makeAutoRun(ctx context.Context, r *autoRun) {
 	}
 	switch r.key.kind {
 	case autoBranch:
-		if runsAutomatically(p, r.key.branch, nil) {
+		if branchRunsAutomatically(p, r.key.branch) {
 			s.startAutomatic(ctx, r, StartInput{UserID: p.UserID, ProjectID: p.ID, Branch: r.key.branch, Trigger: r.trigger, Automatic: true})
 		}
 	case autoMergeRequest:
@@ -214,11 +293,11 @@ func (s *service) makeAutoRun(ctx context.Context, r *autoRun) {
 			s.logAutoRefusal(ctx, r, err)
 			return
 		}
-		if mr != nil && runsAutomatically(p, "", mr) {
+		if mergeRequestRunsAutomatically(p, mr) {
 			s.startAutomatic(ctx, r, StartInput{UserID: p.UserID, ProjectID: p.ID, MergeRequestID: mr.ID, Trigger: r.trigger, Automatic: true, StopStale: true})
 		}
 	case autoInto:
-		if !runsAutomatically(p, r.key.branch, nil) {
+		if !branchRunsAutomatically(p, r.key.branch) {
 			return
 		}
 		mrs, err := s.mrs.PipelineMergeRequestsInto(ctx, p.UserID, p.ID, r.key.branch)
@@ -266,8 +345,10 @@ func (s *service) logAutoRefusal(ctx context.Context, r *autoRun, err error) {
 
 // catchUp queues the runs of every ticked branch, each with the open merge
 // requests into it, so that what changed while devpad was not running, of
-// which no listener was told, runs now. Each makes a pipeline only where
-// the commits and jobs as they are have none.
+// which no listener was told, runs now, as does what a run could not start
+// or the queue dropped. Each makes a pipeline only where the commits and
+// jobs as they are have none (StartInput.Automatic), and goes through the
+// queue's interval and its turn per project like any other run.
 func (s *service) catchUp(ctx context.Context) {
 	projects, err := s.projects.ListPipelineProjects(ctx)
 	if err != nil {

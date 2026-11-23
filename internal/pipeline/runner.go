@@ -71,11 +71,18 @@ func (s *service) awaitEnvironment(ctx context.Context, p *Pipeline) bool {
 }
 
 // begin takes a pipeline that holds a job slot out of the queue, unless it
-// was cancelled or superseded first, and records it as running on the image
-// new workspaces of its project get now: read once the slot is held, since
-// builds while it waited may have replaced, and pruned, the one it would
-// have had. It reports false, with no error, when the pipeline ended first.
+// was cancelled or superseded first, or has nothing left to test (stale),
+// and records it as running on the image new workspaces of its project get
+// now: read once the slot is held, since builds while it waited may have
+// replaced, and pruned, the one it would have had. It reports false, with
+// no error, when the pipeline ended first.
 func (s *service) begin(ctx context.Context, a *activePipeline, p *Pipeline) (bool, error) {
+	if why := s.stale(ctx, p); why != "" {
+		s.mu.Lock()
+		a.stop(why)
+		s.mu.Unlock()
+		return false, nil
+	}
 	image, err := s.image(ctx, p)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -97,6 +104,38 @@ func (s *service) begin(ctx context.Context, a *activePipeline, p *Pipeline) (bo
 	}
 	p.Status, p.Image, p.StartedAt = StatusRunning, image, &started
 	return true, nil
+}
+
+// stale says why a pipeline about to start has nothing left to test, or
+// is "": whoever started it, its merge request is no longer open, or its
+// branch or its merge request's target is no longer protected; and what
+// devpad started by itself no longer runs by itself, that branch no longer
+// ticked. It reads the merge request as stored, taking no lock of the
+// merge request service's, and when it cannot read something it lets the
+// pipeline run.
+func (s *service) stale(ctx context.Context, p *Pipeline) staleCause {
+	branch := p.Branch
+	if p.Kind == KindMergeRequest {
+		mr, err := s.mrs.PipelineMergeRequest(ctx, p.UserID, p.ProjectID, p.MergeRequestID)
+		if err != nil {
+			return ""
+		}
+		if mr == nil || !mr.Open {
+			return mergeRequestEnded(mr != nil && mr.Merged)
+		}
+		branch = mr.TargetBranch
+	}
+	proj, err := s.projects.Get(ctx, p.UserID, p.ProjectID)
+	if err != nil {
+		return ""
+	}
+	switch {
+	case !proj.IsProtected(branch):
+		return staleCause(branch + " is no longer protected")
+	case p.Trigger.Automatic() && !branchRunsAutomatically(proj, branch):
+		return noLongerAutomatic(branch)
+	}
+	return ""
 }
 
 // image is the image new workspaces of the pipeline's project get now.

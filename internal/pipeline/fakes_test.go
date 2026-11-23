@@ -47,6 +47,10 @@ type fakeProjects struct {
 	// refs are the pipelines' pins, by UID.
 	refs    map[string]string
 	deleted []string
+	// branchesErr, when set, is what reading the branches fails with;
+	// branchesGate, when set, holds each read until it is closed.
+	branchesErr  error
+	branchesGate chan struct{}
 }
 
 func (f *fakeProjects) Get(_ context.Context, userID, projectID int64) (*project.Project, error) {
@@ -62,9 +66,22 @@ func (f *fakeProjects) Get(_ context.Context, userID, projectID int64) (*project
 	return &p, nil
 }
 
-func (f *fakeProjects) Branches(context.Context, int64, int64) (*agent.RepoRefs, error) {
+func (f *fakeProjects) Branches(ctx context.Context, _, _ int64) (*agent.RepoRefs, error) {
+	f.mu.Lock()
+	gate := f.branchesGate
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.branchesErr != nil {
+		return nil, f.branchesErr
+	}
 	refs := &agent.RepoRefs{DefaultBranch: f.project.DefaultBranch}
 	for name, sha := range f.branches {
 		refs.Branches = append(refs.Branches, agent.RepoRef{Name: name, SHA: sha})
@@ -683,6 +700,9 @@ func (e *env) newService() *service {
 		BundleDir:     e.tempDir,
 	}).(*service)
 	svc.AddListener(e.listener)
+	// Automatic runs of a key go at once in tests, but for those of the
+	// interval itself.
+	svc.auto.interval = 0
 	return svc
 }
 
