@@ -116,7 +116,7 @@ func TestPipelineFeedbackCapsOutput(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		files = append(files, fmt.Sprintf("dir/%03d/%s\nforged line", i, strings.Repeat("f", 2000)))
 	}
-	conflict := ConflictFeedback("task/3", "main", files)
+	conflict := ConflictFeedback("task/3", "main", files, 0)
 	if len(conflict) > maxConflictListBytes+1024 || strings.Contains(conflict, "\nforged line") || !strings.Contains(conflict, "more\n") {
 		t.Fatalf("conflict feedback of %d bytes:\n%.600s", len(conflict), conflict)
 	}
@@ -145,7 +145,7 @@ func TestPipelineFeedbackOfAJobWithNoOutput(t *testing.T) {
 func TestPipelineFeedbackOfAConflict(t *testing.T) {
 	res := PipelineResult{PipelineID: 7, HeadSHA: "h1", TargetBranch: "main", TargetSHA: "m1", Outcome: PipelineConflict, ConflictFiles: []string{"cart.go", "go.mod"}}
 	msg := pipelineFeedback{res: res, branch: "task/3", round: 2}.String()
-	for _, want := range []string{"pipeline #7 could not test your branch: it doesn't merge onto `main`", "automatic round 2 of 2", ConflictFeedback("task/3", "main", res.ConflictFiles)} {
+	for _, want := range []string{"pipeline #7 could not test your branch: it doesn't merge onto `main`", "automatic round 2 of 2", ConflictFeedback("task/3", "main", res.ConflictFiles, 0)} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("feedback lacks %q:\n%s", want, msg)
 		}
@@ -153,12 +153,16 @@ func TestPipelineFeedbackOfAConflict(t *testing.T) {
 	if got := (pipelineFeedback{res: res, branch: "task/3"}).summary(); !strings.HasSuffix(got, ": 2 files conflict.") {
 		t.Errorf("summary %q", got)
 	}
-	// The pin's answer keeps at most agent.MaxConflictPaths files, so as
-	// many may be more.
+	// The pin's answer keeps at most agent.MaxConflictPaths files and
+	// counts the rest, so exactly as many are as many.
 	for i := range agent.MaxConflictPaths - 2 {
 		res.ConflictFiles = append(res.ConflictFiles, fmt.Sprintf("f%d.go", i))
 	}
-	if got := (pipelineFeedback{res: res, branch: "task/3"}).summary(); !strings.HasSuffix(got, ": 50 or more files conflict.") {
+	if got := (pipelineFeedback{res: res, branch: "task/3"}).summary(); !strings.HasSuffix(got, ": 50 files conflict.") {
+		t.Errorf("summary %q", got)
+	}
+	res.ConflictMore = 3
+	if got := (pipelineFeedback{res: res, branch: "task/3"}).summary(); !strings.HasSuffix(got, ": 53 files conflict.") {
 		t.Errorf("summary %q", got)
 	}
 }
@@ -168,8 +172,15 @@ func TestConflictFeedbackListsAtMostFiftyFiles(t *testing.T) {
 	for i := 0; i < 60; i++ {
 		files = append(files, fmt.Sprintf("f%d.go", i))
 	}
-	msg := ConflictFeedback("task/3", "main", files)
+	msg := ConflictFeedback("task/3", "main", files, 0)
 	if !strings.Contains(msg, "- `f49.go`\n- … and 10 more") || strings.Contains(msg, "f50.go") || !strings.Contains(msg, "Merge `devpad/main` into `task/3`") {
+		t.Fatalf("feedback:\n%s", msg)
+	}
+	// Files the pin's answer didn't list are counted with the rest.
+	if msg := ConflictFeedback("task/3", "main", files, 5); !strings.Contains(msg, "- … and 15 more\n") {
+		t.Fatalf("feedback:\n%s", msg)
+	}
+	if msg := ConflictFeedback("task/3", "main", files[:2], 5); !strings.Contains(msg, "- `f1.go`\n- … and 5 more\n") {
 		t.Fatalf("feedback:\n%s", msg)
 	}
 }

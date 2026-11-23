@@ -98,8 +98,35 @@ func (s *service) recordLookClosely(ctx context.Context, mr *MergeRequest, diff 
 // markChange works out and keeps the look-closely mark of open merge
 // request mrID's head, unless it has it already.
 func (s *service) markChange(ctx context.Context, mrID int64) {
+	s.mark(ctx, mrID, false)
+}
+
+// markInto works out again, in the background, the look-closely marks of
+// the project's open merge requests into branch, which moved: the files
+// its jobs run may be others now.
+func (s *service) markInto(projectID int64, branch string) {
+	s.spawn(func(ctx context.Context) {
+		open, err := s.repo.ListOpenByTarget(ctx, projectID, branch)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("project %d: reading the open merge requests into %s to mark: %v", projectID, branch, err)
+			}
+			return
+		}
+		for _, mr := range open {
+			if ctx.Err() != nil {
+				return
+			}
+			s.mark(ctx, mr.ID, true)
+		}
+	})
+}
+
+// mark works out and keeps the look-closely mark of open merge request
+// mrID's head: again, when again is set, else unless it has it already.
+func (s *service) mark(ctx context.Context, mrID int64, again bool) {
 	mr, err := s.repo.GetByID(ctx, mrID)
-	if err != nil || mr == nil || mr.Status != StatusOpen || mr.LookClosely != nil || mr.HeadSHA == "" {
+	if err != nil || mr == nil || mr.Status != StatusOpen || (mr.LookClosely != nil && !again) || mr.HeadSHA == "" {
 		return
 	}
 	diff, err := s.projects.Diff(ctx, mr.UserID, mr.ProjectID, mr.TargetBranch, mr.HeadSHA)

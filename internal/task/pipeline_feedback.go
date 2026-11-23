@@ -6,7 +6,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/promptname"
 )
 
@@ -73,7 +72,7 @@ func (f pipelineFeedback) String() string {
 	if res.Outcome == PipelineConflict {
 		fmt.Fprintf(&b, "Devpad's pipeline #%d could not test your branch: it doesn't merge onto %s at `%s`.%s\n\n", res.PipelineID, target, short(res.TargetSHA), from)
 		b.WriteString(f.roundLine())
-		b.WriteString(ConflictFeedback(f.branch, res.TargetBranch, res.ConflictFiles))
+		b.WriteString(ConflictFeedback(f.branch, res.TargetBranch, res.ConflictFiles, res.ConflictMore))
 		return b.String()
 	}
 	fmt.Fprintf(&b, "Devpad's pipeline #%d failed on your branch %s merged onto %s at `%s`.%s Your work merges only once it passes.\n\n", res.PipelineID, branch, target, short(res.TargetSHA), from)
@@ -138,13 +137,8 @@ func (f pipelineFeedback) roundLine() string {
 func (f pipelineFeedback) summary() string {
 	res := f.res
 	if res.Outcome == PipelineConflict {
-		n := len(res.ConflictFiles)
-		count := fmt.Sprintf("%d %s", n, plural(n, "file", "files"))
-		if n >= agent.MaxConflictPaths {
-			// The pin's answer keeps no more than that many.
-			count = fmt.Sprintf("%d or more files", n)
-		}
-		return fmt.Sprintf("Pipeline #%d found `%s` doesn't merge onto `%s`: %s conflict.", res.PipelineID, f.branch, res.TargetBranch, count)
+		n := len(res.ConflictFiles) + res.ConflictMore
+		return fmt.Sprintf("Pipeline #%d found `%s` doesn't merge onto `%s`: %d %s conflict.", res.PipelineID, f.branch, res.TargetBranch, n, plural(n, "file", "files"))
 	}
 	jobs := make([]string, len(f.counted))
 	for i, j := range f.counted {
@@ -230,9 +224,10 @@ func writeFailedJob(b *strings.Builder, j PipelineJobResult, share int, h string
 }
 
 // ConflictFeedback asks a task's agent to merge the target branch into its
-// branch and resolve the conflicts, which files lists, as the user's
-// request to resolve them and a pipeline that found them both send it.
-func ConflictFeedback(branch, target string, files []string) string {
+// branch and resolve the conflicts, which files lists, with more files
+// conflicting than it lists, as the user's request to resolve them and a
+// pipeline that found them both send it.
+func ConflictFeedback(branch, target string, files []string, more int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Your branch `%s` conflicts with `%s`, so it cannot be merged.", branch, target)
 	if len(files) > 0 {
@@ -241,11 +236,15 @@ func ConflictFeedback(branch, target string, files []string) string {
 		for i, f := range files {
 			line := fmt.Sprintf("- %s\n", promptname.Quote(f))
 			if i == maxConflictFiles || listed+len(line) > maxConflictListBytes {
-				fmt.Fprintf(&b, "- … and %d more\n", len(files)-i)
+				fmt.Fprintf(&b, "- … and %d more\n", len(files)-i+more)
+				more = 0
 				break
 			}
 			b.WriteString(line)
 			listed += len(line)
+		}
+		if more > 0 {
+			fmt.Fprintf(&b, "- … and %d more\n", more)
 		}
 	}
 	fmt.Fprintf(&b, "\nMerge `devpad/%s` into `%s`, resolve the conflicts keeping both sides' intent, make sure the project's checks pass, and commit the merge.", target, branch)

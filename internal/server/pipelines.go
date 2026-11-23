@@ -118,7 +118,7 @@ func (a mergeRequestPipelineReports) PipelineReport(ctx context.Context, userID,
 	p := r.Pipeline
 	out := &mergerequest.PipelineReport{
 		PipelineID: p.ID, Status: string(p.Status), HeadSHA: p.HeadSHA, TargetSHA: p.TargetSHA,
-		ConflictPaths: p.ConflictPaths, TargetPending: r.Target != nil && r.Target.Pending,
+		ConflictPaths: p.ConflictPaths, ConflictMore: p.ConflictMore, TargetPending: r.Target != nil && r.Target.Pending,
 	}
 	if p.ConfigSource == pipeline.SourceFile {
 		out.ConfigPath = p.ConfigPath

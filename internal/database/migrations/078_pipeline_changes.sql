@@ -15,6 +15,10 @@ ALTER TABLE pipelines ADD COLUMN purpose TEXT NOT NULL DEFAULT 'official'
 -- they didn't come from. Empty for pipelines from before it was kept.
 ALTER TABLE pipelines ADD COLUMN config_sha TEXT NOT NULL DEFAULT '';
 
+-- How many more files a conflict names than conflict_paths keeps, which is
+-- at most the first 50 the pin's answer listed.
+ALTER TABLE pipelines ADD COLUMN conflict_more INTEGER NOT NULL DEFAULT 0;
+
 -- What a merge request keeps of the look-closely mark of its change: how
 -- many files it lists for each reason, as JSON ({"reasons": [{"reason",
 -- "files"}]}), and none of the change's paths, which come with its diff;

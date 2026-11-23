@@ -289,8 +289,10 @@ type Pipeline struct {
 	// its jobs: what devpad could not do, the parse error of an invalid
 	// pipeline, why the source does not merge, or why it was cancelled.
 	Error string
-	// ConflictPaths are the files that conflict, for StatusConflict.
+	// ConflictPaths are the files that conflict, for StatusConflict: the
+	// first agent.MaxConflictPaths, and ConflictMore how many more do.
 	ConflictPaths []string
+	ConflictMore  int
 	Trigger       Trigger
 	// RerunOf is the interrupted pipeline this one runs again, or zero.
 	RerunOf int64

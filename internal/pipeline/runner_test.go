@@ -242,8 +242,11 @@ func TestSourceThatDoesNotMergeIsAConflict(t *testing.T) {
 	e.projects.mu.Unlock()
 	e.mrs.setHead(e.mr, sha(31))
 	p = e.wait(e.start(StartInput{MergeRequestID: e.mr}).ID)
-	if p.Status != StatusConflict || p.Error != "the source conflicts with the target (5 files conflict; the first 2 are listed)" || len(p.ConflictPaths) != 2 {
+	if p.Status != StatusConflict || p.Error != "the source conflicts with the target (5 files conflict; the first 2 are listed)" || len(p.ConflictPaths) != 2 || p.ConflictMore != 3 {
 		t.Fatalf("a long conflict: %+v", p)
+	}
+	if kept, err := e.svc.repo.Get(context.Background(), p.ID); err != nil || kept.ConflictMore != 3 || len(kept.ConflictPaths) != 2 {
+		t.Fatalf("kept: %+v %v", kept, err)
 	}
 }
 

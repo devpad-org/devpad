@@ -580,9 +580,12 @@ func (s *service) updateFromTask(ctx context.Context, mr *MergeRequest, t *task.
 const maxReviewRounds = 3
 
 // BranchMoved has the open merge request from a branch that moved follow
-// it. A merge is followed by the merge request that merged (followMerge),
-// once it has released its lock, which it holds while the move is told.
+// it, and those into it work out their look-closely mark again, which
+// depends on the branch's jobs. A merge is followed by the merge request
+// that merged (followMerge), once it has released its lock, which it holds
+// while the move is told.
 func (s *service) BranchMoved(ctx context.Context, m project.BranchMove) {
+	s.markInto(m.ProjectID, m.Branch)
 	switch m.Cause {
 	case project.MovePublished:
 		if err := s.branchPublished(ctx, m.UserID, m.ProjectID, m.Branch, m.SHA); err != nil {
@@ -1926,6 +1929,7 @@ func (s *service) Merge(ctx context.Context, userID, projectID, mrID int64, in M
 // take their locks in opposite orders.
 func (s *service) followMerge(ctx context.Context, mr *MergeRequest) {
 	branch := mr.TargetBranch
+	s.markInto(mr.ProjectID, branch)
 	if err := s.followBranch(ctx, mr.UserID, mr.ProjectID, branch, PushMerge, func() (string, error) {
 		return s.canonicalSHA(ctx, mr.UserID, mr.ProjectID, branch)
 	}); err != nil {
@@ -2141,7 +2145,7 @@ func (s *service) ResolveConflicts(ctx context.Context, userID, projectID, mrID 
 	if t.OverBudget() {
 		return fmt.Errorf("%w: the task has spent $%.2f of its $%.2f budget; raise its budget to send it the conflicts", ErrInvalidState, t.CostUSD, t.BudgetUSD)
 	}
-	_, err = s.tasks.RequestChanges(ctx, userID, projectID, mr.TaskID, task.ConflictFeedback(mr.SourceBranch, mr.TargetBranch, files), true)
+	_, err = s.tasks.RequestChanges(ctx, userID, projectID, mr.TaskID, task.ConflictFeedback(mr.SourceBranch, mr.TargetBranch, files, 0), true)
 	return err
 }
 

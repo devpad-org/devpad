@@ -166,30 +166,82 @@ func markOf(f agent.RepoDiffFile, named map[string]bool) (MarkReason, bool) {
 
 // jobPaths are the paths in the repo the scripts name, as tokens of the
 // shell that look like paths: each holding a "/" or a ".", relative to
-// /workspace, where a job's checkout is, or given under it. A path held in
-// a variable, a glob or wildcard such as Go's ./..., or a directory names
-// no file here.
+// /workspace, where a job's checkout is, or given under it. A command's
+// path is also taken from the directory a "cd" before it in the script
+// went to, and from the one a -C (make, git), --prefix (npm) or --cwd
+// (yarn) of its own names; both the path as written and as joined count,
+// since a cd that can't be followed, such as to a variable, leaves which
+// is meant unknown. A path held in a variable, a glob or wildcard such as
+// Go's ./..., or a directory names no file here.
 func jobPaths(scripts []string) map[string]bool {
 	named := map[string]bool{}
 	for _, script := range scripts {
-		for _, token := range strings.FieldsFunc(script, func(r rune) bool {
-			return unicode.IsSpace(r) || strings.ContainsRune(";|&()<>'\"`=,", r)
-		}) {
-			if !strings.ContainsAny(token, "/.") || strings.ContainsAny(token, "$*?[{~\\") || strings.Contains(token, "...") || strings.HasPrefix(token, "-") {
+		dir := ""
+		for _, command := range strings.FieldsFunc(script, func(r rune) bool { return strings.ContainsRune(";&|()\n", r) }) {
+			tokens := strings.FieldsFunc(command, func(r rune) bool {
+				return unicode.IsSpace(r) || strings.ContainsRune("<>'\"`=,", r)
+			})
+			if len(tokens) == 0 {
 				continue
 			}
-			token = strings.TrimPrefix(token, "/workspace/")
-			if strings.HasPrefix(token, "/") {
+			if tokens[0] == "cd" {
+				next, ok := "", false
+				if len(tokens) > 1 {
+					next, ok = repoPath(dir, tokens[1])
+				}
+				// Where a cd that can't be followed went is unknown, and
+				// the paths after it count as written.
+				dir = next
+				if !ok {
+					dir = ""
+				}
 				continue
 			}
-			p := path.Clean(token)
-			if p == "." || p == ".." || strings.HasPrefix(p, "../") {
-				continue
+			bases := []string{"", dir}
+			for i, token := range tokens[:len(tokens)-1] {
+				if token == "-C" || token == "--prefix" || token == "--cwd" {
+					if base, ok := repoPath(dir, tokens[i+1]); ok {
+						bases = append(bases, base)
+					}
+				}
 			}
-			named[p] = true
+			for _, token := range tokens {
+				if !strings.ContainsAny(token, "/.") {
+					continue
+				}
+				for _, base := range bases {
+					if p, ok := repoPath(base, token); ok && p != "" {
+						named[p] = true
+					}
+				}
+			}
 		}
 	}
 	return named
+}
+
+// repoPath is where token, a path a job's script gives from dir, is in the
+// checkout, "" for its root, or false when it is no plain path there.
+func repoPath(dir, token string) (string, bool) {
+	if strings.ContainsAny(token, "$*?[{~\\") || strings.Contains(token, "...") || strings.HasPrefix(token, "-") {
+		return "", false
+	}
+	if rest, ok := strings.CutPrefix(token, "/workspace/"); ok {
+		dir, token = "", rest
+	} else if token == "/workspace" {
+		dir, token = "", "."
+	}
+	if strings.HasPrefix(token, "/") {
+		return "", false
+	}
+	p := path.Clean(path.Join(dir, token))
+	if p == ".." || strings.HasPrefix(p, "../") {
+		return "", false
+	}
+	if p == "." {
+		return "", true
+	}
+	return p, true
 }
 
 // deletesTest reports whether a change to f deletes a test: it removes a

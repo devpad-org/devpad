@@ -554,7 +554,7 @@ func TestResolveConflictsSendsTheConflictFeedback(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 	reqs := e.tasks.changeRequests()
-	if len(reqs) != 1 || reqs[0].feedback != task.ConflictFeedback("task/1", "main", []string{"cart.go"}) || !reqs[0].start {
+	if len(reqs) != 1 || reqs[0].feedback != task.ConflictFeedback("task/1", "main", []string{"cart.go"}, 0) || !reqs[0].start {
 		t.Fatalf("requests %+v", reqs)
 	}
 }

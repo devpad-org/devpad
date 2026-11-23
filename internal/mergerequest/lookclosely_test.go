@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/project"
 )
 
 // The look-closely rule: what a change touches that a pipeline can't vouch
@@ -146,8 +147,31 @@ func TestLookCloselyMarksTheFilesTheJobsRun(t *testing.T) {
 			t.Errorf("%s is not named", p)
 		}
 	}
-	for _, p := range []string{"frontend", "gen.sh", "outside.sh", "etc/profile", "test", "--config", "..."} {
+	for _, p := range []string{"frontend", "gen.sh", "outside.sh", "etc/profile", "test", "--config", "...", ""} {
 		if named[p] {
+			t.Errorf("%s is named", p)
+		}
+	}
+	// A cd before a command, or a -C of its own, moves where its paths
+	// are; as it might not be followed, the path as written counts too.
+	// Each script is a shell of its own, whose cd lasts to its end.
+	moved := jobPaths([]string{
+		"cd frontend && node ./tools/check.mjs",
+		"cd web\ncd src && sh lint.sh",
+		"make -C backend -f rules.mk",
+		"npm --prefix ui run x ./scripts/a.js",
+		"cd $DIR && ./run.sh; cd /workspace/api && ./b.sh; cd .. && ./c.sh",
+	})
+	for _, p := range []string{
+		"frontend/tools/check.mjs", "tools/check.mjs", "web/src/lint.sh", "lint.sh", "backend/rules.mk", "rules.mk",
+		"ui/scripts/a.js", "scripts/a.js", "run.sh", "api/b.sh", "b.sh", "c.sh",
+	} {
+		if !moved[p] {
+			t.Errorf("%s is not named", p)
+		}
+	}
+	for _, p := range []string{"frontend", "web", "src/lint.sh", "../c.sh", "api/c.sh"} {
+		if moved[p] {
 			t.Errorf("%s is named", p)
 		}
 	}
@@ -345,6 +369,10 @@ func TestACorruptMarkIsNone(t *testing.T) {
 		if all, err := e.svc.List(ctx, e.owner, e.pid()); err != nil || len(all) != 1 {
 			t.Fatalf("%s: list %v %v", bad, all, err)
 		}
+		// Read twice, it was logged once: it is no longer met first.
+		if unreadableMarks.first(mr.ID, got.MergeRequest.HeadSHA, bad) {
+			t.Fatalf("%s: not noted as logged", bad)
+		}
 	}
 	if err := e.svc.Reconcile(ctx); err != nil {
 		t.Fatal(err)
@@ -377,6 +405,32 @@ func TestTheMarkNamesWhatTheTargetsJobsRun(t *testing.T) {
 	if got, _ := e.svc.repo.GetByID(ctx, mr.ID); !slices.Equal(got.LookClosely.Reasons, []ReasonCount{{MarkJobFile, 1}}) {
 		t.Fatalf("kept %+v", got.LookClosely)
 	}
+}
+
+// When the target moves, its jobs may run other files, so the marks of the
+// merge requests into it are worked out again.
+func TestTheMarkFollowsTheTargetsJobs(t *testing.T) {
+	e, reports := pipelineEnv(t)
+	ctx := context.Background()
+	e.projects.mu.Lock()
+	e.projects.files = []agent.RepoDiffFile{{Path: "scripts/test.sh", Status: "M"}}
+	e.projects.mu.Unlock()
+	mr := e.openTaskMR(t)
+	kept := func() *LookCloselySummary {
+		got, _ := e.svc.repo.GetByID(ctx, mr.ID)
+		return got.LookClosely
+	}
+	waitFor(t, "the first mark", func() bool { return kept() != nil })
+	if got := kept(); got.Marked() {
+		t.Fatalf("marked before the jobs ran the file: %+v", got)
+	}
+	reports.mu.Lock()
+	reports.scripts = []string{"bash scripts/test.sh"}
+	reports.mu.Unlock()
+	e.svc.BranchMoved(ctx, project.BranchMove{UserID: e.owner, ProjectID: e.pid(), Branch: mr.TargetBranch, Cause: project.MoveFastForwarded})
+	waitFor(t, "the mark of the target's new jobs", func() bool {
+		return slices.Equal(kept().Reasons, []ReasonCount{{MarkJobFile, 1}})
+	})
 }
 
 // The app's LookCloselyReason lists the reasons the server marks files for.

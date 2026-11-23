@@ -243,6 +243,10 @@ func TestMergeRequestPipelineReportsAreThePipelinesReport(t *testing.T) {
 	if got, _ := (mergeRequestPipelineReports{f}).PipelineReport(context.Background(), 1, 2, 9, 0); got.ConfigPath != "" || !got.TargetPending {
 		t.Fatalf("from the setting, the target pending: %+v", got)
 	}
+	f.report.Pipeline.Status, f.report.Pipeline.ConflictPaths, f.report.Pipeline.ConflictMore = pipeline.StatusConflict, []string{"a.go"}, 4
+	if got, _ := (mergeRequestPipelineReports{f}).PipelineReport(context.Background(), 1, 2, 9, 0); len(got.ConflictPaths) != 1 || got.ConflictMore != 4 {
+		t.Fatalf("a conflict: %+v", got)
+	}
 }
 
 // A task's agent gets the jobs of the pipeline at the tip of the branch its

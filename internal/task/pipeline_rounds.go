@@ -104,8 +104,10 @@ type PipelineResult struct {
 	// TargetPending says the target's own pipeline of TargetSHA is still to
 	// finish, so whether a job fails there too is not known yet.
 	TargetPending bool
-	// ConflictFiles are the files that conflict, for PipelineConflict.
+	// ConflictFiles are the files that conflict, for PipelineConflict, and
+	// ConflictMore how many more do than it lists.
 	ConflictFiles []string
+	ConflictMore  int
 	// Reviewing says an agent review of HeadSHA is under way, whose
 	// requested changes go to the task's agent: a failure waits for it to
 	// end, rather than send the agent off before the review can.
@@ -297,7 +299,7 @@ func roundFingerprint(res PipelineResult, counted []PipelineJobResult) string {
 	if res.Outcome == PipelineConflict {
 		files := slices.Clone(res.ConflictFiles)
 		slices.Sort(files)
-		lines = append(lines, "conflict")
+		lines = append(lines, fmt.Sprintf("conflict, %d more", res.ConflictMore))
 		lines = append(lines, files...)
 	} else {
 		for _, j := range counted {

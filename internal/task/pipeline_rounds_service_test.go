@@ -215,7 +215,7 @@ func TestAConflictCountsTowardThePipelineRounds(t *testing.T) {
 	if got := e.pipelineEnded(t, tk.ID, conflict); got.PipelineRounds.Count != 1 || got.Status != StatusQueued {
 		t.Fatalf("after a conflict: %+v", got)
 	}
-	if prompt := e.roundDone(t, tk.ID, "h2"); !strings.Contains(prompt, ConflictFeedback("task/1", "main", []string{"cart.go"})) {
+	if prompt := e.roundDone(t, tk.ID, "h2"); !strings.Contains(prompt, ConflictFeedback("task/1", "main", []string{"cart.go"}, 0)) {
 		t.Errorf("the conflict round:\n%s", prompt)
 	}
 	e.pipelineEnded(t, tk.ID, on("h2", failure(6, failedJob("backend", "two\n"))))

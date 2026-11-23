@@ -99,6 +99,7 @@ async function onRunAgain() {
       <p v-if="pipeline.error" class="notice pv-error" :class="look?.tone === 'error' ? 'notice-error' : 'notice-warning'">{{ pipeline.error }}</p>
       <ul v-if="pipeline.conflictPaths.length" class="pv-conflicts">
         <li v-for="path in pipeline.conflictPaths" :key="path" class="mono"><MrIcon name="file" :size="12" />{{ path }}</li>
+        <li v-if="pipeline.conflictMore" class="pv-conflicts-more">and {{ pipeline.conflictMore }} more</li>
       </ul>
       <p v-if="error" class="notice notice-error">{{ error }}</p>
 
@@ -226,6 +227,10 @@ async function onRunAgain() {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.pv-conflicts .pv-conflicts-more {
+  color: var(--text-tertiary);
 }
 
 .pv-facts {

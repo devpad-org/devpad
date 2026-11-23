@@ -481,6 +481,7 @@ func pipelineResponse(p *Pipeline, withScripts bool) map[string]any {
 		"status":        p.Status,
 		"error":         p.Error,
 		"conflictPaths": paths,
+		"conflictMore":  p.ConflictMore,
 		"trigger":       p.Trigger,
 		"rerunOf":       p.RerunOf,
 		"createdAt":     p.CreatedAt,

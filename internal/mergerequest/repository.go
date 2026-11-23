@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -385,6 +386,40 @@ type rowScanner interface {
 }
 
 // scanMergeRequest scans mrColumns, then any extra columns into extra.
+// unreadableMarks are the kept marks that didn't decode, so each is logged
+// once rather than on every read of its merge request, such as each poll
+// of the list.
+var unreadableMarks markSet
+
+type markSet struct {
+	mu   sync.Mutex
+	seen map[markKey]bool
+}
+
+type markKey struct {
+	mrID       int64
+	head, mark string
+}
+
+// maxUnreadableMarks bounds the set; past it, it starts again empty.
+const maxUnreadableMarks = 1024
+
+// first reports whether a mark of the merge request's head is met for the
+// first time.
+func (m *markSet) first(mrID int64, head, mark string) bool {
+	key := markKey{mrID: mrID, head: head, mark: mark}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.seen[key] {
+		return false
+	}
+	if m.seen == nil || len(m.seen) >= maxUnreadableMarks {
+		m.seen = make(map[markKey]bool)
+	}
+	m.seen[key] = true
+	return true
+}
+
 func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 	var mr MergeRequest
 	var taskID sql.NullInt64
@@ -402,7 +437,7 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 	// request: it has none, and devpad works it out again.
 	if markHead != "" && markHead == mr.HeadSHA {
 		lc, err := decodeLookClosely(mark)
-		if err != nil {
+		if err != nil && unreadableMarks.first(mr.ID, markHead, mark) {
 			log.Printf("merge request %d: %v; it has no look-closely mark until devpad works it out again", mr.ID, err)
 		}
 		mr.LookClosely = lc

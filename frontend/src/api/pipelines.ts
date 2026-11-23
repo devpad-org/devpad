@@ -111,6 +111,8 @@ export interface Pipeline {
   // Why the pipeline itself ended as it did, when that was not its jobs.
   error: string
   conflictPaths: string[]
+  // How many more files conflict than conflictPaths lists, at most 50.
+  conflictMore: number
   trigger: PipelineTrigger
   // The interrupted pipeline this one runs again, or 0.
   rerunOf: number

@@ -139,7 +139,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const pipelineColumns = `id, project_id, user_id, uid, kind, purpose, branch, merge_request_id, source_branch, target_branch, head_sha, target_sha, tested_sha, tested_tree, config_source, config_path, config_hash, config_sha, image, status, error, conflict_paths, trigger, rerun_of, ref_pinned, created_at, started_at, finished_at, announced_at`
+const pipelineColumns = `id, project_id, user_id, uid, kind, purpose, branch, merge_request_id, source_branch, target_branch, head_sha, target_sha, tested_sha, tested_tree, config_source, config_path, config_hash, config_sha, image, status, error, conflict_paths, conflict_more, trigger, rerun_of, ref_pinned, created_at, started_at, finished_at, announced_at`
 
 func (r *repository) Create(ctx context.Context, p *Pipeline) error {
 	paths, err := jsonList(p.ConflictPaths)
@@ -152,9 +152,9 @@ func (r *repository) Create(ctx context.Context, p *Pipeline) error {
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO pipelines (project_id, user_id, uid, kind, purpose, branch, merge_request_id, source_branch, target_branch, head_sha, target_sha, tested_sha, config_source, config_path, config_hash, config_sha, image, status, error, conflict_paths, trigger, rerun_of, ref_pinned, created_at, started_at, finished_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ProjectID, p.UserID, p.UID, p.Kind, p.Purpose, p.Branch, nullableID(p.MergeRequestID), p.SourceBranch, p.TargetBranch, p.HeadSHA, p.TargetSHA, p.TestedSHA, p.ConfigSource, p.ConfigPath, p.ConfigHash, p.ConfigSHA, p.Image, p.Status, p.Error, paths, p.Trigger, nullableID(p.RerunOf), p.RefPinned, p.CreatedAt, p.StartedAt, p.FinishedAt,
+		`INSERT INTO pipelines (project_id, user_id, uid, kind, purpose, branch, merge_request_id, source_branch, target_branch, head_sha, target_sha, tested_sha, config_source, config_path, config_hash, config_sha, image, status, error, conflict_paths, conflict_more, trigger, rerun_of, ref_pinned, created_at, started_at, finished_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ProjectID, p.UserID, p.UID, p.Kind, p.Purpose, p.Branch, nullableID(p.MergeRequestID), p.SourceBranch, p.TargetBranch, p.HeadSHA, p.TargetSHA, p.TestedSHA, p.ConfigSource, p.ConfigPath, p.ConfigHash, p.ConfigSHA, p.Image, p.Status, p.Error, paths, p.ConflictMore, p.Trigger, nullableID(p.RerunOf), p.RefPinned, p.CreatedAt, p.StartedAt, p.FinishedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting pipeline: %w", err)
@@ -426,8 +426,8 @@ func (r *repository) Finish(ctx context.Context, p *Pipeline) (bool, error) {
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx,
-		`UPDATE pipelines SET status = ?, error = ?, conflict_paths = ?, finished_at = ? WHERE id = ? AND status IN (?, ?)`,
-		p.Status, p.Error, paths, p.FinishedAt, p.ID, StatusQueued, StatusRunning)
+		`UPDATE pipelines SET status = ?, error = ?, conflict_paths = ?, conflict_more = ?, finished_at = ? WHERE id = ? AND status IN (?, ?)`,
+		p.Status, p.Error, paths, p.ConflictMore, p.FinishedAt, p.ID, StatusQueued, StatusRunning)
 	if err != nil {
 		return false, fmt.Errorf("finishing pipeline: %w", err)
 	}
@@ -749,7 +749,7 @@ func scanPipeline(row rowScanner) (*Pipeline, error) {
 	var mergeRequestID, rerunOf sql.NullInt64
 	var paths string
 	var started, finished, announced sql.NullTime
-	if err := row.Scan(&p.ID, &p.ProjectID, &p.UserID, &p.UID, &p.Kind, &p.Purpose, &p.Branch, &mergeRequestID, &p.SourceBranch, &p.TargetBranch, &p.HeadSHA, &p.TargetSHA, &p.TestedSHA, &p.TestedTree, &p.ConfigSource, &p.ConfigPath, &p.ConfigHash, &p.ConfigSHA, &p.Image, &p.Status, &p.Error, &paths, &p.Trigger, &rerunOf, &p.RefPinned, &p.CreatedAt, &started, &finished, &announced); err != nil {
+	if err := row.Scan(&p.ID, &p.ProjectID, &p.UserID, &p.UID, &p.Kind, &p.Purpose, &p.Branch, &mergeRequestID, &p.SourceBranch, &p.TargetBranch, &p.HeadSHA, &p.TargetSHA, &p.TestedSHA, &p.TestedTree, &p.ConfigSource, &p.ConfigPath, &p.ConfigHash, &p.ConfigSHA, &p.Image, &p.Status, &p.Error, &paths, &p.ConflictMore, &p.Trigger, &rerunOf, &p.RefPinned, &p.CreatedAt, &started, &finished, &announced); err != nil {
 		return nil, err
 	}
 	p.MergeRequestID, p.RerunOf = mergeRequestID.Int64, rerunOf.Int64

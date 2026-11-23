@@ -53,6 +53,9 @@ type PipelineReport struct {
 	// project's pipeline setting.
 	ConfigPath    string
 	ConflictPaths []string
+	// ConflictMore is how many more files conflict than ConflictPaths
+	// lists.
+	ConflictMore int
 	// Jobs are all its jobs in the file's order, as a review agent may read
 	// of them, and Failed those whose code failed, with the end of their
 	// output when it was asked for, which only the task's agent reads.
@@ -241,7 +244,7 @@ func (s *service) pipelineResult(ctx context.Context, mr *MergeRequest, g *Gate)
 		return nil, nil
 	}
 	res.JobsFrom = jobsFrom(rep.ConfigPath, mr.TargetBranch)
-	res.Failed, res.TargetPending, res.ConflictFiles = rep.Failed, rep.TargetPending, rep.ConflictPaths
+	res.Failed, res.TargetPending, res.ConflictFiles, res.ConflictMore = rep.Failed, rep.TargetPending, rep.ConflictPaths, rep.ConflictMore
 	return res, nil
 }
 
