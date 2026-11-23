@@ -468,9 +468,6 @@ func TestSettledPipelinesShow(t *testing.T) {
 	if b := latest.Branches["main"]; b == nil || b.Automatic || b.Settled != nil {
 		t.Fatalf("main's standing: %+v", b)
 	}
-	if !latest.MergeRequestsAutomatic[e.mr] {
-		t.Fatalf("the merge request runs by itself: %v", latest.MergeRequestsAutomatic)
-	}
 
 	// The retry fails too: devpad leaves it to the user.
 	e.svc.MergeRequestMoved(ctx, MergeRequestMove{UserID: e.owner, ProjectID: e.project, MergeRequestID: e.mr})

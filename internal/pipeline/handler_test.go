@@ -109,9 +109,6 @@ func TestPipelineEndpoints(t *testing.T) {
 		settled["pipeline"].(map[string]any)["id"] != float64(id) || branches["main"].(map[string]any)["settled"] != nil {
 		t.Fatalf("latest branches: %v", branches)
 	}
-	if auto, _ := out["mergeRequestsAutomatic"].(map[string]any); auto[fmt.Sprint(e.mr)] != false {
-		t.Fatalf("latest merge requests: %v", out["mergeRequestsAutomatic"])
-	}
 
 	code, out = e.serve(e.owner, http.MethodGet, fmt.Sprintf("/api/projects/%d/merge-requests/%d/pipeline", e.project, e.mr), "")
 	if st, _ := out["status"].(map[string]any); code != http.StatusOK || st["open"] != true || st["configured"] != true || st["passed"] != false || st["current"] != nil || st["targetSha"] != sha(2) || st["source"] != "file" ||

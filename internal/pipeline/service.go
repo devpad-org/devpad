@@ -430,9 +430,6 @@ type LatestPipelines struct {
 	// it runs automatically, and, when it can be read, its settled
 	// pipeline.
 	Branches map[string]*BranchStanding
-	// MergeRequestsAutomatic says, by ID, whether devpad runs each merge
-	// request asked for by itself.
-	MergeRequestsAutomatic map[int64]bool
 }
 
 // BranchStanding is how a branch stands for pipelines now.
@@ -462,9 +459,6 @@ func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestF
 		return nil, err
 	}
 	out := &LatestPipelines{Pipelines: found}
-	if out.MergeRequestsAutomatic, err = s.mergeRequestsAutomatic(ctx, p, f.MergeRequestIDs); err != nil {
-		return nil, err
-	}
 	if len(f.Branches) == 0 {
 		return out, nil
 	}
@@ -483,23 +477,6 @@ func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestF
 			out.BranchTips[b.Name] = b.SHA
 			s.settleBranch(ctx, p, b.Name, b.SHA, out.Branches[b.Name])
 		}
-	}
-	return out, nil
-}
-
-// mergeRequestsAutomatic says of each merge request whether devpad runs it
-// by itself.
-func (s *service) mergeRequestsAutomatic(ctx context.Context, p *project.Project, ids []int64) (map[int64]bool, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	out := make(map[int64]bool, len(ids))
-	for _, id := range ids {
-		mr, err := s.mrs.PipelineMergeRequest(ctx, p.UserID, p.ID, id)
-		if err != nil {
-			return nil, err
-		}
-		out[id] = mergeRequestRunsAutomatically(p, mr)
 	}
 	return out, nil
 }

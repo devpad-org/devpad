@@ -137,10 +137,6 @@ func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 	for name, st := range latest.Branches {
 		branches[name] = map[string]any{"automatic": st.Automatic, "settled": settledResponse(st.Settled)}
 	}
-	automatic := make(map[string]bool, len(latest.MergeRequestsAutomatic))
-	for id, auto := range latest.MergeRequestsAutomatic {
-		automatic[strconv.FormatInt(id, 10)] = auto
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"pipelines":  items,
 		"branchTips": latest.BranchTips,
@@ -148,8 +144,6 @@ func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 		// pipeline of its current commit and jobs that ended without a
 		// result when none of them counts.
 		"branches": branches,
-		// Whether devpad runs each merge request asked for by itself.
-		"mergeRequestsAutomatic": automatic,
 	})
 }
 

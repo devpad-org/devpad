@@ -207,8 +207,8 @@ export const pipelineApi = {
 
   // The newest pipeline that counts (under way, or with a result) of each
   // branch and merge request named that has one, the commit each branch
-  // named is at now (null when the repo could not be read), how each
-  // branch stands, and whether devpad runs each merge request by itself.
+  // named is at now (null when the repo could not be read), and how each
+  // branch stands.
   latest(
     projectId: number,
     subjects: { branches: string[]; mergeRequestIds: number[] },
@@ -216,7 +216,6 @@ export const pipelineApi = {
     pipelines: Pipeline[]
     branchTips: Record<string, string> | null
     branches: Record<string, BranchPipelineStanding>
-    mergeRequestsAutomatic: Record<string, boolean>
   }> {
     const query = new URLSearchParams()
     for (const b of subjects.branches) query.append('branch', b)
