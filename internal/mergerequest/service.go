@@ -2210,8 +2210,9 @@ func (s *service) Reconcile(ctx context.Context) error {
 		}
 	}
 	// A review owed when devpad stopped, such as one a settings change
-	// had let in, starts now if its gate lets it.
-	s.spawn(func(ctx context.Context) { s.resumeReviews(ctx, 0) })
+	// had let in, starts now if its gate lets it, and a task's merge
+	// request follows its pipeline (followOpen).
+	s.spawn(s.followOpen)
 	return nil
 }
 

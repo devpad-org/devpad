@@ -461,6 +461,33 @@ func TestARoundsEndTellsTheTaskThePipelineThatStands(t *testing.T) {
 	}
 }
 
+// A failure that waited, before devpad stopped, on what devpad holds only
+// in memory, such as a queued run of the target's pipeline, is told to the
+// task again as devpad starts, as its gate stands then.
+func TestReconcileTellsTheTaskThePipelineThatStands(t *testing.T) {
+	e, reports := pipelineEnv(t)
+	mr := e.openTaskMR(t)
+	e.gate.set(shut("failed", "pipeline #7 failed (backend, lint)", false, 7))
+	reports.mu.Lock()
+	reports.report.TargetPending = true
+	reports.mu.Unlock()
+	e.finished(mr, 7)
+	if got := e.tasks.pipelineResults(); len(got) != 1 || !got[0].TargetPending {
+		t.Fatalf("told %+v", got)
+	}
+	// Devpad restarts; the target's run it waited on started nothing.
+	reports.mu.Lock()
+	reports.report.TargetPending = false
+	reports.mu.Unlock()
+	if err := e.svc.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the task told again", func() bool {
+		got := e.tasks.pipelineResults()
+		return len(got) == 2 && got[1].PipelineID == 7 && !got[1].TargetPending
+	})
+}
+
 // A review that fails before its agent's run starts ends the wait too.
 func TestAFailureWaitingForAReviewThatCantStartIsDecided(t *testing.T) {
 	e, _ := pipelineEnv(t)

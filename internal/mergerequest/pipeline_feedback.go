@@ -349,24 +349,43 @@ func (s *service) resumeReview(ctx context.Context, mrID int64) error {
 	return nil
 }
 
-// resumeReviews starts the reviews the open merge requests owe whose gate
-// lets them now, of project projectID or of every project when it is 0: as
-// devpad starts, and when a project's settings change, which can open the
-// gate or take it away.
+// resumeReviews starts the reviews the open merge requests of project
+// projectID owe whose gate lets them now, as when the project's settings
+// change, which can open the gate or take it away. As devpad starts,
+// followOpen does this for every project.
 func (s *service) resumeReviews(ctx context.Context, projectID int64) {
-	var open []*MergeRequest
-	var err error
-	if projectID == 0 {
-		open, err = s.repo.ListOpen(ctx)
-	} else {
-		open, err = s.repo.ListByProjectID(ctx, projectID)
-	}
+	open, err := s.repo.ListByProjectID(ctx, projectID)
 	if err != nil {
 		log.Printf("reading the merge requests whose reviews to start: %v", err)
 		return
 	}
 	for _, mr := range open {
 		if mr.Status == StatusOpen && ctx.Err() == nil {
+			s.resumeReview(ctx, mr.ID)
+		}
+	}
+}
+
+// followOpen follows, as devpad starts, each open merge request's
+// pipeline: a task's tells its task how its pipeline stands
+// (followPipeline), since what a failure waited on before a restart, such
+// as a queued run of the target that starts no pipeline now, may tell it
+// nothing more; every one starts the review it owes, if the gate lets it.
+// The task decides each pipeline once, so one already decided goes back to
+// nobody again.
+func (s *service) followOpen(ctx context.Context) {
+	open, err := s.repo.ListOpen(ctx)
+	if err != nil {
+		log.Printf("reading the open merge requests to follow: %v", err)
+		return
+	}
+	for _, mr := range open {
+		if ctx.Err() != nil {
+			return
+		}
+		if mr.TaskID != 0 {
+			s.followPipeline(ctx, mr.ID, 0)
+		} else {
 			s.resumeReview(ctx, mr.ID)
 		}
 	}
