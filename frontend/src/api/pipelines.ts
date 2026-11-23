@@ -236,8 +236,6 @@ export interface MergeRequestPipelineStatus {
   // Why the pipeline that would run now doesn't parse, or empty.
   invalid: string
   configured: boolean
-  // current passed: the result is of the commits and jobs as they are now.
-  passed: boolean
   // The newest pipeline of exactly these commits and jobs that counts: one
   // under way, or one with a result. Null when none has run.
   current: Pipeline | null

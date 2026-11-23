@@ -94,7 +94,10 @@ var unfinishedStatuses = []Status{StatusQueued, StatusRunning}
 // countingStatuses are those of pipelines that count for what they test:
 // one still to say how the commits stand, or one that said. One that was
 // cancelled, superseded or interrupted, or could not run, said nothing, so
-// it never hides an older one that did.
+// it never hides an older one that did. It is the one predicate for which
+// pipeline stands for a subject's commits and jobs (Service.current): the
+// merge gate's, a badge's and a start that reuses a result all go by it, so
+// they always agree.
 var countingStatuses = append(slices.Clone(unfinishedStatuses), resultStatuses...)
 
 // endedStatuses are those of pipelines that ended without a result for a
@@ -112,21 +115,6 @@ var endedStatuses = []Status{StatusCancelled, StatusError}
 // database has that ended so, so no restart or catch-up resets it, and an
 // error that repeats, such as a bundle too large, stops there.
 const errorRetries = 1
-
-// HasResult reports whether a pipeline that ended in status s says
-// something of the commits it tested, so that running the same jobs on them
-// again would only say it again.
-func (s Status) HasResult() bool {
-	return slices.Contains(resultStatuses, s)
-}
-
-// Counts reports whether a pipeline in status s counts for what it tests:
-// it has not finished, or it finished with a result. Reusing a result
-// (StartInput.ReuseResult) and the latest pipeline of a merge request
-// (Service.LatestForMergeRequest) both go by it, so they always agree.
-func (s Status) Counts() bool {
-	return slices.Contains(countingStatuses, s)
-}
 
 // JobStatus is where a job of a pipeline is, or how it ended.
 type JobStatus string

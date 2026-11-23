@@ -174,7 +174,7 @@ func (a mergeRequestPipelineEnds) PipelineFinished(ctx context.Context, p *pipel
 		return
 	}
 	a.mrs.PipelineFinished(ctx, mergerequest.PipelineEnd{
-		UserID: p.UserID, ProjectID: p.ProjectID, MergeRequestID: p.MergeRequestID, PipelineID: p.ID, Status: string(p.Status),
+		UserID: p.UserID, ProjectID: p.ProjectID, MergeRequestID: p.MergeRequestID, PipelineID: p.ID,
 	})
 }
 

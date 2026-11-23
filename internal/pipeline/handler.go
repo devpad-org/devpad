@@ -199,7 +199,6 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 		"configPath": st.ConfigPath,
 		"invalid":    st.Invalid,
 		"configured": st.Open && st.Configured(),
-		"passed":     st.Passed(),
 		"current":    pipelineOrNil(st.Current),
 		"latest":     pipelineOrNil(st.Latest),
 		"automatic":  st.Automatic,

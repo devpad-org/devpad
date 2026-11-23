@@ -33,9 +33,9 @@ type MergeRequestStatus struct {
 	// Invalid is why the pipeline that would run now doesn't parse, or
 	// empty; a pipeline of Key would be StatusInvalid.
 	Invalid string
-	// Current is the newest pipeline of Key that counts (Status.Counts):
-	// one queued or running, or one finished with a result. It is what
-	// LatestForMergeRequest returns for Key, and nil when none has run.
+	// Current is the newest pipeline of Key that counts (Service.current):
+	// one queued or running, or one finished with a result; nil when none
+	// has run.
 	Current *Pipeline
 	// Latest is the merge request's newest pipeline that counts, whatever
 	// it tested: Current, or an older result to show as out of date.
@@ -72,7 +72,7 @@ type SettledPipeline struct {
 // it counts or none ended without a result. automatic says its subject
 // runs by itself.
 func (s *service) settledOf(ctx context.Context, probe *Pipeline, automatic bool) (*SettledPipeline, error) {
-	current, err := s.repo.FindSame(ctx, probe, countingStatuses)
+	current, err := s.current(ctx, probe)
 	if err != nil || current != nil {
 		return nil, err
 	}
@@ -120,12 +120,6 @@ func noResultError(p *Pipeline) string {
 		}
 	}
 	return "devpad could not run it"
-}
-
-// Passed reports whether the merge request's pipeline passed on its head
-// and target as they are now, with the jobs its target has now.
-func (st *MergeRequestStatus) Passed() bool {
-	return st.Open && st.Current != nil && st.Current.Status == StatusPassed
 }
 
 // Configured reports whether a pipeline is configured for the merge
@@ -184,7 +178,7 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 	if resolved.Invalid != nil {
 		st.Invalid = resolved.Invalid.Error()
 	}
-	if st.Current, err = s.LatestForMergeRequest(ctx, userID, projectID, st.Key); err != nil {
+	if st.Current, err = s.current(ctx, st.Key.probe(projectID, PurposeOfficial)); err != nil {
 		return nil, err
 	}
 	if st.Current != nil && st.Current.Status == StatusFailed {

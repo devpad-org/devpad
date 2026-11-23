@@ -111,7 +111,7 @@ func TestPipelineEndpoints(t *testing.T) {
 	}
 
 	code, out = e.serve(e.owner, http.MethodGet, fmt.Sprintf("/api/projects/%d/merge-requests/%d/pipeline", e.project, e.mr), "")
-	if st, _ := out["status"].(map[string]any); code != http.StatusOK || st["open"] != true || st["configured"] != true || st["passed"] != false || st["current"] != nil || st["targetSha"] != sha(2) || st["source"] != "file" ||
+	if st, _ := out["status"].(map[string]any); code != http.StatusOK || st["open"] != true || st["configured"] != true || st["current"] != nil || st["targetSha"] != sha(2) || st["source"] != "file" ||
 		st["automatic"] != false || st["settled"] != nil {
 		t.Fatalf("merge request status: %d %v", code, out)
 	}

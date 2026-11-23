@@ -240,17 +240,15 @@ func runCutShort(run domain.AgentRun) string {
 	}
 }
 
-// PipelineEnd is one of a merge request's pipelines finishing: which, and
-// how it ended, as the pipeline package's status names it. Told at least
-// once, maybe more, in any order, so what acts on it reads how the merge
-// request's pipeline stands now rather than trusting this one is the latest
-// (PipelineFinished).
+// PipelineEnd is one of a merge request's pipelines finishing. Told at
+// least once, maybe more, in any order, so what acts on it reads how the
+// merge request's pipeline stands now (its gate) rather than trusting this
+// one is the latest, or how it ended (PipelineFinished).
 type PipelineEnd struct {
 	UserID         int64
 	ProjectID      int64
 	MergeRequestID int64
 	PipelineID     int64
-	Status         string
 }
 
 // ProjectSettingsChanged decides again, in the background, on every

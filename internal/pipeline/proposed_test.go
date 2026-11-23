@@ -333,7 +333,7 @@ func TestProposedPipelinesNeverCountForTheMergeRequest(t *testing.T) {
 		if st.Current != nil && st.Current.Purpose != PurposeOfficial || st.Latest != nil && st.Latest.Purpose != PurposeOfficial || st.Settled != nil && st.Settled.Pipeline.Purpose != PurposeOfficial {
 			t.Fatalf("%s: status %+v", when, st)
 		}
-		if got, err := e.svc.LatestForMergeRequest(ctx, e.owner, e.project, key); err != nil || (got != nil && got.Purpose != PurposeOfficial) {
+		if got, err := e.svc.current(ctx, probe); err != nil || (got != nil && got.Purpose != PurposeOfficial) {
 			t.Fatalf("%s: latest for the merge request %+v %v", when, got, err)
 		}
 		if _, err := e.svc.Latest(ctx, e.owner, e.project, LatestFilter{MergeRequestIDs: []int64{e.mr}, Purpose: PurposeProposed}); !errors.Is(err, ErrInvalidInput) {
@@ -478,7 +478,7 @@ func TestAProposedPipelineOfTheOfficialKeyNeverStandsForIt(t *testing.T) {
 	if g := st.Gate(); g.State != GateNotRun || st.Current != nil || st.Latest != nil || st.Settled != nil {
 		t.Fatalf("a proposed pipeline of the official key counted: gate %s, %+v", g.State, st)
 	}
-	if got, err := e.svc.LatestForMergeRequest(ctx, e.owner, e.project, key); err != nil || got != nil {
+	if got, err := e.svc.current(ctx, probe); err != nil || got != nil {
 		t.Fatalf("latest for the merge request: %+v %v", got, err)
 	}
 	if latest, err := e.svc.Latest(ctx, e.owner, e.project, LatestFilter{MergeRequestIDs: []int64{e.mr}}); err != nil || len(latest.Pipelines) != 0 {

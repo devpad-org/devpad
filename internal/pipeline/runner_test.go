@@ -208,13 +208,13 @@ func TestMergeRequestPipelineTestsTheMergeWithTheTargetsJobs(t *testing.T) {
 		t.Errorf("container left: %+v", c)
 	}
 	key := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: got.ConfigHash}
-	latest, err := e.svc.LatestForMergeRequest(context.Background(), e.owner, e.project, key)
+	latest, err := e.svc.current(context.Background(), key.probe(e.project, PurposeOfficial))
 	if err != nil || latest == nil || latest.ID != p.ID {
 		t.Fatalf("latest for the pair: %+v %v", latest, err)
 	}
 	other := key
 	other.TargetSHA = sha(1)
-	if latest, err := e.svc.LatestForMergeRequest(context.Background(), e.owner, e.project, other); err != nil || latest != nil {
+	if latest, err := e.svc.current(context.Background(), other.probe(e.project, PurposeOfficial)); err != nil || latest != nil {
 		t.Fatalf("latest for another target: %+v %v", latest, err)
 	}
 }
@@ -275,7 +275,7 @@ func TestNoPipelineIsNeverAPass(t *testing.T) {
 	e := setup(t)
 	e.projects.setBranch("main", sha(9))
 	p := e.start(StartInput{Branch: "main"})
-	if p.Status != StatusNotConfigured || p.ConfigSource != SourceNone || p.Status.HasResult() != true || p.FinishedAt == nil {
+	if p.Status != StatusNotConfigured || p.ConfigSource != SourceNone || !slices.Contains(resultStatuses, p.Status) || p.FinishedAt == nil {
 		t.Fatalf("expected no pipeline configured: %+v", p)
 	}
 

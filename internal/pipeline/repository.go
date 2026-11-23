@@ -19,7 +19,7 @@ type Repository interface {
 	// not their scripts.
 	List(ctx context.Context, projectID int64, f ListFilter) ([]*Pipeline, error)
 	// Latest returns the newest pipeline of f's purpose that counts
-	// (Status.Counts) of each branch and merge request of the project f
+	// (countingStatuses) of each branch and merge request of the project f
 	// names that has one, with their jobs but not their scripts: a branch's
 	// first, in f's order, then a merge request's.
 	Latest(ctx context.Context, projectID int64, f LatestFilter) ([]*Pipeline, error)
@@ -277,7 +277,7 @@ func (r *repository) Latest(ctx context.Context, projectID int64, f LatestFilter
 }
 
 // latestQuery selects, for each branch and merge request f names, its
-// newest pipeline of f's purpose that counts (Status.Counts: unfinished, or
+// newest pipeline of f's purpose that counts (countingStatuses: unfinished, or
 // finished with a result), so a cancelled, superseded, interrupted or
 // erroring newest one never hides the last result, and a pipeline of
 // another purpose is never taken for it. Each subject's is read backwards

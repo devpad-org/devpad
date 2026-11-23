@@ -260,8 +260,8 @@ func TestGetAndListAreTheOwnersOnly(t *testing.T) {
 	if _, err := e.svc.List(ctx, e.stranger, e.project, ListFilter{}); !errors.Is(err, project.ErrForbidden) {
 		t.Fatalf("a stranger's list: %v", err)
 	}
-	if latest, err := e.svc.LatestForMergeRequest(ctx, e.stranger, e.project, MergeRequestKey{MergeRequestID: e.mr, HeadSHA: mr.HeadSHA, TargetSHA: mr.TargetSHA, ConfigHash: mr.ConfigHash}); !errors.Is(err, project.ErrForbidden) || latest != nil {
-		t.Fatalf("a stranger's latest: %+v %v", latest, err)
+	if st, err := e.svc.MergeRequestStatus(ctx, e.stranger, e.project, e.mr); !errors.Is(err, project.ErrForbidden) || st != nil {
+		t.Fatalf("a stranger's merge request status: %+v %v", st, err)
 	}
 	if _, err := e.svc.Cancel(ctx, e.stranger, e.project, branch.ID); !errors.Is(err, project.ErrForbidden) {
 		t.Fatalf("a stranger's cancel: %v", err)
@@ -386,7 +386,7 @@ func TestReuseAndTheMergeRequestGateCountTheSamePipelines(t *testing.T) {
 	latest := func(of *Pipeline) *Pipeline {
 		t.Helper()
 		key := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: of.ConfigHash}
-		got, err := e.svc.LatestForMergeRequest(ctx, e.owner, e.project, key)
+		got, err := e.svc.current(ctx, key.probe(e.project, PurposeOfficial))
 		if err != nil || got == nil {
 			t.Fatalf("latest: %+v %v", got, err)
 		}

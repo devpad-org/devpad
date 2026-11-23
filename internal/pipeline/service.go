@@ -37,7 +37,7 @@ type Service interface {
 	// not their scripts.
 	List(ctx context.Context, userID, projectID int64, f ListFilter) ([]*Pipeline, error)
 	// Latest returns the newest official pipeline that counts
-	// (Status.Counts) of each branch and merge request of the project f
+	// (countingStatuses) of each branch and merge request of the project f
 	// names that has one, with their jobs but not their scripts, and the
 	// commit each branch named is at now: what a branch's or a merge
 	// request's pipeline badge shows, and whether a branch's is of its
@@ -49,12 +49,6 @@ type Service interface {
 	// JobOutput reads a job's output from an offset on, with devpad's notes
 	// on the job: live while the job runs, and what is kept of them after.
 	JobOutput(ctx context.Context, userID, projectID, pipelineID int64, req OutputRequest) (*Output, error)
-	// LatestForMergeRequest returns the newest pipeline of what key names
-	// that counts (Status.Counts): one queued or running, or one finished
-	// with a result, which a later one cancelled, superseded or interrupted
-	// never hides. It is nil when there is none. A Start with ReuseResult
-	// returns this same pipeline when it has finished.
-	LatestForMergeRequest(ctx context.Context, userID, projectID int64, key MergeRequestKey) (*Pipeline, error)
 	// MergeRequestStatus says how an open merge request stands for
 	// pipelines now: the key a pipeline must test to count (its head on its
 	// target's current tip, with the jobs resolved there now), whether any
@@ -83,9 +77,9 @@ type Service interface {
 	// pipelines that finished without every listener being told, such as
 	// when devpad stopped first. A listener is told of each pipeline at
 	// least once but maybe more often, and of a subject's pipelines in any
-	// order, so it re-reads what it acts on, such as LatestForMergeRequest
-	// for a merge request's current key, rather than trusting the pipeline
-	// it is told of to be the latest. It is never told on a context that
+	// order, so it re-reads what it acts on, such as MergeRequestStatus for
+	// a merge request's current key, rather than trusting the pipeline it is
+	// told of to be the latest. It is never told on a context that
 	// has ended.
 	AddListener(l Listener)
 	// BranchMoved, ProjectSettingsChanged and MergeRequestMoved are told
@@ -131,7 +125,7 @@ type StartInput struct {
 	Purpose Purpose
 	Trigger Trigger
 	// ReuseResult returns the newest pipeline of the same commits and jobs
-	// that counts (Status.Counts), a finished one with a result included,
+	// that counts (countingStatuses), a finished one with a result included,
 	// rather than running them again. Without it, a finished pipeline is
 	// never returned: the user's Run again always runs.
 	ReuseResult bool
@@ -551,15 +545,14 @@ func (s *service) settleBranch(ctx context.Context, p *project.Project, branch, 
 	}
 }
 
-func (s *service) LatestForMergeRequest(ctx context.Context, userID, projectID int64, key MergeRequestKey) (*Pipeline, error) {
-	if _, err := s.projects.Get(ctx, userID, projectID); err != nil {
-		return nil, err
-	}
-	p, err := s.repo.FindSame(ctx, key.probe(projectID, PurposeOfficial), countingStatuses)
-	if err != nil || p == nil || p.UserID != userID {
-		return nil, err
-	}
-	return p, nil
+// current is the newest pipeline testing what probe tests that counts
+// (countingStatuses): one queued or running, or one finished with a result,
+// which a later one cancelled, superseded or interrupted never hides. It is
+// nil when there is none. A start that reuses results returns this same
+// pipeline once it has finished, so the merge gate and reuse never
+// disagree.
+func (s *service) current(ctx context.Context, probe *Pipeline) (*Pipeline, error) {
+	return s.repo.FindSame(ctx, probe, countingStatuses)
 }
 
 func (s *service) JobOutput(ctx context.Context, userID, projectID, pipelineID int64, req OutputRequest) (*Output, error) {

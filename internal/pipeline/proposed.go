@@ -343,7 +343,7 @@ func (s *service) ProposedStatus(ctx context.Context, userID, projectID int64, o
 		st.Invalid = jobs.Invalid.Error()
 	}
 	probe := st.Key.probe(projectID, PurposeProposed)
-	if st.Current, err = s.repo.FindSame(ctx, probe, countingStatuses); err != nil {
+	if st.Current, err = s.current(ctx, probe); err != nil {
 		return nil, err
 	}
 	if st.Current == nil {

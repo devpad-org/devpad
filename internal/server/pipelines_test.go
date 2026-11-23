@@ -164,7 +164,7 @@ func TestMergeRequestPipelineEndsTellsOfEveryOfficialPipeline(t *testing.T) {
 	for _, status := range []pipeline.Status{pipeline.StatusFailed, pipeline.StatusConflict, pipeline.StatusPassed, pipeline.StatusError} {
 		a.PipelineFinished(ctx, &pipeline.Pipeline{ID: 3, UserID: 1, ProjectID: 2, Kind: pipeline.KindMergeRequest, Purpose: pipeline.PurposeProposed, MergeRequestID: 5, Status: status})
 	}
-	if len(got.ends) != 1 || got.ends[0] != (mergerequest.PipelineEnd{UserID: 1, ProjectID: 2, MergeRequestID: 5, PipelineID: 2, Status: "failed"}) {
+	if len(got.ends) != 1 || got.ends[0] != (mergerequest.PipelineEnd{UserID: 1, ProjectID: 2, MergeRequestID: 5, PipelineID: 2}) {
 		t.Fatalf("told %+v", got.ends)
 	}
 	if len(got.branches) != 1 || got.branches[0] != (mergerequest.BranchPipelineEnd{UserID: 1, ProjectID: 2, Branch: "develop", PipelineID: 1}) {
