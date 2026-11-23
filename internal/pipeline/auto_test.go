@@ -378,7 +378,7 @@ func TestNewerCommitsReplaceQueuedBranchPipelinesAndStopStaleMergeRequestOnes(t 
 // run it runs once more, at the next event or catch-up, and then leaves to
 // the user, however often devpad restarts. Only new commits or jobs run
 // again, or Run again.
-func TestAutomaticRunsSettleCancelledAndRetryErrorsOnce(t *testing.T) {
+func TestAutomaticRunsNeverRepeatACancelAndRetryErrorsOnce(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	e.tick("develop")
@@ -439,7 +439,7 @@ func TestAutomaticRunsSettleCancelledAndRetryErrorsOnce(t *testing.T) {
 // What has no result on the commits and jobs as they are shows, with why
 // and whether devpad tries again: on the merge request, and on a ticked
 // branch's badge.
-func TestSettledPipelinesShow(t *testing.T) {
+func TestPipelinesWithoutAResultShow(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	e.tick("develop")
@@ -458,18 +458,18 @@ func TestSettledPipelinesShow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !st.Automatic || st.Current != nil || st.Settled == nil || st.Settled.Pipeline.Status != StatusError || !st.Settled.Retrying ||
-		!strings.Contains(st.Settled.Reason, "couldn't run on these commits: pinning what the pipeline tests: docker hiccup.") || !strings.Contains(st.Settled.Reason, "once more") {
-		t.Fatalf("status after one error: %+v %+v", st, st.Settled)
+	if !st.Automatic || st.Current != nil || st.NoResult == nil || st.NoResult.Pipeline.Status != StatusError || !st.NoResult.Retrying ||
+		!strings.Contains(st.NoResult.Reason, "couldn't run on these commits: pinning what the pipeline tests: docker hiccup.") || !strings.Contains(st.NoResult.Reason, "once more") {
+		t.Fatalf("status after one error: %+v %+v", st, st.NoResult)
 	}
 	latest, err := e.svc.Latest(ctx, e.owner, e.project, LatestFilter{Branches: []string{"develop", "main"}, MergeRequestIDs: []int64{e.mr}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b := latest.Branches["develop"]; b == nil || !b.Automatic || b.Settled == nil || b.Settled.Pipeline.Branch != "develop" || !b.Settled.Retrying {
+	if b := latest.Branches["develop"]; b == nil || !b.Automatic || b.NoResult == nil || b.NoResult.Pipeline.Branch != "develop" || !b.NoResult.Retrying {
 		t.Fatalf("develop's standing: %+v", b)
 	}
-	if b := latest.Branches["main"]; b == nil || b.Automatic || b.Settled != nil {
+	if b := latest.Branches["main"]; b == nil || b.Automatic || b.NoResult != nil {
 		t.Fatalf("main's standing: %+v", b)
 	}
 
@@ -480,8 +480,8 @@ func TestSettledPipelinesShow(t *testing.T) {
 		e.wait(p.ID)
 	}
 	st, _ = e.svc.MergeRequestStatus(ctx, e.owner, e.project, e.mr)
-	if st.Settled == nil || st.Settled.Retrying || !strings.Contains(st.Settled.Reason, "won't run them again by itself") {
-		t.Fatalf("status after the retry: %+v", st.Settled)
+	if st.NoResult == nil || st.NoResult.Retrying || !strings.Contains(st.NoResult.Reason, "won't run them again by itself") {
+		t.Fatalf("status after the retry: %+v", st.NoResult)
 	}
 	// Cancelled is the user's call.
 	e.projects.mu.Lock()
@@ -497,8 +497,8 @@ func TestSettledPipelinesShow(t *testing.T) {
 	}
 	release()
 	st, _ = e.svc.MergeRequestStatus(ctx, e.owner, e.project, e.mr)
-	if st.Settled == nil || st.Settled.Pipeline.ID != queued.ID || st.Settled.Retrying || !strings.Contains(st.Settled.Reason, "was cancelled on these commits") {
-		t.Fatalf("status after a cancel: %+v", st.Settled)
+	if st.NoResult == nil || st.NoResult.Pipeline.ID != queued.ID || st.NoResult.Retrying || !strings.Contains(st.NoResult.Reason, "was cancelled on these commits") {
+		t.Fatalf("status after a cancel: %+v", st.NoResult)
 	}
 }
 
@@ -968,8 +968,8 @@ func TestABranchRunThatStartsNothingTellsOnlyWhatWaitedOnIt(t *testing.T) {
 				if p.ID == branch.ID && p.AnnouncedAt != nil {
 					t.Fatalf("%s announced the cancelled pipeline again", what)
 				}
-			case b := <-e.listener.settled:
-				t.Fatalf("%s told that %s's run settled", what, b)
+			case b := <-e.listener.startedNone:
+				t.Fatalf("%s told that %s's run started no pipeline", what, b)
 			case <-deadline:
 				return
 			}
@@ -998,9 +998,9 @@ func TestABranchRunThatStartsNothingTellsOnlyWhatWaitedOnIt(t *testing.T) {
 	e.svc.beginAutomatic()
 	e.autoIdle()
 	select {
-	case b := <-e.listener.settled:
+	case b := <-e.listener.startedNone:
 		if b != "develop" {
-			t.Fatalf("settled %q", b)
+			t.Fatalf("started none on %q", b)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the run that was waited on told nobody")

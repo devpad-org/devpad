@@ -162,7 +162,7 @@ export const MAX_LATEST_SUBJECTS = 100
 // A pipeline of the commits and jobs a branch or merge request has now that
 // ended without a result, cancelled or unable to run, when none of them
 // counts: reason says why, and whether devpad runs them again (retrying).
-export interface SettledPipeline {
+export interface NoResult {
   pipeline: Pipeline
   retrying: boolean
   reason: string
@@ -170,12 +170,12 @@ export interface SettledPipeline {
 
 // How a branch stands for pipelines now: whether devpad runs it by itself,
 // whether a pipeline is configured at its current commit (null when that
-// couldn't be read), and its settled pipeline. Automatic and configured, a
+// couldn't be read), and its pipeline that ended without a result. Automatic and configured, a
 // pipeline guards the merge requests into it.
 export interface BranchPipelineStanding {
   automatic: boolean
   configured: boolean | null
-  settled: SettledPipeline | null
+  noResult: NoResult | null
 }
 
 // How the merge gate stands: unguarded when no pipeline guards the merge
@@ -247,7 +247,7 @@ export interface MergeRequestPipelineStatus {
   automatic: boolean
   // When nothing current counts, the newest of these commits and jobs that
   // was cancelled or couldn't run, and why.
-  settled: SettledPipeline | null
+  noResult: NoResult | null
   // Whether the pipeline lets it merge.
   gate: MergeGate
   // When current failed, how the target's own pipeline went on the commit
@@ -282,7 +282,7 @@ export interface ProposedPipelineStatus {
   invalid: string
   current: Pipeline | null
   latest: Pipeline | null
-  settled: SettledPipeline | null
+  noResult: NoResult | null
 }
 
 export interface TargetResult {

@@ -866,7 +866,7 @@ func TestTheBundlesDirectoryIsMadeAgainWhenItIsGone(t *testing.T) {
 	}
 }
 
-func TestCancelSettlesAPipelineNoRunHolds(t *testing.T) {
+func TestCancelFinishesAPipelineNoRunHolds(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	// A run that ended without recording how, as when the database failed.

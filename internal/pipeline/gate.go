@@ -113,14 +113,14 @@ func (st *MergeRequestStatus) Gate() *Gate {
 		if g.State == GatePassed {
 			g.TestedTree = st.Current.TestedTree
 		}
-	case st.Settled != nil:
-		p := st.Settled.Pipeline
+	case st.NoResult != nil:
+		p := st.NoResult.Pipeline
 		g.Pipeline = p
 		if p.Status == StatusCancelled {
 			g.State, g.Reason = GateCancelled, fmt.Sprintf("pipeline #%d was cancelled", p.ID)
 			break
 		}
-		g.State, g.Waits = GateError, st.Settled.Retrying
+		g.State, g.Waits = GateError, st.NoResult.Retrying
 		g.Reason = fmt.Sprintf("pipeline #%d couldn't run: %s", p.ID, trimStop(noResultError(p)))
 		if g.Waits {
 			g.Reason += "; devpad runs it once more by itself"

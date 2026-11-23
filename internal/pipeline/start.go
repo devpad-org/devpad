@@ -134,7 +134,7 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 // reusable finds the pipeline a start of next returns rather than make
 // one: one queued or running of the same commits and jobs; with
 // reuseResult, one that counts; and with reuseEnded one that ended without
-// a result that devpad doesn't run again by itself (settled).
+// a result that devpad doesn't run again by itself (lastEnded).
 func (s *service) reusable(ctx context.Context, next *Pipeline, policy startPolicy) (*Pipeline, error) {
 	statuses := unfinishedStatuses
 	if policy.reuseResult {
@@ -144,19 +144,19 @@ func (s *service) reusable(ctx context.Context, next *Pipeline, policy startPoli
 	if err != nil || same != nil || !policy.reuseEnded {
 		return same, err
 	}
-	ended, retry, err := s.settled(ctx, next.key())
+	ended, retry, err := s.lastEnded(ctx, next.key())
 	if err != nil || retry {
 		return nil, err
 	}
 	return ended, nil
 }
 
-// settled returns the newest pipeline of k that ended without a result
+// lastEnded returns the newest pipeline of k that ended without a result
 // (endedStatuses), or nil, and whether devpad is to run those commits and
 // jobs once more by itself: never after the user cancelled them, and after
 // an error only while the database holds no more than errorRetries of
 // them.
-func (s *service) settled(ctx context.Context, k key) (ended *Pipeline, retry bool, err error) {
+func (s *service) lastEnded(ctx context.Context, k key) (ended *Pipeline, retry bool, err error) {
 	ended, err = s.repo.FindSame(ctx, k, endedStatuses)
 	if err != nil || ended == nil || ended.Status != StatusError {
 		return ended, false, err
@@ -294,7 +294,7 @@ func (s *service) supersede(current *Pipeline, stale bool) {
 	k, cause := current.key(), supersededBy(current.ID)
 	if slices.Contains(endedStatuses, current.Status) {
 		// What replaces them is a pipeline that ended without a result,
-		// which the commits and jobs as they are now keep (settled).
+		// which the commits and jobs as they are now keep (NoResult).
 		cause = staleCause("what it tests is no longer current")
 	}
 	s.mu.Lock()
@@ -375,8 +375,8 @@ func (s *service) admit(projectID int64) error {
 }
 
 // reserve makes the run of a queued pipeline whose record is yet to be
-// made, so that what settles a devpad that stopped never takes the record
-// for one it left. Shutdown waits for the run, and stopping the project's
+// made, so that what cleans up after a devpad that stopped never takes the
+// record for one it left. Shutdown waits for the run, and stopping the project's
 // pipelines stops it, from then on.
 func (s *service) reserve(p *Pipeline) (*activePipeline, error) {
 	s.mu.Lock()

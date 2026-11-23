@@ -178,11 +178,11 @@ func (a mergeRequestPipelineEnds) PipelineFinished(ctx context.Context, p *pipel
 	})
 }
 
-// BranchRunSettled tells the merge request service that a branch's
+// BranchRunStartedNone tells the merge request service that a branch's
 // automatic run that a merge request's result waited on started no
 // pipeline, so it decides the merge requests into the branch again, as a
 // branch pipeline's end does.
-func (a mergeRequestPipelineEnds) BranchRunSettled(ctx context.Context, userID, projectID int64, branch string) {
+func (a mergeRequestPipelineEnds) BranchRunStartedNone(ctx context.Context, userID, projectID int64, branch string) {
 	a.mrs.BranchPipelineFinished(ctx, mergerequest.BranchPipelineEnd{UserID: userID, ProjectID: projectID, Branch: branch})
 }
 

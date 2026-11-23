@@ -13,7 +13,7 @@ import { useMergeRequest } from './useMergeRequest'
 // and whether it keeps the merge request from merging. Its jobs come from
 // the target branch, never the change.
 const { mr, projectId, isOpen, pipelines } = useMergeRequest()
-const { latest, settled, status, current, shownId, shownStale, shownPipeline, pickedId, loaded, starting, startError, gateText, alsoFailing, targetPending } = pipelines
+const { latest, noResult, status, current, shownId, shownStale, shownPipeline, pickedId, loaded, starting, startError, gateText, alsoFailing, targetPending } = pipelines
 
 // How the task's automatic pipeline rounds stand: sent back after the
 // pipeline failed, or the failure waiting for you.
@@ -24,7 +24,7 @@ const shownAlsoFailing = computed(() => (shownId.value !== null && shownId.value
 
 // The card shows the pipeline of the current commits that was cancelled or
 // couldn't run, saying why and whether devpad tries again.
-const showingSettled = computed(() => !!settled.value && shownId.value === settled.value.pipeline.id)
+const showingNoResult = computed(() => !!noResult.value && shownId.value === noResult.value.pipeline.id)
 
 // Run again shows the pipeline it started, the latest.
 function started() {
@@ -51,14 +51,14 @@ function started() {
           @click="pipelines.start"
         >
           <MrIcon name="play" :size="12" />
-          {{ starting ? 'Starting…' : latest || settled ? 'Run pipeline again' : 'Run pipeline' }}
+          {{ starting ? 'Starting…' : latest || noResult ? 'Run pipeline again' : 'Run pipeline' }}
         </button>
       </span>
     </div>
     <div class="card-body">
       <p v-if="startError" class="notice notice-error">{{ startError }}</p>
       <p v-if="roundsText" class="notice" :class="roundsHeld ? 'notice-warning' : 'notice-info'">{{ roundsText }}</p>
-      <p v-if="showingSettled && settled" class="notice" :class="settled.pipeline.status === 'cancelled' ? 'notice-warning' : 'notice-error'">{{ settled.reason }}</p>
+      <p v-if="showingNoResult && noResult" class="notice" :class="noResult.pipeline.status === 'cancelled' ? 'notice-warning' : 'notice-error'">{{ noResult.reason }}</p>
       <p v-if="shownStale && status" class="notice notice-warning">
         <template v-if="shownPipeline">
           This pipeline tested <span class="mono">{{ shortSha(shownPipeline.headSha) }}</span> onto {{ shownPipeline.targetBranch }} at

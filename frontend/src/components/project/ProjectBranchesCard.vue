@@ -61,10 +61,10 @@ const rows = computed(() => {
 // date. When nothing of its current commit and jobs counts but a pipeline of
 // them was cancelled or couldn't run, the server says so, and why.
 function pipelineBadge(name: string) {
-  const settled = store.pipelineBranchStandings[name]?.settled
-  if (settled) {
-    const look: StatusLook = settled.pipeline.status === 'cancelled' ? PIPELINE_STATUS.cancelled : { ...PIPELINE_STATUS.error, label: "Couldn't run" }
-    return { look, title: settled.reason }
+  const noResult = store.pipelineBranchStandings[name]?.noResult
+  if (noResult) {
+    const look: StatusLook = noResult.pipeline.status === 'cancelled' ? PIPELINE_STATUS.cancelled : { ...PIPELINE_STATUS.error, label: "Couldn't run" }
+    return { look, title: noResult.reason }
   }
   const p = store.branchPipelines.get(name)
   if (!p) return null

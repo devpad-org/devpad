@@ -304,7 +304,7 @@ func TestARestartRunsAProposedPipelineAgainAsProposed(t *testing.T) {
 
 // Every path that reads a merge request's result, or acts on one, sees
 // only its official pipelines: the merge gate and the pipeline it names,
-// the current and latest pipelines, the badges, a settled result and the
+// the current and latest pipelines, the badges, one without a result and the
 // errors counted towards running it again, and reusing a result. A
 // passing proposed pipeline never opens the gate, and one that fails or
 // can't run never shuts it or stands for the merge request's own.
@@ -331,7 +331,7 @@ func TestProposedPipelinesNeverCountForTheMergeRequest(t *testing.T) {
 		if g.State != wantGate || (g.Pipeline != nil && g.Pipeline.Purpose != PurposeOfficial) {
 			t.Fatalf("%s: gate %+v", when, g)
 		}
-		if st.Current != nil && st.Current.Purpose != PurposeOfficial || st.Latest != nil && st.Latest.Purpose != PurposeOfficial || st.Settled != nil && st.Settled.Pipeline.Purpose != PurposeOfficial {
+		if st.Current != nil && st.Current.Purpose != PurposeOfficial || st.Latest != nil && st.Latest.Purpose != PurposeOfficial || st.NoResult != nil && st.NoResult.Pipeline.Purpose != PurposeOfficial {
 			t.Fatalf("%s: status %+v", when, st)
 		}
 		if got, err := e.svc.current(ctx, probe); err != nil || (got != nil && got.Purpose != PurposeOfficial) {
@@ -354,8 +354,8 @@ func TestProposedPipelinesNeverCountForTheMergeRequest(t *testing.T) {
 				t.Fatalf("%s: the same pipeline as the gate's %+v %v", when, same, err)
 			}
 		}
-		if ended, _, err := e.svc.settled(ctx, probe); err != nil || (ended != nil && ended.Purpose != PurposeOfficial) {
-			t.Fatalf("%s: settled %+v %v", when, ended, err)
+		if ended, _, err := e.svc.lastEnded(ctx, probe); err != nil || (ended != nil && ended.Purpose != PurposeOfficial) {
+			t.Fatalf("%s: ended without a result %+v %v", when, ended, err)
 		}
 	}
 
@@ -369,7 +369,7 @@ func TestProposedPipelinesNeverCountForTheMergeRequest(t *testing.T) {
 		t.Fatalf("counted %d official passes %v", n, err)
 	}
 
-	// Ones that couldn't run, or were cancelled, settle nothing of it and
+	// Ones that couldn't run, or were cancelled, stand for nothing of it and
 	// count towards no retry.
 	e.projects.mu.Lock()
 	e.projects.envErr = errors.New("the build broke")
@@ -445,8 +445,8 @@ func TestPurposesMatchTheFrontend(t *testing.T) {
 // TestAChangeThatProposesTheSameJobsRunsNothingTwice), so these rows are
 // put in as an older devpad, or a bug, might have left them; still not one
 // of them opens or shuts the gate, stands for the merge request's result,
-// is reused for it, settles it, or counts towards running it again. Only
-// the purpose tells them apart.
+// is reused for it, stands for it without a result, or counts towards
+// running it again. Only the purpose tells them apart.
 func TestAProposedPipelineOfTheOfficialKeyNeverStandsForIt(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
@@ -476,7 +476,7 @@ func TestAProposedPipelineOfTheOfficialKeyNeverStandsForIt(t *testing.T) {
 	probe := key.of(e.project, PurposeOfficial)
 
 	st := status()
-	if g := st.Gate(); g.State != GateNotRun || st.Current != nil || st.Latest != nil || st.Settled != nil {
+	if g := st.Gate(); g.State != GateNotRun || st.Current != nil || st.Latest != nil || st.NoResult != nil {
 		t.Fatalf("a proposed pipeline of the official key counted: gate %s, %+v", g.State, st)
 	}
 	if got, err := e.svc.current(ctx, probe); err != nil || got != nil {
@@ -490,8 +490,8 @@ func TestAProposedPipelineOfTheOfficialKeyNeverStandsForIt(t *testing.T) {
 			t.Fatalf("found %+v %v", same, err)
 		}
 	}
-	if ended, _, err := e.svc.settled(ctx, probe); err != nil || ended != nil {
-		t.Fatalf("settled by %+v %v", ended, err)
+	if ended, _, err := e.svc.lastEnded(ctx, probe); err != nil || ended != nil {
+		t.Fatalf("ended without a result: %+v %v", ended, err)
 	}
 	for _, s := range []Status{StatusPassed, StatusError, StatusCancelled} {
 		if n, err := e.svc.repo.CountSame(ctx, probe, []Status{s}); err != nil || n != 0 {
@@ -500,7 +500,8 @@ func TestAProposedPipelineOfTheOfficialKeyNeverStandsForIt(t *testing.T) {
 	}
 	// A restart's start, which would take a result of its key, and
 	// devpad's own, which would take a cancelled pipeline or two errors of
-	// it as settled, each run or reuse only an official pipeline.
+	// it as ending without a result, each run or reuse only an official
+	// pipeline.
 	for i, in := range []StartInput{
 		{Trigger: TriggerRestart},
 		{Trigger: TriggerSourceMoved},

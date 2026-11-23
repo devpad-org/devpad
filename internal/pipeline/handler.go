@@ -140,7 +140,7 @@ func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 	// pipeline of an older commit; null when the repo could not be read.
 	branches := make(map[string]any, len(latest.Branches))
 	for name, st := range latest.Branches {
-		branches[name] = map[string]any{"automatic": st.Automatic, "configured": st.Configured, "settled": settledResponse(st.Settled)}
+		branches[name] = map[string]any{"automatic": st.Automatic, "configured": st.Configured, "noResult": noResultResponse(st.NoResult)}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"pipelines":  items,
@@ -153,8 +153,8 @@ func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// settledResponse is a SettledPipeline as the app reads it, or null.
-func settledResponse(st *SettledPipeline) any {
+// noResultResponse is a NoResult as the app reads it, or null.
+func noResultResponse(st *NoResult) any {
 	if st == nil {
 		return nil
 	}
@@ -202,7 +202,7 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 		"current":    pipelineOrNil(st.Current),
 		"latest":     pipelineOrNil(st.Latest),
 		"automatic":  st.Automatic,
-		"settled":    settledResponse(st.Settled),
+		"noResult":   noResultResponse(st.NoResult),
 		"gate":       gateResponse(st.Gate()),
 		"onTarget":   targetResponse(st.OnTarget),
 		// The pipeline the change proposes, run for information only; null
@@ -237,7 +237,7 @@ func proposedResponse(st *ProposedStatus) any {
 		"invalid":    st.Invalid,
 		"current":    pipelineOrNil(st.Current),
 		"latest":     pipelineOrNil(st.Latest),
-		"settled":    settledResponse(st.Settled),
+		"noResult":   noResultResponse(st.NoResult),
 	}
 }
 

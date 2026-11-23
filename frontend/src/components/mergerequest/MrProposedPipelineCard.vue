@@ -19,9 +19,9 @@ const { proposed, proposedShown, proposedStale, proposedStarting, proposedStartE
 // merge onto its target, or that proposes the jobs the merge request's own
 // pipeline runs.
 const runnable = computed(() => !!proposed.value && !proposed.value.removed && !proposed.value.conflict && !proposed.value.sameJobs)
-const showingSettled = computed(() => {
+const showingNoResult = computed(() => {
   const p = proposed.value
-  return !!p?.settled && proposedShown.value?.id === p.settled.pipeline.id
+  return !!p?.noResult && proposedShown.value?.id === p.noResult.pipeline.id
 })
 
 function started() {
@@ -60,8 +60,8 @@ function started() {
       <template v-else>
         <!-- The pipeline shown may be of older commits, which parsed. -->
         <p v-if="proposed.invalid && !proposed.current" class="notice notice-error">{{ proposed.invalid }}</p>
-        <p v-if="showingSettled && proposed.settled" class="notice" :class="proposed.settled.pipeline.status === 'cancelled' ? 'notice-warning' : 'notice-error'">
-          {{ proposed.settled.reason }}
+        <p v-if="showingNoResult && proposed.noResult" class="notice" :class="proposed.noResult.pipeline.status === 'cancelled' ? 'notice-warning' : 'notice-error'">
+          {{ proposed.noResult.reason }}
         </p>
         <p v-if="proposedStale && proposedShown" class="notice notice-warning">
           This proposed pipeline tested <span class="mono">{{ shortSha(proposedShown.headSha) }}</span> onto {{ proposedShown.targetBranch }} at

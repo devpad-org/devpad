@@ -17,7 +17,7 @@ import (
 // A pipeline runs in a goroutine of its own, which records how it went;
 // cancelling, superseding or deleting its project only ends its context,
 // with a cause saying why, and the run records what that means. Only what
-// no run holds is settled otherwise: Cancel finishes an unfinished pipeline
+// no run holds is finished otherwise: Cancel finishes an unfinished pipeline
 // whose run ended without recording so, and Reconcile one a devpad that
 // stopped left.
 //
@@ -319,13 +319,13 @@ func (s *service) runJob(ctx context.Context, p *Pipeline, j *JobRun, bundle job
 	if err := s.repo.FinishJob(recordCtx, j, told); err != nil {
 		log.Printf("pipeline %d job %s: recording how it ended: %v", p.ID, j.Name, err)
 		// Its record still has it running, which its pipeline's finish
-		// settles as this, so the pipeline's outcome counts it so too.
+		// records as this, so the pipeline's outcome counts it so too.
 		j.Status, j.Error = JobError, lostJob
 	}
 }
 
 // jobStatus is the status a job's outcome gives it, or false when the job
-// was stopped because devpad is stopping, which Reconcile settles.
+// was stopped because devpad is stopping, which Reconcile deals with.
 func jobStatus(outcome jobrun.Outcome, cause error) (JobStatus, bool) {
 	switch outcome {
 	case jobrun.Passed:

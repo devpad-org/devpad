@@ -376,32 +376,33 @@ type fakeDocker struct {
 	running int
 	// maxRunning is the most scripts that ran at once.
 	maxRunning int
-	// gates hold block scripts, one per job name; allOpen opens every one,
-	// those made later too.
-	gates   map[string]*fakeGate
+	// latches hold block scripts, one per job name; allOpen opens every
+	// one, those made later too.
+	latches map[string]*scriptLatch
 	allOpen bool
 	// started receives each job's name as its script starts, while it has
 	// room.
 	started chan string
 }
 
-type fakeGate struct {
+// scriptLatch holds the block scripts of one job name until it opens.
+type scriptLatch struct {
 	ch     chan struct{}
 	opened bool
 }
 
-// gate is what holds the block scripts of jobs named name.
-func (f *fakeDocker) gate(name string) chan struct{} {
+// latch is what holds the block scripts of jobs named name.
+func (f *fakeDocker) latch(name string) chan struct{} {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.gateLocked(name).ch
+	return f.latchLocked(name).ch
 }
 
-func (f *fakeDocker) gateLocked(name string) *fakeGate {
-	g := f.gates[name]
+func (f *fakeDocker) latchLocked(name string) *scriptLatch {
+	g := f.latches[name]
 	if g == nil {
-		g = &fakeGate{ch: make(chan struct{})}
-		f.gates[name] = g
+		g = &scriptLatch{ch: make(chan struct{})}
+		f.latches[name] = g
 		if f.allOpen {
 			g.opened = true
 			close(g.ch)
@@ -415,7 +416,7 @@ func (f *fakeDocker) open(names ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, name := range names {
-		if g := f.gateLocked(name); !g.opened {
+		if g := f.latchLocked(name); !g.opened {
 			g.opened = true
 			close(g.ch)
 		}
@@ -427,7 +428,7 @@ func (f *fakeDocker) openAll() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.allOpen = true
-	for _, g := range f.gates {
+	for _, g := range f.latches {
 		if !g.opened {
 			g.opened = true
 			close(g.ch)
@@ -445,7 +446,7 @@ func newFakeDocker() *fakeDocker {
 	return &fakeDocker{
 		networks:   map[container.Job]bool{},
 		containers: map[string]*fakeContainer{},
-		gates:      map[string]*fakeGate{},
+		latches:    map[string]*scriptLatch{},
 		clones:     map[string][][]string{},
 		started:    make(chan string, 1000),
 	}
@@ -541,7 +542,7 @@ func (f *fakeDocker) ExecJob(ctx context.Context, containerID string, spec conta
 		return container.ExecResult{}, nil
 	case "block":
 		select {
-		case <-f.gate(c.job.Name):
+		case <-f.latch(c.job.Name):
 			fmt.Fprintln(out, "released")
 			return container.ExecResult{}, nil
 		case <-ctx.Done():
@@ -658,18 +659,18 @@ func (f *fakeServices) RemoveJobServices(context.Context, *wsservice.JobServices
 }
 
 // recordingListener collects the pipelines it is told finished, and the
-// branches whose awaited runs settled.
+// branches whose awaited runs started no pipeline.
 type recordingListener struct {
-	finished chan *Pipeline
-	settled  chan string
+	finished    chan *Pipeline
+	startedNone chan string
 }
 
 func (l *recordingListener) PipelineFinished(_ context.Context, p *Pipeline) {
 	l.finished <- p
 }
 
-func (l *recordingListener) BranchRunSettled(_ context.Context, _, _ int64, branch string) {
-	l.settled <- branch
+func (l *recordingListener) BranchRunStartedNone(_ context.Context, _, _ int64, branch string) {
+	l.startedNone <- branch
 }
 
 // env is a pipeline service over a real database, with fakes for the rest:
@@ -736,7 +737,7 @@ func setup(t *testing.T) *env {
 	}}
 	e.docker = newFakeDocker()
 	e.services = &fakeServices{have: map[wsservice.ServiceType]bool{wsservice.ServicePostgres: true}}
-	e.listener = &recordingListener{finished: make(chan *Pipeline, 100), settled: make(chan string, 100)}
+	e.listener = &recordingListener{finished: make(chan *Pipeline, 100), startedNone: make(chan string, 100)}
 	e.svc = e.newService()
 	t.Cleanup(func() { e.shutdown() })
 	return e

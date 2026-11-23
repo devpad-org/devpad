@@ -75,17 +75,17 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
   const latest = computed(() => status.value?.latest ?? null)
   // The pipeline of the current commits and jobs that was cancelled or
   // couldn't run, when none of them counts, with why.
-  const settled = computed(() => status.value?.settled ?? null)
-  const shownId = computed(() => pickedId.value ?? current.value?.id ?? settled.value?.pipeline.id ?? latest.value?.id ?? null)
+  const noResult = computed(() => status.value?.noResult ?? null)
+  const shownId = computed(() => pickedId.value ?? current.value?.id ?? noResult.value?.pipeline.id ?? latest.value?.id ?? null)
   // The pipeline the card shows is not of the commits and jobs the merge
   // request has now.
   const shownStale = computed(
-    () => !!status.value?.open && shownId.value !== null && shownId.value !== current.value?.id && shownId.value !== settled.value?.pipeline.id,
+    () => !!status.value?.open && shownId.value !== null && shownId.value !== current.value?.id && shownId.value !== noResult.value?.pipeline.id,
   )
   const shownPipeline = computed(
     () =>
       pipelines.value.find((p) => p.id === shownId.value) ??
-      [latest.value, settled.value?.pipeline].find((p) => p && p.id === shownId.value) ??
+      [latest.value, noResult.value?.pipeline].find((p) => p && p.id === shownId.value) ??
       null,
   )
   // A pipeline that was replaced before it ran says nothing worth listing.
@@ -97,12 +97,12 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
   const proposed = computed(() => status.value?.proposed ?? null)
   const proposedShown = computed(() => {
     const p = proposed.value
-    return p?.current ?? p?.settled?.pipeline ?? p?.latest ?? null
+    return p?.current ?? p?.noResult?.pipeline ?? p?.latest ?? null
   })
   const proposedStale = computed(() => {
     const p = proposed.value
     const shown = proposedShown.value
-    return !!p && !!shown && shown.id !== p.current?.id && shown.id !== p.settled?.pipeline.id
+    return !!p && !!shown && shown.id !== p.current?.id && shown.id !== p.noResult?.pipeline.id
   })
 
   async function load() {
@@ -158,7 +158,7 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
   }
 
   function show(id: number | null) {
-    pickedId.value = id === (current.value?.id ?? settled.value?.pipeline.id ?? latest.value?.id) ? null : id
+    pickedId.value = id === (current.value?.id ?? noResult.value?.pipeline.id ?? latest.value?.id) ? null : id
   }
 
   // The merge card's row: how the pipeline stands, and the gate's note.
@@ -184,14 +184,14 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
     }
     if (st.invalid) return { ...base, tone: 'error', icon: 'warning', title: "Pipeline doesn't parse", detail: st.invalid }
     const p = st.current
-    if (!p && st.settled) {
-      const cancelled = st.settled.pipeline.status === 'cancelled'
+    if (!p && st.noResult) {
+      const cancelled = st.noResult.pipeline.status === 'cancelled'
       return {
         ...base,
         tone: cancelled ? 'neutral' : 'error',
         icon: cancelled ? 'ban' : 'warning',
         title: cancelled ? 'Pipeline cancelled' : "Pipeline couldn't run",
-        detail: st.settled.reason,
+        detail: st.noResult.reason,
       }
     }
     if (!p) {
@@ -242,7 +242,7 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
     loaded,
     current,
     latest,
-    settled,
+    noResult,
     gate,
     gateText,
     gateNote,

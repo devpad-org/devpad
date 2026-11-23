@@ -81,11 +81,11 @@ type ProposedStatus struct {
 	// it doesn't parse, or empty.
 	ConfigPath string
 	Invalid    string
-	// Current, Latest and Settled are as MergeRequestStatus's, of the
+	// Current, Latest and NoResult are as MergeRequestStatus's, of the
 	// merge request's proposed pipelines.
-	Current *Pipeline
-	Latest  *Pipeline
-	Settled *SettledPipeline
+	Current  *Pipeline
+	Latest   *Pipeline
+	NoResult *NoResult
 }
 
 // proposal is what a merge request's change proposes for its pipeline when
@@ -347,7 +347,7 @@ func (s *service) ProposedStatus(ctx context.Context, userID, projectID int64, o
 		return nil, err
 	}
 	if st.Current == nil {
-		if st.Settled, err = s.settledWithout(ctx, proposed, st.Automatic); err != nil {
+		if st.NoResult, err = s.noResultWithout(ctx, proposed, st.Automatic); err != nil {
 			return nil, err
 		}
 	}

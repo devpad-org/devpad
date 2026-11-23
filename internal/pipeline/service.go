@@ -67,7 +67,11 @@ type Service interface {
 	// failures and the reviewer told its results: its jobs, the last
 	// outputTail bytes of each failed job's output with devpad's notes on it,
 	// and, for a merge request's pipeline, how the target's own pipeline went
-	// on the commit it merged onto (TargetResult).
+	// on the commit it merged onto (TargetResult). It also does one thing
+	// besides reading: while the target's result is Pending on an automatic
+	// run of the target still queued, it marks that run awaited, so a run
+	// that then starts no pipeline tells the BranchRunListeners. It takes
+	// only leaf locks, so it may be called under a merge request's lock.
 	Report(ctx context.Context, userID, projectID, pipelineID int64, outputTail int) (*Report, error)
 	// BranchPipeline resolves the pipeline a merge request into a protected
 	// branch would run now, at the branch's tip, for a task's agent to run
@@ -98,7 +102,7 @@ type Service interface {
 	// ProjectDeleting stops the project's pipelines before the project goes,
 	// and starts none until ProjectDeleteEnded.
 	project.DeleteHook
-	// Reconcile settles the pipelines a previous devpad left unfinished and
+	// Reconcile finishes the pipelines a previous devpad left unfinished and
 	// runs them again, tells the listeners what they were not told, and
 	// removes what finished pipelines left behind. It never touches a
 	// pipeline this process runs, but it is to come before anything that
@@ -154,7 +158,7 @@ type Listener interface {
 // that result is to be decided again. Only a run something waited on is
 // told, so devpad's periodic catch-up tells nobody.
 type BranchRunListener interface {
-	BranchRunSettled(ctx context.Context, userID, projectID int64, branch string)
+	BranchRunStartedNone(ctx context.Context, userID, projectID int64, branch string)
 }
 
 // Projects is what pipelines need of the project service: the project, its
@@ -287,7 +291,7 @@ type service struct {
 	closed bool
 	// runs holds each pipeline this process has queued or is running, by
 	// its UID, from before its record is made until its run has ended.
-	// Nothing that settles what a devpad that stopped left, interrupting a
+	// Nothing that cleans up what a devpad that stopped left, interrupting a
 	// pipeline or removing what it made, touches one of these.
 	runs map[string]*activePipeline
 	// deleting holds the projects being deleted, whose pipelines no longer
@@ -448,8 +452,8 @@ type LatestPipelines struct {
 	// whether a branch's is of its current commit is not known.
 	BranchTips map[string]string
 	// Branches says how each branch asked for stands now, by name: whether
-	// it runs automatically, and, when it can be read, its settled
-	// pipeline.
+	// it runs automatically, and, when it can be read, its pipeline that
+	// ended without a result.
 	Branches map[string]*BranchStanding
 }
 
@@ -462,9 +466,9 @@ type BranchStanding struct {
 	// included: with Automatic, a pipeline guards the merge requests into
 	// it (Gate). Nil when its commit or pipeline could not be read.
 	Configured *bool
-	// Settled is, when no pipeline of its current commit and jobs counts,
+	// NoResult is, when no pipeline of its current commit and jobs counts,
 	// the newest that ended without a result on them, or nil.
-	Settled *SettledPipeline
+	NoResult *NoResult
 }
 
 func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestFilter) (*LatestPipelines, error) {
@@ -507,16 +511,16 @@ func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestF
 	for _, b := range refs.Branches {
 		if slices.Contains(f.Branches, b.Name) {
 			out.BranchTips[b.Name] = b.SHA
-			s.settleBranch(ctx, p, b.Name, b.SHA, out.Branches[b.Name])
+			s.fillBranchStanding(ctx, p, b.Name, b.SHA, out.Branches[b.Name])
 		}
 	}
 	return out, nil
 }
 
-// settleBranch fills in whether a pipeline is configured for a branch at
-// tip and its settled pipeline, unless its pipeline at tip cannot be read,
+// fillBranchStanding fills in whether a pipeline is configured for a branch at
+// tip and its NoResult, unless its pipeline at tip cannot be read,
 // which only leaves the badge without them.
-func (s *service) settleBranch(ctx context.Context, p *project.Project, branch, tip string, st *BranchStanding) {
+func (s *service) fillBranchStanding(ctx context.Context, p *project.Project, branch, tip string, st *BranchStanding) {
 	if !project.IsCommitHash(tip) || !p.IsProtected(branch) {
 		return
 	}
@@ -527,7 +531,7 @@ func (s *service) settleBranch(ctx context.Context, p *project.Project, branch, 
 	}
 	configured := resolved.Source != SourceNone
 	st.Configured = &configured
-	if st.Settled, err = s.settledOf(ctx, branchKey(p.ID, branch, tip, resolved.Hash), st.Automatic); err != nil {
+	if st.NoResult, err = s.noResultOf(ctx, branchKey(p.ID, branch, tip, resolved.Hash), st.Automatic); err != nil {
 		log.Printf("pipeline: project %d's %s for its badge: %v", p.ID, branch, err)
 	}
 }

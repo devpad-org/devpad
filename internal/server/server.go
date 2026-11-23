@@ -246,9 +246,9 @@ func New(cfg Config) (*Server, error) {
 	// about devpad from.
 	aiModule.AddToolProvider(docs.NewProvider(userRepo))
 
-	// Pipelines first: their Reconcile settles what the last devpad left
-	// and needs nothing else settled, and the reconciles after it may start
-	// pipelines, which must not be taken for ones left behind.
+	// Pipelines first: their Reconcile finishes what the last devpad left
+	// and needs nothing else reconciled first, and the reconciles after it
+	// may start pipelines, which must not be taken for ones left behind.
 	if err := pipelineService.Reconcile(context.Background()); err != nil {
 		log.Printf("reconciling interrupted pipelines: %v", err)
 	}

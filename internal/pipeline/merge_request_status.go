@@ -43,21 +43,21 @@ type MergeRequestStatus struct {
 	// Automatic says devpad runs the merge request's pipelines by itself:
 	// it is open, into a branch ticked to run them.
 	Automatic bool
-	// Settled is, when no pipeline of Key counts, the newest of Key that
+	// NoResult is, when no pipeline of Key counts, the newest of Key that
 	// ended without a result, cancelled or unable to run, with why and
 	// whether devpad runs Key once more: what the merge request shows
 	// rather than "no pipeline yet", and what the merge gate names when it
 	// is shut. Nil otherwise.
-	Settled *SettledPipeline
+	NoResult *NoResult
 	// OnTarget is, when Current failed, how the target's own pipeline went
 	// on the commit Current merged onto, which says which of its failures
 	// the change didn't bring. Nil otherwise.
 	OnTarget *TargetResult
 }
 
-// SettledPipeline is a pipeline of the commits and jobs a branch or merge
+// NoResult is a pipeline of the commits and jobs a branch or merge
 // request has now that ended without a result, when none of those counts.
-type SettledPipeline struct {
+type NoResult struct {
 	Pipeline *Pipeline
 	// Retrying says devpad runs those commits and jobs once more by itself,
 	// at the next event or catch-up: the pipeline could not run, the
@@ -68,29 +68,29 @@ type SettledPipeline struct {
 	Reason string
 }
 
-// settledOf is the SettledPipeline of k, or nil when one of it counts or
+// noResultOf is the NoResult of k, or nil when one of it counts or
 // none ended without a result. automatic says its subject runs by itself.
-func (s *service) settledOf(ctx context.Context, k key, automatic bool) (*SettledPipeline, error) {
+func (s *service) noResultOf(ctx context.Context, k key, automatic bool) (*NoResult, error) {
 	current, err := s.current(ctx, k)
 	if err != nil || current != nil {
 		return nil, err
 	}
-	return s.settledWithout(ctx, k, automatic)
+	return s.noResultWithout(ctx, k, automatic)
 }
 
-// settledWithout is settledOf for k when none of it counts.
-func (s *service) settledWithout(ctx context.Context, k key, automatic bool) (*SettledPipeline, error) {
-	ended, retry, err := s.settled(ctx, k)
+// noResultWithout is noResultOf for k when none of it counts.
+func (s *service) noResultWithout(ctx context.Context, k key, automatic bool) (*NoResult, error) {
+	ended, retry, err := s.lastEnded(ctx, k)
 	if err != nil || ended == nil {
 		return nil, err
 	}
 	retrying := retry && automatic
-	return &SettledPipeline{Pipeline: ended, Retrying: retrying, Reason: s.settledReason(ended, retrying, automatic)}, nil
+	return &NoResult{Pipeline: ended, Retrying: retrying, Reason: s.noResultReason(ended, retrying, automatic)}, nil
 }
 
-// settledReason says why pipeline p of a subject's commits and jobs as they
+// noResultReason says why pipeline p of a subject's commits and jobs as they
 // are now leaves them without a result, and whether devpad runs them again.
-func (s *service) settledReason(p *Pipeline, retrying, automatic bool) string {
+func (s *service) noResultReason(p *Pipeline, retrying, automatic bool) string {
 	if p.Status == StatusCancelled {
 		if automatic {
 			return fmt.Sprintf("Pipeline #%d was cancelled on these commits, so devpad won't run them again by itself: run it again.", p.ID)
@@ -187,7 +187,7 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 		}
 	}
 	if st.Current == nil {
-		if st.Settled, err = s.settledWithout(ctx, official, st.Automatic); err != nil {
+		if st.NoResult, err = s.noResultWithout(ctx, official, st.Automatic); err != nil {
 			return nil, err
 		}
 	}

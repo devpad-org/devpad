@@ -59,13 +59,13 @@ func TestGateStates(t *testing.T) {
 		{name: "out of date", st: guarded(func(st *MergeRequestStatus) { st.Latest = pipelineOf(2, StatusPassed) }), state: GateOutOfDate, waits: true, reason: "#2, is out of date", pipeline: 2},
 		{name: "cancelled", st: guarded(func(st *MergeRequestStatus) {
 			st.Latest = pipelineOf(2, StatusPassed)
-			st.Settled = &SettledPipeline{Pipeline: pipelineOf(4, StatusCancelled)}
+			st.NoResult = &NoResult{Pipeline: pipelineOf(4, StatusCancelled)}
 		}), state: GateCancelled, reason: "pipeline #4 was cancelled", pipeline: 4},
 		{name: "couldn't run, retrying", st: guarded(func(st *MergeRequestStatus) {
-			st.Settled = &SettledPipeline{Pipeline: &Pipeline{ID: 4, Status: StatusError, Error: "the repo could not be read."}, Retrying: true}
+			st.NoResult = &NoResult{Pipeline: &Pipeline{ID: 4, Status: StatusError, Error: "the repo could not be read."}, Retrying: true}
 		}), state: GateError, waits: true, reason: "pipeline #4 couldn't run: the repo could not be read; devpad runs it once more", pipeline: 4},
 		{name: "couldn't run", st: guarded(func(st *MergeRequestStatus) {
-			st.Settled = &SettledPipeline{Pipeline: &Pipeline{ID: 4, Status: StatusError, Jobs: []*JobRun{{Job: Job{Name: "backend"}, Status: JobError, Error: "no service redis"}}}}
+			st.NoResult = &NoResult{Pipeline: &Pipeline{ID: 4, Status: StatusError, Jobs: []*JobRun{{Job: Job{Name: "backend"}, Status: JobError, Error: "no service redis"}}}}
 		}), state: GateError, reason: "pipeline #4 couldn't run: job backend: no service redis", pipeline: 4},
 		{name: "closed", st: &MergeRequestStatus{Latest: pipelineOf(2, StatusPassed)}, state: GateClosed, reason: "can no longer merge"},
 	}

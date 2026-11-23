@@ -101,7 +101,8 @@ type Report struct {
 // Report reads what a pipeline of the user's project found: its jobs, the
 // last outputTail bytes of each failed job's output with devpad's notes on
 // it (none when outputTail is 0), and for a merge request's pipeline how
-// the target's own pipeline went on the commit it merged onto.
+// the target's own pipeline went on the commit it merged onto, awaiting the
+// target's queued automatic run when that is still to say (targetResult).
 func (s *service) Report(ctx context.Context, userID, projectID, pipelineID int64, outputTail int) (*Report, error) {
 	p, err := s.get(ctx, userID, projectID, pipelineID)
 	if err != nil {

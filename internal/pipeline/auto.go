@@ -271,21 +271,21 @@ func (s *service) autoWorker(ctx context.Context) {
 		coming := s.makeAutoRun(ctx, r)
 		// Once the run no longer counts as on its way (targetResult).
 		if s.auto.done(r.key) && !coming && r.key.kind == autoBranch {
-			s.branchRunSettled(r)
+			s.branchRunStartedNone(r)
 		}
 	}
 }
 
-// branchRunSettled tells the BranchRunListeners that a branch's automatic
+// branchRunStartedNone tells the BranchRunListeners that a branch's automatic
 // run, which a merge request's result waited on, started no pipeline.
-func (s *service) branchRunSettled(r *autoRun) {
+func (s *service) branchRunStartedNone(r *autoRun) {
 	s.mu.Lock()
 	listeners := slices.Clone(s.listeners)
 	s.mu.Unlock()
 	s.spawn(func(ctx context.Context) {
 		for _, l := range listeners {
 			if b, ok := l.(BranchRunListener); ok && ctx.Err() == nil {
-				b.BranchRunSettled(ctx, r.userID, r.key.projectID, r.key.branch)
+				b.BranchRunStartedNone(ctx, r.userID, r.key.projectID, r.key.branch)
 			}
 		}
 	})
