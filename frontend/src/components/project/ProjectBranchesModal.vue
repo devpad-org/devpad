@@ -3,6 +3,7 @@ import DocLink from '@/components/DocLink.vue'
 import { computed, ref, watch } from 'vue'
 import { projectApi } from '@/api/projects'
 import SelectMenu from '@/components/SelectMenu.vue'
+import { PIPELINE_COPY } from '@/components/pipeline/pipelineFormat'
 import { useActiveProjectStore } from '@/stores/activeProject'
 
 // Picks the project's default branch and the other branches that change
@@ -260,8 +261,7 @@ async function save() {
               </div>
             </div>
             <p class="form-hint">
-              The branches whose pipelines you follow: the Project page shows each ticked branch's latest result. Only protected branches can run pipelines, since anyone
-              who can push to a branch can change its pipeline file. Devpad doesn't start pipelines on its own yet: run them from the Pipelines tab or a merge request.
+              Only protected branches run pipelines, since anyone who can push to a branch can change its pipeline file. {{ PIPELINE_COPY.tickedBranches }}
             </p>
           </div>
           <p v-if="error" class="form-error">{{ error }}</p>

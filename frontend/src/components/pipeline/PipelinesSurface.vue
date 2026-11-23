@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, toRef, watch } from 'vue'
+import MrIcon from '@/components/project/MrIcon.vue'
+import { computed, onMounted, onUnmounted, ref, toRef, watch } from 'vue'
 import { pipelineApi, type Pipeline, type PipelineListFilter } from '@/api/pipelines'
 import DocLink from '@/components/DocLink.vue'
 import SelectMenu from '@/components/SelectMenu.vue'
 import { usePipelineList } from '@/composables/usePipelines'
 import { useActiveProjectStore } from '@/stores/activeProject'
+import { PIPELINE_COPY } from './pipelineFormat'
 import PipelineList from './PipelineList.vue'
 import PipelineView from './PipelineView.vue'
 
@@ -26,8 +28,20 @@ const list = usePipelineList(projectId, filter, toRef(props, 'active'))
 const { pipelines, loaded, error, hasMore, loadingMore } = list
 
 const selectedId = ref<number | null>(null)
-// On a narrow surface the list and the pipeline take turns.
+// On a narrow surface the list and the pipeline take turns, and the
+// pipeline is read only while it shows.
 const showingDetail = ref(false)
+const NARROW_PX = 760
+const root = ref<HTMLElement | null>(null)
+const narrow = ref(false)
+const detailActive = computed(() => props.active && (!narrow.value || showingDetail.value))
+let resize: ResizeObserver | null = null
+onMounted(() => {
+  if (!root.value) return
+  resize = new ResizeObserver(([entry]) => (narrow.value = entry.contentRect.width <= NARROW_PX))
+  resize.observe(root.value)
+})
+onUnmounted(() => resize?.disconnect())
 
 const runBranch = ref('')
 const starting = ref(false)
@@ -83,17 +97,11 @@ async function run() {
 </script>
 
 <template>
-  <section class="list-surface pipelines-surface" aria-label="Pipelines">
+  <section ref="root" class="list-surface pipelines-surface" aria-label="Pipelines">
     <header class="list-header">
       <div class="list-title">
         <span class="list-title-icon">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="5" cy="12" r="2.5" />
-            <circle cx="19" cy="12" r="2.5" />
-            <path d="M7.5 12h3" />
-            <path d="M13.5 12h3" />
-            <rect x="10.5" y="9.5" width="3" height="5" rx="1" />
-          </svg>
+          <MrIcon name="pipeline" :size="16" :stroke-width="1.8" />
         </span>
         <span class="list-title-text">Pipelines</span>
         <DocLink topic="pipelines" label="Pipelines" />
@@ -137,7 +145,7 @@ async function run() {
             {{ b }}
           </button>
         </div>
-        <span class="toolbar-hint">Devpad doesn't start pipelines on its own yet: run them here, or from a merge request.</span>
+        <span class="toolbar-hint">{{ PIPELINE_COPY.startedByHand }}</span>
       </div>
       <p v-if="startError" class="notice notice-error surface-notice">{{ startError }}</p>
       <p v-if="error" class="notice notice-error surface-notice">{{ error }}</p>
@@ -162,7 +170,7 @@ async function run() {
             :key="selectedId"
             :project-id="store.projectId"
             :pipeline-id="selectedId"
-            :active="active"
+            :active="detailActive"
             @started="started"
           />
           <p v-else class="list-empty">Pick a pipeline to see its jobs.</p>
@@ -235,7 +243,30 @@ async function run() {
   color: var(--text-primary);
 }
 
-/* A narrow surface shows the list, or the pipeline picked from it. */
+/* The header wraps rather than overflowing a phone's width. */
+.pipelines-surface .list-header {
+  height: auto;
+  min-height: 38px;
+  flex-wrap: wrap;
+  row-gap: var(--space-1);
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+@container (max-width: 520px) {
+  .pipelines-surface .list-summary {
+    display: none;
+  }
+
+  .run-controls {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+}
+
+/* A narrow surface shows the list, or the pipeline picked from it; this
+   width is NARROW_PX. */
 @container (max-width: 760px) {
   .split {
     grid-template-columns: minmax(0, 1fr);

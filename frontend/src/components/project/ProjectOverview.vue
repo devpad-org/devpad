@@ -203,7 +203,7 @@ async function dismissConversion() {
 
         <div class="section-head">
           <h2 class="section-heading">How changes are tested <DocLink topic="pipelines" label="Pipelines" /></h2>
-          <p class="section-sub">Each job of a pipeline runs in a fresh container of the project's environment, apart from every workspace. Their runs are on the <button type="button" class="section-link" @click="emit('navigate', 'pipelines')">Pipelines</button> tab.</p>
+          <p class="section-sub">Each job of a pipeline runs in a fresh container of the project's environment, apart from every workspace. Their runs are on the <button type="button" class="section-link" @click="emit('navigate', 'pipelines')">Pipelines</button> surface.</p>
         </div>
         <ProjectPipelineCard />
 

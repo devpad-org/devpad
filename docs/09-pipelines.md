@@ -5,7 +5,7 @@ summary: The jobs a project runs on its protected branches and merge requests, w
 
 A pipeline runs a project's jobs, such as its tests and its build, on a commit of a protected branch or on a merge request, each job in a fresh container that no agent can reach. Its result tells you whether the change builds and passes before you read it.
 
-For now, pipelines run only when you start them: devpad doesn't yet start one on its own when a branch moves or a merge request opens, and a pipeline's result doesn't stop anything from merging.
+For now, pipelines run only when you start them, or when devpad runs one again that its restart interrupted: devpad doesn't yet start one on its own when a branch moves or a merge request opens, and a pipeline's result doesn't stop anything from merging.
 
 ## The pipeline file {#pipeline-file}
 
@@ -24,7 +24,7 @@ jobs:
       npm run type-check
 ```
 
-- **jobs** lists up to 20 jobs, shown in the file's order. A job's name uses lowercase letters, digits, `-` and `_`, and starts with a letter or digit.
+- **jobs** lists up to 20 jobs, shown in the file's order. A job's name is up to 40 lowercase letters, digits, `-` and `_`, and starts with a letter or digit.
 - **run** is the job's bash script. It stops at the first command that fails.
 - **timeout** is how long the job may run, such as `90s` or `15m`: 10 minutes when left out, and at most an hour.
 - **services** lists up to 8 of the project's [services](/docs/services#project-services) by type, such as `postgres`. The job gets fresh copies of its own.
@@ -35,7 +35,7 @@ Devpad reads the file strictly: a key it doesn't know is an error, so a misspelt
 
 For a repo where committing a devpad file isn't welcome, such as one you don't own, the **Pipeline setting** card on the Project page holds the same YAML for the project. Only you can change it: no agent or assistant can. Devpad checks it as you save it and says on which line anything is wrong; leave it empty to have none.
 
-The setting applies only to a commit that has no `.devpad/pipeline.yml`. When the file is there, it wins, and the two are never combined. One setting covers every branch, so every protected branch gets the same jobs from it. With neither a file nor the setting, there is no pipeline, and devpad says **No pipeline configured**, never that the commit passed.
+The setting applies only to a commit that has no pipeline file, `.devpad/pipeline.yml` or `.devpad/pipeline.yaml`. When the file is there, it wins (both at once make the pipeline **Invalid**), and the two are never combined. One setting covers every branch, so every protected branch gets the same jobs from it. With neither a file nor the setting, there is no pipeline, and devpad says **No pipeline configured**, never that the commit passed.
 
 ## Which branches run pipelines {#branches}
 
@@ -44,9 +44,9 @@ Only protected branches and merge requests into them run pipelines. Anyone who c
 - **A protected branch's pipeline** tests the branch's current commit, with the pipeline file in that commit.
 - **A merge request's pipeline** tests its branch merged onto the target branch's current commit, so it also catches two merge requests that pass alone but break once both land. Its jobs come from the target branch's pipeline file, never the change's, so a task's agent can't rewrite the jobs that grade its work. A branch that doesn't merge cleanly makes the pipeline **Doesn't merge** without running anything.
 
-Under **Run pipelines** in the **Branches** dialog, tick the protected branches whose pipelines you follow. The Project page shows the result of each ticked branch's latest pipeline beside it. Ticking a branch doesn't start anything yet.
+Under **Run pipelines** in the **Branches** dialog, tick the protected branches whose pipelines you follow. The Project page shows the result of each ticked branch's latest pipeline beside it, skipping pipelines that were cancelled, replaced, interrupted or couldn't run, and says **Out of date** once the branch has moved past it. Ticking a branch doesn't start anything yet, and you can run a pipeline on any protected branch, ticked or not, and on a merge request into one.
 
-To run a pipeline, press **Run pipeline** on the **Pipelines** tab and pick a protected branch, or press **Run pipeline** on a merge request's **Pipeline** card (**Run pipeline again** once it has one). Starting one that is already queued or running for the same commits shows that one instead. **Run again** on a finished pipeline runs its branch or merge request again at the commits it is at now, and **Cancel** stops a queued or running one.
+To run a pipeline, press **Run pipeline** on the **Pipelines** surface and pick a protected branch, or press **Run pipeline** on a merge request's **Pipeline** card (**Run pipeline again** once it has one). Starting one that is already queued or running for the same commits shows that one instead. **Run again** on a finished pipeline runs its branch or merge request again at the commits it is at now, and **Cancel** stops a queued or running one.
 
 ## How jobs run {#how-jobs-run}
 
@@ -79,7 +79,9 @@ A job is queued, running, passed, failed, timed out, out of memory, error, cance
 
 ## Merge requests {#merge-requests}
 
-A merge request's **Pipeline** card shows its latest pipeline, its jobs and where they came from, and the merge card has a row for it: **No pipeline configured** when the target branch has no pipeline file and the project no setting. The activity lists each pipeline the merge request ran, and picking one there shows it on the card. The list of merge requests shows each open one's latest result beside its status. A pipeline that ran on an older commit than the merge request's says so. A pipeline's result doesn't block merging yet: it is there for you to weigh.
+A merge request's result counts only for what it tested: its branch at its current commit, merged onto the target branch's current commit, with the jobs the target's pipeline has now. A pipeline of an older commit of either, or of jobs that have changed since, is out of date, and devpad works out which on its side.
+
+A merge request's **Pipeline** card shows the pipeline that counts now, or else its latest, saying when that is out of date, with its jobs and where they came from. The merge card has a row for it: **Pipeline passed** only for a pass that counts now, **Pipeline out of date** for an older result, and **No pipeline configured** when the target branch has no pipeline file and the project no setting. The activity lists each pipeline the merge request ran, and picking one there shows it on the card. The list of merge requests shows each open one's latest result beside its status, and **Out of date** once its branch has moved past it; open the merge request to see whether its target or jobs have too. A pipeline's result doesn't block merging yet: it is there for you to weigh.
 
 ## What pipelines don't stop {#limits}
 

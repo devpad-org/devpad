@@ -50,13 +50,13 @@ const statusDetail = computed(() => {
   if (!p) return ''
   switch (p.status) {
     case 'queued':
-      return 'Waiting for the environment to build, or for another of the project’s jobs to finish.'
+      return "Waiting for the environment to build, or for another of the project's jobs to finish."
     case 'not_configured':
-      return `${p.kind === 'branch' ? 'The commit' : `${p.targetBranch}’s commit`} has no .devpad/pipeline.yml and the project has no pipeline setting, so nothing was tested.`
+      return `${p.kind === 'branch' ? 'The commit' : `${p.targetBranch}'s commit`} has no .devpad/pipeline.yml and the project has no pipeline setting, so nothing was tested.`
     case 'invalid':
-      return 'The pipeline doesn’t parse, so nothing ran.'
+      return "The pipeline doesn't parse, so nothing ran."
     case 'conflict':
-      return `${p.sourceBranch} doesn’t merge onto ${p.targetBranch}, so nothing ran.`
+      return `${p.sourceBranch} doesn't merge onto ${p.targetBranch}, so nothing ran.`
     default:
       return ''
   }

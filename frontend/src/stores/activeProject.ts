@@ -6,7 +6,7 @@ import { projectApi, type ConversionNotice, type GitPushEvent, type Project, typ
 export type GitPushNotice = GitPushEvent & { key: string }
 import { taskApi, type Task } from '@/api/tasks'
 import { mergeRequestApi, type MergeRequest } from '@/api/mergeRequests'
-import { pipelineApi, type Pipeline } from '@/api/pipelines'
+import { MAX_LATEST_SUBJECTS, pipelineApi, type Pipeline } from '@/api/pipelines'
 
 const POLL_INTERVAL_MS = 4000
 
@@ -131,7 +131,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     if (id === null || !ready.value) return
     const gen = generation
     const branches = project.value?.pipelineBranches ?? []
-    const mergeRequestIds = openMergeRequests.value.map((mr) => mr.id).slice(0, 100 - branches.length)
+    const mergeRequestIds = openMergeRequests.value.map((mr) => mr.id).slice(0, MAX_LATEST_SUBJECTS - branches.length)
     if (branches.length === 0 && mergeRequestIds.length === 0) {
       latestPipelines.value = []
       return

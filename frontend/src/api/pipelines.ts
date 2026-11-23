@@ -122,6 +122,36 @@ export interface PipelineListFilter {
 // merge request's head merged onto its target.
 export type PipelineSubject = { branch: string } | { mergeRequestId: number }
 
+// How many branches and merge requests one latest() names at most, as the
+// server's MaxLatestSubjects.
+export const MAX_LATEST_SUBJECTS = 100
+
+// How a merge request stands for pipelines now, as the server works it out:
+// the head and target tip a pipeline must test to count, the jobs that
+// would run there, and the pipeline that tested exactly that.
+export interface MergeRequestPipelineStatus {
+  // The merge request can still merge; when it can't, only latest is set.
+  open: boolean
+  headSha: string
+  targetSha: string
+  configHash: string
+  // Where the jobs that would run now come from; 'none' is no pipeline
+  // configured, so nothing guards the merge request.
+  source: PipelineSource
+  configPath: string
+  // Why the pipeline that would run now doesn't parse, or empty.
+  invalid: string
+  configured: boolean
+  // current passed: the result is of the commits and jobs as they are now.
+  passed: boolean
+  // The newest pipeline of exactly these commits and jobs that counts: one
+  // under way, or one with a result. Null when none has run.
+  current: Pipeline | null
+  // The newest pipeline of the merge request that counts, whatever it
+  // tested; an older result when it isn't current.
+  latest: Pipeline | null
+}
+
 function base(projectId: number): string {
   return `/api/projects/${projectId}/pipelines`
 }
@@ -138,13 +168,17 @@ export const pipelineApi = {
     return apiClient.get(`${base(projectId)}${qs ? `?${qs}` : ''}`)
   },
 
-  // The newest pipeline of each branch and merge request named that has
-  // one, whatever its status.
+  // The newest pipeline that counts (under way, or with a result) of each
+  // branch and merge request named that has one.
   latest(projectId: number, subjects: { branches: string[]; mergeRequestIds: number[] }): Promise<{ pipelines: Pipeline[] }> {
     const query = new URLSearchParams()
     for (const b of subjects.branches) query.append('branch', b)
     for (const id of subjects.mergeRequestIds) query.append('mergeRequestId', String(id))
     return apiClient.get(`${base(projectId)}/latest?${query.toString()}`)
+  },
+
+  mergeRequestStatus(projectId: number, mergeRequestId: number): Promise<{ status: MergeRequestPipelineStatus }> {
+    return apiClient.get(`/api/projects/${projectId}/merge-requests/${mergeRequestId}/pipeline`)
   },
 
   // Starts a pipeline, or returns one already queued or running that tests

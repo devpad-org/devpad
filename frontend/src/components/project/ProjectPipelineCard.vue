@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MrIcon from '@/components/project/MrIcon.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import { pipelineApi } from '@/api/pipelines'
 import { useActiveProjectStore } from '@/stores/activeProject'
@@ -15,6 +16,8 @@ const draft = ref('')
 const saving = ref(false)
 const error = ref('')
 const editor = ref<HTMLTextAreaElement | null>(null)
+// Cancelling an edited draft asks first.
+const confirmingDiscard = ref(false)
 
 const PLACEHOLDER = `jobs:
   test:
@@ -41,8 +44,18 @@ watch(
 function edit() {
   draft.value = config.value
   error.value = ''
+  confirmingDiscard.value = false
   editing.value = true
   void nextTick(() => editor.value?.focus())
+}
+
+function cancel() {
+  if (draft.value !== config.value && !confirmingDiscard.value) {
+    confirmingDiscard.value = true
+    return
+  }
+  confirmingDiscard.value = false
+  editing.value = false
 }
 
 async function save() {
@@ -67,7 +80,7 @@ function onKeydown(e: KeyboardEvent) {
     void save()
   } else if (e.key === 'Escape') {
     e.stopPropagation()
-    editing.value = false
+    cancel()
   } else if (e.key === 'Tab' && !e.shiftKey && editor.value) {
     // YAML is indented with spaces; a tab would not parse.
     e.preventDefault()
@@ -82,13 +95,7 @@ function onKeydown(e: KeyboardEvent) {
 <template>
   <ProjectCard title="Pipeline setting" doc="pipelineSetting" doc-label="The project's pipeline setting" :status="status.label" :tone="status.tone">
     <template #icon>
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="5" cy="12" r="2.5" />
-        <circle cx="19" cy="12" r="2.5" />
-        <path d="M7.5 12h3" />
-        <path d="M13.5 12h3" />
-        <rect x="10.5" y="9.5" width="3" height="5" rx="1" />
-      </svg>
+      <MrIcon name="pipeline" :size="15" :stroke-width="1.8" />
     </template>
 
     <p class="card-lead">
@@ -108,6 +115,11 @@ function onKeydown(e: KeyboardEvent) {
         :placeholder="PLACEHOLDER"
         @keydown="onKeydown"
       />
+      <p v-if="confirmingDiscard" class="notice notice-warning card-message discard" role="alert">
+        <span>Discard your changes to the pipeline setting?</span>
+        <button type="button" class="btn btn-danger btn-sm" @click="cancel">Discard</button>
+        <button type="button" class="btn btn-secondary btn-sm" @click="confirmingDiscard = false; editor?.focus()">Keep editing</button>
+      </p>
       <p v-if="error" class="notice notice-error card-message pipeline-error" role="alert">{{ error }}</p>
       <p v-else class="card-note">Leave it empty to have none. <kbd>Ctrl</kbd> <kbd>Enter</kbd> saves.</p>
     </template>
@@ -117,15 +129,16 @@ function onKeydown(e: KeyboardEvent) {
         Not set: a commit without a pipeline file has no pipeline, and devpad says <strong>No pipeline configured</strong> rather than that it passed.
       </p>
       <p class="card-note">
-        <template v-if="ticked.length">Runs pipelines: <span class="mono">{{ ticked.join(', ') }}</span>, and merge requests into them.</template>
-        <template v-else>No protected branch is ticked under Run pipelines in Manage branches yet.</template>
+        Pipelines run by hand on any protected branch and on merge requests into one.
+        <template v-if="ticked.length">Shown on the Project page: <span class="mono">{{ ticked.join(', ') }}</span>.</template>
+        <template v-else>Tick branches under Run pipelines in Manage branches to show their latest result here.</template>
       </p>
     </template>
 
     <template #actions>
       <template v-if="editing">
         <button class="btn btn-primary btn-sm" :disabled="saving" @click="save">{{ saving ? 'Saving…' : 'Save' }}</button>
-        <button class="btn btn-secondary btn-sm" :disabled="saving" @click="editing = false">Cancel</button>
+        <button class="btn btn-secondary btn-sm" :disabled="saving" @click="cancel">Cancel</button>
       </template>
       <button v-else class="btn btn-secondary btn-sm" :disabled="!store.project" @click="edit">{{ hasConfig ? 'Edit' : 'Add a pipeline setting' }}</button>
     </template>
@@ -158,6 +171,17 @@ function onKeydown(e: KeyboardEvent) {
 .pipeline-input:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.discard {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.discard span {
+  margin-right: auto;
 }
 
 .pipeline-error {

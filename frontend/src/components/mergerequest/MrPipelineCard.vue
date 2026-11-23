@@ -2,6 +2,7 @@
 import DocLink from '@/components/DocLink.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import PipelineView from '@/components/pipeline/PipelineView.vue'
+import { PIPELINE_COPY } from '@/components/pipeline/pipelineFormat'
 import { shortSha } from './format'
 import { useMergeRequest } from './useMergeRequest'
 
@@ -9,7 +10,7 @@ import { useMergeRequest } from './useMergeRequest'
 // activity, with its jobs, where they came from and their output, and a way
 // to run it by hand. Its jobs come from the target branch, never the change.
 const { mr, projectId, isOpen, pipelines } = useMergeRequest()
-const { latest, latestStale, shownId, pickedId, loaded, starting, startError } = pipelines
+const { latest, status, shownId, shownStale, shownPipeline, pickedId, loaded, starting, startError } = pipelines
 
 // Run again shows the pipeline it started, the latest.
 function started() {
@@ -26,7 +27,7 @@ function started() {
         <DocLink topic="mergeRequestPipelines" label="Merge request pipelines" />
       </span>
       <span class="card-header-end">
-        <button v-if="pickedId !== null" type="button" class="btn btn-secondary btn-sm" @click="pipelines.show(null)">Show the latest</button>
+        <button v-if="pickedId !== null" type="button" class="btn btn-secondary btn-sm" @click="pipelines.show(null)">Show the current one</button>
         <button
           v-if="isOpen"
           type="button"
@@ -42,14 +43,20 @@ function started() {
     </div>
     <div class="card-body">
       <p v-if="startError" class="notice notice-error">{{ startError }}</p>
-      <p v-if="latestStale && pickedId === null && latest" class="notice notice-warning">
-        This pipeline tested <span class="mono">{{ shortSha(latest.headSha) }}</span>; the branch is at <span class="mono">{{ shortSha(mr.headSha) }}</span> now.
+      <p v-if="shownStale && status" class="notice notice-warning">
+        <template v-if="shownPipeline">
+          This pipeline tested <span class="mono">{{ shortSha(shownPipeline.headSha) }}</span> onto {{ shownPipeline.targetBranch }} at
+          <span class="mono">{{ shortSha(shownPipeline.targetSha) }}</span>.
+        </template>
+        <template v-else>This pipeline isn't of the merge request as it is now.</template>
+        Now it is <span class="mono">{{ shortSha(status.headSha) }}</span> onto {{ mr.targetBranch }} at <span class="mono">{{ shortSha(status.targetSha) }}</span><template v-if="shownPipeline && shownPipeline.headSha === status.headSha && shownPipeline.targetSha === status.targetSha">, with other jobs</template>.
       </p>
       <PipelineView v-if="shownId !== null" :key="shownId" :project-id="projectId" :pipeline-id="shownId" :active="true" compact @started="started" />
       <p v-else-if="loaded" class="muted empty">
-        No pipeline has run on this merge request. Its jobs come from <span class="mono">.devpad/pipeline.yml</span> on
-        <span class="mono">{{ mr.targetBranch }}</span>, or the project's pipeline setting, and test this branch merged onto it. A pipeline's result doesn't block merging yet.
+        {{ PIPELINE_COPY.mergeRequestNone }} Its jobs come from <span class="mono">.devpad/pipeline.yml</span> on
+        <span class="mono">{{ mr.targetBranch }}</span>, or the project's pipeline setting, and test this branch merged onto it.
       </p>
+      <p v-if="loaded" class="muted empty">{{ PIPELINE_COPY.notGating }}</p>
       <p v-else class="muted empty">Loading pipelines...</p>
     </div>
   </section>

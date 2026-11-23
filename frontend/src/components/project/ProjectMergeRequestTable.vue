@@ -7,7 +7,8 @@ import { fullTime, timeAgo } from '@/utils/time'
 import MrIcon, { type MrIconName } from './MrIcon.vue'
 import NewMergeRequestModal from './NewMergeRequestModal.vue'
 import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
-import { PIPELINE_STATUS } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_STATUS, type StatusLook } from '@/components/pipeline/pipelineFormat'
+import { shortSha } from '@/components/mergerequest/format'
 import { TASK_STATUS } from './taskStatus'
 
 // The project's merge requests as a table, one row each, on a surface of its
@@ -29,6 +30,8 @@ const STATUS: Record<MergeRequestStatus, { order: number; icon: MrIconName; labe
   merged: { order: 1, icon: 'merged', label: 'Merged' },
   closed: { order: 2, icon: 'closed', label: 'Closed' },
 }
+
+const OUT_OF_DATE: StatusLook = { label: 'Out of date', tone: 'neutral', icon: 'clock' }
 
 const filter = ref<Filter>('open')
 const search = ref('')
@@ -100,16 +103,25 @@ function ariaSort(key: SortKey): 'ascending' | 'descending' | 'none' {
   return sortDesc.value ? 'descending' : 'ascending'
 }
 
-// An open merge request's latest pipeline, and whether it tested the head
-// the merge request is at now.
-function pipelineOf(mr: MergeRequest) {
-  if (mr.status !== 'open') return null
-  const p = store.mergeRequestPipelines.get(mr.id)
-  if (!p) return null
-  const current = p.headSha === mr.headSha
-  const label = PIPELINE_STATUS[p.status].label
-  return { look: PIPELINE_STATUS[p.status], current, title: `Pipeline #${p.id}: ${label}${current ? '' : ', on an older commit'}` }
-}
+// Each open merge request's latest pipeline that counts, by its id. This
+// list compares only heads: one of an older head shows as out of date, and
+// one of this head says which target commit it ran on, since only the
+// merge request's own page asks the server whether the target or the jobs
+// have moved since.
+const pipelineLooks = computed(() => {
+  const looks = new Map<number, { look: StatusLook; title: string }>()
+  for (const mr of store.openMergeRequests) {
+    const p = store.mergeRequestPipelines.get(mr.id)
+    if (!p) continue
+    const label = PIPELINE_STATUS[p.status].label.toLowerCase()
+    if (p.headSha !== mr.headSha) {
+      looks.set(mr.id, { look: OUT_OF_DATE, title: `Pipeline #${p.id} ${label} on an older commit, ${shortSha(p.headSha)}: out of date` })
+    } else {
+      looks.set(mr.id, { look: PIPELINE_STATUS[p.status], title: `Pipeline #${p.id} ${label} on this head onto ${p.targetBranch} at ${shortSha(p.targetSha)}` })
+    }
+  }
+  return looks
+})
 
 function select(mr: MergeRequest) {
   store.selectedMergeRequestId = mr.id
@@ -240,11 +252,10 @@ function select(mr: MergeRequest) {
                     {{ STATUS[mr.status].label }}
                   </span>
                   <PipelineStatusIcon
-                    v-if="pipelineOf(mr)"
-                    :look="pipelineOf(mr)!.look"
-                    :title="pipelineOf(mr)!.title"
+                    v-if="pipelineLooks.has(mr.id)"
+                    :look="pipelineLooks.get(mr.id)!.look"
+                    :title="pipelineLooks.get(mr.id)!.title"
                     :size="18"
-                    :class="{ 'pipeline-stale': !pipelineOf(mr)!.current }"
                   />
                 </span>
               </td>
@@ -293,11 +304,6 @@ function select(mr: MergeRequest) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-/* A pipeline of an older commit says less of the merge request now. */
-.pipeline-stale {
-  opacity: 0.55;
 }
 
 .branches {
