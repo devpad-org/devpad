@@ -169,8 +169,12 @@ export const pipelineApi = {
   },
 
   // The newest pipeline that counts (under way, or with a result) of each
-  // branch and merge request named that has one.
-  latest(projectId: number, subjects: { branches: string[]; mergeRequestIds: number[] }): Promise<{ pipelines: Pipeline[] }> {
+  // branch and merge request named that has one, and the commit each
+  // branch named is at now: null when the repo could not be read.
+  latest(
+    projectId: number,
+    subjects: { branches: string[]; mergeRequestIds: number[] },
+  ): Promise<{ pipelines: Pipeline[]; branchTips: Record<string, string> | null }> {
     const query = new URLSearchParams()
     for (const b of subjects.branches) query.append('branch', b)
     for (const id of subjects.mergeRequestIds) query.append('mergeRequestId', String(id))

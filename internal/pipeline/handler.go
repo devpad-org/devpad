@@ -122,16 +122,18 @@ func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 		}
 		f.MergeRequestIDs = append(f.MergeRequestIDs, id)
 	}
-	pipelines, err := h.pipelines.Latest(r.Context(), user.ID, projectID, f)
+	latest, err := h.pipelines.Latest(r.Context(), user.ID, projectID, f)
 	if err != nil {
 		handleServiceError(w, err)
 		return
 	}
-	items := make([]map[string]any, 0, len(pipelines))
-	for _, p := range pipelines {
+	items := make([]map[string]any, 0, len(latest.Pipelines))
+	for _, p := range latest.Pipelines {
 		items = append(items, pipelineResponse(p, false))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pipelines": items})
+	// The commit each branch asked for is at now, to tell a branch's
+	// pipeline of an older commit; null when the repo could not be read.
+	writeJSON(w, http.StatusOK, map[string]any{"pipelines": items, "branchTips": latest.BranchTips})
 }
 
 // HandleMergeRequestStatus says how a merge request stands for pipelines
@@ -164,7 +166,7 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 		"headSha":    st.Key.HeadSHA,
 		"targetSha":  st.Key.TargetSHA,
 		"configHash": st.Key.ConfigHash,
-		"source":     st.Source,
+		"source":     sourceOf(st),
 		"configPath": st.ConfigPath,
 		"invalid":    st.Invalid,
 		"configured": st.Open && st.Configured(),
@@ -172,6 +174,15 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 		"current":    pipelineOrNil(st.Current),
 		"latest":     pipelineOrNil(st.Latest),
 	}})
+}
+
+// sourceOf is where the jobs of the merge request's pipeline come from now,
+// none for one that can no longer merge, which has no pipeline to run.
+func sourceOf(st *MergeRequestStatus) Source {
+	if !st.Open {
+		return SourceNone
+	}
+	return st.Source
 }
 
 // HandleStart starts a pipeline of a protected branch's current commit, or

@@ -1,4 +1,4 @@
-import { PLAIN, advanceStyle, parseLine, type AnsiSegment, type AnsiStyle } from './ansi'
+import { PLAIN, advanceStyle, parseLine, partialEscapeStart, type AnsiSegment, type AnsiStyle } from './ansi'
 
 // How many lines a log keeps, dropping the oldest past it, and how much of
 // one line it shows. Together they bound what the page holds, whatever a job
@@ -8,6 +8,9 @@ export const MAX_LINE_CHARS = 2_000
 // How much of the line still open is kept: what is shown, with room for the
 // escape codes in it. The rest of a longer line is dropped as it comes.
 const MAX_OPEN_CHARS = MAX_LINE_CHARS + 2_000
+// How long an escape cut off at the end of a chunk is held for the next;
+// one longer is no escape worth reading, and is dropped.
+const MAX_HELD_ESCAPE = 256
 
 export interface LogLine {
   // Unique in its log, for keyed rendering.
@@ -36,17 +39,25 @@ export class LogLines {
   // what was dropped of it left the output in.
   private openCut = false
   private cutStyle: AnsiStyle = { ...PLAIN }
-  // A carriage return a chunk ended with, which may yet start a CRLF.
-  private pendingCR = false
+  // What a chunk ended with that the next may complete: a carriage return,
+  // which may start a CRLF, or the start of an escape.
+  private held = ''
   // The id of the open line as last shown, or -1 when there is none.
   private openId = -1
   private nextId = 0
 
   append(data: string) {
     if (!data) return
-    let text = (this.pendingCR ? '\r' : '') + data
-    this.pendingCR = text.endsWith('\r')
-    if (this.pendingCR) text = text.slice(0, -1)
+    let text = this.held + data
+    this.held = ''
+    const esc = partialEscapeStart(text)
+    if (esc !== -1) {
+      if (text.length - esc <= MAX_HELD_ESCAPE) this.held = text.slice(esc)
+      text = text.slice(0, esc)
+    } else if (text.endsWith('\r')) {
+      this.held = '\r'
+      text = text.slice(0, -1)
+    }
     text = text.replace(/\r\n/g, '\n')
     this.unshowOpen()
     const pieces = text.split('\n')
@@ -63,7 +74,7 @@ export class LogLines {
   gap() {
     this.unshowOpen()
     if (this.open || this.openCut) this.closeLine()
-    this.pendingCR = false
+    this.held = ''
     this.lines.push({ id: this.nextId++, segments: [], cut: false, gap: true })
     this.trim()
   }
@@ -75,7 +86,7 @@ export class LogLines {
     this.openStyle = { ...PLAIN }
     this.openCut = false
     this.cutStyle = { ...PLAIN }
-    this.pendingCR = false
+    this.held = ''
     this.openId = -1
   }
 
@@ -99,9 +110,11 @@ export class LogLines {
       this.open += text
       return
     }
+    // The style is read over the whole, so an escape the cut falls inside
+    // still counts.
+    this.cutStyle = advanceStyle(this.open + text, this.openStyle)
     this.open += text.slice(0, room)
     this.openCut = true
-    this.cutStyle = advanceStyle(text.slice(room), parseLine(this.open, this.openStyle).style)
   }
 
   // endStyle is the style the open line leaves the output in.

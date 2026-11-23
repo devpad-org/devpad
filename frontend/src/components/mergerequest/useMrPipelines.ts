@@ -39,18 +39,16 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
 
   async function load() {
     const mine = ++seq
-    try {
-      const [list, st] = await Promise.all([
-        pipelineApi.list(projectId.value, { mergeRequestId: mrId.value, limit: LISTED }),
-        pipelineApi.mergeRequestStatus(projectId.value, mrId.value),
-      ])
-      if (mine !== seq) return
-      pipelines.value = list.pipelines
-      status.value = st.status
-      loaded.value = true
-    } catch {
-      // The pipelines add to the page; it shows without them.
-    }
+    // Each answer stands alone: the status reads the repo, which may be
+    // down while the list still loads.
+    const [list, st] = await Promise.allSettled([
+      pipelineApi.list(projectId.value, { mergeRequestId: mrId.value, limit: LISTED }),
+      pipelineApi.mergeRequestStatus(projectId.value, mrId.value),
+    ])
+    if (mine !== seq) return
+    if (list.status === 'fulfilled') pipelines.value = list.value.pipelines
+    if (st.status === 'fulfilled') status.value = st.value.status
+    if (list.status === 'fulfilled' || st.status === 'fulfilled') loaded.value = true
   }
 
   // Starts a pipeline of the merge request as it is now, or finds the one

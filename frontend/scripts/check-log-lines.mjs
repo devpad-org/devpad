@@ -7,6 +7,7 @@
 //    cost the same for each chunk (20 MB of each, within a time limit);
 //  - colours carry over what is dropped of a line too long to show;
 //  - lost output never joins the lines on either side of it;
+//  - output read in random chunks shows as it does read whole;
 //  - control characters, C1 and bidirectional controls never reach the page.
 // Run with `npm run check-log-lines` (`npm run build` runs it too); exits
 // non-zero on any problem.
@@ -88,6 +89,35 @@ let lines = ''
 for (let n = 0; n < MAX_LOG_LINES + 10; n++) lines += `line ${n}\n`
 log.append(lines)
 check(log.lines.length === MAX_LOG_LINES && log.droppedLines === 10 && text(log.lines[0]) === 'line 10', 'the oldest lines go past the cap')
+
+// Read in any chunks, output shows as it does read whole. A seeded random
+// generator keeps a failure repeatable.
+let seed = 20261122
+const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648)
+const pick = (items) => items[Math.floor(random() * items.length)]
+const tokens = ['\x1b[31m', '\x1b[0m', '\x1b[1;92m', '\x1b[m', '\x1b[38;5;196m', '\x1b[2K', '\x1b]0;title\x07', '\x1b]8;;x\x1b\\', '\r', '\r\n', '\n', 'ab', 'xyz ', '\u202e', '\t']
+const shown = (log) => JSON.stringify(log.lines.map((l) => [l.segments, l.cut, !!l.gap]))
+let differ = 0
+for (let n = 0; n < 2000; n++) {
+  let input = ''
+  const count = 5 + Math.floor(random() * 60)
+  for (let t = 0; t < count; t++) input += random() < 0.03 ? 'L'.repeat(4500) : pick(tokens)
+  const whole = new LogLines()
+  whole.append(input)
+  const chunked = new LogLines()
+  for (let at = 0; at < input.length; ) {
+    const size = 1 + Math.floor(random() * 6)
+    chunked.append(input.slice(at, at + size))
+    at += size
+  }
+  if (shown(whole) !== shown(chunked)) differ++
+}
+check(differ === 0, `${differ} of 2000 outputs show otherwise read in chunks of 1 to 6 characters`)
+
+log = new LogLines()
+log.append('\x1b[31m' + 'x'.repeat(5000) + '\x1b[0')
+log.append('m tail\nplain\n')
+check(log.lines.length === 2 && log.lines[1].segments[0].cls === '', 'an escape cut across chunks past the line cap still counts')
 
 if (failures > 0) {
   console.log(`\n${failures} problem${failures === 1 ? '' : 's'} in the log lines.`)

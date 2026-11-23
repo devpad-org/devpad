@@ -36,11 +36,12 @@ type Service interface {
 	// List lists a project's pipelines, newest first, with their jobs but
 	// not their scripts.
 	List(ctx context.Context, userID, projectID int64, f ListFilter) ([]*Pipeline, error)
-	// Latest returns the newest pipeline, whatever its status, of each
-	// branch and merge request of the project f names that has one, with
-	// their jobs but not their scripts: what a branch's or a merge
-	// request's pipeline badge shows.
-	Latest(ctx context.Context, userID, projectID int64, f LatestFilter) ([]*Pipeline, error)
+	// Latest returns the newest pipeline that counts (Status.Counts) of
+	// each branch and merge request of the project f names that has one,
+	// with their jobs but not their scripts, and the commit each branch
+	// named is at now: what a branch's or a merge request's pipeline badge
+	// shows, and whether a branch's is of its current commit.
+	Latest(ctx context.Context, userID, projectID int64, f LatestFilter) (*LatestPipelines, error)
 	// Get returns a pipeline of the project with its jobs and their scripts.
 	Get(ctx context.Context, userID, projectID, pipelineID int64) (*Pipeline, error)
 	// JobOutput reads a job's output from an offset on, with devpad's notes
@@ -377,8 +378,19 @@ func (s *service) List(ctx context.Context, userID, projectID int64, f ListFilte
 	return s.repo.List(ctx, projectID, f)
 }
 
-func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestFilter) ([]*Pipeline, error) {
-	if _, err := s.projects.Get(ctx, userID, projectID); err != nil {
+// LatestPipelines is what Latest found.
+type LatestPipelines struct {
+	Pipelines []*Pipeline
+	// BranchTips are the commits the branches asked for are at now, by
+	// name, of those the canonical repo has. Nil when it could not be read,
+	// such as while its container is down: the pipelines still count, but
+	// whether a branch's is of its current commit is not known.
+	BranchTips map[string]string
+}
+
+func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestFilter) (*LatestPipelines, error) {
+	p, err := s.projects.Get(ctx, userID, projectID)
+	if err != nil {
 		return nil, err
 	}
 	if len(f.Branches)+len(f.MergeRequestIDs) > MaxLatestSubjects {
@@ -389,7 +401,26 @@ func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestF
 			return nil, fmt.Errorf("%w: invalid merge request id %d", ErrInvalidInput, id)
 		}
 	}
-	return s.repo.Latest(ctx, projectID, f)
+	found, err := s.repo.Latest(ctx, projectID, f)
+	if err != nil {
+		return nil, err
+	}
+	out := &LatestPipelines{Pipelines: found}
+	if len(f.Branches) == 0 {
+		return out, nil
+	}
+	refs, err := s.projects.Branches(ctx, p.UserID, p.ID)
+	if err != nil {
+		log.Printf("pipeline: reading project %d's branches for their latest pipelines: %v", p.ID, err)
+		return out, nil
+	}
+	out.BranchTips = make(map[string]string, len(f.Branches))
+	for _, b := range refs.Branches {
+		if slices.Contains(f.Branches, b.Name) {
+			out.BranchTips[b.Name] = b.SHA
+		}
+	}
+	return out, nil
 }
 
 func (s *service) LatestForMergeRequest(ctx context.Context, userID, projectID int64, key MergeRequestKey) (*Pipeline, error) {

@@ -57,20 +57,17 @@ const rows = computed(() => {
 })
 
 // A ticked branch's latest pipeline that counts. One of a commit the branch
-// has moved on from, when the branch's tip is known, shows as out of date.
+// has moved on from, by the tip the server read with it, shows as out of
+// date.
 function pipelineBadge(name: string) {
   const p = store.branchPipelines.get(name)
   if (!p) return null
-  const tip = store.branches.find((b) => b.name === name)?.sha ?? upstreamTip(name)
+  const tip = store.pipelineBranchTips[name]
   const status = PIPELINE_STATUS[p.status]
   if (tip && tip !== p.headSha) {
     return { look: { label: 'Out of date', tone: 'neutral', icon: 'clock' } as StatusLook, title: `Latest pipeline #${p.id} ${status.label.toLowerCase()} on ${p.headSha.slice(0, 8)}, an older commit` }
   }
   return { look: status, title: `Latest pipeline #${p.id}: ${status.label.toLowerCase()} on ${p.headSha.slice(0, 8)}, ${timeAgo(p.createdAt)}` }
-}
-
-function upstreamTip(name: string): string | undefined {
-  return status.value?.branches.find((b) => b.branch === name)?.sha || undefined
 }
 
 type BranchState = { text: string; tone: 'ok' | 'pending' | 'attention' | 'muted'; push: boolean; hint?: string }

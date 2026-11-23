@@ -58,6 +58,14 @@ function classOf(style: AnsiStyle): string {
   return parts.join(' ')
 }
 
+// partialEscapeStart is where an escape that text ends part way through
+// starts, or -1 when text ends with none: output arriving in chunks can cut
+// one in two.
+export function partialEscapeStart(text: string): number {
+  const i = text.lastIndexOf('\x1b')
+  return i !== -1 && PARTIAL_ESCAPE.test(text.slice(i)) ? i : -1
+}
+
 // advanceStyle is the style text leaves output in, starting in style, for
 // text that is not shown.
 export function advanceStyle(text: string, style: AnsiStyle): AnsiStyle {

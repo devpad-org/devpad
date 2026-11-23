@@ -24,6 +24,9 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   // The newest pipeline of each branch that runs pipelines and of each
   // open merge request, for the badges beside them.
   const latestPipelines = ref<Pipeline[]>([])
+  // The commit each branch that runs pipelines is at, as the server read it
+  // with those pipelines, to tell a badge of an older commit.
+  const pipelineBranchTips = ref<Record<string, string>>({})
   const loadError = ref('')
   const selectedTaskId = ref<number | null>(null)
   // The merge request open in its modal, which loads it by id.
@@ -134,11 +137,14 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     const mergeRequestIds = openMergeRequests.value.map((mr) => mr.id).slice(0, MAX_LATEST_SUBJECTS - branches.length)
     if (branches.length === 0 && mergeRequestIds.length === 0) {
       latestPipelines.value = []
+      pipelineBranchTips.value = {}
       return
     }
     try {
       const res = await pipelineApi.latest(id, { branches, mergeRequestIds })
-      if (gen === generation) latestPipelines.value = res.pipelines ?? []
+      if (gen !== generation) return
+      latestPipelines.value = res.pipelines ?? []
+      pipelineBranchTips.value = res.branchTips ?? {}
     } catch {
       // Keep the badges as they were.
     }
@@ -206,6 +212,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     sandboxes.value = []
     branches.value = []
     latestPipelines.value = []
+    pipelineBranchTips.value = {}
     loadError.value = ''
     selectedTaskId.value = null
     selectedMergeRequestId.value = null
@@ -264,6 +271,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     sandboxes,
     branches,
     latestPipelines,
+    pipelineBranchTips,
     branchPipelines,
     mergeRequestPipelines,
     loadError,

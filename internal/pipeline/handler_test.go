@@ -95,8 +95,9 @@ func TestPipelineEndpoints(t *testing.T) {
 
 	code, out = e.serve(e.owner, http.MethodGet, fmt.Sprintf("%s/latest?branch=main&branch=develop&mergeRequestId=%d", base, e.mr), "")
 	// The only pipeline was cancelled, which says nothing of the commits,
-	// so no branch has one that counts.
-	if latest := out["pipelines"].([]any); code != http.StatusOK || len(latest) != 0 {
+	// so no branch has one that counts; each branch's commit comes along.
+	tips, _ := out["branchTips"].(map[string]any)
+	if latest := out["pipelines"].([]any); code != http.StatusOK || len(latest) != 0 || tips["develop"] != sha(2) || tips["main"] != sha(1) || len(tips) != 2 {
 		t.Fatalf("latest: %d %v", code, out)
 	}
 
@@ -104,6 +105,17 @@ func TestPipelineEndpoints(t *testing.T) {
 	if st, _ := out["status"].(map[string]any); code != http.StatusOK || st["open"] != true || st["configured"] != true || st["passed"] != false || st["current"] != nil || st["targetSha"] != sha(2) || st["source"] != "file" {
 		t.Fatalf("merge request status: %d %v", code, out)
 	}
+	// One that can no longer merge has no pipeline to run.
+	e.mrs.mu.Lock()
+	e.mrs.mrs[e.mr].Open = false
+	e.mrs.mu.Unlock()
+	code, out = e.serve(e.owner, http.MethodGet, fmt.Sprintf("/api/projects/%d/merge-requests/%d/pipeline", e.project, e.mr), "")
+	if st, _ := out["status"].(map[string]any); code != http.StatusOK || st["open"] != false || st["source"] != "none" || st["configured"] != false {
+		t.Fatalf("a closed merge request's status: %d %v", code, out)
+	}
+	e.mrs.mu.Lock()
+	e.mrs.mrs[e.mr].Open = true
+	e.mrs.mu.Unlock()
 
 	for _, tc := range []struct {
 		name   string
