@@ -134,6 +134,46 @@ func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"pipelines": items})
 }
 
+// HandleMergeRequestStatus says how a merge request stands for pipelines
+// now: whether a pipeline is configured, the pipeline that tested its head
+// on its target's current tip with the jobs there now, and its newest
+// pipeline that counts, which may be of older commits.
+func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	projectID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	mrID, ok := pathID(w, r, "mrId")
+	if !ok {
+		return
+	}
+	st, err := h.pipelines.MergeRequestStatus(r.Context(), user.ID, projectID, mrID)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	pipelineOrNil := func(p *Pipeline) any {
+		if p == nil {
+			return nil
+		}
+		return pipelineResponse(p, false)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": map[string]any{
+		"open":       st.Open,
+		"headSha":    st.Key.HeadSHA,
+		"targetSha":  st.Key.TargetSHA,
+		"configHash": st.Key.ConfigHash,
+		"source":     st.Source,
+		"configPath": st.ConfigPath,
+		"invalid":    st.Invalid,
+		"configured": st.Open && st.Configured(),
+		"passed":     st.Passed(),
+		"current":    pipelineOrNil(st.Current),
+		"latest":     pipelineOrNil(st.Latest),
+	}})
+}
+
 // HandleStart starts a pipeline of a protected branch's current commit, or
 // of an open merge request. It answers 202 with a new pipeline, or 200 with
 // one already queued or running that tests the same.

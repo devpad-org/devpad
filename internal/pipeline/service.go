@@ -52,6 +52,13 @@ type Service interface {
 	// never hides. It is nil when there is none. A Start with ReuseResult
 	// returns this same pipeline when it has finished.
 	LatestForMergeRequest(ctx context.Context, userID, projectID int64, key MergeRequestKey) (*Pipeline, error)
+	// MergeRequestStatus says how an open merge request stands for
+	// pipelines now: the key a pipeline must test to count (its head on its
+	// target's current tip, with the jobs resolved there now), whether any
+	// pipeline is configured, and the pipeline that counts for that key.
+	// It is the one answer to whether a merge request's result is current,
+	// for its page and for the merge gate.
+	MergeRequestStatus(ctx context.Context, userID, projectID, mergeRequestID int64) (*MergeRequestStatus, error)
 	// AddListener adds a Listener, told each time a pipeline finishes.
 	// Listeners are to be added before Reconcile, which tells them of the
 	// pipelines that finished without every listener being told, such as
@@ -213,6 +220,7 @@ type service struct {
 	ownsBundleDir bool
 	slots         *jobSlots
 	now           func() time.Time
+	resolved      resolveCache
 
 	cancelWait    time.Duration
 	sweepInterval time.Duration

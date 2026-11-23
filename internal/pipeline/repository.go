@@ -18,9 +18,10 @@ type Repository interface {
 	// List lists a project's pipelines, newest first, with their jobs but
 	// not their scripts.
 	List(ctx context.Context, projectID int64, f ListFilter) ([]*Pipeline, error)
-	// Latest returns the newest pipeline of each branch and merge request
-	// of the project f names that has one, with their jobs but not their
-	// scripts: a branch's first, in f's order, then a merge request's.
+	// Latest returns the newest pipeline that counts (Status.Counts) of
+	// each branch and merge request of the project f names that has one,
+	// with their jobs but not their scripts: a branch's first, in f's
+	// order, then a merge request's.
 	Latest(ctx context.Context, projectID int64, f LatestFilter) ([]*Pipeline, error)
 	// FindSame returns the newest pipeline that tests what p tests, the
 	// same subject, commits and jobs, and stands at one of statuses, with
@@ -261,30 +262,46 @@ func (r *repository) Latest(ctx context.Context, projectID int64, f LatestFilter
 	return out, nil
 }
 
-// latestQuery selects the newest pipeline of each branch and merge request
-// f names, through the index of a branch's and of a merge request's
-// pipelines. A merge request's pipelines are all of its project, so the
+// latestQuery selects, for each branch and merge request f names, its
+// newest pipeline that counts (Status.Counts: unfinished, or finished with
+// a result), so a cancelled, superseded, interrupted or erroring newest one
+// never hides the last result. Each subject's is read backwards through the
+// index of a branch's or a merge request's pipelines, stopping at the first
+// that counts. A merge request's pipelines are all of its project, so the
 // project is checked on the one found. It is empty when f names none.
 func latestQuery(projectID int64, f LatestFilter) (string, []any) {
+	counting := `p.status IN (` + placeholders(len(countingStatuses)) + `)`
 	var parts []string
-	var args []any
+	args := []any{projectID}
+	addStatuses := func() {
+		for _, st := range countingStatuses {
+			args = append(args, st)
+		}
+	}
 	if len(f.Branches) > 0 {
-		parts = append(parts, `SELECT `+pipelineColumns+` FROM pipelines WHERE id IN (
-			SELECT MAX(id) FROM pipelines WHERE project_id = ? AND kind = 'branch' AND branch IN (`+placeholders(len(f.Branches))+`) GROUP BY branch)`)
+		parts = append(parts, `SELECT (SELECT p.id FROM pipelines p WHERE p.project_id = ? AND p.kind = 'branch' AND p.branch = s.column1 AND `+counting+` ORDER BY p.id DESC LIMIT 1) FROM (VALUES `+valueRows(len(f.Branches))+`) s`)
 		args = append(args, projectID)
+		addStatuses()
 		for _, b := range f.Branches {
 			args = append(args, b)
 		}
 	}
 	if len(f.MergeRequestIDs) > 0 {
-		parts = append(parts, `SELECT `+pipelineColumns+` FROM pipelines WHERE id IN (
-			SELECT MAX(id) FROM pipelines WHERE merge_request_id IN (`+placeholders(len(f.MergeRequestIDs))+`) GROUP BY merge_request_id) AND project_id = ?`)
+		parts = append(parts, `SELECT (SELECT p.id FROM pipelines p WHERE p.merge_request_id = s.column1 AND `+counting+` ORDER BY p.id DESC LIMIT 1) FROM (VALUES `+valueRows(len(f.MergeRequestIDs))+`) s`)
+		addStatuses()
 		for _, id := range f.MergeRequestIDs {
 			args = append(args, id)
 		}
-		args = append(args, projectID)
 	}
-	return strings.Join(parts, ` UNION ALL `), args
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return `SELECT ` + pipelineColumns + ` FROM pipelines WHERE project_id = ? AND id IN (` + strings.Join(parts, ` UNION ALL `) + `)`, args
+}
+
+// valueRows is n one-column rows of placeholders for a VALUES list.
+func valueRows(n int) string {
+	return strings.TrimSuffix(strings.Repeat("(?), ", n), ", ")
 }
 
 func (r *repository) FindSame(ctx context.Context, p *Pipeline, statuses []Status) (*Pipeline, error) {

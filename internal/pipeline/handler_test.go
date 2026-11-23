@@ -21,6 +21,7 @@ func (e *env) serve(user int64, method, target, body string) (int, map[string]an
 	mux.HandleFunc("GET /api/projects/{id}/pipelines", h.HandleList)
 	mux.HandleFunc("POST /api/projects/{id}/pipelines", h.HandleStart)
 	mux.HandleFunc("GET /api/projects/{id}/pipelines/latest", h.HandleLatest)
+	mux.HandleFunc("GET /api/projects/{id}/merge-requests/{mrId}/pipeline", h.HandleMergeRequestStatus)
 	mux.HandleFunc("GET /api/projects/{id}/pipelines/{pipelineId}", h.HandleGet)
 	mux.HandleFunc("POST /api/projects/{id}/pipelines/{pipelineId}/cancel", h.HandleCancel)
 	mux.HandleFunc("GET /api/projects/{id}/pipelines/{pipelineId}/jobs/{jobId}/output", h.HandleJobOutput)
@@ -93,9 +94,15 @@ func TestPipelineEndpoints(t *testing.T) {
 	}
 
 	code, out = e.serve(e.owner, http.MethodGet, fmt.Sprintf("%s/latest?branch=main&branch=develop&mergeRequestId=%d", base, e.mr), "")
-	latest := out["pipelines"].([]any)
-	if code != http.StatusOK || len(latest) != 1 || int64(latest[0].(map[string]any)["id"].(float64)) != id {
+	// The only pipeline was cancelled, which says nothing of the commits,
+	// so no branch has one that counts.
+	if latest := out["pipelines"].([]any); code != http.StatusOK || len(latest) != 0 {
 		t.Fatalf("latest: %d %v", code, out)
+	}
+
+	code, out = e.serve(e.owner, http.MethodGet, fmt.Sprintf("/api/projects/%d/merge-requests/%d/pipeline", e.project, e.mr), "")
+	if st, _ := out["status"].(map[string]any); code != http.StatusOK || st["open"] != true || st["configured"] != true || st["passed"] != false || st["current"] != nil || st["targetSha"] != sha(2) || st["source"] != "file" {
+		t.Fatalf("merge request status: %d %v", code, out)
 	}
 
 	for _, tc := range []struct {
@@ -113,6 +120,8 @@ func TestPipelineEndpoints(t *testing.T) {
 		{"a missing merge request", e.owner, http.MethodPost, base, `{"mergeRequestId":999}`, http.StatusNotFound},
 		{"a bad body", e.owner, http.MethodPost, base, `branch`, http.StatusBadRequest},
 		{"a stranger's latest", e.stranger, http.MethodGet, base + "/latest?branch=develop", "", http.StatusForbidden},
+		{"a stranger's merge request status", e.stranger, http.MethodGet, fmt.Sprintf("/api/projects/%d/merge-requests/%d/pipeline", e.project, e.mr), "", http.StatusForbidden},
+		{"a missing merge request's status", e.owner, http.MethodGet, fmt.Sprintf("/api/projects/%d/merge-requests/999/pipeline", e.project), "", http.StatusNotFound},
 		{"a bad merge request id", e.owner, http.MethodGet, base + "/latest?mergeRequestId=x", "", http.StatusBadRequest},
 		{"too many at once", e.owner, http.MethodGet, base + "/latest?" + strings.Repeat("branch=b&", MaxLatestSubjects+1), "", http.StatusBadRequest},
 		{"a bad limit", e.owner, http.MethodGet, base + "?limit=1000", "", http.StatusBadRequest},

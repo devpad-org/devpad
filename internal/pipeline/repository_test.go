@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -247,7 +248,9 @@ func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 		rows.Close()
 		all := strings.Join(plan, "; ")
 		for _, step := range plan {
-			indexed := strings.Contains(step, "INDEX") || strings.Contains(step, "USING INTEGER PRIMARY KEY")
+			// A lookup by rowid, or a scan of the subjects a query lists in
+			// VALUES, reads no more than it must.
+			indexed := strings.Contains(step, "INDEX") || strings.Contains(step, "USING INTEGER PRIMARY KEY") || strings.HasSuffix(step, "VALUES CLAUSE")
 			if strings.Contains(step, "TEMP B-TREE") || ((strings.HasPrefix(step, "SCAN ") || strings.HasPrefix(step, "SEARCH ")) && !indexed) {
 				t.Errorf("%s reads more than it needs: %s", tc.name, all)
 			}
@@ -335,6 +338,13 @@ func TestRepositoryLatestIsEachSubjectsNewestOfTheProject(t *testing.T) {
 	create(e.branchPipeline("a000000000000001", "develop", sha(2)))
 	newestDevelop := create(e.branchPipeline("a000000000000002", "develop", sha(3)))
 	main := create(e.branchPipeline("a000000000000003", "main", sha(1)))
+	// A newest pipeline that said nothing, cancelled or replaced, never
+	// hides the one before it.
+	for i, st := range []Status{StatusCancelled, StatusSuperseded, StatusInterrupted, StatusError} {
+		p := e.branchPipeline(fmt.Sprintf("b00000000000000%d", i), "develop", sha(4))
+		p.Status = st
+		create(p)
+	}
 	create(mrPipeline("a000000000000004", e.project, e.mr, sha(30)))
 	newestMR := create(mrPipeline("a000000000000005", e.project, e.mr, sha(31)))
 
