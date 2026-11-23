@@ -189,12 +189,17 @@ export interface MergeGate {
   clear: boolean
   // A result that could clear it is still to come by itself.
   waits: boolean
-  // You can merge anyway, which the merge request records.
+  // You can merge anyway, which the merge request records: not when it
+  // can no longer merge, nor when its branch doesn't merge onto the target.
   overridable: boolean
   // Why it is shut, as a lowercase clause; empty when it is clear.
   reason: string
-  // The pipeline the state is about, if any.
+  // The pipeline the state is about, if any, and the head and target tip
+  // it is of: what a merge over the gate confirms, all of which must still
+  // be so when it merges.
   pipelineId: number | null
+  headSha: string
+  targetSha: string
 }
 
 // How a merge request stands for pipelines now, as the server works it out:

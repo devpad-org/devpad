@@ -43,6 +43,15 @@ type Gate struct {
 	TargetSHA string
 }
 
+// gateConflict is the gate's state for a branch whose pipeline found it
+// doesn't merge onto the target.
+const gateConflict = "conflict"
+
+// confirmation is what the user confirms merging over when the gate is g.
+func (g *Gate) confirmation() GateConfirmation {
+	return GateConfirmation{State: g.State, PipelineID: g.PipelineID, HeadSHA: g.HeadSHA, TargetSHA: g.TargetSHA}
+}
+
 // ErrPipelineGate refuses a merge the merge request's pipeline gate doesn't
 // let through.
 var ErrPipelineGate = errors.New("the merge request's pipeline hasn't let it merge")
@@ -58,10 +67,12 @@ type GateError struct {
 
 func (e *GateError) Error() string {
 	switch {
+	case e.Gate.State == gateConflict:
+		return fmt.Sprintf("%s: resolve the conflicts, and its pipeline runs again", e.Gate.Reason)
 	case !e.Gate.Overridable:
 		return fmt.Sprintf("this merge request can't merge: %s", e.Gate.Reason)
 	case e.Changed:
-		return fmt.Sprintf("the pipeline changed since you chose to merge anyway: %s", e.Gate.Reason)
+		return fmt.Sprintf("the pipeline or the commits changed since you chose to merge anyway: %s", e.Gate.Reason)
 	}
 	return fmt.Sprintf("%s's pipeline must pass before this merges, and %s", e.Target, e.Gate.Reason)
 }
@@ -120,11 +131,12 @@ func (s *service) readGate(ctx context.Context, mr *MergeRequest) (*Gate, error)
 }
 
 // admitUser lets the user merge mr once its pipeline gate is clear, or over
-// the gate when the user confirmed merging anyway in the state it is in
-// now (override), which the merge records. A merge a pipeline guards lands
-// on the target's commit the gate read, so that the tree that passed is the
-// tree that lands, whichever strategy merges it.
-func (s *service) admitUser(ctx context.Context, mr *MergeRequest, override string) (*admission, error) {
+// the gate when the user confirmed merging anyway with it standing exactly
+// as it does now (override: the same state, pipeline, head and target),
+// which the merge records. A merge a pipeline guards lands on the target's
+// commit the gate read, so that the tree that passed is the tree that
+// lands, whichever strategy merges it.
+func (s *service) admitUser(ctx context.Context, mr *MergeRequest, override *GateConfirmation) (*admission, error) {
 	g, err := s.readGate(ctx, mr)
 	if err != nil {
 		return nil, err
@@ -136,9 +148,9 @@ func (s *service) admitUser(ctx context.Context, mr *MergeRequest, override stri
 	switch {
 	case g.Clear:
 		return adm, nil
-	case !g.Overridable || override == "":
+	case !g.Overridable || override == nil:
 		return nil, &GateError{Target: mr.TargetBranch, Gate: g}
-	case override != g.State:
+	case *override != g.confirmation():
 		return nil, &GateError{Target: mr.TargetBranch, Gate: g, Changed: true}
 	}
 	adm.override = &PipelineOverride{State: g.State, PipelineID: g.PipelineID}

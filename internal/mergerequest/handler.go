@@ -267,14 +267,23 @@ func (h *Handler) HandleMerge(w http.ResponseWriter, r *http.Request) {
 		Strategy string `json:"strategy"`
 		Message  string `json:"message"`
 		Push     bool   `json:"push"`
-		// OverridePipeline is the pipeline gate's state the user confirmed
-		// merging over, such as "failed"; empty leaves the gate to decide.
-		OverridePipeline string `json:"overridePipeline"`
+		// OverridePipeline is the pipeline gate as the user saw it when
+		// they confirmed merging over it; absent leaves the gate to decide.
+		OverridePipeline *struct {
+			State      string `json:"state"`
+			PipelineID int64  `json:"pipelineId"`
+			HeadSHA    string `json:"headSha"`
+			TargetSHA  string `json:"targetSha"`
+		} `json:"overridePipeline"`
 	}
 	if r.ContentLength != 0 && !decode(w, r, &req) {
 		return
 	}
-	result, err := h.service.Merge(r.Context(), user.ID, projectID, mrID, MergeInput(req))
+	in := MergeInput{Strategy: req.Strategy, Message: req.Message, Push: req.Push}
+	if o := req.OverridePipeline; o != nil {
+		in.OverridePipeline = &GateConfirmation{State: o.State, PipelineID: o.PipelineID, HeadSHA: o.HeadSHA, TargetSHA: o.TargetSHA}
+	}
+	result, err := h.service.Merge(r.Context(), user.ID, projectID, mrID, in)
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -375,11 +384,19 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.As(err, &gateErr):
 		// How the gate stands, for the merge card to ask the user again.
+		g := gateErr.Gate
+		var pipelineID any
+		if g.PipelineID != 0 {
+			pipelineID = g.PipelineID
+		}
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "pipelineGate": map[string]any{
-			"state":       gateErr.Gate.State,
-			"reason":      gateErr.Gate.Reason,
-			"overridable": gateErr.Gate.Overridable,
+			"state":       g.State,
+			"reason":      g.Reason,
+			"overridable": g.Overridable,
 			"changed":     gateErr.Changed,
+			"pipelineId":  pipelineID,
+			"headSha":     g.HeadSHA,
+			"targetSha":   g.TargetSHA,
 		}})
 	case errors.Is(err, ErrNotFound), errors.Is(err, project.ErrNotFound), errors.Is(err, task.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")

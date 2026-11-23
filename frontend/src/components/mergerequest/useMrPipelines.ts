@@ -30,14 +30,33 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
   const current = computed(() => status.value?.current ?? null)
   // Whether the pipeline lets the merge request merge.
   const gate = computed(() => status.value?.gate ?? null)
-  // What the merge card's row adds of the gate: whether the result keeps
-  // the merge request from merging, and when it doesn't, why not.
-  const gateNote = computed(() => {
+  // Why no pipeline guards the merge request, when none does.
+  const unguardedText = computed(() => {
+    const g = gate.value
+    const target = mr.value?.targetBranch
+    if (!g || !target || g.guarded) return ''
+    return status.value?.configured ? PIPELINE_COPY.gateNotTicked(target) : PIPELINE_COPY.gateNotConfigured(target)
+  })
+  // What the Pipeline card says of the gate: that the pipeline guards the
+  // merge request, or why none does.
+  const gateText = computed(() => {
     const g = gate.value
     const target = mr.value?.targetBranch
     if (!g || !target || g.state === 'closed') return ''
-    if (!g.guarded) return status.value?.configured ? PIPELINE_COPY.gateNotTicked(target) : PIPELINE_COPY.gateNotConfigured(target)
-    return g.clear ? '' : PIPELINE_COPY.gateShut
+    return g.guarded ? PIPELINE_COPY.gateGuarded(target) : unguardedText.value
+  })
+  // What the merge card's row adds of the gate: what it takes to merge
+  // while the pipeline keeps it from merging, or why no pipeline guards it.
+  const gateNote = computed(() => {
+    const g = gate.value
+    if (!g || g.state === 'closed' || g.clear) return unguardedText.value
+    return g.state === 'conflict' ? PIPELINE_COPY.gateConflict : PIPELINE_COPY.gateShut
+  })
+  // The files the pipeline's trial merge found conflicting, when its
+  // branch doesn't merge onto the target as it is now.
+  const gateConflicts = computed(() => {
+    const paths = gate.value?.state === 'conflict' ? (current.value?.conflictPaths ?? []) : []
+    return paths.length ? paths : null
   })
   const latest = computed(() => status.value?.latest ?? null)
   // The pipeline of the current commits and jobs that was cancelled or
@@ -177,7 +196,9 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
     latest,
     settled,
     gate,
+    gateText,
     gateNote,
+    gateConflicts,
     shownId,
     shownStale,
     shownPipeline,

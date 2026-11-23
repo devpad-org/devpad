@@ -116,7 +116,7 @@ func TestPipelineEndpoints(t *testing.T) {
 		t.Fatalf("merge request status: %d %v", code, out)
 	}
 	// develop isn't ticked, so no pipeline guards the merge request.
-	if gate, _ := out["status"].(map[string]any)["gate"].(map[string]any); gate["state"] != "unguarded" || gate["guarded"] != false || gate["clear"] != true || gate["overridable"] != false || gate["pipelineId"] != nil {
+	if gate, _ := out["status"].(map[string]any)["gate"].(map[string]any); gate["state"] != "unguarded" || gate["guarded"] != false || gate["clear"] != true || gate["overridable"] != false || gate["pipelineId"] != nil || gate["headSha"] != sha(30) || gate["targetSha"] != sha(2) {
 		t.Fatalf("merge request gate: %v", gate)
 	}
 	// One that can no longer merge has no pipeline to run.

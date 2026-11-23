@@ -161,7 +161,7 @@ func TestMergeWithoutAGateIsRefused(t *testing.T) {
 	e.gate.mu.Lock()
 	e.gate.err = errors.New("the repo is down")
 	e.gate.mu.Unlock()
-	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{OverridePipeline: "failed"}); err == nil || !strings.Contains(err.Error(), "the repo is down") {
+	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{OverridePipeline: &GateConfirmation{State: "failed"}}); err == nil || !strings.Contains(err.Error(), "the repo is down") {
 		t.Fatalf("expected the gate's error, got %v", err)
 	}
 	e.svc.SetPipelineGate(nil)
@@ -173,23 +173,18 @@ func TestMergeWithoutAGateIsRefused(t *testing.T) {
 	}
 }
 
-// The user can merge over a shut gate, only by naming the state it is in,
-// and the merge request records that they did and how the gate stood.
+// The user can merge over a shut gate only by confirming it as it stands
+// now, and the merge request records that they did and how the gate stood.
 func TestUserOverridesThePipelineGate(t *testing.T) {
 	e := autoMergeEnv(t)
 	ctx := context.Background()
 	mr := e.openTaskMR(t)
 	failed := e.pipelineRow(t, mr.ID, "failed")
-	e.gate.set(shut("failed", fmt.Sprintf("pipeline #%d failed (backend)", failed), false, failed))
+	g := shut("failed", fmt.Sprintf("pipeline #%d failed (backend)", failed), false, failed)
+	e.gate.set(g)
+	seen := g.confirmation()
 
-	// A confirmation of how the gate stood earlier is asked again.
-	_, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{OverridePipeline: "running"})
-	var gateErr *GateError
-	if !errors.As(err, &gateErr) || !gateErr.Changed || gateErr.Gate.State != "failed" || e.mergeCount() != 0 {
-		t.Fatalf("expected the user asked again, got %v", err)
-	}
-
-	result, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{OverridePipeline: "failed"})
+	result, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{OverridePipeline: &seen})
 	if err != nil {
 		t.Fatalf("override: %v", err)
 	}
@@ -207,27 +202,80 @@ func TestUserOverridesThePipelineGate(t *testing.T) {
 	}
 }
 
+// An override binds to what the user saw: the same state with another
+// pipeline, another head, another target, or a pipeline where there was
+// none, is asked again, and nothing merges.
+func TestAnOverrideOfWhatTheGateNoLongerIsIsAskedAgain(t *testing.T) {
+	seen := shut("failed", "pipeline #3 failed (backend)", false, 3)
+	notRun := shut("not_run", "no pipeline has run on it yet", true, 0)
+	for _, tt := range []struct {
+		name      string
+		confirmed Gate
+		now       func(g Gate) Gate
+	}{
+		{name: "another state", confirmed: seen, now: func(g Gate) Gate { g.State = "running"; return g }},
+		{name: "another pipeline", confirmed: seen, now: func(g Gate) Gate { g.PipelineID = 4; return g }},
+		{name: "another head", confirmed: seen, now: func(g Gate) Gate { g.HeadSHA = "head2"; return g }},
+		{name: "another target", confirmed: seen, now: func(g Gate) Gate { g.TargetSHA = "moved"; return g }},
+		{name: "a pipeline where there was none", confirmed: notRun, now: func(g Gate) Gate { g.State, g.PipelineID = "running", 4; return g }},
+		{name: "none where there was one", confirmed: seen, now: func(Gate) Gate { return notRun }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := autoMergeEnv(t)
+			ctx := context.Background()
+			mr := e.openTaskMR(t)
+			now := tt.now(tt.confirmed)
+			if now.HeadSHA != "head1" {
+				// The head moves, as a task's round would, under the lock.
+				got, _ := e.svc.repo.GetByID(ctx, mr.ID)
+				if err := e.svc.repo.UpdateHead(ctx, got, now.HeadSHA, PushTask); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.gate.set(now)
+			confirmed := tt.confirmed.confirmation()
+			_, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{OverridePipeline: &confirmed})
+			var gateErr *GateError
+			if !errors.As(err, &gateErr) || !gateErr.Changed || gateErr.Gate.confirmation() != now.confirmation() || e.mergeCount() != 0 {
+				t.Fatalf("expected the user asked again with the gate as it is, got %v", err)
+			}
+		})
+	}
+}
+
 // A clear gate needs no override, and records none; a merge request that
-// can no longer merge can't be overridden into merging.
+// can no longer merge, or whose branch doesn't merge onto its target,
+// can't be overridden into merging.
 func TestOverrideOnlyWhereTheGateIsShutByItsPipeline(t *testing.T) {
 	t.Run("clear", func(t *testing.T) {
 		e := autoMergeEnv(t)
 		mr := e.openTaskMR(t)
 		e.gate.set(passedOn(3, "head1", mainTip))
-		result, err := e.svc.Merge(context.Background(), e.owner, e.pid(), mr.ID, MergeInput{OverridePipeline: "failed"})
+		result, err := e.svc.Merge(context.Background(), e.owner, e.pid(), mr.ID, MergeInput{OverridePipeline: &GateConfirmation{State: "failed"}})
 		if err != nil || result.MergeRequest.PipelineOverride != nil {
 			t.Fatalf("expected a plain merge, got %+v %v", result, err)
 		}
 	})
-	t.Run("closed", func(t *testing.T) {
-		e := autoMergeEnv(t)
-		mr := e.openTaskMR(t)
-		e.gate.set(Gate{State: "closed", Guarded: true, Reason: "it can no longer merge into a protected branch"})
-		_, err := e.svc.Merge(context.Background(), e.owner, e.pid(), mr.ID, MergeInput{OverridePipeline: "closed"})
-		if !errors.Is(err, ErrPipelineGate) || e.mergeCount() != 0 {
-			t.Fatalf("expected no merge, got %v", err)
-		}
-	})
+	for _, g := range []Gate{
+		{State: "closed", Guarded: true, Reason: "it can no longer merge into a protected branch"},
+		// The merge would refuse just as the pipeline's trial merge did.
+		{State: "conflict", Guarded: true, Reason: "pipeline #3 found the branch doesn't merge onto main", PipelineID: 3, HeadSHA: "head1", TargetSHA: mainTip},
+	} {
+		t.Run(g.State, func(t *testing.T) {
+			e := autoMergeEnv(t)
+			mr := e.openTaskMR(t)
+			e.gate.set(g)
+			confirmed := g.confirmation()
+			_, err := e.svc.Merge(context.Background(), e.owner, e.pid(), mr.ID, MergeInput{OverridePipeline: &confirmed})
+			var gateErr *GateError
+			if !errors.As(err, &gateErr) || gateErr.Changed || e.mergeCount() != 0 {
+				t.Fatalf("expected no merge, got %v", err)
+			}
+			if g.State == "conflict" && !strings.Contains(err.Error(), "resolve the conflicts") {
+				t.Fatalf("expected the conflict to be pointed at, got %v", err)
+			}
+		})
+	}
 }
 
 // Only a merge by the user can have overridden the gate, which the
@@ -249,7 +297,7 @@ func TestOnlyTheUsersMergeRecordsAnOverride(t *testing.T) {
 }
 
 // The merge endpoint refuses a shut gate with how it stands, and merges
-// over it when the user confirms that state.
+// over it when the user confirms it exactly as it stands.
 func TestHandlerMergesOverTheGate(t *testing.T) {
 	e := autoMergeEnv(t)
 	mr := e.openTaskMR(t)
@@ -269,10 +317,16 @@ func TestHandlerMergesOverTheGate(t *testing.T) {
 	}
 	code, out := serve(`{"strategy":"merge"}`)
 	gate, _ := out["pipelineGate"].(map[string]any)
-	if code != http.StatusConflict || gate["state"] != "running" || gate["overridable"] != true || gate["changed"] != false || !strings.Contains(fmt.Sprint(out["error"]), "still running") {
+	if code != http.StatusConflict || gate["state"] != "running" || gate["overridable"] != true || gate["changed"] != false || !strings.Contains(fmt.Sprint(out["error"]), "still running") ||
+		gate["pipelineId"] != nil || gate["headSha"] != "head1" || gate["targetSha"] != mainTip {
 		t.Fatalf("refusal: %d %v", code, out)
 	}
-	code, out = serve(`{"strategy":"merge","overridePipeline":"running"}`)
+	// Confirming another head is asked again, with the gate as it is.
+	code, out = serve(`{"strategy":"merge","overridePipeline":{"state":"running","pipelineId":null,"headSha":"head0","targetSha":"` + mainTip + `"}}`)
+	if gate, _ := out["pipelineGate"].(map[string]any); code != http.StatusConflict || gate["changed"] != true || gate["headSha"] != "head1" {
+		t.Fatalf("a stale confirmation: %d %v", code, out)
+	}
+	code, out = serve(`{"strategy":"merge","overridePipeline":{"state":"running","pipelineId":null,"headSha":"head1","targetSha":"` + mainTip + `"}}`)
 	got, _ := out["mergeRequest"].(map[string]any)
 	override, _ := got["pipelineOverride"].(map[string]any)
 	if code != http.StatusOK || override["state"] != "running" || override["pipelineId"] != nil {

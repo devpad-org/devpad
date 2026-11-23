@@ -230,13 +230,14 @@ export const mergeRequestApi = {
     return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/agent-reviews/${reviewId}/continue`, input)
   },
 
-  // overridePipeline merges although the pipeline gate is shut: the gate's
-  // state you confirmed merging over. The server refuses it, with the gate
-  // as it stands (pipelineGateFromError), when the gate has moved on.
+  // overridePipeline merges although the pipeline gate is shut: the gate
+  // as you saw it when you confirmed merging over it. The server refuses
+  // it, with the gate as it stands (pipelineGateFromError), when the state,
+  // the pipeline, the head or the target has moved on.
   merge(
     projectId: number,
     id: number,
-    input: { strategy: MergeStrategy; message?: string; push: boolean; overridePipeline?: MergeGateState },
+    input: { strategy: MergeStrategy; message?: string; push: boolean; overridePipeline?: GateConfirmation },
   ): Promise<MergeResult> {
     return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/merge`, input)
   },
@@ -264,14 +265,26 @@ export function mergeConflictsFromError(err: unknown): string[] | null {
   return Array.isArray(conflicts) ? conflicts.filter((c): c is string => typeof c === 'string') : null
 }
 
+// The pipeline gate as you saw it when you confirmed merging over it.
+export interface GateConfirmation {
+  state: MergeGateState
+  pipelineId: number | null
+  headSha: string
+  targetSha: string
+}
+
 // How the pipeline gate stood when it refused a merge: what to ask the user
 // to confirm merging over.
-export interface PipelineGateRefusal {
-  state: MergeGateState
+export interface PipelineGateRefusal extends GateConfirmation {
   reason: string
   overridable: boolean
-  // You had confirmed merging over another state than this one.
+  // You had confirmed merging over the gate as it stood before.
   changed: boolean
+}
+
+// What merging over the gate g confirms.
+export function gateConfirmation(g: GateConfirmation): GateConfirmation {
+  return { state: g.state, pipelineId: g.pipelineId, headSha: g.headSha, targetSha: g.targetSha }
 }
 
 // Returns how the pipeline gate stood when it refused a merge, or null.

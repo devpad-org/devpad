@@ -83,8 +83,12 @@ func (g *Gate) Guarded() bool { return g.State != GateUnguarded }
 func (g *Gate) Clear() bool { return g.State == GateUnguarded || g.State == GatePassed }
 
 // Overridable reports whether the user can merge the merge request anyway:
-// the gate is shut by its pipeline, not by its no longer merging at all.
-func (g *Gate) Overridable() bool { return !g.Clear() && g.State != GateClosed }
+// the gate is shut by its pipeline, not by its no longer merging at all,
+// nor by its branch not merging onto the target, which the merge itself
+// would refuse just as the pipeline's trial merge did.
+func (g *Gate) Overridable() bool {
+	return !g.Clear() && g.State != GateClosed && g.State != GateConflict
+}
 
 // Gate is the merge gate for the merge request as st found it.
 func (st *MergeRequestStatus) Gate() *Gate {

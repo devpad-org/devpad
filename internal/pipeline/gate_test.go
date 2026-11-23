@@ -78,7 +78,7 @@ func TestGateStates(t *testing.T) {
 			if g.Guarded() != (tt.state != GateUnguarded) {
 				t.Fatalf("guarded %v for %s", g.Guarded(), g.State)
 			}
-			if g.Overridable() != (!tt.clear && tt.state != GateClosed) {
+			if g.Overridable() != (!tt.clear && tt.state != GateClosed && tt.state != GateConflict) {
 				t.Fatalf("overridable %v for %s", g.Overridable(), g.State)
 			}
 			if (tt.reason == "") != (g.Reason == "") || !strings.Contains(g.Reason, tt.reason) {

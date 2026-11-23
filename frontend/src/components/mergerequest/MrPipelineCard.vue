@@ -13,21 +13,11 @@ import { useMergeRequest } from './useMergeRequest'
 // and whether it keeps the merge request from merging. Its jobs come from
 // the target branch, never the change.
 const { mr, projectId, isOpen, pipelines } = useMergeRequest()
-const { latest, settled, status, shownId, shownStale, shownPipeline, pickedId, loaded, starting, startError } = pipelines
+const { latest, settled, status, shownId, shownStale, shownPipeline, pickedId, loaded, starting, startError, gateText } = pipelines
 
 // The card shows the pipeline of the current commits that was cancelled or
 // couldn't run, saying why and whether devpad tries again.
 const showingSettled = computed(() => !!settled.value && shownId.value === settled.value.pipeline.id)
-
-// Whether the pipeline keeps the merge request from merging, and when it
-// doesn't, why not.
-const gateText = computed(() => {
-  const g = status.value?.gate
-  const target = mr.value?.targetBranch
-  if (!g || !target || g.state === 'closed') return ''
-  if (g.guarded) return PIPELINE_COPY.gateGuarded(target)
-  return status.value?.configured ? PIPELINE_COPY.gateNotTicked(target) : PIPELINE_COPY.gateNotConfigured(target)
-})
 
 // Run again shows the pipeline it started, the latest.
 function started() {

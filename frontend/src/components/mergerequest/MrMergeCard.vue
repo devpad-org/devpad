@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import DocLink from '@/components/DocLink.vue'
 import BudgetReached from '@/components/project/BudgetReached.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
+import { gateConfirmation } from '@/api/mergeRequests'
 import { GATE_OVERRIDDEN, PIPELINE_COPY, sentence } from '@/components/pipeline/pipelineFormat'
 import { fullTime, timeAgo } from '@/utils/time'
 import { shortSha } from './format'
@@ -26,6 +27,7 @@ const {
   mergeError,
   overrideAsk,
   cancelOverride,
+  gateConflicted,
   pipelines,
   statusIcon,
   merge,
@@ -102,7 +104,13 @@ const gateShut = computed(() => {
             <input v-model="pushAfterMerge" type="checkbox" />
             Push {{ mr.targetBranch }} upstream
           </label>
-          <button class="btn" :class="gateShut ? 'btn-secondary' : 'btn-success'" :disabled="busy || !!overrideAsk" @click="merge()">
+          <button
+            class="btn"
+            :class="gateShut || gateConflicted ? 'btn-secondary' : 'btn-success'"
+            :disabled="busy || !!overrideAsk || gateConflicted"
+            :title="gateConflicted ? PIPELINE_COPY.gateConflict : undefined"
+            @click="merge()"
+          >
             <MrIcon name="merged" :size="14" />
             Merge into {{ mr.targetBranch }}{{ gateShut ? '…' : '' }}
           </button>
@@ -117,7 +125,7 @@ const gateShut = computed(() => {
         <p id="mr-override-detail" class="override-detail">{{ sentence(overrideAsk.reason) }} {{ PIPELINE_COPY.overrideRecorded }}</p>
         <div class="override-actions">
           <button type="button" class="btn btn-secondary btn-sm" :disabled="busy" @click="cancelOverride">Cancel</button>
-          <button type="button" class="btn btn-danger btn-sm" :disabled="busy" @click="merge(overrideAsk.state)">Merge anyway</button>
+          <button type="button" class="btn btn-danger btn-sm" :disabled="busy" @click="merge(gateConfirmation(overrideAsk))">Merge anyway</button>
         </div>
       </div>
       <p v-if="mergeError" class="form-error merge-error">{{ mergeError }}</p>

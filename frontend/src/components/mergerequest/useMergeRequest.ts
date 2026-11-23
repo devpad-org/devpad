@@ -1,6 +1,7 @@
 import { computed, inject, ref, watch, type InjectionKey, type Ref } from 'vue'
 import { projectApi, type RepoDiff, type RepoDiffFile, type WorkspaceBranchStatus } from '@/api/projects'
 import {
+  gateConfirmation,
   mergeConflictsFromError,
   mergeRequestApi,
   pipelineGateFromError,
@@ -9,6 +10,7 @@ import {
   type CommitLog,
   type MergeRequestDetail,
   type MergeStrategy,
+  type GateConfirmation,
   type NewComment,
   type PipelineGateRefusal,
   type Push,
@@ -22,7 +24,7 @@ import { taskApi } from '@/api/tasks'
 import { branchActionError } from '@/components/project/branchErrors'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useAiModelStore } from '@/stores/aiModels'
-import type { MergeGateState, Pipeline } from '@/api/pipelines'
+import type { Pipeline } from '@/api/pipelines'
 import { PIPELINE_COPY } from '@/components/pipeline/pipelineFormat'
 import { STRATEGIES, authorName, autoMergeReason, dirName, errorText, plural, type Author, type Tone } from './format'
 import { createMrPipelines } from './useMrPipelines'
@@ -142,7 +144,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
 
   const strategy = ref<MergeStrategy>('merge')
   const pushAfterMerge = ref(true)
-  const conflicts = ref<string[] | null>(null)
+  // The files a merge the repo refused found conflicting.
+  const mergeConflicts = ref<string[] | null>(null)
   const mergeError = ref('')
   // The pipeline gate's state you are asked to confirm merging over, with
   // why it is shut; null while not asking.
@@ -151,6 +154,13 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
 
   const pipelines = createMrPipelines(projectId, mrId, mr, () => void projectStore.refreshLatestPipelines())
+  // The files that keep the branch from merging onto its target: those a
+  // refused merge found, or else those the pipeline's trial merge found,
+  // which a merge would find too.
+  const conflicts = computed(() => mergeConflicts.value ?? pipelines.gateConflicts.value)
+  // The pipeline found the branch doesn't merge onto its target as it is
+  // now, so merging waits for the conflicts to be resolved.
+  const gateConflicted = computed(() => pipelines.gate.value?.state === 'conflict')
 
   const project = computed(() => projectStore.project)
   const isOpen = computed(() => mr.value?.status === 'open')
@@ -684,7 +694,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     fileCache.clear()
     drafts.value = []
     reviewBody.value = ''
-    conflicts.value = null
+    mergeConflicts.value = null
     overrideAsk.value = null
     reviewOpen.value = false
     sendBackOpen.value = false
@@ -917,17 +927,17 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   }
 
   // Merges the merge request. While its pipeline keeps it from merging,
-  // it asks first (overrideAsk), and merges over the gate only with the
-  // state you confirmed, which the server refuses, asking again, once the
-  // pipeline has moved on.
-  function merge(override?: MergeGateState) {
+  // it asks first (overrideAsk), and merges over the gate only as you saw
+  // it, its state, pipeline, head and target, which the server refuses,
+  // asking again, once any of them has moved on.
+  function merge(override?: GateConfirmation) {
     const gate = pipelines.gate.value
     if (!override && gate && !gate.clear && gate.overridable) {
-      overrideAsk.value = { state: gate.state, reason: gate.reason, overridable: true, changed: false }
+      overrideAsk.value = { ...gateConfirmation(gate), reason: gate.reason, overridable: true, changed: false }
       return
     }
     void act(async () => {
-      conflicts.value = null
+      mergeConflicts.value = null
       try {
         const res = await mergeRequestApi.merge(projectId.value, mrId.value, {
           strategy: strategy.value,
@@ -945,7 +955,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
         const files = mergeConflictsFromError(e)
         if (files) {
           overrideAsk.value = null
-          conflicts.value = files
+          mergeConflicts.value = files
           return
         }
         const refusal = pipelineGateFromError(e)
@@ -970,7 +980,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     const files = conflicts.value ?? []
     void act(async () => {
       await mergeRequestApi.resolveConflicts(projectId.value, mrId.value, files)
-      conflicts.value = null
+      mergeConflicts.value = null
       showNotice(`The task agent is merging ${mr.value?.targetBranch ?? 'the target branch'} in and resolving the conflicts.`)
       await refreshAll()
     }, mergeError)
@@ -1034,6 +1044,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     mergeError,
     overrideAsk,
     cancelOverride,
+    gateConflicted,
     isOpen,
     files,
     pendingAgentReview,

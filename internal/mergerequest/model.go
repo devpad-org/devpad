@@ -341,10 +341,20 @@ type MergeInput struct {
 	// Push sends the target branch upstream after merging.
 	Push bool
 	// OverridePipeline merges although the merge request's pipeline gate is
-	// shut: it is the gate's state the user confirmed merging over, such as
-	// "failed", and merges only while the gate is still in that state.
-	// Empty leaves the gate to decide.
-	OverridePipeline string
+	// shut: how the gate stood when the user confirmed merging over it,
+	// which it must still be in exactly when the merge is made. Nil leaves
+	// the gate to decide.
+	OverridePipeline *GateConfirmation
+}
+
+// GateConfirmation is the pipeline gate as the user saw it when they
+// confirmed merging over it: its state, the pipeline it was about (0 for
+// none), and the head and target commits that pipeline was of.
+type GateConfirmation struct {
+	State      string
+	PipelineID int64
+	HeadSHA    string
+	TargetSHA  string
 }
 
 // MergeResult is a merged request and, when a push was asked for, why it

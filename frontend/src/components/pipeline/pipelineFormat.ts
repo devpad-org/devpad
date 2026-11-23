@@ -35,9 +35,10 @@ export const PIPELINE_COPY = {
     `No pipeline guards ${target}: it isn't ticked under Run pipelines, so a result here doesn't keep this from merging.`,
   gateNotConfigured: (target: string) => `No pipeline guards ${target}: it has no .devpad/pipeline.yml and the project no pipeline setting.`,
   gateShut: 'Merging waits for it to pass, unless you merge anyway.',
+  gateConflict: "It can't merge until the conflicts are resolved; its pipeline runs again then.",
   // Asking to merge over a shut gate, and what the merge request keeps.
   overrideTitle: 'Merge without a passing pipeline?',
-  overrideChanged: 'The pipeline changed. Merge anyway?',
+  overrideChanged: 'The pipeline or the commits changed. Merge anyway?',
   overrideRecorded: 'The merge request records that you merged it anyway, and how its pipeline stood.',
   // A task's merge request into a branch that merges automatically.
   autoMergeGuarded: (reviewer: string, target: string) => `Once ${reviewer} approves it and its pipeline passes on ${target} as it is then.`,

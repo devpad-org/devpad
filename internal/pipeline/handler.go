@@ -200,7 +200,8 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 }
 
 // gateResponse is how the merge gate stands: what the merge card shows,
-// and the state a merge that overrides it names.
+// and what a merge that overrides it names, the state, the pipeline and
+// the commits, which must all still be so when it merges.
 func gateResponse(g *Gate) map[string]any {
 	var pipelineID any
 	if g.Pipeline != nil {
@@ -214,6 +215,8 @@ func gateResponse(g *Gate) map[string]any {
 		"overridable": g.Overridable(),
 		"reason":      g.Reason,
 		"pipelineId":  pipelineID,
+		"headSha":     g.HeadSHA,
+		"targetSha":   g.TargetSHA,
 	}
 }
 
