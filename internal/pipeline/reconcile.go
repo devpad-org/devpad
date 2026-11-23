@@ -141,7 +141,7 @@ func latestBySubject(pipelines []*Pipeline) []*Pipeline {
 // before devpad stopped. An older result is the one an interrupted Run
 // again was to repeat, so it runs again.
 func (s *service) rerun(ctx context.Context, p *Pipeline) {
-	in := StartInput{UserID: p.UserID, ProjectID: p.ProjectID, Purpose: p.Purpose, Trigger: TriggerRestart, ReuseResult: true}
+	in := StartInput{UserID: p.UserID, ProjectID: p.ProjectID, Purpose: p.Purpose, Trigger: TriggerRestart}
 	if p.Kind == KindMergeRequest {
 		in.MergeRequestID = p.MergeRequestID
 	} else {

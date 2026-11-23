@@ -84,10 +84,10 @@ func TestAProposedPipelineRunsTheChangesJobsOnTheTrialMerge(t *testing.T) {
 		t.Fatalf("proposed status: %+v", st)
 	}
 	// Starting either again finds its own.
-	if again := e.start(StartInput{MergeRequestID: e.mr, Purpose: PurposeProposed, ReuseResult: true}); again.ID != proposed.ID {
+	if again := e.start(StartInput{MergeRequestID: e.mr, Purpose: PurposeProposed, Trigger: TriggerRestart}); again.ID != proposed.ID {
 		t.Fatalf("reused %d, want %d", again.ID, proposed.ID)
 	}
-	if again := e.start(StartInput{MergeRequestID: e.mr, ReuseResult: true}); again.ID != official.ID {
+	if again := e.start(StartInput{MergeRequestID: e.mr, Trigger: TriggerRestart}); again.ID != official.ID {
 		t.Fatalf("reused %d, want %d", again.ID, official.ID)
 	}
 	// The change and its trial merge are read once for each pair of
@@ -164,6 +164,7 @@ func TestAProposedPipelineRunsOnlyWhatTheChangeProposes(t *testing.T) {
 // replace each other: each is replaced only by a newer one of its own.
 func TestProposedAndOfficialPipelinesReplaceOnlyTheirOwn(t *testing.T) {
 	e := setup(t)
+	e.tick("develop")
 	release := e.holdEnvironment()
 	e.propose(sha(30), proposedYAML)
 	officialA := e.start(StartInput{MergeRequestID: e.mr})
@@ -171,14 +172,14 @@ func TestProposedAndOfficialPipelinesReplaceOnlyTheirOwn(t *testing.T) {
 
 	e.mrs.setHead(e.mr, sha(31))
 	e.propose(sha(31), proposedYAML)
-	officialB := e.start(StartInput{MergeRequestID: e.mr, StopStale: true})
+	officialB := e.start(StartInput{MergeRequestID: e.mr, Trigger: TriggerSourceMoved})
 	if got := e.wait(officialA.ID); got.Status != StatusSuperseded {
 		t.Fatalf("the older official pipeline: %s", got.Status)
 	}
 	if got, _ := e.svc.repo.Get(context.Background(), proposedA.ID); got.Status != StatusQueued {
 		t.Fatalf("a newer official pipeline replaced the proposed one: %s", got.Status)
 	}
-	proposedB := e.start(StartInput{MergeRequestID: e.mr, Purpose: PurposeProposed, StopStale: true})
+	proposedB := e.start(StartInput{MergeRequestID: e.mr, Purpose: PurposeProposed, Trigger: TriggerSourceMoved})
 	if got := e.wait(proposedA.ID); got.Status != StatusSuperseded || !strings.Contains(got.Error, fmt.Sprintf("pipeline %d", proposedB.ID)) {
 		t.Fatalf("the older proposed pipeline: %s %q", got.Status, got.Error)
 	}
@@ -389,7 +390,7 @@ func TestProposedPipelinesNeverCountForTheMergeRequest(t *testing.T) {
 
 	// Devpad's own start of the official pipeline makes one of its own,
 	// reusing nothing proposed.
-	ran := e.wait(e.start(StartInput{MergeRequestID: e.mr, Trigger: TriggerSourceMoved, Automatic: true, StopStale: true}).ID)
+	ran := e.wait(e.start(StartInput{MergeRequestID: e.mr, Trigger: TriggerSourceMoved}).ID)
 	if ran.Purpose != PurposeOfficial || ran.ID == passed.ID {
 		t.Fatalf("the official start reused %+v", ran)
 	}
@@ -501,8 +502,8 @@ func TestAProposedPipelineOfTheOfficialKeyNeverStandsForIt(t *testing.T) {
 	// devpad's own, which would take a cancelled pipeline or two errors of
 	// it as settled, each run or reuse only an official pipeline.
 	for i, in := range []StartInput{
-		{Trigger: TriggerRestart, ReuseResult: true},
-		{Trigger: TriggerSourceMoved, Automatic: true, StopStale: true},
+		{Trigger: TriggerRestart},
+		{Trigger: TriggerSourceMoved},
 	} {
 		in.UserID, in.ProjectID, in.MergeRequestID = e.owner, e.project, e.mr
 		ran, created, err := e.svc.Start(ctx, in)

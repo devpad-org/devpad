@@ -29,11 +29,48 @@ func (s *service) Start(ctx context.Context, in StartInput) (*Pipeline, bool, er
 	return s.start(ctx, in, 0)
 }
 
+// startPolicy is what a start reuses rather than run again, and what it
+// stops.
+type startPolicy struct {
+	// reuseResult returns the newest pipeline of the same commits and jobs
+	// that counts (countingStatuses), a finished one with a result
+	// included, rather than run them again. Without it, a finished
+	// pipeline is never returned.
+	reuseResult bool
+	// reuseEnded also returns, rather than repeats, the newest pipeline of
+	// the same commits and jobs that the user cancelled, or that devpad
+	// could not run once errorRetries more have not either: devpad runs
+	// those again only when the user asks.
+	reuseEnded bool
+	// stopStale also stops the subject's pipelines that have started and
+	// test something else, which this start makes stale, as it stops the
+	// queued ones: each is recorded superseded by the pipeline Start
+	// returns.
+	stopStale bool
+}
+
+// startPolicyOf is the one rule for what a start with trigger t of a
+// pipeline of kind reuses and stops. The user's Run again always runs. A
+// restart's re-run reuses a result, since the user didn't ask for one.
+// Devpad's own runs reuse a result and one it doesn't run again by itself,
+// and a merge request's stop its pipelines of older commits or jobs, which
+// no longer say anything of it; a branch's let a running one finish, so
+// the branch's history shows each result.
+func startPolicyOf(t Trigger, kind Kind) startPolicy {
+	switch {
+	case t.Automatic():
+		return startPolicy{reuseResult: true, reuseEnded: true, stopStale: kind == KindMergeRequest}
+	case t == TriggerRestart:
+		return startPolicy{reuseResult: true}
+	}
+	return startPolicy{}
+}
+
 // start starts a pipeline, recording it as running again rerunOf when that
 // is set.
 func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pipeline, bool, error) {
-	if in.Trigger == "" {
-		return nil, false, fmt.Errorf("%w: a pipeline needs a trigger", ErrInvalidInput)
+	if !slices.Contains(Triggers(), in.Trigger) {
+		return nil, false, fmt.Errorf("%w: unknown pipeline trigger %q", ErrInvalidInput, in.Trigger)
 	}
 	// The project is the user's before anyone takes its lock.
 	if _, err := s.projects.Get(ctx, in.UserID, in.ProjectID); err != nil {
@@ -55,10 +92,11 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 	if err != nil {
 		return nil, false, err
 	}
+	policy := startPolicyOf(in.Trigger, next.Kind)
 	resolved, configSHA, err := s.resolveJobs(ctx, p, next)
 	if err != nil {
 		var none *NoProposal
-		if in.StopStale && errors.As(err, &none) {
+		if policy.stopStale && errors.As(err, &none) {
 			// What the change proposed before, it no longer does.
 			s.stopSubject(next.subject(), staleCause(none.Error()))
 		}
@@ -73,7 +111,7 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 	next.CreatedAt = s.now()
 	setJobs(next, resolved)
 
-	same, err := s.reusable(ctx, next, in)
+	same, err := s.reusable(ctx, next, policy)
 	if err != nil {
 		return nil, false, err
 	}
@@ -89,22 +127,21 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 		}
 		same = next
 	}
-	s.supersede(same, in.StopStale)
+	s.supersede(same, policy.stopStale)
 	return same, created, nil
 }
 
 // reusable finds the pipeline a start of next returns rather than make
 // one: one queued or running of the same commits and jobs; with
-// ReuseResult, or Automatic, one that counts; and with Automatic one that
-// ended without a result that devpad doesn't run again by itself
-// (settled).
-func (s *service) reusable(ctx context.Context, next *Pipeline, in StartInput) (*Pipeline, error) {
+// reuseResult, one that counts; and with reuseEnded one that ended without
+// a result that devpad doesn't run again by itself (settled).
+func (s *service) reusable(ctx context.Context, next *Pipeline, policy startPolicy) (*Pipeline, error) {
 	statuses := unfinishedStatuses
-	if in.ReuseResult || in.Automatic {
+	if policy.reuseResult {
 		statuses = countingStatuses
 	}
 	same, err := s.repo.FindSame(ctx, next.key(), statuses)
-	if err != nil || same != nil || !in.Automatic {
+	if err != nil || same != nil || !policy.reuseEnded {
 		return same, err
 	}
 	ended, retry, err := s.settled(ctx, next.key())
@@ -251,8 +288,8 @@ func setJobs(p *Pipeline, r *Resolved) {
 
 // supersede has current replace every queued pipeline of its subject that
 // tests something else: the newer commits, or jobs, are what count. One that
-// has started is left to finish, unless stale asks to stop those too. The
-// caller holds the project's start lock.
+// has started is left to finish, unless stale asks to stop those too
+// (startPolicy.stopStale). The caller holds the project's start lock.
 func (s *service) supersede(current *Pipeline, stale bool) {
 	k, cause := current.key(), supersededBy(current.ID)
 	if slices.Contains(endedStatuses, current.Status) {

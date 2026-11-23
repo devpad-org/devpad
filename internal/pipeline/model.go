@@ -72,7 +72,8 @@ const (
 	StatusCancelled Status = "cancelled"
 	// StatusSuperseded was replaced by a pipeline of the same branch or
 	// merge request that tests something else: before it started, or while
-	// it ran when the start that replaced it asked (StartInput.StopStale).
+	// it ran when the start that replaced it stops stale ones
+	// (startPolicy.stopStale).
 	StatusSuperseded Status = "superseded"
 	// StatusInterrupted was queued or running when devpad stopped; a new
 	// pipeline runs it again.
@@ -104,7 +105,7 @@ var countingStatuses = append(slices.Clone(unfinishedStatuses), resultStatuses..
 // reason that holds for their commits and jobs: the user cancelled them, or
 // devpad could not run them. Devpad never runs again by itself the commits
 // and jobs of one cancelled, and of one that could not run only errorRetries
-// times (StartInput.Automatic). One superseded or interrupted says nothing
+// times (startPolicy.reuseEnded). One superseded or interrupted says nothing
 // of its commits.
 var endedStatuses = []Status{StatusCancelled, StatusError}
 
@@ -187,6 +188,14 @@ const (
 	// sweepInterval.
 	TriggerCatchUp Trigger = "catch_up"
 )
+
+// Triggers lists every trigger, the app's PipelineTrigger too.
+func Triggers() []Trigger {
+	return []Trigger{
+		TriggerUser, TriggerRestart, TriggerOpened, TriggerSourceMoved, TriggerTargetMoved,
+		TriggerMerged, TriggerUpstream, TriggerTicked, TriggerSetting, TriggerCatchUp,
+	}
+}
 
 // Automatic reports whether devpad started a pipeline with trigger t by
 // itself, rather than the user or a restart running one again.

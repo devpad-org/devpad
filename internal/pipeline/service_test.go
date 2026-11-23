@@ -125,10 +125,41 @@ func TestNewerCommitSupersedesAQueuedPipeline(t *testing.T) {
 	}
 }
 
-func TestReuseResultReturnsAFinishedPipelineOfTheSameCommits(t *testing.T) {
+// What a start reuses and stops follows from its trigger alone: the user's
+// Run again always runs, a restart's re-run reuses a result, and devpad's
+// own runs also what it doesn't run again by itself, stopping a merge
+// request's stale pipelines but not a branch's. A trigger devpad doesn't
+// know starts nothing.
+func TestTheTriggerDecidesWhatAStartReuses(t *testing.T) {
+	for _, tr := range Triggers() {
+		for _, kind := range []Kind{KindBranch, KindMergeRequest} {
+			got := startPolicyOf(tr, kind)
+			want := startPolicy{}
+			switch {
+			case tr.Automatic():
+				want = startPolicy{reuseResult: true, reuseEnded: true, stopStale: kind == KindMergeRequest}
+			case tr == TriggerRestart:
+				want = startPolicy{reuseResult: true}
+			case tr != TriggerUser:
+				t.Fatalf("trigger %s is neither the user's, a restart's nor automatic", tr)
+			}
+			if got != want {
+				t.Errorf("%s of a %s: %+v, want %+v", tr, kind, got, want)
+			}
+		}
+	}
+	e := setup(t)
+	for _, tr := range []Trigger{"", "nonsense"} {
+		if _, _, err := e.svc.Start(context.Background(), StartInput{UserID: e.owner, ProjectID: e.project, MergeRequestID: e.mr, Trigger: tr}); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("trigger %q: %v", tr, err)
+		}
+	}
+}
+
+func TestARestartReusesAFinishedPipelineOfTheSameCommits(t *testing.T) {
 	e := setup(t)
 	first := e.wait(e.start(StartInput{MergeRequestID: e.mr}).ID)
-	reused := e.start(StartInput{MergeRequestID: e.mr, ReuseResult: true})
+	reused := e.start(StartInput{MergeRequestID: e.mr, Trigger: TriggerRestart})
 	if reused.ID != first.ID {
 		t.Fatalf("expected the finished pipeline back, got %+v", reused)
 	}
@@ -146,7 +177,7 @@ func TestReuseResultReturnsAFinishedPipelineOfTheSameCommits(t *testing.T) {
 	if _, err := e.svc.Cancel(context.Background(), e.owner, e.project, queued.ID); err != nil {
 		t.Fatal(err)
 	}
-	if fresh := e.start(StartInput{MergeRequestID: e.mr, ReuseResult: true}); fresh.ID == queued.ID {
+	if fresh := e.start(StartInput{MergeRequestID: e.mr, Trigger: TriggerRestart}); fresh.ID == queued.ID {
 		t.Fatalf("reused a cancelled pipeline")
 	}
 }
@@ -392,16 +423,16 @@ func TestReuseAndTheMergeRequestGateCountTheSamePipelines(t *testing.T) {
 		}
 		return got
 	}
-	automatic := func() *Pipeline { return e.start(StartInput{MergeRequestID: e.mr, ReuseResult: true}) }
+	reusing := func() *Pipeline { return e.start(StartInput{MergeRequestID: e.mr, Trigger: TriggerRestart}) }
 	strictJobs, laxJobs := "jobs:\n  strict:\n    run: fail 1\n", "jobs:\n  lax:\n    run: pass\n"
 
 	// The setting's jobs fail; other jobs pass; then the first jobs are back.
 	e.projects.project.PipelineConfig = strictJobs
-	strict := e.wait(automatic().ID)
+	strict := e.wait(reusing().ID)
 	e.projects.project.PipelineConfig = laxJobs
-	lax := e.wait(automatic().ID)
+	lax := e.wait(reusing().ID)
 	e.projects.project.PipelineConfig = strictJobs
-	if again := automatic(); again.ID != strict.ID {
+	if again := reusing(); again.ID != strict.ID {
 		t.Fatalf("expected the strict jobs' result reused, got %+v", again)
 	}
 	// The gate sees the failure of the jobs the pipeline has, never the
@@ -431,7 +462,7 @@ func TestReuseAndTheMergeRequestGateCountTheSamePipelines(t *testing.T) {
 	if got := latest(lax); got.ID != lax.ID {
 		t.Fatalf("a cancelled run hid the pass: %+v", got)
 	}
-	if got := automatic(); got.ID != lax.ID {
+	if got := reusing(); got.ID != lax.ID {
 		t.Fatalf("expected the pass reused after a cancelled run, got %+v", got)
 	}
 	// Nor does one that could not run.
@@ -444,18 +475,21 @@ func TestReuseAndTheMergeRequestGateCountTheSamePipelines(t *testing.T) {
 	if got := latest(lax); got.ID != lax.ID {
 		t.Fatalf("a run that could not run hid the pass: %+v", got)
 	}
-	if got := automatic(); got.ID != lax.ID {
+	if got := reusing(); got.ID != lax.ID {
 		t.Fatalf("expected the pass reused after an error, got %+v", got)
 	}
 }
 
-func TestStopStaleStopsAStartedPipelineOfOtherCommits(t *testing.T) {
+func TestAnAutomaticStartStopsAStartedPipelineOfOtherCommits(t *testing.T) {
 	e := setup(t)
+	// Devpad runs the merge request's pipelines by itself only into a
+	// ticked branch.
+	e.tick("develop")
 	e.projects.setFile(sha(2), ".devpad/pipeline.yml", "jobs:\n  forever:\n    run: hang\n")
 	old := e.start(StartInput{MergeRequestID: e.mr})
 	e.awaitScript("forever")
 	e.mrs.mrs[e.mr].HeadSHA = sha(31)
-	next := e.start(StartInput{MergeRequestID: e.mr, StopStale: true})
+	next := e.start(StartInput{MergeRequestID: e.mr, Trigger: TriggerSourceMoved})
 	want := fmt.Sprintf("replaced by pipeline %d", next.ID)
 	got := e.wait(old.ID)
 	if got.Status != StatusSuperseded || got.Error != want || got.StartedAt == nil {

@@ -26,13 +26,13 @@ import (
 // it may be told under any of its caller's locks. A few workers make the
 // runs outside every lock but the start lock Start takes: each reads the
 // project and the merge request as they are then, asks runsAutomatically,
-// and starts the pipeline with Automatic, so a run of what already has a
-// pipeline for its commits and jobs makes none. A merge request's run
-// starts its official pipeline and then the one its change proposes
-// (proposed.go), which Start refuses when it proposes none; each stops its
-// own purpose's pipelines that test something else (StopStale). A branch's
-// replaces only one still queued, and lets one running finish, so the
-// branch's history shows each result.
+// and starts the pipeline with the run's trigger, an automatic one, so a
+// run of what already has a pipeline for its commits and jobs makes none
+// (startPolicyOf). A merge request's run starts its official pipeline and
+// then the one its change proposes (proposed.go), which Start refuses when
+// it proposes none; each stops its own purpose's pipelines that test
+// something else. A branch's replaces only one still queued, and lets one
+// running finish, so the branch's history shows each result.
 //
 // A pipeline whose subject stops needing it stops too: a merge request
 // that closes or merges stops all its pipelines (MergeRequestEnded), a
@@ -306,7 +306,7 @@ func (s *service) makeAutoRun(ctx context.Context, r *autoRun) (coming bool) {
 	switch r.key.kind {
 	case autoBranch:
 		if branchRunsAutomatically(p, r.key.branch) {
-			return s.startAutomatic(ctx, r, StartInput{UserID: p.UserID, ProjectID: p.ID, Branch: r.key.branch, Trigger: r.trigger, Automatic: true})
+			return s.startAutomatic(ctx, r, StartInput{UserID: p.UserID, ProjectID: p.ID, Branch: r.key.branch, Trigger: r.trigger})
 		}
 	case autoMergeRequest:
 		mr, err := s.mrs.PipelineMergeRequest(ctx, p.UserID, p.ID, r.key.mergeRequestID)
@@ -323,7 +323,7 @@ func (s *service) makeAutoRun(ctx context.Context, r *autoRun) (coming bool) {
 		// whatever the order, but the official pipeline is the one to
 		// start even when the proposed one fails to.
 		for _, purpose := range []Purpose{PurposeOfficial, PurposeProposed} {
-			s.startAutomatic(ctx, r, StartInput{UserID: p.UserID, ProjectID: p.ID, MergeRequestID: mr.ID, Purpose: purpose, Trigger: r.trigger, Automatic: true, StopStale: true})
+			s.startAutomatic(ctx, r, StartInput{UserID: p.UserID, ProjectID: p.ID, MergeRequestID: mr.ID, Purpose: purpose, Trigger: r.trigger})
 		}
 	case autoInto:
 		if !branchRunsAutomatically(p, r.key.branch) {
@@ -381,7 +381,7 @@ func (s *service) logAutoRefusal(ctx context.Context, r *autoRun, err error) {
 // requests into it, so that what changed while devpad was not running, of
 // which no listener was told, runs now, as does what a run could not start
 // or the queue dropped. Each makes a pipeline only where the commits and
-// jobs as they are have none (StartInput.Automatic), and goes through the
+// jobs as they are have none (startPolicyOf), and goes through the
 // queue's interval and its turn per project like any other run.
 func (s *service) catchUp(ctx context.Context) {
 	projects, err := s.projects.ListPipelineProjects(ctx)

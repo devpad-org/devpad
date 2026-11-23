@@ -22,9 +22,10 @@ type Service interface {
 	// Start queues a pipeline of a protected branch's current commit, or of
 	// an open merge request's head merged onto its target's current commit.
 	// A pipeline already queued or running that tests the same commits with
-	// the same jobs is returned instead, with created false. Any pipeline of
-	// the same branch or merge request and purpose still queued that tests
-	// something else is superseded. It reads the merge request and the
+	// the same jobs is returned instead, with created false, as, for a
+	// restart's or devpad's own start, is one with a result
+	// (startPolicyOf). Any pipeline of the same branch or merge request and
+	// purpose still queued that tests something else is superseded. It reads the merge request and the
 	// canonical repo, so it is never to be called inside a database
 	// transaction, and the merge request lookup it makes (MergeRequests)
 	// takes no lock a caller of Start may hold.
@@ -123,23 +124,10 @@ type StartInput struct {
 	// PurposeProposed for a merge request's, which runs the jobs its change
 	// proposes and is refused when it proposes none.
 	Purpose Purpose
+	// Trigger is what starts it, one of Triggers, which also decides what
+	// the start reuses rather than run again and what it stops
+	// (startPolicyOf): the user's Run again always runs.
 	Trigger Trigger
-	// ReuseResult returns the newest pipeline of the same commits and jobs
-	// that counts (countingStatuses), a finished one with a result included,
-	// rather than running them again. Without it, a finished pipeline is
-	// never returned: the user's Run again always runs.
-	ReuseResult bool
-	// StopStale also stops the subject's pipelines that have started and
-	// test something else, which this start makes stale, as it stops the
-	// queued ones: each is recorded superseded by the pipeline Start
-	// returns.
-	StopStale bool
-	// Automatic is a start devpad makes by itself. It reuses results as
-	// ReuseResult does, and also returns, rather than repeats, the newest
-	// pipeline of the same commits and jobs that the user cancelled, or that
-	// devpad could not run once errorRetries more have not either: devpad
-	// runs those commits and jobs again only when the user asks.
-	Automatic bool
 }
 
 // OutputRequest asks for a pipeline's job's output from Offset on: 0, or the
