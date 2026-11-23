@@ -56,8 +56,10 @@ type Service interface {
 	ReadAt(ctx context.Context, userID, projectID int64, in agent.RepoReadRequest) (*agent.RepoRead, error)
 	// PinPipeline pins what a pipeline tests in the canonical repo, never
 	// moving a branch; PipelineBundle writes a bundle of it, and
-	// DeletePipelineRef forgets it. See pipeline_ref.go.
+	// DeletePipelineRef forgets it. TrialMerge reads the commit a pin of a
+	// source onto a target tests, without pinning it. See pipeline_ref.go.
 	PinPipeline(ctx context.Context, userID, projectID int64, pin agent.PipelinePin) (*agent.PipelinePinResult, error)
+	TrialMerge(ctx context.Context, userID, projectID int64, source, target string) (*agent.TrialMerge, error)
 	PipelineBundle(ctx context.Context, userID, projectID int64, pipelineID string, w io.Writer) (int64, error)
 	DeletePipelineRef(ctx context.Context, userID, projectID int64, pipelineID string) error
 	Merge(ctx context.Context, userID, projectID int64, in MergeInput) (*agent.RepoMergeResult, error)

@@ -5,13 +5,14 @@ import { shortSha } from '@/components/mergerequest/format'
 
 // Presentation helpers shared by the pipeline components.
 
-// What the app says of when devpad starts pipelines by itself, and of the
-// merge gate, in one place. The docs say the same in docs/09-pipelines.md
-// (the introduction, #automatic-runs, #branches, #merge-requests,
-// #merge-gate and #failures), docs/04-branches.md (the Run pipelines list,
-// #reviews, #auto-fixing-reviews, #merging and #automatic-merges),
-// docs/05-tasks.md (#how-a-task-runs) and docs/03-projects.md (the
-// Pipelines surface and the pipeline setting).
+// What the app says of when devpad starts pipelines by itself, of the
+// merge gate and of the pipeline a change proposes, in one place. The docs
+// say the same in docs/09-pipelines.md (the introduction, #automatic-runs,
+// #branches, #merge-requests, #merge-gate, #failures and #proposed),
+// docs/04-branches.md (the Run pipelines list, #reviews,
+// #auto-fixing-reviews, #merging and #automatic-merges), docs/05-tasks.md
+// (#how-a-task-runs) and docs/03-projects.md (the Pipelines surface and the
+// pipeline setting).
 export const PIPELINE_COPY = {
   // Beside where pipelines are run.
   automaticRuns: 'Devpad runs ticked branches and the merge requests into them by itself. Run any protected branch here, or a merge request from its page.',
@@ -59,6 +60,15 @@ export const PIPELINE_COPY = {
   targetPending: (target: string) => `Waiting for ${target}'s own pipeline of the same commit, to tell the failures this change brings from those already there.`,
   // The project's automatic review of a merge request a pipeline guards.
   reviewAwaitsPipeline: 'The automatic review starts once the pipeline passes.',
+  // The pipeline a merge request's change proposes, on its own card.
+  proposedNote: "from this change — doesn't gate merging",
+  proposedExplain: (file: string, target: string) =>
+    `This change touches ${file}, so devpad also runs the jobs it proposes on this branch merged onto ${target}, for you to see they work before they take effect. The result never keeps this from merging, never goes back to the task's agent and never holds a review: until it merges, ${target}'s own jobs are the ones that count.`,
+  proposedRemoved: (target: string) =>
+    `This change removes the pipeline, so it proposes no jobs and nothing runs here. Once it merges, ${target}'s commits run the project's pipeline setting, or no pipeline when it has none.`,
+  proposedConflict: (target: string) => `This branch doesn't merge onto ${target}, so the pipeline it proposes can't be read.`,
+  proposedNoneAutomatic: "No proposed pipeline has run yet. Devpad runs it by itself whenever it runs this merge request's own.",
+  proposedNone: (target: string) => `No proposed pipeline has run yet. ${target} isn't ticked under Run pipelines, so run it here.`,
 } as const
 
 // What a task's automatic pipeline rounds say, on the task and on its merge
@@ -153,13 +163,17 @@ export const PIPELINE_OUTCOME: Record<PipelineStatus, string> = {
   interrupted: 'was interrupted',
 }
 
-// What a pipeline tests, in a few words.
+// What a pipeline tests, in a few words, and whether it runs the jobs a
+// change proposes.
 export function subjectLabel(p: Pipeline): string {
-  return p.kind === 'branch' ? p.branch : `!${p.mergeRequestId} ${p.sourceBranch} → ${p.targetBranch}`
+  if (p.kind === 'branch') return p.branch
+  const subject = `!${p.mergeRequestId} ${p.sourceBranch} → ${p.targetBranch}`
+  return p.purpose === 'proposed' ? `${subject}, proposed` : subject
 }
 
 // Where a pipeline's jobs came from.
 export function sourceLabel(p: Pipeline): string {
+  if (p.purpose === 'proposed') return `${p.configPath || '.devpad/pipeline.yml'} as ${p.sourceBranch} proposes it`
   switch (p.configSource) {
     case 'file':
       return `${p.configPath || '.devpad/pipeline.yml'} on ${p.kind === 'branch' ? p.branch : p.targetBranch}`

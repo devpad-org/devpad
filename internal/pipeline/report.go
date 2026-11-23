@@ -66,7 +66,7 @@ func (s *service) targetResult(ctx context.Context, p *Pipeline, await bool) (*T
 	if p.Kind != KindMergeRequest || p.TargetSHA == "" || p.TargetBranch == "" {
 		return nil, nil
 	}
-	probe := &Pipeline{ProjectID: p.ProjectID, Kind: KindBranch, Branch: p.TargetBranch, HeadSHA: p.TargetSHA, ConfigHash: p.ConfigHash}
+	probe := branchProbe(p.ProjectID, p.TargetBranch, p.TargetSHA, p.ConfigHash)
 	done, err := s.repo.FindSame(ctx, probe, resultStatuses)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s's pipeline of %s: %w", p.TargetBranch, p.TargetSHA, err)

@@ -61,6 +61,19 @@ type RepoReader interface {
 // Invalid, and the setting is never used instead. The error is for failing
 // to read the repo, which says nothing of the pipeline.
 func Resolve(ctx context.Context, repo RepoReader, p *project.Project, commit string) (*Resolved, error) {
+	return resolveAt(ctx, repo, p, commit, p.PipelineConfig)
+}
+
+// ResolveProposed finds the pipeline a merge request's change proposes, at
+// merge, the full hash of the trial merge of its head onto its target: the
+// commit's pipeline file, and never the project's setting, which no change
+// proposes. With no file the pipeline is SourceNone: the change removes it.
+func ResolveProposed(ctx context.Context, repo RepoReader, p *project.Project, merge string) (*Resolved, error) {
+	return resolveAt(ctx, repo, p, merge, "")
+}
+
+// resolveAt is Resolve with setting as the project's pipeline setting.
+func resolveAt(ctx context.Context, repo RepoReader, p *project.Project, commit, setting string) (*Resolved, error) {
 	if !project.IsCommitHash(commit) {
 		return nil, fmt.Errorf("resolving a pipeline: %q is not a full commit hash", commit)
 	}
@@ -86,7 +99,7 @@ func Resolve(ctx context.Context, repo RepoReader, p *project.Project, commit st
 	}
 	switch len(found) {
 	case 0:
-		return resolveSetting(p.PipelineConfig), nil
+		return resolveSetting(setting), nil
 	case 1:
 	default:
 		return &Resolved{Source: SourceFile, Path: found[0].Path, Invalid: fmt.Errorf("both %s exist: keep one", strings.Join(Files(), " and "))}, nil

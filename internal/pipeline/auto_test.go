@@ -159,7 +159,11 @@ func describe(p *Pipeline) string {
 	if p.Kind == KindBranch {
 		return fmt.Sprintf("%s@%s %s", p.Branch, short(p.HeadSHA), p.Trigger)
 	}
-	return fmt.Sprintf("!%d@%s/%s %s", p.MergeRequestID, short(p.HeadSHA), short(p.TargetSHA), p.Trigger)
+	d := fmt.Sprintf("!%d@%s/%s %s", p.MergeRequestID, short(p.HeadSHA), short(p.TargetSHA), p.Trigger)
+	if p.Purpose == PurposeProposed {
+		d += " proposed"
+	}
+	return d
 }
 
 // short is a made-up commit hash by its number.
@@ -535,9 +539,10 @@ func TestABurstOfHeadMovesIsReadTwice(t *testing.T) {
 	for _, p := range e.pipelines() {
 		e.wait(p.ID)
 	}
-	// Two runs, each reading the merge request once and Start once more,
-	// and the pipeline once as it starts.
-	if n := e.mrs.lookupCount(); n != 5 {
+	// Two runs, each reading the merge request once and each of its two
+	// Starts, official and proposed, once more, and the pipeline once as
+	// it starts.
+	if n := e.mrs.lookupCount(); n != 7 {
 		t.Fatalf("%d lookups of the merge request", n)
 	}
 	if got, want := e.started(), fmt.Sprintf("!%d@%x/2 source_moved", e.mr, 150); got != want {

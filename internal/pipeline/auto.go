@@ -27,8 +27,10 @@ import (
 // runs outside every lock but the start lock Start takes: each reads the
 // project and the merge request as they are then, asks runsAutomatically,
 // and starts the pipeline with Automatic, so a run of what already has a
-// pipeline for its commits and jobs makes none. A merge request's start
-// stops its pipelines that test something else (StopStale); a branch's
+// pipeline for its commits and jobs makes none. A merge request's run
+// starts its official pipeline and then the one its change proposes
+// (proposed.go), which Start refuses when it proposes none; each stops its
+// own purpose's pipelines that test something else (StopStale). A branch's
 // replaces only one still queued, and lets one running finish, so the
 // branch's history shows each result.
 //
@@ -180,15 +182,15 @@ func (s *service) MergeRequestMoved(_ context.Context, m MergeRequestMove) {
 }
 
 // MergeRequestEnded stops every pipeline of a merge request that closed or
-// merged, by hand or not: what it would say no longer matters. It only
-// ends their contexts, so it may be told under the merge request's lock.
+// merged, by hand or not, of either purpose: what it would say no longer
+// matters. It only ends their contexts, so it may be told under the merge
+// request's lock.
 func (s *service) MergeRequestEnded(_ context.Context, m MergeRequestEnd) {
-	sub := subject{projectID: m.ProjectID, kind: KindMergeRequest, mergeRequestID: m.MergeRequestID}
 	cause := mergeRequestEnded(m.Merged)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, a := range s.runs {
-		if a.subject == sub {
+		if a.subject.ofMergeRequest(m.ProjectID, m.MergeRequestID) {
 			a.stop(cause)
 		}
 	}
@@ -312,8 +314,14 @@ func (s *service) makeAutoRun(ctx context.Context, r *autoRun) (coming bool) {
 			s.logAutoRefusal(ctx, r, err)
 			return false
 		}
-		if mergeRequestRunsAutomatically(p, mr) {
-			s.startAutomatic(ctx, r, StartInput{UserID: p.UserID, ProjectID: p.ID, MergeRequestID: mr.ID, Trigger: r.trigger, Automatic: true, StopStale: true})
+		if !mergeRequestRunsAutomatically(p, mr) {
+			return false
+		}
+		// Its official pipeline, then the one its change proposes, which
+		// Start refuses when it proposes none; each replaces only those of
+		// its own purpose.
+		for _, purpose := range Purposes() {
+			s.startAutomatic(ctx, r, StartInput{UserID: p.UserID, ProjectID: p.ID, MergeRequestID: mr.ID, Purpose: purpose, Trigger: r.trigger, Automatic: true, StopStale: true})
 		}
 	case autoInto:
 		if !branchRunsAutomatically(p, r.key.branch) {

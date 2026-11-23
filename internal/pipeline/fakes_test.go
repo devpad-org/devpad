@@ -51,6 +51,12 @@ type fakeProjects struct {
 	// branchesGate, when set, holds each read until it is closed.
 	branchesErr  error
 	branchesGate chan struct{}
+	// changes are the files each head changes since it left its target,
+	// by head; diffs and trialMerges count the reads of changes and of
+	// trial merges.
+	changes     map[string][]agent.RepoDiffFile
+	diffs       int
+	trialMerges int
 }
 
 func (f *fakeProjects) Get(_ context.Context, userID, projectID int64) (*project.Project, error) {
@@ -137,6 +143,34 @@ func (f *fakeProjects) PinPipeline(_ context.Context, _, _ int64, pin agent.Pipe
 	}
 	f.refs[pin.ID] = tested
 	return &agent.PipelinePinResult{Ref: pipelineid.Ref(pin.ID), SHA: tested, Tree: treeOf(tested)}, nil
+}
+
+func (f *fakeProjects) Diff(_ context.Context, _, _ int64, base, head string) (*agent.RepoDiff, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.diffs++
+	return &agent.RepoDiff{BaseSHA: base, HeadSHA: head, MergeBase: base, Files: slices.Clone(f.changes[head])}, nil
+}
+
+func (f *fakeProjects) TrialMerge(_ context.Context, _, _ int64, source, target string) (*agent.TrialMerge, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.trialMerges++
+	if f.conflict != nil {
+		return &agent.TrialMerge{Conflict: f.conflict}, nil
+	}
+	merged := mergeOf(source, target)
+	return &agent.TrialMerge{SHA: merged, Tree: treeOf(merged)}, nil
+}
+
+// setChange records the files head changes.
+func (f *fakeProjects) setChange(head string, files ...agent.RepoDiffFile) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.changes == nil {
+		f.changes = map[string][]agent.RepoDiffFile{}
+	}
+	f.changes[head] = files
 }
 
 // treeOf is the tree the fake repo says a pinned commit has.

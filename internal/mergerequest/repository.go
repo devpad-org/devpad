@@ -23,6 +23,9 @@ type Repository interface {
 	// SetReviewAwaitsPipeline records whether the merge request's automatic
 	// review waits for its pipeline to pass.
 	SetReviewAwaitsPipeline(ctx context.Context, id int64, awaits bool) error
+	// SetLookClosely keeps the look-closely mark of the merge request's
+	// change at head, unless the merge request has moved to another head.
+	SetLookClosely(ctx context.Context, id int64, head string, mark LookClosely) error
 	// UpdateHead moves mr to head and records the push in the same
 	// transaction. A task's push also moves the threads its agent started
 	// on the old head, replies included, to the new one: the agent writes
@@ -73,7 +76,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const mrColumns = `id, project_id, user_id, task_id, opened_by, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, merged_by, pipeline_override, pipeline_override_id, review_awaits_pipeline, created_at, updated_at`
+const mrColumns = `id, project_id, user_id, task_id, opened_by, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, merged_by, pipeline_override, pipeline_override_id, review_awaits_pipeline, look_closely, look_closely_head, created_at, updated_at`
 
 func (r *repository) Create(ctx context.Context, mr *MergeRequest) error {
 	now := time.Now()
@@ -143,6 +146,17 @@ func (r *repository) ListOpen(ctx context.Context) ([]*MergeRequest, error) {
 func (r *repository) SetReviewAwaitsPipeline(ctx context.Context, id int64, awaits bool) error {
 	if _, err := r.db.ExecContext(ctx, `UPDATE merge_requests SET review_awaits_pipeline = ? WHERE id = ?`, awaits, id); err != nil {
 		return fmt.Errorf("recording whether the review waits for the pipeline: %w", err)
+	}
+	return nil
+}
+
+func (r *repository) SetLookClosely(ctx context.Context, id int64, head string, mark LookClosely) error {
+	data, err := encodeLookClosely(mark)
+	if err != nil {
+		return err
+	}
+	if _, err := r.db.ExecContext(ctx, `UPDATE merge_requests SET look_closely = ?, look_closely_head = ? WHERE id = ? AND head_sha = ?`, data, head, id, head); err != nil {
+		return fmt.Errorf("keeping the look-closely mark: %w", err)
 	}
 	return nil
 }
@@ -376,9 +390,19 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 	var mergedAt sql.NullTime
 	var override string
 	var overridePipeline sql.NullInt64
-	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.OpenedBy, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.MergedBy, &override, &overridePipeline, &mr.ReviewAwaitsPipeline, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
+	var mark, markHead string
+	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.OpenedBy, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.MergedBy, &override, &overridePipeline, &mr.ReviewAwaitsPipeline, &mark, &markHead, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
+	}
+	// A mark of another head is out of date, so it isn't the merge
+	// request's.
+	if markHead != "" && markHead == mr.HeadSHA {
+		lc, err := decodeLookClosely(mark)
+		if err != nil {
+			return nil, err
+		}
+		mr.LookClosely = lc
 	}
 	mr.TaskID = taskID.Int64
 	if mergedAt.Valid {

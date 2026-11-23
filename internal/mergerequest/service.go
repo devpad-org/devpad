@@ -34,7 +34,9 @@ type Service interface {
 	// ListOpenInto lists the project's open merge requests into a branch,
 	// alone as Lookup returns them.
 	ListOpenInto(ctx context.Context, userID, projectID int64, target string) ([]*MergeRequest, error)
-	Diff(ctx context.Context, userID, projectID, mrID int64) (*agent.RepoDiff, error)
+	// Diff lists the files the merge request changes, with the
+	// look-closely mark of them, which it keeps for an open one's head.
+	Diff(ctx context.Context, userID, projectID, mrID int64) (*Change, error)
 	// Commits lists the commits the merge request proposes, newest first.
 	Commits(ctx context.Context, userID, projectID, mrID int64) (*agent.RepoLog, error)
 	Review(ctx context.Context, userID, projectID, mrID int64, in ReviewInput) (*Review, error)
@@ -292,13 +294,16 @@ func (s *service) listening() []Listener {
 	return slices.Clone(s.listeners)
 }
 
-// headMoved tells the listeners a merge request opened or its head moved.
+// headMoved tells the listeners a merge request opened or its head moved,
+// and works out the look-closely mark of its new head in the background.
 // The caller holds none of the service's locks.
 func (s *service) headMoved(ctx context.Context, mr *MergeRequest, opened bool) {
 	m := HeadMove{UserID: mr.UserID, ProjectID: mr.ProjectID, MergeRequestID: mr.ID, Opened: opened}
 	for _, l := range s.listening() {
 		l.MergeRequestHeadMoved(ctx, m)
 	}
+	id := mr.ID
+	s.spawn(func(ctx context.Context) { s.markChange(ctx, id) })
 }
 
 // ended tells the listeners a merge request closed or merged, once that is
@@ -706,9 +711,11 @@ func (s *service) ListOpenInto(ctx context.Context, userID, projectID int64, tar
 	return s.repo.ListOpenByTarget(ctx, projectID, target)
 }
 
-// Diff lists the files the merge request changes. A merged request diffs
-// against the merge base it was merged from.
-func (s *service) Diff(ctx context.Context, userID, projectID, mrID int64) (*agent.RepoDiff, error) {
+// Diff lists the files the merge request changes, and their look-closely
+// mark. A merged request diffs against the merge base it was merged from.
+// An open one's mark is kept for its head, so that the list of merge
+// requests shows the mark the page does.
+func (s *service) Diff(ctx context.Context, userID, projectID, mrID int64) (*Change, error) {
 	mr, err := s.get(ctx, userID, projectID, mrID)
 	if err != nil {
 		return nil, err
@@ -717,7 +724,14 @@ func (s *service) Diff(ctx context.Context, userID, projectID, mrID int64) (*age
 	if mr.Status == StatusMerged && mr.BaseSHA != "" {
 		base = mr.BaseSHA
 	}
-	return s.projects.Diff(ctx, userID, projectID, base, mr.HeadSHA)
+	diff, err := s.projects.Diff(ctx, userID, projectID, base, mr.HeadSHA)
+	if err != nil {
+		return nil, err
+	}
+	if mr.Status != StatusOpen {
+		return &Change{RepoDiff: diff, LookClosely: LookCloselyAt(diff.Files)}, nil
+	}
+	return &Change{RepoDiff: diff, LookClosely: s.recordLookClosely(ctx, mr, diff)}, nil
 }
 
 // Commits lists the commits the merge request proposes, newest first: those
@@ -1483,6 +1497,8 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 			sandbox:  sandbox,
 			history:  history,
 			pipeline: s.reviewPipeline(ctx, mr, rv),
+			// The mark of the very change the review reads.
+			lookClosely: lookCloselySection(LookCloselyAt(diff.Files)),
 		})
 	}
 	run, err := s.runs.StartRun(ctx, app.StartAgentRunRequest{
@@ -1626,6 +1642,9 @@ type reviewPromptInput struct {
 	// pipeline is reviewPipelineSection's account of the change's pipeline,
 	// or empty.
 	pipeline string
+	// lookClosely is lookCloselySection's list of the files devpad marked
+	// for a closer look, or empty.
+	lookClosely string
 }
 
 func reviewPrompt(in reviewPromptInput) string {
@@ -1642,6 +1661,8 @@ func reviewPrompt(in reviewPromptInput) string {
 	}
 	fmt.Fprintf(&b, "## The change\n\n/workspace is a checkout of the change at commit `%s`, on the branch `%s` made from `%s`. Since it branched from `%s` it changes %d files:\n\n",
 		short(in.review.HeadSHA), in.branch, in.mr.SourceBranch, in.mr.TargetBranch, len(in.diff.Files))
+	// The paths are the change's own, which could otherwise end a line
+	// early and start a heading of their own.
 	for i, f := range in.diff.Files {
 		if i == 200 {
 			fmt.Fprintf(&b, "- … and %d more\n", len(in.diff.Files)-i)
@@ -1649,15 +1670,16 @@ func reviewPrompt(in reviewPromptInput) string {
 		}
 		switch {
 		case f.Binary:
-			fmt.Fprintf(&b, "- %s (%s, binary)\n", f.Path, f.Status)
+			fmt.Fprintf(&b, "- %s (%s, binary)\n", promptPath(f.Path), f.Status)
 		case f.OldPath != "":
-			fmt.Fprintf(&b, "- %s (renamed from %s, +%d −%d)\n", f.Path, f.OldPath, f.Additions, f.Deletions)
+			fmt.Fprintf(&b, "- %s (renamed from %s, +%d −%d)\n", promptPath(f.Path), promptPath(f.OldPath), f.Additions, f.Deletions)
 		default:
-			fmt.Fprintf(&b, "- %s (%s, +%d −%d)\n", f.Path, f.Status, f.Additions, f.Deletions)
+			fmt.Fprintf(&b, "- %s (%s, +%d −%d)\n", promptPath(f.Path), f.Status, f.Additions, f.Deletions)
 		}
 	}
 	fmt.Fprintf(&b, "\nRun `git diff %[1]s HEAD` to read the change and `git log %[1]s..HEAD` for its commits.\n\n", in.diff.MergeBase)
 	b.WriteString(in.pipeline)
+	b.WriteString(in.lookClosely)
 	b.WriteString(in.sandbox.Prompt())
 	if in.history.earlier > 0 {
 		b.WriteString("## Earlier reviews\n\nThis merge request has been reviewed before")
@@ -2213,6 +2235,7 @@ func (s *service) Reconcile(ctx context.Context) error {
 	// had let in, starts now if its gate lets it, and a task's merge
 	// request follows its pipeline (followOpen).
 	s.spawn(s.followOpen)
+	s.spawn(s.markOpen)
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -64,7 +65,7 @@ func (h *Handler) HandleSetConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleList lists a project's pipelines, newest first, optionally only a
-// branch's or a merge request's, and paged back with before.
+// branch's or a merge request's, of one purpose, and paged back with before.
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	projectID, ok := pathID(w, r, "id")
@@ -72,7 +73,11 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	f := ListFilter{Branch: q.Get("branch")}
+	f := ListFilter{Branch: q.Get("branch"), Purpose: Purpose(q.Get("purpose"))}
+	if f.Purpose != "" && !slices.Contains(Purposes(), f.Purpose) {
+		writeError(w, http.StatusBadRequest, "invalid purpose")
+		return
+	}
 	for name, dst := range map[string]*int64{"mergeRequestId": &f.MergeRequestID, "before": &f.Before} {
 		if v := q.Get(name); v != "" {
 			n, err := strconv.ParseInt(v, 10, 64)
@@ -175,11 +180,12 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 		handleServiceError(w, err)
 		return
 	}
-	pipelineOrNil := func(p *Pipeline) any {
-		if p == nil {
-			return nil
-		}
-		return pipelineResponse(p, false)
+	// The proposed pipeline is information beside the merge request's own:
+	// one that can't be read leaves the rest to show.
+	proposed, err := h.pipelines.ProposedStatus(r.Context(), user.ID, projectID, st)
+	if err != nil {
+		log.Printf("pipeline handler: merge request %d's proposed pipeline: %v", mrID, err)
+		proposed = nil
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": map[string]any{
 		"open":       st.Open,
@@ -197,7 +203,39 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 		"settled":    settledResponse(st.Settled),
 		"gate":       gateResponse(st.Gate()),
 		"onTarget":   targetResponse(st.OnTarget),
+		// The pipeline the change proposes, run for information only; null
+		// when the change leaves the pipeline file alone.
+		"proposed": proposedResponse(proposed),
 	}})
+}
+
+func pipelineOrNil(p *Pipeline) any {
+	if p == nil {
+		return nil
+	}
+	return pipelineResponse(p, false)
+}
+
+// proposedResponse is the pipeline a merge request's change proposes, as
+// the merge request page shows it apart from its own, or null.
+func proposedResponse(st *ProposedStatus) any {
+	if st == nil {
+		return nil
+	}
+	return map[string]any{
+		"file":       st.File,
+		"headSha":    st.Key.HeadSHA,
+		"targetSha":  st.Key.TargetSHA,
+		"configHash": st.Key.ConfigHash,
+		"configPath": st.ConfigPath,
+		"automatic":  st.Automatic,
+		"conflict":   st.Conflict,
+		"removed":    st.Removed,
+		"invalid":    st.Invalid,
+		"current":    pipelineOrNil(st.Current),
+		"latest":     pipelineOrNil(st.Latest),
+		"settled":    settledResponse(st.Settled),
+	}
 }
 
 // targetResponse is how the target's own pipeline went on the commit the
@@ -250,8 +288,9 @@ func sourceOf(st *MergeRequestStatus) Source {
 }
 
 // HandleStart starts a pipeline of a protected branch's current commit, or
-// of an open merge request. It answers 202 with a new pipeline, or 200 with
-// one already queued or running that tests the same.
+// of an open merge request, its own or, with purpose "proposed", the one
+// its change proposes. It answers 202 with a new pipeline, or 200 with one
+// already queued or running that tests the same.
 func (h *Handler) HandleStart(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	projectID, ok := pathID(w, r, "id")
@@ -259,14 +298,15 @@ func (h *Handler) HandleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Branch         string `json:"branch"`
-		MergeRequestID int64  `json:"mergeRequestId"`
+		Branch         string  `json:"branch"`
+		MergeRequestID int64   `json:"mergeRequestId"`
+		Purpose        Purpose `json:"purpose"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
 	p, created, err := h.pipelines.Start(r.Context(), StartInput{
-		UserID: user.ID, ProjectID: projectID, Branch: req.Branch, MergeRequestID: req.MergeRequestID, Trigger: TriggerUser,
+		UserID: user.ID, ProjectID: projectID, Branch: req.Branch, MergeRequestID: req.MergeRequestID, Purpose: req.Purpose, Trigger: TriggerUser,
 	})
 	if err != nil {
 		handleServiceError(w, err)
@@ -412,9 +452,12 @@ func pipelineResponse(p *Pipeline, withScripts bool) map[string]any {
 		paths = []string{}
 	}
 	return map[string]any{
-		"id":             p.ID,
-		"projectId":      p.ProjectID,
-		"kind":           p.Kind,
+		"id":        p.ID,
+		"projectId": p.ProjectID,
+		"kind":      p.Kind,
+		// official: the branch's or merge request's own pipeline; proposed:
+		// the jobs a merge request's change proposes, run for information.
+		"purpose":        p.Purpose,
 		"branch":         p.Branch,
 		"mergeRequestId": p.MergeRequestID,
 		"sourceBranch":   p.SourceBranch,

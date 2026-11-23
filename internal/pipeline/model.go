@@ -18,6 +18,30 @@ const (
 	KindMergeRequest Kind = "merge_request"
 )
 
+// Purpose is what a pipeline is for. It is part of what a pipeline is of
+// (subject), so every query and rule that finds a branch's or a merge
+// request's pipelines finds only those of one purpose: a proposed pipeline
+// never stands for an official one, nor replaces one, nor the other way
+// round.
+type Purpose string
+
+const (
+	// PurposeOfficial is a pipeline devpad's results come from: a protected
+	// branch's own, with the jobs of its commit, or a merge request's, with
+	// the jobs of its target. The merge gate, the badges, a task's failures
+	// and its reviews all read these alone.
+	PurposeOfficial Purpose = "official"
+	// PurposeProposed is a merge request's pipeline with the jobs its
+	// change proposes: the pipeline file of the trial merge of its head onto
+	// its target, run on that same commit for information only. It never
+	// gates a merge, never goes back to a task's agent, never holds or lets
+	// in a review and never counts as a merge request's latest.
+	PurposeProposed Purpose = "proposed"
+)
+
+// Purposes lists every purpose, the app's PipelinePurpose too.
+func Purposes() []Purpose { return []Purpose{PurposeOfficial, PurposeProposed} }
+
 // Status is where a pipeline is, or how it ended.
 type Status string
 
@@ -226,6 +250,9 @@ type Pipeline struct {
 	// make in Docker.
 	UID  string
 	Kind Kind
+	// Purpose says whether it is the branch's or merge request's own
+	// pipeline, or one a merge request's change proposes.
+	Purpose Purpose
 	// Branch is the protected branch a KindBranch pipeline tests.
 	Branch string
 	// MergeRequestID is the merge request a KindMergeRequest pipeline tests,
@@ -247,7 +274,8 @@ type Pipeline struct {
 	// through must land. Empty when the repo's agent did not say.
 	TestedTree string
 	// ConfigSource and ConfigPath say where the jobs came from, and
-	// ConfigHash which they were (Resolved.Hash).
+	// ConfigHash which they were (Resolved.Hash). A proposed pipeline's
+	// come from the trial merge it tests, TestedSHA once it is pinned.
 	ConfigSource Source
 	ConfigPath   string
 	ConfigHash   string
@@ -312,26 +340,42 @@ type MergeRequestKey struct {
 	ConfigHash string
 }
 
-// probe is a pipeline of the project testing what k names, to look up
-// others that test the same.
-func (k MergeRequestKey) probe(projectID int64) *Pipeline {
+// probe is a pipeline of the project with purpose testing what k names,
+// to look up others that test the same. The purpose is always named: one
+// left out matches no pipeline, so a lookup that forgets it finds no pass
+// rather than taking a proposed pipeline's.
+func (k MergeRequestKey) probe(projectID int64, purpose Purpose) *Pipeline {
 	return &Pipeline{
-		ProjectID: projectID, Kind: KindMergeRequest, MergeRequestID: k.MergeRequestID,
+		ProjectID: projectID, Kind: KindMergeRequest, Purpose: purpose, MergeRequestID: k.MergeRequestID,
 		HeadSHA: k.HeadSHA, TargetSHA: k.TargetSHA, ConfigHash: k.ConfigHash,
 	}
 }
 
+// branchProbe is an official pipeline of a protected branch's commit with
+// the jobs configHash names, to look up others that test the same.
+func branchProbe(projectID int64, branch, commit, configHash string) *Pipeline {
+	return &Pipeline{ProjectID: projectID, Kind: KindBranch, Purpose: PurposeOfficial, Branch: branch, HeadSHA: commit, ConfigHash: configHash}
+}
+
 // subject is what a pipeline is of: a branch or a merge request of a
-// project.
+// project, and what for. Pipelines of one subject replace each other; those
+// of two never do.
 type subject struct {
 	projectID      int64
 	kind           Kind
+	purpose        Purpose
 	branch         string
 	mergeRequestID int64
 }
 
 func (p *Pipeline) subject() subject {
-	return subject{projectID: p.ProjectID, kind: p.Kind, branch: p.Branch, mergeRequestID: p.MergeRequestID}
+	return subject{projectID: p.ProjectID, kind: p.Kind, purpose: p.Purpose, branch: p.Branch, mergeRequestID: p.MergeRequestID}
+}
+
+// ofMergeRequest reports whether the subject is merge request mrID of
+// project projectID, whatever its purpose.
+func (sub subject) ofMergeRequest(projectID, mrID int64) bool {
+	return sub.projectID == projectID && sub.kind == KindMergeRequest && sub.mergeRequestID == mrID
 }
 
 // JobRun is a job of a pipeline as it runs or ran.

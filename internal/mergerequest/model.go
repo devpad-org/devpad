@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/task"
 )
 
@@ -118,8 +119,12 @@ type MergeRequest struct {
 	// request waits for the pipeline guarding it to pass. Only
 	// SetReviewAwaitsPipeline writes it.
 	ReviewAwaitsPipeline bool
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
+	// LookClosely is the look-closely mark of its change at HeadSHA, nil
+	// while devpad has not worked it out for that head. Only
+	// SetLookClosely writes it.
+	LookClosely *LookClosely
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 	// AgentReviewing says a review agent is at work on the merge request.
 	// Only listing a project's merge requests sets it.
 	AgentReviewing bool
@@ -267,6 +272,13 @@ type Detail struct {
 	// Ahead and Behind count commits relative to the target branch; they are
 	// only filled in for open merge requests.
 	Ahead, Behind int
+}
+
+// Change is what a merge request changes: the files of its diff, and the
+// look-closely mark devpad works out from them.
+type Change struct {
+	*agent.RepoDiff
+	LookClosely LookClosely `json:"lookClosely"`
 }
 
 // CreateInput opens a merge request for a published branch.

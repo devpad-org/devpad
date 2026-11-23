@@ -34,7 +34,8 @@ export type JobStatus =
 // requests into them: a merge request opening, its branch getting new
 // commits, its target moving; a merge into the branch, a fast-forward from
 // the upstream; the user ticking the branch, changing the pipeline setting;
-// and devpad catching up as it starts. Later versions may add more.
+// and devpad catching up as it starts. The server doesn't check triggers,
+// so one the app doesn't know shows by its name (triggerLabel).
 export type PipelineTrigger =
   | 'user'
   | 'restart'
@@ -51,6 +52,12 @@ export type PipelineTrigger =
 // Where the jobs came from: a file at the commit read (a branch's own, or a
 // merge request's target's), the project's setting, or neither.
 export type PipelineSource = 'file' | 'project' | 'none'
+
+// What a pipeline is for: official is a branch's or merge request's own,
+// the result that counts; proposed runs the jobs a merge request's change
+// proposes, from the pipeline file of its trial merge, for information
+// only. As the server's Purposes.
+export type PipelinePurpose = 'official' | 'proposed'
 
 export interface PipelineJob {
   id: number
@@ -76,6 +83,7 @@ export interface Pipeline {
   id: number
   projectId: number
   kind: 'branch' | 'merge_request'
+  purpose: PipelinePurpose
   // The protected branch a branch pipeline tests.
   branch: string
   // The merge request a merge request pipeline tests, and its branches.
@@ -89,6 +97,7 @@ export interface Pipeline {
   targetSha: string
   // What the jobs got: the commit, or the trial merge. Empty until pinned.
   testedSha: string
+  // A proposed pipeline's jobs come from the trial merge it tests.
   configSource: PipelineSource
   configPath: string
   configHash: string
@@ -128,14 +137,17 @@ export interface JobOutputChunk {
 export interface PipelineListFilter {
   branch?: string
   mergeRequestId?: number
+  // Only pipelines of this purpose; all when left out.
+  purpose?: PipelinePurpose
   // Only pipelines older than this one, to page back.
   before?: number
   limit?: number
 }
 
 // What a pipeline tests: a protected branch's current commit, or an open
-// merge request's head merged onto its target.
-export type PipelineSubject = { branch: string } | { mergeRequestId: number }
+// merge request's head merged onto its target, with its own jobs or, as
+// proposed, those its change proposes.
+export type PipelineSubject = { branch: string } | { mergeRequestId: number; purpose?: PipelinePurpose }
 
 // How many branches and merge requests one latest() names at most, as the
 // server's MaxLatestSubjects.
@@ -238,6 +250,34 @@ export interface MergeRequestPipelineStatus {
   // it merged onto, with the same jobs: which of current's failing jobs fail
   // there too, or that it is still to say. Null otherwise.
   onTarget: TargetResult | null
+  // The pipeline the change proposes, run for information only; null when
+  // the change leaves the pipeline file alone. Nothing above ever counts
+  // one.
+  proposed: ProposedPipelineStatus | null
+}
+
+// How the pipeline a merge request's change proposes stands now. It never
+// gates merging, goes back to a task's agent or holds a review.
+export interface ProposedPipelineStatus {
+  // The pipeline file the change adds, changes, renames or deletes.
+  file: string
+  headSha: string
+  targetSha: string
+  configHash: string
+  // The file the proposed jobs come from at the trial merge.
+  configPath: string
+  // Devpad runs it by itself, with the merge request's own pipeline.
+  automatic: boolean
+  // The change doesn't merge onto the target, so the file it proposes
+  // can't be read; or it removes the pipeline file. Nothing runs for
+  // either.
+  conflict: boolean
+  removed: boolean
+  // Why the proposed file doesn't parse, or empty.
+  invalid: string
+  current: Pipeline | null
+  latest: Pipeline | null
+  settled: SettledPipeline | null
 }
 
 export interface TargetResult {
@@ -258,6 +298,7 @@ export const pipelineApi = {
     const query = new URLSearchParams()
     if (filter.branch) query.set('branch', filter.branch)
     if (filter.mergeRequestId) query.set('mergeRequestId', String(filter.mergeRequestId))
+    if (filter.purpose) query.set('purpose', filter.purpose)
     if (filter.before) query.set('before', String(filter.before))
     if (filter.limit) query.set('limit', String(filter.limit))
     const qs = query.toString()

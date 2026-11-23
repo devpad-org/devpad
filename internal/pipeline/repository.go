@@ -18,17 +18,17 @@ type Repository interface {
 	// List lists a project's pipelines, newest first, with their jobs but
 	// not their scripts.
 	List(ctx context.Context, projectID int64, f ListFilter) ([]*Pipeline, error)
-	// Latest returns the newest pipeline that counts (Status.Counts) of
-	// each branch and merge request of the project f names that has one,
-	// with their jobs but not their scripts: a branch's first, in f's
-	// order, then a merge request's.
+	// Latest returns the newest pipeline of f's purpose that counts
+	// (Status.Counts) of each branch and merge request of the project f
+	// names that has one, with their jobs but not their scripts: a branch's
+	// first, in f's order, then a merge request's.
 	Latest(ctx context.Context, projectID int64, f LatestFilter) ([]*Pipeline, error)
 	// FindSame returns the newest pipeline that tests what p tests, the
-	// same subject, commits and jobs, and stands at one of statuses, with
-	// its jobs and their scripts, or nil.
+	// same subject and purpose, commits and jobs, and stands at one of
+	// statuses, with its jobs and their scripts, or nil.
 	FindSame(ctx context.Context, p *Pipeline, statuses []Status) (*Pipeline, error)
-	// CountSame counts the pipelines that test what p tests and stand at
-	// one of statuses.
+	// CountSame counts the pipelines that test what p tests, with p's
+	// purpose, and stand at one of statuses.
 	CountSame(ctx context.Context, p *Pipeline, statuses []Status) (int, error)
 
 	// MarkStarted records that a queued pipeline started on image, and so
@@ -103,6 +103,8 @@ type ListFilter struct {
 	Branch string
 	// MergeRequestID keeps only this merge request's pipelines.
 	MergeRequestID int64
+	// Purpose keeps only pipelines of this purpose; empty keeps all.
+	Purpose Purpose
 	// Before keeps only pipelines older than this one, to page back.
 	Before int64
 	// Limit is how many to list: DefaultListLimit when zero, at most
@@ -116,10 +118,12 @@ const (
 )
 
 // LatestFilter names the branches and merge requests of a project whose
-// newest pipeline to read.
+// newest pipeline of Purpose to read. Purpose is always named: left empty,
+// it matches no pipeline.
 type LatestFilter struct {
 	Branches        []string
 	MergeRequestIDs []int64
+	Purpose         Purpose
 }
 
 // MaxLatestSubjects caps the branches and merge requests one LatestFilter
@@ -135,7 +139,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const pipelineColumns = `id, project_id, user_id, uid, kind, branch, merge_request_id, source_branch, target_branch, head_sha, target_sha, tested_sha, tested_tree, config_source, config_path, config_hash, image, status, error, conflict_paths, trigger, rerun_of, ref_pinned, created_at, started_at, finished_at, announced_at`
+const pipelineColumns = `id, project_id, user_id, uid, kind, purpose, branch, merge_request_id, source_branch, target_branch, head_sha, target_sha, tested_sha, tested_tree, config_source, config_path, config_hash, image, status, error, conflict_paths, trigger, rerun_of, ref_pinned, created_at, started_at, finished_at, announced_at`
 
 func (r *repository) Create(ctx context.Context, p *Pipeline) error {
 	paths, err := jsonList(p.ConflictPaths)
@@ -148,9 +152,9 @@ func (r *repository) Create(ctx context.Context, p *Pipeline) error {
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO pipelines (project_id, user_id, uid, kind, branch, merge_request_id, source_branch, target_branch, head_sha, target_sha, tested_sha, config_source, config_path, config_hash, image, status, error, conflict_paths, trigger, rerun_of, ref_pinned, created_at, started_at, finished_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ProjectID, p.UserID, p.UID, p.Kind, p.Branch, nullableID(p.MergeRequestID), p.SourceBranch, p.TargetBranch, p.HeadSHA, p.TargetSHA, p.TestedSHA, p.ConfigSource, p.ConfigPath, p.ConfigHash, p.Image, p.Status, p.Error, paths, p.Trigger, nullableID(p.RerunOf), p.RefPinned, p.CreatedAt, p.StartedAt, p.FinishedAt,
+		`INSERT INTO pipelines (project_id, user_id, uid, kind, purpose, branch, merge_request_id, source_branch, target_branch, head_sha, target_sha, tested_sha, config_source, config_path, config_hash, image, status, error, conflict_paths, trigger, rerun_of, ref_pinned, created_at, started_at, finished_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ProjectID, p.UserID, p.UID, p.Kind, p.Purpose, p.Branch, nullableID(p.MergeRequestID), p.SourceBranch, p.TargetBranch, p.HeadSHA, p.TargetSHA, p.TestedSHA, p.ConfigSource, p.ConfigPath, p.ConfigHash, p.Image, p.Status, p.Error, paths, p.Trigger, nullableID(p.RerunOf), p.RefPinned, p.CreatedAt, p.StartedAt, p.FinishedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting pipeline: %w", err)
@@ -215,6 +219,10 @@ func listQuery(projectID int64, f ListFilter) (string, []any) {
 		query += ` AND merge_request_id = ?`
 		args = append(args, f.MergeRequestID)
 	}
+	if f.Purpose != "" {
+		query += ` AND purpose = ?`
+		args = append(args, f.Purpose)
+	}
 	if f.Before != 0 {
 		query += ` AND id < ?`
 		args = append(args, f.Before)
@@ -269,17 +277,20 @@ func (r *repository) Latest(ctx context.Context, projectID int64, f LatestFilter
 }
 
 // latestQuery selects, for each branch and merge request f names, its
-// newest pipeline that counts (Status.Counts: unfinished, or finished with
-// a result), so a cancelled, superseded, interrupted or erroring newest one
-// never hides the last result. Each subject's is read backwards through the
-// index of a branch's or a merge request's pipelines, stopping at the first
-// that counts. A merge request's pipelines are all of its project, so the
-// project is checked on the one found. It is empty when f names none.
+// newest pipeline of f's purpose that counts (Status.Counts: unfinished, or
+// finished with a result), so a cancelled, superseded, interrupted or
+// erroring newest one never hides the last result, and a pipeline of
+// another purpose is never taken for it. Each subject's is read backwards
+// through the index of a branch's or a merge request's pipelines, stopping
+// at the first that counts. A merge request's pipelines are all of its
+// project, so the project is checked on the one found. It is empty when f
+// names none.
 func latestQuery(projectID int64, f LatestFilter) (string, []any) {
-	counting := `p.status IN (` + placeholders(len(countingStatuses)) + `)`
+	counting := `p.purpose = ? AND p.status IN (` + placeholders(len(countingStatuses)) + `)`
 	var parts []string
 	args := []any{projectID}
 	addStatuses := func() {
+		args = append(args, f.Purpose)
 		for _, st := range countingStatuses {
 			args = append(args, st)
 		}
@@ -344,19 +355,22 @@ func countSameQuery(p *Pipeline, statuses []Status) (string, []any) {
 	return `SELECT COUNT(*) FROM pipelines WHERE ` + where, args
 }
 
-// sameWhere picks the pipelines testing what p tests at one of statuses:
-// through the index of a branch's commits, or of a merge request's pairs of
-// commits, so it reads only pipelines of those commits however many the
-// project keeps.
+// sameWhere picks the pipelines testing what p tests at one of statuses,
+// of p's subject, purpose included, so that reusing a result, the merge
+// gate's current pipeline, a settled one and the count of those that could
+// not run all see only pipelines of one purpose: through the index of a
+// branch's commits, or of a merge request's pairs of commits, so it reads
+// only pipelines of those commits however many the project keeps.
 func sameWhere(p *Pipeline, statuses []Status) (string, []any) {
+	sub := p.subject()
 	var where string
 	var args []any
-	if p.Kind == KindMergeRequest {
-		where = `merge_request_id = ? AND head_sha = ? AND target_sha = ? AND project_id = ? AND config_hash = ?`
-		args = []any{p.MergeRequestID, p.HeadSHA, p.TargetSHA, p.ProjectID, p.ConfigHash}
+	if sub.kind == KindMergeRequest {
+		where = `merge_request_id = ? AND head_sha = ? AND target_sha = ? AND project_id = ? AND config_hash = ? AND purpose = ?`
+		args = []any{sub.mergeRequestID, p.HeadSHA, p.TargetSHA, sub.projectID, p.ConfigHash, sub.purpose}
 	} else {
-		where = `project_id = ? AND kind = 'branch' AND branch = ? AND head_sha = ? AND config_hash = ?`
-		args = []any{p.ProjectID, p.Branch, p.HeadSHA, p.ConfigHash}
+		where = `project_id = ? AND kind = 'branch' AND branch = ? AND head_sha = ? AND config_hash = ? AND purpose = ?`
+		args = []any{sub.projectID, sub.branch, p.HeadSHA, p.ConfigHash, sub.purpose}
 	}
 	where += ` AND status IN (` + placeholders(len(statuses)) + `)`
 	for _, s := range statuses {
@@ -735,7 +749,7 @@ func scanPipeline(row rowScanner) (*Pipeline, error) {
 	var mergeRequestID, rerunOf sql.NullInt64
 	var paths string
 	var started, finished, announced sql.NullTime
-	if err := row.Scan(&p.ID, &p.ProjectID, &p.UserID, &p.UID, &p.Kind, &p.Branch, &mergeRequestID, &p.SourceBranch, &p.TargetBranch, &p.HeadSHA, &p.TargetSHA, &p.TestedSHA, &p.TestedTree, &p.ConfigSource, &p.ConfigPath, &p.ConfigHash, &p.Image, &p.Status, &p.Error, &paths, &p.Trigger, &rerunOf, &p.RefPinned, &p.CreatedAt, &started, &finished, &announced); err != nil {
+	if err := row.Scan(&p.ID, &p.ProjectID, &p.UserID, &p.UID, &p.Kind, &p.Purpose, &p.Branch, &mergeRequestID, &p.SourceBranch, &p.TargetBranch, &p.HeadSHA, &p.TargetSHA, &p.TestedSHA, &p.TestedTree, &p.ConfigSource, &p.ConfigPath, &p.ConfigHash, &p.Image, &p.Status, &p.Error, &paths, &p.Trigger, &rerunOf, &p.RefPinned, &p.CreatedAt, &started, &finished, &announced); err != nil {
 		return nil, err
 	}
 	p.MergeRequestID, p.RerunOf = mergeRequestID.Int64, rerunOf.Int64

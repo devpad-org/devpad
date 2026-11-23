@@ -23,11 +23,11 @@ type Service interface {
 	// an open merge request's head merged onto its target's current commit.
 	// A pipeline already queued or running that tests the same commits with
 	// the same jobs is returned instead, with created false. Any pipeline of
-	// the same branch or merge request still queued that tests something
-	// else is superseded. It reads the merge request and the canonical repo,
-	// so it is never to be called inside a database transaction, and the
-	// merge request lookup it makes (MergeRequests) takes no lock a caller
-	// of Start may hold.
+	// the same branch or merge request and purpose still queued that tests
+	// something else is superseded. It reads the merge request and the
+	// canonical repo, so it is never to be called inside a database
+	// transaction, and the merge request lookup it makes (MergeRequests)
+	// takes no lock a caller of Start may hold.
 	Start(ctx context.Context, in StartInput) (p *Pipeline, created bool, err error)
 	// Cancel stops a queued or running pipeline, and waits a while for its
 	// jobs to be stopped and removed. It refuses while devpad stops, which
@@ -36,11 +36,12 @@ type Service interface {
 	// List lists a project's pipelines, newest first, with their jobs but
 	// not their scripts.
 	List(ctx context.Context, userID, projectID int64, f ListFilter) ([]*Pipeline, error)
-	// Latest returns the newest pipeline that counts (Status.Counts) of
-	// each branch and merge request of the project f names that has one,
-	// with their jobs but not their scripts, and the commit each branch
-	// named is at now: what a branch's or a merge request's pipeline badge
-	// shows, and whether a branch's is of its current commit.
+	// Latest returns the newest official pipeline that counts
+	// (Status.Counts) of each branch and merge request of the project f
+	// names that has one, whatever f's Purpose, with their jobs but not
+	// their scripts, and the commit each branch named is at now: what a
+	// branch's or a merge request's pipeline badge shows, and whether a
+	// branch's is of its current commit.
 	Latest(ctx context.Context, userID, projectID int64, f LatestFilter) (*LatestPipelines, error)
 	// Get returns a pipeline of the project with its jobs and their scripts.
 	Get(ctx context.Context, userID, projectID, pipelineID int64) (*Pipeline, error)
@@ -60,6 +61,12 @@ type Service interface {
 	// It is the one answer to whether a merge request's result is current,
 	// for its page and for the merge gate.
 	MergeRequestStatus(ctx context.Context, userID, projectID, mergeRequestID int64) (*MergeRequestStatus, error)
+	// ProposedStatus says how the pipeline an open merge request's change
+	// proposes stands (proposed.go), at the commits its MergeRequestStatus
+	// found, or nil when its change leaves the pipeline file alone. It reads
+	// the change, so it is never part of MergeRequestStatus, which the merge
+	// gate reads on every merge.
+	ProposedStatus(ctx context.Context, userID, projectID int64, official *MergeRequestStatus) (*ProposedStatus, error)
 	// Report reads what a pipeline found, for the agent sent back with its
 	// failures and the reviewer told its results: its jobs, the last
 	// outputTail bytes of each failed job's output with devpad's notes on it,
@@ -117,7 +124,11 @@ type StartInput struct {
 	Branch    string
 	// MergeRequestID is the merge request, when Branch is empty.
 	MergeRequestID int64
-	Trigger        Trigger
+	// Purpose is what the pipeline is for: PurposeOfficial when empty, or
+	// PurposeProposed for a merge request's, which runs the jobs its change
+	// proposes and is refused when it proposes none.
+	Purpose Purpose
+	Trigger Trigger
 	// ReuseResult returns the newest pipeline of the same commits and jobs
 	// that counts (Status.Counts), a finished one with a result included,
 	// rather than running them again. Without it, a finished pipeline is
@@ -176,6 +187,11 @@ type Projects interface {
 	// image new workspaces get, or nil when it has none.
 	ProjectEnvironment(ctx context.Context, userID, projectID int64) (*project.Environment, error)
 	PinPipeline(ctx context.Context, userID, projectID int64, pin agent.PipelinePin) (*agent.PipelinePinResult, error)
+	// Diff lists the files head changed since it diverged from base, and
+	// TrialMerge reads the commit a pin of a source onto a target tests,
+	// for the pipeline a merge request's change proposes.
+	Diff(ctx context.Context, userID, projectID int64, base, head string) (*agent.RepoDiff, error)
+	TrialMerge(ctx context.Context, userID, projectID int64, source, target string) (*agent.TrialMerge, error)
 	PipelineBundle(ctx context.Context, userID, projectID int64, pipelineID string, w io.Writer) (int64, error)
 	DeletePipelineRef(ctx context.Context, userID, projectID int64, pipelineID string) error
 	// ListPipelineProjects lists every user's ready projects that tick a
@@ -271,6 +287,7 @@ type service struct {
 	slots         *jobSlots
 	now           func() time.Time
 	resolved      resolveCache
+	proposals     proposalCache
 	// auto holds the automatic runs waiting for a worker (auto.go), and
 	// autoStartTimeout bounds each.
 	auto             *autoQueue
@@ -480,6 +497,9 @@ func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestF
 			return nil, fmt.Errorf("%w: invalid merge request id %d", ErrInvalidInput, id)
 		}
 	}
+	// Badges show the branches' and merge requests' own results, never
+	// what a change proposes.
+	f.Purpose = PurposeOfficial
 	found, err := s.repo.Latest(ctx, projectID, f)
 	if err != nil {
 		return nil, err
@@ -521,7 +541,7 @@ func (s *service) settleBranch(ctx context.Context, p *project.Project, branch, 
 	}
 	configured := resolved.Source != SourceNone
 	st.Configured = &configured
-	probe := &Pipeline{ProjectID: p.ID, Kind: KindBranch, Branch: branch, HeadSHA: tip, ConfigHash: resolved.Hash}
+	probe := branchProbe(p.ID, branch, tip, resolved.Hash)
 	if st.Settled, err = s.settledOf(ctx, probe, st.Automatic); err != nil {
 		log.Printf("pipeline: project %d's %s for its badge: %v", p.ID, branch, err)
 	}
@@ -531,7 +551,7 @@ func (s *service) LatestForMergeRequest(ctx context.Context, userID, projectID i
 	if _, err := s.projects.Get(ctx, userID, projectID); err != nil {
 		return nil, err
 	}
-	p, err := s.repo.FindSame(ctx, key.probe(projectID), countingStatuses)
+	p, err := s.repo.FindSame(ctx, key.probe(projectID, PurposeOfficial), countingStatuses)
 	if err != nil || p == nil || p.UserID != userID {
 		return nil, err
 	}

@@ -111,6 +111,7 @@ func main() {
 	authedMux.HandleFunc("POST /api/repo/pipeline-ref", handleRepoPinPipeline)
 	authedMux.HandleFunc("DELETE /api/repo/pipeline-ref", handleRepoDeletePipelineRef)
 	authedMux.HandleFunc("GET /api/repo/pipeline-bundle", handleRepoPipelineBundle)
+	authedMux.HandleFunc("POST /api/repo/trial-merge", handleRepoTrialMerge)
 	authedMux.HandleFunc("POST /api/repo/upstream/fetch", handleRepoUpstreamFetch)
 	authedMux.HandleFunc("POST /api/repo/upstream/fast-forward", handleRepoUpstreamFastForward)
 	authedMux.HandleFunc("GET /api/repo/upstream/status", handleRepoUpstreamStatus)

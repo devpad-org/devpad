@@ -399,6 +399,72 @@ func TestPipelineClientAgainstTheAgent(t *testing.T) {
 	}
 }
 
+// A trial merge is the commit a pin of the same pair tests, read without
+// pinning anything or moving a branch, and a conflict is an answer.
+func TestTrialMergeIsWhatAPinTests(t *testing.T) {
+	canonical := initCanonical(t)
+	sandbox := seedSandbox(t, canonical, "task/1")
+	source := commitFile(t, sandbox, "a.txt", "task work")
+	publish(t, canonical, sandbox, "task/1")
+	target := advanceMain(t, canonical, "other.txt", "main work")
+	before := branchRefs(t, canonical)
+	refsBefore := runGit(t, canonical, "for-each-ref", "--format=%(refname)")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/repo/trial-merge", handleRepoTrialMerge)
+	withWorkspaceRoot(t, canonical)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	c := agent.NewClient(host, port, "")
+	ctx := context.Background()
+
+	merged, err := c.RepoTrialMerge(ctx, source, target)
+	if err != nil || merged.Conflict != nil || merged.SHA == source || merged.SHA == target {
+		t.Fatalf("trial merge: %+v %v", merged, err)
+	}
+	if tree := runGit(t, canonical, "rev-parse", merged.SHA+"^{tree}"); merged.Tree != tree {
+		t.Fatalf("says tree %q, the commit's is %s", merged.Tree, tree)
+	}
+	if after := runGit(t, canonical, "for-each-ref", "--format=%(refname)"); after != refsBefore {
+		t.Fatalf("a trial merge made refs:\n%s\nwant\n%s", after, refsBefore)
+	}
+	// Its files read like any commit's, which is how devpad reads the
+	// pipeline file a change proposes.
+	if code, read, body := readRepo(t, canonical, repoReadRequest{Rev: merged.SHA, Files: []string{"a.txt", "other.txt"}}); code != http.StatusOK || read.Commit != merged.SHA ||
+		string(read.Files[0].Content) != "task work" || string(read.Files[1].Content) != "main work" {
+		t.Fatalf("reading the trial merge: %d %s", code, body)
+	}
+	pinned := mustPin(t, canonical, repoPipelinePin{ID: "9", Source: source, Target: target})
+	if pinned.SHA != merged.SHA || pinned.Tree != merged.Tree {
+		t.Fatalf("the pin tests %s (%s), the trial merge said %s (%s)", pinned.SHA, pinned.Tree, merged.SHA, merged.Tree)
+	}
+	if after := branchRefs(t, canonical); after != before {
+		t.Fatalf("branches moved:\n%s\nwant\n%s", after, before)
+	}
+
+	// A fast-forward tests the source itself.
+	if ff, err := c.RepoTrialMerge(ctx, pinned.SHA, target); err != nil || ff.SHA != pinned.SHA {
+		t.Fatalf("fast-forward: %+v %v", ff, err)
+	}
+
+	conflicting := commitFile(t, sandbox, "other.txt", "task's other")
+	publish(t, canonical, sandbox, "task/1")
+	got, err := c.RepoTrialMerge(ctx, conflicting, target)
+	if err != nil || got.Conflict == nil || !slices.Equal(got.Conflict.Paths, []string{"other.txt"}) || got.SHA != "" {
+		t.Fatalf("expected a conflict, not an error: %+v %v", got, err)
+	}
+
+	if _, err := c.RepoTrialMerge(ctx, "main", target); err == nil {
+		t.Fatal("a branch name for a hash was taken")
+	}
+	rec := repoRequest(t, canonical, handleRepoTrialMerge, http.MethodPost, "/api/repo/trial-merge", strings.NewReader(`{"source":"main","target":"`+target+`"}`))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("a branch name: status %d %s", rec.Code, rec.Body)
+	}
+}
+
 // Only git's no is no: a commit it cannot read is an error, never a
 // conflict or "not an ancestor".
 func TestGitAnswerTellsNoFromFailure(t *testing.T) {

@@ -31,10 +31,39 @@ export interface MergeRequest {
   pipelineOverride: PipelineOverride | null
   // The project's automatic review waits for the pipeline to pass.
   reviewAwaitsPipeline: boolean
+  // The files of its change devpad marks for a closer look; null while it
+  // hasn't worked them out for the head.
+  lookClosely: LookClosely | null
   createdAt: string
   updatedAt: string
   // A review agent is at work on it. Only the list sets it.
   agentReviewing: boolean
+}
+
+// Why devpad marks a file of a change for a closer look: it deletes a test,
+// or changes the pipeline file, another CI system's configuration, a lint,
+// type-check or test setting, or a build script, dependency list or
+// lockfile. In the order the mark shows them, as the server's MarkReasons.
+export type LookCloselyReason = 'tests_deleted' | 'pipeline' | 'ci' | 'checks' | 'build'
+
+// A file the mark lists. Its paths are the change's, which its author chose.
+export interface MarkedFile {
+  path: string
+  oldPath?: string
+  reason: LookCloselyReason
+}
+
+// The look-closely mark: files a passing pipeline can't vouch for, at most
+// 50 of them, and how many more there are. It never keeps a merge request
+// from merging.
+export interface LookClosely {
+  files: MarkedFile[]
+  more: number
+}
+
+// What a merge request changes, and the files of it devpad marks.
+export interface MergeRequestChange extends RepoDiff {
+  lookClosely: LookClosely
 }
 
 export interface PipelineOverride {
@@ -195,7 +224,7 @@ export const mergeRequestApi = {
     return apiClient.get(`/api/projects/${projectId}/merge-requests/${id}`)
   },
 
-  diff(projectId: number, id: number): Promise<RepoDiff> {
+  diff(projectId: number, id: number): Promise<MergeRequestChange> {
     return apiClient.get(`/api/projects/${projectId}/merge-requests/${id}/diff`)
   },
 

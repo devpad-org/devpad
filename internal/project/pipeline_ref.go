@@ -27,6 +27,22 @@ func (s *service) PinPipeline(ctx context.Context, userID, projectID int64, pin 
 	return c.RepoPinPipeline(ctx, pin)
 }
 
+// TrialMerge reads the commit a pipeline of source merged onto target
+// tests, both full commit hashes, as PinPipeline would pin it, without
+// pinning anything: the commit whose pipeline file a merge request's change
+// proposes. A source that does not merge comes back as the answer's
+// Conflict.
+func (s *service) TrialMerge(ctx context.Context, userID, projectID int64, source, target string) (*agent.TrialMerge, error) {
+	if !IsCommitHash(source) || !IsCommitHash(target) {
+		return nil, invalid("a trial merge is of two full commit hashes")
+	}
+	c, err := s.readyRepoAgent(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	return c.RepoTrialMerge(ctx, source, target)
+}
+
 // PipelineBundle writes a bundle of what a pipeline tests to w, and returns
 // its size, refusing one over gitbundle.MaxBytes.
 func (s *service) PipelineBundle(ctx context.Context, userID, projectID int64, pipelineID string, w io.Writer) (int64, error) {

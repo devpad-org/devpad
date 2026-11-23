@@ -2,13 +2,16 @@
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import { fullTime, timeAgo } from '@/utils/time'
 import MrActivity from './MrActivity.vue'
+import MrLookClosely from './MrLookClosely.vue'
 import MrMergeCard from './MrMergeCard.vue'
 import MrPipelineCard from './MrPipelineCard.vue'
+import MrProposedPipelineCard from './MrProposedPipelineCard.vue'
 import MrSidebar from './MrSidebar.vue'
 import { useMergeRequest } from './useMergeRequest'
 
-// The Overview section: description, merge widget and activity, with the
-// details sidebar beside them. Each column scrolls on its own.
+// The Overview section: description, the look-closely mark, merge widget,
+// pipelines and activity, with the details sidebar beside them. Each
+// column scrolls on its own.
 const { mr } = useMergeRequest()
 </script>
 
@@ -26,8 +29,10 @@ const { mr } = useMergeRequest()
         </div>
       </section>
 
+      <MrLookClosely />
       <MrMergeCard />
       <MrPipelineCard />
+      <MrProposedPipelineCard />
       <MrActivity />
     </div>
 
@@ -67,7 +72,7 @@ const { mr } = useMergeRequest()
 }
 
 .muted {
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 /* The modal, not the window, decides the layout: on a phone it is the

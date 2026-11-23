@@ -13,7 +13,7 @@ import (
 // branchPipeline is a queued pipeline of a branch with one job, to record.
 func (e *env) branchPipeline(uid, branch, head string) *Pipeline {
 	return &Pipeline{
-		ProjectID: e.project, UserID: e.owner, UID: uid, Kind: KindBranch, Branch: branch, HeadSHA: head,
+		ProjectID: e.project, UserID: e.owner, UID: uid, Kind: KindBranch, Purpose: PurposeOfficial, Branch: branch, HeadSHA: head,
 		ConfigSource: SourceFile, ConfigHash: "h1", Status: StatusQueued, Trigger: TriggerUser, CreatedAt: time.Now().UTC(),
 		Jobs: []*JobRun{
 			{Job: Job{Name: "b", Run: "make b", Timeout: 90 * time.Second, Services: []string{"postgres"}}, Position: 1, Status: JobQueued},
@@ -132,12 +132,12 @@ func TestRepositoryFindsTheSamePipeline(t *testing.T) {
 
 	// A merge request's pipeline is the same only for the same pair of
 	// commits and jobs.
-	mr := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "c0ffee0000000008", Kind: KindMergeRequest, MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigSource: SourceFile, ConfigHash: "h1", Status: StatusPassed, Trigger: TriggerUser, CreatedAt: time.Now().UTC()}
+	mr := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "c0ffee0000000008", Kind: KindMergeRequest, Purpose: PurposeOfficial, MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigSource: SourceFile, ConfigHash: "h1", Status: StatusPassed, Trigger: TriggerUser, CreatedAt: time.Now().UTC()}
 	if err := repo.Create(ctx, mr); err != nil {
 		t.Fatal(err)
 	}
 	key := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: "h1"}
-	if same, err := repo.FindSame(ctx, key.probe(e.project), countingStatuses); err != nil || same == nil || same.ID != mr.ID {
+	if same, err := repo.FindSame(ctx, key.probe(e.project, PurposeOfficial), countingStatuses); err != nil || same == nil || same.ID != mr.ID {
 		t.Fatalf("same merge request pipeline: %+v %v", same, err)
 	}
 	for name, change := range map[string]func(*MergeRequestKey){
@@ -147,11 +147,11 @@ func TestRepositoryFindsTheSamePipeline(t *testing.T) {
 	} {
 		k := key
 		change(&k)
-		if same, _ := repo.FindSame(ctx, k.probe(e.project), countingStatuses); same != nil {
+		if same, _ := repo.FindSame(ctx, k.probe(e.project, PurposeOfficial), countingStatuses); same != nil {
 			t.Errorf("%s: found %d", name, same.ID)
 		}
 	}
-	if same, _ := repo.FindSame(ctx, key.probe(e.project+1), countingStatuses); same != nil {
+	if same, _ := repo.FindSame(ctx, key.probe(e.project+1, PurposeOfficial), countingStatuses); same != nil {
 		t.Errorf("found another project's pipeline")
 	}
 }
@@ -203,7 +203,7 @@ func TestRepositoryInterruptsUnfinishedPipelines(t *testing.T) {
 func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 	e := setup(t)
 	branch := e.branchPipeline("", "develop", sha(2))
-	mr := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: "h1"}.probe(e.project)
+	mr := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: "h1"}.probe(e.project, PurposeOfficial)
 	query := func(q string, args []any) (string, []any) { return q, args }
 	tests := []struct {
 		name, query, index string
@@ -224,6 +224,9 @@ func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 		{"the latest of merge requests", "", "idx_pipelines_merge_request", nil},
 		{"counting a branch's errors", "", "idx_pipelines_branch_commit", nil},
 		{"counting a merge request's errors", "", "idx_pipelines_merge_request_commits", nil},
+		{"the same proposed pipeline", "", "idx_pipelines_merge_request_commits", nil},
+		{"the latest proposed pipelines", "", "idx_pipelines_merge_request", nil},
+		{"a merge request's official pipelines", "", "idx_pipelines_merge_request", nil},
 	}
 	tests[0].query, tests[0].args = findSameQuery(branch, countingStatuses)
 	tests[1].query, tests[1].args = findSameQuery(mr, countingStatuses)
@@ -231,10 +234,14 @@ func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 	tests[3].query, tests[3].args = query(listQuery(e.project, ListFilter{Before: 100, Limit: 10}))
 	tests[4].query, tests[4].args = query(listQuery(e.project, ListFilter{Branch: "develop"}))
 	tests[5].query, tests[5].args = query(listQuery(e.project, ListFilter{MergeRequestID: e.mr}))
-	tests[11].query, tests[11].args = query(latestQuery(e.project, LatestFilter{Branches: []string{"develop", "main"}}))
-	tests[12].query, tests[12].args = query(latestQuery(e.project, LatestFilter{MergeRequestIDs: []int64{e.mr, e.mr + 1}}))
+	tests[11].query, tests[11].args = query(latestQuery(e.project, LatestFilter{Branches: []string{"develop", "main"}, Purpose: PurposeOfficial}))
+	tests[12].query, tests[12].args = query(latestQuery(e.project, LatestFilter{MergeRequestIDs: []int64{e.mr, e.mr + 1}, Purpose: PurposeOfficial}))
 	tests[13].query, tests[13].args = countSameQuery(branch, []Status{StatusError})
 	tests[14].query, tests[14].args = countSameQuery(mr, []Status{StatusError})
+	proposed := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: "h1"}.probe(e.project, PurposeProposed)
+	tests[15].query, tests[15].args = findSameQuery(proposed, countingStatuses)
+	tests[16].query, tests[16].args = query(latestQuery(e.project, LatestFilter{MergeRequestIDs: []int64{e.mr, e.mr + 1}, Purpose: PurposeProposed}))
+	tests[17].query, tests[17].args = query(listQuery(e.project, ListFilter{MergeRequestID: e.mr, Purpose: PurposeOfficial}))
 	for _, tc := range tests {
 		rows, err := e.db.Query("EXPLAIN QUERY PLAN "+tc.query, tc.args...)
 		if err != nil {
@@ -351,6 +358,11 @@ func TestRepositoryLatestIsEachSubjectsNewestOfTheProject(t *testing.T) {
 	}
 	create(mrPipeline("a000000000000004", e.project, e.mr, sha(30)))
 	newestMR := create(mrPipeline("a000000000000005", e.project, e.mr, sha(31)))
+	// A newer pipeline the change proposes is never the merge request's
+	// latest, nor is an official one the latest proposed.
+	proposed := mrPipeline("a000000000000007", e.project, e.mr, sha(32))
+	proposed.Purpose = PurposeProposed
+	create(proposed)
 
 	// Another project's merge request is never this project's to read.
 	res, err := e.db.Exec(`INSERT INTO projects (user_id, name, status) VALUES (?, 'other', 'ready')`, e.owner)
@@ -365,7 +377,7 @@ func TestRepositoryLatestIsEachSubjectsNewestOfTheProject(t *testing.T) {
 	otherMR, _ := res.LastInsertId()
 	create(mrPipeline("a000000000000006", other, otherMR, sha(40)))
 
-	got, err := repo.Latest(ctx, e.project, LatestFilter{Branches: []string{"main", "develop", "gone"}, MergeRequestIDs: []int64{otherMR, e.mr}})
+	got, err := repo.Latest(ctx, e.project, LatestFilter{Branches: []string{"main", "develop", "gone"}, MergeRequestIDs: []int64{otherMR, e.mr}, Purpose: PurposeOfficial})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,5 +393,12 @@ func TestRepositoryLatestIsEachSubjectsNewestOfTheProject(t *testing.T) {
 	}
 	if none, err := repo.Latest(ctx, e.project, LatestFilter{}); err != nil || len(none) != 0 {
 		t.Fatalf("nothing asked: %v %v", none, err)
+	}
+	if got, err := repo.Latest(ctx, e.project, LatestFilter{MergeRequestIDs: []int64{e.mr}, Purpose: PurposeProposed}); err != nil || len(got) != 1 || got[0].ID != proposed.ID {
+		t.Fatalf("latest proposed: %+v %v", got, err)
+	}
+	// One that names no purpose finds nothing, rather than either kind.
+	if got, err := repo.Latest(ctx, e.project, LatestFilter{Branches: []string{"develop"}, MergeRequestIDs: []int64{e.mr}}); err != nil || len(got) != 0 {
+		t.Fatalf("latest of no purpose: %+v %v", got, err)
 	}
 }

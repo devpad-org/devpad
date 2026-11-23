@@ -7,6 +7,8 @@ A pipeline runs a project's jobs, such as its tests and its build, on a commit o
 
 Devpad runs pipelines by itself on the protected branches you tick under **Run pipelines**, on each new commit, and on every merge request into them, when it opens and each time its branch or the ticked branch moves. A merge request into a ticked branch [merges only once its pipeline passes](#merge-gate), unless you merge it anyway. On a task's merge request, a failure [goes back to the task's agent](#failures), and the automatic review waits for a pass. You can run a pipeline on any protected branch, and on any merge request into one, yourself; into a branch you don't tick, its result is there for you to weigh and doesn't stop anything from merging.
 
+A merge request's jobs always come from its target branch, so a change can't rewrite the jobs that grade it. A change to the pipeline file itself runs the jobs it proposes too, [for information only](#proposed), and devpad [marks a change](#look-closely) that deletes tests or changes the files jobs depend on, which no pipeline result can vouch for.
+
 ## The pipeline file {#pipeline-file}
 
 A project's pipeline lives in its repo, in `.devpad/pipeline.yml` (or `.devpad/pipeline.yaml`, but not both). It names the jobs and the script each runs:
@@ -56,7 +58,7 @@ A pipeline's result counts only for the commits and jobs it tested, so devpad ru
 - **A merge request into a ticked branch** runs when it opens, whether a task's agent, you or the assistant opened it; when its branch gets new commits, from a task's agent finishing a round, a publish or `git push devpad` from your workspace, or, for a release such as `develop` into `main`, a merge into `develop` or a fast-forward of `develop` from the upstream; and when the ticked branch moves, since it then merges onto another commit. Ticking its target runs it too.
 - **Changing the pipeline setting** runs again the ticked branches and merge requests whose jobs come from it. Those with a pipeline file get the same jobs, so nothing runs for them.
 
-A pipeline devpad starts by itself says what started it, such as **Started when develop moved**; one you start says **Run by you**.
+A merge request whose change touches the pipeline file runs [the pipeline it proposes](#proposed) at the same times. A pipeline devpad starts by itself says what started it, such as **Started when develop moved**; one you start says **Run by you**.
 
 Devpad starts a branch's or a merge request's pipeline at most once every 30 seconds. When it moves again sooner, as when an agent pushes several times in a row, devpad waits until the 30 seconds are up and then runs its newest commits. What you do yourself, ticking a branch or changing the setting, runs at once.
 
@@ -97,7 +99,7 @@ A job is queued, running, passed, failed, timed out, out of memory, error, cance
 
 A merge request's result counts only for what it tested: its branch at its current commit, merged onto the target branch's current commit, with the jobs the target's pipeline has now. A pipeline of an older commit of either, or of jobs that have changed since, is out of date, and devpad works out which on its side. Into a ticked branch, devpad [runs the pipeline again](#automatic-runs) whenever that happens; into another protected branch, run it from the merge request.
 
-A merge request's **Pipeline** card shows the pipeline that counts now, or else its latest, saying when that is out of date, with its jobs and where they came from. The merge card has a row for it: **Pipeline passed** only for a pass that counts now, **Pipeline out of date** for an older result, and **No pipeline configured** when the target branch has no pipeline file and the project no setting. The activity lists each pipeline the merge request ran, and picking one there shows it on the card. The list of merge requests shows each open one's latest result beside its status, and **Out of date** once its branch has moved past it; open the merge request to see whether its target or jobs have too. Into a ticked branch, the result decides whether the merge request can merge: see [The merge gate](#merge-gate). Into another protected branch, it is there for you to weigh.
+A merge request's **Pipeline** card shows the pipeline that counts now, or else its latest, saying when that is out of date, with its jobs and where they came from. The merge card has a row for it: **Pipeline passed** only for a pass that counts now, **Pipeline out of date** for an older result, and **No pipeline configured** when the target branch has no pipeline file and the project no setting. The activity lists each pipeline the merge request ran, and picking one there shows it on the card. The list of merge requests shows each open one's latest result beside its status, and **Out of date** once its branch has moved past it; open the merge request to see whether its target or jobs have too. None of these is ever the [pipeline a change proposes](#proposed), which has a card of its own. Into a ticked branch, the result decides whether the merge request can merge: see [The merge gate](#merge-gate). Into another protected branch, it is there for you to weigh.
 
 ## The merge gate {#merge-gate}
 
@@ -127,6 +129,29 @@ A task's agent knows the jobs before it finishes: its first prompt lists the tar
 
 **Reviews wait for a pass.** Where a pipeline guards a merge request, the project's [automatic review](/docs/branches#reviews), and the next round of an [auto-fixing review](/docs/branches#auto-fixing-reviews), start only once its pipeline has passed, so the review agent reads a change that passes its jobs. Until then the **Pipeline** card says **The automatic review starts once the pipeline passes**. A review you start yourself starts at once. The review agent is told how the pipeline went, each job's name, result and time, but never what a job printed: that came from the code under review, which could use it to talk its reviewer round.
 
+## A change to the pipeline file {#proposed}
+
+A merge request whose change adds, changes, renames or deletes `.devpad/pipeline.yml` (or `.devpad/pipeline.yaml`) is still graded by its target branch's jobs: once it merges, its file decides what every later merge request has to pass, but not before. So that you can see the jobs it proposes work before they take effect, devpad runs those too, on the merge request's **Proposed pipeline** card, which says **from this change — doesn't gate merging**:
+
+- **What runs.** The pipeline file of the branch merged onto the target's current commit, the very commit the merge request's own pipeline tests, and on that same tree. The project's pipeline setting never stands in for it.
+- **What it decides.** Nothing. A proposed pipeline never keeps the merge request from merging nor lets it through, never goes back to the task's agent, never holds back or starts a review, never decides an [automatic merge](/docs/branches#automatic-merges), and is never the merge request's latest result: its badge, its merge card, its activity and the list of merge requests show only the merge request's own pipeline. The **Pipelines** surface lists both, the proposed one marked **proposed**.
+- **When it runs.** Whenever the merge request's own pipeline would: by itself into a ticked branch, when it opens, when its branch gets new commits and when the target moves, at most once every 30 seconds like the merge request's own; into another branch when you press **Run proposed pipeline** on the card. A newer proposed pipeline replaces an older one, a merge request that closes or merges stops it, and devpad runs it again after a restart, as it does the merge request's own; the two never replace each other.
+- **When nothing runs.** A change that removes the pipeline file proposes no jobs: the card says **This change removes the pipeline**, and once it merges the target's commits run the project's pipeline setting, or no pipeline. A branch that doesn't merge onto its target proposes nothing that can be read. A proposed file that doesn't parse shows its error, as an **Invalid** pipeline does.
+
+Devpad never merges a change to the pipeline file by itself, so you merge it once you've seen its jobs at work.
+
+## The look-closely mark {#look-closely}
+
+A passing pipeline says the jobs ran clean, not that they still test what they did. Devpad works out from each merge request's change, the files its branch changed since it left the target, which of them decide what the jobs prove, and marks the merge request when there are any, so you know where to look closely:
+
+- **Deletes tests**: a test file the change deletes, or renames to a name that is no test's, by the common conventions, such as `*_test.go`, `*.test.*` and `*.spec.*`, `test_*.py` and `*_test.py`, `*_spec.rb` and `*Test.java`, and any file in a `test/`, `tests/`, `__tests__/`, `spec/` or `testdata/` directory;
+- **Changes the pipeline file**;
+- **Changes CI configuration**, such as `.github/workflows/`, `.gitlab-ci.yml`, CircleCI or a `Jenkinsfile`;
+- **Changes lint, type-check or test settings**, such as `tsconfig*.json`, ESLint, Prettier, golangci-lint, Ruff, mypy, pytest, Vitest, Jest or Vite configuration, `setup.cfg` or `tox.ini`;
+- **Changes build scripts or dependencies**, such as a `Makefile`, `package.json` and its lockfile, `go.mod` and `go.sum`, `Cargo.toml`, `pyproject.toml` or a requirements file.
+
+The merge request's Overview lists them on a **Look closely** card, each opening in **Changes**, and the list of merge requests shows an eye beside its status. The review agent is given the same list in devpad's own words. It is a mark, never a gate: nothing waits on it, and a change can weaken its tests in ways no file name shows, such as by skipping a test inside a file it keeps.
+
 ## What pipelines don't stop {#limits}
 
 Reading the jobs from the target branch makes cheating visible, not impossible. A change can still weaken what the jobs check:
@@ -135,4 +160,4 @@ Reading the jobs from the target branch makes cheating visible, not impossible. 
 - change what a command does, such as a `Makefile` target or a script in `package.json`;
 - loosen a type-check or lint configuration.
 
-The review agent is told to look for exactly these: deleted or skipped tests, changed build or test scripts, and loosened lint or type-check settings, which it treats as blocking unless the task asks for them. Still, review a change's tests and build files as closely as its code.
+The review agent is told to look for exactly these: deleted or skipped tests, changed build or test scripts, and loosened lint or type-check settings, which it treats as blocking unless the task asks for them, and is given the files devpad [marked](#look-closely) for a closer look. Still, review a change's tests and build files as closely as its code: the **Look closely** card shows where to start.

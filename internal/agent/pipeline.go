@@ -104,6 +104,44 @@ func (c *Client) RepoPinPipeline(ctx context.Context, pin PipelinePin) (*Pipelin
 	return &result, nil
 }
 
+// TrialMerge is the commit a pipeline of a source merged onto a target
+// tests, as PipelinePinResult says, read without pinning it: the same
+// commit a pin of the two makes, or the Conflict instead.
+type TrialMerge struct {
+	SHA      string         `json:"sha,omitempty"`
+	Tree     string         `json:"tree,omitempty"`
+	Conflict *MergeConflict `json:"conflict,omitempty"`
+}
+
+// RepoTrialMerge works out the commit a pipeline of source merged onto
+// target tests, both full commit hashes, without pinning it or moving any
+// branch: devpad reads the pipeline file a merge request's change proposes
+// there.
+func (c *Client) RepoTrialMerge(ctx context.Context, source, target string) (*TrialMerge, error) {
+	for _, h := range []string{source, target} {
+		if !fullHashPattern.MatchString(h) {
+			return nil, fmt.Errorf("%q is not a full commit hash", h)
+		}
+	}
+	payload, err := json.Marshal(map[string]string{"source": source, "target": target})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/repo/trial-merge", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var result TrialMerge
+	if err := c.doRepoJSON(req, "repo trial merge", &result); err != nil {
+		return nil, err
+	}
+	if result.Conflict == nil && !fullHashPattern.MatchString(result.SHA) {
+		return nil, fmt.Errorf("repo trial merge: unexpected answer %+v", result)
+	}
+	return &result, nil
+}
+
 // RepoPipelineBundle writes a bundle of what a pipeline tests to w, and
 // returns its size. Past gitbundle.MaxBytes it stops with ErrBundleTooLarge,
 // having written part of it.

@@ -481,11 +481,11 @@ func TestReconcileAfterACrash(t *testing.T) {
 	// What a devpad that crashed left: a running pipeline of develop with a
 	// job running and one queued, a queued one of the merge request, and a
 	// finished one whose ref and a container a late create made remain.
-	running := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "aaaaaaaaaaaaaaa1", Kind: KindBranch, Branch: "develop", HeadSHA: sha(2), ConfigSource: SourceFile, Status: StatusRunning, Trigger: TriggerUser, RefPinned: true, CreatedAt: time.Now(),
+	running := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "aaaaaaaaaaaaaaa1", Kind: KindBranch, Purpose: PurposeOfficial, Branch: "develop", HeadSHA: sha(2), ConfigSource: SourceFile, Status: StatusRunning, Trigger: TriggerUser, RefPinned: true, CreatedAt: time.Now(),
 		Jobs: []*JobRun{{Job: Job{Name: "a", Run: "pass", Timeout: time.Minute}, Position: 0, Status: JobRunning}, {Job: Job{Name: "b", Run: "pass", Timeout: time.Minute}, Position: 1, Status: JobQueued}}}
-	queued := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "aaaaaaaaaaaaaaa2", Kind: KindMergeRequest, MergeRequestID: e.mr, SourceBranch: "feature", TargetBranch: "develop", HeadSHA: sha(30), TargetSHA: sha(2), ConfigSource: SourceFile, Status: StatusQueued, Trigger: TriggerUser, CreatedAt: time.Now(),
+	queued := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "aaaaaaaaaaaaaaa2", Kind: KindMergeRequest, Purpose: PurposeOfficial, MergeRequestID: e.mr, SourceBranch: "feature", TargetBranch: "develop", HeadSHA: sha(30), TargetSHA: sha(2), ConfigSource: SourceFile, Status: StatusQueued, Trigger: TriggerUser, CreatedAt: time.Now(),
 		Jobs: []*JobRun{{Job: Job{Name: "a", Run: "pass", Timeout: time.Minute}, Status: JobQueued}}}
-	finished := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "aaaaaaaaaaaaaaa3", Kind: KindBranch, Branch: "main", HeadSHA: sha(1), ConfigSource: SourceFile, Status: StatusPassed, Trigger: TriggerUser, RefPinned: true, CreatedAt: time.Now()}
+	finished := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "aaaaaaaaaaaaaaa3", Kind: KindBranch, Purpose: PurposeOfficial, Branch: "main", HeadSHA: sha(1), ConfigSource: SourceFile, Status: StatusPassed, Trigger: TriggerUser, RefPinned: true, CreatedAt: time.Now()}
 	for _, p := range []*Pipeline{running, queued, finished} {
 		if err := repo.Create(ctx, p); err != nil {
 			t.Fatal(err)
@@ -578,7 +578,7 @@ func TestReconcileDoesNotRerunWhatAlreadyHasAResult(t *testing.T) {
 	ctx := context.Background()
 	// An older commit's pipeline still ran when devpad stopped, after the
 	// pipeline of develop's tip, started later, had passed.
-	old := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "cccccccccccccc01", Kind: KindBranch, Branch: "develop", HeadSHA: sha(7), ConfigSource: SourceFile, Status: StatusRunning, Trigger: TriggerUser, CreatedAt: time.Now()}
+	old := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "cccccccccccccc01", Kind: KindBranch, Purpose: PurposeOfficial, Branch: "develop", HeadSHA: sha(7), ConfigSource: SourceFile, Status: StatusRunning, Trigger: TriggerUser, CreatedAt: time.Now()}
 	if err := e.svc.repo.Create(ctx, old); err != nil {
 		t.Fatal(err)
 	}
@@ -601,7 +601,7 @@ func TestAnInterruptedRunAgainRunsAgainAfterARestart(t *testing.T) {
 	passed := e.wait(e.start(StartInput{Branch: "develop"}).ID)
 	// The user ran develop's tip again, with the same jobs, and devpad
 	// stopped while it ran.
-	again := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "cccccccccccccc02", Kind: KindBranch, Branch: "develop", HeadSHA: passed.HeadSHA, ConfigSource: passed.ConfigSource, ConfigPath: passed.ConfigPath, ConfigHash: passed.ConfigHash, Status: StatusRunning, Trigger: TriggerUser, CreatedAt: time.Now()}
+	again := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "cccccccccccccc02", Kind: KindBranch, Purpose: PurposeOfficial, Branch: "develop", HeadSHA: passed.HeadSHA, ConfigSource: passed.ConfigSource, ConfigPath: passed.ConfigPath, ConfigHash: passed.ConfigHash, Status: StatusRunning, Trigger: TriggerUser, CreatedAt: time.Now()}
 	if err := e.svc.repo.Create(ctx, again); err != nil {
 		t.Fatal(err)
 	}
@@ -622,7 +622,7 @@ func TestAnInterruptedRunAgainRunsAgainAfterARestart(t *testing.T) {
 func TestReconcileDoesNotRerunWhatNoLongerRunsPipelines(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
-	left := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "bbbbbbbbbbbbbbb1", Kind: KindMergeRequest, MergeRequestID: e.mr, SourceBranch: "feature", TargetBranch: "develop", HeadSHA: sha(30), TargetSHA: sha(2), ConfigSource: SourceFile, Status: StatusRunning, Trigger: TriggerUser, CreatedAt: time.Now()}
+	left := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "bbbbbbbbbbbbbbb1", Kind: KindMergeRequest, Purpose: PurposeOfficial, MergeRequestID: e.mr, SourceBranch: "feature", TargetBranch: "develop", HeadSHA: sha(30), TargetSHA: sha(2), ConfigSource: SourceFile, Status: StatusRunning, Trigger: TriggerUser, CreatedAt: time.Now()}
 	if err := e.svc.repo.Create(ctx, left); err != nil {
 		t.Fatal(err)
 	}
@@ -737,7 +737,7 @@ func TestListenersAreToldAgainOfWhatTheyWereNotAllTold(t *testing.T) {
 	}
 	// And a pipeline that finished without being announced at all, as when
 	// devpad crashed right after recording it.
-	crashed := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "dddddddddddddd01", Kind: KindBranch, Branch: "main", HeadSHA: sha(1), ConfigSource: SourceFile, Status: StatusPassed, Trigger: TriggerUser, CreatedAt: time.Now()}
+	crashed := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "dddddddddddddd01", Kind: KindBranch, Purpose: PurposeOfficial, Branch: "main", HeadSHA: sha(1), ConfigSource: SourceFile, Status: StatusPassed, Trigger: TriggerUser, CreatedAt: time.Now()}
 	if err := e.svc.repo.Create(ctx, crashed); err != nil {
 		t.Fatal(err)
 	}
@@ -856,7 +856,7 @@ func TestCancelSettlesAPipelineNoRunHolds(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	// A run that ended without recording how, as when the database failed.
-	stuck := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "eeeeeeeeeeeeee01", Kind: KindBranch, Branch: "develop", HeadSHA: sha(2), ConfigSource: SourceFile, Status: StatusRunning, Trigger: TriggerUser, CreatedAt: time.Now(),
+	stuck := &Pipeline{ProjectID: e.project, UserID: e.owner, UID: "eeeeeeeeeeeeee01", Kind: KindBranch, Purpose: PurposeOfficial, Branch: "develop", HeadSHA: sha(2), ConfigSource: SourceFile, Status: StatusRunning, Trigger: TriggerUser, CreatedAt: time.Now(),
 		Jobs: []*JobRun{{Job: Job{Name: "a", Run: "pass", Timeout: time.Minute}, Position: 0, Status: JobRunning}, {Job: Job{Name: "b", Run: "pass", Timeout: time.Minute}, Position: 1, Status: JobQueued}}}
 	if err := e.svc.repo.Create(ctx, stuck); err != nil {
 		t.Fatal(err)

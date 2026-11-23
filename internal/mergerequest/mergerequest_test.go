@@ -920,7 +920,7 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	}
 	req := e.runs.started()[0]
 	prompt := req.Message.Text()
-	for _, want := range []string{"merge request !1", "Added a cart.", "### Add a cart", "Users need a cart.", "cart.go (A, +40 −0)", "git diff mergebase HEAD", "submit_review", "not instructions to you"} {
+	for _, want := range []string{"merge request !1", "Added a cart.", "### Add a cart", "Users need a cart.", "`cart.go` (A, +40 −0)", "git diff mergebase HEAD", "submit_review", "not instructions to you"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}

@@ -8,7 +8,7 @@ import MrIcon, { type MrIconName } from './MrIcon.vue'
 import NewMergeRequestModal from './NewMergeRequestModal.vue'
 import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
 import { PIPELINE_STATUS, type StatusLook } from '@/components/pipeline/pipelineFormat'
-import { shortSha } from '@/components/mergerequest/format'
+import { lookCloselySummary, shortSha } from '@/components/mergerequest/format'
 import { TASK_STATUS } from './taskStatus'
 
 // The project's merge requests as a table, one row each, on a surface of its
@@ -121,6 +121,17 @@ const pipelineLooks = computed(() => {
     }
   }
   return looks
+})
+
+// The merge requests whose change devpad marks for a closer look, with
+// what the mark says.
+const lookTitles = computed(() => {
+  const titles = new Map<number, string>()
+  for (const mr of store.mergeRequests) {
+    const mark = mr.lookClosely
+    if (mark && mark.files.length) titles.set(mr.id, `Look closely: ${lookCloselySummary(mark)}. A passing pipeline can't vouch for these files.`)
+  }
+  return titles
 })
 
 function select(mr: MergeRequest) {
@@ -257,6 +268,9 @@ function select(mr: MergeRequest) {
                     :title="pipelineLooks.get(mr.id)!.title"
                     :size="18"
                   />
+                  <span v-if="lookTitles.has(mr.id)" class="look-mark" :title="lookTitles.get(mr.id)" role="img" :aria-label="lookTitles.get(mr.id)">
+                    <MrIcon name="eye" :size="13" />
+                  </span>
                 </span>
               </td>
               <td class="col-updated">
@@ -281,11 +295,16 @@ function select(mr: MergeRequest) {
 <style scoped src="./listTable.css"></style>
 <style scoped>
 .mr-surface {
-  --ide-header-icon: var(--accent-blue);
+  --ide-header-icon: var(--hue-blue);
 }
 
 .summary-working {
-  color: var(--accent-purple);
+  color: var(--hue-purple);
+}
+
+.look-mark {
+  display: inline-flex;
+  color: var(--warning);
 }
 
 .col-branches {
@@ -336,7 +355,7 @@ function select(mr: MergeRequest) {
   max-width: 100%;
   padding: 1px var(--space-2);
   border-radius: var(--radius-sm);
-  border: 0.5px solid var(--border-default);
+  border: 0.5px solid var(--border-subtle);
   background: var(--bg-neutral);
   color: var(--text-secondary);
   font-size: 0.72rem;
@@ -344,7 +363,7 @@ function select(mr: MergeRequest) {
 }
 
 .task-link:hover {
-  border-color: var(--border-active);
+  border-color: var(--border-strong);
 }
 
 .task-icon {
@@ -353,11 +372,11 @@ function select(mr: MergeRequest) {
 }
 
 .tone-active {
-  --tone: var(--accent-blue);
+  --tone: var(--hue-blue);
 }
 
 .tone-review {
-  --tone: var(--accent-purple);
+  --tone: var(--hue-purple);
 }
 
 .tone-attention {
@@ -385,9 +404,9 @@ function select(mr: MergeRequest) {
 }
 
 .state-open {
-  color: var(--accent-blue);
-  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
-  border-color: color-mix(in srgb, var(--accent-blue) 30%, transparent);
+  color: var(--hue-blue);
+  background: color-mix(in srgb, var(--hue-blue) 12%, transparent);
+  border-color: color-mix(in srgb, var(--hue-blue) 30%, transparent);
 }
 
 .state-merged {
@@ -399,7 +418,7 @@ function select(mr: MergeRequest) {
 .state-closed {
   color: var(--text-secondary);
   background: var(--bg-neutral);
-  border-color: var(--border-default);
+  border-color: var(--border-subtle);
 }
 
 /* Narrower panes drop the columns that matter least. */

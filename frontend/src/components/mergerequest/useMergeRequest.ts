@@ -1,5 +1,5 @@
 import { computed, inject, ref, watch, type InjectionKey, type Ref } from 'vue'
-import { projectApi, type RepoDiff, type RepoDiffFile, type WorkspaceBranchStatus } from '@/api/projects'
+import { projectApi, type RepoDiffFile, type WorkspaceBranchStatus } from '@/api/projects'
 import {
   gateConfirmation,
   mergeConflictsFromError,
@@ -8,6 +8,8 @@ import {
   type Commit,
   type CommentInput,
   type CommitLog,
+  type LookClosely,
+  type MergeRequestChange,
   type MergeRequestDetail,
   type MergeStrategy,
   type GateConfirmation,
@@ -86,7 +88,10 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   const aiModelStore = useAiModelStore()
 
   const mr = ref<MergeRequestDetail | null>(null)
-  const diff = ref<RepoDiff | null>(null)
+  const diff = ref<MergeRequestChange | null>(null)
+  // The files of the change devpad marks for a closer look: those of the
+  // diff on the page, else of the merge request as last listed.
+  const lookClosely = computed<LookClosely | null>(() => diff.value?.lookClosely ?? mr.value?.lookClosely ?? null)
   // The commits the merge request proposes, or null until they load or when
   // the repo can't list them.
   const commitLog = ref<CommitLog | null>(null)
@@ -1010,6 +1015,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     project,
     mr,
     diff,
+    lookClosely,
     commitLog,
     loadError,
     actionError,

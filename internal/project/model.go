@@ -4,6 +4,8 @@ import (
 	"errors"
 	"slices"
 	"time"
+
+	"github.com/devpad-org/devpad/internal/agent"
 )
 
 // Status represents the setup state of a project's canonical repo.
@@ -134,6 +136,27 @@ func (p *Project) RunsPipelines(branch string) bool {
 // change to them.
 func PipelineFiles() []string {
 	return []string{".devpad/pipeline.yml", ".devpad/pipeline.yaml"}
+}
+
+// IsPipelineFile reports whether path is one of PipelineFiles.
+func IsPipelineFile(path string) bool {
+	return slices.Contains(PipelineFiles(), path)
+}
+
+// ChangedPipelineFile names the pipeline file a change adds, changes,
+// renames or deletes, as its diff lists them, or "" when it touches none:
+// the one rule for whether a merge request proposes other jobs than its
+// target's, which an automatic merge never takes and devpad runs for
+// information.
+func ChangedPipelineFile(files []agent.RepoDiffFile) string {
+	for _, f := range files {
+		for _, path := range []string{f.Path, f.OldPath} {
+			if path != "" && IsPipelineFile(path) {
+				return path
+			}
+		}
+	}
+	return ""
 }
 
 // Protected lists every protected branch, the default branch first.

@@ -150,18 +150,23 @@ func (a mergeRequestPipelineReports) PipelineReport(ctx context.Context, userID,
 	return out, nil
 }
 
-// mergeRequestPipelineEnds tells the merge request service each time a
-// pipeline finishes: one of a merge request's, so that its task hears how
-// it went, a review waiting for it starts, and an automatic merge waiting
-// for it decides again; or a protected branch's, so that a failure of a
-// merge request into it waiting on it is decided. The pipeline service
-// tells it holding none of its locks; the merge request service takes its
-// own.
+// mergeRequestPipelineEnds tells the merge request service each time an
+// official pipeline finishes: one of a merge request's, so that its task
+// hears how it went, a review waiting for it starts, and an automatic merge
+// waiting for it decides again; or a protected branch's, so that a failure
+// of a merge request into it waiting on it is decided. A pipeline a change
+// proposes is for information alone, so the merge request service never
+// hears of it: it sends no task back, starts no review and decides no
+// merge (the gate never names one either). The pipeline service tells it
+// holding none of its locks; the merge request service takes its own.
 type mergeRequestPipelineEnds struct {
 	mrs mergerequest.Service
 }
 
 func (a mergeRequestPipelineEnds) PipelineFinished(ctx context.Context, p *pipeline.Pipeline) {
+	if p.Purpose != pipeline.PurposeOfficial {
+		return
+	}
 	if p.Kind == pipeline.KindBranch {
 		a.mrs.BranchPipelineFinished(ctx, mergerequest.BranchPipelineEnd{
 			UserID: p.UserID, ProjectID: p.ProjectID, Branch: p.Branch, PipelineID: p.ID,

@@ -10,9 +10,9 @@ export function pipelineFinished(p: Pipeline): boolean {
   return p.status !== 'queued' && p.status !== 'running'
 }
 
-// What a pipeline tests, to start another of the same.
+// What a pipeline tests, and what for, to start another of the same.
 export function subjectOf(p: Pipeline): PipelineSubject {
-  return p.kind === 'branch' ? { branch: p.branch } : { mergeRequestId: p.mergeRequestId }
+  return p.kind === 'branch' ? { branch: p.branch } : { mergeRequestId: p.mergeRequestId, purpose: p.purpose }
 }
 
 function errorText(e: unknown, fallback: string): string {

@@ -11,7 +11,9 @@ import (
 )
 
 // MergeRequestStatus is how a merge request stands for pipelines now: what
-// a pipeline must test to count for it, and the pipeline that does.
+// a pipeline must test to count for it, and the pipeline that does. Only
+// its official pipelines count: one its change proposes (ProposedStatus)
+// never does.
 type MergeRequestStatus struct {
 	// Open says the merge request can still merge into a protected branch.
 	// When it can't, there is no Key and no Current: only Latest.
@@ -157,7 +159,7 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 		return nil, ErrMergeRequestNotFound
 	}
 	st := &MergeRequestStatus{Target: mr.TargetBranch}
-	latest, err := s.repo.Latest(ctx, projectID, LatestFilter{MergeRequestIDs: []int64{mr.ID}})
+	latest, err := s.repo.Latest(ctx, projectID, LatestFilter{MergeRequestIDs: []int64{mr.ID}, Purpose: PurposeOfficial})
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +193,7 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 		}
 	}
 	if st.Current == nil {
-		if st.Settled, err = s.settledWithout(ctx, st.Key.probe(projectID), st.Automatic); err != nil {
+		if st.Settled, err = s.settledWithout(ctx, st.Key.probe(projectID, PurposeOfficial), st.Automatic); err != nil {
 			return nil, err
 		}
 	}

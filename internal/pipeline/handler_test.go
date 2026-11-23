@@ -173,3 +173,58 @@ func TestPipelineEndpoints(t *testing.T) {
 		t.Errorf("start while devpad stops: %d %v", code, out)
 	}
 }
+
+// A merge request's proposed pipeline starts with purpose "proposed", lists
+// apart from its own, and shows beside its status.
+func TestProposedPipelineEndpoints(t *testing.T) {
+	e := setup(t)
+	base := fmt.Sprintf("/api/projects/%d/pipelines", e.project)
+	statusPath := fmt.Sprintf("/api/projects/%d/merge-requests/%d/pipeline", e.project, e.mr)
+	if code, out := e.serve(e.owner, http.MethodGet, statusPath, ""); code != http.StatusOK || out["status"].(map[string]any)["proposed"] != nil {
+		t.Fatalf("a change that leaves the file alone: %d %v", code, out)
+	}
+	if code, out := e.serve(e.owner, http.MethodPost, base, fmt.Sprintf(`{"mergeRequestId":%d,"purpose":"proposed"}`, e.mr)); code != http.StatusConflict {
+		t.Fatalf("proposing nothing: %d %v", code, out)
+	}
+	e.mrs.setHead(e.mr, sha(31))
+	e.propose(sha(31), proposedYAML)
+	code, out := e.serve(e.owner, http.MethodPost, base, fmt.Sprintf(`{"mergeRequestId":%d,"purpose":"proposed"}`, e.mr))
+	if code != http.StatusAccepted || out["pipeline"].(map[string]any)["purpose"] != "proposed" {
+		t.Fatalf("start: %d %v", code, out)
+	}
+	proposed := e.wait(int64(out["pipeline"].(map[string]any)["id"].(float64)))
+	official := e.wait(e.start(StartInput{MergeRequestID: e.mr}).ID)
+
+	ids := func(target string) []float64 {
+		t.Helper()
+		code, out := e.serve(e.owner, http.MethodGet, target, "")
+		if code != http.StatusOK {
+			t.Fatalf("%s: %d %v", target, code, out)
+		}
+		var got []float64
+		for _, p := range out["pipelines"].([]any) {
+			got = append(got, p.(map[string]any)["id"].(float64))
+		}
+		return got
+	}
+	if got := ids(fmt.Sprintf("%s?mergeRequestId=%d&purpose=official", base, e.mr)); fmt.Sprint(got) != fmt.Sprint([]float64{float64(official.ID)}) {
+		t.Fatalf("official list: %v", got)
+	}
+	if got := ids(fmt.Sprintf("%s?mergeRequestId=%d", base, e.mr)); len(got) != 2 {
+		t.Fatalf("whole list: %v", got)
+	}
+	code, out = e.serve(e.owner, http.MethodGet, statusPath, "")
+	st := out["status"].(map[string]any)
+	prop, _ := st["proposed"].(map[string]any)
+	current, _ := prop["current"].(map[string]any)
+	if code != http.StatusOK || prop["file"] != ".devpad/pipeline.yml" || prop["removed"] != false || prop["conflict"] != false || current["id"] != float64(proposed.ID) ||
+		st["current"].(map[string]any)["id"] != float64(official.ID) {
+		t.Fatalf("status: %d %v", code, out)
+	}
+	if code, out := e.serve(e.owner, http.MethodGet, base+"?purpose=secret", ""); code != http.StatusBadRequest {
+		t.Fatalf("an unknown purpose: %d %v", code, out)
+	}
+	if code, out := e.serve(e.owner, http.MethodPost, base, `{"branch":"develop","purpose":"proposed"}`); code != http.StatusBadRequest {
+		t.Fatalf("a branch's proposed pipeline: %d %v", code, out)
+	}
+}

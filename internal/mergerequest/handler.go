@@ -99,8 +99,9 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"mergeRequest": body})
 }
 
-// HandleDiff lists the files a merge request changes. File contents come
-// from the project file endpoint at the returned mergeBase and headSha.
+// HandleDiff lists the files a merge request changes, and those of them
+// devpad marks for a closer look (lookClosely). File contents come from the
+// project file endpoint at the returned mergeBase and headSha.
 func (h *Handler) HandleDiff(w http.ResponseWriter, r *http.Request) {
 	user, projectID, mrID, ok := params(w, r)
 	if !ok {
@@ -440,6 +441,9 @@ func mergeRequestResponse(mr *MergeRequest) map[string]any {
 		"pipelineOverride": pipelineOverrideResponse(mr.PipelineOverride),
 		// The project's automatic review waits for the pipeline to pass.
 		"reviewAwaitsPipeline": mr.ReviewAwaitsPipeline,
+		// The files of its change devpad marks for a closer look, null
+		// while it hasn't worked them out for the head.
+		"lookClosely": mr.LookClosely,
 	}
 }
 

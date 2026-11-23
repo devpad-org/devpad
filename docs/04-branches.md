@@ -59,7 +59,7 @@ A merge request asks to merge one branch into a protected branch. Open one:
 
 A branch has at most one open merge request. The source can itself be protected, as when releasing `develop` into `main`.
 
-The merge request's **Overview** has its description, the merge card, and its **Activity**: reviews, comment threads, and each push to the branch. **Changes** shows the diff file by file; click a line number to comment on that line.
+The merge request's **Overview** has its description, the merge card, its [pipeline](/docs/pipelines#merge-requests) and, when the change touches the pipeline file, the [pipeline it proposes](/docs/pipelines#proposed), and its **Activity**: reviews, comment threads, and each push to the branch. When the change deletes tests or changes the files its jobs depend on, a **Look closely** card lists them, and the list of merge requests marks it with an eye: see [The look-closely mark](/docs/pipelines#look-closely). **Changes** shows the diff file by file; click a line number to comment on that line.
 
 ## Threads {#threads}
 

@@ -149,14 +149,19 @@ func (f *endedMergeRequests) BranchPipelineFinished(_ context.Context, m mergere
 	f.branches = append(f.branches, m)
 }
 
-// Each pipeline that finishes is told to the merge request service: a
-// merge request's as its own, a branch's for the merge requests into it.
-func TestMergeRequestPipelineEndsTellsOfEveryPipeline(t *testing.T) {
+// Each official pipeline that finishes is told to the merge request
+// service: a merge request's as its own, a branch's for the merge requests
+// into it. One a change proposes never is, however it ended, so it sends
+// no task back, starts no review and decides no merge.
+func TestMergeRequestPipelineEndsTellsOfEveryOfficialPipeline(t *testing.T) {
 	ctx := context.Background()
 	got := &endedMergeRequests{}
 	a := mergeRequestPipelineEnds{mrs: got}
-	a.PipelineFinished(ctx, &pipeline.Pipeline{ID: 1, UserID: 1, ProjectID: 2, Kind: pipeline.KindBranch, Branch: "develop"})
-	a.PipelineFinished(ctx, &pipeline.Pipeline{ID: 2, UserID: 1, ProjectID: 2, Kind: pipeline.KindMergeRequest, MergeRequestID: 5, Status: pipeline.StatusFailed})
+	a.PipelineFinished(ctx, &pipeline.Pipeline{ID: 1, UserID: 1, ProjectID: 2, Kind: pipeline.KindBranch, Purpose: pipeline.PurposeOfficial, Branch: "develop"})
+	a.PipelineFinished(ctx, &pipeline.Pipeline{ID: 2, UserID: 1, ProjectID: 2, Kind: pipeline.KindMergeRequest, Purpose: pipeline.PurposeOfficial, MergeRequestID: 5, Status: pipeline.StatusFailed})
+	for _, status := range []pipeline.Status{pipeline.StatusFailed, pipeline.StatusConflict, pipeline.StatusPassed, pipeline.StatusError} {
+		a.PipelineFinished(ctx, &pipeline.Pipeline{ID: 3, UserID: 1, ProjectID: 2, Kind: pipeline.KindMergeRequest, Purpose: pipeline.PurposeProposed, MergeRequestID: 5, Status: status})
+	}
 	if len(got.ends) != 1 || got.ends[0] != (mergerequest.PipelineEnd{UserID: 1, ProjectID: 2, MergeRequestID: 5, PipelineID: 2, Status: "failed"}) {
 		t.Fatalf("told %+v", got.ends)
 	}

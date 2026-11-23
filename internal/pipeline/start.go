@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -54,8 +55,13 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 	if err != nil {
 		return nil, false, err
 	}
-	resolved, err := Resolve(ctx, s.projects, p, configCommit(next))
+	resolved, err := s.resolveJobs(ctx, p, next)
 	if err != nil {
+		var none *NoProposal
+		if in.StopStale && errors.As(err, &none) {
+			// What the change proposed before, it no longer does.
+			s.stopSubject(next.subject(), staleCause(none.Error()))
+		}
 		return nil, false, err
 	}
 	uid, err := newUID()
@@ -126,17 +132,32 @@ func (s *service) settled(ctx context.Context, p *Pipeline) (ended *Pipeline, re
 }
 
 // subjectOf reads what in asks to test: the pipeline it would be, with its
-// subject and commits filled in.
+// subject, purpose and commits filled in.
 func (s *service) subjectOf(ctx context.Context, p *project.Project, in StartInput) (*Pipeline, error) {
+	purpose := in.Purpose
+	if purpose == "" {
+		purpose = PurposeOfficial
+	}
 	branch := strings.TrimSpace(in.Branch)
+	var next *Pipeline
+	var err error
 	switch {
+	case !slices.Contains(Purposes(), purpose):
+		return nil, fmt.Errorf("%w: unknown pipeline purpose %q", ErrInvalidInput, purpose)
 	case branch != "" && in.MergeRequestID != 0, branch == "" && in.MergeRequestID == 0:
 		return nil, fmt.Errorf("%w: a pipeline tests a branch or a merge request", ErrInvalidInput)
+	case branch != "" && purpose == PurposeProposed:
+		return nil, fmt.Errorf("%w: only a merge request's change proposes a pipeline", ErrInvalidInput)
 	case branch != "":
-		return s.branchSubject(ctx, p, branch)
+		next, err = s.branchSubject(ctx, p, branch)
 	default:
-		return s.mergeRequestSubject(ctx, p, in.UserID, in.MergeRequestID)
+		next, err = s.mergeRequestSubject(ctx, p, in.UserID, in.MergeRequestID)
 	}
+	if err != nil {
+		return nil, err
+	}
+	next.Purpose = purpose
+	return next, nil
 }
 
 // branchSubject is a pipeline of a protected branch's current commit, read
@@ -243,6 +264,18 @@ func (s *service) supersede(current *Pipeline, stale bool) {
 	defer s.mu.Unlock()
 	for _, a := range s.runs {
 		if a.subject == k.subject && a.key != k && (!a.started || stale) {
+			a.stop(cause)
+		}
+	}
+}
+
+// stopSubject stops every pipeline of a subject, queued or running, for
+// cause. The caller holds the project's start lock.
+func (s *service) stopSubject(sub subject, cause error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.runs {
+		if a.subject == sub {
 			a.stop(cause)
 		}
 	}

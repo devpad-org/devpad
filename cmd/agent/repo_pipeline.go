@@ -104,6 +104,53 @@ func handleRepoPinPipeline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, repoPipelinePinResult{Ref: ref, SHA: sha, Tree: tree})
 }
 
+type repoTrialMerge struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
+}
+
+type repoTrialMergeResult struct {
+	SHA      string                `json:"sha,omitempty"`
+	Tree     string                `json:"tree,omitempty"`
+	Conflict *repoPipelineConflict `json:"conflict,omitempty"`
+}
+
+// handleRepoTrialMerge works out the commit a pipeline of source merged
+// onto target tests, as a pin of the two does, without pinning it: devpad
+// reads the pipeline file a change proposes there before anything is
+// pinned. The trial merge commit is the same each time for the same pair
+// (trialMergeCommit), so the pin made later tests this very commit. Nothing
+// refers to it until then.
+func handleRepoTrialMerge(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxGitRequestBody)
+	var req repoTrialMerge
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Source == "" || req.Target == "" {
+		writeErr(w, http.StatusBadRequest, "a trial merge needs a source and a target")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), repoTimeout)
+	defer cancel()
+	sha, conflict, err := trialMerge(ctx, req.Source, req.Target)
+	if err != nil {
+		writeRevError(w, err)
+		return
+	}
+	if conflict != nil {
+		writeJSON(w, http.StatusOK, repoTrialMergeResult{Conflict: conflict})
+		return
+	}
+	tree, err := commitTree(ctx, sha)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, repoTrialMergeResult{SHA: sha, Tree: tree})
+}
+
 // commitTree returns the tree of commit, a full commit hash.
 func commitTree(ctx context.Context, commit string) (string, error) {
 	out, err := gitOutput(ctx, "rev-parse", "--verify", commit+"^{tree}")

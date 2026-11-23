@@ -12,8 +12,9 @@ const LISTED = 50
 // (whether a pipeline is configured, the one of its current head, target
 // tip and jobs, and the merge gate), the one its Pipeline card shows, the
 // merge card's row, its pipelines for the activity, and starting one by
-// hand. Whether a result is current, and whether it lets the merge request
-// merge, is never worked out here: the server says.
+// hand; and apart from all that, the pipeline its change proposes, which
+// counts for none of it. Whether a result is current, and whether it lets
+// the merge request merge, is never worked out here: the server says.
 export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr: Ref<MergeRequestDetail | null>, onStarted: () => void) {
   const pipelines = ref<Pipeline[]>([])
   const status = ref<MergeRequestPipelineStatus | null>(null)
@@ -23,6 +24,8 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
   const pickedId = ref<number | null>(null)
   const starting = ref(false)
   const startError = ref('')
+  const proposedStarting = ref(false)
+  const proposedStartError = ref('')
   // Bumped for each load and on reset, so an answer older than the last
   // asked for is dropped.
   let seq = 0
@@ -88,12 +91,28 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
   // A pipeline that was replaced before it ran says nothing worth listing.
   const timelinePipelines = computed(() => pipelines.value.filter((p) => p.status !== 'superseded'))
 
+  // The pipeline the change proposes, and the one of them its card shows:
+  // the one of the commits and jobs as they are now, or the newest that
+  // ended without a result on them, or else the latest, out of date.
+  const proposed = computed(() => status.value?.proposed ?? null)
+  const proposedShown = computed(() => {
+    const p = proposed.value
+    return p?.current ?? p?.settled?.pipeline ?? p?.latest ?? null
+  })
+  const proposedStale = computed(() => {
+    const p = proposed.value
+    const shown = proposedShown.value
+    return !!p && !!shown && shown.id !== p.current?.id && shown.id !== p.settled?.pipeline.id
+  })
+
   async function load() {
     const mine = ++seq
     // Each answer stands alone: the status reads the repo, which may be
     // down while the list still loads.
     const [list, st] = await Promise.allSettled([
-      pipelineApi.list(projectId.value, { mergeRequestId: mrId.value, limit: LISTED }),
+      // The activity lists the merge request's own pipelines; the one its
+      // change proposes has its card.
+      pipelineApi.list(projectId.value, { mergeRequestId: mrId.value, purpose: 'official', limit: LISTED }),
       pipelineApi.mergeRequestStatus(projectId.value, mrId.value),
     ])
     if (mine !== seq) return
@@ -118,6 +137,23 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
       startError.value = errorText(e, 'Failed to start the pipeline')
     } finally {
       starting.value = false
+    }
+  }
+
+  // Runs the pipeline the change proposes as the merge request is now, or
+  // finds the one already running the same.
+  async function startProposed() {
+    const m = mr.value
+    if (!m || proposedStarting.value) return
+    proposedStarting.value = true
+    proposedStartError.value = ''
+    try {
+      await pipelineApi.start(projectId.value, { mergeRequestId: m.id, purpose: 'proposed' })
+      await load()
+    } catch (e) {
+      proposedStartError.value = errorText(e, 'Failed to start the proposed pipeline')
+    } finally {
+      proposedStarting.value = false
     }
   }
 
@@ -197,6 +233,7 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
     loaded.value = false
     pickedId.value = null
     startError.value = ''
+    proposedStartError.value = ''
   }
 
   return {
@@ -219,9 +256,15 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
     timelinePipelines,
     starting,
     startError,
+    proposed,
+    proposedShown,
+    proposedStale,
+    proposedStarting,
+    proposedStartError,
     check,
     load,
     start,
+    startProposed,
     show,
     reset,
   }

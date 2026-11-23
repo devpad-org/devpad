@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"slices"
 	"strings"
 
 	"github.com/devpad-org/devpad/internal/agent"
@@ -222,15 +221,7 @@ func (s *service) changedPipelineFile(ctx context.Context, mr *MergeRequest) (st
 	if err != nil {
 		return "", fmt.Errorf("reading what the change touches: %w", err)
 	}
-	pipelineFiles := project.PipelineFiles()
-	for _, f := range diff.Files {
-		for _, path := range []string{f.Path, f.OldPath} {
-			if path != "" && slices.Contains(pipelineFiles, path) {
-				return path, nil
-			}
-		}
-	}
-	return "", nil
+	return project.ChangedPipelineFile(diff.Files), nil
 }
 
 // runCutShort says why the run of an approving review did not complete, or
