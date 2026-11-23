@@ -111,7 +111,7 @@ func TestRepositoryFindsTheSamePipeline(t *testing.T) {
 	if err := repo.Create(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	probe := e.branchPipeline("", "develop", sha(2))
+	probe := e.branchPipeline("", "develop", sha(2)).key()
 	if same, err := repo.FindSame(ctx, probe, []Status{StatusQueued}); err != nil || same == nil || same.ID != p.ID {
 		t.Fatalf("same: %+v %v", same, err)
 	}
@@ -122,7 +122,7 @@ func TestRepositoryFindsTheSamePipeline(t *testing.T) {
 	} {
 		q := e.branchPipeline("", "develop", sha(2))
 		change(q)
-		if same, _ := repo.FindSame(ctx, q, []Status{StatusQueued}); same != nil {
+		if same, _ := repo.FindSame(ctx, q.key(), []Status{StatusQueued}); same != nil {
 			t.Errorf("%s: found %d", name, same.ID)
 		}
 	}
@@ -137,7 +137,7 @@ func TestRepositoryFindsTheSamePipeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: "h1"}
-	if same, err := repo.FindSame(ctx, key.probe(e.project, PurposeOfficial), countingStatuses); err != nil || same == nil || same.ID != mr.ID {
+	if same, err := repo.FindSame(ctx, key.of(e.project, PurposeOfficial), countingStatuses); err != nil || same == nil || same.ID != mr.ID {
 		t.Fatalf("same merge request pipeline: %+v %v", same, err)
 	}
 	for name, change := range map[string]func(*MergeRequestKey){
@@ -147,12 +147,20 @@ func TestRepositoryFindsTheSamePipeline(t *testing.T) {
 	} {
 		k := key
 		change(&k)
-		if same, _ := repo.FindSame(ctx, k.probe(e.project, PurposeOfficial), countingStatuses); same != nil {
+		if same, _ := repo.FindSame(ctx, k.of(e.project, PurposeOfficial), countingStatuses); same != nil {
 			t.Errorf("%s: found %d", name, same.ID)
 		}
 	}
-	if same, _ := repo.FindSame(ctx, key.probe(e.project+1, PurposeOfficial), countingStatuses); same != nil {
+	if same, _ := repo.FindSame(ctx, key.of(e.project+1, PurposeOfficial), countingStatuses); same != nil {
 		t.Errorf("found another project's pipeline")
+	}
+	// A key that names no purpose matches nothing, so a lookup that forgets
+	// it never takes another purpose's pipeline.
+	if same, _ := repo.FindSame(ctx, key.of(e.project, ""), countingStatuses); same != nil {
+		t.Errorf("a key without a purpose found %d", same.ID)
+	}
+	if n, _ := repo.CountSame(ctx, key.of(e.project, ""), countingStatuses); n != 0 {
+		t.Errorf("a key without a purpose counted %d", n)
 	}
 }
 
@@ -202,8 +210,8 @@ func TestRepositoryInterruptsUnfinishedPipelines(t *testing.T) {
 // table or sorts what it read, so none grows with the pipelines kept.
 func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 	e := setup(t)
-	branch := e.branchPipeline("", "develop", sha(2))
-	mr := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: "h1"}.probe(e.project, PurposeOfficial)
+	branch := e.branchPipeline("", "develop", sha(2)).key()
+	mr := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: "h1"}.of(e.project, PurposeOfficial)
 	query := func(q string, args []any) (string, []any) { return q, args }
 	tests := []struct {
 		name, query, index string
@@ -238,7 +246,7 @@ func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 	tests[12].query, tests[12].args = query(latestQuery(e.project, LatestFilter{MergeRequestIDs: []int64{e.mr, e.mr + 1}, Purpose: PurposeOfficial}))
 	tests[13].query, tests[13].args = countSameQuery(branch, []Status{StatusError})
 	tests[14].query, tests[14].args = countSameQuery(mr, []Status{StatusError})
-	proposed := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: "h1"}.probe(e.project, PurposeProposed)
+	proposed := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: "h1"}.of(e.project, PurposeProposed)
 	tests[15].query, tests[15].args = findSameQuery(proposed, countingStatuses)
 	tests[16].query, tests[16].args = query(latestQuery(e.project, LatestFilter{MergeRequestIDs: []int64{e.mr, e.mr + 1}, Purpose: PurposeProposed}))
 	tests[17].query, tests[17].args = query(listQuery(e.project, ListFilter{MergeRequestID: e.mr, Purpose: PurposeOfficial}))

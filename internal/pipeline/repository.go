@@ -23,13 +23,12 @@ type Repository interface {
 	// names that has one, with their jobs but not their scripts: a branch's
 	// first, in f's order, then a merge request's.
 	Latest(ctx context.Context, projectID int64, f LatestFilter) ([]*Pipeline, error)
-	// FindSame returns the newest pipeline that tests what p tests, the
-	// same subject and purpose, commits and jobs, and stands at one of
-	// statuses, with its jobs and their scripts, or nil.
-	FindSame(ctx context.Context, p *Pipeline, statuses []Status) (*Pipeline, error)
-	// CountSame counts the pipelines that test what p tests, with p's
-	// purpose, and stand at one of statuses.
-	CountSame(ctx context.Context, p *Pipeline, statuses []Status) (int, error)
+	// FindSame returns the newest pipeline of k, the same subject and
+	// purpose, commits and jobs, that stands at one of statuses, with its
+	// jobs and their scripts, or nil.
+	FindSame(ctx context.Context, k key, statuses []Status) (*Pipeline, error)
+	// CountSame counts the pipelines of k that stand at one of statuses.
+	CountSame(ctx context.Context, k key, statuses []Status) (int, error)
 
 	// MarkStarted records that a queued pipeline started on image, and so
 	// may keep its jobs' output, reporting false when it was no longer
@@ -321,19 +320,19 @@ func valueRows(n int) string {
 	return strings.TrimSuffix(strings.Repeat("(?), ", n), ", ")
 }
 
-func (r *repository) FindSame(ctx context.Context, p *Pipeline, statuses []Status) (*Pipeline, error) {
+func (r *repository) FindSame(ctx context.Context, k key, statuses []Status) (*Pipeline, error) {
 	if len(statuses) == 0 {
 		return nil, nil
 	}
-	query, args := findSameQuery(p, statuses)
+	query, args := findSameQuery(k, statuses)
 	return r.one(ctx, query, args...)
 }
 
-func (r *repository) CountSame(ctx context.Context, p *Pipeline, statuses []Status) (int, error) {
+func (r *repository) CountSame(ctx context.Context, k key, statuses []Status) (int, error) {
 	if len(statuses) == 0 {
 		return 0, nil
 	}
-	query, args := countSameQuery(p, statuses)
+	query, args := countSameQuery(k, statuses)
 	var n int
 	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
 		return 0, fmt.Errorf("counting pipelines: %w", err)
@@ -341,36 +340,35 @@ func (r *repository) CountSame(ctx context.Context, p *Pipeline, statuses []Stat
 	return n, nil
 }
 
-// findSameQuery selects the newest pipeline testing what p tests at one of
-// statuses.
-func findSameQuery(p *Pipeline, statuses []Status) (string, []any) {
-	where, args := sameWhere(p, statuses)
+// findSameQuery selects the newest pipeline of k at one of statuses.
+func findSameQuery(k key, statuses []Status) (string, []any) {
+	where, args := sameWhere(k, statuses)
 	return `SELECT ` + pipelineColumns + ` FROM pipelines WHERE ` + where + ` ORDER BY id DESC LIMIT 1`, args
 }
 
-// countSameQuery counts the pipelines testing what p tests at one of
-// statuses.
-func countSameQuery(p *Pipeline, statuses []Status) (string, []any) {
-	where, args := sameWhere(p, statuses)
+// countSameQuery counts the pipelines of k at one of statuses.
+func countSameQuery(k key, statuses []Status) (string, []any) {
+	where, args := sameWhere(k, statuses)
 	return `SELECT COUNT(*) FROM pipelines WHERE ` + where, args
 }
 
-// sameWhere picks the pipelines testing what p tests at one of statuses,
-// of p's subject, purpose included, so that reusing a result, the merge
-// gate's current pipeline, a settled one and the count of those that could
-// not run all see only pipelines of one purpose: through the index of a
-// branch's commits, or of a merge request's pairs of commits, so it reads
-// only pipelines of those commits however many the project keeps.
-func sameWhere(p *Pipeline, statuses []Status) (string, []any) {
-	sub := p.subject()
+// sameWhere picks the pipelines of k at one of statuses: of its subject,
+// purpose included, so that reusing a result, the merge gate's current
+// pipeline, one that ended without a result and the count of those that
+// could not run all see only pipelines of one purpose, and a key with no
+// purpose matches none. It reads through the index of a branch's commits,
+// or of a merge request's pairs of commits, so only pipelines of those
+// commits however many the project keeps.
+func sameWhere(k key, statuses []Status) (string, []any) {
+	sub := k.subject
 	var where string
 	var args []any
 	if sub.kind == KindMergeRequest {
 		where = `merge_request_id = ? AND head_sha = ? AND target_sha = ? AND project_id = ? AND config_hash = ? AND purpose = ?`
-		args = []any{sub.mergeRequestID, p.HeadSHA, p.TargetSHA, sub.projectID, p.ConfigHash, sub.purpose}
+		args = []any{sub.mergeRequestID, k.head, k.target, sub.projectID, k.configHash, sub.purpose}
 	} else {
 		where = `project_id = ? AND kind = 'branch' AND branch = ? AND head_sha = ? AND config_hash = ? AND purpose = ?`
-		args = []any{sub.projectID, sub.branch, p.HeadSHA, p.ConfigHash, sub.purpose}
+		args = []any{sub.projectID, sub.branch, k.head, k.configHash, sub.purpose}
 	}
 	where += ` AND status IN (` + placeholders(len(statuses)) + `)`
 	for _, s := range statuses {

@@ -322,7 +322,7 @@ func TestProposedPipelinesNeverCountForTheMergeRequest(t *testing.T) {
 		return st
 	}
 	key := official().Key
-	probe := key.probe(e.project, PurposeOfficial)
+	probe := key.of(e.project, PurposeOfficial)
 	countsNothing := func(when string, wantGate GateState) {
 		t.Helper()
 		st := official()
@@ -401,7 +401,7 @@ func TestProposedPipelinesNeverCountForTheMergeRequest(t *testing.T) {
 	e.projects.setBranch("develop", sha(3))
 	e.propose(sha(30), proposedYAML)
 	key = official().Key
-	probe = key.probe(e.project, PurposeOfficial)
+	probe = key.of(e.project, PurposeOfficial)
 	failed := e.wait(e.start(StartInput{MergeRequestID: e.mr}).ID)
 	again := e.wait(e.start(StartInput{MergeRequestID: e.mr, Purpose: PurposeProposed}).ID)
 	if failed.Status != StatusFailed || again.Status != StatusPassed {
@@ -472,7 +472,7 @@ func TestAProposedPipelineOfTheOfficialKeyNeverStandsForIt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	probe := key.probe(e.project, PurposeOfficial)
+	probe := key.of(e.project, PurposeOfficial)
 
 	st := status()
 	if g := st.Gate(); g.State != GateNotRun || st.Current != nil || st.Latest != nil || st.Settled != nil {

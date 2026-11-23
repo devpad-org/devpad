@@ -342,12 +342,12 @@ func (s *service) ProposedStatus(ctx context.Context, userID, projectID int64, o
 	if jobs.Invalid != nil {
 		st.Invalid = jobs.Invalid.Error()
 	}
-	probe := st.Key.probe(projectID, PurposeProposed)
-	if st.Current, err = s.current(ctx, probe); err != nil {
+	proposed := st.Key.of(projectID, PurposeProposed)
+	if st.Current, err = s.current(ctx, proposed); err != nil {
 		return nil, err
 	}
 	if st.Current == nil {
-		if st.Settled, err = s.settledWithout(ctx, probe, st.Automatic); err != nil {
+		if st.Settled, err = s.settledWithout(ctx, proposed, st.Automatic); err != nil {
 			return nil, err
 		}
 	}

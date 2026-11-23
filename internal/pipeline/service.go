@@ -539,20 +539,18 @@ func (s *service) settleBranch(ctx context.Context, p *project.Project, branch, 
 	}
 	configured := resolved.Source != SourceNone
 	st.Configured = &configured
-	probe := branchProbe(p.ID, branch, tip, resolved.Hash)
-	if st.Settled, err = s.settledOf(ctx, probe, st.Automatic); err != nil {
+	if st.Settled, err = s.settledOf(ctx, branchKey(p.ID, branch, tip, resolved.Hash), st.Automatic); err != nil {
 		log.Printf("pipeline: project %d's %s for its badge: %v", p.ID, branch, err)
 	}
 }
 
-// current is the newest pipeline testing what probe tests that counts
-// (countingStatuses): one queued or running, or one finished with a result,
-// which a later one cancelled, superseded or interrupted never hides. It is
-// nil when there is none. A start that reuses results returns this same
-// pipeline once it has finished, so the merge gate and reuse never
-// disagree.
-func (s *service) current(ctx context.Context, probe *Pipeline) (*Pipeline, error) {
-	return s.repo.FindSame(ctx, probe, countingStatuses)
+// current is the newest pipeline of k that counts (countingStatuses): one
+// queued or running, or one finished with a result, which a later one
+// cancelled, superseded or interrupted never hides. It is nil when there is
+// none. A start that reuses results returns this same pipeline once it has
+// finished, so the merge gate and reuse never disagree.
+func (s *service) current(ctx context.Context, k key) (*Pipeline, error) {
+	return s.repo.FindSame(ctx, k, countingStatuses)
 }
 
 func (s *service) JobOutput(ctx context.Context, userID, projectID, pipelineID int64, req OutputRequest) (*Output, error) {

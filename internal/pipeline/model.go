@@ -333,21 +333,21 @@ type MergeRequestKey struct {
 	ConfigHash string
 }
 
-// probe is a pipeline of the project with purpose testing what k names,
-// to look up others that test the same. The purpose is always named: one
-// left out matches no pipeline, so a lookup that forgets it finds no pass
-// rather than taking a proposed pipeline's.
-func (k MergeRequestKey) probe(projectID int64, purpose Purpose) *Pipeline {
-	return &Pipeline{
-		ProjectID: projectID, Kind: KindMergeRequest, Purpose: purpose, MergeRequestID: k.MergeRequestID,
-		HeadSHA: k.HeadSHA, TargetSHA: k.TargetSHA, ConfigHash: k.ConfigHash,
+// of is the key of the project's pipelines with purpose that test what k
+// names. The purpose is always named: a key without one matches no
+// pipeline (sameWhere), so a lookup that forgets it finds no pass rather
+// than taking a proposed pipeline's.
+func (k MergeRequestKey) of(projectID int64, purpose Purpose) key {
+	return key{
+		subject: subject{projectID: projectID, kind: KindMergeRequest, purpose: purpose, mergeRequestID: k.MergeRequestID},
+		head:    k.HeadSHA, target: k.TargetSHA, configHash: k.ConfigHash,
 	}
 }
 
-// branchProbe is an official pipeline of a protected branch's commit with
-// the jobs configHash names, to look up others that test the same.
-func branchProbe(projectID int64, branch, commit, configHash string) *Pipeline {
-	return &Pipeline{ProjectID: projectID, Kind: KindBranch, Purpose: PurposeOfficial, Branch: branch, HeadSHA: commit, ConfigHash: configHash}
+// branchKey is the key of the official pipelines of a protected branch's
+// commit with the jobs configHash names.
+func branchKey(projectID int64, branch, commit, configHash string) key {
+	return key{subject: subject{projectID: projectID, kind: KindBranch, purpose: PurposeOfficial, branch: branch}, head: commit, configHash: configHash}
 }
 
 // subject is what a pipeline is of: a branch or a merge request of a

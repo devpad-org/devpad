@@ -386,7 +386,7 @@ func TestReuseAndTheMergeRequestGateCountTheSamePipelines(t *testing.T) {
 	latest := func(of *Pipeline) *Pipeline {
 		t.Helper()
 		key := MergeRequestKey{MergeRequestID: e.mr, HeadSHA: sha(30), TargetSHA: sha(2), ConfigHash: of.ConfigHash}
-		got, err := e.svc.current(ctx, key.probe(e.project, PurposeOfficial))
+		got, err := e.svc.current(ctx, key.of(e.project, PurposeOfficial))
 		if err != nil || got == nil {
 			t.Fatalf("latest: %+v %v", got, err)
 		}

@@ -68,20 +68,19 @@ type SettledPipeline struct {
 	Reason string
 }
 
-// settledOf is the SettledPipeline of what probe tests, or nil when one of
-// it counts or none ended without a result. automatic says its subject
-// runs by itself.
-func (s *service) settledOf(ctx context.Context, probe *Pipeline, automatic bool) (*SettledPipeline, error) {
-	current, err := s.current(ctx, probe)
+// settledOf is the SettledPipeline of k, or nil when one of it counts or
+// none ended without a result. automatic says its subject runs by itself.
+func (s *service) settledOf(ctx context.Context, k key, automatic bool) (*SettledPipeline, error) {
+	current, err := s.current(ctx, k)
 	if err != nil || current != nil {
 		return nil, err
 	}
-	return s.settledWithout(ctx, probe, automatic)
+	return s.settledWithout(ctx, k, automatic)
 }
 
-// settledWithout is settledOf for what probe tests when none of it counts.
-func (s *service) settledWithout(ctx context.Context, probe *Pipeline, automatic bool) (*SettledPipeline, error) {
-	ended, retry, err := s.settled(ctx, probe)
+// settledWithout is settledOf for k when none of it counts.
+func (s *service) settledWithout(ctx context.Context, k key, automatic bool) (*SettledPipeline, error) {
+	ended, retry, err := s.settled(ctx, k)
 	if err != nil || ended == nil {
 		return nil, err
 	}
@@ -178,7 +177,8 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 	if resolved.Invalid != nil {
 		st.Invalid = resolved.Invalid.Error()
 	}
-	if st.Current, err = s.current(ctx, st.Key.probe(projectID, PurposeOfficial)); err != nil {
+	official := st.Key.of(projectID, PurposeOfficial)
+	if st.Current, err = s.current(ctx, official); err != nil {
 		return nil, err
 	}
 	if st.Current != nil && st.Current.Status == StatusFailed {
@@ -187,7 +187,7 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 		}
 	}
 	if st.Current == nil {
-		if st.Settled, err = s.settledWithout(ctx, st.Key.probe(projectID, PurposeOfficial), st.Automatic); err != nil {
+		if st.Settled, err = s.settledWithout(ctx, official, st.Automatic); err != nil {
 			return nil, err
 		}
 	}

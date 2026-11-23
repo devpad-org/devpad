@@ -103,28 +103,28 @@ func (s *service) reusable(ctx context.Context, next *Pipeline, in StartInput) (
 	if in.ReuseResult || in.Automatic {
 		statuses = countingStatuses
 	}
-	same, err := s.repo.FindSame(ctx, next, statuses)
+	same, err := s.repo.FindSame(ctx, next.key(), statuses)
 	if err != nil || same != nil || !in.Automatic {
 		return same, err
 	}
-	ended, retry, err := s.settled(ctx, next)
+	ended, retry, err := s.settled(ctx, next.key())
 	if err != nil || retry {
 		return nil, err
 	}
 	return ended, nil
 }
 
-// settled returns the newest pipeline testing what p tests that ended
-// without a result (endedStatuses), or nil, and whether devpad is to run
-// those commits and jobs once more by itself: never after the user
-// cancelled them, and after an error only while the database holds no more
-// than errorRetries of them.
-func (s *service) settled(ctx context.Context, p *Pipeline) (ended *Pipeline, retry bool, err error) {
-	ended, err = s.repo.FindSame(ctx, p, endedStatuses)
+// settled returns the newest pipeline of k that ended without a result
+// (endedStatuses), or nil, and whether devpad is to run those commits and
+// jobs once more by itself: never after the user cancelled them, and after
+// an error only while the database holds no more than errorRetries of
+// them.
+func (s *service) settled(ctx context.Context, k key) (ended *Pipeline, retry bool, err error) {
+	ended, err = s.repo.FindSame(ctx, k, endedStatuses)
 	if err != nil || ended == nil || ended.Status != StatusError {
 		return ended, false, err
 	}
-	failed, err := s.repo.CountSame(ctx, p, []Status{StatusError})
+	failed, err := s.repo.CountSame(ctx, k, []Status{StatusError})
 	if err != nil {
 		return nil, false, err
 	}
