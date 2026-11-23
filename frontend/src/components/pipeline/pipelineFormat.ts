@@ -18,7 +18,7 @@ export const PIPELINE_COPY = {
     "Devpad runs a ticked branch's pipeline on each new commit and when you tick it, and a merge request's into it when it opens, when its branch gets new commits and when the ticked branch moves. Merge requests into other protected branches run only when you start them. The Project page shows each ticked branch's latest pipeline.",
   // On a merge request into a ticked branch without a pipeline.
   mergeRequestNoneAutomatic: (target: string) =>
-    `No pipeline has run on this merge request yet. Devpad runs one by itself when it opens, when its branch gets new commits and when ${target} moves, but never again on the same commits after you cancelled its pipeline or it couldn't run: run it here then.`,
+    `No pipeline has run on this merge request yet. Devpad runs one by itself when it opens, when its branch gets new commits and when ${target} moves.`,
   // On a merge request into a branch not ticked to run pipelines.
   mergeRequestNone: (target: string) =>
     `No pipeline has run on this merge request yet. ${target} isn't ticked under Run pipelines, so devpad doesn't run its merge requests by itself: run one here.`,
@@ -131,7 +131,7 @@ export function triggerLabel(p: Pipeline): string {
     case 'setting':
       return "Started when the project's pipeline setting changed"
     case 'catch_up':
-      return 'Started as devpad started, since nothing had tested these commits'
+      return 'Started when devpad caught up on commits nothing had tested'
     default:
       return `Started by ${p.trigger}`
   }

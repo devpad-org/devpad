@@ -141,6 +141,22 @@ export type PipelineSubject = { branch: string } | { mergeRequestId: number }
 // server's MaxLatestSubjects.
 export const MAX_LATEST_SUBJECTS = 100
 
+// A pipeline of the commits and jobs a branch or merge request has now that
+// ended without a result, cancelled or unable to run, when none of them
+// counts: reason says why, and whether devpad runs them again (retrying).
+export interface SettledPipeline {
+  pipeline: Pipeline
+  retrying: boolean
+  reason: string
+}
+
+// How a branch stands for pipelines now: whether devpad runs it by itself,
+// and its settled pipeline.
+export interface BranchPipelineStanding {
+  automatic: boolean
+  settled: SettledPipeline | null
+}
+
 // How a merge request stands for pipelines now, as the server works it out:
 // the head and target tip a pipeline must test to count, the jobs that
 // would run there, and the pipeline that tested exactly that.
@@ -165,6 +181,12 @@ export interface MergeRequestPipelineStatus {
   // The newest pipeline of the merge request that counts, whatever it
   // tested; an older result when it isn't current.
   latest: Pipeline | null
+  // Devpad runs the merge request's pipelines by itself: it is open, into a
+  // branch ticked to run them.
+  automatic: boolean
+  // When nothing current counts, the newest of these commits and jobs that
+  // was cancelled or couldn't run, and why.
+  settled: SettledPipeline | null
 }
 
 function base(projectId: number): string {
@@ -184,12 +206,18 @@ export const pipelineApi = {
   },
 
   // The newest pipeline that counts (under way, or with a result) of each
-  // branch and merge request named that has one, and the commit each
-  // branch named is at now: null when the repo could not be read.
+  // branch and merge request named that has one, the commit each branch
+  // named is at now (null when the repo could not be read), how each
+  // branch stands, and whether devpad runs each merge request by itself.
   latest(
     projectId: number,
     subjects: { branches: string[]; mergeRequestIds: number[] },
-  ): Promise<{ pipelines: Pipeline[]; branchTips: Record<string, string> | null }> {
+  ): Promise<{
+    pipelines: Pipeline[]
+    branchTips: Record<string, string> | null
+    branches: Record<string, BranchPipelineStanding>
+    mergeRequestsAutomatic: Record<string, boolean>
+  }> {
     const query = new URLSearchParams()
     for (const b of subjects.branches) query.append('branch', b)
     for (const id of subjects.mergeRequestIds) query.append('mergeRequestId', String(id))

@@ -29,11 +29,21 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
 
   const current = computed(() => status.value?.current ?? null)
   const latest = computed(() => status.value?.latest ?? null)
-  const shownId = computed(() => pickedId.value ?? current.value?.id ?? latest.value?.id ?? null)
+  // The pipeline of the current commits and jobs that was cancelled or
+  // couldn't run, when none of them counts, with why.
+  const settled = computed(() => status.value?.settled ?? null)
+  const shownId = computed(() => pickedId.value ?? current.value?.id ?? settled.value?.pipeline.id ?? latest.value?.id ?? null)
   // The pipeline the card shows is not of the commits and jobs the merge
   // request has now.
-  const shownStale = computed(() => !!status.value?.open && shownId.value !== null && shownId.value !== current.value?.id)
-  const shownPipeline = computed(() => pipelines.value.find((p) => p.id === shownId.value) ?? (latest.value?.id === shownId.value ? latest.value : null))
+  const shownStale = computed(
+    () => !!status.value?.open && shownId.value !== null && shownId.value !== current.value?.id && shownId.value !== settled.value?.pipeline.id,
+  )
+  const shownPipeline = computed(
+    () =>
+      pipelines.value.find((p) => p.id === shownId.value) ??
+      [latest.value, settled.value?.pipeline].find((p) => p && p.id === shownId.value) ??
+      null,
+  )
   // A pipeline that was replaced before it ran says nothing worth listing.
   const timelinePipelines = computed(() => pipelines.value.filter((p) => p.status !== 'superseded'))
 
@@ -71,7 +81,7 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
   }
 
   function show(id: number | null) {
-    pickedId.value = id === (current.value?.id ?? latest.value?.id) ? null : id
+    pickedId.value = id === (current.value?.id ?? settled.value?.pipeline.id ?? latest.value?.id) ? null : id
   }
 
   const check = computed<Check | null>(() => {
@@ -89,9 +99,22 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
     }
     if (st.invalid) return { ...base, tone: 'error', icon: 'warning', title: "Pipeline doesn't parse", detail: st.invalid }
     const p = st.current
+    if (!p && st.settled) {
+      const cancelled = st.settled.pipeline.status === 'cancelled'
+      return {
+        ...base,
+        tone: cancelled ? 'neutral' : 'error',
+        icon: cancelled ? 'ban' : 'warning',
+        title: cancelled ? 'Pipeline cancelled' : "Pipeline couldn't run",
+        detail: st.settled.reason,
+      }
+    }
     if (!p) {
       const old = st.latest
-      if (!old) return { ...base, tone: 'neutral', icon: 'circle', title: 'No pipeline yet', detail: 'Run one from the Pipeline card below.' }
+      if (!old) {
+        const detail = st.automatic ? 'Devpad runs one by itself.' : 'Run one from the Pipeline card below.'
+        return { ...base, tone: 'neutral', icon: 'circle', title: 'No pipeline yet', detail }
+      }
       return {
         ...base,
         tone: 'warning',
@@ -127,7 +150,26 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
     startError.value = ''
   }
 
-  return { pipelines, status, loaded, current, latest, shownId, shownStale, shownPipeline, pickedId, timelinePipelines, starting, startError, check, load, start, show, reset }
+  return {
+    pipelines,
+    status,
+    loaded,
+    current,
+    latest,
+    settled,
+    shownId,
+    shownStale,
+    shownPipeline,
+    pickedId,
+    timelinePipelines,
+    starting,
+    startError,
+    check,
+    load,
+    start,
+    show,
+    reset,
+  }
 }
 
 export type MrPipelines = ReturnType<typeof createMrPipelines>

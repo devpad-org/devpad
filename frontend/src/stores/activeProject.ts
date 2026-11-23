@@ -6,7 +6,7 @@ import { projectApi, type ConversionNotice, type GitPushEvent, type Project, typ
 export type GitPushNotice = GitPushEvent & { key: string }
 import { taskApi, type Task } from '@/api/tasks'
 import { mergeRequestApi, type MergeRequest } from '@/api/mergeRequests'
-import { MAX_LATEST_SUBJECTS, pipelineApi, type Pipeline } from '@/api/pipelines'
+import { MAX_LATEST_SUBJECTS, pipelineApi, type BranchPipelineStanding, type Pipeline } from '@/api/pipelines'
 
 const POLL_INTERVAL_MS = 4000
 
@@ -27,6 +27,9 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   // The commit each branch that runs pipelines is at, as the server read it
   // with those pipelines, to tell a badge of an older commit.
   const pipelineBranchTips = ref<Record<string, string>>({})
+  // How each branch that runs pipelines stands, as the server says: its
+  // pipeline of its current commit that was cancelled or couldn't run.
+  const pipelineBranchStandings = ref<Record<string, BranchPipelineStanding>>({})
   const loadError = ref('')
   const selectedTaskId = ref<number | null>(null)
   // The merge request open in its modal, which loads it by id.
@@ -138,6 +141,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     if (branches.length === 0 && mergeRequestIds.length === 0) {
       latestPipelines.value = []
       pipelineBranchTips.value = {}
+      pipelineBranchStandings.value = {}
       return
     }
     try {
@@ -145,6 +149,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
       if (gen !== generation) return
       latestPipelines.value = res.pipelines ?? []
       pipelineBranchTips.value = res.branchTips ?? {}
+      pipelineBranchStandings.value = res.branches ?? {}
     } catch {
       // Keep the badges as they were.
     }
@@ -213,6 +218,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     branches.value = []
     latestPipelines.value = []
     pipelineBranchTips.value = {}
+    pipelineBranchStandings.value = {}
     loadError.value = ''
     selectedTaskId.value = null
     selectedMergeRequestId.value = null
@@ -272,6 +278,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     branches,
     latestPipelines,
     pipelineBranchTips,
+    pipelineBranchStandings,
     branchPipelines,
     mergeRequestPipelines,
     loadError,

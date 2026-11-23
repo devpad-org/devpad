@@ -11,11 +11,12 @@ import { useMergeRequest } from './useMergeRequest'
 // activity, with its jobs, where they came from and their output, and a way
 // to run it by hand, which devpad also does by itself into a ticked branch.
 // Its jobs come from the target branch, never the change.
-const { mr, project, projectId, isOpen, pipelines } = useMergeRequest()
-const { latest, status, shownId, shownStale, shownPipeline, pickedId, loaded, starting, startError } = pipelines
+const { mr, projectId, isOpen, pipelines } = useMergeRequest()
+const { latest, settled, status, shownId, shownStale, shownPipeline, pickedId, loaded, starting, startError } = pipelines
 
-// Devpad runs the pipeline by itself when the target is ticked to run them.
-const runsByItself = computed(() => !!mr.value && (project.value?.pipelineBranches ?? []).includes(mr.value.targetBranch))
+// The card shows the pipeline of the current commits that was cancelled or
+// couldn't run, saying why and whether devpad tries again.
+const showingSettled = computed(() => !!settled.value && shownId.value === settled.value.pipeline.id)
 
 // Run again shows the pipeline it started, the latest.
 function started() {
@@ -42,12 +43,13 @@ function started() {
           @click="pipelines.start"
         >
           <MrIcon name="play" :size="12" />
-          {{ starting ? 'Starting…' : latest ? 'Run pipeline again' : 'Run pipeline' }}
+          {{ starting ? 'Starting…' : latest || settled ? 'Run pipeline again' : 'Run pipeline' }}
         </button>
       </span>
     </div>
     <div class="card-body">
       <p v-if="startError" class="notice notice-error">{{ startError }}</p>
+      <p v-if="showingSettled && settled" class="notice" :class="settled.pipeline.status === 'cancelled' ? 'notice-warning' : 'notice-error'">{{ settled.reason }}</p>
       <p v-if="shownStale && status" class="notice notice-warning">
         <template v-if="shownPipeline">
           This pipeline tested <span class="mono">{{ shortSha(shownPipeline.headSha) }}</span> onto {{ shownPipeline.targetBranch }} at
@@ -58,7 +60,7 @@ function started() {
       </p>
       <PipelineView v-if="shownId !== null" :key="shownId" :project-id="projectId" :pipeline-id="shownId" :active="true" compact @started="started" />
       <p v-else-if="loaded" class="muted empty">
-        {{ runsByItself ? PIPELINE_COPY.mergeRequestNoneAutomatic(mr.targetBranch) : PIPELINE_COPY.mergeRequestNone(mr.targetBranch) }} Its jobs come from <span class="mono">.devpad/pipeline.yml</span> on
+        {{ status?.automatic ? PIPELINE_COPY.mergeRequestNoneAutomatic(mr.targetBranch) : PIPELINE_COPY.mergeRequestNone(mr.targetBranch) }} Its jobs come from <span class="mono">.devpad/pipeline.yml</span> on
         <span class="mono">{{ mr.targetBranch }}</span>, or the project's pipeline setting, and test this branch merged onto it.
       </p>
       <p v-if="loaded" class="muted empty">{{ PIPELINE_COPY.notGating }}</p>
