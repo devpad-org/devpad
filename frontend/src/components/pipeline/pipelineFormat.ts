@@ -70,7 +70,9 @@ export function pipelineRoundsText(rounds: PipelineRounds | undefined): string {
     case 'limit':
       return `Waiting for you: the pipeline still failed after ${rounds.limit} automatic rounds. Send the failure back, or look at the change.`
     case 'stuck':
-      return "Waiting for you: stuck, the agent's last round failed the same jobs the same way. Send the failure back with a hint, or look at the change."
+      return "Waiting for you: stuck, the agent's last round left the same failures as before. Send the failure back with a hint, or look at the change."
+    case 'not_started':
+      return "Waiting for you: devpad couldn't start the agent to send the pipeline's failure back. Send it back once the project is ready."
     case 'budget':
       return ''
   }

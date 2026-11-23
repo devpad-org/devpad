@@ -51,9 +51,9 @@ export interface Task {
 
 // Why a task's latest pipeline failure waits for you rather than going back
 // to its agent: it already had its automatic rounds, its last round failed
-// the same way as the one before, or its budget is spent. Empty when it
-// doesn't wait.
-export type PipelineHold = '' | 'limit' | 'stuck' | 'budget'
+// the same way as the one before or brought nothing new, its budget is
+// spent, or devpad couldn't start the agent. Empty when it doesn't wait.
+export type PipelineHold = '' | 'limit' | 'stuck' | 'budget' | 'not_started'
 
 // A task's automatic pipeline rounds: count of limit sent in a row since you
 // last stepped in or the pipeline last passed.

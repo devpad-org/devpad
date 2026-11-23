@@ -173,7 +173,7 @@ const statusHint = computed(() => {
       return props.mergeRequest ? 'The agent is done. Review the merge request.' : 'The agent is done and waiting for review.'
     case 'changes_requested':
       if (agentReviewing.value) return 'Changes were requested. A review agent is reviewing the merge request.'
-      if (t.pipelineRounds?.held === 'limit' || t.pipelineRounds?.held === 'stuck') {
+      if (t.pipelineRounds?.held && t.pipelineRounds.held !== 'budget') {
         return "The pipeline failed, and devpad stopped sending it back by itself. Send the failure back to the agent, or look at the merge request."
       }
       return 'Changes were requested. Send the feedback back to the agent.'
@@ -711,12 +711,6 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 <style scoped src="./shared.css"></style>
 <style scoped src="./taskModal.css"></style>
 <style scoped>
-.notice-info {
-  color: var(--text-secondary);
-  background: var(--bg-neutral);
-  border: 0.5px solid var(--border-subtle);
-}
-
 .rounds-text {
   flex: 1;
   min-width: 0;

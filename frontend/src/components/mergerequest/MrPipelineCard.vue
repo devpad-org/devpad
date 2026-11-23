@@ -116,12 +116,6 @@ function started() {
   margin: 0;
 }
 
-.notice-info {
-  color: var(--text-secondary);
-  background: var(--bg-neutral);
-  border: 0.5px solid var(--border-subtle);
-}
-
 .empty {
   font-size: 0.8rem;
 }

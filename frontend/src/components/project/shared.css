@@ -224,6 +224,13 @@
   border: 0.5px solid var(--success-border);
 }
 
+/* Something to know that asks nothing of the user. */
+.notice-info {
+  color: var(--text-secondary);
+  background: var(--bg-neutral);
+  border: 0.5px solid var(--border-subtle);
+}
+
 .empty-text {
   color: var(--text-muted);
   font-size: 0.8rem;
