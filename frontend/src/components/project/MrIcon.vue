@@ -177,7 +177,7 @@ withDefaults(defineProps<{ name: MrIconName; size?: number; strokeWidth?: number
       <rect width="16" height="10" x="4" y="11" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" />
     </template>
     <template v-else-if="name === 'pipeline'">
-      <circle cx="5" cy="12" r="2.5" /><circle cx="19" cy="12" r="2.5" /><path d="M7.5 12h3" /><path d="M13.5 12h3" /><rect x="10.5" y="9.5" width="3" height="5" rx="1" />
+      <rect x="2" y="9" width="6" height="6" rx="1.5" /><rect x="16" y="3" width="6" height="6" rx="1.5" /><rect x="16" y="15" width="6" height="6" rx="1.5" /><path d="M8 12h4" /><path d="M16 6h-2a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
     </template>
     <template v-else-if="name === 'box'">
       <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" /><path d="m3.3 7 8.7 5 8.7-5" /><path d="M12 22V12" />
