@@ -2,6 +2,9 @@ package task
 
 import (
 	"fmt"
+	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -249,5 +252,29 @@ func TestCleanOutput(t *testing.T) {
 				t.Fatalf("cleanOutput(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// The app's PipelineHold lists exactly the holds the server has.
+func TestPipelineHoldsMatchTheFrontend(t *testing.T) {
+	source, err := os.ReadFile("../../frontend/src/api/tasks.ts")
+	if err != nil {
+		t.Fatalf("reading the frontend's tasks API: %v", err)
+	}
+	block := regexp.MustCompile(`export type PipelineHold =([^\n]*)`).FindSubmatch(source)
+	if block == nil {
+		t.Fatal("cannot find PipelineHold in frontend/src/api/tasks.ts")
+	}
+	var frontend, server []string
+	for _, m := range regexp.MustCompile(`'([a-z_]*)'`).FindAllSubmatch(block[1], -1) {
+		frontend = append(frontend, string(m[1]))
+	}
+	for _, h := range PipelineHolds() {
+		server = append(server, string(h))
+	}
+	slices.Sort(frontend)
+	slices.Sort(server)
+	if !slices.Equal(frontend, server) {
+		t.Errorf("the server's holds are %v, the frontend's PipelineHold %v", server, frontend)
 	}
 }

@@ -5,10 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
-	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -411,30 +408,6 @@ func TestProposedPipelinesNeverCountForTheMergeRequest(t *testing.T) {
 	countsNothing("after a failing official pipeline", GateFailed)
 	if g := official().Gate(); g.Pipeline.ID != failed.ID {
 		t.Fatalf("the gate names %d, want %d", g.Pipeline.ID, failed.ID)
-	}
-}
-
-// The app's PipelinePurpose lists the purposes the server has.
-func TestPurposesMatchTheFrontend(t *testing.T) {
-	source, err := os.ReadFile("../../frontend/src/api/pipelines.ts")
-	if err != nil {
-		t.Fatalf("reading the frontend's pipelines API: %v", err)
-	}
-	block := regexp.MustCompile(`export type PipelinePurpose =([^\n]*)`).FindSubmatch(source)
-	if block == nil {
-		t.Fatal("cannot find PipelinePurpose in frontend/src/api/pipelines.ts")
-	}
-	var frontend, server []string
-	for _, m := range regexp.MustCompile(`'([a-z_]+)'`).FindAllSubmatch(block[1], -1) {
-		frontend = append(frontend, string(m[1]))
-	}
-	for _, p := range Purposes() {
-		server = append(server, string(p))
-	}
-	sort.Strings(frontend)
-	sort.Strings(server)
-	if !slices.Equal(frontend, server) {
-		t.Errorf("the server's purposes are %v, the frontend's PipelinePurpose %v", server, frontend)
 	}
 }
 

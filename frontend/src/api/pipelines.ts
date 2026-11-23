@@ -1,9 +1,9 @@
 import { apiClient } from './client'
 import type { Project } from './projects'
 
-// Where a pipeline is, or how it ended. not_configured means the commit has
-// no pipeline file and the project no setting, so nothing was tested: it is
-// never a pass.
+// Where a pipeline is, or how it ended, as the server's Statuses.
+// not_configured means the commit has no pipeline file and the project no
+// setting, so nothing was tested: it is never a pass.
 export type PipelineStatus =
   | 'queued'
   | 'running'
@@ -17,6 +17,7 @@ export type PipelineStatus =
   | 'superseded'
   | 'interrupted'
 
+// Where a pipeline's job is, or how it ended, as the server's JobStatuses.
 export type JobStatus =
   | 'queued'
   | 'running'
@@ -34,8 +35,9 @@ export type JobStatus =
 // requests into them: a merge request opening, its branch getting new
 // commits, its target moving; a merge into the branch, a fast-forward from
 // the upstream; the user ticking the branch, changing the pipeline setting;
-// and devpad catching up as it starts. The server doesn't check triggers,
-// so one the app doesn't know shows by its name (triggerLabel).
+// and devpad catching up as it starts. As the server's Triggers; one the
+// app doesn't know, recorded by a newer devpad, shows by its name
+// (triggerLabel).
 export type PipelineTrigger =
   | 'user'
   | 'restart'
@@ -198,7 +200,7 @@ export interface BranchPipelineStanding extends PipelineStanding {
 // request (its target isn't ticked under Run pipelines, or has no
 // pipeline), passed when its pipeline passed on it as it is now, closed
 // when it can no longer merge, and otherwise why its pipeline keeps it from
-// merging.
+// merging. As the server's GateStates.
 export type MergeGateState =
   | 'unguarded'
   | 'passed'
