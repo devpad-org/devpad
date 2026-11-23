@@ -326,12 +326,9 @@ func (s *service) PublishWorkspaceBranch(ctx context.Context, userID, projectID 
 	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	hook := s.publishHook
-	s.mu.Unlock()
-	if hook != nil {
-		hook.BranchPublished(ctx, userID, p.ID, branch, published.SHA)
-	}
+	// Told while the branch is still held for this publish, so its
+	// publishes are told in order.
+	s.branchMoved(ctx, BranchMove{UserID: userID, ProjectID: p.ID, Branch: branch, SHA: published.SHA, Cause: MovePublished})
 	return published, nil
 }
 

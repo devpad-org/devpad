@@ -4,6 +4,8 @@ import (
 	"errors"
 	"slices"
 	"time"
+
+	"github.com/devpad-org/devpad/internal/agent"
 )
 
 // Status represents the setup state of a project's canonical repo.
@@ -73,7 +75,14 @@ type Project struct {
 	// merges into on its own once a review agent approves it. Empty unless
 	// the user picks some.
 	AutoMergeBranches []string
-	UpstreamURL       string
+	// PipelineBranches are the protected branches that run the project's
+	// pipeline on each new commit, and on each merge request into them.
+	// Empty unless the user picks some.
+	PipelineBranches []string
+	// PipelineConfig is the pipeline, in the format of .devpad/pipeline.yml,
+	// for a commit that has no such file. Empty means none.
+	PipelineConfig string
+	UpstreamURL    string
 	// UpstreamVersion counts the changes to UpstreamURL since the project
 	// was made.
 	UpstreamVersion int64
@@ -113,6 +122,41 @@ func (p *Project) IsProtected(branch string) bool {
 // its own once a review agent approves it. Only a protected branch can.
 func (p *Project) AutoMerges(branch string) bool {
 	return p.IsProtected(branch) && slices.Contains(p.AutoMergeBranches, branch)
+}
+
+// RunsPipelines reports whether branch runs the project's pipeline on each
+// new commit and on each merge request into it. Only a protected branch
+// can.
+func (p *Project) RunsPipelines(branch string) bool {
+	return p.IsProtected(branch) && slices.Contains(p.PipelineBranches, branch)
+}
+
+// PipelineFiles are where a commit keeps its pipeline, of which it may have
+// one: internal/pipeline reads them, and an automatic merge never takes a
+// change to them.
+func PipelineFiles() []string {
+	return []string{".devpad/pipeline.yml", ".devpad/pipeline.yaml"}
+}
+
+// IsPipelineFile reports whether path is one of PipelineFiles.
+func IsPipelineFile(path string) bool {
+	return slices.Contains(PipelineFiles(), path)
+}
+
+// ChangedPipelineFile names the pipeline file a change adds, changes,
+// renames or deletes, as its diff lists them, or "" when it touches none:
+// the one rule for whether a merge request proposes other jobs than its
+// target's, which an automatic merge never takes and devpad runs for
+// information.
+func ChangedPipelineFile(files []agent.RepoDiffFile) string {
+	for _, f := range files {
+		for _, path := range []string{f.Path, f.OldPath} {
+			if path != "" && IsPipelineFile(path) {
+				return path
+			}
+		}
+	}
+	return ""
 }
 
 // Protected lists every protected branch, the default branch first.
@@ -163,6 +207,10 @@ type BranchesInput struct {
 	// a task's merge request merges into once a review agent approves it.
 	// Nil keeps the project's, less any branch no longer protected.
 	AutoMergeBranches *[]string
+	// PipelineBranches are the protected branches, of those set here, that
+	// run the project's pipeline. Nil keeps the project's, less any branch
+	// no longer protected.
+	PipelineBranches *[]string
 }
 
 // MergeInput merges Source into Target, a protected branch.
@@ -179,6 +227,13 @@ type MergeInput struct {
 	// at it when the repo merges, so nothing merged into Target meanwhile is
 	// merged with the change unseen.
 	ExpectedTargetSHA string
+	// ExpectedTree, when set, refuses the merge unless it lands this tree:
+	// the one the pipeline that let it through tested.
+	ExpectedTree string
+	// KeepPipelineFiles refuses the merge if the tree it lands has any of
+	// PipelineFiles otherwise than Target has it, which the repo checks on
+	// that very tree: an automatic merge never changes the pipeline.
+	KeepPipelineFiles bool
 }
 
 // WorkspaceBranchStatus says how a branch of the project workspace compares

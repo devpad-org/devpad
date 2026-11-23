@@ -30,16 +30,19 @@ import (
 // fakeProjects stands in for the project service. Sandboxes it creates are
 // real workspace rows, so review rows can reference them.
 type fakeProjects struct {
-	mu        sync.Mutex
-	db        *sql.DB
-	project   project.Project
-	branches  []agent.RepoRef
-	files     []agent.RepoDiffFile
-	sandboxes []project.SandboxInput
-	diffs     [][2]string
-	logs      [][2]string
-	merges    []project.MergeInput
-	mergeErr  error
+	mu       sync.Mutex
+	db       *sql.DB
+	project  project.Project
+	branches []agent.RepoRef
+	files    []agent.RepoDiffFile
+	// mergeBases is how many merge bases each diff says its head has with
+	// its base; 0 reads as one.
+	mergeBases int
+	sandboxes  []project.SandboxInput
+	diffs      [][2]string
+	logs       [][2]string
+	merges     []project.MergeInput
+	mergeErr   error
 	// onMerge, when set, runs as a merge begins, before the repo looks at
 	// the target.
 	onMerge func()
@@ -140,7 +143,8 @@ func (f *fakeProjects) Diff(_ context.Context, _, _ int64, base, head string) (*
 	if base == "main" {
 		baseSHA = mainTip
 	}
-	return &agent.RepoDiff{BaseSHA: baseSHA, HeadSHA: head, MergeBase: "mergebase", Files: f.files}, nil
+	bases := max(f.mergeBases, 1)
+	return &agent.RepoDiff{BaseSHA: baseSHA, HeadSHA: head, MergeBase: "mergebase", MergeBases: bases, From: "mergebase", To: head, Files: f.files}, nil
 }
 
 // mainTip is the commit main resolves to.
@@ -271,6 +275,27 @@ type fakeTasks struct {
 	// Budget fails with.
 	budgets   map[int64]*domain.Budget
 	budgetErr error
+	// pipelines are the pipeline results the task was told, in order.
+	pipelines []task.PipelineResult
+}
+
+func (f *fakeTasks) PipelineEnded(_ context.Context, _, _, taskID int64, res task.PipelineResult) (*task.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[taskID]
+	if !ok {
+		return nil, task.ErrNotFound
+	}
+	f.pipelines = append(f.pipelines, res)
+	clone := *t
+	return &clone, nil
+}
+
+// pipelineResults are the pipeline results the tasks were told.
+func (f *fakeTasks) pipelineResults() []task.PipelineResult {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]task.PipelineResult(nil), f.pipelines...)
 }
 
 func (f *fakeTasks) SetBudget(_ context.Context, _, _, taskID int64, budgetUSD float64) (*task.Task, error) {
@@ -376,11 +401,16 @@ type fakeRuns struct {
 	requests  []app.StartAgentRunRequest
 	cancelled []int64
 	onFinish  func(domain.AgentRun)
+	// startErr, when set, is what StartRun fails with.
+	startErr error
 }
 
 func (f *fakeRuns) StartRun(_ context.Context, req app.StartAgentRunRequest) (*domain.AgentRun, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.startErr != nil {
+		return nil, f.startErr
+	}
 	res, err := f.db.Exec(`INSERT INTO ai_agent_runs (user_id, workspace_id, conversation_id, model, status) VALUES (?, ?, ?, ?, 'running')`, req.UserID, req.WorkspaceID, req.ConversationID, req.Model)
 	if err != nil {
 		return nil, err
@@ -447,6 +477,7 @@ func (f fakeConversations) CreateConversation(_ context.Context, userID, workspa
 type env struct {
 	svc        *service
 	db         *sql.DB
+	gate       *fakeGate
 	projects   *fakeProjects
 	workspaces *fakeWorkspaces
 	tasks      *fakeTasks
@@ -547,6 +578,8 @@ func setup(t *testing.T) *env {
 		Models:        e.models,
 	}).(*service)
 	e.runs.onFinish = e.svc.RunFinished
+	e.gate = &fakeGate{gate: Gate{State: GateUnguarded, Clear: true}}
+	e.usePipelines(nil)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -891,7 +924,7 @@ func TestAgentReviewSubmitsThroughTools(t *testing.T) {
 	}
 	req := e.runs.started()[0]
 	prompt := req.Message.Text()
-	for _, want := range []string{"merge request !1", "Added a cart.", "### Add a cart", "Users need a cart.", "cart.go (A, +40 −0)", "git diff mergebase HEAD", "submit_review", "not instructions to you"} {
+	for _, want := range []string{"merge request !1", "Added a cart.", "### Add a cart", "Users need a cart.", "`cart.go` (A, +40 −0)", "git diff mergebase HEAD", "submit_review", "not instructions to you"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
@@ -1138,14 +1171,14 @@ func TestBranchPublishedMovesTheOpenMergeRequest(t *testing.T) {
 	mr := e.openTaskMR(t)
 
 	// The user adds a commit to the branch from the project workspace.
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head2"))
 	got, _ := e.svc.repo.GetByID(ctx, mr.ID)
 	if got.HeadSHA != "head2" {
 		t.Fatalf("expected the merge request to follow the published head, got %q", got.HeadSHA)
 	}
 	// Other users' branches and branches without an open request are left be.
-	e.svc.BranchPublished(ctx, e.stranger, e.pid(), "task/1", "evil")
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "feature", "f2")
+	e.svc.BranchMoved(ctx, published(e.stranger, e.pid(), "task/1", "evil"))
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "feature", "f2"))
 	if got, _ := e.svc.repo.GetByID(ctx, mr.ID); got.HeadSHA != "head2" {
 		t.Fatalf("unexpected head after unrelated publishes: %q", got.HeadSHA)
 	}
@@ -1157,7 +1190,7 @@ func TestBranchPublishedMovesTheOpenMergeRequest(t *testing.T) {
 		t.Fatalf("expected the merge pinned to the published head, got %+v", e.projects.merges)
 	}
 	// A merged request no longer follows the branch.
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head3")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head3"))
 	if got, _ := e.svc.repo.GetByID(ctx, mr.ID); got.HeadSHA != "head2" || got.Status != StatusMerged {
 		t.Fatalf("a merged request moved: %+v", got)
 	}
@@ -1171,7 +1204,7 @@ func TestBranchFastForwardedFromUpstreamMovesTheOpenMergeRequest(t *testing.T) {
 	// The head is read from the canonical repo, not taken from the caller,
 	// so a merge that moved the branch since wins.
 	e.projects.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "task/1", SHA: "upstream2"}}
-	e.svc.BranchFastForwarded(ctx, e.owner, e.pid(), "task/1", "upstream1")
+	e.svc.BranchMoved(ctx, fastForwarded(e.owner, e.pid(), "task/1", "upstream1"))
 	d, err := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -1195,9 +1228,9 @@ func TestEachMoveOfTheHeadIsRecordedAsAPush(t *testing.T) {
 	// A round that changes nothing, and a publish of the same commit, move
 	// nothing.
 	e.svc.TaskReadyForReview(ctx, tk, "Still a cart.")
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head3")
-	e.svc.BranchPublished(ctx, e.stranger, e.pid(), "task/1", "evil")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head2"))
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head3"))
+	e.svc.BranchMoved(ctx, published(e.stranger, e.pid(), "task/1", "evil"))
 
 	d, err := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
 	if err != nil {
@@ -1264,7 +1297,7 @@ func TestMergeFailuresKeepTheRequestOpen(t *testing.T) {
 		t.Fatalf("resolve conflicts: %v", err)
 	}
 	reqs := e.tasks.changeRequests()
-	if len(reqs) != 1 || !reqs[0].start || !strings.Contains(reqs[0].feedback, "Merge `devpad/main` into `task/1`") || !strings.Contains(reqs[0].feedback, "- cart.go") {
+	if len(reqs) != 1 || !reqs[0].start || !strings.Contains(reqs[0].feedback, "Merge `devpad/main` into `task/1`") || !strings.Contains(reqs[0].feedback, "- `cart.go`") {
 		t.Fatalf("unexpected conflict request: %+v", reqs)
 	}
 
@@ -1529,6 +1562,60 @@ func TestCloseWhileReviewSetupRunsDoesNotWaitForIt(t *testing.T) {
 	}
 	if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.Status != ReviewFailed || got.WorkspaceID != 0 {
 		t.Fatalf("expected the review ended with its sandbox removed, got %+v", got)
+	}
+}
+
+// With more than one merge base, the change's diff lists what the merge
+// changes, which no git diff in the review's sandbox shows, and the review
+// agent is told so rather than pointed at a diff that can hide what the
+// merge undoes.
+func TestReviewPromptSaysWhatTheListIsWithSeveralMergeBases(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	files := []agent.RepoDiffFile{{Path: ".devpad/pipeline.yml", Status: "D", Deletions: 3}}
+	for _, tt := range []struct {
+		name       string
+		diff       agent.RepoDiff
+		want, gone []string
+	}{
+		{
+			name: "one merge base",
+			diff: agent.RepoDiff{BaseSHA: mainTip, HeadSHA: head, MergeBase: "base1", MergeBases: 1, From: "base1", To: head},
+			want: []string{"Since it branched from `main` it changes 1 files", "Run `git diff base1 HEAD` to read the change"},
+			gone: []string{"more than one merge base"},
+		},
+		{
+			name: "several, merging cleanly",
+			diff: agent.RepoDiff{BaseSHA: mainTip, HeadSHA: head, MergeBase: "base1", MergeBases: 2, From: mainTip, To: strings.Repeat("c", 40)},
+			want: []string{"Merged into `main` at `" + short(mainTip) + "`, it changes 1 files", "more than one merge base", "no `git diff` in /workspace shows just what merging it does", "The list above is what the merge changes"},
+			gone: []string{"Since it branched", "Run `git diff"},
+		},
+		{
+			name: "several, conflicting",
+			diff: agent.RepoDiff{BaseSHA: mainTip, HeadSHA: head, MergeBase: "base1", MergeBases: 2, From: "base1", To: head},
+			want: []string{"Since it branched from `main`", "more than one merge base and don't merge cleanly", "may miss work of `main` the change undoes"},
+			gone: []string{"The list above is what the merge changes"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.diff.Files = files
+			prompt := reviewPrompt(reviewPromptInput{
+				project: &project.Project{Name: "shop"},
+				mr:      &MergeRequest{ID: 1, Title: "Add a cart", SourceBranch: "task/1", TargetBranch: "main"},
+				review:  &Review{HeadSHA: head},
+				branch:  "review/1",
+				diff:    &tt.diff,
+			})
+			for _, want := range tt.want {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("prompt missing %q:\n%s", want, prompt)
+				}
+			}
+			for _, gone := range tt.gone {
+				if strings.Contains(prompt, gone) {
+					t.Errorf("prompt has %q:\n%s", gone, prompt)
+				}
+			}
+		})
 	}
 }
 
@@ -1930,7 +2017,7 @@ func TestSendBackStartsTheTaskAgentWithTheFeedback(t *testing.T) {
 	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{Verdict: VerdictComment, Body: "Old round."}); err != nil {
 		t.Fatalf("review: %v", err)
 	}
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head2"))
 	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{
 		Verdict: VerdictComment, Body: "Rename the cart.",
 		Comments: []CommentInput{{Path: "cart.go", Line: 4, Body: "Call it basket."}},
@@ -2162,7 +2249,7 @@ func TestTaskPushKeepsItsAgentsCommentsCurrent(t *testing.T) {
 	}
 
 	// Any other push leaves them behind.
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head3")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head3"))
 	if got := heads(); got[agentThread.ID] != "head2" {
 		t.Fatalf("a publish moved the agent's thread: %v", got)
 	}
@@ -2197,7 +2284,7 @@ func TestReReviewIsToldAboutEarlierReviews(t *testing.T) {
 	waitFor(t, "the second review sandbox to stop", func() bool { stopped, _ := e.workspaces.calls(); return len(stopped) == 2 })
 
 	// After a push, the next review looks at what changed since.
-	e.svc.BranchPublished(context.Background(), e.owner, e.pid(), "task/1", "head2")
+	e.svc.BranchMoved(context.Background(), published(e.owner, e.pid(), "task/1", "head2"))
 	e.startAgentReview(t, mr, AgentReviewInput{})
 	if prompt := e.runs.started()[2].Message.Text(); !strings.Contains(prompt, "`git diff head1 HEAD`") || !strings.Contains(prompt, "only if it is blocking") {
 		t.Fatalf("a re-review should be scoped to what changed since the last one:\n%s", prompt)
@@ -2286,7 +2373,7 @@ func TestUserCommentsAndResolvesThreads(t *testing.T) {
 		t.Fatalf("assistant reply: %v", err)
 	}
 	// A reply to a reply joins the thread, where the thread sits.
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head2"))
 	reply, err := e.svc.Comment(ctx, e.owner, e.pid(), mr.ID, UserCommentInput{ReplyTo: answer.ID, Path: "other.go", Line: 1, Body: "Thanks."})
 	if err != nil || reply.ReplyTo != line.ID || reply.Path != "cart.go" || reply.Line != 7 || reply.HeadSHA != "head1" {
 		t.Fatalf("reply: %+v %v", reply, err)
@@ -2476,7 +2563,7 @@ func TestSendBackWithOnlyAnOpenThreadFromAnEarlierRound(t *testing.T) {
 	if _, err := e.svc.Comment(ctx, e.owner, e.pid(), mr.ID, UserCommentInput{Path: "cart.go", Line: 4, Body: "Call it basket."}); err != nil {
 		t.Fatalf("comment: %v", err)
 	}
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head2"))
 	if _, err := e.svc.SendBack(ctx, e.owner, e.pid(), mr.ID, SendBackInput{}); err != nil {
 		t.Fatalf("an open thread is feedback to send back: %v", err)
 	}
@@ -2819,7 +2906,7 @@ func TestAutoMergeMergesWhatTheReviewApproved(t *testing.T) {
 	ctx := context.Background()
 	mr := e.openTaskMR(t)
 	rv := e.startAgentReview(t, mr, AgentReviewInput{})
-	if !strings.Contains(e.runs.started()[0].Message.Text(), "Approving merges the change into `main` at once") {
+	if !strings.Contains(e.runs.started()[0].Message.Text(), "Approving merges the change into `main`, with no one else reviewing it first") {
 		t.Fatal("expected the review agent told that approving merges")
 	}
 	e.approve(t, rv, domain.AgentRunCompleted, nil)
@@ -2832,7 +2919,8 @@ func TestAutoMergeMergesWhatTheReviewApproved(t *testing.T) {
 
 	want := project.MergeInput{
 		Source: "task/1", Target: "main", ExpectedSourceSHA: "head1", ExpectedTargetSHA: mainTip,
-		Message: "Merge !1: Add a cart\n\nMerged automatically by devpad after a review agent approved it.",
+		Message:           "Merge !1: Add a cart\n\nMerged automatically by devpad after a review agent approved it.",
+		KeepPipelineFiles: true,
 	}
 	if e.projects.merges[0] != want {
 		t.Fatalf("merge input = %+v", e.projects.merges[0])
@@ -3112,4 +3200,30 @@ func TestReconcileSettlesApprovals(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLookupIsTheOwnersMergeRequestAlone(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	got, err := e.svc.Lookup(ctx, e.owner, e.pid(), mr.ID)
+	if err != nil || got.ID != mr.ID || got.HeadSHA != "head1" || got.TargetBranch != mr.TargetBranch || got.Status != StatusOpen {
+		t.Fatalf("lookup: %+v %v", got, err)
+	}
+	if _, err := e.svc.Lookup(ctx, e.stranger, e.pid(), mr.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a stranger's lookup: %v", err)
+	}
+	if _, err := e.svc.Lookup(ctx, e.owner, e.pid()+1, mr.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another project's lookup: %v", err)
+	}
+}
+
+// published is the project workspace publishing branch at sha.
+func published(userID, projectID int64, branch, sha string) project.BranchMove {
+	return project.BranchMove{UserID: userID, ProjectID: projectID, Branch: branch, SHA: sha, Cause: project.MovePublished}
+}
+
+// fastForwarded is a sync fast-forwarding branch from the upstream to sha.
+func fastForwarded(userID, projectID int64, branch, sha string) project.BranchMove {
+	return project.BranchMove{UserID: userID, ProjectID: projectID, Branch: branch, SHA: sha, Cause: project.MoveFastForwarded}
 }

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/devpad-org/devpad/internal/auth"
 	"github.com/devpad-org/devpad/internal/container"
 	appdb "github.com/devpad-org/devpad/internal/database"
+	"github.com/devpad-org/devpad/internal/pipelineid"
 	"github.com/devpad-org/devpad/internal/workspace"
 	"github.com/mattn/go-sqlite3"
 )
@@ -264,6 +266,10 @@ type fakeRepoAgent struct {
 	// origin is the repo's upstream URL. Fetches, fast-forwards and pushes
 	// that expect another are refused, as the real repo refuses them.
 	origin string
+	// pins records each pipeline pinned, and pipelineDeletes each pipeline
+	// ref deleted.
+	pins            []agent.PipelinePin
+	pipelineDeletes []string
 }
 
 // expectsOrigin refuses a request that expects another upstream than the
@@ -418,6 +424,18 @@ func (a *fakeRepoAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/repo/compare":
 		q := r.URL.Query()
 		json.NewEncoder(w).Encode(agent.RepoComparison{Base: q.Get("base"), Head: q.Get("head"), Ahead: a.ahead[q.Get("head")]})
+	case "/api/repo/pipeline-ref":
+		if r.Method == http.MethodDelete {
+			a.pipelineDeletes = append(a.pipelineDeletes, r.URL.Query().Get("id"))
+			json.NewEncoder(w).Encode(map[string]string{"ref": pipelineid.Ref(r.URL.Query().Get("id"))})
+			return
+		}
+		var pin agent.PipelinePin
+		json.NewDecoder(r.Body).Decode(&pin)
+		a.pins = append(a.pins, pin)
+		json.NewEncoder(w).Encode(agent.PipelinePinResult{Ref: pipelineid.Ref(pin.ID), SHA: strings.Repeat("e", 40)})
+	case "/api/repo/pipeline-bundle":
+		w.Write([]byte("bundle-of-pipeline-" + r.URL.Query().Get("id")))
 	case "/api/repo/import-initial":
 		if a.initialErr != "" {
 			w.WriteHeader(http.StatusBadRequest)
@@ -579,7 +597,10 @@ func (f *fakeWorkspaces) ListByProject(_ context.Context, userID, projectID int6
 	var out []*workspace.Workspace
 	for _, ws := range f.byID {
 		if ws.ProjectID == projectID && ws.UserID == userID {
-			out = append(out, ws)
+			// A copy, as the repository reads each afresh: the caller may
+			// change it while another reads its own.
+			copied := *ws
+			out = append(out, &copied)
 		}
 	}
 	return out, nil
@@ -1263,7 +1284,7 @@ func TestMergeCommitsAsUserIntoDefaultBranch(t *testing.T) {
 		t.Fatalf("merge: %+v %v", result, err)
 	}
 	want := agent.RepoMergeRequest{Source: "task/1", Target: "main", Strategy: "squash", ExpectedSourceSHA: "abc", ExpectedTargetSHA: "def", Name: "owner", Email: "owner@example.com"}
-	if got := e.repoAgent.merges; len(got) != 1 || got[0] != want {
+	if got := e.repoAgent.merges; len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("merge request = %+v", got)
 	}
 	// A chosen git identity replaces the account's, one field at a time.
@@ -1273,8 +1294,16 @@ func TestMergeCommitsAsUserIntoDefaultBranch(t *testing.T) {
 	if _, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: "task/1"}); err != nil {
 		t.Fatalf("merge with a git identity: %v", err)
 	}
-	if got := e.repoAgent.merges[1]; got.Name != "Owner Name" || got.Email != "owner@example.com" {
-		t.Fatalf("merge identity = %q <%s>", got.Name, got.Email)
+	if got := e.repoAgent.merges[1]; got.Name != "Owner Name" || got.Email != "owner@example.com" || got.UnchangedPaths != nil {
+		t.Fatalf("merge identity = %q <%s>, unchanged paths %v", got.Name, got.Email, got.UnchangedPaths)
+	}
+	// Keeping the pipeline files has the repo check each of them on the
+	// tree the merge lands.
+	if _, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: "task/1", KeepPipelineFiles: true}); err != nil {
+		t.Fatalf("merge keeping the pipeline files: %v", err)
+	}
+	if got := e.repoAgent.merges[2].UnchangedPaths; !slices.Equal(got, PipelineFiles()) {
+		t.Fatalf("unchanged paths = %v, want %v", got, PipelineFiles())
 	}
 	for _, source := range []string{"main", "", "-x"} {
 		if _, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: source}); !errors.Is(err, ErrInvalidInput) {
@@ -1347,6 +1376,103 @@ func TestSetBranchesPicksBranchesToMergeIntoAutomatically(t *testing.T) {
 	}
 }
 
+func TestSetBranchesPicksBranchesThatRunThePipeline(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "develop", SHA: "d"}, {Name: "feature", SHA: "f"}}
+	list := func(b ...string) *[]string { return &b }
+
+	if p.RunsPipelines("main") || len(p.PipelineBranches) != 0 {
+		t.Fatal("a new project must not run its pipeline anywhere")
+	}
+	got, err := e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{
+		DefaultBranch: "develop", ProtectedBranches: []string{"main"}, AutoMergeBranches: list("develop"), PipelineBranches: list("main", " develop ", "main"),
+	})
+	if err != nil {
+		t.Fatalf("set branches: %v", err)
+	}
+	if strings.Join(got.PipelineBranches, ",") != "main,develop" || !got.RunsPipelines("develop") || !got.RunsPipelines("main") {
+		t.Fatalf("unexpected pipeline branches: %v", got.PipelineBranches)
+	}
+	stored, _ := e.svc.Get(ctx, e.userID, p.ID)
+	if strings.Join(stored.PipelineBranches, ",") != "main,develop" || strings.Join(stored.AutoMergeBranches, ",") != "develop" {
+		t.Fatalf("not stored: pipelines %v, automatic merges %v", stored.PipelineBranches, stored.AutoMergeBranches)
+	}
+
+	// Leaving them out keeps them.
+	if got, err = e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop", ProtectedBranches: []string{"main"}}); err != nil || len(got.PipelineBranches) != 2 {
+		t.Fatalf("expected both kept, got %v (%v)", got.PipelineBranches, err)
+	}
+	// An unprotected branch is refused.
+	if _, err := e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop", PipelineBranches: list("feature")}); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "cannot run the pipeline") {
+		t.Fatalf("expected ErrInvalidInput for an unprotected branch, got %v", err)
+	}
+	// A branch that stops being protected stops running the pipeline.
+	if got, err = e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop"}); err != nil || got.RunsPipelines("main") || strings.Join(got.PipelineBranches, ",") != "develop" {
+		t.Fatalf("expected main dropped, got %v (%v)", got.PipelineBranches, err)
+	}
+	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); strings.Join(stored.PipelineBranches, ",") != "develop" {
+		t.Fatalf("expected only develop stored, got %v", stored.PipelineBranches)
+	}
+	// An empty list clears them.
+	if got, err = e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{DefaultBranch: "develop", PipelineBranches: list()}); err != nil || len(got.PipelineBranches) != 0 {
+		t.Fatalf("expected none, got %v (%v)", got.PipelineBranches, err)
+	}
+}
+
+// The project keeps its pipeline setting apart from its other fields, so
+// saving them from a stale copy cannot undo it.
+func TestSetPipelineConfig(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	const config = "jobs:\n  test:\n    run: make test\n"
+
+	before, _ := e.svc.Get(ctx, e.userID, p.ID)
+	time.Sleep(2 * time.Millisecond)
+	got, err := e.svc.SetPipelineConfig(ctx, e.userID, p.ID, config)
+	if err != nil || got.PipelineConfig != config {
+		t.Fatalf("set: %+v (%v)", got, err)
+	}
+	// It answers with the project as stored, so with when it changed.
+	stored, _ := e.svc.Get(ctx, e.userID, p.ID)
+	if !got.UpdatedAt.Equal(stored.UpdatedAt) || !got.UpdatedAt.After(before.UpdatedAt) {
+		t.Fatalf("updated at %v, stored %v, before %v", got.UpdatedAt, stored.UpdatedAt, before.UpdatedAt)
+	}
+	if _, err := e.svc.Update(ctx, e.userID, p.ID, UpdateInput{Name: "renamed"}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); stored.PipelineConfig != config || stored.Name != "renamed" {
+		t.Fatalf("stored %q, name %q", stored.PipelineConfig, stored.Name)
+	}
+	if _, err := e.svc.SetPipelineConfig(ctx, e.otherID, p.ID, ""); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for another user, got %v", err)
+	}
+	if stored, _ := e.svc.Get(ctx, e.userID, p.ID); stored.PipelineConfig != config {
+		t.Fatalf("another user changed it to %q", stored.PipelineConfig)
+	}
+}
+
+// Creating a project records its pipeline settings with the rest of it.
+func TestCreateRecordsPipelineSettings(t *testing.T) {
+	ctx := context.Background()
+	e := setupTest(t)
+	repo := NewRepository(e.db.Conn())
+	const config = "jobs:\n  test:\n    run: make test\n"
+	p := &Project{UserID: e.userID, Name: "proj", DefaultBranch: "main", PipelineBranches: []string{"main"}, PipelineConfig: config, MaxSandboxes: 1, Status: StatusReady}
+	if err := repo.Create(ctx, p); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := repo.GetByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if strings.Join(got.PipelineBranches, ",") != "main" || got.PipelineConfig != config {
+		t.Fatalf("pipeline branches %v, config %q", got.PipelineBranches, got.PipelineConfig)
+	}
+}
+
 // The branches endpoint keeps the automatic merges when a request leaves
 // them out, and reports them.
 func TestSetBranchesHandlerKeepsAutomaticMergesLeftOut(t *testing.T) {
@@ -1385,6 +1511,54 @@ func TestSetBranchesHandlerKeepsAutomaticMergesLeftOut(t *testing.T) {
 	}
 	if got := put(`{"defaultBranch":"develop","protectedBranches":["main"],"autoMergeBranches":[]}`); len(got) != 0 {
 		t.Fatalf("expected an empty list to clear them, got %v", got)
+	}
+}
+
+// The branches endpoint takes the branches that run the pipeline, keeps
+// them when a request leaves them out, and reports them with the
+// project's pipeline setting.
+func TestSetBranchesHandlerTakesPipelineBranches(t *testing.T) {
+	e := setupTest(t)
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	e.repoAgent.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "develop", SHA: "d"}}
+	id := strconv.FormatInt(p.ID, 10)
+	put := func(body string) map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/projects/"+id+"/branches", strings.NewReader(body))
+		req.SetPathValue("id", id)
+		req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.User{ID: e.userID}))
+		rec := httptest.NewRecorder()
+		NewHandler(e.svc).HandleSetBranches(rec, req)
+		var out struct {
+			Project map[string]any `json:"project"`
+		}
+		json.NewDecoder(rec.Body).Decode(&out)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT %s: %d", body, rec.Code)
+		}
+		return out.Project
+	}
+	branches := func(project map[string]any) string {
+		t.Helper()
+		list, ok := project["pipelineBranches"].([]any)
+		if !ok {
+			t.Fatalf("expected pipelineBranches as a list, got %v", project["pipelineBranches"])
+		}
+		names := make([]string, 0, len(list))
+		for _, b := range list {
+			names = append(names, b.(string))
+		}
+		return strings.Join(names, ",")
+	}
+	got := put(`{"defaultBranch":"develop","protectedBranches":["main"]}`)
+	if branches(got) != "" || got["pipelineConfig"] != "" {
+		t.Fatalf("expected none and no setting, got %v", got)
+	}
+	if got := put(`{"defaultBranch":"develop","protectedBranches":["main"],"pipelineBranches":["main"]}`); branches(got) != "main" {
+		t.Fatalf("expected main, got %v", got["pipelineBranches"])
+	}
+	if got := put(`{"defaultBranch":"develop","protectedBranches":["main"]}`); branches(got) != "main" {
+		t.Fatalf("expected main kept, got %v", got["pipelineBranches"])
 	}
 }
 
@@ -1585,8 +1759,17 @@ func TestDeleteRemovesSandboxesThenRepo(t *testing.T) {
 		}
 	}
 
+	// A delete hook, such as the pipelines', is told before anything goes.
+	hook := &recordingDeleteHook{before: func() bool { return len(e.workspaces.deleted) == 0 && len(e.containers.removed) == 0 }}
+	e.svc.AddDeleteHook(hook)
 	if err := e.svc.Delete(ctx, e.userID, p.ID); err != nil {
 		t.Fatalf("delete: %v", err)
+	}
+	if len(hook.told) != 1 || hook.told[0] != p.ID || !hook.first {
+		t.Fatalf("delete hook told %v, before anything went: %v", hook.told, hook.first)
+	}
+	if len(hook.ended) != 1 || hook.ended[0] != p.ID {
+		t.Fatalf("delete hook told the deletion ended for %v", hook.ended)
 	}
 	if len(e.workspaces.deleted) != 2 {
 		t.Fatalf("expected 2 sandboxes deleted, got %v", e.workspaces.deleted)
@@ -1597,6 +1780,48 @@ func TestDeleteRemovesSandboxesThenRepo(t *testing.T) {
 	if _, err := e.svc.Get(ctx, e.userID, p.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected project gone, got %v", err)
 	}
+}
+
+func TestDeleteThatFailsTellsItsHooksItEnded(t *testing.T) {
+	e := setupTest(t)
+	ctx := context.Background()
+	p := e.createProject(t, CreateInput{Name: "proj"})
+	if _, err := e.svc.CreateSandbox(ctx, e.userID, p.ID, SandboxInput{}); err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	hook := &recordingDeleteHook{before: func() bool { return true }}
+	e.svc.AddDeleteHook(hook)
+	e.workspaces.mu.Lock()
+	e.workspaces.deleteErr = errors.New("docker unreachable")
+	e.workspaces.mu.Unlock()
+	if err := e.svc.Delete(ctx, e.userID, p.ID); err == nil {
+		t.Fatal("expected the delete to fail")
+	}
+	// The project stays, and so may start what its hooks run again.
+	if len(hook.told) != 1 || len(hook.ended) != 1 || hook.ended[0] != p.ID {
+		t.Fatalf("delete hook told %v, ended %v", hook.told, hook.ended)
+	}
+	if _, err := e.svc.Get(ctx, e.userID, p.ID); err != nil {
+		t.Fatalf("expected the project to stay: %v", err)
+	}
+}
+
+// recordingDeleteHook records the projects it is told are being deleted,
+// and whether before held each time, and those whose deletion ended.
+type recordingDeleteHook struct {
+	before func() bool
+	told   []int64
+	first  bool
+	ended  []int64
+}
+
+func (h *recordingDeleteHook) ProjectDeleting(_ context.Context, projectID int64) {
+	h.told = append(h.told, projectID)
+	h.first = h.before()
+}
+
+func (h *recordingDeleteHook) ProjectDeleteEnded(projectID int64) {
+	h.ended = append(h.ended, projectID)
 }
 
 func TestMigrationEnforcesSandboxBranchOwnership(t *testing.T) {

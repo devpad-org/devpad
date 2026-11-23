@@ -3,8 +3,10 @@ import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from '
 import { taskApi, type Task } from '@/api/tasks'
 import { projectApi } from '@/api/projects'
 import type { MergeRequest } from '@/api/mergeRequests'
+import DocLink from '@/components/DocLink.vue'
 import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import { confirmDiscardKey } from '@/components/ide/ideShell'
+import { pipelineRoundsText } from '@/components/pipeline/pipelineCopy'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { branchActionError } from './branchErrors'
 import AgentModelPicker from './AgentModelPicker.vue'
@@ -171,6 +173,9 @@ const statusHint = computed(() => {
       return props.mergeRequest ? 'The agent is done. Review the merge request.' : 'The agent is done and waiting for review.'
     case 'changes_requested':
       if (agentReviewing.value) return 'Changes were requested. A review agent is reviewing the merge request.'
+      if (t.pipelineRounds?.held && t.pipelineRounds.held !== 'budget') {
+        return "The pipeline failed, and devpad stopped sending it back by itself. Send the failure back to the agent, or look at the merge request."
+      }
       return 'Changes were requested. Send the feedback back to the agent.'
     case 'merged':
       return props.mergeRequest ? `Merged into ${props.mergeRequest.targetBranch}.` : 'Merged.'
@@ -179,6 +184,15 @@ const statusHint = computed(() => {
   }
   return ''
 })
+
+// How its automatic pipeline rounds stand: sent back after the pipeline
+// failed, or the failure waiting for you. The budget says for itself when
+// it is spent.
+const roundsText = computed(() => {
+  const t = props.task
+  return t && t.status !== 'merged' && t.status !== 'cancelled' ? pipelineRoundsText(t.pipelineRounds) : ''
+})
+const roundsHeld = computed(() => !!props.task?.pipelineRounds?.held)
 
 // Errors the banner doesn't already show, e.g. a warning left on a task in review.
 const extraWarning = computed(() => {
@@ -443,6 +457,11 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               <MrIcon name="warning" :size="14" />
               {{ extraWarning }}
             </p>
+            <p v-if="roundsText && !editing" class="notice notice-row" :class="roundsHeld ? 'notice-warning' : 'notice-info'">
+              <MrIcon :name="roundsHeld ? 'warning' : 'retry'" :size="14" />
+              <span class="rounds-text">{{ roundsText }}</span>
+              <DocLink topic="pipelineFailures" label="When a pipeline fails" />
+            </p>
 
             <form v-if="editing" class="edit-form" @submit.prevent="save">
               <div class="field">
@@ -692,6 +711,11 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 <style scoped src="./shared.css"></style>
 <style scoped src="./taskModal.css"></style>
 <style scoped>
+.rounds-text {
+  flex: 1;
+  min-width: 0;
+}
+
 .modal-title {
   margin: var(--space-1) 0 var(--space-2);
   font-size: 1.1rem;

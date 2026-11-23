@@ -98,14 +98,32 @@ type repoDiffFile struct {
 }
 
 type repoDiff struct {
-	BaseSHA   string         `json:"baseSha"`
-	HeadSHA   string         `json:"headSha"`
-	MergeBase string         `json:"mergeBase"`
-	Files     []repoDiffFile `json:"files"`
+	BaseSHA string `json:"baseSha"`
+	HeadSHA string `json:"headSha"`
+	// MergeBase is head's merge base with base, the first of them when
+	// there are more (MergeBases).
+	MergeBase string `json:"mergeBase"`
+	// MergeBases counts head's merge bases with base. With more than one,
+	// as when each side has merged work the other merged too, a diff from
+	// any one of them can miss what merging head does, such as undoing
+	// work base has: the merge starts from all of them.
+	MergeBases int `json:"mergeBases"`
+	// From and To are the commits Files compare, at which their contents
+	// show the change: MergeBase and HeadSHA, or BaseSHA and the trial
+	// merge of head onto it when there are more merge bases and head
+	// merges cleanly, so the files are what the merge itself changes.
+	From  string         `json:"from"`
+	To    string         `json:"to"`
+	Files []repoDiffFile `json:"files"`
 }
 
-// handleRepoDiff lists the files head changed since it diverged from base,
-// the way a merge request shows them.
+// handleRepoDiff lists the files merging head into base changes, the way a
+// merge request shows them: those head changed since it diverged from base.
+// When the two have more than one merge base, no diff from one of them is
+// sure to show what the merge does, so the files are those the trial merge,
+// the commit a pipeline of the two tests, changes on base; unless head
+// conflicts with base, when nothing can merge it and the diff from the
+// first merge base is the best there is.
 func handleRepoDiff(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), gitTimeout)
 	defer cancel()
@@ -121,13 +139,24 @@ func handleRepoDiff(w http.ResponseWriter, r *http.Request) {
 		writeRevError(w, err)
 		return
 	}
-	mergeBase, err := gitOutput(ctx, "merge-base", baseSHA, headSHA)
-	if err != nil {
+	out, err := gitStdout(ctx, "merge-base", "--all", baseSHA, headSHA)
+	bases := strings.Fields(out)
+	if err != nil || len(bases) == 0 {
 		writeErr(w, http.StatusConflict, "base and head have no common history")
 		return
 	}
-	diff := repoDiff{BaseSHA: baseSHA, HeadSHA: headSHA, MergeBase: strings.TrimSpace(mergeBase)}
-	if diff.Files, err = diffFiles(ctx, diff.MergeBase, headSHA); err != nil {
+	diff := repoDiff{BaseSHA: baseSHA, HeadSHA: headSHA, MergeBase: bases[0], MergeBases: len(bases), From: bases[0], To: headSHA}
+	if len(bases) > 1 {
+		merged, conflict, err := trialMerge(ctx, headSHA, baseSHA)
+		if err != nil {
+			writeRevError(w, err)
+			return
+		}
+		if conflict == nil {
+			diff.From, diff.To = baseSHA, merged
+		}
+	}
+	if diff.Files, err = diffFiles(ctx, diff.From, diff.To); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -346,9 +375,18 @@ type repoMergeRequest struct {
 	Message           string `json:"message"`
 	ExpectedSourceSHA string `json:"expectedSourceSha"`
 	ExpectedTargetSHA string `json:"expectedTargetSha"`
-	Name              string `json:"name"`
-	Email             string `json:"email"`
+	// ExpectedTree, when set, is the tree the merge must land: the one the
+	// pipeline that let it through tested.
+	ExpectedTree string `json:"expectedTree"`
+	// UnchangedPaths are paths the merge must land as the target has them:
+	// devpad names the pipeline files for a merge it makes by itself.
+	UnchangedPaths []string `json:"unchangedPaths,omitempty"`
+	Name           string   `json:"name"`
+	Email          string   `json:"email"`
 }
+
+// maxUnchangedPaths caps a merge's UnchangedPaths.
+const maxUnchangedPaths = 16
 
 type repoMergeResult struct {
 	Target    string `json:"target"`
@@ -389,6 +427,16 @@ func handleRepoMerge(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "source and target must differ")
 		return
 	}
+	if len(req.UnchangedPaths) > maxUnchangedPaths {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("name at most %d paths to leave unchanged", maxUnchangedPaths))
+		return
+	}
+	for _, p := range req.UnchangedPaths {
+		if err := validateRepoPath(p); err != nil {
+			writeErr(w, http.StatusBadRequest, "unchanged path: "+err.Error())
+			return
+		}
+	}
 	sourceSHA, err := resolveBranch(ctx, req.Source, "source")
 	if err != nil {
 		writeRevError(w, err)
@@ -420,6 +468,14 @@ func handleRepoMerge(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, fmt.Sprintf("%s cannot be fast-forwarded to %s", req.Target, req.Source))
 			return
 		}
+		tree, err := commitTree(ctx, sourceSHA)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !landsExpectedTree(w, req, tree) || !leavesUnchanged(ctx, w, req, targetSHA, tree) {
+			return
+		}
 		newSHA = sourceSHA
 	} else {
 		tree, conflicts, err := mergeTree(ctx, targetSHA, sourceSHA)
@@ -432,6 +488,9 @@ func handleRepoMerge(w http.ResponseWriter, r *http.Request) {
 				"error":     fmt.Sprintf("%s conflicts with %s", req.Source, req.Target),
 				"conflicts": conflicts,
 			})
+			return
+		}
+		if !landsExpectedTree(w, req, tree) || !leavesUnchanged(ctx, w, req, targetSHA, tree) {
 			return
 		}
 		message := strings.TrimSpace(req.Message)
@@ -458,13 +517,58 @@ func handleRepoMerge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, repoMergeResult{Target: req.Target, SHA: newSHA, Strategy: req.Strategy, MergeBase: strings.TrimSpace(mergeBase)})
 }
 
+// landsExpectedTree refuses, answering w, a merge that would land another
+// tree than the one req expects, which the pipeline that let it through
+// tested. Merges and pipelines' trial merges compute the tree the same way,
+// so it holds unless git itself changed between the two.
+func landsExpectedTree(w http.ResponseWriter, req repoMergeRequest, tree string) bool {
+	if req.ExpectedTree == "" || tree == req.ExpectedTree {
+		return true
+	}
+	writeErr(w, http.StatusConflict, fmt.Sprintf("merging %s would land another tree than the one its pipeline tested", req.Source))
+	return false
+}
+
+// leavesUnchanged refuses, answering w, a merge that would land any of
+// req's UnchangedPaths otherwise than target has it: added, removed, or with
+// another mode or content. It compares the target with the very tree the
+// merge lands, so no history, however it was made, can change one unseen.
+func leavesUnchanged(ctx context.Context, w http.ResponseWriter, req repoMergeRequest, target, tree string) bool {
+	if len(req.UnchangedPaths) == 0 {
+		return true
+	}
+	args := append([]string{"--literal-pathspecs", "diff-tree", "-r", "--no-renames", "--name-only", "-z", target, tree, "--"}, req.UnchangedPaths...)
+	out, err := gitStdout(ctx, args...)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "comparing what the merge lands: "+err.Error())
+		return false
+	}
+	if changed, _, _ := strings.Cut(out, "\x00"); changed != "" {
+		writeErr(w, http.StatusConflict, fmt.Sprintf("merging %s would change %s, which this merge must leave as %s has it", req.Source, changed, req.Target))
+		return false
+	}
+	return true
+}
+
 // mergeTree computes the merged tree of two commits without a working tree.
 // It returns the conflicted paths instead of a tree when the merge is not clean.
+// Merges and the trial merges pipelines test both use it, so a pipeline
+// tests the tree a merge lands.
+//
+// The commits' .gitattributes never apply: attributes are read from the
+// empty tree, so content cannot choose a merge driver or how files merge.
+// A bare repo reads none from content today; this keeps it so whatever git's
+// default becomes. Drivers themselves are config, which only devpad writes.
 func mergeTree(ctx context.Context, ours, theirs string) (string, []string, error) {
-	cmd := gitCommand(ctx, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", ours, theirs)
+	empty, err := gitOutput(ctx, "hash-object", "-t", "tree", "/dev/null")
+	if err != nil {
+		return "", nil, fmt.Errorf("finding the empty tree: %s", strings.TrimSpace(empty))
+	}
+	cmd := gitCommand(ctx, "-c", "attr.tree="+strings.TrimSpace(empty), "-c", "core.hooksPath=/dev/null",
+		"merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", ours, theirs)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	fields := strings.Split(strings.TrimSuffix(stdout.String(), "\x00"), "\x00")
 	var exitErr *exec.ExitError
 	switch {

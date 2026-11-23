@@ -432,9 +432,18 @@ func taskResponse(t *Task, links Links) map[string]any {
 		"budgetUsd":          t.BudgetUSD,
 		"costUsd":            t.CostUSD,
 		"error":              t.Error,
+		"pipelineRounds":     RoundsResponse(t.PipelineRounds),
 		"createdAt":          t.CreatedAt,
 		"updatedAt":          t.UpdatedAt,
 	}
+}
+
+// RoundsResponse is how a task's automatic pipeline rounds stand, as the
+// task and its merge request show them: how many of limit devpad has sent
+// in a row, and why the latest failure waits for the user, "" when it
+// doesn't.
+func RoundsResponse(r PipelineRounds) map[string]any {
+	return map[string]any{"count": r.Count, "limit": r.Limit(), "held": r.Held}
 }
 
 // ids is a list of ids for JSON, never null.

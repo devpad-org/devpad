@@ -356,6 +356,9 @@ func TestLinkHandlers(t *testing.T) {
 	if got, _ := json.Marshal(b["blockedBy"]); string(got) != "[1]" {
 		t.Fatalf("unexpected blockedBy: %s", got)
 	}
+	if got, _ := json.Marshal(b["pipelineRounds"]); string(got) != `{"count":0,"held":"","limit":2}` {
+		t.Fatalf("unexpected pipelineRounds: %s", got)
+	}
 	code, a := do(http.MethodPost, "/api/projects/1/tasks/1/links", `{"kind":"related","taskId":2}`)
 	if code != http.StatusConflict {
 		t.Fatalf("second link: %d %v", code, a)

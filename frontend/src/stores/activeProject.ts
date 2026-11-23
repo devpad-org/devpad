@@ -6,6 +6,7 @@ import { projectApi, type ConversionNotice, type GitPushEvent, type Project, typ
 export type GitPushNotice = GitPushEvent & { key: string }
 import { taskApi, type Task } from '@/api/tasks'
 import { mergeRequestApi, type MergeRequest } from '@/api/mergeRequests'
+import { MAX_LATEST_SUBJECTS, pipelineApi, type BranchPipelineStanding, type Pipeline } from '@/api/pipelines'
 
 const POLL_INTERVAL_MS = 4000
 
@@ -20,6 +21,12 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   // The canonical repo's branches, loaded on demand by the panels that need
   // them rather than on every poll.
   const branches = ref<RepoBranch[]>([])
+  // The newest pipeline of each open merge request, for the badges beside
+  // them.
+  const latestMergeRequestPipelines = ref<Pipeline[]>([])
+  // How each branch that runs pipelines stands for them, as the server
+  // says, for the badges beside them.
+  const pipelineBranchStandings = ref<Record<string, BranchPipelineStanding>>({})
   const loadError = ref('')
   const selectedTaskId = ref<number | null>(null)
   // The merge request open in its modal, which loads it by id.
@@ -74,6 +81,8 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     return tasks.value.find((t) => t.workspaceId === sandboxId)
   }
 
+  const mergeRequestPipelines = computed(() => new Map(latestMergeRequestPipelines.value.map((p) => [p.mergeRequestId, p])))
+
   function openMergeRequestFor(branch: string): MergeRequest | undefined {
     return openMergeRequests.value.find((mr) => mr.sourceBranch === branch)
   }
@@ -98,6 +107,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
         tasks.value = t.tasks ?? []
         mergeRequests.value = m.mergeRequests ?? []
         sandboxes.value = s.sandboxes ?? []
+        await refreshLatestPipelines()
       }
       if (project.value?.status === 'ready') await refreshGitActivity(id, gen)
       // Load the notice once, then follow it while devpad finishes it.
@@ -110,6 +120,30 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
       loadError.value = ''
     } catch (e) {
       if (gen === generation) loadError.value = e instanceof Error ? e.message : 'Failed to load project'
+    }
+  }
+
+  // Reads how each branch that runs pipelines stands, and the newest
+  // pipeline of each open merge request. A badge is a convenience: the
+  // lists still load without them.
+  async function refreshLatestPipelines() {
+    const id = projectId.value
+    if (id === null || !ready.value) return
+    const gen = generation
+    const branches = project.value?.pipelineBranches ?? []
+    const mergeRequestIds = openMergeRequests.value.map((mr) => mr.id).slice(0, MAX_LATEST_SUBJECTS - branches.length)
+    if (branches.length === 0 && mergeRequestIds.length === 0) {
+      latestMergeRequestPipelines.value = []
+      pipelineBranchStandings.value = {}
+      return
+    }
+    try {
+      const res = await pipelineApi.latest(id, { branches, mergeRequestIds })
+      if (gen !== generation) return
+      latestMergeRequestPipelines.value = res.mergeRequests ?? []
+      pipelineBranchStandings.value = res.branches ?? {}
+    } catch {
+      // Keep the badges as they were.
     }
   }
 
@@ -174,6 +208,8 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     mergeRequests.value = []
     sandboxes.value = []
     branches.value = []
+    latestMergeRequestPipelines.value = []
+    pipelineBranchStandings.value = {}
     loadError.value = ''
     selectedTaskId.value = null
     selectedMergeRequestId.value = null
@@ -201,7 +237,9 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   }
 
   function setProject(p: Project) {
+    const ticked = project.value?.pipelineBranches?.join('\n')
     project.value = p
+    if (p.pipelineBranches?.join('\n') !== ticked) void refreshLatestPipelines()
   }
 
   async function dismissConversion() {
@@ -229,6 +267,9 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     mergeRequests,
     sandboxes,
     branches,
+    latestMergeRequestPipelines,
+    pipelineBranchStandings,
+    mergeRequestPipelines,
     loadError,
     selectedTaskId,
     selectedMergeRequestId,
@@ -246,6 +287,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     openMergeRequestFor,
     refresh,
     refreshBranches,
+    refreshLatestPipelines,
     open,
     close,
     setProject,

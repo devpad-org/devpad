@@ -45,6 +45,17 @@ type Service interface {
 	Merged(ctx context.Context, userID, projectID, taskID int64) (*Task, error)
 	// SetReviewHook registers who is told when a task is ready for review.
 	SetReviewHook(h ReviewHook)
+	// PipelineEnded tells the task how the pipeline guarding its merge
+	// request ended on its branch: a pass ends its automatic pipeline
+	// rounds, and a failure or conflict sends it back to its agent with what
+	// failed, up to maxPipelineRounds times in a row, or leaves it waiting
+	// for the user (PipelineRounds.decide). It may be told of a pipeline
+	// more than once, and of an older one after a newer: one decided on
+	// before, or older than one that was, changes nothing.
+	PipelineEnded(ctx context.Context, userID, projectID, taskID int64, res PipelineResult) (*Task, error)
+	// SetPipelines sets what tells task agents the jobs of the pipeline
+	// their merge request will run.
+	SetPipelines(p Pipelines)
 	// GuardDeleteBranch refuses deleting a branch a task that is not
 	// closed starts from or works on.
 	GuardDeleteBranch(ctx context.Context, userID, projectID int64, branch string, del func() error) error
@@ -184,6 +195,8 @@ type service struct {
 	// mid-run takes effect at once.
 	runBudgets map[int64]*domain.Budget
 	reviewHook ReviewHook
+	// pipelines tells agents their pipeline's jobs, once it is set.
+	pipelines Pipelines
 	// announced counts each task's announcements to the review hook, and
 	// announceGates make them one at a time; see announceReview.
 	announced     map[int64]uint64
@@ -534,7 +547,13 @@ func (s *service) Update(ctx context.Context, userID, projectID, taskID int64, i
 	if title == "" {
 		return nil, invalid("title is required")
 	}
+	// Editing the task is the user stepping in, which starts its automatic
+	// pipeline rounds again, but for a failure waiting for the user, which
+	// waits on until they send it or the pipeline passes.
 	t.Title, t.Body = title, in.Body
+	if !t.holdsPipelineFailure() {
+		t.PipelineRounds = t.PipelineRounds.reset()
+	}
 	if in.BudgetUSD != nil {
 		if err := domain.ValidateBudget(*in.BudgetUSD); err != nil {
 			return nil, invalid("%v", err)
@@ -592,6 +611,10 @@ func (s *service) Start(ctx context.Context, userID, projectID, taskID int64, in
 	if err != nil {
 		return nil, err
 	}
+	// Starting the task, from the task, from its merge request or by the
+	// assistant, is the user stepping in, which starts its automatic
+	// pipeline rounds again.
+	t.PipelineRounds = t.PipelineRounds.reset()
 	return s.start(ctx, t, in)
 }
 
@@ -640,7 +663,7 @@ func (s *service) start(ctx context.Context, t *Task, in StartInput) (*Task, err
 	// agent can be told why it is being restarted. Feedback already waiting
 	// from RequestChanges is kept unless a new message replaces it.
 	if msg := strings.TrimSpace(in.Message); msg != "" {
-		t.PendingMessage = msg
+		t.PendingMessage, t.PendingPipeline = msg, in.PipelineSummary
 	}
 	// Only a task to do can be blocked, and links to it change under its
 	// lock, which the caller holds, so this holds until the task is queued.
@@ -680,16 +703,81 @@ func (s *service) RequestChanges(ctx context.Context, userID, projectID, taskID 
 	if feedback == "" {
 		return nil, invalid("feedback is required")
 	}
+	// A review's feedback, or the user's, starts the automatic pipeline
+	// rounds again, and replaces a pipeline failure waiting for the user.
+	t.PipelineRounds = t.PipelineRounds.reset()
+	return s.sendBack(ctx, t, feedback, "", start)
+}
+
+// sendBack hands feedback to the agent of a task the caller has locked,
+// with devpad's summary of the pipeline failure it quotes, if it quotes
+// one (Task.PendingPipeline): it starts the agent when start is set and
+// the task has budget left, and otherwise leaves the feedback for the next
+// Start, the task changes requested, as feedback for a task over budget
+// waits for its budget to be raised. The task is saved with its rounds as
+// the caller set them.
+func (s *service) sendBack(ctx context.Context, t *Task, feedback, summary string, start bool) (*Task, error) {
 	if start && !t.OverBudget() {
-		return s.start(ctx, t, StartInput{Message: feedback})
+		return s.start(ctx, t, StartInput{Message: feedback, PipelineSummary: summary})
 	}
-	// Feedback for a task over budget waits, like feedback not sent to the
-	// agent, for a Start once its budget is raised.
-	t.Status, t.PendingMessage = StatusChangesRequested, feedback
+	t.Status, t.PendingMessage, t.PendingPipeline = StatusChangesRequested, feedback, summary
 	if err := s.repo.Update(ctx, t); err != nil {
 		return nil, err
 	}
 	return t, nil
+}
+
+func (s *service) PipelineEnded(ctx context.Context, userID, projectID, taskID int64, res PipelineResult) (*Task, error) {
+	unlock := s.lock(taskID)
+	defer unlock()
+	t, err := s.get(ctx, userID, projectID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if res.HeadSHA == "" || res.HeadSHA != t.HeadSHA {
+		// Of another commit of the branch: a round since moved it on.
+		return t, nil
+	}
+	d := t.PipelineRounds.decide(t, res)
+	switch d.action {
+	case roundIgnore, roundWait:
+		return t, nil
+	case roundReset, roundOnTarget:
+		t.PipelineRounds = d.rounds
+		if d.release {
+			t.Status, t.PendingMessage, t.PendingPipeline = StatusInReview, "", ""
+		}
+		if err := s.repo.Update(ctx, t); err != nil {
+			return nil, err
+		}
+		return t, nil
+	}
+	feedback := pipelineFeedback{res: res, counted: d.counted, onTarget: d.onTarget, branch: t.Branch, unchanged: d.unchanged}
+	before := *t
+	t.PipelineRounds = d.rounds
+	if d.action == roundSend {
+		feedback.round = d.rounds.Count
+	}
+	sent, err := s.sendBack(ctx, t, feedback.String(), feedback.summary(), d.action == roundSend)
+	if err == nil || d.action != roundSend {
+		return sent, err
+	}
+	// The agent could not start, such as when the project isn't ready:
+	// the failure waits for the user rather than be lost, since this
+	// pipeline counts as decided once this returns.
+	log.Printf("task %d: sending pipeline #%d's failure back: %v", t.ID, res.PipelineID, err)
+	*t = before
+	t.PipelineRounds = d.rounds
+	t.PipelineRounds.Count, t.PipelineRounds.Fingerprint = before.PipelineRounds.Count, before.PipelineRounds.Fingerprint
+	t.PipelineRounds.Held, t.PipelineRounds.SentHead = HoldNotStarted, ""
+	feedback.round = 0
+	return s.sendBack(ctx, t, feedback.String(), feedback.summary(), false)
+}
+
+// holdsPipelineFailure reports whether a pipeline failure waits for the
+// user as the task's pending message.
+func (t *Task) holdsPipelineFailure() bool {
+	return t.PipelineRounds.Held != HoldNone && t.Status == StatusChangesRequested
 }
 
 func (s *service) Merged(ctx context.Context, userID, projectID, taskID int64) (*Task, error) {
@@ -705,7 +793,7 @@ func (s *service) Merged(ctx context.Context, userID, projectID, taskID int64) (
 	if err := s.teardown(ctx, t); err != nil {
 		return nil, err
 	}
-	t.Status, t.Error, t.PendingMessage = StatusMerged, "", ""
+	t.Status, t.Error, t.PendingMessage, t.PendingPipeline = StatusMerged, "", "", ""
 	if err := s.repo.Update(ctx, t); err != nil {
 		return nil, err
 	}
@@ -993,7 +1081,7 @@ func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace
 		s.dropConversation(t, conversationID)
 		return fmt.Errorf("starting agent: %w", err)
 	}
-	t.ConversationID, t.PendingMessage, t.RunID = conversationID, "", run.ID
+	t.ConversationID, t.PendingMessage, t.PendingPipeline, t.RunID = conversationID, "", "", run.ID
 	if err := s.repo.Update(ctx, t); err != nil {
 		return err
 	}
@@ -1172,14 +1260,33 @@ func (s *service) runInput(ctx context.Context, t *Task, p *project.Project, san
 	if len(carried) > 0 {
 		return conv.ID, carried, newRoundPrompt(t, pending.text), nil
 	}
-	prompt := implementPrompt(p, t, sandbox, s.linkedTasks(ctx, t))
+	target := mergesInto(p, t)
+	prompt := implementPrompt(implementInput{
+		project:  p,
+		task:     t,
+		sandbox:  sandbox,
+		linked:   s.linkedTasks(ctx, t),
+		pipeline: pipelineJobsPrompt(target, p.RunsPipelines(target), s.pipelineJobs(ctx, t, target)),
+	})
 	if pending.text != "" {
 		prompt += "\n\n## Additional instructions\n\n" + pending.text
 	}
 	return conv.ID, nil, prompt, nil
 }
 
-func implementPrompt(p *project.Project, t *Task, sandbox project.SandboxState, linked linkedTasks) string {
+// implementInput is what a task agent's first prompt describes.
+type implementInput struct {
+	project *project.Project
+	task    *Task
+	sandbox project.SandboxState
+	linked  linkedTasks
+	// pipeline is pipelineJobsPrompt's section on the jobs its merge
+	// request will run, or empty.
+	pipeline string
+}
+
+func implementPrompt(in implementInput) string {
+	p, t, sandbox, linked := in.project, in.task, in.sandbox, in.linked
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are implementing task #%d in the project %q.\n\n", t.ID, p.Name)
 	fmt.Fprintf(&b, "## %s\n\n", t.Title)
@@ -1193,6 +1300,7 @@ func implementPrompt(p *project.Project, t *Task, sandbox project.SandboxState, 
 	}
 	b.WriteString(linked.prompt())
 	b.WriteString(sandbox.Prompt())
+	b.WriteString(in.pipeline)
 	start := "`" + p.DefaultBranch + "`"
 	if t.BaseBranch != "" {
 		start = "`" + t.BaseBranch + "`, a branch of " + start + " that already holds work you are continuing"
@@ -1429,7 +1537,7 @@ func (s *service) Cancel(ctx context.Context, userID, projectID, taskID int64) (
 	if err := s.teardown(ctx, t); err != nil {
 		return nil, err
 	}
-	t.Status, t.Error, t.PendingMessage = StatusCancelled, "", ""
+	t.Status, t.Error, t.PendingMessage, t.PendingPipeline = StatusCancelled, "", "", ""
 	if err := s.repo.Update(ctx, t); err != nil {
 		return nil, err
 	}

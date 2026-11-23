@@ -48,9 +48,9 @@ A task's **Comments**, below its description, are a discussion about the task. Y
 Each task works on a branch of its own, `task/<id>`, in a sandbox: a fresh workspace made from the project, with the project's environment, its own copy of each [service](/docs/services), and the setup script already run.
 
 1. **Queued**: the task waits for a free sandbox. A project runs at most its **Concurrent sandboxes** at once.
-2. **Agent working**: the agent edits, runs and commits in the sandbox. **Watch in sandbox** opens it to follow along.
-3. **In review**: when the agent finishes, devpad collects its branch and opens a merge request into the default branch, or moves the open one to the new commit. If the agent made no commits, the task fails instead.
-4. **Changes requested**: you or a review asked for changes. **Send back to agent** sends the feedback, and the agent picks up where it left off, on the same branch.
+2. **Agent working**: the agent edits, runs and commits in the sandbox. **Watch in sandbox** opens it to follow along. When the project has a [pipeline](/docs/pipelines), the agent is told its jobs and runs them before it finishes.
+3. **In review**: when the agent finishes, devpad collects its branch and opens a merge request into the default branch, or moves the open one to the new commit. If the agent made no commits, the task fails instead. When the pipeline guarding the merge request fails, devpad [sends the task back to its agent](/docs/pipelines#failures) with what failed, up to twice in a row, and the task says **Sent back after the pipeline failed (1 of 2)**; after that the failure waits for you.
+4. **Changes requested**: you or a review asked for changes, or a pipeline failure waits for you. **Send back to agent** sends the feedback, and the agent picks up where it left off, on the same branch.
 5. **Merged** or **Cancelled**. A task whose merge request targets a branch devpad [merges into automatically](/docs/branches#automatic-merges) is merged as soon as a review agent approves it.
 
 The sandbox stops after each round, freeing its slot, and keeps the branch and the agent's transcript for the next. **Cancel task** stops the agent and removes the sandbox; anything already published stays. A task that **Failed** can be started again with **Retry**, with another model if you like.

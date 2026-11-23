@@ -3,6 +3,9 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { projectApi, type UpstreamBranch, type UpstreamStatus } from '@/api/projects'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { fullTime, timeAgo } from '@/utils/time'
+import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
+import { PIPELINE_OUT_OF_DATE, PIPELINE_STATUS, noResultLook, shownOf, staleIn } from '@/components/pipeline/pipelineFormat'
+import { shortSha } from '@/components/mergerequest/format'
 import ProjectBranchesModal from './ProjectBranchesModal.vue'
 import ProjectCard from './ProjectCard.vue'
 import type { CardStatus } from './card'
@@ -49,9 +52,28 @@ const rows = computed(() => {
   const byName = new Map((status.value?.branches ?? []).map((b) => [b.branch, b]))
   return store.protectedBranches.map((name, i) => {
     const upstream = byName.get(name)
-    return { name, isDefault: i === 0, upstream, state: upstream ? branchState(upstream) : null }
+    const runsPipelines = store.project?.pipelineBranches?.includes(name) ?? false
+    return { name, isDefault: i === 0, upstream, state: upstream ? branchState(upstream) : null, runsPipelines, pipeline: pipelineBadge(name) }
   })
 })
+
+// A ticked branch's pipeline as the server says it stands: the one of its
+// commit and jobs as they are now, or one of them that was cancelled or
+// couldn't run, with why, or else its latest, out of date once the server
+// could read the branch's pipeline and found it moved on.
+function pipelineBadge(name: string) {
+  const st = store.pipelineBranchStandings[name]
+  const p = shownOf(st)
+  if (!st || !p) return null
+  const noResult = st.noResult
+  if (noResult && p.id === noResult.pipeline.id) return { look: noResultLook(noResult), title: noResult.reason }
+  const status = PIPELINE_STATUS[p.status]
+  if (st.configured !== null && staleIn(st, p.id)) {
+    const why = st.tip !== p.headSha ? 'an older commit' : 'with jobs the branch no longer has'
+    return { look: PIPELINE_OUT_OF_DATE, title: `Latest pipeline #${p.id} ${status.label.toLowerCase()} on ${shortSha(p.headSha)}, ${why}` }
+  }
+  return { look: status, title: `Latest pipeline #${p.id}: ${status.label.toLowerCase()} on ${shortSha(p.headSha)}, ${timeAgo(p.createdAt)}` }
+}
 
 type BranchState = { text: string; tone: 'ok' | 'pending' | 'attention' | 'muted'; push: boolean; hint?: string }
 
@@ -185,6 +207,14 @@ onUnmounted(() => {
           </svg>
           <span class="mono branch-name" :title="row.name">{{ row.name }}</span>
           <span v-if="row.isDefault" class="branch-tag">default</span>
+          <span
+            v-if="row.runsPipelines"
+            class="branch-pipeline"
+            :title="row.pipeline ? row.pipeline.title : 'No pipeline has run on this branch yet'"
+          >
+            <PipelineStatusIcon v-if="row.pipeline" :look="row.pipeline.look" :size="16" :title="row.pipeline.title" />
+            <span class="branch-pipeline-text">{{ row.pipeline ? row.pipeline.look.label : 'no pipeline yet' }}</span>
+          </span>
           <span v-if="row.state" class="branch-state" :class="`state-${row.state.tone}`">{{ row.state.text }}</span>
           <button
             v-if="row.state?.push"
@@ -279,6 +309,15 @@ onUnmounted(() => {
   color: var(--accent);
   font-size: 0.68rem;
   font-weight: 500;
+}
+
+.branch-pipeline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
 }
 
 .branch-state {

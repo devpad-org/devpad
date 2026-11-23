@@ -712,8 +712,20 @@ func taskDetail(t *task.Task, mr *mergerequest.MergeRequest, links task.Links) m
 	if t.Error != "" {
 		detail["error"] = clip(t.Error, maxTaskBodyBytes)
 	}
-	if t.PendingMessage != "" {
+	// Feedback quoting a pipeline's job output, which the code under test
+	// wrote, is the task's agent's alone: the assistant gets devpad's own
+	// summary of the failure instead.
+	switch {
+	case t.PendingPipeline != "":
+		detail["pendingPipelineFailure"] = map[string]any{
+			"summary": clip(t.PendingPipeline, maxTaskBodyBytes),
+			"note":    "The pipeline failed; its jobs' output goes to the task's agent and shows on the pipeline page, not here.",
+		}
+	case t.PendingMessage != "":
 		detail["pendingFeedback"] = clip(t.PendingMessage, maxTaskBodyBytes)
+	}
+	if r := t.PipelineRounds; r.Count > 0 || r.Held != task.HoldNone {
+		detail["pipelineRounds"] = map[string]any{"count": r.Count, "limit": r.Limit(), "waitingForUser": string(r.Held)}
 	}
 	if mr != nil {
 		detail["mergeRequest"] = mrRef{ID: mr.ID, Title: mr.Title, Status: mr.Status}

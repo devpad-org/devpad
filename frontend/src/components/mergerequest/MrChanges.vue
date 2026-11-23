@@ -16,6 +16,7 @@ import { useMergeRequest } from './useMergeRequest'
 
 const {
   mr,
+  diff,
   isOpen,
   files,
   orderedFiles,
@@ -42,6 +43,18 @@ const isMobile = useIsMobile()
 const treeOpen = ref(false)
 watch(selectedPath, () => {
   treeOpen.value = false
+})
+
+// With more than one merge base, the diff is of the branch merged onto its
+// target, unless the two conflict, when it is from one of the merge bases
+// and can miss what merging the branch would undo.
+const mergeBasesNote = computed(() => {
+  const d = diff.value
+  const target = mr.value?.targetBranch ?? 'the target'
+  if (!d || d.mergeBases <= 1) return ''
+  return d.to !== d.headSha
+    ? `This branch and ${target} have more than one merge base, so this shows what merging it changes on ${target}: the new side is the branch merged onto ${target}.`
+    : `This branch and ${target} have more than one merge base and don't merge cleanly, so this diff, from one of them, may not show work of ${target} the branch undoes.`
 })
 
 // The branch and commit the project workspace has checked out, so "Open in
@@ -164,6 +177,7 @@ onMounted(() => {
           </div>
         </div>
 
+        <p v-if="mergeBasesNote" class="notice notice-warning branch-note">{{ mergeBasesNote }}</p>
         <p v-if="otherBranch" class="notice notice-warning branch-note">
           Your workspace is on <span class="mono">{{ otherBranch }}</span>, not <span class="mono">{{ mr?.sourceBranch }}</span>,
           so the editor shows that branch's version of this file.

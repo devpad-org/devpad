@@ -99,8 +99,9 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"mergeRequest": body})
 }
 
-// HandleDiff lists the files a merge request changes. File contents come
-// from the project file endpoint at the returned mergeBase and headSha.
+// HandleDiff lists the files a merge request changes, and those of them
+// devpad marks for a closer look (lookClosely). File contents come from the
+// project file endpoint at the returned mergeBase and headSha.
 func (h *Handler) HandleDiff(w http.ResponseWriter, r *http.Request) {
 	user, projectID, mrID, ok := params(w, r)
 	if !ok {
@@ -267,11 +268,23 @@ func (h *Handler) HandleMerge(w http.ResponseWriter, r *http.Request) {
 		Strategy string `json:"strategy"`
 		Message  string `json:"message"`
 		Push     bool   `json:"push"`
+		// OverridePipeline is the pipeline gate as the user saw it when
+		// they confirmed merging over it; absent leaves the gate to decide.
+		OverridePipeline *struct {
+			State      GateState `json:"state"`
+			PipelineID int64     `json:"pipelineId"`
+			HeadSHA    string    `json:"headSha"`
+			TargetSHA  string    `json:"targetSha"`
+		} `json:"overridePipeline"`
 	}
 	if r.ContentLength != 0 && !decode(w, r, &req) {
 		return
 	}
-	result, err := h.service.Merge(r.Context(), user.ID, projectID, mrID, MergeInput(req))
+	in := MergeInput{Strategy: req.Strategy, Message: req.Message, Push: req.Push}
+	if o := req.OverridePipeline; o != nil {
+		in.OverridePipeline = &GateConfirmation{State: o.State, PipelineID: o.PipelineID, HeadSHA: o.HeadSHA, TargetSHA: o.TargetSHA}
+	}
+	result, err := h.service.Merge(r.Context(), user.ID, projectID, mrID, in)
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -368,7 +381,24 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 
 func handleServiceError(w http.ResponseWriter, err error) {
 	var agentErr *agent.AgentError
+	var gateErr *GateError
 	switch {
+	case errors.As(err, &gateErr):
+		// How the gate stands, for the merge card to ask the user again.
+		g := gateErr.Gate
+		var pipelineID any
+		if g.PipelineID != 0 {
+			pipelineID = g.PipelineID
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "pipelineGate": map[string]any{
+			"state":       g.State,
+			"reason":      g.Reason,
+			"overridable": g.Overridable,
+			"changed":     gateErr.Changed,
+			"pipelineId":  pipelineID,
+			"headSha":     g.HeadSHA,
+			"targetSha":   g.TargetSHA,
+		}})
 	case errors.Is(err, ErrNotFound), errors.Is(err, project.ErrNotFound), errors.Is(err, task.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, project.ErrForbidden):
@@ -406,7 +436,26 @@ func mergeRequestResponse(mr *MergeRequest) map[string]any {
 		"createdAt":      mr.CreatedAt,
 		"updatedAt":      mr.UpdatedAt,
 		"agentReviewing": mr.AgentReviewing,
+		// The pipeline gate's state the user merged over, and the pipeline
+		// that stood then; null when the merge overrode nothing.
+		"pipelineOverride": pipelineOverrideResponse(mr.PipelineOverride),
+		// The project's automatic review waits for the pipeline to pass.
+		"reviewAwaitsPipeline": mr.ReviewAwaitsPipeline,
+		// The files of its change devpad marks for a closer look, null
+		// while it hasn't worked them out for the head.
+		"lookClosely": mr.LookClosely,
 	}
+}
+
+func pipelineOverrideResponse(o *PipelineOverride) any {
+	if o == nil {
+		return nil
+	}
+	var pipelineID any
+	if o.PipelineID != 0 {
+		pipelineID = o.PipelineID
+	}
+	return map[string]any{"state": o.State, "pipelineId": pipelineID}
 }
 
 func reviewResponse(rv *Review) map[string]any {
@@ -471,6 +520,9 @@ func taskSummaryResponse(t *task.Task) map[string]any {
 		"error":       t.Error,
 		"budgetUsd":   t.BudgetUSD,
 		"costUsd":     t.CostUSD,
+		// How many times in a row devpad sent the task back for its
+		// pipeline, and why the latest failure waits for the user, if it does.
+		"pipelineRounds": task.RoundsResponse(t.PipelineRounds),
 	}
 }
 

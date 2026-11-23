@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"sync"
 	"time"
 
@@ -106,6 +107,7 @@ type Manager interface {
 	// RemoveSidecar removes a sidecar container and the anonymous volumes
 	// its image declared. A sidecar's data is in its named volume, so an
 	// anonymous one holds nothing worth keeping and would otherwise leak.
+	// One already gone is removed.
 	RemoveSidecar(ctx context.Context, containerID string) error
 	// SidecarHealth reports whether a sidecar is running and what its
 	// health check says.
@@ -142,6 +144,17 @@ type SidecarSpec struct {
 	// tell when the service accepts connections, in Docker's form:
 	// {"CMD", args...} or {"CMD-SHELL", command}.
 	Healthcheck []string
+	// NetworkAlias, when set, is another name the sidecar goes by on
+	// Network.
+	NetworkAlias string
+	// Labels are added to devpad's own, such as a pipeline job's.
+	Labels map[string]string
+	// NoRestart leaves a sidecar that exits stopped, as a job's services
+	// are: Docker otherwise restarts it unless it was stopped.
+	NoRestart bool
+	// Limits, when set, bound the sidecar, as DefaultJobServiceLimits do a
+	// job's services.
+	Limits Limits
 }
 
 // SidecarHealthStartPeriod is how long a sidecar has to pass its first
@@ -179,8 +192,9 @@ type manager struct {
 	attached map[string]bool
 }
 
-// NewManager creates a new container Manager using the default Docker client.
-func NewManager() (Manager, error) {
+// NewManager creates a new container Manager using the default Docker
+// client, which runs pipeline jobs too.
+func NewManager() (Docker, error) {
 	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("creating docker client: %w", err)
@@ -304,7 +318,7 @@ func (m *manager) Remove(ctx context.Context, containerID string) error {
 }
 
 func (m *manager) RemoveSidecar(ctx context.Context, containerID string) error {
-	if _, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
+	if _, err := m.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil && !isNotFound(err) {
 		return fmt.Errorf("removing sidecar container: %w", err)
 	}
 	return nil
@@ -635,6 +649,9 @@ func (m *manager) pullImageIfNeeded(ctx context.Context, imageName string) error
 }
 
 func (m *manager) CreateSidecar(ctx context.Context, spec SidecarSpec) (string, error) {
+	if spec.NetworkAlias != "" && spec.Network == "" {
+		return "", fmt.Errorf("sidecar %s has a network alias but no network", spec.Name)
+	}
 	if err := m.pullImageIfNeeded(ctx, spec.Image); err != nil {
 		return "", fmt.Errorf("pulling sidecar image: %w", err)
 	}
@@ -653,11 +670,24 @@ func (m *manager) CreateSidecar(ctx context.Context, spec SidecarSpec) (string, 
 
 	var networkingConfig *network.NetworkingConfig
 	if spec.Network != "" {
+		endpoint := &network.EndpointSettings{}
+		if spec.NetworkAlias != "" {
+			endpoint.Aliases = []string{spec.NetworkAlias}
+		}
 		networkingConfig = &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
-				spec.Network: {},
+				spec.Network: endpoint,
 			},
 		}
+	}
+
+	labels := map[string]string{}
+	maps.Copy(labels, spec.Labels)
+	labels[labelManaged] = "true"
+	labels[labelSidecar] = "true"
+	restart := container.RestartPolicy{Name: container.RestartPolicyUnlessStopped}
+	if spec.NoRestart {
+		restart = container.RestartPolicy{Name: container.RestartPolicyDisabled}
 	}
 
 	var healthcheck *container.HealthConfig
@@ -677,14 +707,12 @@ func (m *manager) CreateSidecar(ctx context.Context, spec SidecarSpec) (string, 
 			Image:       spec.Image,
 			Env:         spec.Env,
 			Healthcheck: healthcheck,
-			Labels: map[string]string{
-				"devpad.managed": "true",
-				"devpad.sidecar": "true",
-			},
+			Labels:      labels,
 		},
 		HostConfig: &container.HostConfig{
-			RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+			RestartPolicy: restart,
 			Mounts:        mounts,
+			Resources:     spec.Limits.resources(),
 		},
 		NetworkingConfig: networkingConfig,
 		Name:             spec.Name,

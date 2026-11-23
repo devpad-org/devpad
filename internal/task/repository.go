@@ -67,7 +67,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const taskColumns = `id, project_id, user_id, title, body, status, branch, workspace_id, conversation_id, run_id, agent_id, model, effort, pending_message, head_sha, error, base_branch, base_sha, handoff, budget_usd, cost_usd, start_when_unblocked, created_at, updated_at`
+const taskColumns = `id, project_id, user_id, title, body, status, branch, workspace_id, conversation_id, run_id, agent_id, model, effort, pending_message, head_sha, error, base_branch, base_sha, handoff, budget_usd, cost_usd, start_when_unblocked, pipeline_rounds, pipeline_fingerprint, pipeline_sent_head, pipeline_decided_id, pipeline_held, pending_pipeline, created_at, updated_at`
 
 func (r *repository) Create(ctx context.Context, t *Task) error {
 	now := time.Now()
@@ -139,8 +139,9 @@ func (r *repository) list(ctx context.Context, query string, arg any) ([]*Task, 
 func (r *repository) Update(ctx context.Context, t *Task) error {
 	now := time.Now()
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE tasks SET title = ?, body = ?, status = ?, branch = ?, workspace_id = ?, conversation_id = ?, run_id = ?, agent_id = ?, model = ?, effort = ?, pending_message = ?, head_sha = ?, error = ?, base_sha = ?, budget_usd = ?, start_when_unblocked = ?, updated_at = ? WHERE id = ?`,
-		t.Title, t.Body, t.Status, t.Branch, nullableID(t.WorkspaceID), nullableID(t.ConversationID), nullableID(t.RunID), t.AgentID, t.Model, t.Effort, t.PendingMessage, t.HeadSHA, t.Error, t.BaseSHA, t.BudgetUSD, t.StartWhenUnblocked, now, t.ID,
+		`UPDATE tasks SET title = ?, body = ?, status = ?, branch = ?, workspace_id = ?, conversation_id = ?, run_id = ?, agent_id = ?, model = ?, effort = ?, pending_message = ?, head_sha = ?, error = ?, base_sha = ?, budget_usd = ?, start_when_unblocked = ?, pipeline_rounds = ?, pipeline_fingerprint = ?, pipeline_sent_head = ?, pipeline_decided_id = ?, pipeline_held = ?, pending_pipeline = ?, updated_at = ? WHERE id = ?`,
+		t.Title, t.Body, t.Status, t.Branch, nullableID(t.WorkspaceID), nullableID(t.ConversationID), nullableID(t.RunID), t.AgentID, t.Model, t.Effort, t.PendingMessage, t.HeadSHA, t.Error, t.BaseSHA, t.BudgetUSD, t.StartWhenUnblocked,
+		t.PipelineRounds.Count, t.PipelineRounds.Fingerprint, t.PipelineRounds.SentHead, t.PipelineRounds.DecidedID, t.PipelineRounds.Held, t.PendingPipeline, now, t.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("updating task: %w", err)
@@ -376,7 +377,8 @@ type rowScanner interface {
 func scanTask(row rowScanner) (*Task, error) {
 	var t Task
 	var workspaceID, conversationID, runID sql.NullInt64
-	if err := row.Scan(&t.ID, &t.ProjectID, &t.UserID, &t.Title, &t.Body, &t.Status, &t.Branch, &workspaceID, &conversationID, &runID, &t.AgentID, &t.Model, &t.Effort, &t.PendingMessage, &t.HeadSHA, &t.Error, &t.BaseBranch, &t.BaseSHA, &t.Handoff, &t.BudgetUSD, &t.CostUSD, &t.StartWhenUnblocked, &t.CreatedAt, &t.UpdatedAt); err != nil {
+	if err := row.Scan(&t.ID, &t.ProjectID, &t.UserID, &t.Title, &t.Body, &t.Status, &t.Branch, &workspaceID, &conversationID, &runID, &t.AgentID, &t.Model, &t.Effort, &t.PendingMessage, &t.HeadSHA, &t.Error, &t.BaseBranch, &t.BaseSHA, &t.Handoff, &t.BudgetUSD, &t.CostUSD, &t.StartWhenUnblocked,
+		&t.PipelineRounds.Count, &t.PipelineRounds.Fingerprint, &t.PipelineRounds.SentHead, &t.PipelineRounds.DecidedID, &t.PipelineRounds.Held, &t.PendingPipeline, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.WorkspaceID = workspaceID.Int64

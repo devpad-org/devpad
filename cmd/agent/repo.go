@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/devpad-org/devpad/internal/gitbundle"
 )
 
 // Repo endpoints move commits between a project's canonical bare repo and its
@@ -23,8 +25,9 @@ const (
 	repoTimeout = 10 * time.Minute
 
 	// maxBundleBytes caps bundles accepted from devpad. Bundles from sandboxes
-	// are untrusted, so this bounds disk use in the receiving container.
-	maxBundleBytes = 512 << 20
+	// are untrusted, so this bounds disk use in the receiving container. The
+	// host holds bundles no agent receives to the same cap.
+	maxBundleBytes = gitbundle.MaxBytes
 
 	quarantineRefPrefix = "refs/devpad/quarantine/"
 )
@@ -236,6 +239,11 @@ func handleRepoBundle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	writeBundle(ctx, w, refs)
+}
+
+// writeBundle streams a bundle of refs, which must exist.
+func writeBundle(ctx context.Context, w http.ResponseWriter, refs []string) {
 	// Write to a temp file first so a git failure can still be reported as an
 	// error status instead of a truncated bundle.
 	path, cleanup, err := tempBundlePath()

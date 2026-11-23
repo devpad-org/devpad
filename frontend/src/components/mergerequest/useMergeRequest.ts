@@ -1,14 +1,20 @@
 import { computed, inject, ref, watch, type InjectionKey, type Ref } from 'vue'
-import { projectApi, type RepoDiff, type RepoDiffFile, type WorkspaceBranchStatus } from '@/api/projects'
+import { projectApi, type RepoDiffFile, type WorkspaceBranchStatus } from '@/api/projects'
 import {
+  gateConfirmation,
   mergeConflictsFromError,
   mergeRequestApi,
+  pipelineGateFromError,
   type Commit,
   type CommentInput,
   type CommitLog,
+  type LookClosely,
+  type MergeRequestChange,
   type MergeRequestDetail,
   type MergeStrategy,
+  type GateConfirmation,
   type NewComment,
+  type PipelineGateRefusal,
   type Push,
   type Review,
   type ReviewComment,
@@ -20,7 +26,10 @@ import { taskApi } from '@/api/tasks'
 import { branchActionError } from '@/components/project/branchErrors'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useAiModelStore } from '@/stores/aiModels'
+import type { Pipeline } from '@/api/pipelines'
+import { PIPELINE_COPY } from '@/components/pipeline/pipelineCopy'
 import { STRATEGIES, authorName, autoMergeReason, dirName, errorText, plural, type Author, type Tone } from './format'
+import { createMrPipelines } from './useMrPipelines'
 
 const NOTICE_MS = 6000
 // Comparing the workspace's branch reads both repos, so polling does it at
@@ -43,11 +52,13 @@ export interface PushEvent {
   commits: Commit[]
 }
 
-// An entry in the activity timeline: a review's verdict, a thread, or a push.
+// An entry in the activity timeline: a review's verdict, a thread, a push,
+// or a pipeline.
 export type TimelineItem =
   | { kind: 'review'; at: string; review: Review }
   | { kind: 'thread'; at: string; thread: Thread }
   | { kind: 'push'; at: string; event: PushEvent }
+  | { kind: 'pipeline'; at: string; pipeline: Pipeline }
 
 // What the activity shows: everything, or only the threads still open.
 export type ActivityFilter = 'all' | 'open'
@@ -77,7 +88,10 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   const aiModelStore = useAiModelStore()
 
   const mr = ref<MergeRequestDetail | null>(null)
-  const diff = ref<RepoDiff | null>(null)
+  const diff = ref<MergeRequestChange | null>(null)
+  // The files of the change devpad marks for a closer look, which come with
+  // its diff.
+  const lookClosely = computed<LookClosely | null>(() => diff.value?.lookClosely ?? null)
   // The commits the merge request proposes, or null until they load or when
   // the repo can't list them.
   const commitLog = ref<CommitLog | null>(null)
@@ -135,10 +149,23 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
 
   const strategy = ref<MergeStrategy>('merge')
   const pushAfterMerge = ref(true)
-  const conflicts = ref<string[] | null>(null)
+  // The files a merge the repo refused found conflicting.
+  const mergeConflicts = ref<string[] | null>(null)
   const mergeError = ref('')
+  // The pipeline gate's state you are asked to confirm merging over, with
+  // why it is shut; null while not asking.
+  const overrideAsk = ref<PipelineGateRefusal | null>(null)
 
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
+
+  const pipelines = createMrPipelines(projectId, mrId, mr, () => void projectStore.refreshLatestPipelines())
+  // The files that keep the branch from merging onto its target: those a
+  // refused merge found, or else those the pipeline's trial merge found,
+  // which a merge would find too.
+  const conflicts = computed(() => mergeConflicts.value ?? pipelines.gateConflicts.value)
+  // The pipeline found the branch doesn't merge onto its target as it is
+  // now, so merging waits for the conflicts to be resolved.
+  const gateConflicted = computed(() => pipelines.gate.value?.state === 'conflict')
 
   const project = computed(() => projectStore.project)
   const isOpen = computed(() => mr.value?.status === 'open')
@@ -200,6 +227,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     for (const push of mr.value?.pushes ?? []) {
       items.push({ kind: 'push', at: push.createdAt, event: { push, commits: commitGroups.value.byPush.get(push.id) ?? [] } })
     }
+    for (const pipeline of pipelines.timelinePipelines.value) items.push({ kind: 'pipeline', at: pipeline.createdAt, pipeline })
     return items.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
   })
 
@@ -408,6 +436,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     } else if (task.value?.status === 'failed') {
       list.push({ key: 'task', tone: 'error', icon: 'warning', title: 'The task agent stopped', detail: task.value.error || undefined })
     }
+    const pipeline = pipelines.check.value
+    if (pipeline) list.push(pipeline)
     if (conflicts.value) {
       list.push({
         key: 'branch',
@@ -433,10 +463,11 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
   })
 
   // A task's merge request into a branch the project merges into
-  // automatically merges once a review agent approves it and its run ends.
-  // The check says so, that the latest approval is about to merge it, or
-  // that it did not and why. The project has no checks for the change to
-  // pass, so the approval is all that stands in the way.
+  // automatically merges once a review agent approves it and its run ends,
+  // and once its pipeline passes when one guards the branch. The check says
+  // so, that the latest approval is about to merge it or waits for its
+  // pipeline, or that it did not and why. Without a pipeline guarding the
+  // branch the approval is all that stands in the way, and the check warns.
   const autoMerges = computed(() => {
     const m = mr.value
     return !!m && m.openedBy === 'task_agent' && (project.value?.autoMergeBranches ?? []).includes(m.targetBranch)
@@ -453,14 +484,31 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
       detail: `The review agent's approval didn't merge it: ${why}. Merge it yourself, or have a review agent review it again.`,
     })
     if (latest?.autoMergeError) return notMerged(autoMergeReason(latest))
+    // A change to the pipeline file is the user's to merge, approved or not,
+    // as the server says of the change.
+    const pipelineFile = diff.value?.pipelineFile
+    if (pipelineFile) {
+      return { key: 'auto-merge', tone: 'warning', icon: 'warning', title: "Won't merge automatically", detail: PIPELINE_COPY.autoMergePipelineFile(pipelineFile) }
+    }
+    if ((diff.value?.mergeBases ?? 1) > 1) {
+      return {
+        key: 'auto-merge',
+        tone: 'warning',
+        icon: 'warning',
+        title: "Won't merge automatically",
+        detail: `It has more than one merge base with ${m.targetBranch}, so its review couldn't read just what merging it does: merge it yourself once you've looked at its changes.`,
+      }
+    }
+    const gate = pipelines.gate.value
     if (latest?.author === 'agent' && latest.status === 'submitted' && latest.verdict === 'approve') {
       if (latest.finishing) {
+        const waiting = !!gate?.guarded && !gate.clear && gate.waits
         return {
           key: 'auto-merge',
           tone: 'active',
           icon: 'merged',
-          title: `Merging into ${m.targetBranch} automatically`,
-          detail: 'The review agent approved it; devpad merges it once the agent finishes.',
+          title: waiting ? `Merging into ${m.targetBranch} once the pipeline passes` : `Merging into ${m.targetBranch} automatically`,
+          detail: waiting ? PIPELINE_COPY.autoMergeWaiting(m.targetBranch) : 'The review agent approved it; devpad merges it once the agent finishes.',
           spin: true,
         }
       }
@@ -469,12 +517,15 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
       return notMerged(`it came before ${m.targetBranch} was merged into automatically`)
     }
     const reviewer = project.value?.autoReview ? 'the automatic review' : 'a review agent you start'
+    // Until the server says how the gate stands, nothing claims a pipeline
+    // guards the branch.
+    const guarded = !!gate?.guarded && gate.state !== 'closed'
     return {
       key: 'auto-merge',
-      tone: 'neutral',
-      icon: 'merged',
+      tone: guarded ? 'neutral' : 'warning',
+      icon: guarded ? 'merged' : 'warning',
       title: `Merges into ${m.targetBranch} automatically`,
-      detail: `Once ${reviewer} approves it, with no checks to pass first.`,
+      detail: guarded ? PIPELINE_COPY.autoMergeGuarded(reviewer, m.targetBranch) : PIPELINE_COPY.autoMergeUnguarded(reviewer, m.targetBranch),
     }
   })
 
@@ -544,6 +595,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
 
   async function refresh() {
     const gen = generation
+    void pipelines.load()
     try {
       await loadDetail(gen)
       if (gen === generation) loadError.value = ''
@@ -592,8 +644,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     fileLoading.value = true
     try {
       const [before, after] = await Promise.all([
-        file.status === 'A' ? Promise.resolve('') : fileAt(d.mergeBase, file.oldPath || file.path),
-        file.status === 'D' ? Promise.resolve('') : fileAt(d.headSha, file.path),
+        file.status === 'A' ? Promise.resolve('') : fileAt(d.from, file.oldPath || file.path),
+        file.status === 'D' ? Promise.resolve('') : fileAt(d.to, file.path),
       ])
       if (request !== fileRequest) return
       oldContent.value = before ?? ''
@@ -653,6 +705,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
 
   watch([projectId, mrId], () => {
     generation++
+    pipelines.reset()
     mr.value = null
     diff.value = null
     commitLog.value = null
@@ -661,7 +714,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     fileCache.clear()
     drafts.value = []
     reviewBody.value = ''
-    conflicts.value = null
+    mergeConflicts.value = null
+    overrideAsk.value = null
     reviewOpen.value = false
     sendBackOpen.value = false
     sendBackNote.value = ''
@@ -892,14 +946,25 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     }, sendBackError)
   }
 
-  function merge() {
+  // Merges the merge request. While its pipeline keeps it from merging,
+  // it asks first (overrideAsk), and merges over the gate only as you saw
+  // it, its state, pipeline, head and target, which the server refuses,
+  // asking again, once any of them has moved on.
+  function merge(override?: GateConfirmation) {
+    const gate = pipelines.gate.value
+    if (!override && gate && !gate.clear && gate.overridable) {
+      overrideAsk.value = { ...gateConfirmation(gate), reason: gate.reason, overridable: true, changed: false }
+      return
+    }
     void act(async () => {
-      conflicts.value = null
+      mergeConflicts.value = null
       try {
         const res = await mergeRequestApi.merge(projectId.value, mrId.value, {
           strategy: strategy.value,
           push: pushAfterMerge.value && Boolean(project.value?.upstreamUrl),
+          overridePipeline: override,
         })
+        overrideAsk.value = null
         if (res.pushError) {
           actionError.value = `Merged, but the push failed: ${res.pushError}`
         } else {
@@ -909,19 +974,33 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
       } catch (e) {
         const files = mergeConflictsFromError(e)
         if (files) {
-          conflicts.value = files
+          overrideAsk.value = null
+          mergeConflicts.value = files
           return
+        }
+        const refusal = pipelineGateFromError(e)
+        if (refusal) {
+          void pipelines.load()
+          if (refusal.overridable) {
+            overrideAsk.value = { ...refusal, changed: refusal.changed || override !== undefined }
+            return
+          }
+          overrideAsk.value = null
         }
         throw e
       }
     }, mergeError)
   }
 
+  function cancelOverride() {
+    overrideAsk.value = null
+  }
+
   function resolveConflicts() {
     const files = conflicts.value ?? []
     void act(async () => {
       await mergeRequestApi.resolveConflicts(projectId.value, mrId.value, files)
-      conflicts.value = null
+      mergeConflicts.value = null
       showNotice(`The task agent is merging ${mr.value?.targetBranch ?? 'the target branch'} in and resolving the conflicts.`)
       await refreshAll()
     }, mergeError)
@@ -936,6 +1015,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
 
   function dispose() {
     generation++
+    pipelines.reset()
     if (noticeTimer !== null) clearTimeout(noticeTimer)
   }
 
@@ -945,6 +1025,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     project,
     mr,
     diff,
+    lookClosely,
     commitLog,
     loadError,
     actionError,
@@ -982,6 +1063,9 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     pushAfterMerge,
     conflicts,
     mergeError,
+    overrideAsk,
+    cancelOverride,
+    gateConflicted,
     isOpen,
     files,
     pendingAgentReview,
@@ -1010,6 +1094,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     markedLines,
     latestReviews,
     checks,
+    pipelines,
     strategyHint,
     strategies,
     statusIcon,

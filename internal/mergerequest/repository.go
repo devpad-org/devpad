@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
+	"sync"
 	"time"
 )
 
@@ -13,7 +15,19 @@ type Repository interface {
 	GetByID(ctx context.Context, id int64) (*MergeRequest, error)
 	GetOpenBySource(ctx context.Context, projectID int64, sourceBranch string) (*MergeRequest, error)
 	ListByProjectID(ctx context.Context, projectID int64) ([]*MergeRequest, error)
+	// ListOpenByTarget lists a project's open merge requests into a branch,
+	// oldest first.
+	ListOpenByTarget(ctx context.Context, projectID int64, target string) ([]*MergeRequest, error)
+	// ListOpen lists every open merge request, oldest first.
+	ListOpen(ctx context.Context) ([]*MergeRequest, error)
+	// Update saves the merge request's fields but ReviewAwaitsPipeline.
 	Update(ctx context.Context, mr *MergeRequest) error
+	// SetReviewAwaitsPipeline records whether the merge request's automatic
+	// review waits for its pipeline to pass.
+	SetReviewAwaitsPipeline(ctx context.Context, id int64, awaits bool) error
+	// SetLookClosely keeps the look-closely mark of the merge request's
+	// change at head, unless the merge request has moved to another head.
+	SetLookClosely(ctx context.Context, id int64, head string, mark LookCloselySummary) error
 	// UpdateHead moves mr to head and records the push in the same
 	// transaction. A task's push also moves the threads its agent started
 	// on the old head, replies included, to the new one: the agent writes
@@ -41,6 +55,9 @@ type Repository interface {
 	// review's run, with why its approval did not merge the merge request
 	// automatically, or "". UpdateReview never writes either.
 	SettleRun(ctx context.Context, id int64, autoMergeError string) error
+	// SettleRunsOf records settled the run of every submitted agent review
+	// of a merge request not settled yet, saying nothing.
+	SettleRunsOf(ctx context.Context, mergeRequestID int64) error
 
 	CreateComment(ctx context.Context, c *Comment) error
 	GetComment(ctx context.Context, id int64) (*Comment, error)
@@ -61,7 +78,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const mrColumns = `id, project_id, user_id, task_id, opened_by, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, merged_by, created_at, updated_at`
+const mrColumns = `id, project_id, user_id, task_id, opened_by, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, merged_by, pipeline_override, pipeline_override_id, review_awaits_pipeline, look_closely, look_closely_head, created_at, updated_at`
 
 func (r *repository) Create(ctx context.Context, mr *MergeRequest) error {
 	now := time.Now()
@@ -109,11 +126,53 @@ func (r *repository) ListByProjectID(ctx context.Context, projectID int64) ([]*M
 	})
 }
 
+func (r *repository) ListOpenByTarget(ctx context.Context, projectID int64, target string) ([]*MergeRequest, error) {
+	// The partial index of open merge requests by source holds every open
+	// one of the project.
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+mrColumns+` FROM merge_requests WHERE project_id = ? AND status = 'open' AND target_branch = ? ORDER BY id`, projectID, target)
+	if err != nil {
+		return nil, fmt.Errorf("listing open merge requests into %s: %w", target, err)
+	}
+	return collect(rows, func(row rowScanner) (*MergeRequest, error) { return scanMergeRequest(row) })
+}
+
+func (r *repository) ListOpen(ctx context.Context) ([]*MergeRequest, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+mrColumns+` FROM merge_requests WHERE status = 'open' ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing open merge requests: %w", err)
+	}
+	return collect(rows, func(row rowScanner) (*MergeRequest, error) { return scanMergeRequest(row) })
+}
+
+func (r *repository) SetReviewAwaitsPipeline(ctx context.Context, id int64, awaits bool) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE merge_requests SET review_awaits_pipeline = ? WHERE id = ?`, awaits, id); err != nil {
+		return fmt.Errorf("recording whether the review waits for the pipeline: %w", err)
+	}
+	return nil
+}
+
+func (r *repository) SetLookClosely(ctx context.Context, id int64, head string, mark LookCloselySummary) error {
+	data, err := encodeLookClosely(mark)
+	if err != nil {
+		return err
+	}
+	if _, err := r.db.ExecContext(ctx, `UPDATE merge_requests SET look_closely = ?, look_closely_head = ? WHERE id = ? AND head_sha = ?`, data, head, id, head); err != nil {
+		return fmt.Errorf("keeping the look-closely mark: %w", err)
+	}
+	return nil
+}
+
 func (r *repository) Update(ctx context.Context, mr *MergeRequest) error {
 	now := time.Now()
+	var override string
+	var overridePipeline any
+	if o := mr.PipelineOverride; o != nil {
+		override, overridePipeline = string(o.State), nullableID(o.PipelineID)
+	}
 	if _, err := r.db.ExecContext(ctx,
-		`UPDATE merge_requests SET title = ?, description = ?, status = ?, head_sha = ?, base_sha = ?, merge_sha = ?, merged_at = ?, merged_by = ?, updated_at = ? WHERE id = ?`,
-		mr.Title, mr.Description, mr.Status, mr.HeadSHA, mr.BaseSHA, mr.MergeSHA, mr.MergedAt, mr.MergedBy, now, mr.ID,
+		`UPDATE merge_requests SET title = ?, description = ?, status = ?, head_sha = ?, base_sha = ?, merge_sha = ?, merged_at = ?, merged_by = ?, pipeline_override = ?, pipeline_override_id = ?, updated_at = ? WHERE id = ?`,
+		mr.Title, mr.Description, mr.Status, mr.HeadSHA, mr.BaseSHA, mr.MergeSHA, mr.MergedAt, mr.MergedBy, override, overridePipeline, now, mr.ID,
 	); err != nil {
 		return fmt.Errorf("updating merge request: %w", err)
 	}
@@ -252,6 +311,16 @@ func (r *repository) SettleRun(ctx context.Context, id int64, autoMergeError str
 	return nil
 }
 
+func (r *repository) SettleRunsOf(ctx context.Context, mergeRequestID int64) error {
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE merge_request_reviews SET run_settled = 1, updated_at = ? WHERE merge_request_id = ? AND author = 'agent' AND status = 'submitted' AND run_settled = 0`,
+		time.Now(), mergeRequestID,
+	); err != nil {
+		return fmt.Errorf("settling the merge request's reviews: %w", err)
+	}
+	return nil
+}
+
 func (r *repository) CreateComment(ctx context.Context, c *Comment) error {
 	now := time.Now()
 	result, err := r.db.ExecContext(ctx,
@@ -317,17 +386,68 @@ type rowScanner interface {
 }
 
 // scanMergeRequest scans mrColumns, then any extra columns into extra.
+// unreadableMarks are the kept marks that didn't decode, so each is logged
+// once rather than on every read of its merge request, such as each poll
+// of the list.
+var unreadableMarks markSet
+
+type markSet struct {
+	mu   sync.Mutex
+	seen map[markKey]bool
+}
+
+type markKey struct {
+	mrID       int64
+	head, mark string
+}
+
+// maxUnreadableMarks bounds the set; past it, it starts again empty.
+const maxUnreadableMarks = 1024
+
+// first reports whether a mark of the merge request's head is met for the
+// first time.
+func (m *markSet) first(mrID int64, head, mark string) bool {
+	key := markKey{mrID: mrID, head: head, mark: mark}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.seen[key] {
+		return false
+	}
+	if m.seen == nil || len(m.seen) >= maxUnreadableMarks {
+		m.seen = make(map[markKey]bool)
+	}
+	m.seen[key] = true
+	return true
+}
+
 func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 	var mr MergeRequest
 	var taskID sql.NullInt64
 	var mergedAt sql.NullTime
-	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.OpenedBy, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.MergedBy, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
+	var override string
+	var overridePipeline sql.NullInt64
+	var mark, markHead string
+	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.OpenedBy, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.MergedBy, &override, &overridePipeline, &mr.ReviewAwaitsPipeline, &mark, &markHead, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
+	}
+	// A mark of another head is out of date, so it isn't the merge
+	// request's.
+	// One that doesn't read is no reason to fail reading the merge
+	// request: it has none, and devpad works it out again.
+	if markHead != "" && markHead == mr.HeadSHA {
+		lc, err := decodeLookClosely(mark)
+		if err != nil && unreadableMarks.first(mr.ID, markHead, mark) {
+			log.Printf("merge request %d: %v; it has no look-closely mark until devpad works it out again", mr.ID, err)
+		}
+		mr.LookClosely = lc
 	}
 	mr.TaskID = taskID.Int64
 	if mergedAt.Valid {
 		mr.MergedAt = &mergedAt.Time
+	}
+	if override != "" {
+		mr.PipelineOverride = &PipelineOverride{State: GateState(override), PipelineID: overridePipeline.Int64}
 	}
 	return &mr, nil
 }

@@ -5,6 +5,8 @@ import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import BudgetReached from '@/components/project/BudgetReached.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
+import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
+import { GATE_OVERRIDDEN, PIPELINE_OUTCOME, PIPELINE_STATUS, sourceLabel, triggerLabel } from '@/components/pipeline/pipelineFormat'
 import MrCommits from './MrCommits.vue'
 import MrThread from './MrThread.vue'
 import { authorIcon, authorName, autoMergeReason, errorText, plural, pushSummary, reviewAction, reviewIcon, reviewTone, shortSha } from './format'
@@ -12,8 +14,9 @@ import { useMergeRequest, type TimelineItem } from './useMergeRequest'
 
 // The merge request's timeline: opened with its first commits, each push of
 // more, each review's verdict, every thread, on a line or on the whole
-// change, and how it ended. It can show only the threads still open, and
-// ends with a box for a new comment.
+// change, and how it ended, saying when you merged it over its pipeline.
+// It can show only the threads still open, and ends with a box for a new
+// comment.
 const {
   mr,
   isOpen,
@@ -31,7 +34,14 @@ const {
   stoppedReview,
   continueReview,
   continueError,
+  pipelines,
 } = useMergeRequest()
+
+// Shows a pipeline of the activity on the Pipeline card above it.
+function showPipeline(id: number) {
+  pipelines.show(id)
+  document.getElementById('mr-pipeline-card')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
 
 const items = computed(() =>
   activityFilter.value === 'open' ? timeline.value.filter((item) => item.kind === 'thread' && !item.thread.root.resolvedBy) : timeline.value,
@@ -41,6 +51,7 @@ const showAll = computed(() => activityFilter.value === 'all')
 function itemKey(item: TimelineItem): string {
   if (item.kind === 'review') return `review-${item.review.id}`
   if (item.kind === 'push') return `push-${item.event.push.id}`
+  if (item.kind === 'pipeline') return `pipeline-${item.pipeline.id}`
   return `thread-${item.thread.root.id}`
 }
 
@@ -151,7 +162,20 @@ async function submitComment() {
           </div>
         </li>
 
-        <li v-else class="event">
+        <li v-else-if="item.kind === 'pipeline'" class="event event-small">
+          <span class="event-node event-node-pipeline">
+            <PipelineStatusIcon :look="PIPELINE_STATUS[item.pipeline.status]" :size="27" />
+          </span>
+          <span class="event-line">
+            <button type="button" class="pipeline-link" :title="`Show pipeline #${item.pipeline.id} above`" @click="showPipeline(item.pipeline.id)">Pipeline #{{ item.pipeline.id }}</button>
+            {{ PIPELINE_OUTCOME[item.pipeline.status] }}
+            on <span class="mono">{{ shortSha(item.pipeline.headSha) }}</span>
+            <span class="muted"> &middot; {{ triggerLabel(item.pipeline) }} &middot; {{ sourceLabel(item.pipeline) }}</span>
+            <span class="muted" :title="fullTime(item.pipeline.createdAt)"> &middot; {{ timeAgo(item.pipeline.createdAt) }}</span>
+          </span>
+        </li>
+
+        <li v-else-if="item.kind === 'thread'" class="event">
           <span class="event-node" :class="item.thread.root.resolvedBy ? 'tone-success' : 'tone-neutral'">
             <MrIcon :name="item.thread.root.resolvedBy ? 'check-circle' : 'comment'" :size="13" />
           </span>
@@ -166,6 +190,11 @@ async function submitComment() {
         <span class="event-line">
           <template v-if="mr.status === 'merged'">
             Merged into <span class="mono">{{ mr.targetBranch }}</span>
+            <template v-if="mr.pipelineOverride">
+              by you although {{ GATE_OVERRIDDEN[mr.pipelineOverride.state] }}<template v-if="mr.pipelineOverride.pipelineId">
+                (<button type="button" class="pipeline-link" :title="`Show pipeline #${mr.pipelineOverride.pipelineId} above`" @click="showPipeline(mr.pipelineOverride.pipelineId)">#{{ mr.pipelineOverride.pipelineId }}</button>)</template
+              >
+            </template>
             <span class="muted" :title="fullTime(mr.mergedAt)"> &middot; {{ timeAgo(mr.mergedAt) }}</span>
           </template>
           <template v-else>
@@ -223,7 +252,7 @@ async function submitComment() {
   bottom: 12px;
   left: 13px;
   width: 1px;
-  background: var(--border-default);
+  background: var(--border-subtle);
 }
 
 .event {
@@ -289,11 +318,11 @@ async function submitComment() {
 }
 
 .edge-review {
-  border-left-color: var(--accent-purple);
+  border-left-color: var(--hue-purple);
 }
 
 .edge-active {
-  border-left-color: var(--accent-blue);
+  border-left-color: var(--hue-blue);
 }
 
 .edge-error {
@@ -339,6 +368,20 @@ async function submitComment() {
 .composer-footer .form-hint,
 .composer-footer .form-error {
   margin: 0;
+}
+
+.event-node-pipeline {
+  background: none;
+}
+
+.pipeline-link {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.pipeline-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .watch-link {

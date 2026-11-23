@@ -88,6 +88,13 @@ type Service interface {
 	// AdoptWorkspaceServices adds the services a workspace has to its
 	// project's list, for a workspace that became a project's workspace.
 	AdoptWorkspaceServices(ctx context.Context, workspaceID, projectID int64) error
+
+	// StartJobServices starts fresh copies of the project's services a
+	// pipeline job names, on the job's network, and waits until they are
+	// ready. They belong to no workspace.
+	StartJobServices(ctx context.Context, req JobServicesRequest) (*JobServices, error)
+	// RemoveJobServices removes the services StartJobServices started.
+	RemoveJobServices(ctx context.Context, services *JobServices) error
 }
 
 // AwaitReady waits up to readyTimeout for a workspace's services to be
@@ -169,17 +176,9 @@ func (s *service) checkDeployable(ctx context.Context, serviceType ServiceType, 
 // An acceptance of terms older than the service's current ones, kept by a
 // project, is refused.
 func (s *service) create(ctx context.Context, workspaceID int64, serviceType ServiceType, acceptance *LicenseAcceptance) (*WorkspaceService, error) {
-	def, ok := lookupDefinition(serviceType)
-	if !ok {
-		return nil, ErrInvalidType
-	}
-	if def.license != nil {
-		if acceptance == nil {
-			return nil, ErrLicenseNotAccepted
-		}
-		if acceptance.termsVersion() != def.license.version {
-			return nil, ErrLicenseOutdated
-		}
+	_, cfg, err := newConfig(serviceType, acceptance)
+	if err != nil {
+		return nil, err
 	}
 
 	// Check for duplicate service type on this workspace.
@@ -193,12 +192,6 @@ func (s *service) create(ctx context.Context, workspaceID int64, serviceType Ser
 		}
 	}
 
-	cfg := def.defaults
-	cfg.DefaultPass = generatePassword(24)
-	if def.license != nil {
-		a := *acceptance
-		cfg.LicenseAcceptance = &a
-	}
 	configJSON, _ := json.Marshal(cfg)
 
 	// The record comes first: the database refuses a second service of the
@@ -226,6 +219,44 @@ func (s *service) create(ctx context.Context, workspaceID int64, serviceType Ser
 		return nil, fmt.Errorf("creating service volume: %w", err)
 	}
 	return svc, nil
+}
+
+// newConfig is the configuration of a new copy of a service of serviceType:
+// its defaults with a password of its own, deployed under acceptance when
+// the type has licence terms. An acceptance of terms older than the
+// service's current ones, as a project keeps, is refused.
+func newConfig(serviceType ServiceType, acceptance *LicenseAcceptance) (definition, ServiceConfig, error) {
+	def, ok := lookupDefinition(serviceType)
+	if !ok {
+		return definition{}, ServiceConfig{}, ErrInvalidType
+	}
+	cfg := def.defaults
+	cfg.DefaultPass = generatePassword(24)
+	if def.license != nil {
+		if acceptance == nil {
+			return definition{}, ServiceConfig{}, ErrLicenseNotAccepted
+		}
+		if acceptance.termsVersion() != def.license.version {
+			return definition{}, ServiceConfig{}, ErrLicenseOutdated
+		}
+		a := *acceptance
+		cfg.LicenseAcceptance = &a
+	}
+	return def, cfg, nil
+}
+
+// sidecarSpec is the container of a service of def with cfg, less where it
+// goes: its name, network and volume.
+func sidecarSpec(def definition, cfg ServiceConfig) (container.SidecarSpec, error) {
+	env, err := def.containerEnv(cfg)
+	if err != nil {
+		return container.SidecarSpec{}, err
+	}
+	var healthcheck []string
+	if def.healthcheck != nil {
+		healthcheck = def.healthcheck(cfg)
+	}
+	return container.SidecarSpec{Image: cfg.Image, Env: env, DataDir: def.dataDir, Healthcheck: healthcheck}, nil
 }
 
 // checkArch refuses a service whose image the Docker daemon cannot run.
@@ -463,23 +494,14 @@ func (s *service) ensureContainer(ctx context.Context, svc *WorkspaceService, ne
 	if !ok {
 		return ErrInvalidType
 	}
-	env, err := def.containerEnv(cfg)
+	spec, err := sidecarSpec(def, cfg)
 	if err != nil {
 		return err
 	}
-	var healthcheck []string
-	if def.healthcheck != nil {
-		healthcheck = def.healthcheck(cfg)
-	}
-	containerID, err := s.container.CreateSidecar(ctx, container.SidecarSpec{
-		Name:        sidecarContainerName(svc.WorkspaceID, svc.ServiceType),
-		Image:       cfg.Image,
-		Network:     networkName,
-		Env:         env,
-		Volume:      svc.VolumeName,
-		DataDir:     def.dataDir,
-		Healthcheck: healthcheck,
-	})
+	spec.Name = sidecarContainerName(svc.WorkspaceID, svc.ServiceType)
+	spec.Network = networkName
+	spec.Volume = svc.VolumeName
+	containerID, err := s.container.CreateSidecar(ctx, spec)
 	if err != nil {
 		return fmt.Errorf("creating sidecar container: %w", err)
 	}
@@ -563,8 +585,7 @@ func (s *service) Provision(ctx context.Context, workspaceID, projectID int64, n
 			continue
 		}
 		if errors.Is(err, ErrLicenseOutdated) {
-			// Adding the service again is how the user accepts the new terms.
-			return fmt.Errorf("adding the project's %s service: %w; remove it from the project's services and add it again to accept the new terms", ps.ServiceType, err)
+			return outdatedLicenseError("adding", ps.ServiceType, err)
 		}
 		if err != nil {
 			return fmt.Errorf("adding the project's %s service: %w", ps.ServiceType, err)
@@ -586,14 +607,28 @@ func (s *service) AwaitReady(ctx context.Context, workspaceID int64) error {
 	if err != nil {
 		return fmt.Errorf("listing services: %w", err)
 	}
-	// One deadline for them all: they were started together, so they get
-	// ready side by side and this waits about as long as the slowest.
+	var started []startedService
+	for _, svc := range services {
+		if svc.Status == StatusRunning && svc.ContainerID != "" {
+			started = append(started, startedService{svc.ContainerID, svc.ServiceType})
+		}
+	}
+	return s.awaitAll(ctx, started)
+}
+
+// startedService is a service's container that has been started.
+type startedService struct {
+	containerID string
+	serviceType ServiceType
+}
+
+// awaitAll waits until each started service passes its health check, with
+// one deadline for them all: they were started together, so they get ready
+// side by side and this waits about as long as the slowest.
+func (s *service) awaitAll(ctx context.Context, services []startedService) error {
 	ctx, cancel := context.WithTimeoutCause(ctx, s.readyTimeout, errReadyTimeout)
 	defer cancel()
 	for _, svc := range services {
-		if svc.Status != StatusRunning || svc.ContainerID == "" {
-			continue
-		}
 		if err := s.awaitReady(ctx, svc); err != nil {
 			return err
 		}
@@ -606,39 +641,39 @@ func (s *service) AwaitReady(ctx context.Context, workspaceID int64) error {
 // that Docker restarts meanwhile exited, which a service that starts well
 // never does, and one that stopped will not get ready, so neither is
 // waited for.
-func (s *service) awaitReady(ctx context.Context, svc *WorkspaceService) error {
+func (s *service) awaitReady(ctx context.Context, svc startedService) error {
 	ticker := time.NewTicker(s.readyPoll)
 	defer ticker.Stop()
 	restarts := -1
 	for {
-		h, err := s.container.SidecarHealth(ctx, svc.ContainerID)
+		h, err := s.container.SidecarHealth(ctx, svc.containerID)
 		switch {
 		case err != nil:
 			if ctx.Err() == nil {
-				return fmt.Errorf("checking the %s service: %w", svc.ServiceType, err)
+				return fmt.Errorf("checking the %s service: %w", svc.serviceType, err)
 			}
 		case restarts >= 0 && h.RestartCount > restarts:
-			return fmt.Errorf("the %s service stopped while starting, with exit code %d", svc.ServiceType, h.ExitCode)
+			return fmt.Errorf("the %s service stopped while starting, with exit code %d", svc.serviceType, h.ExitCode)
 		case !h.Running:
 			// Docker reports one it is about to restart as running, so this
-			// one was stopped, such as with its workspace, and will not get
-			// ready by waiting.
-			return fmt.Errorf("the %s service %w", svc.ServiceType, errServiceStopped)
+			// one was stopped, such as with its workspace, or exited with no
+			// restart policy, and will not get ready by waiting.
+			return fmt.Errorf("the %s service %w", svc.serviceType, errServiceStopped)
 		default:
 			restarts = h.RestartCount
 			switch h.Status {
 			case "healthy", "none":
 				return nil
 			case "unhealthy":
-				return fmt.Errorf("the %s service started but is not accepting connections", svc.ServiceType)
+				return fmt.Errorf("the %s service started but is not accepting connections", svc.serviceType)
 			}
 		}
 		select {
 		case <-ctx.Done():
 			if errors.Is(context.Cause(ctx), errReadyTimeout) {
-				return fmt.Errorf("the %s service was not ready after %s", svc.ServiceType, s.readyTimeout)
+				return fmt.Errorf("the %s service was not ready after %s", svc.serviceType, s.readyTimeout)
 			}
-			return ctx.Err()
+			return context.Cause(ctx)
 		case <-ticker.C:
 		}
 	}
@@ -682,6 +717,13 @@ func (s *service) AdoptWorkspaceServices(ctx context.Context, workspaceID, proje
 		}
 	}
 	return nil
+}
+
+// outdatedLicenseError says that a project's service cannot be copied, as
+// doing says, under terms changed since the project accepted them, and how
+// the user accepts the new ones: by adding the service again.
+func outdatedLicenseError(doing string, serviceType ServiceType, err error) error {
+	return fmt.Errorf("%s the project's %s service: %w; remove it from the project's services and add it again to accept the new terms", doing, serviceType, err)
 }
 
 // generatePassword returns a cryptographically random alphanumeric string of

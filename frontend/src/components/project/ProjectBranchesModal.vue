@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import DocLink from '@/components/DocLink.vue'
 import { computed, ref, watch } from 'vue'
+import { pipelineApi, MAX_LATEST_SUBJECTS } from '@/api/pipelines'
 import { projectApi } from '@/api/projects'
 import SelectMenu from '@/components/SelectMenu.vue'
+import { PIPELINE_COPY } from '@/components/pipeline/pipelineCopy'
 import { useActiveProjectStore } from '@/stores/activeProject'
 
 // Picks the project's default branch and the other branches that change
@@ -23,6 +25,13 @@ const protectedSet = ref(new Set<string>())
 // The protected branches a task's merge request merges into once a review
 // agent approves it.
 const autoMergeSet = ref(new Set<string>())
+// The protected branches that run the project's pipeline, and whose merge
+// requests do.
+const pipelineSet = ref(new Set<string>())
+// Whether a pipeline is configured at each protected branch's commit, as
+// the server read it when the dialog opened; a branch it couldn't read, or
+// protected only in the edits not yet saved, is missing.
+const configured = ref(new Map<string, boolean>())
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -69,6 +78,7 @@ watch(
     defaultBranch.value = store.project.defaultBranch
     protectedSet.value = new Set(store.protectedBranches.filter((b) => b !== store.project?.defaultBranch))
     autoMergeSet.value = new Set(store.project.autoMergeBranches ?? [])
+    pipelineSet.value = new Set(store.project.pipelineBranches ?? [])
     error.value = ''
     confirming.value = ''
     loading.value = true
@@ -79,9 +89,44 @@ watch(
     } finally {
       loading.value = false
     }
+    void loadConfigured()
   },
   { immediate: true },
 )
+
+// Reads whether each protected branch has a pipeline, for Merge
+// automatically to say which a pipeline guards. Until it answers, or
+// when it can't, every branch is taken for one without.
+async function loadConfigured() {
+  const id = store.projectId
+  configured.value = new Map()
+  if (id === null) return
+  try {
+    const res = await pipelineApi.latest(id, { branches: store.protectedBranches.slice(0, MAX_LATEST_SUBJECTS), mergeRequestIds: [] })
+    const found = new Map<string, boolean>()
+    for (const [name, standing] of Object.entries(res.branches ?? {})) {
+      if (standing.configured !== null) found.set(name, standing.configured)
+    }
+    if (store.projectId === id) configured.value = found
+  } catch {
+    // The warning shows for every branch merged into automatically.
+  }
+}
+
+// A pipeline guards a branch's merge requests when it is ticked to run
+// pipelines and has one configured.
+function guarded(branch: string): boolean {
+  return pipelineSet.value.has(branch) && configured.value.get(branch) === true
+}
+
+const autoMerged = computed(() => protectedChoices.value.filter((b) => autoMergeSet.value.has(b)))
+const autoMergedGuarded = computed(() => autoMerged.value.filter(guarded))
+const autoMergedUnguarded = computed(() => autoMerged.value.filter((b) => !guarded(b)))
+
+// "a", "a and b", "a, b and c".
+function names(list: string[]): string {
+  return list.length < 2 ? (list[0] ?? '') : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`
+}
 
 // The old default branch stays protected, so moving the default to develop
 // leaves main changing only through merge requests.
@@ -100,11 +145,19 @@ function toggle(branch: string, on: boolean) {
   protectedSet.value = set
 }
 
+function withBranch(set: Set<string>, branch: string, on: boolean): Set<string> {
+  const next = new Set(set)
+  if (on) next.add(branch)
+  else next.delete(branch)
+  return next
+}
+
 function toggleAutoMerge(branch: string, on: boolean) {
-  const set = new Set(autoMergeSet.value)
-  if (on) set.add(branch)
-  else set.delete(branch)
-  autoMergeSet.value = set
+  autoMergeSet.value = withBranch(autoMergeSet.value, branch, on)
+}
+
+function togglePipelines(branch: string, on: boolean) {
+  pipelineSet.value = withBranch(pipelineSet.value, branch, on)
 }
 
 // The branch is deleted only while it is where the list shows it, so
@@ -140,6 +193,8 @@ async function save() {
       protectedBranches: choices.value.filter((b) => protectedSet.value.has(b)),
       // Only a protected branch can be merged into automatically.
       autoMergeBranches: protectedChoices.value.filter((b) => autoMergeSet.value.has(b)),
+      // Only a protected branch runs pipelines.
+      pipelineBranches: protectedChoices.value.filter((b) => pipelineSet.value.has(b)),
     })
     store.setProject(res.project)
     emit('close')
@@ -228,11 +283,26 @@ async function save() {
               </div>
             </div>
             <p class="form-hint">
-              A task's merge request into a branch ticked here merges as soon as a review agent approves it, with no one looking first. Leave a branch unticked to review its merge
-              requests yourself; never tick a release branch such as <span class="mono">main</span>.
+              A task's merge request into a branch ticked here merges as soon as a review agent approves it, and its pipeline passes where one guards the branch, with no one looking
+              first. Leave a branch unticked to review its merge requests yourself; never tick a release branch such as <span class="mono">main</span>.
             </p>
-            <p v-if="protectedChoices.some((b) => autoMergeSet.has(b))" class="notice notice-warning auto-merge-warning" role="note">
-              This project has no checks, so nothing but the review agent's judgment decides what merges. A change can carry text that tries to talk the review agent into approving it.
+            <p v-if="autoMergedUnguarded.length" class="notice notice-warning auto-merge-warning" role="note">
+              {{ PIPELINE_COPY.autoMergeUnguardedWarning(names(autoMergedUnguarded)) }}
+            </p>
+            <p v-if="autoMergedGuarded.length" class="form-hint">{{ PIPELINE_COPY.autoMergeGuardedHint(names(autoMergedGuarded)) }}</p>
+          </div>
+          <div class="form-group">
+            <span class="form-label">Run pipelines<DocLink topic="pipelineBranches" label="Which branches run pipelines" /></span>
+            <div class="branch-list" role="group" aria-label="Run pipelines">
+              <div v-for="b in protectedChoices" :key="b" class="branch-row">
+                <label class="form-check branch-check">
+                  <input type="checkbox" :checked="pipelineSet.has(b)" @change="togglePipelines(b, ($event.target as HTMLInputElement).checked)" />
+                  <span class="mono">{{ b }}</span>
+                </label>
+              </div>
+            </div>
+            <p class="form-hint">
+              Only protected branches run pipelines, since anyone who can push to a branch can change its pipeline file. {{ PIPELINE_COPY.tickedBranches }}
             </p>
           </div>
           <p v-if="error" class="form-error">{{ error }}</p>

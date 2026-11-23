@@ -276,18 +276,16 @@ func (s *service) startUpstreamSync(p *Project, maxAge time.Duration, reuseFaile
 }
 
 // syncUpstream fetches the upstream and fast-forwards the protected
-// branches, then has the merge requests of those it moved follow them.
+// branches, then tells the branch listeners of each it moved, once the
+// branch lock is released.
 func (s *service) syncUpstream(ctx context.Context, userID, projectID int64) (*agent.UpstreamStatus, error) {
 	status, err := s.fetchUpstream(ctx, userID, projectID)
 	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	hook := s.publishHook
-	s.mu.Unlock()
 	for _, b := range status.Branches {
-		if b.FastForwarded && hook != nil {
-			hook.BranchFastForwarded(ctx, userID, projectID, b.Branch, b.SHA)
+		if b.FastForwarded {
+			s.branchMoved(ctx, BranchMove{UserID: userID, ProjectID: projectID, Branch: b.Branch, SHA: b.SHA, Cause: MoveFastForwarded})
 		}
 	}
 	return status, nil

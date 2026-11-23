@@ -8,11 +8,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/devpad-org/devpad/internal/loginpath"
 )
 
 func TestInstallLoginPathRestoresTheImagesPath(t *testing.T) {
 	loginPathFile = filepath.Join(t.TempDir(), "00-devpad-path.sh")
-	t.Cleanup(func() { loginPathFile = "/etc/profile.d/00-devpad-path.sh" })
+	t.Cleanup(func() { loginPathFile = loginpath.File })
 
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -58,7 +60,7 @@ func TestInstallLoginPathGivesUpOnAStuckSudo(t *testing.T) {
 		t.Fatal(err)
 	}
 	loginPathFile = filepath.Join(readOnly, "00-devpad-path.sh")
-	t.Cleanup(func() { loginPathFile = "/etc/profile.d/00-devpad-path.sh" })
+	t.Cleanup(func() { loginPathFile = loginpath.File })
 	t.Setenv("PATH", bin)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -74,10 +76,10 @@ func TestInstallLoginPathGivesUpOnAStuckSudo(t *testing.T) {
 
 func TestInstallLoginPathLeavesAnUpToDateScript(t *testing.T) {
 	loginPathFile = filepath.Join(t.TempDir(), "00-devpad-path.sh")
-	t.Cleanup(func() { loginPathFile = "/etc/profile.d/00-devpad-path.sh" })
+	t.Cleanup(func() { loginPathFile = loginpath.File })
 	t.Setenv("PATH", "/usr/bin:/bin")
 
-	if err := os.WriteFile(loginPathFile, loginPathScript("/usr/bin:/bin"), 0o444); err != nil {
+	if err := os.WriteFile(loginPathFile, loginpath.Script("/usr/bin:/bin"), 0o444); err != nil {
 		t.Fatal(err)
 	}
 	// Read-only, so rewriting it would fall through to sudo and fail.

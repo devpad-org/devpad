@@ -1,5 +1,6 @@
 import { apiClient, ApiError } from './client'
-import type { AgentSettings, TaskStatus } from './tasks'
+import type { AgentSettings, PipelineRounds, TaskStatus } from './tasks'
+import type { MergeGateState } from './pipelines'
 import type { RepoDiff } from './projects'
 
 export type MergeRequestStatus = 'open' | 'merged' | 'closed'
@@ -25,10 +26,66 @@ export interface MergeRequest {
   // Who merged it: the user, or devpad once a review agent approved it.
   // Empty until it is merged.
   mergedBy: 'user' | 'auto' | ''
+  // You merged it although its pipeline hadn't let it through: how the
+  // merge gate stood then, and the pipeline that stood. Null otherwise.
+  pipelineOverride: PipelineOverride | null
+  // The project's automatic review waits for the pipeline to pass.
+  reviewAwaitsPipeline: boolean
+  // How many files of its change devpad marks for a closer look, for each
+  // reason; null while it hasn't worked them out for the head. The files
+  // come with the change.
+  lookClosely: LookCloselySummary | null
   createdAt: string
   updatedAt: string
   // A review agent is at work on it. Only the list sets it.
   agentReviewing: boolean
+}
+
+// Why devpad marks a file of a change for a closer look: it deletes a test,
+// or changes the pipeline file, a file the target's jobs run, another CI
+// system's configuration, a lint, type-check or test setting, or a build
+// script, dependency list, lockfile or toolchain pin. In the order the mark
+// shows them, as the server's MarkReasons.
+export type LookCloselyReason = 'tests_deleted' | 'pipeline' | 'job_file' | 'ci' | 'checks' | 'build'
+
+// How many files the mark lists for a reason.
+export interface ReasonCount {
+  reason: LookCloselyReason
+  files: number
+}
+
+// A file the mark lists. Its paths are the change's, which its author chose.
+export interface MarkedFile {
+  path: string
+  oldPath?: string
+  reason: LookCloselyReason
+}
+
+// The look-closely mark: files a passing pipeline can't vouch for, at most
+// 50 of them, those of the first reasons first, and how many there are of
+// each reason, every reason present. It never keeps a merge request from
+// merging.
+export interface LookClosely {
+  files: MarkedFile[]
+  reasons: ReasonCount[]
+}
+
+// What a merge request keeps of its mark, for the list.
+export interface LookCloselySummary {
+  reasons: ReasonCount[]
+}
+
+// What a merge request changes, and the files of it devpad marks.
+export interface MergeRequestChange extends RepoDiff {
+  lookClosely: LookClosely
+  // The pipeline file the change adds, changes, renames or deletes, empty
+  // when it touches none: devpad never merges such a change by itself.
+  pipelineFile: string
+}
+
+export interface PipelineOverride {
+  state: MergeGateState
+  pipelineId: number | null
 }
 
 export interface Review {
@@ -132,6 +189,7 @@ export interface MergeRequestTask {
   // all, zero for no limit, and have spent.
   budgetUsd: number
   costUsd: number
+  pipelineRounds: PipelineRounds
 }
 
 export interface MergeRequestDetail extends MergeRequest {
@@ -183,7 +241,7 @@ export const mergeRequestApi = {
     return apiClient.get(`/api/projects/${projectId}/merge-requests/${id}`)
   },
 
-  diff(projectId: number, id: number): Promise<RepoDiff> {
+  diff(projectId: number, id: number): Promise<MergeRequestChange> {
     return apiClient.get(`/api/projects/${projectId}/merge-requests/${id}/diff`)
   },
 
@@ -221,7 +279,15 @@ export const mergeRequestApi = {
     return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/agent-reviews/${reviewId}/continue`, input)
   },
 
-  merge(projectId: number, id: number, input: { strategy: MergeStrategy; message?: string; push: boolean }): Promise<MergeResult> {
+  // overridePipeline merges although the pipeline gate is shut: the gate
+  // as you saw it when you confirmed merging over it. The server refuses
+  // it, with the gate as it stands (pipelineGateFromError), when the state,
+  // the pipeline, the head or the target has moved on.
+  merge(
+    projectId: number,
+    id: number,
+    input: { strategy: MergeStrategy; message?: string; push: boolean; overridePipeline?: GateConfirmation },
+  ): Promise<MergeResult> {
     return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/merge`, input)
   },
 
@@ -246,4 +312,36 @@ export function mergeConflictsFromError(err: unknown): string[] | null {
   if (typeof body !== 'object' || body === null || !('conflicts' in body)) return null
   const conflicts = (body as { conflicts: unknown }).conflicts
   return Array.isArray(conflicts) ? conflicts.filter((c): c is string => typeof c === 'string') : null
+}
+
+// The pipeline gate as you saw it when you confirmed merging over it.
+export interface GateConfirmation {
+  state: MergeGateState
+  pipelineId: number | null
+  headSha: string
+  targetSha: string
+}
+
+// How the pipeline gate stood when it refused a merge: what to ask the user
+// to confirm merging over.
+export interface PipelineGateRefusal extends GateConfirmation {
+  reason: string
+  overridable: boolean
+  // You had confirmed merging over the gate as it stood before.
+  changed: boolean
+}
+
+// What merging over the gate g confirms.
+export function gateConfirmation(g: GateConfirmation): GateConfirmation {
+  return { state: g.state, pipelineId: g.pipelineId, headSha: g.headSha, targetSha: g.targetSha }
+}
+
+// Returns how the pipeline gate stood when it refused a merge, or null.
+export function pipelineGateFromError(err: unknown): PipelineGateRefusal | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null
+  const body = err.body
+  if (typeof body !== 'object' || body === null || !('pipelineGate' in body)) return null
+  const gate = (body as { pipelineGate: unknown }).pipelineGate
+  if (typeof gate !== 'object' || gate === null || typeof (gate as { state?: unknown }).state !== 'string') return null
+  return gate as PipelineGateRefusal
 }

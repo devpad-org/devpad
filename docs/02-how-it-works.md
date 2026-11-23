@@ -24,6 +24,10 @@ You only need this page if you want to know why devpad behaves as it does. Every
   |  | sandbox: a task or a   |                                   |
   |  | review + agent         |   ... one per task or review      |
   |  +------------------------+                                   |
+  |  +------------------------+                                   |
+  |  | pipeline job, no agent |                                   |
+  |  | commit under test only |   ... one per job, while it runs  |
+  |  +------------------------+                                   |
   +---------------------------------------------------------------+
 ```
 
@@ -31,6 +35,7 @@ You only need this page if you want to know why devpad behaves as it does. Every
 - **A workspace** is a Docker container with your code in `/workspace`, its own Docker volume and its own network. A small program devpad puts in every workspace, the *agent*, gives the server its terminals, files, commands and git. (This "agent" is plumbing, not an AI.)
 - **A project** groups everything about one codebase: its **canonical repo**, your **project workspace**, and a **sandbox** for each AI task or review.
 - **The repo container** holds the project's canonical bare git repo. It is the only container with your SSH key and the only one that talks to the upstream (GitHub, GitLab…).
+- **A pipeline job** is a container devpad makes for one job of a [pipeline](/docs/pipelines), from the project's environment image, and removes once the job ends. It has no agent and nothing of devpad's in it: only the commit under test, fresh copies of the [services](/docs/services) the job names and a network of its own. Devpad reads the job's result from Docker, never from anything inside it. See [How jobs run](/docs/pipelines#how-jobs-run).
 
 ## Where your code lives {#where-code-lives}
 
@@ -38,6 +43,7 @@ The canonical repo is the project's source of truth. No workspace mounts it, can
 
 - **Into a workspace**: when a workspace is made, devpad seeds it from the canonical repo. In your project workspace, `git fetch devpad` brings newer branches in.
 - **Out of a workspace**: when you press **Publish** (or run `git push devpad <branch>`), devpad pulls the branch out of your workspace, checks it against the project's rules, and writes it to the canonical repo. A task's agent hands its branch over the same way.
+- **Into a pipeline's jobs**: devpad bundles the commit a [pipeline](/docs/pipelines) tests, a branch's commit or a merge request's branch merged onto its target, in the canonical repo, and copies the bundle into each job's container before the job starts. Nothing comes back out but the job's exit status and output.
 - **To and from the upstream**: devpad syncs from the upstream when asked, and pushes protected branches to it when you choose to, from the repo container with your SSH key. See [Upstream](/docs/projects#upstream).
 
 Because devpad does the moving, it can refuse: a push to a protected branch, a force-push, a branch an agent is working on. Those rules live in the server, out of reach of anything running in a workspace. See [Branches and merge requests](/docs/branches).
@@ -48,7 +54,8 @@ Each task and each review gets a sandbox: a fresh workspace seeded from the cano
 
 - it has no SSH key, no route to the canonical repo, and no way to reach your project workspace or other sandboxes;
 - it can only change its own branch, and only by handing commits to devpad;
-- it can't merge, close a merge request, push upstream or move a protected branch: those stay with you, unless you have devpad [merge automatically](/docs/branches#automatic-merges) what a review agent approves, which devpad does itself, by its own rules.
+- it can't merge, close a merge request, push upstream or move a protected branch: those stay with you, unless you have devpad [merge automatically](/docs/branches#automatic-merges) what a review agent approves and, where a pipeline guards the branch, its pipeline passes, which devpad does itself, by its own rules;
+- it can't grade its own work: a merge request's [pipeline](/docs/pipelines#merge-requests) takes its jobs from the branch it merges into, never from the change, and runs them in containers no agent can reach.
 
 Your project workspace has no SSH key either. Its `devpad` and `origin` remotes look like ordinary git remotes, but they're served by devpad, which applies the same rules as the Publish button.
 

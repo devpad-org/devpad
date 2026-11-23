@@ -8,26 +8,19 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/devpad-org/devpad/internal/loginpath"
 )
 
-// Commands and setup scripts run in a login shell, whose /etc/profile replaces
-// PATH with Debian's default, so a project environment's ENV PATH would reach
-// terminals but not them. /etc/profile runs the scripts in /etc/profile.d after
-// that and before ~/.profile, so one there puts the image's PATH back and
-// whatever ~/.profile adds still goes in front of it.
+// Commands and setup scripts run in a login shell, which would otherwise lose
+// the image's PATH; see package loginpath.
 
 // loginPathFile is the script that restores the image's PATH.
-var loginPathFile = "/etc/profile.d/00-devpad-path.sh"
+var loginPathFile = loginpath.File
 
 // loginPathWaitDelay is how long a killed sudo's children may hold its stderr
 // open before startup stops waiting for them.
 const loginPathWaitDelay = time.Second
-
-// loginPathScript returns a script setting PATH to path.
-func loginPathScript(path string) []byte {
-	quoted := "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
-	return []byte("# Written by devpad's agent: the PATH of this workspace's image.\nPATH=" + quoted + "\nexport PATH\n")
-}
 
 // installLoginPath writes the script for the agent's own PATH, which is the
 // image's. /etc/profile.d belongs to root, so it falls back to sudo, which the
@@ -37,7 +30,7 @@ func installLoginPath(ctx context.Context) error {
 	if path == "" {
 		return nil
 	}
-	script := loginPathScript(path)
+	script := loginpath.Script(path)
 	if current, err := os.ReadFile(loginPathFile); err == nil && bytes.Equal(current, script) {
 		return nil
 	}

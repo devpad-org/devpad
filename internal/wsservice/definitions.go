@@ -40,6 +40,9 @@ type definition struct {
 	// requiredArch, when set, is the only Docker daemon architecture the
 	// image supports.
 	requiredArch string
+	// minMemory, when set, is the least memory the service runs in, where
+	// that is more than a pipeline job's services get.
+	minMemory int64
 	// healthcheck is the test Docker runs in the sidecar, in Docker's form,
 	// to tell when the service is ready: it accepts connections from the
 	// workspace with the configured credentials. Images that first start a
@@ -243,6 +246,8 @@ var definitions = map[ServiceType]definition{
 		// Microsoft publishes SQL Server images for x86-64 only, and
 		// supports them under emulation on no other architecture.
 		requiredArch: "amd64",
+		// It refuses to start in under 2 GB, and is told to use 2 GB.
+		minMemory: 3 << 30,
 		// Signing in as the workspace's login to its database waits for
 		// both, which SQL Server creates after it starts accepting
 		// connections.

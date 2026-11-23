@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && node scripts/check-themes.mjs && vite build",
+    "build": "vue-tsc --noEmit && node scripts/check-themes.mjs && node scripts/check-log-lines.mjs && vite build",
     "preview": "vite preview",
     "type-check": "vue-tsc --noEmit",
-    "check-themes": "node scripts/check-themes.mjs"
+    "check-themes": "node scripts/check-themes.mjs",
+    "check-log-lines": "node scripts/check-log-lines.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

@@ -68,8 +68,14 @@ type Task struct {
 	Effort         string
 	// PendingMessage is sent to the agent when the queued task launches.
 	PendingMessage string
-	HeadSHA        string
-	Error          string
+	// PendingPipeline is devpad's own summary of the pipeline failure
+	// PendingMessage quotes, when it quotes one: the pipeline and its failed
+	// jobs' names and how they ended, never their output, which the code
+	// under test wrote. Anything but the task's own agent and its user is
+	// shown this rather than the message.
+	PendingPipeline string
+	HeadSHA         string
+	Error           string
 	// BaseBranch is the canonical branch the task's branch starts from when
 	// it is not the project's default branch.
 	BaseBranch string
@@ -90,8 +96,12 @@ type Task struct {
 	// while tasks it is blocked by were not merged: its agent is queued once
 	// the last of them is.
 	StartWhenUnblocked bool
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// PipelineRounds is how the task's automatic pipeline rounds stand: how
+	// many times in a row devpad sent it back because its merge request's
+	// pipeline failed, and whether the latest failure waits for the user.
+	PipelineRounds PipelineRounds
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // BranchName is the branch a task's sandbox works on.
@@ -170,6 +180,10 @@ type UpdateInput struct {
 type StartInput struct {
 	AgentSettings
 	Message string
+	// PipelineSummary is devpad's summary of the pipeline failure Message
+	// quotes, when it quotes one (Task.PendingPipeline). Only devpad sets
+	// it, never a request.
+	PipelineSummary string
 }
 
 // LinkKind is how one task is linked to another, from the first task's side.

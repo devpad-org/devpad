@@ -21,6 +21,8 @@ import (
 	"github.com/devpad-org/devpad/internal/encrypt"
 	"github.com/devpad-org/devpad/internal/gitbridge"
 	"github.com/devpad-org/devpad/internal/mergerequest"
+	"github.com/devpad-org/devpad/internal/pipeline"
+	"github.com/devpad-org/devpad/internal/pipeline/jobrun"
 	"github.com/devpad-org/devpad/internal/preview"
 	"github.com/devpad-org/devpad/internal/project"
 	"github.com/devpad-org/devpad/internal/projecttools"
@@ -33,6 +35,10 @@ import (
 	"github.com/devpad-org/devpad/web"
 )
 
+// pipelineShutdownWait bounds how long shutting down waits for pipelines'
+// jobs to be removed.
+const pipelineShutdownWait = 5 * time.Second
+
 // Server is the main application server.
 type Server struct {
 	httpServer     *http.Server
@@ -43,6 +49,9 @@ type Server struct {
 	aiShutdown     func(context.Context) error
 	taskShutdown   func(context.Context) error
 	mrShutdown     func(context.Context) error
+	// pipelineShutdown stops every pipeline and waits for their jobs to be
+	// removed.
+	pipelineShutdown func(context.Context) error
 	// gitBridgeStop stops polling project workspaces for git requests.
 	gitBridgeStop func()
 }
@@ -154,10 +163,47 @@ func New(cfg Config) (*Server, error) {
 		Models:        aiModule.CatalogService,
 	})
 	taskService.SetReviewHook(mrService)
-	projectService.SetPublishHook(mrService)
+	projectService.AddBranchListener(mrService)
 	projectService.AddBranchGuard(mrService)
 	projectService.AddBranchGuard(taskService)
 	aiModule.OnAgentRunFinished(mrService.RunFinished)
+
+	// Pipelines: each job in a fresh container of its own that no agent can
+	// reach, with the jobs a commit's .devpad/pipeline.yml names (for a merge
+	// request, its target's) or the project's setting.
+	pipelineService := pipeline.NewService(pipeline.Deps{
+		Repo:          pipeline.NewRepository(db.Conn()),
+		Projects:      projectService,
+		MergeRequests: pipelineMergeRequests{mrs: mrService},
+		Jobs:          jobrun.New(containerManager, wsServiceService, jobrun.Config{}),
+		Docker:        containerManager,
+		BundleDir:     pipelineBundleDir(cfg.DBPath),
+	})
+	projectService.AddDeleteHook(pipelineService)
+	// Ticked branches and the merge requests into them run their pipelines
+	// by themselves: the project tells of branches moving and settings
+	// changing, the merge requests of opening, of their heads moving and of
+	// closing or merging, which stops their pipelines. Each listener only
+	// queues a run or ends a run's context, so it may be told under the
+	// teller's locks; the pipelines start once Reconcile has run.
+	projectService.AddBranchListener(pipelineService)
+	projectService.AddSettingsListener(pipelineService)
+	mrService.AddListener(mergeRequestMoves{pipelines: pipelineService})
+	// Every merge asks the pipeline gate first: a merge request into a
+	// ticked branch with a pipeline merges once its pipeline passed on its
+	// head merged onto the branch as it is, or when the user overrides it.
+	// An automatic merge waiting for its pipeline decides again as each of
+	// the merge request's pipelines finishes, which the pipeline service
+	// tells it from Reconcile on, and as the project's branches or pipeline
+	// setting change. A failed pipeline of a task's merge request goes back
+	// to its agent with what failed, and a review waits for a pass where a
+	// pipeline guards the merge request; task agents are told the jobs
+	// first.
+	mrService.SetPipelines(mergeRequestPipelines{pipelines: pipelineService})
+	taskService.SetPipelines(taskPipelines{pipelines: pipelineService})
+	pipelineService.AddListener(mergeRequestPipelineEnds{mrs: mrService})
+	projectService.AddSettingsListener(mrService)
+	pipelineHandler := pipeline.NewHandler(projectService, pipelineService)
 
 	// What each run's workspace is, which every tool provider is told. It is
 	// set before any provider is added and before reconciling restarts runs.
@@ -199,6 +245,12 @@ func New(cfg Config) (*Server, error) {
 	// about devpad from.
 	aiModule.AddToolProvider(docs.NewProvider(userRepo))
 
+	// Pipelines first: their Reconcile finishes what the last devpad left
+	// and needs nothing else reconciled first, and the reconciles after it
+	// may start pipelines, which must not be taken for ones left behind.
+	if err := pipelineService.Reconcile(context.Background()); err != nil {
+		log.Printf("reconciling interrupted pipelines: %v", err)
+	}
 	if err := projectService.Reconcile(context.Background()); err != nil {
 		log.Printf("finishing interrupted workspace conversions: %v", err)
 	}
@@ -230,6 +282,7 @@ func New(cfg Config) (*Server, error) {
 		wsServices:      wsServiceHandler,
 		projectServices: projectServicesHandler,
 		project:         projectHandler,
+		pipeline:        pipelineHandler,
 		task:            taskHandler,
 		mr:              mrHandler,
 		gitBridge:       gitBridgeHandler,
@@ -273,12 +326,13 @@ func New(cfg Config) (*Server, error) {
 			IdleTimeout:  5 * time.Minute,
 			WriteTimeout: 0, // Disabled — SSE streams require unbounded writes
 		},
-		db:            db,
-		cfg:           cfg,
-		cleanupCancel: cleanupCancel,
-		aiShutdown:    aiModule.Shutdown,
-		taskShutdown:  taskService.Shutdown,
-		mrShutdown:    mrService.Shutdown,
+		db:               db,
+		cfg:              cfg,
+		cleanupCancel:    cleanupCancel,
+		aiShutdown:       aiModule.Shutdown,
+		taskShutdown:     taskService.Shutdown,
+		mrShutdown:       mrService.Shutdown,
+		pipelineShutdown: pipelineService.Shutdown,
 		gitBridgeStop: func() {
 			gitBridgeCancel()
 			<-gitBridgeDone
@@ -363,6 +417,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.gitBridgeStop != nil {
 		s.gitBridgeStop()
 	}
+	// Pipelines go before the rest, since removing their jobs takes Docker
+	// longest, but with only part of ctx's time: what they leave, Reconcile
+	// removes on the next start, so it is no reason to skip closing the rest.
+	if s.pipelineShutdown != nil {
+		pipelineCtx, cancel := context.WithTimeout(ctx, pipelineShutdownWait)
+		if err := s.pipelineShutdown(pipelineCtx); err != nil {
+			log.Printf("pipeline shutdown: %v", err)
+		}
+		cancel()
+	}
 	// Stop the task orchestrator first so runs cancelled by the AI shutdown
 	// are left for Reconcile instead of failing their tasks.
 	if s.taskShutdown != nil {
@@ -443,6 +507,7 @@ type routeHandlers struct {
 	workspace       *workspace.Handler
 	wsServices      *wsservice.Handler
 	projectServices *wsservice.ProjectHandler
+	pipeline        *pipeline.Handler
 	project         *project.Handler
 	task            *task.Handler
 	mr              *mergerequest.Handler
@@ -555,6 +620,13 @@ func registerRoutes(mux *http.ServeMux, h routeHandlers) {
 	mux.Handle("GET /api/projects/{id}/branches", h.authMiddleware.RequireAuth(http.HandlerFunc(h.project.HandleBranches)))
 	mux.Handle("PUT /api/projects/{id}/branches", h.authMiddleware.RequireAuth(http.HandlerFunc(h.project.HandleSetBranches)))
 	mux.Handle("DELETE /api/projects/{id}/branches/{branch...}", h.authMiddleware.RequireAuth(http.HandlerFunc(h.project.HandleDeleteBranch)))
+	mux.Handle("PUT /api/projects/{id}/pipeline", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleSetConfig)))
+	mux.Handle("GET /api/projects/{id}/pipelines", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleList)))
+	mux.Handle("POST /api/projects/{id}/pipelines", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleStart)))
+	mux.Handle("GET /api/projects/{id}/pipelines/latest", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleLatest)))
+	mux.Handle("GET /api/projects/{id}/pipelines/{pipelineId}", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleGet)))
+	mux.Handle("POST /api/projects/{id}/pipelines/{pipelineId}/cancel", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleCancel)))
+	mux.Handle("GET /api/projects/{id}/pipelines/{pipelineId}/jobs/{jobId}/output", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleJobOutput)))
 	mux.Handle("GET /api/projects/{id}/sandboxes", h.authMiddleware.RequireAuth(http.HandlerFunc(h.project.HandleListSandboxes)))
 	mux.Handle("POST /api/projects/{id}/sandboxes", h.authMiddleware.RequireAuth(http.HandlerFunc(h.project.HandleCreateSandbox)))
 	mux.Handle("POST /api/projects/{id}/sandboxes/{workspaceId}/publish", h.authMiddleware.RequireAuth(http.HandlerFunc(h.project.HandlePublishSandbox)))
@@ -607,6 +679,7 @@ func registerRoutes(mux *http.ServeMux, h routeHandlers) {
 	mux.Handle("POST /api/projects/{id}/merge-requests", h.authMiddleware.RequireAuth(http.HandlerFunc(h.mr.HandleCreate)))
 	mux.Handle("GET /api/projects/{id}/merge-requests/{mrId}", h.authMiddleware.RequireAuth(http.HandlerFunc(h.mr.HandleGet)))
 	mux.Handle("GET /api/projects/{id}/merge-requests/{mrId}/diff", h.authMiddleware.RequireAuth(http.HandlerFunc(h.mr.HandleDiff)))
+	mux.Handle("GET /api/projects/{id}/merge-requests/{mrId}/pipeline", h.authMiddleware.RequireAuth(http.HandlerFunc(h.pipeline.HandleMergeRequestStatus)))
 	mux.Handle("GET /api/projects/{id}/merge-requests/{mrId}/commits", h.authMiddleware.RequireAuth(http.HandlerFunc(h.mr.HandleCommits)))
 	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/reviews", h.authMiddleware.RequireAuth(http.HandlerFunc(h.mr.HandleReview)))
 	mux.Handle("POST /api/projects/{id}/merge-requests/{mrId}/comments", h.authMiddleware.RequireAuth(http.HandlerFunc(h.mr.HandleComment)))

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/task"
 )
 
@@ -110,12 +111,34 @@ type MergeRequest struct {
 	MergeSHA string
 	MergedAt *time.Time
 	// MergedBy is empty until the merge request is merged.
-	MergedBy  MergedBy
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	MergedBy MergedBy
+	// PipelineOverride says the user merged it although its pipeline had
+	// not let it through, nil when nothing was overridden.
+	PipelineOverride *PipelineOverride
+	// ReviewAwaitsPipeline says the project's automatic review of the merge
+	// request waits for the pipeline guarding it to pass. Only
+	// SetReviewAwaitsPipeline writes it.
+	ReviewAwaitsPipeline bool
+	// LookClosely is what it keeps of the look-closely mark of its change
+	// at HeadSHA, how many files it lists for each reason, nil while devpad
+	// has not worked it out for that head. Only SetLookClosely writes it.
+	LookClosely *LookCloselySummary
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 	// AgentReviewing says a review agent is at work on the merge request.
 	// Only listing a project's merge requests sets it.
 	AgentReviewing bool
+}
+
+// PipelineOverride is the user merging a merge request although its
+// pipeline gate was shut. Only the user overrides the gate: agents and
+// automatic merges never do.
+type PipelineOverride struct {
+	// State is the gate's state the user merged over, such as GateFailed
+	// or GateRunning.
+	State GateState
+	// PipelineID is the pipeline that stood then, 0 when none had run.
+	PipelineID int64
 }
 
 // Review is a user's or agent's review of a merge request at one head.
@@ -158,15 +181,16 @@ type Review struct {
 	AutoMergeError string
 	// RunSettled says devpad has settled the end of a submitted agent
 	// review's run: stopped its sandbox and decided whether its approval
-	// merges the change.
+	// merges the change. An approval waiting for the merge request's
+	// pipeline to pass is not settled yet.
 	RunSettled bool
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
 
 // Finishing reports whether the run of a submitted agent review has not
-// ended or devpad is still settling it, so its approval may yet merge the
-// change.
+// ended, devpad is still settling it, or its approval waits for the merge
+// request's pipeline, so its approval may yet merge the change.
 func (rv *Review) Finishing() bool {
 	return rv.Author == AuthorAgent && rv.Status == ReviewSubmitted && !rv.RunSettled
 }
@@ -250,6 +274,17 @@ type Detail struct {
 	Ahead, Behind int
 }
 
+// Change is what a merge request changes: the files of its diff, and the
+// look-closely mark devpad works out from them.
+type Change struct {
+	*agent.RepoDiff
+	LookClosely LookClosely `json:"lookClosely"`
+	// PipelineFile is the pipeline file the change adds, changes, renames or
+	// deletes, "" when it touches none (project.ChangedPipelineFile, the
+	// rule by which an automatic merge never takes it).
+	PipelineFile string `json:"pipelineFile"`
+}
+
 // CreateInput opens a merge request for a published branch.
 type CreateInput struct {
 	Title        string
@@ -325,6 +360,21 @@ type MergeInput struct {
 	Message  string
 	// Push sends the target branch upstream after merging.
 	Push bool
+	// OverridePipeline merges although the merge request's pipeline gate is
+	// shut: how the gate stood when the user confirmed merging over it,
+	// which it must still be in exactly when the merge is made. Nil leaves
+	// the gate to decide.
+	OverridePipeline *GateConfirmation
+}
+
+// GateConfirmation is the pipeline gate as the user saw it when they
+// confirmed merging over it: its state, the pipeline it was about (0 for
+// none), and the head and target commits that pipeline was of.
+type GateConfirmation struct {
+	State      GateState
+	PipelineID int64
+	HeadSHA    string
+	TargetSHA  string
 }
 
 // MergeResult is a merged request and, when a push was asked for, why it

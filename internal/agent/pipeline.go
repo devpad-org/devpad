@@ -1,0 +1,215 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"unicode/utf8"
+
+	"github.com/devpad-org/devpad/internal/gitbundle"
+	"github.com/devpad-org/devpad/internal/pipelineid"
+)
+
+// ErrBundleTooLarge is returned for a bundle over gitbundle.MaxBytes.
+var ErrBundleTooLarge = fmt.Errorf("the bundle is over %d MB", gitbundle.MaxBytes>>20)
+
+// bundleLimit is gitbundle.MaxBytes, which tests lower.
+var bundleLimit int64 = gitbundle.MaxBytes
+
+var fullHashPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// PipelinePin says what a pipeline tests: Commit as it is, or the trial
+// merge of Source onto Target, the tree a merge, squash or fast-forward of
+// Source into Target lands. Each is a full commit hash.
+type PipelinePin struct {
+	ID     string `json:"id"`
+	Commit string `json:"commit,omitempty"`
+	Source string `json:"source,omitempty"`
+	Target string `json:"target,omitempty"`
+}
+
+// Validate refuses a pin the agent would.
+func (p PipelinePin) Validate() error {
+	if !pipelineid.Valid(p.ID) {
+		return fmt.Errorf("pipeline id %q must be lowercase letters, digits and hyphens", p.ID)
+	}
+	var hashes []string
+	switch {
+	case p.Commit != "" && p.Source == "" && p.Target == "":
+		hashes = []string{p.Commit}
+	case p.Commit == "" && p.Source != "" && p.Target != "":
+		hashes = []string{p.Source, p.Target}
+	default:
+		return errors.New("a pipeline tests a commit, or a source merged onto a target")
+	}
+	for _, h := range hashes {
+		if !fullHashPattern.MatchString(h) {
+			return fmt.Errorf("%q is not a full commit hash", h)
+		}
+	}
+	return nil
+}
+
+// PipelinePinResult is what a pipeline tests, pinned in the canonical repo,
+// or why there is nothing to test.
+type PipelinePinResult struct {
+	// Ref holds SHA until the pin is deleted.
+	Ref string `json:"ref,omitempty"`
+	// SHA is the commit tested. For a merge it is the target when it
+	// already has the source, the source when the target can fast-forward
+	// to it, and otherwise a merge commit of the two that no branch has.
+	SHA string `json:"sha,omitempty"`
+	// Tree is SHA's tree, what the jobs get and what a merge the pipeline
+	// lets through must land; empty from an agent too old to say.
+	Tree string `json:"tree,omitempty"`
+	// Conflict is set instead, with nothing pinned, when the source does
+	// not merge onto the target.
+	Conflict *MergeConflict `json:"conflict,omitempty"`
+}
+
+// MergeConflict is why a source does not merge onto a target.
+type MergeConflict struct {
+	Message string `json:"message"`
+	// Paths are the files that conflict, when that is why: at most
+	// MaxConflictPaths of them, each at most MaxConflictPathBytes long, as
+	// the client keeps them, and More how many more the agent named.
+	Paths []string `json:"paths,omitempty"`
+	More  int      `json:"-"`
+}
+
+const (
+	// MaxConflictPaths bounds the conflicting files the client keeps of a
+	// conflict. The paths come from the repo's content, which agents
+	// write.
+	MaxConflictPaths = 50
+	// MaxConflictPathBytes bounds each.
+	MaxConflictPathBytes = 1024
+)
+
+// bound keeps at most MaxConflictPaths of c's paths, each cut to
+// MaxConflictPathBytes on a character boundary, and counts the rest.
+func (c *MergeConflict) bound() {
+	if c == nil {
+		return
+	}
+	if len(c.Paths) > MaxConflictPaths {
+		c.More, c.Paths = len(c.Paths)-MaxConflictPaths, c.Paths[:MaxConflictPaths]
+	}
+	for i, p := range c.Paths {
+		if len(p) > MaxConflictPathBytes {
+			cut := MaxConflictPathBytes - len("…")
+			for cut > 0 && !utf8.RuneStart(p[cut]) {
+				cut--
+			}
+			c.Paths[i] = p[:cut] + "…"
+		}
+	}
+}
+
+// RepoPinPipeline pins what a pipeline tests to its ref, replacing an
+// earlier pin of the same id. It never moves a branch.
+func (c *Client) RepoPinPipeline(ctx context.Context, pin PipelinePin) (*PipelinePinResult, error) {
+	if err := pin.Validate(); err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(pin)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/repo/pipeline-ref", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var result PipelinePinResult
+	if err := c.doRepoJSON(req, "repo pin pipeline", &result); err != nil {
+		return nil, err
+	}
+	result.Conflict.bound()
+	if result.Conflict == nil && (result.Ref != pipelineid.Ref(pin.ID) || !fullHashPattern.MatchString(result.SHA)) {
+		return nil, fmt.Errorf("repo pin pipeline: unexpected answer %+v", result)
+	}
+	return &result, nil
+}
+
+// TrialMerge is the commit a pipeline of a source merged onto a target
+// tests, as PipelinePinResult says, read without pinning it: the same
+// commit a pin of the two makes, or the Conflict instead.
+type TrialMerge struct {
+	SHA      string         `json:"sha,omitempty"`
+	Tree     string         `json:"tree,omitempty"`
+	Conflict *MergeConflict `json:"conflict,omitempty"`
+}
+
+// RepoTrialMerge works out the commit a pipeline of source merged onto
+// target tests, both full commit hashes, without pinning it or moving any
+// branch: devpad reads the pipeline file a merge request's change proposes
+// there.
+func (c *Client) RepoTrialMerge(ctx context.Context, source, target string) (*TrialMerge, error) {
+	for _, h := range []string{source, target} {
+		if !fullHashPattern.MatchString(h) {
+			return nil, fmt.Errorf("%q is not a full commit hash", h)
+		}
+	}
+	payload, err := json.Marshal(map[string]string{"source": source, "target": target})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/repo/trial-merge", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var result TrialMerge
+	if err := c.doRepoJSON(req, "repo trial merge", &result); err != nil {
+		return nil, err
+	}
+	result.Conflict.bound()
+	if result.Conflict == nil && !fullHashPattern.MatchString(result.SHA) {
+		return nil, fmt.Errorf("repo trial merge: unexpected answer %+v", result)
+	}
+	return &result, nil
+}
+
+// RepoPipelineBundle writes a bundle of what a pipeline tests to w, and
+// returns its size. Past gitbundle.MaxBytes it stops with ErrBundleTooLarge,
+// having written part of it.
+func (c *Client) RepoPipelineBundle(ctx context.Context, id string, w io.Writer) (int64, error) {
+	if !pipelineid.Valid(id) {
+		return 0, fmt.Errorf("pipeline id %q must be lowercase letters, digits and hyphens", id)
+	}
+	body, err := c.repoBundle(ctx, "/api/repo/pipeline-bundle", url.Values{"id": {id}})
+	if err != nil {
+		return 0, err
+	}
+	defer body.Close()
+	n, err := io.Copy(w, io.LimitReader(body, bundleLimit+1))
+	if err != nil {
+		return n, fmt.Errorf("copying the pipeline's bundle: %w", err)
+	}
+	if n > bundleLimit {
+		return n, ErrBundleTooLarge
+	}
+	return n, nil
+}
+
+// RepoDeletePipelineRef deletes a pipeline's ref, if it has one.
+func (c *Client) RepoDeletePipelineRef(ctx context.Context, id string) error {
+	if !pipelineid.Valid(id) {
+		return fmt.Errorf("pipeline id %q must be lowercase letters, digits and hyphens", id)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/api/repo/pipeline-ref?"+url.Values{"id": {id}}.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	var result struct {
+		Ref string `json:"ref"`
+	}
+	return c.doRepoJSON(req, "repo delete pipeline ref", &result)
+}

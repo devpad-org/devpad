@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MrIcon from '@/components/project/MrIcon.vue'
 import { computed, nextTick, provide, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter, type LocationQuery } from 'vue-router'
 import { workspaceApi, type Workspace } from '@/api/workspaces'
@@ -24,6 +25,7 @@ import ProjectAgentsPanel from '@/components/project/ProjectAgentsPanel.vue'
 import ProjectInboxPanel from '@/components/project/ProjectInboxPanel.vue'
 import InboxPopover from '@/components/inbox/InboxPopover.vue'
 import ProjectMergeRequestTable from '@/components/project/ProjectMergeRequestTable.vue'
+import PipelinesSurface from '@/components/pipeline/PipelinesSurface.vue'
 import ProjectOverview from '@/components/project/ProjectOverview.vue'
 import ProjectTaskTable from '@/components/project/ProjectTaskTable.vue'
 import TaskModal from '@/components/project/TaskModal.vue'
@@ -116,8 +118,8 @@ type GitDiffRequest =
 type ActivityTab = 'ai' | 'explorer' | 'git' | 'info' | 'services' | ProjectActivity
 // The inbox is a phone-only activity; on wider screens the title bar's inbox
 // button covers it.
-type ProjectActivity = 'inbox' | 'tasks' | 'merge-requests' | 'agents' | 'project'
-const PROJECT_ACTIVITIES: ActivityTab[] = ['inbox', 'tasks', 'merge-requests', 'agents', 'project']
+type ProjectActivity = 'inbox' | 'tasks' | 'merge-requests' | 'pipelines' | 'agents' | 'project'
+const PROJECT_ACTIVITIES: ActivityTab[] = ['inbox', 'tasks', 'merge-requests', 'pipelines', 'agents', 'project']
 const activeActivity = ref<ActivityTab>('ai')
 const serviceCount = computed(() => serviceStore.services.length)
 const isProjectActivity = computed(() => PROJECT_ACTIVITIES.includes(activeActivity.value))
@@ -136,9 +138,10 @@ const mobileProject = computed(() => isMobile.value && isProjectMode.value)
 // too; on a phone's project they are its lists instead.
 const taskSurfaceVisible = computed(() => activeActivity.value === 'tasks' && !mobileProject.value)
 const mergeRequestSurfaceVisible = computed(() => activeActivity.value === 'merge-requests' && !mobileProject.value)
+const pipelineSurfaceVisible = computed(() => activeActivity.value === 'pipelines' && !mobileProject.value)
 const projectSurfaceVisible = computed(() => activeActivity.value === 'project' && !mobileProject.value)
 const tableSurfaceVisible = computed(
-  () => taskSurfaceVisible.value || mergeRequestSurfaceVisible.value || projectSurfaceVisible.value,
+  () => taskSurfaceVisible.value || mergeRequestSurfaceVisible.value || pipelineSurfaceVisible.value || projectSurfaceVisible.value,
 )
 // The editor sits behind the explorer and the other project panels.
 const editorSurfaceVisible = computed(
@@ -156,6 +159,7 @@ const MOBILE_LIST_NAMES: Partial<Record<ActivityTab, string>> = {
   inbox: 'inbox',
   tasks: 'tasks',
   'merge-requests': 'merge requests',
+  pipelines: 'pipelines',
   agents: 'agents',
   project: 'project',
   explorer: 'files',
@@ -1225,6 +1229,14 @@ const backLabel = computed(() => {
             </span>
           </button>
           <button
+            class="activity-btn activity-btn--pipelines"
+            :class="{ active: activeActivity === 'pipelines' }"
+            @click="selectActivity('pipelines')"
+            title="Pipelines"
+          >
+            <MrIcon name="pipeline" :size="20" :stroke-width="1.5" />
+          </button>
+          <button
             class="activity-btn activity-btn--agents"
             :class="{ active: activeActivity === 'agents' }"
             @click="selectActivity('agents')"
@@ -1467,6 +1479,10 @@ const backLabel = computed(() => {
           </svg>
           Workspace info
         </button>
+        <button class="more-item" @click="moreActivity('pipelines')">
+          <MrIcon name="pipeline" :size="18" :stroke-width="1.5" />
+          Pipelines
+        </button>
         <button class="more-item" @click="moreActivity('project')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z" />
@@ -1556,6 +1572,7 @@ const backLabel = computed(() => {
           />
           <ProjectTaskTable v-if="mobileProject" v-show="activeActivity === 'tasks'" />
           <ProjectMergeRequestTable v-if="mobileProject" v-show="activeActivity === 'merge-requests'" />
+          <PipelinesSurface v-if="mobileProject" v-show="activeActivity === 'pipelines'" :active="activeActivity === 'pipelines'" />
           <ProjectAgentsPanel
             v-show="activeActivity === 'agents'"
             :workspace-live="workspaceLive"
@@ -1606,6 +1623,9 @@ const backLabel = computed(() => {
           </div>
           <div v-if="isProjectMode && !mobileProject" v-show="mergeRequestSurfaceVisible" class="ide-surface-pane">
             <ProjectMergeRequestTable />
+          </div>
+          <div v-if="isProjectMode && !mobileProject" v-show="pipelineSurfaceVisible" class="ide-surface-pane">
+            <PipelinesSurface :active="pipelineSurfaceVisible" />
           </div>
           <div v-if="isProjectMode && !mobileProject" v-show="projectSurfaceVisible" class="ide-surface-pane">
             <ProjectOverview
@@ -2014,6 +2034,10 @@ const backLabel = computed(() => {
 
 .activity-btn--merge-requests {
   --activity-accent: var(--accent-blue);
+}
+
+.activity-btn--pipelines {
+  --activity-accent: var(--hue-green);
 }
 
 .activity-btn--agents {
