@@ -266,26 +266,40 @@ func (s *service) autoWorker(ctx context.Context) {
 		if !ok {
 			return
 		}
-		again := s.makeAutoRun(ctx, r)
-		s.auto.done(r.key)
+		coming := s.makeAutoRun(ctx, r)
 		// Once the run no longer counts as on its way (targetResult).
-		if again != 0 {
-			s.announce(again)
+		if s.auto.done(r.key) && !coming && r.key.kind == autoBranch {
+			s.branchRunSettled(r)
 		}
 	}
 }
 
+// branchRunSettled tells the BranchRunListeners that a branch's automatic
+// run, which a merge request's result waited on, started no pipeline.
+func (s *service) branchRunSettled(r *autoRun) {
+	s.mu.Lock()
+	listeners := slices.Clone(s.listeners)
+	s.mu.Unlock()
+	s.spawn(func(ctx context.Context) {
+		for _, l := range listeners {
+			if b, ok := l.(BranchRunListener); ok && ctx.Err() == nil {
+				b.BranchRunSettled(ctx, r.userID, r.key.projectID, r.key.branch)
+			}
+		}
+	})
+}
+
 // makeAutoRun reads what r is of as it is now and, when that runs by
 // itself, starts its pipeline, or for an autoInto run queues the runs of
-// the merge requests into the branch. It returns a finished pipeline to
-// announce again, or 0 (startAutomatic).
-func (s *service) makeAutoRun(ctx context.Context, r *autoRun) int64 {
+// the merge requests into the branch. It reports whether a pipeline of a
+// branch's run is on its way, whose end will be announced.
+func (s *service) makeAutoRun(ctx context.Context, r *autoRun) (coming bool) {
 	ctx, cancel := context.WithTimeout(ctx, s.autoStartTimeout)
 	defer cancel()
 	p, err := s.projects.Get(ctx, r.userID, r.key.projectID)
 	if err != nil {
 		s.logAutoRefusal(ctx, r, err)
-		return 0
+		return false
 	}
 	switch r.key.kind {
 	case autoBranch:
@@ -296,19 +310,19 @@ func (s *service) makeAutoRun(ctx context.Context, r *autoRun) int64 {
 		mr, err := s.mrs.PipelineMergeRequest(ctx, p.UserID, p.ID, r.key.mergeRequestID)
 		if err != nil {
 			s.logAutoRefusal(ctx, r, err)
-			return 0
+			return false
 		}
 		if mergeRequestRunsAutomatically(p, mr) {
 			s.startAutomatic(ctx, r, StartInput{UserID: p.UserID, ProjectID: p.ID, MergeRequestID: mr.ID, Trigger: r.trigger, Automatic: true, StopStale: true})
 		}
 	case autoInto:
 		if !branchRunsAutomatically(p, r.key.branch) {
-			return 0
+			return false
 		}
 		mrs, err := s.mrs.PipelineMergeRequestsInto(ctx, p.UserID, p.ID, r.key.branch)
 		if err != nil {
 			s.logAutoRefusal(ctx, r, err)
-			return 0
+			return false
 		}
 		for _, mr := range mrs {
 			if !slices.Contains(r.except, mr.SourceBranch) {
@@ -316,27 +330,22 @@ func (s *service) makeAutoRun(ctx context.Context, r *autoRun) int64 {
 			}
 		}
 	}
-	return 0
+	return false
 }
 
-// startAutomatic starts an automatic run's pipeline. A branch's run that
-// finds the branch's commit and jobs already have a finished pipeline
-// without a result (one cancelled, or that could not run, which devpad
-// does not repeat) returns that one, to announce again once the run is
-// done: a merge request's failure that waited for this run, to tell whether
-// its jobs fail on the branch too (targetResult), is decided then rather
-// than at some later event. A result was there to read all along.
-func (s *service) startAutomatic(ctx context.Context, r *autoRun, in StartInput) (again int64) {
+// startAutomatic starts an automatic run's pipeline. It reports whether a
+// pipeline of it is on its way: one it started, or one queued or running
+// it found.
+func (s *service) startAutomatic(ctx context.Context, r *autoRun, in StartInput) (coming bool) {
 	pl, created, err := s.Start(ctx, in)
 	switch {
 	case err != nil:
 		s.logAutoRefusal(ctx, r, err)
+		return false
 	case created:
 		log.Printf("pipeline %d: started by itself (%s) for project %d", pl.ID, in.Trigger, in.ProjectID)
-	case in.Branch != "" && pl.Status.Finished() && !slices.Contains(resultStatuses, pl.Status):
-		return pl.ID
 	}
-	return 0
+	return !pl.Status.Finished()
 }
 
 // logAutoRefusal logs why an automatic run made nothing, unless that is

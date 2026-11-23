@@ -281,10 +281,9 @@ func TestAPipelineToldTwiceIsDecidedOnce(t *testing.T) {
 	e.roundDone(t, tk.ID, "h2")
 	runs := len(e.runs.startedRequests())
 	for name, res := range map[string]PipelineResult{
-		"told again":            first,
-		"of an earlier commit":  failure(9, failedJob("backend", "stale\n")),
-		"with no commit":        on("", failure(10, failedJob("backend", "?\n"))),
-		"told again, as passed": {PipelineID: 5, HeadSHA: "h2", Outcome: PipelinePassed},
+		"told again":           first,
+		"of an earlier commit": failure(9, failedJob("backend", "stale\n")),
+		"with no commit":       on("", failure(10, failedJob("backend", "?\n"))),
 	} {
 		if got := e.pipelineEnded(t, tk.ID, res); got.Status != StatusInReview || got.PipelineRounds.Count != 1 || got.PipelineRounds.DecidedID != 5 {
 			t.Fatalf("%s: %+v", name, got)
@@ -364,6 +363,24 @@ func TestARoundBackAtTestedCommitsWaitsForTheUser(t *testing.T) {
 	e.pipelineEnded(t, tk.ID, on("h2", failure(6, failedJob("backend", "two\n"))))
 	e.roundDone(t, tk.ID, "h1")
 	if got := e.pipelineEnded(t, tk.ID, failure(5, failedJob("backend", "one\n"))); got.Status != StatusChangesRequested || got.PipelineRounds.Held != HoldStuck {
+		t.Fatalf("back at h1: %s %+v", got.Status, got.PipelineRounds)
+	}
+}
+
+// A round that goes back to commits whose pipeline passed ends the rounds,
+// as any pass does: the next failure is round 1 again.
+func TestARoundBackAtCommitsThatPassedEndsTheRounds(t *testing.T) {
+	e := setup(t)
+	tk := e.reviewTask(t, "h1")
+	e.pipelineEnded(t, tk.ID, PipelineResult{PipelineID: 4, HeadSHA: "h1", Outcome: PipelinePassed})
+	tk = e.stored(t, tk.ID)
+	tk.HeadSHA = "h2"
+	if err := e.repo.Update(context.Background(), tk); err != nil {
+		t.Fatal(err)
+	}
+	e.pipelineEnded(t, tk.ID, on("h2", failure(5, failedJob("backend", "one\n"))))
+	e.roundDone(t, tk.ID, "h1")
+	if got := e.pipelineEnded(t, tk.ID, PipelineResult{PipelineID: 4, HeadSHA: "h1", Outcome: PipelinePassed}); got.Status != StatusInReview || got.PipelineRounds != (PipelineRounds{DecidedID: 5}) {
 		t.Fatalf("back at h1: %s %+v", got.Status, got.PipelineRounds)
 	}
 }

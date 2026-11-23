@@ -152,6 +152,17 @@ type Listener interface {
 	PipelineFinished(ctx context.Context, p *Pipeline)
 }
 
+// BranchRunListener is what a Listener may also be, to hear that an
+// automatic run of a protected branch, which a merge request's result
+// waited on to tell what fails on the branch too (Report's TargetResult
+// was Pending only for that run), started no pipeline, such as when the
+// branch's commit and jobs had one that was cancelled or couldn't run:
+// that result is to be decided again. Only a run something waited on is
+// told, so devpad's periodic catch-up tells nobody.
+type BranchRunListener interface {
+	BranchRunSettled(ctx context.Context, userID, projectID int64, branch string)
+}
+
 // Projects is what pipelines need of the project service: the project, its
 // canonical repo, and its environment.
 type Projects interface {

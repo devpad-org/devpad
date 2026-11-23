@@ -70,7 +70,9 @@ type PipelineJobStanding struct {
 	AlsoFailingOnTarget bool
 }
 
-// BranchPipelineEnd is a protected branch's pipeline finishing.
+// BranchPipelineEnd is a protected branch's pipeline finishing, or an
+// automatic run of the branch a merge request's result waited on starting
+// none (PipelineID 0).
 type BranchPipelineEnd struct {
 	UserID     int64
 	ProjectID  int64

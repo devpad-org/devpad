@@ -228,16 +228,28 @@ func (r PipelineRounds) decide(t *Task, res PipelineResult) roundDecision {
 	return d
 }
 
-// unanswered decides on res, a result already decided, when the task is
-// back in review from a round sent for an earlier failure that no pipeline
-// has been decided since: the round left its branch where that result
-// stands, with no new commit or back at commits already tested, so it
-// brought nothing a pipeline could test, and nothing else will tell the
-// task of it. The failure waits for the user as stuck. Any other result
+// unanswered decides on res, a result already decided, which the merge
+// request tells only as the result of the task's branch as it is now. A
+// pass resets the rounds of a task in review, as any pass does: its last
+// round went back to commits that passed. When the task is back in review
+// from a round sent for an earlier failure that no pipeline has been
+// decided since, a failure means the round left its branch where that
+// failure stands, with no new commit or back at commits already tested, so
+// it brought nothing a pipeline could test, and nothing else will tell the
+// task of it: the failure waits for the user as stuck. Any other result
 // told again changes nothing.
 func (r PipelineRounds) unanswered(t *Task, res PipelineResult) roundDecision {
 	ignore := roundDecision{action: roundIgnore, rounds: r}
-	if r.SentHead == "" || r.Held != HoldNone || t.Status != StatusInReview {
+	if r.Held != HoldNone || t.Status != StatusInReview {
+		return ignore
+	}
+	if res.Outcome == PipelinePassed {
+		if r.Count == 0 && r.SentHead == "" {
+			return ignore
+		}
+		return roundDecision{action: roundReset, rounds: r.reset()}
+	}
+	if r.SentHead == "" {
 		return ignore
 	}
 	switch res.Outcome {

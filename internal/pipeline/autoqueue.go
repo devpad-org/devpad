@@ -99,7 +99,10 @@ type autoQueue struct {
 	busy    map[int64]bool
 	// handed holds when each key was last handed out, while it still
 	// holds back the key's next run.
-	handed  map[autoKey]time.Time
+	handed map[autoKey]time.Time
+	// awaited holds the keys something waits on (await), until a worker
+	// is done with them.
+	awaited map[autoKey]bool
 	workers int
 	// open says workers may start; until then runs only wait. closed says
 	// devpad is stopping: no worker starts and no timer is set again.
@@ -124,6 +127,7 @@ func newAutoQueue(maxWorkers, maxPending int, interval time.Duration) *autoQueue
 		working:     make(map[autoKey]*autoRun),
 		busy:        make(map[int64]bool),
 		handed:      make(map[autoKey]time.Time),
+		awaited:     make(map[autoKey]bool),
 	}
 }
 
@@ -259,12 +263,28 @@ func (q *autoQueue) has(k autoKey) bool {
 	return q.pending[k] != nil
 }
 
-// done ends a worker's run of key, queueing the run of it that waited
-// meanwhile, if any, for when its interval allows: the worker that handed
-// it in comes to it, or a timer does.
-func (q *autoQueue) done(k autoKey) {
+// await is has, and records that something waits on the run when there
+// is one, for done to report.
+func (q *autoQueue) await(k autoKey) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	_, working := q.working[k]
+	if !working && q.pending[k] == nil {
+		return false
+	}
+	q.awaited[k] = true
+	return true
+}
+
+// done ends a worker's run of key, queueing the run of it that waited
+// meanwhile, if any, for when its interval allows: the worker that handed
+// it in comes to it, or a timer does. It reports whether something waited
+// on the key (await) since a worker was last done with it.
+func (q *autoQueue) done(k autoKey) (awaited bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	awaited = q.awaited[k]
+	delete(q.awaited, k)
 	now := q.now()
 	waiting := q.working[k]
 	delete(q.working, k)
@@ -275,6 +295,7 @@ func (q *autoQueue) done(k autoKey) {
 		q.order = append(q.order, k)
 	}
 	q.forgetHandedOut(now)
+	return awaited
 }
 
 // forgetHandedOut drops, once there are many, the hand-outs that no longer

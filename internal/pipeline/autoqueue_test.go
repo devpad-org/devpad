@@ -194,6 +194,35 @@ func TestAutoQueueHasARunWaitingOrBeingRead(t *testing.T) {
 	}
 }
 
+// Awaiting a key's run is reported by the worker's done for it, once;
+// awaiting a key with no run records nothing.
+func TestAutoQueueReportsARunAwaited(t *testing.T) {
+	q := newAutoQueue(1, 10, 0)
+	q.begin()
+	key := branchRun("develop", TriggerMerged).key
+	if q.await(key) {
+		t.Fatal("awaited a key with no run")
+	}
+	q.add(branchRun("develop", TriggerMerged))
+	if !q.await(key) {
+		t.Fatal("a queued run isn't on its way")
+	}
+	r, _ := q.next(false)
+	if !q.done(r.key) {
+		t.Fatal("done didn't report the wait")
+	}
+	q.add(branchRun("develop", TriggerUpstream))
+	if r, ok := q.next(false); !ok || q.done(r.key) {
+		t.Fatal("done reported a wait twice, or the run didn't come")
+	}
+	// Nothing awaited one with no run.
+	q.add(branchRun("develop", TriggerUpstream))
+	r, _ = q.next(false)
+	if q.done(r.key) {
+		t.Fatal("done reported a wait nothing made")
+	}
+}
+
 func projectRun(projectID int64, branch string, trigger Trigger) *autoRun {
 	return &autoRun{key: autoKey{projectID: projectID, kind: autoBranch, branch: branch}, userID: 7, trigger: trigger}
 }

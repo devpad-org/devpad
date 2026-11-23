@@ -186,7 +186,7 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 		return nil, err
 	}
 	if st.Current != nil && st.Current.Status == StatusFailed {
-		if st.OnTarget, err = s.targetResult(ctx, st.Current); err != nil {
+		if st.OnTarget, err = s.targetResult(ctx, st.Current, false); err != nil {
 			return nil, err
 		}
 	}

@@ -613,13 +613,19 @@ func (f *fakeServices) RemoveJobServices(context.Context, *wsservice.JobServices
 	return nil
 }
 
-// recordingListener collects the pipelines it is told finished.
+// recordingListener collects the pipelines it is told finished, and the
+// branches whose awaited runs settled.
 type recordingListener struct {
 	finished chan *Pipeline
+	settled  chan string
 }
 
 func (l *recordingListener) PipelineFinished(_ context.Context, p *Pipeline) {
 	l.finished <- p
+}
+
+func (l *recordingListener) BranchRunSettled(_ context.Context, _, _ int64, branch string) {
+	l.settled <- branch
 }
 
 // env is a pipeline service over a real database, with fakes for the rest:
@@ -686,7 +692,7 @@ func setup(t *testing.T) *env {
 	}}
 	e.docker = newFakeDocker()
 	e.services = &fakeServices{have: map[wsservice.ServiceType]bool{wsservice.ServicePostgres: true}}
-	e.listener = &recordingListener{finished: make(chan *Pipeline, 100)}
+	e.listener = &recordingListener{finished: make(chan *Pipeline, 100), settled: make(chan string, 100)}
 	e.svc = e.newService()
 	t.Cleanup(func() { e.shutdown() })
 	return e

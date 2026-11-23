@@ -74,7 +74,7 @@ func TestTargetResultWaitsForThatCommitsPipeline(t *testing.T) {
 	mrp := &Pipeline{ProjectID: e.project, Kind: KindMergeRequest, MergeRequestID: e.mr, TargetBranch: "develop", TargetSHA: sha(2), ConfigHash: "h1"}
 	check := func(what string, pending bool, pipeline *Pipeline) {
 		t.Helper()
-		got, err := e.svc.targetResult(ctx, mrp)
+		got, err := e.svc.targetResult(ctx, mrp, false)
 		if err != nil || got.Pending != pending || (got.Pipeline == nil) != (pipeline == nil) || (pipeline != nil && got.Pipeline.ID != pipeline.ID) {
 			t.Fatalf("%s: %+v %v", what, got, err)
 		}
@@ -125,11 +125,11 @@ func TestTargetResultWaitsForThatCommitsPipeline(t *testing.T) {
 	check("still running", true, nil)
 	finish(running, "a")
 	check("finished", false, running)
-	got, _ := e.svc.targetResult(ctx, mrp)
+	got, _ := e.svc.targetResult(ctx, mrp, false)
 	if !got.Fails("a") || got.Fails("b") {
 		t.Fatalf("failing %v", got.Failing())
 	}
-	if got, _ := e.svc.targetResult(ctx, other); got != nil {
+	if got, _ := e.svc.targetResult(ctx, other, false); got != nil {
 		t.Fatalf("a branch's pipeline has no target: %+v", got)
 	}
 }

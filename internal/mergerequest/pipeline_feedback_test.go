@@ -461,6 +461,35 @@ func TestARoundsEndTellsTheTaskThePipelineThatStands(t *testing.T) {
 	}
 }
 
+// A review that fails before its agent's run starts ends the wait too.
+func TestAFailureWaitingForAReviewThatCantStartIsDecided(t *testing.T) {
+	e, _ := pipelineEnv(t)
+	ctx := context.Background()
+	mr := e.openTaskMR(t)
+	e.gate.set(shut("failed", "pipeline #7 failed (backend, lint)", false, 7))
+	e.runs.mu.Lock()
+	e.runs.startErr = errors.New("the provider is down")
+	e.runs.mu.Unlock()
+	// The review is pending when the pipeline's end is told, so the
+	// failure waits; then its run fails to start.
+	rv := &Review{MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewPending, HeadSHA: "head1", AgentID: domain.ReviewAgentID, Model: "m"}
+	if err := e.svc.repo.CreateReview(ctx, rv); err != nil {
+		t.Fatal(err)
+	}
+	e.finished(mr, 7)
+	if got := e.tasks.pipelineResults(); len(got) != 1 || !got[0].Reviewing {
+		t.Fatalf("told %+v", got)
+	}
+	e.svc.launchReview(ctx, rv.ID)
+	if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.Status != ReviewFailed || !strings.Contains(got.Error, "the provider is down") {
+		t.Fatalf("review %+v", got)
+	}
+	waitFor(t, "the task told again", func() bool {
+		got := e.tasks.pipelineResults()
+		return len(got) == 2 && got[1].PipelineID == 7 && !got[1].Reviewing
+	})
+}
+
 // A failure while an agent reviews the same commits waits for the review:
 // the task is told so, and told again as the review ends.
 func TestAFailureWaitsForAnAgentReviewOfTheSameCommits(t *testing.T) {

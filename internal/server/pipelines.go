@@ -173,6 +173,14 @@ func (a mergeRequestPipelineEnds) PipelineFinished(ctx context.Context, p *pipel
 	})
 }
 
+// BranchRunSettled tells the merge request service that a branch's
+// automatic run that a merge request's result waited on started no
+// pipeline, so it decides the merge requests into the branch again, as a
+// branch pipeline's end does.
+func (a mergeRequestPipelineEnds) BranchRunSettled(ctx context.Context, userID, projectID int64, branch string) {
+	a.mrs.BranchPipelineFinished(ctx, mergerequest.BranchPipelineEnd{UserID: userID, ProjectID: projectID, Branch: branch})
+}
+
 // taskPipelines tells a task's agent the jobs its merge request's pipeline
 // will run: those of the pipeline at the tip of the branch it merges into.
 type taskPipelines struct {

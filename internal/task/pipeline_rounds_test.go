@@ -86,6 +86,10 @@ func TestPipelineRoundsDecide(t *testing.T) {
 		{name: "a failure only on the target, told again, is not stuck", rounds: PipelineRounds{Count: 1, DecidedID: 6}, task: inReview, res: failure(6, onMain), action: roundIgnore, count: 1, decided: 6},
 		{name: "a round's old failure only on the target is not stuck", rounds: outstanding(1, failure(6, backend)), task: inReview, res: failure(5, onMain), action: roundIgnore, count: 1, decided: 6, sentHead: "h1"},
 		{name: "a round's old failure waits for an agent review", rounds: outstanding(1, failure(5, backend)), task: inReview, res: reviewing(failure(5, backend)), action: roundWait, count: 1, decided: 5, sentHead: "h1"},
+		{name: "a round back at commits that passed resets", rounds: outstanding(1, failure(5, backend)), task: inReview, res: PipelineResult{PipelineID: 4, HeadSHA: "h0", Outcome: PipelinePassed}, action: roundReset, decided: 5},
+		{name: "a pass told again resets what counts since", rounds: PipelineRounds{Count: 1, DecidedID: 6}, task: inReview, res: PipelineResult{PipelineID: 6, HeadSHA: "h1", Outcome: PipelinePassed}, action: roundReset, decided: 6},
+		{name: "a pass told again with nothing to reset", rounds: PipelineRounds{DecidedID: 6}, task: inReview, res: PipelineResult{PipelineID: 6, HeadSHA: "h1", Outcome: PipelinePassed}, action: roundIgnore, decided: 6},
+		{name: "a round's old pass while the agent works", rounds: outstanding(1, failure(5, backend)), task: &Task{Status: StatusInProgress}, res: PipelineResult{PipelineID: 4, HeadSHA: "h0", Outcome: PipelinePassed}, action: roundIgnore, count: 1, decided: 5, sentHead: "h1"},
 		{name: "a held failure told again stays as it is", rounds: PipelineRounds{Count: 2, DecidedID: 5, Held: HoldLimit}, task: &Task{Status: StatusChangesRequested}, res: failure(5, backend), action: roundIgnore, count: 2, held: HoldLimit, decided: 5},
 	}
 	for _, tt := range tests {

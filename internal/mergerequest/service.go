@@ -1740,8 +1740,9 @@ func (s *service) finishReview(ctx context.Context, run domain.AgentRun) {
 		}
 	}
 	// A pipeline failure that waited for the review to end is decided now,
-	// and a review owed starts if the gate lets it.
-	if ctx.Err() == nil {
+	// and a review owed starts if the gate lets it; a review that failed
+	// has had failReview see to that.
+	if rv.Status != ReviewFailed && ctx.Err() == nil {
 		s.followPipeline(ctx, mr.ID, 0)
 	}
 }
@@ -1791,12 +1792,21 @@ func (s *service) settleReview(ctx context.Context, mr *MergeRequest, rv *Review
 	}
 }
 
+// failReview records a review failed and stops its sandbox. A pipeline
+// failure that waited for an agent's review to end is decided then, as
+// finishReview does for one that ends otherwise: on a goroutine of its
+// own, since that takes the merge request's lock, which a caller may hold
+// with the review's.
 func (s *service) failReview(ctx context.Context, mr *MergeRequest, rv *Review, msg string) {
 	rv.Status, rv.Error = ReviewFailed, msg
 	if err := s.repo.UpdateReview(context.Background(), rv); err != nil {
 		log.Printf("review %d: recording failure %q: %v", rv.ID, msg, err)
 	}
 	s.stopReviewSandbox(ctx, mr, rv)
+	if rv.Author == AuthorAgent && mr.Status == StatusOpen {
+		id := mr.ID
+		s.spawn(func(ctx context.Context) { s.followPipeline(ctx, id, 0) })
+	}
 }
 
 func (s *service) stopReviewSandbox(ctx context.Context, mr *MergeRequest, rv *Review) {

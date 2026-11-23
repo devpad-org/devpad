@@ -397,11 +397,16 @@ type fakeRuns struct {
 	requests  []app.StartAgentRunRequest
 	cancelled []int64
 	onFinish  func(domain.AgentRun)
+	// startErr, when set, is what StartRun fails with.
+	startErr error
 }
 
 func (f *fakeRuns) StartRun(_ context.Context, req app.StartAgentRunRequest) (*domain.AgentRun, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.startErr != nil {
+		return nil, f.startErr
+	}
 	res, err := f.db.Exec(`INSERT INTO ai_agent_runs (user_id, workspace_id, conversation_id, model, status) VALUES (?, ?, ?, ?, 'running')`, req.UserID, req.WorkspaceID, req.ConversationID, req.Model)
 	if err != nil {
 		return nil, err

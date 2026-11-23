@@ -928,11 +928,11 @@ func TestARestartRetriesWhatCouldNotRunOnce(t *testing.T) {
 	}
 }
 
-// A branch's automatic run that finds its commit and jobs already have a
-// pipeline that ended without a result, such as one the user cancelled,
-// starts none and announces that one again, so a merge request's failure
-// that waited for the run to tell what fails on the branch is decided.
-func TestABranchRunThatStartsNothingAnnouncesThePipelineItFound(t *testing.T) {
+// A branch's automatic run that starts no pipeline, such as when its
+// commit's pipeline was cancelled, tells nobody, as each catch-up does
+// every ten minutes; only one a merge request's result waited on tells the
+// BranchRunListeners, once, so that result is decided.
+func TestABranchRunThatStartsNothingTellsOnlyWhatWaitedOnIt(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	e.tick("develop")
@@ -953,32 +953,54 @@ func TestABranchRunThatStartsNothingAnnouncesThePipelineItFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
-	told := func() bool {
+	e.wait(branch.ID)
+	quiet := func(what string) {
 		t.Helper()
-		deadline := time.After(5 * time.Second)
+		deadline := time.After(200 * time.Millisecond)
 		for {
 			select {
 			case p := <-e.listener.finished:
-				if p.ID == branch.ID {
-					return true
+				if p.ID == branch.ID && p.AnnouncedAt != nil {
+					t.Fatalf("%s announced the cancelled pipeline again", what)
 				}
+			case b := <-e.listener.settled:
+				t.Fatalf("%s told that %s's run settled", what, b)
 			case <-deadline:
-				return false
-			case <-time.After(300 * time.Millisecond):
-				return false
+				return
 			}
 		}
 	}
-	if !told() {
-		t.Fatal("the cancelled pipeline wasn't announced")
-	}
+	quiet("the cancel")
 	before := len(e.pipelines())
-	e.svc.queueBranch(e.owner, e.project, "develop", TriggerTicked, nil)
-	e.autoIdle()
-	if !told() {
-		t.Fatal("the run that found it didn't announce it again")
+	for i := 0; i < 3; i++ {
+		e.svc.queueBranch(e.owner, e.project, "develop", TriggerCatchUp, nil)
+		e.autoIdle()
 	}
+	quiet("an idle catch-up")
 	if got := len(e.pipelines()); got != before {
-		t.Fatalf("the run started a pipeline: %s", e.started())
+		t.Fatalf("the catch-up started a pipeline: %s", e.started())
 	}
+
+	// A merge request's result waits on the next run of develop, which
+	// finds the same cancelled pipeline: the wait is told, once.
+	e.shutdown()
+	e.svc = e.newService()
+	e.svc.queueBranch(e.owner, e.project, "develop", TriggerCatchUp, nil)
+	mrp := &Pipeline{ProjectID: e.project, Kind: KindMergeRequest, MergeRequestID: e.mr, TargetBranch: "develop", TargetSHA: branch.HeadSHA, ConfigHash: branch.ConfigHash}
+	if got, err := e.svc.targetResult(ctx, mrp, true); err != nil || !got.Pending {
+		t.Fatalf("with develop's run queued: %+v %v", got, err)
+	}
+	e.svc.beginAutomatic()
+	e.autoIdle()
+	select {
+	case b := <-e.listener.settled:
+		if b != "develop" {
+			t.Fatalf("settled %q", b)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run that was waited on told nobody")
+	}
+	e.svc.queueBranch(e.owner, e.project, "develop", TriggerCatchUp, nil)
+	e.autoIdle()
+	quiet("the next catch-up")
 }

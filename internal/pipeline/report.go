@@ -59,8 +59,10 @@ func (t *TargetResult) Failing() []string {
 // start one: the target's run can be held back (autoMinInterval, a
 // project's runs going one at a time) when a merge request's pipeline
 // fails fast. Callers ask of a pipeline of the target as it is now, whose
-// commit such a run would test; a run that starts nothing ends the wait.
-func (s *service) targetResult(ctx context.Context, p *Pipeline) (*TargetResult, error) {
+// commit such a run would test. With await, a decision waits on that run:
+// one that starts nothing tells the BranchRunListeners, so the decision is
+// made then.
+func (s *service) targetResult(ctx context.Context, p *Pipeline, await bool) (*TargetResult, error) {
 	if p.Kind != KindMergeRequest || p.TargetSHA == "" || p.TargetBranch == "" {
 		return nil, nil
 	}
@@ -76,7 +78,11 @@ func (s *service) targetResult(ctx context.Context, p *Pipeline) (*TargetResult,
 	if err != nil {
 		return nil, fmt.Errorf("reading %s's pipeline of %s: %w", p.TargetBranch, p.TargetSHA, err)
 	}
-	queued := s.auto.has(autoKey{projectID: p.ProjectID, kind: autoBranch, branch: p.TargetBranch})
+	key := autoKey{projectID: p.ProjectID, kind: autoBranch, branch: p.TargetBranch}
+	queued := s.auto.has(key)
+	if await {
+		queued = s.auto.await(key)
+	}
 	return &TargetResult{Branch: p.TargetBranch, Pending: running != nil || queued}, nil
 }
 
@@ -116,7 +122,7 @@ func (s *service) Report(ctx context.Context, userID, projectID, pipelineID int6
 			}
 		}
 	}
-	if r.Target, err = s.targetResult(ctx, p); err != nil {
+	if r.Target, err = s.targetResult(ctx, p, true); err != nil {
 		return nil, err
 	}
 	return r, nil
