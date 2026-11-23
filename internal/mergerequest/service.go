@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/ai/app"
@@ -18,6 +16,7 @@ import (
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 	"github.com/devpad-org/devpad/internal/database"
 	"github.com/devpad-org/devpad/internal/project"
+	"github.com/devpad-org/devpad/internal/promptname"
 	"github.com/devpad-org/devpad/internal/task"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
@@ -1664,7 +1663,7 @@ func reviewPrompt(in reviewPromptInput) string {
 	// The branch names and paths are the change's own, which could
 	// otherwise end a line early and start a heading of their own.
 	fmt.Fprintf(&b, "## The change\n\n/workspace is a checkout of the change at commit `%s`, on the branch %s made from %s. Since it branched from %s it changes %d files:\n\n",
-		short(in.review.HeadSHA), promptPath(in.branch), promptPath(in.mr.SourceBranch), promptPath(in.mr.TargetBranch), len(in.diff.Files))
+		short(in.review.HeadSHA), promptname.Quote(in.branch), promptname.Quote(in.mr.SourceBranch), promptname.Quote(in.mr.TargetBranch), len(in.diff.Files))
 	for i, f := range in.diff.Files {
 		if i == 200 {
 			fmt.Fprintf(&b, "- … and %d more\n", len(in.diff.Files)-i)
@@ -1672,11 +1671,11 @@ func reviewPrompt(in reviewPromptInput) string {
 		}
 		switch {
 		case f.Binary:
-			fmt.Fprintf(&b, "- %s (%s, binary)\n", promptPath(f.Path), f.Status)
+			fmt.Fprintf(&b, "- %s (%s, binary)\n", promptname.Quote(f.Path), f.Status)
 		case f.OldPath != "":
-			fmt.Fprintf(&b, "- %s (renamed from %s, +%d −%d)\n", promptPath(f.Path), promptPath(f.OldPath), f.Additions, f.Deletions)
+			fmt.Fprintf(&b, "- %s (renamed from %s, +%d −%d)\n", promptname.Quote(f.Path), promptname.Quote(f.OldPath), f.Additions, f.Deletions)
 		default:
-			fmt.Fprintf(&b, "- %s (%s, +%d −%d)\n", promptPath(f.Path), f.Status, f.Additions, f.Deletions)
+			fmt.Fprintf(&b, "- %s (%s, +%d −%d)\n", promptname.Quote(f.Path), f.Status, f.Additions, f.Deletions)
 		}
 	}
 	fmt.Fprintf(&b, "\nRun `git diff %[1]s HEAD` to read the change and `git log %[1]s..HEAD` for its commits.\n\n", in.diff.MergeBase)
@@ -1724,12 +1723,10 @@ func reviewPrompt(in reviewPromptInput) string {
 	return b.String()
 }
 
-// Prompt limits for what the reviewer is told of the look-closely mark.
+// The limit of what the reviewer is told of the look-closely mark.
 const (
 	// maxPromptMarked bounds the paths the reviewer's section names.
 	maxPromptMarked = 30
-	// maxPromptPathRunes bounds each path a prompt quotes.
-	maxPromptPathRunes = 200
 )
 
 // markWords say, in devpad's words, what the change does to the files the
@@ -1746,7 +1743,7 @@ var markWords = map[MarkReason]string{
 // lookCloselySection tells a review agent which files of the change devpad
 // marked for a closer look, in devpad's words, every reason and how many
 // files it covers. The paths are the change's, which the code under review
-// chose, so each is quoted on one line by promptPath; the agent reads the
+// chose, so each is quoted on one line by promptname.Quote; the agent reads the
 // files themselves in its checkout. Empty when nothing is marked.
 func lookCloselySection(mark LookClosely) string {
 	if !mark.Marked() {
@@ -1763,9 +1760,9 @@ func lookCloselySection(mark LookClosely) string {
 			}
 			named++
 			if f.OldPath != "" && f.OldPath != f.Path {
-				paths = append(paths, fmt.Sprintf("%s (was %s)", promptPath(f.Path), promptPath(f.OldPath)))
+				paths = append(paths, fmt.Sprintf("%s (was %s)", promptname.Quote(f.Path), promptname.Quote(f.OldPath)))
 			} else {
-				paths = append(paths, promptPath(f.Path))
+				paths = append(paths, promptname.Quote(f.Path))
 			}
 		}
 		line := fmt.Sprintf("- %s (%d %s)", markWords[c.Reason], c.Files, plural(c.Files, "file", "files"))
@@ -1779,32 +1776,6 @@ func lookCloselySection(mark LookClosely) string {
 	}
 	b.WriteString("\n")
 	return b.String()
-}
-
-// promptPath quotes a name the change chose, a path or a branch, on one
-// line of a prompt: only printable characters and spaces stay, and every
-// other character, such as a control, format, separator, private-use,
-// unassigned or default-ignorable one, becomes "?", backticks "'", and it
-// is cut to maxPromptPathRunes characters, so it can neither break out of
-// its quotes or its line nor hide text.
-func promptPath(p string) string {
-	var b strings.Builder
-	n := 0
-	for _, r := range p {
-		if n == maxPromptPathRunes {
-			b.WriteString("…")
-			break
-		}
-		switch {
-		case r == '`':
-			r = '\''
-		case r == utf8.RuneError, r != ' ' && !unicode.IsGraphic(r), unicode.In(r, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector):
-			r = '?'
-		}
-		b.WriteRune(r)
-		n++
-	}
-	return "`" + b.String() + "`"
 }
 
 func plural(n int, one, many string) string {

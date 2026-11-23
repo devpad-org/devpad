@@ -234,6 +234,17 @@ func TestSourceThatDoesNotMergeIsAConflict(t *testing.T) {
 	if len(e.docker.scripts) != 0 || len(e.docker.removed) != 1 {
 		t.Errorf("ran %v, removed %v", e.docker.scripts, e.docker.removed)
 	}
+
+	// The client keeps a bounded list of the files; the pipeline says how
+	// many more conflict.
+	e.projects.mu.Lock()
+	e.projects.conflict = &agent.MergeConflict{Message: "the source conflicts with the target", Paths: []string{"a.go", "b.go"}, More: 3}
+	e.projects.mu.Unlock()
+	e.mrs.setHead(e.mr, sha(31))
+	p = e.wait(e.start(StartInput{MergeRequestID: e.mr}).ID)
+	if p.Status != StatusConflict || p.Error != "the source conflicts with the target (5 files conflict; the first 2 are listed)" || len(p.ConflictPaths) != 2 {
+		t.Fatalf("a long conflict: %+v", p)
+	}
 }
 
 func TestPipelineThatDoesNotParseFailsWithoutRunning(t *testing.T) {

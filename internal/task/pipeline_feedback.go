@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
+
+	"github.com/devpad-org/devpad/internal/agent"
+	"github.com/devpad-org/devpad/internal/promptname"
 )
 
 // What a task's agent is told when its merge request's pipeline fails, or
@@ -30,7 +32,7 @@ const (
 	maxFeedbackNotes     = 10
 	maxFeedbackNoteBytes = 300
 	// maxConflictFiles and maxConflictListBytes bound the conflicting files
-	// listed.
+	// listed, each quoted by promptname.Quote.
 	maxConflictFiles     = 50
 	maxConflictListBytes = 8 << 10
 	// maxFeedbackBytes bounds the whole message: past it, the failed jobs
@@ -136,7 +138,13 @@ func (f pipelineFeedback) roundLine() string {
 func (f pipelineFeedback) summary() string {
 	res := f.res
 	if res.Outcome == PipelineConflict {
-		return fmt.Sprintf("Pipeline #%d found `%s` doesn't merge onto `%s`: %d %s conflict.", res.PipelineID, f.branch, res.TargetBranch, len(res.ConflictFiles), plural(len(res.ConflictFiles), "file", "files"))
+		n := len(res.ConflictFiles)
+		count := fmt.Sprintf("%d %s", n, plural(n, "file", "files"))
+		if n >= agent.MaxConflictPaths {
+			// The pin's answer keeps no more than that many.
+			count = fmt.Sprintf("%d or more files", n)
+		}
+		return fmt.Sprintf("Pipeline #%d found `%s` doesn't merge onto `%s`: %s conflict.", res.PipelineID, f.branch, res.TargetBranch, count)
 	}
 	jobs := make([]string, len(f.counted))
 	for i, j := range f.counted {
@@ -231,7 +239,7 @@ func ConflictFeedback(branch, target string, files []string) string {
 		b.WriteString(" The conflicting files are:\n")
 		listed := 0
 		for i, f := range files {
-			line := fmt.Sprintf("- %s\n", clip(strings.Map(dropControl, f), maxFeedbackNoteBytes))
+			line := fmt.Sprintf("- %s\n", promptname.Quote(f))
 			if i == maxConflictFiles || listed+len(line) > maxConflictListBytes {
 				fmt.Fprintf(&b, "- … and %d more\n", len(files)-i)
 				break
@@ -266,15 +274,6 @@ func tailOf(s string, n int) string {
 func fenced(lang, text string) string {
 	fence := strings.Repeat("`", max(3, longestRun(text, '`')+1))
 	return fmt.Sprintf("%s%s\n%s\n%s\n", fence, lang, strings.TrimRight(text, "\n"), fence)
-}
-
-// dropControl drops control characters, such as a newline in a file's
-// name, which would end its line in a list.
-func dropControl(r rune) rune {
-	if unicode.IsControl(r) {
-		return -1
-	}
-	return r
 }
 
 // oneLine joins text's lines with spaces.

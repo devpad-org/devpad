@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/devpad-org/devpad/internal/agent"
 )
 
 func TestPipelineFeedbackSaysWhatFailed(t *testing.T) {
@@ -148,6 +150,17 @@ func TestPipelineFeedbackOfAConflict(t *testing.T) {
 			t.Errorf("feedback lacks %q:\n%s", want, msg)
 		}
 	}
+	if got := (pipelineFeedback{res: res, branch: "task/3"}).summary(); !strings.HasSuffix(got, ": 2 files conflict.") {
+		t.Errorf("summary %q", got)
+	}
+	// The pin's answer keeps at most agent.MaxConflictPaths files, so as
+	// many may be more.
+	for i := range agent.MaxConflictPaths - 2 {
+		res.ConflictFiles = append(res.ConflictFiles, fmt.Sprintf("f%d.go", i))
+	}
+	if got := (pipelineFeedback{res: res, branch: "task/3"}).summary(); !strings.HasSuffix(got, ": 50 or more files conflict.") {
+		t.Errorf("summary %q", got)
+	}
 }
 
 func TestConflictFeedbackListsAtMostFiftyFiles(t *testing.T) {
@@ -156,7 +169,7 @@ func TestConflictFeedbackListsAtMostFiftyFiles(t *testing.T) {
 		files = append(files, fmt.Sprintf("f%d.go", i))
 	}
 	msg := ConflictFeedback("task/3", "main", files)
-	if !strings.Contains(msg, "- f49.go\n- … and 10 more") || strings.Contains(msg, "f50.go") || !strings.Contains(msg, "Merge `devpad/main` into `task/3`") {
+	if !strings.Contains(msg, "- `f49.go`\n- … and 10 more") || strings.Contains(msg, "f50.go") || !strings.Contains(msg, "Merge `devpad/main` into `task/3`") {
 		t.Fatalf("feedback:\n%s", msg)
 	}
 }

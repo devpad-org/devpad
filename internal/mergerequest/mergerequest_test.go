@@ -1293,7 +1293,7 @@ func TestMergeFailuresKeepTheRequestOpen(t *testing.T) {
 		t.Fatalf("resolve conflicts: %v", err)
 	}
 	reqs := e.tasks.changeRequests()
-	if len(reqs) != 1 || !reqs[0].start || !strings.Contains(reqs[0].feedback, "Merge `devpad/main` into `task/1`") || !strings.Contains(reqs[0].feedback, "- cart.go") {
+	if len(reqs) != 1 || !reqs[0].start || !strings.Contains(reqs[0].feedback, "Merge `devpad/main` into `task/1`") || !strings.Contains(reqs[0].feedback, "- `cart.go`") {
 		t.Fatalf("unexpected conflict request: %+v", reqs)
 	}
 

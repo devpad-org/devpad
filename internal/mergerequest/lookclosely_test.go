@@ -3,6 +3,7 @@ package mergerequest
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -236,12 +237,6 @@ func TestLookCloselySectionQuotesTheChangesPathsSafely(t *testing.T) {
 	if got := lookCloselySection(many); strings.Count(got, "go.mod") != maxPromptMarked || !strings.Contains(got, "(35 files)") || !strings.Contains(got, "and 5 more") {
 		t.Fatalf("named %d paths:\n%s", strings.Count(got, "go.mod"), got)
 	}
-	if p := promptPath(strings.Repeat("a", maxPromptPathRunes+10)); len([]rune(p)) != maxPromptPathRunes+3 {
-		t.Fatalf("a long path quoted as %d characters", len([]rune(p)))
-	}
-	if p := promptPath("feature/cart fix-ü"); p != "`feature/cart fix-ü`" {
-		t.Fatalf("a plain name quoted as %s", p)
-	}
 }
 
 // The mark is worked out for the merge request's head as it opens, kept
@@ -404,5 +399,24 @@ func TestMarkReasonsMatchTheFrontend(t *testing.T) {
 	}
 	if !slices.Equal(frontend, server) {
 		t.Errorf("the server marks files for %v, the frontend's LookCloselyReason lists %v", server, frontend)
+	}
+}
+
+// The app says what the reviewer is told of each reason, word for word.
+func TestMarkWordsMatchTheFrontend(t *testing.T) {
+	source, err := os.ReadFile("../../frontend/src/components/mergerequest/format.ts")
+	if err != nil {
+		t.Fatalf("reading the frontend's merge request format: %v", err)
+	}
+	block := regexp.MustCompile(`(?s)export const LOOK_CLOSELY: Record<LookCloselyReason, string> = \{(.*?)\n\}`).FindSubmatch(source)
+	if block == nil {
+		t.Fatal("cannot find LOOK_CLOSELY in frontend/src/components/mergerequest/format.ts")
+	}
+	frontend := map[MarkReason]string{}
+	for _, m := range regexp.MustCompile(`(?m)^\s*([a-z_]+): (?:'([^']*)'|"([^"]*)"),$`).FindAllSubmatch(block[1], -1) {
+		frontend[MarkReason(m[1])] = string(m[2]) + string(m[3])
+	}
+	if !maps.Equal(frontend, markWords) {
+		t.Errorf("the reviewer is told %q, the app says %q", markWords, frontend)
 	}
 }

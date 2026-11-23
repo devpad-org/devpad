@@ -173,8 +173,13 @@ func (s *service) prepare(ctx context.Context, p *Pipeline) (jobrun.Bundle, Stat
 	case err != nil:
 		return jobrun.Bundle{}, StatusError, fmt.Sprintf("pinning what the pipeline tests: %v", err)
 	case pinned.Conflict != nil:
+		// The client keeps the first agent.MaxConflictPaths files.
 		p.ConflictPaths = pinned.Conflict.Paths
-		return jobrun.Bundle{}, StatusConflict, pinned.Conflict.Message
+		reason := pinned.Conflict.Message
+		if more := pinned.Conflict.More; more > 0 {
+			reason += fmt.Sprintf(" (%d files conflict; the first %d are listed)", len(p.ConflictPaths)+more, len(p.ConflictPaths))
+		}
+		return jobrun.Bundle{}, StatusConflict, reason
 	}
 	p.TestedSHA, p.TestedTree = pinned.SHA, pinned.Tree
 	if err := s.repo.SetTested(ctx, p.ID, pinned.SHA, pinned.Tree); err != nil {

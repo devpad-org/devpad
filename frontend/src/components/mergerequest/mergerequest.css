@@ -1,8 +1,8 @@
 /* Styles shared by the merge request components. Each component includes
  * this file as a scoped style, after ../project/shared.css. */
 .card {
-  background: var(--bg-surface);
-  border: 0.5px solid var(--border-default);
+  background: var(--bg-elevated);
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-lg);
 }
 
@@ -52,7 +52,7 @@
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-8) var(--space-4);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.82rem;
 }
 
@@ -123,23 +123,23 @@
 }
 
 .avatar-user {
-  color: var(--accent-blue);
-  background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+  color: var(--hue-blue);
+  background: color-mix(in srgb, var(--hue-blue) 16%, transparent);
 }
 
 .avatar-agent {
-  color: var(--accent-purple);
-  background: color-mix(in srgb, var(--accent-purple) 16%, transparent);
+  color: var(--hue-purple);
+  background: color-mix(in srgb, var(--hue-purple) 16%, transparent);
 }
 
 .avatar-task_agent {
-  color: var(--accent-green);
-  background: color-mix(in srgb, var(--accent-green) 16%, transparent);
+  color: var(--hue-green);
+  background: color-mix(in srgb, var(--hue-green) 16%, transparent);
 }
 
 .avatar-assistant {
-  color: var(--accent-amber);
-  background: color-mix(in srgb, var(--accent-amber) 16%, transparent);
+  color: var(--hue-yellow);
+  background: color-mix(in srgb, var(--hue-yellow) 16%, transparent);
 }
 
 .tag {
@@ -162,22 +162,22 @@
 }
 
 .tag-draft {
-  color: var(--accent-blue);
-  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  color: var(--hue-blue);
+  background: color-mix(in srgb, var(--hue-blue) 14%, transparent);
 }
 
 .line-chip {
   padding: 0 5px;
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
-  color: var(--accent-blue);
+  background: color-mix(in srgb, var(--hue-blue) 14%, transparent);
+  color: var(--hue-blue);
   font-family: var(--font-mono);
   font-size: 0.68rem;
   flex-shrink: 0;
 }
 
 .line-chip-button:hover {
-  background: color-mix(in srgb, var(--accent-blue) 26%, transparent);
+  background: color-mix(in srgb, var(--hue-blue) 26%, transparent);
 }
 
 .icon-button {
@@ -187,7 +187,7 @@
   width: 24px;
   height: 24px;
   border-radius: var(--radius-sm);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   transition: all var(--transition-fast);
 }
 
@@ -202,7 +202,7 @@
 }
 
 .text-button {
-  color: var(--accent-blue);
+  color: var(--accent);
   font-size: inherit;
 }
 
@@ -263,7 +263,7 @@
 
 .status-R,
 .status-C {
-  color: var(--accent-blue);
+  color: var(--hue-blue);
 }
 
 /* Tinted icons for checks and timeline events. */
@@ -275,14 +275,14 @@
 
 .tone-active .check-icon,
 .event-node.tone-active {
-  color: var(--accent-blue);
-  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  color: var(--hue-blue);
+  background: color-mix(in srgb, var(--hue-blue) 14%, transparent);
 }
 
 .tone-review .check-icon,
 .event-node.tone-review {
-  color: var(--accent-purple);
-  background: color-mix(in srgb, var(--accent-purple) 14%, transparent);
+  color: var(--hue-purple);
+  background: color-mix(in srgb, var(--hue-purple) 14%, transparent);
 }
 
 .tone-attention .check-icon,
@@ -320,7 +320,7 @@
   width: 16px;
   height: 16px;
   border: 2px solid var(--spinner-track);
-  border-top-color: var(--accent-blue);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   flex-shrink: 0;

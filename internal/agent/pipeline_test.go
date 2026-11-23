@@ -3,11 +3,14 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestPipelinePinValidate(t *testing.T) {
@@ -81,6 +84,26 @@ func TestRepoPinPipelineChecksTheAnswer(t *testing.T) {
 	got, err := c.RepoPinPipeline(context.Background(), pin)
 	if err != nil || got.Conflict == nil || got.Conflict.Paths[0] != "a.txt" {
 		t.Fatalf("expected a conflict, not an error: %+v %v", got, err)
+	}
+	// However many files the agent names, and however long, the client
+	// keeps a bounded list, for the pin and the trial merge alike.
+	paths := make([]string, MaxConflictPaths+7)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("dir/%d.txt", i)
+	}
+	paths[0] = strings.Repeat("é", MaxConflictPathBytes)
+	many, _ := json.Marshal(map[string]any{"conflict": map[string]any{"message": "conflicts", "paths": paths}})
+	answer = string(many)
+	got, err = c.RepoPinPipeline(context.Background(), pin)
+	if err != nil || len(got.Conflict.Paths) != MaxConflictPaths || got.Conflict.More != 7 || got.Conflict.Paths[1] != "dir/1.txt" {
+		t.Fatalf("a long conflict: %d paths, %d more %v", len(got.Conflict.Paths), got.Conflict.More, err)
+	}
+	if p := got.Conflict.Paths[0]; len(p) > MaxConflictPathBytes || !strings.HasSuffix(p, "…") || !utf8.ValidString(p) {
+		t.Fatalf("a long path kept as %d bytes", len(p))
+	}
+	merge, err := c.RepoTrialMerge(context.Background(), pin.Source, pin.Target)
+	if err != nil || len(merge.Conflict.Paths) != MaxConflictPaths || merge.Conflict.More != 7 {
+		t.Fatalf("a long trial merge conflict: %+v %v", merge, err)
 	}
 	for _, wrong := range []string{
 		`{"ref":"refs/devpad/pipelines/4","sha":"` + strings.Repeat("c", 40) + `"}`,

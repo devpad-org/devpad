@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"unicode/utf8"
 
 	"github.com/devpad-org/devpad/internal/gitbundle"
 	"github.com/devpad-org/devpad/internal/pipelineid"
@@ -75,8 +76,40 @@ type PipelinePinResult struct {
 // MergeConflict is why a source does not merge onto a target.
 type MergeConflict struct {
 	Message string `json:"message"`
-	// Paths are the files that conflict, when that is why.
+	// Paths are the files that conflict, when that is why: at most
+	// MaxConflictPaths of them, each at most MaxConflictPathBytes long, as
+	// the client keeps them, and More how many more the agent named.
 	Paths []string `json:"paths,omitempty"`
+	More  int      `json:"-"`
+}
+
+const (
+	// MaxConflictPaths bounds the conflicting files the client keeps of a
+	// conflict. The paths come from the repo's content, which agents
+	// write.
+	MaxConflictPaths = 50
+	// MaxConflictPathBytes bounds each.
+	MaxConflictPathBytes = 1024
+)
+
+// bound keeps at most MaxConflictPaths of c's paths, each cut to
+// MaxConflictPathBytes on a character boundary, and counts the rest.
+func (c *MergeConflict) bound() {
+	if c == nil {
+		return
+	}
+	if len(c.Paths) > MaxConflictPaths {
+		c.More, c.Paths = len(c.Paths)-MaxConflictPaths, c.Paths[:MaxConflictPaths]
+	}
+	for i, p := range c.Paths {
+		if len(p) > MaxConflictPathBytes {
+			cut := MaxConflictPathBytes - len("…")
+			for cut > 0 && !utf8.RuneStart(p[cut]) {
+				cut--
+			}
+			c.Paths[i] = p[:cut] + "…"
+		}
+	}
 }
 
 // RepoPinPipeline pins what a pipeline tests to its ref, replacing an
@@ -98,6 +131,7 @@ func (c *Client) RepoPinPipeline(ctx context.Context, pin PipelinePin) (*Pipelin
 	if err := c.doRepoJSON(req, "repo pin pipeline", &result); err != nil {
 		return nil, err
 	}
+	result.Conflict.bound()
 	if result.Conflict == nil && (result.Ref != pipelineid.Ref(pin.ID) || !fullHashPattern.MatchString(result.SHA)) {
 		return nil, fmt.Errorf("repo pin pipeline: unexpected answer %+v", result)
 	}
@@ -136,6 +170,7 @@ func (c *Client) RepoTrialMerge(ctx context.Context, source, target string) (*Tr
 	if err := c.doRepoJSON(req, "repo trial merge", &result); err != nil {
 		return nil, err
 	}
+	result.Conflict.bound()
 	if result.Conflict == nil && !fullHashPattern.MatchString(result.SHA) {
 		return nil, fmt.Errorf("repo trial merge: unexpected answer %+v", result)
 	}

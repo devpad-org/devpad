@@ -451,7 +451,8 @@ func pipelineResponse(p *Pipeline, withScripts bool) map[string]any {
 	for _, j := range p.Jobs {
 		jobs = append(jobs, jobResponse(j, withScripts))
 	}
-	paths := p.ConflictPaths
+	// Kept bounded as the pin answered; bounded again however it was kept.
+	paths := p.ConflictPaths[:min(len(p.ConflictPaths), agent.MaxConflictPaths)]
 	if paths == nil {
 		paths = []string{}
 	}
