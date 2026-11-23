@@ -99,10 +99,11 @@ func (s *service) decideApproval(ctx context.Context, mr *MergeRequest, reviewID
 		return s.autoMergeable(ctx, open, reviewID, run)
 	}})
 	var moved *targetMovedError
+	errors.As(err, &moved)
 	var reason string
 	switch {
 	case err == nil:
-	case errors.Is(err, errAwaitingPipeline), errors.As(err, &moved) && moved.guarded:
+	case errors.Is(err, errAwaitingPipeline), moved != nil && moved.guarded:
 		log.Printf("merge request %d: review %d's approval waits for the pipeline: %v", mr.ID, reviewID, err)
 		return nil
 	case moved != nil:
