@@ -15,12 +15,16 @@ import (
 	"github.com/devpad-org/devpad/internal/task"
 )
 
-// pipelineMergeRequests shows pipelines the merge requests they test. The
-// pipeline package never imports the merge request package, which gates
-// merges on pipelines, and the merge request package never imports the
-// pipeline package, so the two meet here.
+// The pipeline package never imports the merge request or task packages,
+// which act on pipelines, and neither imports the pipeline package, so they
+// meet here: each adapter holds only what it calls of the other side.
+
+// pipelineMergeRequests shows pipelines the merge requests they test.
 type pipelineMergeRequests struct {
-	mrs mergerequest.Service
+	mrs interface {
+		Lookup(ctx context.Context, userID, projectID, mrID int64) (*mergerequest.MergeRequest, error)
+		ListOpenInto(ctx context.Context, userID, projectID int64, target string) ([]*mergerequest.MergeRequest, error)
+	}
 }
 
 func (a pipelineMergeRequests) PipelineMergeRequest(ctx context.Context, userID, projectID, mrID int64) (*pipeline.MergeRequest, error) {
@@ -57,36 +61,50 @@ func pipelineMergeRequest(mr *mergerequest.MergeRequest) *pipeline.MergeRequest 
 	}
 }
 
-// mergeRequestPipelines tells the pipeline service each time a merge
-// request opens or its head moves, so that one into a ticked branch runs
-// its pipeline, and when it closes or merges, so that its pipelines stop.
-// The merge request service owns the listener, and never imports the
-// pipeline package, so the two meet here too.
-type mergeRequestPipelines struct {
-	pipelines pipeline.Service
+// mergeRequestMoves tells the pipeline service each time a merge request
+// opens or its head moves, so that one into a ticked branch runs its
+// pipeline, and when it closes or merges, so that its pipelines stop: a
+// mergerequest.Listener, which the merge request service owns.
+type mergeRequestMoves struct {
+	pipelines interface {
+		MergeRequestMoved(ctx context.Context, m pipeline.MergeRequestMove)
+		MergeRequestEnded(ctx context.Context, m pipeline.MergeRequestEnd)
+	}
 }
 
-func (a mergeRequestPipelines) MergeRequestHeadMoved(ctx context.Context, m mergerequest.HeadMove) {
+func (a mergeRequestMoves) MergeRequestHeadMoved(ctx context.Context, m mergerequest.HeadMove) {
 	a.pipelines.MergeRequestMoved(ctx, pipeline.MergeRequestMove{
 		UserID: m.UserID, ProjectID: m.ProjectID, MergeRequestID: m.MergeRequestID, Opened: m.Opened,
 	})
 }
 
-func (a mergeRequestPipelines) MergeRequestEnded(ctx context.Context, m mergerequest.End) {
+func (a mergeRequestMoves) MergeRequestEnded(ctx context.Context, m mergerequest.End) {
 	a.pipelines.MergeRequestEnded(ctx, pipeline.MergeRequestEnd{
 		UserID: m.UserID, ProjectID: m.ProjectID, MergeRequestID: m.MergeRequestID, Merged: m.Merged,
 	})
 }
 
-// mergeRequestGate is the merge gate every merge asks first: the pipeline
-// service's MergeRequestStatus.Gate, the one rule for whether a merge
-// request's pipeline lets it merge. It only reads, so the merge request
-// service asks it under the merge request's lock.
-type mergeRequestGate struct {
-	pipelines pipeline.Service
+// mergeRequestPipelines is what the merge request service reads of
+// pipelines (mergerequest.Pipelines): the merge gate every merge asks
+// first, the pipeline service's MergeRequestStatus.Gate, the one rule for
+// whether a merge request's pipeline lets it merge; what a pipeline found,
+// for its task's agent and its reviewer; and the target's job scripts. It
+// only reads, so the merge request service asks it under the merge
+// request's lock.
+type mergeRequestPipelines struct {
+	pipelines interface {
+		MergeRequestStatus(ctx context.Context, userID, projectID, mergeRequestID int64) (*pipeline.MergeRequestStatus, error)
+		Report(ctx context.Context, userID, projectID, pipelineID int64, outputTail int) (*pipeline.Report, error)
+		branchPipelines
+	}
 }
 
-func (a mergeRequestGate) MergeGate(ctx context.Context, userID, projectID, mrID int64) (*mergerequest.Gate, error) {
+// branchPipelines resolves the pipeline at a protected branch's tip.
+type branchPipelines interface {
+	BranchPipeline(ctx context.Context, userID, projectID int64, branch string) (*pipeline.Resolved, error)
+}
+
+func (a mergeRequestPipelines) MergeGate(ctx context.Context, userID, projectID, mrID int64) (*mergerequest.Gate, error) {
 	st, err := a.pipelines.MergeRequestStatus(ctx, userID, projectID, mrID)
 	if err != nil {
 		return nil, err
@@ -177,16 +195,10 @@ func reportGateState(s pipeline.Status) mergerequest.GateState {
 	return ""
 }
 
-// mergeRequestPipelineReports reads for the merge request service what a
-// merge request's pipeline found, for its task's agent and its reviewer:
-// every job with its status and time, and of each that failed its script,
-// devpad's word on it, the end of its output and whether it fails on the
-// target too.
-type mergeRequestPipelineReports struct {
-	pipelines pipeline.Service
-}
-
-func (a mergeRequestPipelineReports) PipelineReport(ctx context.Context, userID, projectID, pipelineID int64, outputTail int) (*mergerequest.PipelineReport, error) {
+// PipelineReport reads what a merge request's pipeline found: every job
+// with its status and time, and of each that failed its script, devpad's
+// word on it, the end of its output and whether it fails on the target too.
+func (a mergeRequestPipelines) PipelineReport(ctx context.Context, userID, projectID, pipelineID int64, outputTail int) (*mergerequest.PipelineReport, error) {
 	r, err := a.pipelines.Report(ctx, userID, projectID, pipelineID, outputTail)
 	if err != nil {
 		return nil, err
@@ -236,7 +248,10 @@ func (a mergeRequestPipelineReports) PipelineReport(ctx context.Context, userID,
 // merge (the gate never names one either). The pipeline service tells it
 // holding none of its locks; the merge request service takes its own.
 type mergeRequestPipelineEnds struct {
-	mrs mergerequest.Service
+	mrs interface {
+		PipelineFinished(ctx context.Context, m mergerequest.PipelineEnd)
+		BranchPipelineFinished(ctx context.Context, m mergerequest.BranchPipelineEnd)
+	}
 }
 
 func (a mergeRequestPipelineEnds) PipelineFinished(ctx context.Context, p *pipeline.Pipeline) {
@@ -264,7 +279,7 @@ func (a mergeRequestPipelineEnds) BranchRunStartedNone(ctx context.Context, user
 
 // JobScripts reads the scripts of the jobs a merge request into branch
 // runs, those of the pipeline at branch's tip, for its look-closely mark.
-func (a mergeRequestPipelineReports) JobScripts(ctx context.Context, userID, projectID int64, branch string) ([]string, error) {
+func (a mergeRequestPipelines) JobScripts(ctx context.Context, userID, projectID int64, branch string) ([]string, error) {
 	r, err := a.pipelines.BranchPipeline(ctx, userID, projectID, branch)
 	if errors.Is(err, pipeline.ErrInvalidInput) {
 		// A branch no longer protected runs no pipeline.
@@ -283,7 +298,7 @@ func (a mergeRequestPipelineReports) JobScripts(ctx context.Context, userID, pro
 // taskPipelines tells a task's agent the jobs its merge request's pipeline
 // will run: those of the pipeline at the tip of the branch it merges into.
 type taskPipelines struct {
-	pipelines pipeline.Service
+	pipelines branchPipelines
 }
 
 func (a taskPipelines) PipelineJobs(ctx context.Context, userID, projectID int64, branch string) (*task.PipelineJobs, error) {

@@ -64,13 +64,11 @@ func (s *service) lookCloselyOf(ctx context.Context, mr *MergeRequest, diff *age
 // of its target branch's pipeline, never its change's. Failing to read
 // them only leaves the files they name unmarked, so it is logged.
 func (s *service) targetJobScripts(ctx context.Context, mr *MergeRequest) []string {
-	s.mu.Lock()
-	reports := s.reports
-	s.mu.Unlock()
-	if reports == nil {
+	pipelines := s.pipelineReader()
+	if pipelines == nil {
 		return nil
 	}
-	scripts, err := reports.JobScripts(ctx, mr.UserID, mr.ProjectID, mr.TargetBranch)
+	scripts, err := pipelines.JobScripts(ctx, mr.UserID, mr.ProjectID, mr.TargetBranch)
 	if err != nil && ctx.Err() == nil {
 		log.Printf("merge request %d: reading %s's jobs for the look-closely mark: %v", mr.ID, mr.TargetBranch, err)
 	}

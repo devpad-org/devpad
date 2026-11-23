@@ -90,9 +90,10 @@ type Service interface {
 	TaskMergeRequest(ctx context.Context, userID int64, ws *workspace.Workspace) (*aitools.TaskMRScope, error)
 	// RunFinished is the agent runner's completion hook.
 	RunFinished(run domain.AgentRun)
-	// SetPipelineGate sets the merge gate every merge asks first. Until it
-	// is set, nothing merges.
-	SetPipelineGate(g PipelineGate)
+	// SetPipelines sets what reads the merge requests' pipelines: the merge
+	// gate every merge asks first, what a pipeline found and the target's
+	// jobs. Until it is set, nothing merges.
+	SetPipelines(p Pipelines)
 	// PipelineFinished is told each time one of a merge request's
 	// pipelines finishes, and ProjectSettingsChanged each time the user
 	// changes which branches merge automatically or run pipelines, or the
@@ -104,9 +105,6 @@ type Service interface {
 	// it that waits to know whether its jobs fail on the branch too is
 	// decided.
 	BranchPipelineFinished(ctx context.Context, m BranchPipelineEnd)
-	// SetPipelineReports sets what reads what a merge request's pipeline
-	// found, for its task's agent and its reviewer.
-	SetPipelineReports(r PipelineReports)
 	project.SettingsListener
 	// Reconcile settles agent reviews interrupted by a server restart.
 	Reconcile(ctx context.Context) error
@@ -205,10 +203,9 @@ type service struct {
 	closed    bool
 	locks     map[string]*sync.Mutex
 	listeners []Listener
-	// gate is the merge gate, and reports what reads pipelines' results,
-	// set once the pipeline service exists.
-	gate    PipelineGate
-	reports PipelineReports
+	// pipelines reads the merge requests' pipelines, set once the pipeline
+	// service exists.
+	pipelines Pipelines
 	// reviewBudgets holds the budget of each agent review that has run since
 	// devpad started and could still be continued, so its runs, the
 	// sub-agents a run leaves running, and a continued run share one limit.

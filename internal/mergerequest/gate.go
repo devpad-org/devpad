@@ -6,13 +6,25 @@ import (
 	"fmt"
 )
 
-// PipelineGate is the merge gate: whether a merge request's pipeline lets
-// it merge. The pipeline package decides it, and server.go adapts it, so
-// this package never imports that one. Every merge asks it under the merge
-// request's lock, so it must take none of this service's locks and start
-// nothing: it only reads.
-type PipelineGate interface {
+// Pipelines is what the merge request service reads of its merge requests'
+// pipelines. The pipeline package answers, and server.go adapts it, so this
+// package never imports that one. The service asks under a merge request's
+// lock, so each method must take none of this service's locks and start
+// nothing: it only reads. Until it is set, nothing merges.
+type Pipelines interface {
+	// MergeGate is the merge gate: whether merge request mrID's pipeline
+	// lets it merge now. Every merge asks it first.
 	MergeGate(ctx context.Context, userID, projectID, mrID int64) (*Gate, error)
+	// PipelineReport reads pipeline pipelineID of the user's project, for
+	// its task's agent and its reviewer: its jobs, the last outputTail bytes
+	// of each failed job's output with devpad's notes on it (none when
+	// outputTail is 0), and whether each failing job fails in the target
+	// branch's own pipeline of the commit it merged onto too.
+	PipelineReport(ctx context.Context, userID, projectID, pipelineID int64, outputTail int) (*PipelineReport, error)
+	// JobScripts reads the scripts of the jobs a merge request into branch
+	// runs: those of the pipeline at branch's tip, never a change's, for
+	// the look-closely mark. None when branch has no pipeline.
+	JobScripts(ctx context.Context, userID, projectID int64, branch string) ([]string, error)
 }
 
 // GateState is how the merge gate stands for a merge request. The pipeline
@@ -152,22 +164,31 @@ type admission struct {
 	override *PipelineOverride
 }
 
-func (s *service) SetPipelineGate(g PipelineGate) {
+func (s *service) SetPipelines(p Pipelines) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.gate = g
+	s.pipelines = p
+}
+
+// errNoPipelines is reading a merge request's pipelines before devpad can.
+var errNoPipelines = errors.New("devpad can't read merge requests' pipelines yet")
+
+// pipelineReader is what reads the merge requests' pipelines, or nil
+// before it is set.
+func (s *service) pipelineReader() Pipelines {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pipelines
 }
 
 // readGate reads the pipeline gate of mr, whose lock the caller holds, so
-// its head cannot move meanwhile. Without a gate set nothing merges.
+// its head cannot move meanwhile. Without Pipelines set nothing merges.
 func (s *service) readGate(ctx context.Context, mr *MergeRequest) (*Gate, error) {
-	s.mu.Lock()
-	gate := s.gate
-	s.mu.Unlock()
-	if gate == nil {
-		return nil, errors.New("devpad can't read merge requests' pipelines yet")
+	pipelines := s.pipelineReader()
+	if pipelines == nil {
+		return nil, errNoPipelines
 	}
-	g, err := gate.MergeGate(ctx, mr.UserID, mr.ProjectID, mr.ID)
+	g, err := pipelines.MergeGate(ctx, mr.UserID, mr.ProjectID, mr.ID)
 	if err != nil {
 		return nil, fmt.Errorf("reading the merge request's pipeline: %w", err)
 	}

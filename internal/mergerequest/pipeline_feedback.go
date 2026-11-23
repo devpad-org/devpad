@@ -26,22 +26,6 @@ import (
 // again under the merge request's lock and acts only on the pipeline it
 // names, and the task decides each pipeline once.
 
-// PipelineReports reads what one of a merge request's pipelines found, for
-// its task's agent and its reviewer. server.go adapts the pipeline service,
-// which this package never imports.
-type PipelineReports interface {
-	// PipelineReport reads pipeline pipelineID of the user's project: its
-	// jobs, the last outputTail bytes of each failed job's output with
-	// devpad's notes on it (none when outputTail is 0), and whether each
-	// failing job fails in the target branch's own pipeline of the commit it
-	// merged onto too.
-	PipelineReport(ctx context.Context, userID, projectID, pipelineID int64, outputTail int) (*PipelineReport, error)
-	// JobScripts reads the scripts of the jobs a merge request into branch
-	// runs: those of the pipeline at branch's tip, never a change's, for
-	// the look-closely mark. None when branch has no pipeline.
-	JobScripts(ctx context.Context, userID, projectID int64, branch string) ([]string, error)
-}
-
 // PipelineReport is what one of a merge request's pipelines found.
 type PipelineReport struct {
 	PipelineID int64
@@ -92,21 +76,13 @@ type BranchPipelineEnd struct {
 	PipelineID int64
 }
 
-func (s *service) SetPipelineReports(r PipelineReports) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.reports = r
-}
-
 // readReport reads what pipeline pipelineID of mr found.
 func (s *service) readReport(ctx context.Context, mr *MergeRequest, pipelineID int64, outputTail int) (*PipelineReport, error) {
-	s.mu.Lock()
-	reports := s.reports
-	s.mu.Unlock()
-	if reports == nil {
-		return nil, errors.New("devpad can't read merge requests' pipelines yet")
+	pipelines := s.pipelineReader()
+	if pipelines == nil {
+		return nil, errNoPipelines
 	}
-	r, err := reports.PipelineReport(ctx, mr.UserID, mr.ProjectID, pipelineID, outputTail)
+	r, err := pipelines.PipelineReport(ctx, mr.UserID, mr.ProjectID, pipelineID, outputTail)
 	if err != nil {
 		return nil, fmt.Errorf("reading pipeline #%d: %w", pipelineID, err)
 	}

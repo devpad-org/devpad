@@ -12,10 +12,9 @@ import (
 	"github.com/devpad-org/devpad/internal/pipeline"
 )
 
-// lookupMergeRequests answers Lookup and ListOpenInto; nothing else of the
-// merge request service is used.
+// lookupMergeRequests answers Lookup and ListOpenInto, all the pipelines
+// ask of the merge request service.
 type lookupMergeRequests struct {
-	mergerequest.Service
 	mr   *mergerequest.MergeRequest
 	into []*mergerequest.MergeRequest
 	err  error
@@ -31,7 +30,6 @@ func (f lookupMergeRequests) ListOpenInto(context.Context, int64, int64, string)
 
 // movedPipelines records what the merge requests tell the pipelines.
 type movedPipelines struct {
-	pipeline.Service
 	moves []pipeline.MergeRequestMove
 	ends  []pipeline.MergeRequestEnd
 }
@@ -63,7 +61,7 @@ func TestPipelineMergeRequestsListsThoseIntoABranch(t *testing.T) {
 func TestMergeRequestPipelinesTellsOfEachHeadMove(t *testing.T) {
 	ctx := context.Background()
 	got := &movedPipelines{}
-	a := mergeRequestPipelines{pipelines: got}
+	a := mergeRequestMoves{pipelines: got}
 	a.MergeRequestHeadMoved(ctx, mergerequest.HeadMove{UserID: 1, ProjectID: 2, MergeRequestID: 3, Opened: true})
 	a.MergeRequestHeadMoved(ctx, mergerequest.HeadMove{UserID: 1, ProjectID: 2, MergeRequestID: 3})
 	want := []pipeline.MergeRequestMove{{UserID: 1, ProjectID: 2, MergeRequestID: 3, Opened: true}, {UserID: 1, ProjectID: 2, MergeRequestID: 3}}
@@ -97,15 +95,29 @@ func TestPipelineMergeRequestsShowsWhatPipelinesNeed(t *testing.T) {
 	}
 }
 
-// statusPipelines answers MergeRequestStatus with st.
-type statusPipelines struct {
-	pipeline.Service
-	st  *pipeline.MergeRequestStatus
-	err error
+// readPipelines answers what the merge request service and the task
+// service read of pipelines: MergeRequestStatus with st, Report with report,
+// recording the output tails asked for, and BranchPipeline with resolved.
+type readPipelines struct {
+	st          *pipeline.MergeRequestStatus
+	err         error
+	report      *pipeline.Report
+	resolved    *pipeline.Resolved
+	resolvedErr error
+	tails       []int
 }
 
-func (f statusPipelines) MergeRequestStatus(context.Context, int64, int64, int64) (*pipeline.MergeRequestStatus, error) {
+func (f *readPipelines) MergeRequestStatus(context.Context, int64, int64, int64) (*pipeline.MergeRequestStatus, error) {
 	return f.st, f.err
+}
+
+func (f *readPipelines) Report(_ context.Context, _, _, _ int64, tail int) (*pipeline.Report, error) {
+	f.tails = append(f.tails, tail)
+	return f.report, nil
+}
+
+func (f *readPipelines) BranchPipeline(context.Context, int64, int64, string) (*pipeline.Resolved, error) {
+	return f.resolved, f.resolvedErr
 }
 
 // The merge request service gets the pipeline package's gate as it is.
@@ -116,22 +128,22 @@ func TestMergeRequestGateIsThePipelinesGate(t *testing.T) {
 		Open: true, Target: "develop", Automatic: true, Source: pipeline.SourceFile, Standing: pipeline.Standing{Current: failed},
 		Key: pipeline.MergeRequestKey{MergeRequestID: 4, HeadSHA: "head", TargetSHA: "tip", ConfigHash: "jobs"},
 	}
-	got, err := mergeRequestGate{statusPipelines{st: st}}.MergeGate(ctx, 1, 2, 4)
+	got, err := mergeRequestPipelines{&readPipelines{st: st}}.MergeGate(ctx, 1, 2, 4)
 	want := mergerequest.Gate{State: mergerequest.GateFailed, Guarded: true, Overridable: true, Reason: "pipeline #9 failed", PipelineID: 9, HeadSHA: "head", TargetSHA: "tip"}
 	if err != nil || *got != want {
 		t.Fatalf("failed: %+v %v", got, err)
 	}
 	// A pass carries the tree it tested.
 	failed.Status, failed.TestedTree = pipeline.StatusPassed, "tree"
-	if got, _ := (mergeRequestGate{statusPipelines{st: st}}).MergeGate(ctx, 1, 2, 4); !got.Clear || got.TestedTree != "tree" {
+	if got, _ := (mergeRequestPipelines{&readPipelines{st: st}}).MergeGate(ctx, 1, 2, 4); !got.Clear || got.TestedTree != "tree" {
 		t.Fatalf("passed: %+v", got)
 	}
 	st.Automatic = false
-	if got, _ := (mergeRequestGate{statusPipelines{st: st}}).MergeGate(ctx, 1, 2, 4); got.Guarded || !got.Clear || got.State != mergerequest.GateUnguarded || got.TestedTree != "" {
+	if got, _ := (mergeRequestPipelines{&readPipelines{st: st}}).MergeGate(ctx, 1, 2, 4); got.Guarded || !got.Clear || got.State != mergerequest.GateUnguarded || got.TestedTree != "" {
 		t.Fatalf("not ticked: %+v", got)
 	}
 	broken := errors.New("the repo is down")
-	if _, err := (mergeRequestGate{statusPipelines{err: broken}}).MergeGate(ctx, 1, 2, 4); !errors.Is(err, broken) {
+	if _, err := (mergeRequestPipelines{&readPipelines{err: broken}}).MergeGate(ctx, 1, 2, 4); !errors.Is(err, broken) {
 		t.Fatalf("an error: %v", err)
 	}
 }
@@ -176,7 +188,7 @@ func TestEveryPipelineStatusReachesTheReportAsAGateState(t *testing.T) {
 		pipeline.StatusConflict: mergerequest.GateConflict, pipeline.StatusInvalid: mergerequest.GateInvalid,
 		pipeline.StatusError: mergerequest.GateErrored, pipeline.StatusCancelled: mergerequest.GateCancelled,
 		pipeline.StatusNotConfigured: mergerequest.GateUnguarded,
-		pipeline.StatusSuperseded: "", pipeline.StatusInterrupted: "",
+		pipeline.StatusSuperseded:    "", pipeline.StatusInterrupted: "",
 	}
 	for _, s := range pipeline.Statuses() {
 		w, ok := want[s]
@@ -206,7 +218,6 @@ func TestEveryPipelineStatusReachesTheReportAsAGateState(t *testing.T) {
 
 // endedMergeRequests records what the pipelines tell the merge requests.
 type endedMergeRequests struct {
-	mergerequest.Service
 	ends     []mergerequest.PipelineEnd
 	branches []mergerequest.BranchPipelineEnd
 }
@@ -240,39 +251,21 @@ func TestMergeRequestPipelineEndsTellsOfEveryOfficialPipeline(t *testing.T) {
 	}
 }
 
-// reportPipelines answers Report and BranchPipeline.
-type reportPipelines struct {
-	pipeline.Service
-	report      *pipeline.Report
-	resolved    *pipeline.Resolved
-	resolvedErr error
-	tails       []int
-}
-
-func (f *reportPipelines) Report(_ context.Context, _, _, _ int64, tail int) (*pipeline.Report, error) {
-	f.tails = append(f.tails, tail)
-	return f.report, nil
-}
-
-func (f *reportPipelines) BranchPipeline(context.Context, int64, int64, string) (*pipeline.Resolved, error) {
-	return f.resolved, f.resolvedErr
-}
-
 // The look-closely mark reads the scripts of the target's own jobs, and
 // none of a branch that runs no pipeline.
 func TestMergeRequestJobScriptsAreTheTargetsJobs(t *testing.T) {
 	ctx := context.Background()
-	f := &reportPipelines{resolved: &pipeline.Resolved{Source: pipeline.SourceFile, Config: &pipeline.Config{Jobs: []pipeline.Job{{Name: "a", Run: "./scripts/a.sh"}, {Name: "b", Run: "make b"}}}}}
-	got, err := mergeRequestPipelineReports{f}.JobScripts(ctx, 1, 2, "main")
+	f := &readPipelines{resolved: &pipeline.Resolved{Source: pipeline.SourceFile, Config: &pipeline.Config{Jobs: []pipeline.Job{{Name: "a", Run: "./scripts/a.sh"}, {Name: "b", Run: "make b"}}}}}
+	got, err := mergeRequestPipelines{f}.JobScripts(ctx, 1, 2, "main")
 	if err != nil || !slices.Equal(got, []string{"./scripts/a.sh", "make b"}) {
 		t.Fatalf("scripts %v %v", got, err)
 	}
 	f.resolved = &pipeline.Resolved{Source: pipeline.SourceFile, Invalid: errors.New("line 2: unknown key")}
-	if got, err := (mergeRequestPipelineReports{f}).JobScripts(ctx, 1, 2, "main"); got != nil || err != nil {
+	if got, err := (mergeRequestPipelines{f}).JobScripts(ctx, 1, 2, "main"); got != nil || err != nil {
 		t.Fatalf("invalid: %v %v", got, err)
 	}
 	f.resolved, f.resolvedErr = nil, fmt.Errorf("%w: main is not a protected branch", pipeline.ErrInvalidInput)
-	if got, err := (mergeRequestPipelineReports{f}).JobScripts(ctx, 1, 2, "main"); got != nil || err != nil {
+	if got, err := (mergeRequestPipelines{f}).JobScripts(ctx, 1, 2, "main"); got != nil || err != nil {
 		t.Fatalf("unprotected: %v %v", got, err)
 	}
 }
@@ -288,12 +281,12 @@ func TestMergeRequestPipelineReportsAreThePipelinesReport(t *testing.T) {
 	timedOut := &pipeline.JobRun{ID: 2, Job: pipeline.Job{Name: "lint"}, Status: pipeline.JobTimedOut}
 	passed := &pipeline.JobRun{ID: 3, Job: pipeline.Job{Name: "frontend", Run: "npm test"}, Status: pipeline.JobPassed, StartedAt: &start, FinishedAt: &end}
 	target := &pipeline.Pipeline{ID: 8, Jobs: []*pipeline.JobRun{{Job: pipeline.Job{Name: "lint"}, Status: pipeline.JobFailed}}}
-	f := &reportPipelines{report: &pipeline.Report{
+	f := &readPipelines{report: &pipeline.Report{
 		Pipeline: &pipeline.Pipeline{ID: 9, Kind: pipeline.KindMergeRequest, Status: pipeline.StatusFailed, HeadSHA: "head", TargetSHA: "tip", ConfigSource: pipeline.SourceFile, ConfigPath: ".devpad/pipeline.yml", Jobs: []*pipeline.JobRun{failed, timedOut, passed}},
 		Logs:     map[int64]*pipeline.JobLog{1: {Output: []byte("FAIL\n"), Total: 5000, Notes: []pipeline.Note{{Text: "the job exited with 1"}}}},
 		Target:   &pipeline.TargetResult{Branch: "develop", Pipeline: target},
 	}}
-	got, err := mergeRequestPipelineReports{f}.PipelineReport(context.Background(), 1, 2, 9, 4096)
+	got, err := mergeRequestPipelines{f}.PipelineReport(context.Background(), 1, 2, 9, 4096)
 	if err != nil || len(f.tails) != 1 || f.tails[0] != 4096 {
 		t.Fatalf("report: %v, tails %v", err, f.tails)
 	}
@@ -308,11 +301,11 @@ func TestMergeRequestPipelineReportsAreThePipelinesReport(t *testing.T) {
 		t.Fatalf("failed %+v", got.Failed)
 	}
 	f.report.Pipeline.ConfigSource, f.report.Target = pipeline.SourceProject, &pipeline.TargetResult{Pending: true}
-	if got, _ := (mergeRequestPipelineReports{f}).PipelineReport(context.Background(), 1, 2, 9, 0); got.ConfigPath != "" || !got.TargetPending {
+	if got, _ := (mergeRequestPipelines{f}).PipelineReport(context.Background(), 1, 2, 9, 0); got.ConfigPath != "" || !got.TargetPending {
 		t.Fatalf("from the setting, the target pending: %+v", got)
 	}
 	f.report.Pipeline.Status, f.report.Pipeline.ConflictPaths, f.report.Pipeline.ConflictMore = pipeline.StatusConflict, []string{"a.go"}, 4
-	if got, _ := (mergeRequestPipelineReports{f}).PipelineReport(context.Background(), 1, 2, 9, 0); len(got.ConflictPaths) != 1 || got.ConflictMore != 4 {
+	if got, _ := (mergeRequestPipelines{f}).PipelineReport(context.Background(), 1, 2, 9, 0); len(got.ConflictPaths) != 1 || got.ConflictMore != 4 {
 		t.Fatalf("a conflict: %+v", got)
 	}
 }
@@ -321,7 +314,7 @@ func TestMergeRequestPipelineReportsAreThePipelinesReport(t *testing.T) {
 // merge request merges into, and none when it has none or it doesn't parse.
 func TestTaskPipelinesAreTheTargetsJobs(t *testing.T) {
 	ctx := context.Background()
-	f := &reportPipelines{resolved: &pipeline.Resolved{Source: pipeline.SourceFile, Path: ".devpad/pipeline.yml", Config: &pipeline.Config{Jobs: []pipeline.Job{{Name: "backend", Run: "go test ./...", Services: []string{"postgres"}}}}}}
+	f := &readPipelines{resolved: &pipeline.Resolved{Source: pipeline.SourceFile, Path: ".devpad/pipeline.yml", Config: &pipeline.Config{Jobs: []pipeline.Job{{Name: "backend", Run: "go test ./...", Services: []string{"postgres"}}}}}}
 	got, err := taskPipelines{f}.PipelineJobs(ctx, 1, 2, "main")
 	if err != nil || got.Path != ".devpad/pipeline.yml" || len(got.Jobs) != 1 || got.Jobs[0].Name != "backend" || got.Jobs[0].Services[0] != "postgres" {
 		t.Fatalf("jobs %+v %v", got, err)

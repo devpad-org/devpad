@@ -68,7 +68,7 @@ func pipelineEnv(t *testing.T) (*env, *fakeReports) {
 	e := setup(t)
 	e.projects.branches = []agent.RepoRef{{Name: "main", SHA: mainTip}, {Name: "task/1", SHA: "head1"}}
 	reports := &fakeReports{report: failedReport()}
-	e.svc.SetPipelineReports(reports)
+	e.usePipelines(reports)
 	return e, reports
 }
 
@@ -276,7 +276,7 @@ func TestAWaitingReviewStartsWhenTheGateLetsItIn(t *testing.T) {
 		e.gate.set(shut("running", "pipeline #3 is still running", true, 3))
 		mr := e.openTaskMR(t)
 		e.restart(t)
-		e.svc.SetPipelineReports(reports)
+		e.usePipelines(reports)
 		e.gate.set(passedOn(3, "head1", mainTip))
 		if err := e.svc.Reconcile(context.Background()); err != nil {
 			t.Fatalf("reconcile: %v", err)

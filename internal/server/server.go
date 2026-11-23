@@ -188,19 +188,18 @@ func New(cfg Config) (*Server, error) {
 	// teller's locks; the pipelines start once Reconcile has run.
 	projectService.AddBranchListener(pipelineService)
 	projectService.AddSettingsListener(pipelineService)
-	mrService.AddListener(mergeRequestPipelines{pipelines: pipelineService})
+	mrService.AddListener(mergeRequestMoves{pipelines: pipelineService})
 	// Every merge asks the pipeline gate first: a merge request into a
 	// ticked branch with a pipeline merges once its pipeline passed on its
 	// head merged onto the branch as it is, or when the user overrides it.
 	// An automatic merge waiting for its pipeline decides again as each of
 	// the merge request's pipelines finishes, which the pipeline service
 	// tells it from Reconcile on, and as the project's branches or pipeline
-	// setting change.
-	mrService.SetPipelineGate(mergeRequestGate{pipelines: pipelineService})
-	// A failed pipeline of a task's merge request goes back to its agent
-	// with what failed, and a review waits for a pass where a pipeline
-	// guards the merge request; task agents are told the jobs first.
-	mrService.SetPipelineReports(mergeRequestPipelineReports{pipelines: pipelineService})
+	// setting change. A failed pipeline of a task's merge request goes back
+	// to its agent with what failed, and a review waits for a pass where a
+	// pipeline guards the merge request; task agents are told the jobs
+	// first.
+	mrService.SetPipelines(mergeRequestPipelines{pipelines: pipelineService})
 	taskService.SetPipelines(taskPipelines{pipelines: pipelineService})
 	pipelineService.AddListener(mergeRequestPipelineEnds{mrs: mrService})
 	projectService.AddSettingsListener(mrService)

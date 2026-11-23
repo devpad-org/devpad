@@ -574,8 +574,8 @@ func setup(t *testing.T) *env {
 		Models:        e.models,
 	}).(*service)
 	e.runs.onFinish = e.svc.RunFinished
-	e.gate = &fakeGate{gate: Gate{State: "unguarded", Clear: true}}
-	e.svc.SetPipelineGate(e.gate)
+	e.gate = &fakeGate{gate: Gate{State: GateUnguarded, Clear: true}}
+	e.usePipelines(nil)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

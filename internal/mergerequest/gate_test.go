@@ -17,6 +17,37 @@ import (
 	"github.com/devpad-org/devpad/internal/auth"
 )
 
+// fakePipelines stands in for the pipeline service: the gate from gate, and
+// reports and job scripts from reports, when a test has any.
+type fakePipelines struct {
+	gate    *fakeGate
+	reports *fakeReports
+}
+
+func (f fakePipelines) MergeGate(ctx context.Context, userID, projectID, mrID int64) (*Gate, error) {
+	return f.gate.MergeGate(ctx, userID, projectID, mrID)
+}
+
+func (f fakePipelines) PipelineReport(ctx context.Context, userID, projectID, pipelineID int64, tail int) (*PipelineReport, error) {
+	if f.reports == nil {
+		return nil, errors.New("no pipeline reports in this test")
+	}
+	return f.reports.PipelineReport(ctx, userID, projectID, pipelineID, tail)
+}
+
+func (f fakePipelines) JobScripts(ctx context.Context, userID, projectID int64, branch string) ([]string, error) {
+	if f.reports == nil {
+		return nil, nil
+	}
+	return f.reports.JobScripts(ctx, userID, projectID, branch)
+}
+
+// usePipelines has the service read the env's gate, and reports, when
+// there are any.
+func (e *env) usePipelines(reports *fakeReports) {
+	e.svc.SetPipelines(fakePipelines{gate: e.gate, reports: reports})
+}
+
 // fakeGate stands in for the pipeline gate: it answers gate, unguarded and
 // clear unless a test sets another, or err.
 type fakeGate struct {
@@ -170,7 +201,7 @@ func TestMergeWithoutAGateIsRefused(t *testing.T) {
 	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{OverridePipeline: &GateConfirmation{State: "failed"}}); err == nil || !strings.Contains(err.Error(), "the repo is down") {
 		t.Fatalf("expected the gate's error, got %v", err)
 	}
-	e.svc.SetPipelineGate(nil)
+	e.svc.SetPipelines(nil)
 	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{}); err == nil {
 		t.Fatal("expected no merge without a gate")
 	}
@@ -590,7 +621,7 @@ func (e *env) restart(t *testing.T) {
 		Conversations: fakeConversations{e.db}, Defaults: e.defaults, Budgets: e.budgets, Models: e.models,
 	}).(*service)
 	e.runs.onFinish = e.svc.RunFinished
-	e.svc.SetPipelineGate(e.gate)
+	e.usePipelines(nil)
 	svc := e.svc
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
