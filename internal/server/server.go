@@ -194,9 +194,11 @@ func New(cfg Config) (*Server, error) {
 	// head merged onto the branch as it is, or when the user overrides it.
 	// An automatic merge waiting for its pipeline decides again as each of
 	// the merge request's pipelines finishes, which the pipeline service
-	// tells it from Reconcile on.
+	// tells it from Reconcile on, and as the project's branches or pipeline
+	// setting change.
 	mrService.SetPipelineGate(mergeRequestGate{pipelines: pipelineService})
 	pipelineService.AddListener(mergeRequestPipelineEnds{mrs: mrService})
+	projectService.AddSettingsListener(mrService)
 	pipelineHandler := pipeline.NewHandler(projectService, pipelineService)
 
 	// What each run's workspace is, which every tool provider is told. It is

@@ -261,21 +261,54 @@ type PipelineEnd struct {
 // decides nothing twice, since each approval is read again under the merge
 // request's lock and settled once.
 func (s *service) PipelineFinished(_ context.Context, m PipelineEnd) {
-	s.spawn(func(ctx context.Context) { s.resumeApprovals(ctx, m) })
+	s.spawn(func(ctx context.Context) {
+		mr, err := s.repo.GetByID(ctx, m.MergeRequestID)
+		if err != nil || mr == nil || mr.UserID != m.UserID || mr.ProjectID != m.ProjectID {
+			return
+		}
+		s.resumeApprovals(ctx, mr)
+	})
 }
 
-// resumeApprovals settles each unsettled approval of the merge request
-// whose run has ended: the latest merges if its pipeline now lets it, and
-// any other is refused as no longer the latest. One whose run goes on is
-// left to the run's end.
-func (s *service) resumeApprovals(ctx context.Context, m PipelineEnd) {
-	mr, err := s.repo.GetByID(ctx, m.MergeRequestID)
-	if err != nil || mr == nil || mr.UserID != m.UserID || mr.ProjectID != m.ProjectID {
-		return
-	}
+// ProjectSettingsChanged decides again, in the background, on every
+// approval of the project waiting for a pipeline: the branches it merges
+// into automatically, or runs pipelines on, or its pipeline setting changed,
+// which can open the gate, shut it, or end the wait altogether. Deciding
+// now, under the rules as they are, keeps an approval from waiting for a
+// pipeline that will never run, and from merging at the next start under
+// rules that no longer hold. It only takes note: the project tells it
+// synchronously.
+func (s *service) ProjectSettingsChanged(_ context.Context, _, after *project.Project) {
+	projectID := after.ID
+	s.spawn(func(ctx context.Context) {
+		reviews, err := s.repo.ListUnsettledReviews(ctx)
+		if err != nil {
+			log.Printf("project %d: reading the approvals to decide again: %v", projectID, err)
+			return
+		}
+		seen := make(map[int64]bool)
+		for _, rv := range reviews {
+			if seen[rv.MergeRequestID] {
+				continue
+			}
+			seen[rv.MergeRequestID] = true
+			mr, err := s.repo.GetByID(ctx, rv.MergeRequestID)
+			if err != nil || mr == nil || mr.ProjectID != projectID {
+				continue
+			}
+			s.resumeApprovals(ctx, mr)
+		}
+	})
+}
+
+// resumeApprovals settles each unsettled approval of mr whose run has
+// ended: the latest merges if its pipeline now lets it, and any other is
+// refused as no longer the latest. One whose run goes on is left to the
+// run's end.
+func (s *service) resumeApprovals(ctx context.Context, mr *MergeRequest) {
 	reviews, err := s.repo.ListReviews(ctx, mr.ID)
 	if err != nil {
-		log.Printf("merge request %d: reading its reviews after a pipeline finished: %v", mr.ID, err)
+		log.Printf("merge request %d: reading its reviews to decide on its approvals: %v", mr.ID, err)
 		return
 	}
 	for _, rv := range reviews {

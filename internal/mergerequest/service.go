@@ -91,9 +91,12 @@ type Service interface {
 	// is set, nothing merges.
 	SetPipelineGate(g PipelineGate)
 	// PipelineFinished is told each time one of a merge request's
-	// pipelines finishes, so that an automatic merge waiting for it decides
-	// again.
+	// pipelines finishes, and ProjectSettingsChanged each time the user
+	// changes which branches merge automatically or run pipelines, or the
+	// pipeline setting, so that an automatic merge waiting for its pipeline
+	// decides again.
 	PipelineFinished(ctx context.Context, m PipelineEnd)
+	project.SettingsListener
 	// Reconcile settles agent reviews interrupted by a server restart.
 	Reconcile(ctx context.Context) error
 	Shutdown(ctx context.Context) error
@@ -1905,6 +1908,7 @@ func (s *service) mergeLocked(ctx context.Context, userID, projectID, mrID int64
 	if err := s.repo.Update(ctx, mr); err != nil {
 		return nil, err
 	}
+	s.settleApprovalsOf(ctx, mr)
 	s.ended(ctx, mr)
 	s.removeReviewSandboxes(ctx, mr, "the merge request was merged")
 	if mr.TaskID != 0 {
@@ -1924,6 +1928,16 @@ func (s *service) mergeLocked(ctx context.Context, userID, projectID, mrID int64
 	return out, nil
 }
 
+// settleApprovalsOf records settled every approval of mr still to be
+// decided, such as one waiting for its pipeline, once mr has merged or
+// closed, under its lock: none of them can merge it now. The caller holds
+// the merge request's lock.
+func (s *service) settleApprovalsOf(ctx context.Context, mr *MergeRequest) {
+	if err := s.repo.SettleRunsOf(ctx, mr.ID); err != nil {
+		log.Printf("merge request %d: settling its approvals: %v", mr.ID, err)
+	}
+}
+
 // Close closes the merge request without merging it. Its task is left as
 // it is.
 func (s *service) Close(ctx context.Context, userID, projectID, mrID int64) (*MergeRequest, error) {
@@ -1937,6 +1951,7 @@ func (s *service) Close(ctx context.Context, userID, projectID, mrID int64) (*Me
 	if err := s.repo.Update(ctx, mr); err != nil {
 		return nil, err
 	}
+	s.settleApprovalsOf(ctx, mr)
 	s.ended(ctx, mr)
 	s.removeReviewSandboxes(ctx, mr, "the merge request was closed")
 	return mr, nil

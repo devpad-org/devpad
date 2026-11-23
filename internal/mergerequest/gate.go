@@ -48,7 +48,7 @@ type Gate struct {
 const gateConflict = "conflict"
 
 // confirmation is what the user confirms merging over when the gate is g.
-func (g *Gate) confirmation() GateConfirmation {
+func (g Gate) confirmation() GateConfirmation {
 	return GateConfirmation{State: g.State, PipelineID: g.PipelineID, HeadSHA: g.HeadSHA, TargetSHA: g.TargetSHA}
 }
 

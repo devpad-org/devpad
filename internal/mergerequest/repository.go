@@ -44,6 +44,9 @@ type Repository interface {
 	// review's run, with why its approval did not merge the merge request
 	// automatically, or "". UpdateReview never writes either.
 	SettleRun(ctx context.Context, id int64, autoMergeError string) error
+	// SettleRunsOf records settled the run of every submitted agent review
+	// of a merge request not settled yet, saying nothing.
+	SettleRunsOf(ctx context.Context, mergeRequestID int64) error
 
 	CreateComment(ctx context.Context, c *Comment) error
 	GetComment(ctx context.Context, id int64) (*Comment, error)
@@ -267,6 +270,16 @@ func (r *repository) ListUnsettledReviews(ctx context.Context) ([]*Review, error
 func (r *repository) SettleRun(ctx context.Context, id int64, autoMergeError string) error {
 	if _, err := r.db.ExecContext(ctx, `UPDATE merge_request_reviews SET run_settled = 1, auto_merge_error = ?, updated_at = ? WHERE id = ?`, autoMergeError, time.Now(), id); err != nil {
 		return fmt.Errorf("settling the review's run: %w", err)
+	}
+	return nil
+}
+
+func (r *repository) SettleRunsOf(ctx context.Context, mergeRequestID int64) error {
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE merge_request_reviews SET run_settled = 1, updated_at = ? WHERE merge_request_id = ? AND author = 'agent' AND status = 'submitted' AND run_settled = 0`,
+		time.Now(), mergeRequestID,
+	); err != nil {
+		return fmt.Errorf("settling the merge request's reviews: %w", err)
 	}
 	return nil
 }

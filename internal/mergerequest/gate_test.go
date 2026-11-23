@@ -694,3 +694,79 @@ func TestAMergeWithoutAnAdmissionIsRefused(t *testing.T) {
 		t.Fatalf("expected no merge, got %v", err)
 	}
 }
+
+// An approval waiting for its pipeline is decided again as soon as the
+// project's settings change: unticking the target's pipeline leaves it to
+// the review's own rule, and taking the target off the automatic merges
+// ends the wait, so it neither waits for a pipeline that will never run
+// nor merges at the next start under rules that no longer hold.
+func TestSettingsChangesDecideWaitingApprovalsAgain(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		change func(e *env)
+		merges bool
+	}{
+		{name: "the pipeline unticked", change: func(e *env) {
+			e.gate.set(Gate{State: "unguarded", Clear: true, HeadSHA: "head1", TargetSHA: mainTip})
+		}, merges: true},
+		{name: "no longer merged into automatically", change: func(e *env) {
+			e.projects.project.AutoMergeBranches = nil
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := autoMergeEnv(t)
+			ctx := context.Background()
+			mr, rv := e.waitingApproval(t)
+			before := e.projects.project
+			// Another project's change decides nothing here.
+			other := before
+			other.ID++
+			e.svc.ProjectSettingsChanged(ctx, &before, &other)
+			e.svc.Shutdown(ctx)
+			if got, _ := e.svc.repo.GetReview(ctx, rv.ID); !got.Finishing() {
+				t.Fatalf("another project's change settled it: %+v", got)
+			}
+			e.restart(t)
+
+			tt.change(e)
+			after := e.projects.project
+			e.svc.ProjectSettingsChanged(ctx, &before, &after)
+			if got := e.settled(t, rv); got.AutoMergeError != "" {
+				t.Fatalf("unexpected refusal: %q", got.AutoMergeError)
+			}
+			if got, _ := e.svc.repo.GetByID(ctx, mr.ID); (got.Status == StatusMerged) != tt.merges {
+				t.Fatalf("merged %v, want %v", got.Status == StatusMerged, tt.merges)
+			}
+		})
+	}
+}
+
+// Closing or merging a merge request settles the approvals still waiting
+// on it, which can no longer merge it.
+func TestEndingAMergeRequestSettlesItsWaitingApprovals(t *testing.T) {
+	t.Run("closed", func(t *testing.T) {
+		e := autoMergeEnv(t)
+		ctx := context.Background()
+		mr, rv := e.waitingApproval(t)
+		if _, err := e.svc.Close(ctx, e.owner, e.pid(), mr.ID); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.Finishing() || got.AutoMergeError != "" {
+			t.Fatalf("expected it settled, saying nothing: %+v", got)
+		}
+	})
+	t.Run("merged by the user", func(t *testing.T) {
+		e := autoMergeEnv(t)
+		ctx := context.Background()
+		mr, rv := e.waitingApproval(t)
+		g := shut("running", "pipeline is still running", true, e.pipelineRow(t, mr.ID, "running"))
+		e.gate.set(g)
+		running := g.confirmation()
+		if _, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{OverridePipeline: &running}); err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if got, _ := e.svc.repo.GetReview(ctx, rv.ID); got.Finishing() || got.AutoMergeError != "" {
+			t.Fatalf("expected it settled, saying nothing: %+v", got)
+		}
+	})
+}
