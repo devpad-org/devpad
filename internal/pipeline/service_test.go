@@ -540,3 +540,40 @@ func TestAStartWaitingForItsProjectsLockGivesUpWithItsContext(t *testing.T) {
 	}
 	close(e.projects.envGate)
 }
+
+// A branch's badge stands as a merge request's card does: the pipeline of
+// its commit and jobs as they are now, else its latest, out of date once
+// the branch moves or its jobs change.
+func TestABranchStandsForItsCommitAndJobs(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	stand := func() *BranchStanding {
+		t.Helper()
+		latest, err := e.svc.Latest(ctx, e.owner, e.project, LatestFilter{Branches: []string{"develop"}})
+		if err != nil || latest.Branches["develop"] == nil {
+			t.Fatalf("latest: %+v %v", latest, err)
+		}
+		return latest.Branches["develop"]
+	}
+	ran := e.wait(e.start(StartInput{Branch: "develop"}).ID)
+	if st := stand(); st.Tip != sha(2) || st.Configured == nil || !*st.Configured || st.Current == nil || st.Current.ID != ran.ID || st.Latest == nil || st.Latest.ID != ran.ID || st.NoResult != nil {
+		t.Fatalf("at its commit: %+v", st)
+	}
+	e.projects.setBranch("develop", sha(3))
+	e.projects.setFile(sha(3), ".devpad/pipeline.yml", jobsYAML)
+	if st := stand(); st.Tip != sha(3) || st.Current != nil || st.Latest == nil || st.Latest.ID != ran.ID {
+		t.Fatalf("moved on: %+v", st)
+	}
+	// A commit without a file runs the project's setting, whose jobs can
+	// change under the same commit.
+	e.projects.setBranch("develop", sha(5))
+	e.projects.setProject(func(p *project.Project) { p.PipelineConfig = jobsYAML })
+	fromSetting := e.wait(e.start(StartInput{Branch: "develop"}).ID)
+	if st := stand(); st.Current == nil || st.Current.ID != fromSetting.ID {
+		t.Fatalf("from the setting: %+v", st)
+	}
+	e.projects.setProject(func(p *project.Project) { p.PipelineConfig = "jobs:\n  lint:\n    run: pass\n" })
+	if st := stand(); st.Tip != sha(5) || st.Current != nil || st.Latest == nil || st.Latest.ID != fromSetting.ID {
+		t.Fatalf("with other jobs: %+v", st)
+	}
+}

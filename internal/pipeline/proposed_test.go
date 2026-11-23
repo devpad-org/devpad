@@ -344,7 +344,7 @@ func TestProposedPipelinesNeverCountForTheMergeRequest(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, p := range latest.Pipelines {
+		for _, p := range latest.MergeRequests {
 			if p.Purpose != PurposeOfficial {
 				t.Fatalf("%s: badge of %+v", when, p)
 			}
@@ -482,7 +482,7 @@ func TestAProposedPipelineOfTheOfficialKeyNeverStandsForIt(t *testing.T) {
 	if got, err := e.svc.current(ctx, probe); err != nil || got != nil {
 		t.Fatalf("latest for the merge request: %+v %v", got, err)
 	}
-	if latest, err := e.svc.Latest(ctx, e.owner, e.project, LatestFilter{MergeRequestIDs: []int64{e.mr}}); err != nil || len(latest.Pipelines) != 0 {
+	if latest, err := e.svc.Latest(ctx, e.owner, e.project, LatestFilter{MergeRequestIDs: []int64{e.mr}}); err != nil || len(latest.MergeRequests) != 0 {
 		t.Fatalf("badges: %+v %v", latest, err)
 	}
 	for _, statuses := range [][]Status{countingStatuses, endedStatuses, resultStatuses} {

@@ -466,7 +466,7 @@ func TestPipelinesWithoutAResultShow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b := latest.Branches["develop"]; b == nil || !b.Automatic || b.NoResult == nil || b.NoResult.Pipeline.Branch != "develop" || !b.NoResult.Retrying {
+	if b := latest.Branches["develop"]; b == nil || !b.Automatic || b.Tip != sha(2) || b.Current != nil || b.NoResult == nil || b.NoResult.Pipeline.Branch != "develop" || !b.NoResult.Retrying {
 		t.Fatalf("develop's standing: %+v", b)
 	}
 	if b := latest.Branches["main"]; b == nil || b.Automatic || b.NoResult != nil {

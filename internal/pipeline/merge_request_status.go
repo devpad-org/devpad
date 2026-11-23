@@ -33,26 +33,37 @@ type MergeRequestStatus struct {
 	// Invalid is why the pipeline that would run now doesn't parse, or
 	// empty; a pipeline of Key would be StatusInvalid.
 	Invalid string
-	// Current is the newest pipeline of Key that counts (Service.current):
-	// one queued or running, or one finished with a result; nil when none
-	// has run.
-	Current *Pipeline
-	// Latest is the merge request's newest pipeline that counts, whatever
-	// it tested: Current, or an older result to show as out of date.
-	Latest *Pipeline
+	// Standing is how its official pipelines stand for Key: Current and
+	// NoResult only while it is Open.
+	Standing
 	// Automatic says devpad runs the merge request's pipelines by itself:
 	// it is open, into a branch ticked to run them.
 	Automatic bool
-	// NoResult is, when no pipeline of Key counts, the newest of Key that
-	// ended without a result, cancelled or unable to run, with why and
-	// whether devpad runs Key once more: what the merge request shows
-	// rather than "no pipeline yet", and what the merge gate names when it
-	// is shut. Nil otherwise.
-	NoResult *NoResult
 	// OnTarget is, when Current failed, how the target's own pipeline went
 	// on the commit Current merged onto, which says which of its failures
 	// the change didn't bring. Nil otherwise.
 	OnTarget *TargetResult
+}
+
+// Standing is how a branch's or a merge request's pipelines of one purpose
+// stand for what a pipeline of it must test now, its key: the commits it has
+// now and the jobs those resolve to. The merge request page, its proposed
+// pipeline card and a branch's badge all show it the same way: Current,
+// else NoResult, else Latest, out of date.
+type Standing struct {
+	// Current is the newest pipeline of the key that counts
+	// (Service.current): one queued or running, or one finished with a
+	// result; nil when none has run.
+	Current *Pipeline
+	// Latest is the subject's newest pipeline that counts, whatever it
+	// tested: Current, or an older result to show as out of date.
+	Latest *Pipeline
+	// NoResult is, when no pipeline of the key counts, the newest of it
+	// that ended without a result, cancelled or unable to run, with why and
+	// whether devpad runs the key once more: what the subject shows rather
+	// than "no pipeline yet", and what the merge gate names when it is
+	// shut. Nil otherwise.
+	NoResult *NoResult
 }
 
 // NoResult is a pipeline of the commits and jobs a branch or merge
@@ -68,24 +79,21 @@ type NoResult struct {
 	Reason string
 }
 
-// noResultOf is the NoResult of k, or nil when one of it counts or
-// none ended without a result. automatic says its subject runs by itself.
-func (s *service) noResultOf(ctx context.Context, k key, automatic bool) (*NoResult, error) {
-	current, err := s.current(ctx, k)
-	if err != nil || current != nil {
-		return nil, err
+// stand fills in st's Current for k, a key of a subject that runs by
+// itself when automatic, and without one its NoResult. Latest is of any
+// key, so the caller reads it.
+func (s *service) stand(ctx context.Context, st *Standing, k key, automatic bool) error {
+	var err error
+	if st.Current, err = s.current(ctx, k); err != nil || st.Current != nil {
+		return err
 	}
-	return s.noResultWithout(ctx, k, automatic)
-}
-
-// noResultWithout is noResultOf for k when none of it counts.
-func (s *service) noResultWithout(ctx context.Context, k key, automatic bool) (*NoResult, error) {
 	ended, retry, err := s.lastEnded(ctx, k)
 	if err != nil || ended == nil {
-		return nil, err
+		return err
 	}
 	retrying := retry && automatic
-	return &NoResult{Pipeline: ended, Retrying: retrying, Reason: s.noResultReason(ended, retrying, automatic)}, nil
+	st.NoResult = &NoResult{Pipeline: ended, Retrying: retrying, Reason: s.noResultReason(ended, retrying, automatic)}
+	return nil
 }
 
 // noResultReason says why pipeline p of a subject's commits and jobs as they
@@ -177,17 +185,11 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 	if resolved.Invalid != nil {
 		st.Invalid = resolved.Invalid.Error()
 	}
-	official := st.Key.of(projectID, PurposeOfficial)
-	if st.Current, err = s.current(ctx, official); err != nil {
+	if err := s.stand(ctx, &st.Standing, st.Key.of(projectID, PurposeOfficial), st.Automatic); err != nil {
 		return nil, err
 	}
 	if st.Current != nil && st.Current.Status == StatusFailed {
 		if st.OnTarget, err = s.targetResult(ctx, st.Current, false); err != nil {
-			return nil, err
-		}
-	}
-	if st.Current == nil {
-		if st.NoResult, err = s.noResultWithout(ctx, official, st.Automatic); err != nil {
 			return nil, err
 		}
 	}

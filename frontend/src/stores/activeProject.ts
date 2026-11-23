@@ -21,14 +21,11 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
   // The canonical repo's branches, loaded on demand by the panels that need
   // them rather than on every poll.
   const branches = ref<RepoBranch[]>([])
-  // The newest pipeline of each branch that runs pipelines and of each
-  // open merge request, for the badges beside them.
-  const latestPipelines = ref<Pipeline[]>([])
-  // The commit each branch that runs pipelines is at, as the server read it
-  // with those pipelines, to tell a badge of an older commit.
-  const pipelineBranchTips = ref<Record<string, string>>({})
-  // How each branch that runs pipelines stands, as the server says: its
-  // pipeline of its current commit that was cancelled or couldn't run.
+  // The newest pipeline of each open merge request, for the badges beside
+  // them.
+  const latestMergeRequestPipelines = ref<Pipeline[]>([])
+  // How each branch that runs pipelines stands for them, as the server
+  // says, for the badges beside them.
   const pipelineBranchStandings = ref<Record<string, BranchPipelineStanding>>({})
   const loadError = ref('')
   const selectedTaskId = ref<number | null>(null)
@@ -84,10 +81,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     return tasks.value.find((t) => t.workspaceId === sandboxId)
   }
 
-  const branchPipelines = computed(() => new Map(latestPipelines.value.filter((p) => p.kind === 'branch').map((p) => [p.branch, p])))
-  const mergeRequestPipelines = computed(
-    () => new Map(latestPipelines.value.filter((p) => p.kind === 'merge_request').map((p) => [p.mergeRequestId, p])),
-  )
+  const mergeRequestPipelines = computed(() => new Map(latestMergeRequestPipelines.value.map((p) => [p.mergeRequestId, p])))
 
   function openMergeRequestFor(branch: string): MergeRequest | undefined {
     return openMergeRequests.value.find((mr) => mr.sourceBranch === branch)
@@ -129,9 +123,9 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     }
   }
 
-  // Reads the newest pipeline of each branch that runs pipelines and of
-  // each open merge request. A badge is a convenience: the lists still load
-  // without them.
+  // Reads how each branch that runs pipelines stands, and the newest
+  // pipeline of each open merge request. A badge is a convenience: the
+  // lists still load without them.
   async function refreshLatestPipelines() {
     const id = projectId.value
     if (id === null || !ready.value) return
@@ -139,16 +133,14 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     const branches = project.value?.pipelineBranches ?? []
     const mergeRequestIds = openMergeRequests.value.map((mr) => mr.id).slice(0, MAX_LATEST_SUBJECTS - branches.length)
     if (branches.length === 0 && mergeRequestIds.length === 0) {
-      latestPipelines.value = []
-      pipelineBranchTips.value = {}
+      latestMergeRequestPipelines.value = []
       pipelineBranchStandings.value = {}
       return
     }
     try {
       const res = await pipelineApi.latest(id, { branches, mergeRequestIds })
       if (gen !== generation) return
-      latestPipelines.value = res.pipelines ?? []
-      pipelineBranchTips.value = res.branchTips ?? {}
+      latestMergeRequestPipelines.value = res.mergeRequests ?? []
       pipelineBranchStandings.value = res.branches ?? {}
     } catch {
       // Keep the badges as they were.
@@ -216,8 +208,7 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     mergeRequests.value = []
     sandboxes.value = []
     branches.value = []
-    latestPipelines.value = []
-    pipelineBranchTips.value = {}
+    latestMergeRequestPipelines.value = []
     pipelineBranchStandings.value = {}
     loadError.value = ''
     selectedTaskId.value = null
@@ -276,10 +267,8 @@ export const useActiveProjectStore = defineStore('activeProject', () => {
     mergeRequests,
     sandboxes,
     branches,
-    latestPipelines,
-    pipelineBranchTips,
+    latestMergeRequestPipelines,
     pipelineBranchStandings,
-    branchPipelines,
     mergeRequestPipelines,
     loadError,
     selectedTaskId,

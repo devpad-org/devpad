@@ -108,9 +108,10 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"pipelines": items})
 }
 
-// HandleLatest returns the newest pipeline of each branch (branch=, as
-// often as needed) and merge request (mergeRequestId=) asked for that has
-// one, for the badges beside them.
+// HandleLatest says how each branch (branch=, as often as needed) asked
+// for stands for pipelines, and returns the newest pipeline of each merge
+// request (mergeRequestId=) asked for that has one, for the badges beside
+// them.
 func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	projectID, ok := pathID(w, r, "id")
@@ -132,25 +133,32 @@ func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
-	items := make([]map[string]any, 0, len(latest.Pipelines))
-	for _, p := range latest.Pipelines {
-		items = append(items, pipelineResponse(p, false))
+	mrs := make([]map[string]any, 0, len(latest.MergeRequests))
+	for _, p := range latest.MergeRequests {
+		mrs = append(mrs, pipelineResponse(p, false))
 	}
-	// The commit each branch asked for is at now, to tell a branch's
-	// pipeline of an older commit; null when the repo could not be read.
 	branches := make(map[string]any, len(latest.Branches))
 	for name, st := range latest.Branches {
-		branches[name] = map[string]any{"automatic": st.Automatic, "configured": st.Configured, "noResult": noResultResponse(st.NoResult)}
+		var tip any
+		if st.Tip != "" {
+			tip = st.Tip
+		}
+		// The commit the branch is at now (null when the repo could not be
+		// read), whether it runs pipelines by itself, whether a pipeline is
+		// configured there (null when that could not be read), and how its
+		// pipelines stand for it.
+		branches[name] = withStanding(map[string]any{"tip": tip, "automatic": st.Automatic, "configured": st.Configured}, st.Standing)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"pipelines":  items,
-		"branchTips": latest.BranchTips,
-		// Whether each branch asked for runs pipelines by itself, whether
-		// a pipeline is configured at its current commit (null when that
-		// could not be read), and the pipeline of its current commit and
-		// jobs that ended without a result when none of them counts.
-		"branches": branches,
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"mergeRequests": mrs, "branches": branches})
+}
+
+// withStanding adds to resp how a subject's pipelines stand, as the app's
+// PipelineStanding reads it: current, latest and noResult.
+func withStanding(resp map[string]any, st Standing) map[string]any {
+	resp["current"] = pipelineOrNil(st.Current)
+	resp["latest"] = pipelineOrNil(st.Latest)
+	resp["noResult"] = noResultResponse(st.NoResult)
+	return resp
 }
 
 // noResultResponse is a NoResult as the app reads it, or null.
@@ -190,7 +198,7 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 		}
 		proposed = nil
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{"status": withStanding(map[string]any{
 		"open":       st.Open,
 		"headSha":    st.Key.HeadSHA,
 		"targetSha":  st.Key.TargetSHA,
@@ -199,16 +207,13 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 		"configPath": st.ConfigPath,
 		"invalid":    st.Invalid,
 		"configured": st.Open && st.Configured(),
-		"current":    pipelineOrNil(st.Current),
-		"latest":     pipelineOrNil(st.Latest),
 		"automatic":  st.Automatic,
-		"noResult":   noResultResponse(st.NoResult),
 		"gate":       gateResponse(st.Gate()),
 		"onTarget":   targetResponse(st.OnTarget),
 		// The pipeline the change proposes, run for information only; null
 		// when the change leaves the pipeline file alone.
 		"proposed": proposedResponse(proposed),
-	}})
+	}, st.Standing)})
 }
 
 func pipelineOrNil(p *Pipeline) any {
@@ -224,7 +229,7 @@ func proposedResponse(st *ProposedStatus) any {
 	if st == nil {
 		return nil
 	}
-	return map[string]any{
+	return withStanding(map[string]any{
 		"file":       st.File,
 		"headSha":    st.Key.HeadSHA,
 		"targetSha":  st.Key.TargetSHA,
@@ -235,10 +240,7 @@ func proposedResponse(st *ProposedStatus) any {
 		"removed":    st.Removed,
 		"sameJobs":   st.SameJobs,
 		"invalid":    st.Invalid,
-		"current":    pipelineOrNil(st.Current),
-		"latest":     pipelineOrNil(st.Latest),
-		"noResult":   noResultResponse(st.NoResult),
-	}
+	}, st.Standing)
 }
 
 // targetResponse is how the target's own pipeline went on the commit the

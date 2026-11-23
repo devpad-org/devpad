@@ -445,30 +445,31 @@ func (s *service) List(ctx context.Context, userID, projectID int64, f ListFilte
 
 // LatestPipelines is what Latest found.
 type LatestPipelines struct {
-	Pipelines []*Pipeline
-	// BranchTips are the commits the branches asked for are at now, by
-	// name, of those the canonical repo has. Nil when it could not be read,
-	// such as while its container is down: the pipelines still count, but
-	// whether a branch's is of its current commit is not known.
-	BranchTips map[string]string
-	// Branches says how each branch asked for stands now, by name: whether
-	// it runs automatically, and, when it can be read, its pipeline that
-	// ended without a result.
+	// MergeRequests are the newest official pipeline that counts of each
+	// merge request asked for that has one.
+	MergeRequests []*Pipeline
+	// Branches says how each branch asked for stands now, by name.
 	Branches map[string]*BranchStanding
 }
 
 // BranchStanding is how a branch stands for pipelines now.
 type BranchStanding struct {
+	// Tip is the commit the branch is at now, empty when the canonical repo
+	// could not be read, such as while its container is down, or has no
+	// such branch: its Latest still counts, but whether that is of its
+	// current commit is not known.
+	Tip string
 	// Automatic says devpad runs its pipelines by itself.
 	Automatic bool
 	// Configured says whether a pipeline is configured at its current
 	// commit, a file there or the project's setting, one that doesn't parse
 	// included: with Automatic, a pipeline guards the merge requests into
-	// it (Gate). Nil when its commit or pipeline could not be read.
+	// it (Gate). Nil when its commit or pipeline could not be read, and
+	// then so are Current and NoResult.
 	Configured *bool
-	// NoResult is, when no pipeline of its current commit and jobs counts,
-	// the newest that ended without a result on them, or nil.
-	NoResult *NoResult
+	// Standing is how its official pipelines stand for its current commit
+	// and the jobs there.
+	Standing
 }
 
 func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestFilter) (*LatestPipelines, error) {
@@ -494,44 +495,49 @@ func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestF
 	if err != nil {
 		return nil, err
 	}
-	out := &LatestPipelines{Pipelines: found}
-	if len(f.Branches) == 0 {
-		return out, nil
-	}
-	out.Branches = make(map[string]*BranchStanding, len(f.Branches))
+	out := &LatestPipelines{Branches: make(map[string]*BranchStanding, len(f.Branches))}
 	for _, b := range f.Branches {
 		out.Branches[b] = &BranchStanding{Automatic: branchRunsAutomatically(p, b)}
+	}
+	for _, pl := range found {
+		if pl.Kind != KindBranch {
+			out.MergeRequests = append(out.MergeRequests, pl)
+		} else if st := out.Branches[pl.Branch]; st != nil {
+			st.Latest = pl
+		}
+	}
+	if len(f.Branches) == 0 {
+		return out, nil
 	}
 	refs, err := s.projects.Branches(ctx, p.UserID, p.ID)
 	if err != nil {
 		log.Printf("pipeline: reading project %d's branches for their latest pipelines: %v", p.ID, err)
 		return out, nil
 	}
-	out.BranchTips = make(map[string]string, len(f.Branches))
 	for _, b := range refs.Branches {
-		if slices.Contains(f.Branches, b.Name) {
-			out.BranchTips[b.Name] = b.SHA
-			s.fillBranchStanding(ctx, p, b.Name, b.SHA, out.Branches[b.Name])
+		if st := out.Branches[b.Name]; st != nil {
+			st.Tip = b.SHA
+			s.standBranch(ctx, p, b.Name, st)
 		}
 	}
 	return out, nil
 }
 
-// fillBranchStanding fills in whether a pipeline is configured for a branch at
-// tip and its NoResult, unless its pipeline at tip cannot be read,
-// which only leaves the badge without them.
-func (s *service) fillBranchStanding(ctx context.Context, p *project.Project, branch, tip string, st *BranchStanding) {
-	if !project.IsCommitHash(tip) || !p.IsProtected(branch) {
+// standBranch fills in whether a pipeline is configured for a branch at its
+// Tip and how its pipelines stand for it, unless its pipeline there cannot
+// be read, which only leaves the badge without them.
+func (s *service) standBranch(ctx context.Context, p *project.Project, branch string, st *BranchStanding) {
+	if !project.IsCommitHash(st.Tip) || !p.IsProtected(branch) {
 		return
 	}
-	resolved, err := s.resolveCached(ctx, p, tip)
+	resolved, err := s.resolveCached(ctx, p, st.Tip)
 	if err != nil {
 		log.Printf("pipeline: project %d's %s for its badge: %v", p.ID, branch, err)
 		return
 	}
 	configured := resolved.Source != SourceNone
 	st.Configured = &configured
-	if st.NoResult, err = s.noResultOf(ctx, branchKey(p.ID, branch, tip, resolved.Hash), st.Automatic); err != nil {
+	if err := s.stand(ctx, &st.Standing, branchKey(p.ID, branch, st.Tip, resolved.Hash), st.Automatic); err != nil {
 		log.Printf("pipeline: project %d's %s for its badge: %v", p.ID, branch, err)
 	}
 }

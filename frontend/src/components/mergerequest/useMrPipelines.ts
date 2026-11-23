@@ -1,7 +1,7 @@
 import { computed, ref, type Ref } from 'vue'
 import type { MergeRequestDetail } from '@/api/mergeRequests'
 import { pipelineApi, type MergeRequestPipelineStatus, type Pipeline } from '@/api/pipelines'
-import { PIPELINE_COPY, PIPELINE_STATUS, sourceLabel } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_COPY, PIPELINE_STATUS, shownOf, sourceLabel, staleIn } from '@/components/pipeline/pipelineFormat'
 import { errorText, plural, shortSha } from './format'
 import type { Check } from './useMergeRequest'
 
@@ -76,12 +76,13 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
   // The pipeline of the current commits and jobs that was cancelled or
   // couldn't run, when none of them counts, with why.
   const noResult = computed(() => status.value?.noResult ?? null)
-  const shownId = computed(() => pickedId.value ?? current.value?.id ?? noResult.value?.pipeline.id ?? latest.value?.id ?? null)
+  const shownId = computed(() => pickedId.value ?? shownOf(status.value)?.id ?? null)
   // The pipeline the card shows is not of the commits and jobs the merge
   // request has now.
-  const shownStale = computed(
-    () => !!status.value?.open && shownId.value !== null && shownId.value !== current.value?.id && shownId.value !== noResult.value?.pipeline.id,
-  )
+  const shownStale = computed(() => {
+    const st = status.value
+    return !!st?.open && shownId.value !== null && staleIn(st, shownId.value)
+  })
   const shownPipeline = computed(
     () =>
       pipelines.value.find((p) => p.id === shownId.value) ??
@@ -91,18 +92,14 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
   // A pipeline that was replaced before it ran says nothing worth listing.
   const timelinePipelines = computed(() => pipelines.value.filter((p) => p.status !== 'superseded'))
 
-  // The pipeline the change proposes, and the one of them its card shows:
-  // the one of the commits and jobs as they are now, or the newest that
-  // ended without a result on them, or else the latest, out of date.
+  // The pipeline the change proposes, and the one of them its card shows,
+  // as the merge request's own card does.
   const proposed = computed(() => status.value?.proposed ?? null)
-  const proposedShown = computed(() => {
-    const p = proposed.value
-    return p?.current ?? p?.noResult?.pipeline ?? p?.latest ?? null
-  })
+  const proposedShown = computed(() => shownOf(proposed.value))
   const proposedStale = computed(() => {
     const p = proposed.value
     const shown = proposedShown.value
-    return !!p && !!shown && shown.id !== p.current?.id && shown.id !== p.noResult?.pipeline.id
+    return !!p && !!shown && staleIn(p, shown.id)
   })
 
   async function load() {
@@ -158,7 +155,7 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
   }
 
   function show(id: number | null) {
-    pickedId.value = id === (current.value?.id ?? noResult.value?.pipeline.id ?? latest.value?.id) ? null : id
+    pickedId.value = id === shownOf(status.value)?.id ? null : id
   }
 
   // The merge card's row: how the pipeline stands, and the gate's note.

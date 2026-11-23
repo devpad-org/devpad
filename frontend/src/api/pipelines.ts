@@ -168,14 +168,30 @@ export interface NoResult {
   reason: string
 }
 
-// How a branch stands for pipelines now: whether devpad runs it by itself,
-// whether a pipeline is configured at its current commit (null when that
-// couldn't be read), and its pipeline that ended without a result. Automatic and configured, a
+// How a branch's or a merge request's pipelines of one purpose stand for
+// the commits and jobs it has now, as the server's Standing. Every card and
+// badge shows it the same way (shownOf in pipelineFormat).
+export interface PipelineStanding {
+  // The newest pipeline of exactly these commits and jobs that counts: one
+  // under way, or one with a result. Null when none has run.
+  current: Pipeline | null
+  // The newest pipeline that counts, whatever it tested; an older result
+  // when it isn't current.
+  latest: Pipeline | null
+  // When nothing current counts, the newest of these commits and jobs that
+  // was cancelled or couldn't run, and why.
+  noResult: NoResult | null
+}
+
+// How a branch stands for pipelines now: the commit it is at (null when the
+// repo couldn't be read), whether devpad runs it by itself, and whether a
+// pipeline is configured there (null when that couldn't be read, and then
+// neither current nor noResult is known). Automatic and configured, a
 // pipeline guards the merge requests into it.
-export interface BranchPipelineStanding {
+export interface BranchPipelineStanding extends PipelineStanding {
+  tip: string | null
   automatic: boolean
   configured: boolean | null
-  noResult: NoResult | null
 }
 
 // How the merge gate stands: unguarded when no pipeline guards the merge
@@ -222,8 +238,8 @@ export interface MergeGate {
 
 // How a merge request stands for pipelines now, as the server works it out:
 // the head and target tip a pipeline must test to count, the jobs that
-// would run there, and the pipeline that tested exactly that.
-export interface MergeRequestPipelineStatus {
+// would run there, and how its own pipelines stand for exactly that.
+export interface MergeRequestPipelineStatus extends PipelineStanding {
   // The merge request can still merge; when it can't, only latest is set.
   open: boolean
   headSha: string
@@ -236,18 +252,9 @@ export interface MergeRequestPipelineStatus {
   // Why the pipeline that would run now doesn't parse, or empty.
   invalid: string
   configured: boolean
-  // The newest pipeline of exactly these commits and jobs that counts: one
-  // under way, or one with a result. Null when none has run.
-  current: Pipeline | null
-  // The newest pipeline of the merge request that counts, whatever it
-  // tested; an older result when it isn't current.
-  latest: Pipeline | null
   // Devpad runs the merge request's pipelines by itself: it is open, into a
   // branch ticked to run them.
   automatic: boolean
-  // When nothing current counts, the newest of these commits and jobs that
-  // was cancelled or couldn't run, and why.
-  noResult: NoResult | null
   // Whether the pipeline lets it merge.
   gate: MergeGate
   // When current failed, how the target's own pipeline went on the commit
@@ -262,7 +269,7 @@ export interface MergeRequestPipelineStatus {
 
 // How the pipeline a merge request's change proposes stands now. It never
 // gates merging, goes back to a task's agent or holds a review.
-export interface ProposedPipelineStatus {
+export interface ProposedPipelineStatus extends PipelineStanding {
   // The pipeline file the change adds, changes, renames or deletes.
   file: string
   headSha: string
@@ -280,9 +287,6 @@ export interface ProposedPipelineStatus {
   sameJobs: boolean
   // Why the proposed file doesn't parse, or empty.
   invalid: string
-  current: Pipeline | null
-  latest: Pipeline | null
-  noResult: NoResult | null
 }
 
 export interface TargetResult {
@@ -310,16 +314,14 @@ export const pipelineApi = {
     return apiClient.get(`${base(projectId)}${qs ? `?${qs}` : ''}`)
   },
 
-  // The newest pipeline that counts (under way, or with a result) of each
-  // branch and merge request named that has one, the commit each branch
-  // named is at now (null when the repo could not be read), and how each
-  // branch stands.
+  // How each branch named stands, and the newest pipeline that counts
+  // (under way, or with a result) of each merge request named that has
+  // one.
   latest(
     projectId: number,
     subjects: { branches: string[]; mergeRequestIds: number[] },
   ): Promise<{
-    pipelines: Pipeline[]
-    branchTips: Record<string, string> | null
+    mergeRequests: Pipeline[]
     branches: Record<string, BranchPipelineStanding>
   }> {
     const query = new URLSearchParams()

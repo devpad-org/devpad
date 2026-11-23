@@ -113,7 +113,7 @@ func TestMergeRequestGateIsThePipelinesGate(t *testing.T) {
 	ctx := context.Background()
 	failed := &pipeline.Pipeline{ID: 9, Kind: pipeline.KindMergeRequest, Status: pipeline.StatusFailed}
 	st := &pipeline.MergeRequestStatus{
-		Open: true, Target: "develop", Automatic: true, Source: pipeline.SourceFile, Current: failed,
+		Open: true, Target: "develop", Automatic: true, Source: pipeline.SourceFile, Standing: pipeline.Standing{Current: failed},
 		Key: pipeline.MergeRequestKey{MergeRequestID: 4, HeadSHA: "head", TargetSHA: "tip", ConfigHash: "jobs"},
 	}
 	got, err := mergeRequestGate{statusPipelines{st: st}}.MergeGate(ctx, 1, 2, 4)

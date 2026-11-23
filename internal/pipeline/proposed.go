@@ -81,11 +81,9 @@ type ProposedStatus struct {
 	// it doesn't parse, or empty.
 	ConfigPath string
 	Invalid    string
-	// Current, Latest and NoResult are as MergeRequestStatus's, of the
-	// merge request's proposed pipelines.
-	Current  *Pipeline
-	Latest   *Pipeline
-	NoResult *NoResult
+	// Standing is how the merge request's proposed pipelines stand for
+	// Key, as MergeRequestStatus's official ones do.
+	Standing
 }
 
 // proposal is what a merge request's change proposes for its pipeline when
@@ -342,14 +340,8 @@ func (s *service) ProposedStatus(ctx context.Context, userID, projectID int64, o
 	if jobs.Invalid != nil {
 		st.Invalid = jobs.Invalid.Error()
 	}
-	proposed := st.Key.of(projectID, PurposeProposed)
-	if st.Current, err = s.current(ctx, proposed); err != nil {
+	if err := s.stand(ctx, &st.Standing, st.Key.of(projectID, PurposeProposed), st.Automatic); err != nil {
 		return nil, err
-	}
-	if st.Current == nil {
-		if st.NoResult, err = s.noResultWithout(ctx, proposed, st.Automatic); err != nil {
-			return nil, err
-		}
 	}
 	return st, nil
 }

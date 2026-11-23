@@ -95,15 +95,17 @@ func TestPipelineEndpoints(t *testing.T) {
 
 	code, out = e.serve(e.owner, http.MethodGet, fmt.Sprintf("%s/latest?branch=main&branch=develop&mergeRequestId=%d", base, e.mr), "")
 	// The only pipeline was cancelled, which says nothing of the commits,
-	// so no branch has one that counts; each branch's commit comes along.
-	tips, _ := out["branchTips"].(map[string]any)
-	if latest := out["pipelines"].([]any); code != http.StatusOK || len(latest) != 0 || tips["develop"] != sha(2) || tips["main"] != sha(1) || len(tips) != 2 {
+	// so neither a branch nor the merge request has one that counts; each
+	// branch's commit comes along.
+	branches, _ := out["branches"].(map[string]any)
+	develop, _ := branches["develop"].(map[string]any)
+	main, _ := branches["main"].(map[string]any)
+	if mrs := out["mergeRequests"].([]any); code != http.StatusOK || len(mrs) != 0 || len(branches) != 2 || develop["tip"] != sha(2) || main["tip"] != sha(1) ||
+		develop["latest"] != nil || develop["current"] != nil || main["latest"] != nil {
 		t.Fatalf("latest: %d %v", code, out)
 	}
 	// develop's commit has its pipeline cancelled, which the badge says;
 	// neither branch nor the merge request runs by itself.
-	branches, _ := out["branches"].(map[string]any)
-	develop, _ := branches["develop"].(map[string]any)
 	noResult, _ := develop["noResult"].(map[string]any)
 	if develop["automatic"] != false || noResult == nil || noResult["retrying"] != false || !strings.Contains(fmt.Sprint(noResult["reason"]), "was cancelled") ||
 		noResult["pipeline"].(map[string]any)["id"] != float64(id) || branches["main"].(map[string]any)["noResult"] != nil || develop["configured"] != true {

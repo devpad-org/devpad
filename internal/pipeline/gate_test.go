@@ -67,7 +67,7 @@ func TestGateStates(t *testing.T) {
 		{name: "couldn't run", st: guarded(func(st *MergeRequestStatus) {
 			st.NoResult = &NoResult{Pipeline: &Pipeline{ID: 4, Status: StatusError, Jobs: []*JobRun{{Job: Job{Name: "backend"}, Status: JobError, Error: "no service redis"}}}}
 		}), state: GateError, reason: "pipeline #4 couldn't run: job backend: no service redis", pipeline: 4},
-		{name: "closed", st: &MergeRequestStatus{Latest: pipelineOf(2, StatusPassed)}, state: GateClosed, reason: "can no longer merge"},
+		{name: "closed", st: &MergeRequestStatus{Standing: Standing{Latest: pipelineOf(2, StatusPassed)}}, state: GateClosed, reason: "can no longer merge"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

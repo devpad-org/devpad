@@ -4,7 +4,8 @@ import { projectApi, type UpstreamBranch, type UpstreamStatus } from '@/api/proj
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { fullTime, timeAgo } from '@/utils/time'
 import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
-import { PIPELINE_STATUS, type StatusLook } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_STATUS, shownOf, staleIn, type StatusLook } from '@/components/pipeline/pipelineFormat'
+import { shortSha } from '@/components/mergerequest/format'
 import ProjectBranchesModal from './ProjectBranchesModal.vue'
 import ProjectCard from './ProjectCard.vue'
 import type { CardStatus } from './card'
@@ -56,24 +57,25 @@ const rows = computed(() => {
   })
 })
 
-// A ticked branch's latest pipeline that counts. One of a commit the branch
-// has moved on from, by the tip the server read with it, shows as out of
-// date. When nothing of its current commit and jobs counts but a pipeline of
-// them was cancelled or couldn't run, the server says so, and why.
+// A ticked branch's pipeline as the server says it stands: the one of its
+// commit and jobs as they are now, or one of them that was cancelled or
+// couldn't run, with why, or else its latest, out of date once the server
+// could read the branch's pipeline and found it moved on.
 function pipelineBadge(name: string) {
-  const noResult = store.pipelineBranchStandings[name]?.noResult
-  if (noResult) {
+  const st = store.pipelineBranchStandings[name]
+  const p = shownOf(st)
+  if (!st || !p) return null
+  const noResult = st.noResult
+  if (noResult && p.id === noResult.pipeline.id) {
     const look: StatusLook = noResult.pipeline.status === 'cancelled' ? PIPELINE_STATUS.cancelled : { ...PIPELINE_STATUS.error, label: "Couldn't run" }
     return { look, title: noResult.reason }
   }
-  const p = store.branchPipelines.get(name)
-  if (!p) return null
-  const tip = store.pipelineBranchTips[name]
   const status = PIPELINE_STATUS[p.status]
-  if (tip && tip !== p.headSha) {
-    return { look: { label: 'Out of date', tone: 'neutral', icon: 'clock' } as StatusLook, title: `Latest pipeline #${p.id} ${status.label.toLowerCase()} on ${p.headSha.slice(0, 8)}, an older commit` }
+  if (st.configured !== null && staleIn(st, p.id)) {
+    const why = st.tip !== p.headSha ? 'an older commit' : 'with jobs the branch no longer has'
+    return { look: { label: 'Out of date', tone: 'neutral', icon: 'clock' } as StatusLook, title: `Latest pipeline #${p.id} ${status.label.toLowerCase()} on ${shortSha(p.headSha)}, ${why}` }
   }
-  return { look: status, title: `Latest pipeline #${p.id}: ${status.label.toLowerCase()} on ${p.headSha.slice(0, 8)}, ${timeAgo(p.createdAt)}` }
+  return { look: status, title: `Latest pipeline #${p.id}: ${status.label.toLowerCase()} on ${shortSha(p.headSha)}, ${timeAgo(p.createdAt)}` }
 }
 
 type BranchState = { text: string; tone: 'ok' | 'pending' | 'attention' | 'muted'; push: boolean; hint?: string }

@@ -1,4 +1,4 @@
-import type { JobStatus, MergeGateState, Pipeline, PipelineJob, PipelineStatus } from '@/api/pipelines'
+import type { JobStatus, MergeGateState, Pipeline, PipelineJob, PipelineStanding, PipelineStatus } from '@/api/pipelines'
 import type { PipelineRounds } from '@/api/tasks'
 import type { MrIconName } from '@/components/project/MrIcon.vue'
 import { shortSha } from '@/components/mergerequest/format'
@@ -163,6 +163,20 @@ export const PIPELINE_OUTCOME: Record<PipelineStatus, string> = {
   cancelled: 'was cancelled',
   superseded: 'was replaced',
   interrupted: 'was interrupted',
+}
+
+// The pipeline a card or badge shows of how a subject's pipelines stand:
+// the one of its commits and jobs as they are now, else the newest of them
+// that ended without a result, else its latest, which is then out of date.
+export function shownOf(st: PipelineStanding | null | undefined): Pipeline | null {
+  return st?.current ?? st?.noResult?.pipeline ?? st?.latest ?? null
+}
+
+// Whether pipeline id, shown for a standing, is of other commits or jobs
+// than the subject has now: neither its current pipeline nor the one of
+// them that ended without a result.
+export function staleIn(st: PipelineStanding, id: number): boolean {
+  return id !== st.current?.id && id !== st.noResult?.pipeline.id
 }
 
 // What a pipeline tests, in a few words, and whether it runs the jobs a
