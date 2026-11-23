@@ -169,6 +169,31 @@ func TestAutoQueueHoldsARunOfAKeyBeingRead(t *testing.T) {
 	}
 }
 
+// A key counts as on its way from when its run is queued until a worker
+// is done with it, whether it waits for its interval or is being read.
+func TestAutoQueueHasARunWaitingOrBeingRead(t *testing.T) {
+	q := newAutoQueue(1, 10, time.Hour)
+	q.begin()
+	key := branchRun("develop", TriggerMerged).key
+	if q.has(key) {
+		t.Fatal("an empty queue has the key")
+	}
+	q.add(branchRun("develop", TriggerMerged))
+	r, _ := q.next(false)
+	if !q.has(key) {
+		t.Fatal("a key being read isn't on its way")
+	}
+	q.done(r.key)
+	if q.has(key) {
+		t.Fatal("a key done is still on its way")
+	}
+	// Within its interval, the next run waits, and is on its way.
+	q.add(branchRun("develop", TriggerUpstream))
+	if !q.has(key) || q.has(branchRun("main", TriggerMerged).key) {
+		t.Fatal("a key waiting for its interval isn't on its way, or another key is")
+	}
+}
+
 func projectRun(projectID int64, branch string, trigger Trigger) *autoRun {
 	return &autoRun{key: autoKey{projectID: projectID, kind: autoBranch, branch: branch}, userID: 7, trigger: trigger}
 }

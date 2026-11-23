@@ -49,14 +49,25 @@ type PipelineReport struct {
 	// project's pipeline setting.
 	ConfigPath    string
 	ConflictPaths []string
-	// Jobs are all its jobs in the file's order, without their output, and
-	// Failed those whose code failed, with the end of their output when it
-	// was asked for.
-	Jobs   []task.PipelineJobResult
+	// Jobs are all its jobs in the file's order, as a review agent may read
+	// of them, and Failed those whose code failed, with the end of their
+	// output when it was asked for, which only the task's agent reads.
+	Jobs   []PipelineJobStanding
 	Failed []task.PipelineJobResult
 	// TargetPending says the target's own pipeline of TargetSHA is still to
 	// finish, so whether a job fails there too is not known yet.
 	TargetPending bool
+}
+
+// PipelineJobStanding is how one of a pipeline's jobs ended, in devpad's
+// words alone: nothing the job printed, nor its script.
+type PipelineJobStanding struct {
+	Name     string
+	Status   string
+	Duration time.Duration
+	// AlsoFailingOnTarget says it failed in the target branch's own
+	// pipeline of the same commit too.
+	AlsoFailingOnTarget bool
 }
 
 // BranchPipelineEnd is a protected branch's pipeline finishing.
@@ -165,37 +176,110 @@ func (s *service) followPipeline(ctx context.Context, mrID, only int64) {
 // pipeline guarding mr ended on its commits and jobs as they are now, as g
 // found: passed, failed, or found the branch doesn't merge. Nothing else
 // is the agent's to answer: a pipeline that couldn't run, was cancelled or
-// doesn't parse says nothing of its work, and the gate says why.
+// doesn't parse says nothing of its work, and the gate says why. A failure
+// that comes while an agent reviews the same commits waits for the review
+// (task.PipelineResult.Reviewing), whose end follows the pipeline again.
 func (s *service) tellTask(ctx context.Context, mr *MergeRequest, g *Gate) {
-	if mr.TaskID == 0 || !g.Guarded || g.PipelineID == 0 || g.HeadSHA != mr.HeadSHA {
+	if mr.TaskID == 0 {
 		return
 	}
-	res := task.PipelineResult{PipelineID: g.PipelineID, HeadSHA: g.HeadSHA, TargetBranch: mr.TargetBranch, TargetSHA: g.TargetSHA}
+	res, err := s.pipelineResult(ctx, mr, g)
+	if err != nil {
+		log.Printf("merge request %d: %v", mr.ID, err)
+		return
+	}
+	if res == nil {
+		return
+	}
+	if res.Outcome != task.PipelinePassed {
+		reviews, err := s.repo.ListReviews(ctx, mr.ID)
+		if err != nil {
+			log.Printf("merge request %d: reading its reviews: %v", mr.ID, err)
+			return
+		}
+		res.Reviewing = agentReviewing(reviews, g.HeadSHA)
+	}
+	if _, err := s.tasks.PipelineEnded(ctx, mr.UserID, mr.ProjectID, mr.TaskID, *res); err != nil && !errors.Is(err, task.ErrNotFound) {
+		log.Printf("merge request %d: telling task %d how pipeline #%d ended: %v", mr.ID, mr.TaskID, g.PipelineID, err)
+	}
+}
+
+// pipelineResult is how the pipeline guarding mr ended on its commits and
+// jobs as they are now, as g found, for its task: passed, failed with the
+// end of each failed job's output, or found the branch doesn't merge. It is
+// nil when no pipeline guards mr or none of its head has one of those
+// results.
+func (s *service) pipelineResult(ctx context.Context, mr *MergeRequest, g *Gate) (*task.PipelineResult, error) {
+	if !g.Guarded || g.PipelineID == 0 || g.HeadSHA != mr.HeadSHA {
+		return nil, nil
+	}
+	res := &task.PipelineResult{PipelineID: g.PipelineID, HeadSHA: g.HeadSHA, TargetBranch: mr.TargetBranch, TargetSHA: g.TargetSHA}
 	switch g.State {
 	case "passed":
 		res.Outcome = task.PipelinePassed
+		return res, nil
 	case "failed", gateConflict:
-		tail := 0
-		res.Outcome = task.PipelineConflict
-		if g.State == "failed" {
-			tail, res.Outcome = task.PipelineOutputTail, task.PipelineFailed
-		}
-		rep, err := s.readReport(ctx, mr, g.PipelineID, tail)
-		if err != nil {
-			log.Printf("merge request %d: %v", mr.ID, err)
-			return
-		}
-		if rep.HeadSHA != g.HeadSHA || rep.Status != g.State {
-			return
-		}
-		res.JobsFrom = jobsFrom(rep.ConfigPath, mr.TargetBranch)
-		res.Failed, res.TargetPending, res.ConflictFiles = rep.Failed, rep.TargetPending, rep.ConflictPaths
 	default:
-		return
+		return nil, nil
 	}
-	if _, err := s.tasks.PipelineEnded(ctx, mr.UserID, mr.ProjectID, mr.TaskID, res); err != nil && !errors.Is(err, task.ErrNotFound) {
-		log.Printf("merge request %d: telling task %d how pipeline #%d ended: %v", mr.ID, mr.TaskID, g.PipelineID, err)
+	tail := 0
+	res.Outcome = task.PipelineConflict
+	if g.State == "failed" {
+		tail, res.Outcome = task.PipelineOutputTail, task.PipelineFailed
 	}
+	rep, err := s.readReport(ctx, mr, g.PipelineID, tail)
+	if err != nil {
+		return nil, err
+	}
+	if rep.HeadSHA != g.HeadSHA || rep.Status != g.State {
+		return nil, nil
+	}
+	res.JobsFrom = jobsFrom(rep.ConfigPath, mr.TargetBranch)
+	res.Failed, res.TargetPending, res.ConflictFiles = rep.Failed, rep.TargetPending, rep.ConflictPaths
+	return res, nil
+}
+
+// agentReviewing reports whether an agent review of head is waiting to
+// start or under way.
+func agentReviewing(reviews []*Review, head string) bool {
+	for _, rv := range reviews {
+		if rv.Author == AuthorAgent && rv.Status == ReviewPending && rv.HeadSHA == head {
+			return true
+		}
+	}
+	return false
+}
+
+// sendBackPipeline is what the user's send back of mr tells the task's
+// agent of mr's pipeline, with devpad's summary of it: the failure of the
+// pipeline guarding mr now, read afresh, or when that can't be read, a
+// failure that waits for the user, as the task keeps it. Empty when the
+// pipeline has nothing of the task's to fix.
+func (s *service) sendBackPipeline(ctx context.Context, mr *MergeRequest, t *task.Task) (feedback, summary string) {
+	if res, err := s.currentPipeline(ctx, mr); err != nil {
+		log.Printf("merge request %d: reading its pipeline to send back: %v", mr.ID, err)
+	} else {
+		if res != nil && res.Outcome != task.PipelinePassed {
+			return task.PipelineFeedback(*res, mr.SourceBranch)
+		}
+		return "", ""
+	}
+	if t.Status == task.StatusChangesRequested && t.PipelineRounds.Held != task.HoldNone {
+		return t.PendingMessage, t.PendingPipeline
+	}
+	return "", ""
+}
+
+// currentPipeline is pipelineResult as mr's gate stands now, under mr's
+// lock.
+func (s *service) currentPipeline(ctx context.Context, mr *MergeRequest) (*task.PipelineResult, error) {
+	unlock := s.lock("mr", mr.ID)
+	defer unlock()
+	g, err := s.readGate(ctx, mr)
+	if err != nil {
+		return nil, err
+	}
+	return s.pipelineResult(ctx, mr, g)
 }
 
 // jobsFrom says where a pipeline into target got its jobs, for an agent.
@@ -244,17 +328,23 @@ func reviewOwed(p *project.Project, mr *MergeRequest, reviews []*Review) (owed *
 // resumeReview starts the review merge request mrID owes, if the gate lets
 // it now, under the merge request's lock, so that no other review can start
 // between reading the last review and starting the next. The next round
-// runs the same agent and model as the review it follows.
-func (s *service) resumeReview(ctx context.Context, mrID int64) {
+// runs the same agent and model as the review it follows. It returns why
+// it could not decide, such as the gate unread.
+func (s *service) resumeReview(ctx context.Context, mrID int64) error {
 	unlock := s.lock("mr", mrID)
 	defer unlock()
 	mr, err := s.repo.GetByID(ctx, mrID)
-	if err != nil || mr == nil || mr.Status != StatusOpen {
-		return
+	if err != nil {
+		return err
+	}
+	if mr == nil || mr.Status != StatusOpen {
+		return nil
 	}
 	if err := s.resumeReviewLocked(ctx, mr, nil); err != nil {
 		log.Printf("merge request %d: starting the review it owes: %v", mr.ID, err)
+		return err
 	}
+	return nil
 }
 
 // resumeReviews starts the reviews the open merge requests owe whose gate

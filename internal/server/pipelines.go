@@ -124,18 +124,21 @@ func (a mergeRequestPipelineReports) PipelineReport(ctx context.Context, userID,
 		out.ConfigPath = p.ConfigPath
 	}
 	for _, j := range p.Jobs {
-		res := task.PipelineJobResult{Name: j.Name, Status: string(j.Status), ExitCode: j.ExitCode}
+		standing := mergerequest.PipelineJobStanding{Name: j.Name, Status: string(j.Status)}
 		if j.StartedAt != nil && j.FinishedAt != nil {
-			res.Duration = j.FinishedAt.Sub(*j.StartedAt)
+			standing.Duration = j.FinishedAt.Sub(*j.StartedAt)
 		}
 		if j.Status.Failed() {
-			res.AlsoFailingOnTarget = r.Target.Fails(j.Name)
+			standing.AlsoFailingOnTarget = r.Target.Fails(j.Name)
 		}
-		out.Jobs = append(out.Jobs, res)
+		out.Jobs = append(out.Jobs, standing)
 		if !j.Status.Failed() {
 			continue
 		}
-		res.Run, res.Error, res.OutputBytes = j.Run, j.Error, j.OutputBytes
+		res := task.PipelineJobResult{
+			Name: j.Name, Status: standing.Status, ExitCode: j.ExitCode, Duration: standing.Duration, AlsoFailingOnTarget: standing.AlsoFailingOnTarget,
+			Run: j.Run, Error: j.Error, OutputBytes: j.OutputBytes,
+		}
 		if told := r.Logs[j.ID]; told != nil {
 			res.Output = string(told.Output)
 			for _, n := range told.Notes {

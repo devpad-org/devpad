@@ -248,6 +248,17 @@ func (q *autoQueue) next(stop bool) (*autoRun, bool) {
 	return nil, false
 }
 
+// has reports whether a run of key waits for a worker or is being read,
+// so a pipeline of it may still be on its way.
+func (q *autoQueue) has(k autoKey) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if _, ok := q.working[k]; ok {
+		return true
+	}
+	return q.pending[k] != nil
+}
+
 // done ends a worker's run of key, queueing the run of it that waited
 // meanwhile, if any, for when its interval allows: the worker that handed
 // it in comes to it, or a timer does.

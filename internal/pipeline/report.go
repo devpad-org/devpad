@@ -54,6 +54,12 @@ func (t *TargetResult) Failing() []string {
 
 // targetResult is the TargetResult of merge request pipeline p, or nil
 // for a branch's pipeline, or one that never merged onto a target commit.
+// It is Pending while a pipeline of the target's commit with p's jobs is
+// queued or running, or while an automatic run of the target is still to
+// start one: the target's run can be held back (autoMinInterval, a
+// project's runs going one at a time) when a merge request's pipeline
+// fails fast. Callers ask of a pipeline of the target as it is now, whose
+// commit such a run would test; a run that starts nothing ends the wait.
 func (s *service) targetResult(ctx context.Context, p *Pipeline) (*TargetResult, error) {
 	if p.Kind != KindMergeRequest || p.TargetSHA == "" || p.TargetBranch == "" {
 		return nil, nil
@@ -70,7 +76,8 @@ func (s *service) targetResult(ctx context.Context, p *Pipeline) (*TargetResult,
 	if err != nil {
 		return nil, fmt.Errorf("reading %s's pipeline of %s: %w", p.TargetBranch, p.TargetSHA, err)
 	}
-	return &TargetResult{Branch: p.TargetBranch, Pending: running != nil}, nil
+	queued := s.auto.has(autoKey{projectID: p.ProjectID, kind: autoBranch, branch: p.TargetBranch})
+	return &TargetResult{Branch: p.TargetBranch, Pending: running != nil || queued}, nil
 }
 
 // Report is what a pipeline found.

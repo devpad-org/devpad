@@ -1,6 +1,7 @@
 package task
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -27,6 +28,13 @@ func TestPipelineRoundsDecide(t *testing.T) {
 		counted, _ := splitOnTarget(res)
 		return PipelineRounds{Count: count, Fingerprint: roundFingerprint(res, counted), DecidedID: res.PipelineID - 1}
 	}
+	// outstanding is a round sent for res, the newest pipeline decided.
+	outstanding := func(count int, res PipelineResult) PipelineRounds {
+		r := sent(count, res)
+		r.DecidedID, r.SentHead = res.PipelineID, res.HeadSHA
+		return r
+	}
+	reviewing := func(res PipelineResult) PipelineResult { res.Reviewing = true; return res }
 	inReview := &Task{Status: StatusInReview}
 	tests := []struct {
 		name   string
@@ -34,21 +42,22 @@ func TestPipelineRoundsDecide(t *testing.T) {
 		task   *Task
 		res    PipelineResult
 		action roundAction
-		// count, held and decided are the rounds after it.
-		count   int
-		held    PipelineHold
-		decided int64
-		release bool
-		counted []string
+		// count, held, decided and sentHead are the rounds after it.
+		count    int
+		held     PipelineHold
+		decided  int64
+		sentHead string
+		release  bool
+		counted  []string
 	}{
-		{name: "a first failure goes back", task: inReview, res: failure(5, backend), action: roundSend, count: 1, decided: 5, counted: []string{"backend"}},
-		{name: "a second, different failure goes back", rounds: sent(1, failure(5, frontend)), task: inReview, res: failure(6, backend), action: roundSend, count: 2, decided: 6, counted: []string{"backend"}},
+		{name: "a first failure goes back", task: inReview, res: failure(5, backend), action: roundSend, count: 1, decided: 5, sentHead: "h1", counted: []string{"backend"}},
+		{name: "a second, different failure goes back", rounds: sent(1, failure(5, frontend)), task: inReview, res: failure(6, backend), action: roundSend, count: 2, decided: 6, sentHead: "h1", counted: []string{"backend"}},
 		{name: "a third waits for the user", rounds: sent(2, failure(6, frontend)), task: inReview, res: failure(7, backend), action: roundHold, count: 2, held: HoldLimit, decided: 7, counted: []string{"backend"}},
 		{name: "the same failure again is stuck", rounds: sent(1, failure(5, backend)), task: inReview, res: failure(6, backend), action: roundHold, count: 1, held: HoldStuck, decided: 6, counted: []string{"backend"}},
-		{name: "a first failure is never stuck", rounds: PipelineRounds{Fingerprint: roundFingerprint(failure(4, backend), []PipelineJobResult{backend}), DecidedID: 4}, task: inReview, res: failure(5, backend), action: roundSend, count: 1, decided: 5},
-		{name: "a conflict counts", rounds: sent(1, failure(8, backend)), task: inReview, res: conflict, action: roundSend, count: 2, decided: 9},
+		{name: "a first failure is never stuck", rounds: PipelineRounds{Fingerprint: roundFingerprint(failure(4, backend), []PipelineJobResult{backend}), DecidedID: 4}, task: inReview, res: failure(5, backend), action: roundSend, count: 1, decided: 5, sentHead: "h1"},
+		{name: "a conflict counts", rounds: sent(1, failure(8, backend)), task: inReview, res: conflict, action: roundSend, count: 2, decided: 9, sentHead: "h1"},
 		{name: "a conflict after two rounds waits", rounds: sent(2, failure(8, backend)), task: inReview, res: conflict, action: roundHold, count: 2, held: HoldLimit, decided: 9},
-		{name: "a job failing on the target too isn't sent and doesn't count", rounds: sent(1, failure(5, frontend)), task: inReview, res: failure(6, backend, onMain), action: roundSend, count: 2, decided: 6, counted: []string{"backend"}},
+		{name: "a job failing on the target too isn't sent and doesn't count", rounds: sent(1, failure(5, frontend)), task: inReview, res: failure(6, backend, onMain), action: roundSend, count: 2, decided: 6, sentHead: "h1", counted: []string{"backend"}},
 		{name: "every job failing on the target sends nothing", rounds: sent(1, failure(5, backend)), task: inReview, res: failure(6, onMain), action: roundOnTarget, count: 1, decided: 6},
 		{name: "every job failing on the target, after two rounds, sends nothing", rounds: sent(2, failure(5, backend)), task: inReview, res: failure(6, onMain), action: roundOnTarget, count: 2, decided: 6},
 		{name: "while the target's pipeline runs, it waits", task: inReview, res: func() PipelineResult { r := failure(5, backend); r.TargetPending = true; return r }(), action: roundWait},
@@ -64,13 +73,27 @@ func TestPipelineRoundsDecide(t *testing.T) {
 		{name: "a pass releases a waiting failure", rounds: PipelineRounds{Count: 2, DecidedID: 5, Held: HoldStuck}, task: &Task{Status: StatusChangesRequested}, res: PipelineResult{PipelineID: 6, HeadSHA: "h1", Outcome: PipelinePassed}, action: roundReset, decided: 6, release: true},
 		{name: "a failure only on the target releases one waiting", rounds: PipelineRounds{Count: 2, DecidedID: 5, Held: HoldLimit}, task: &Task{Status: StatusChangesRequested}, res: failure(6, onMain), action: roundOnTarget, count: 2, decided: 6, release: true},
 		{name: "a status that says nothing of the work", task: inReview, res: PipelineResult{PipelineID: 5, Outcome: "error"}, action: roundIgnore},
+		{name: "while an agent reviews the commit, a failure waits", task: inReview, res: reviewing(failure(5, backend)), action: roundWait},
+		{name: "while an agent reviews the commit, a conflict waits", task: inReview, res: reviewing(conflict), action: roundWait},
+		{name: "while an agent reviews the commit, a pass resets", rounds: sent(1, failure(4, backend)), task: inReview, res: reviewing(PipelineResult{PipelineID: 5, HeadSHA: "h1", Outcome: PipelinePassed}), action: roundReset, decided: 5},
+		{name: "a newer pipeline ends the outstanding round", rounds: outstanding(1, failure(5, backend)), task: inReview, res: failure(6, frontend), action: roundSend, count: 2, decided: 6, sentHead: "h1"},
+		{name: "a pass ends the outstanding round", rounds: outstanding(1, failure(5, backend)), task: inReview, res: PipelineResult{PipelineID: 6, HeadSHA: "h1", Outcome: PipelinePassed}, action: roundReset, decided: 6},
+		{name: "a failure only on the target ends the outstanding round", rounds: outstanding(1, failure(5, backend)), task: inReview, res: failure(6, onMain), action: roundOnTarget, count: 1, decided: 6},
+		{name: "a round that brought nothing new is stuck", rounds: outstanding(1, failure(5, backend)), task: inReview, res: failure(5, backend), action: roundHold, count: 1, held: HoldStuck, decided: 5, counted: []string{"backend"}},
+		{name: "a round back at commits already tested is stuck", rounds: outstanding(2, on("h2", failure(6, frontend))), task: &Task{Status: StatusInReview}, res: failure(4, backend), action: roundHold, count: 2, held: HoldStuck, decided: 6, counted: []string{"backend"}},
+		{name: "a conflict that a round left standing is stuck", rounds: outstanding(1, conflict), task: inReview, res: conflict, action: roundHold, count: 1, held: HoldStuck, decided: 9},
+		{name: "a round still at work is not yet stuck", rounds: outstanding(1, failure(5, backend)), task: &Task{Status: StatusInProgress}, res: failure(5, backend), action: roundIgnore, count: 1, decided: 5, sentHead: "h1"},
+		{name: "a failure only on the target, told again, is not stuck", rounds: PipelineRounds{Count: 1, DecidedID: 6}, task: inReview, res: failure(6, onMain), action: roundIgnore, count: 1, decided: 6},
+		{name: "a round's old failure only on the target is not stuck", rounds: outstanding(1, failure(6, backend)), task: inReview, res: failure(5, onMain), action: roundIgnore, count: 1, decided: 6, sentHead: "h1"},
+		{name: "a round's old failure waits for an agent review", rounds: outstanding(1, failure(5, backend)), task: inReview, res: reviewing(failure(5, backend)), action: roundWait, count: 1, decided: 5, sentHead: "h1"},
+		{name: "a held failure told again stays as it is", rounds: PipelineRounds{Count: 2, DecidedID: 5, Held: HoldLimit}, task: &Task{Status: StatusChangesRequested}, res: failure(5, backend), action: roundIgnore, count: 2, held: HoldLimit, decided: 5},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := tt.rounds.decide(tt.task, tt.res)
-			if d.action != tt.action || d.rounds.Count != tt.count || d.rounds.Held != tt.held || d.rounds.DecidedID != tt.decided || d.release != tt.release {
-				t.Fatalf("decide = action %d, rounds %+v, release %v; want action %d, count %d, held %q, decided %d, release %v",
-					d.action, d.rounds, d.release, tt.action, tt.count, tt.held, tt.decided, tt.release)
+			if d.action != tt.action || d.rounds.Count != tt.count || d.rounds.Held != tt.held || d.rounds.DecidedID != tt.decided || d.rounds.SentHead != tt.sentHead || d.release != tt.release {
+				t.Fatalf("decide = action %d, rounds %+v, release %v; want action %d, count %d, held %q, decided %d, sent head %q, release %v",
+					d.action, d.rounds, d.release, tt.action, tt.count, tt.held, tt.decided, tt.sentHead, tt.release)
 			}
 			if tt.counted != nil {
 				var names []string
@@ -91,7 +114,7 @@ func TestPipelineRoundsDecide(t *testing.T) {
 // Every way of stepping in starts the count again but keeps the pipeline
 // decided on, so a pipeline told again after it is still never acted on.
 func TestPipelineRoundsResetKeepsTheDecidedPipeline(t *testing.T) {
-	r := PipelineRounds{Count: 2, Fingerprint: "f", DecidedID: 9, Held: HoldStuck}
+	r := PipelineRounds{Count: 2, Fingerprint: "f", SentHead: "h1", DecidedID: 9, Held: HoldStuck}
 	if got := r.reset(); got != (PipelineRounds{DecidedID: 9}) {
 		t.Fatalf("reset = %+v", got)
 	}
@@ -158,16 +181,50 @@ func TestRoundFingerprint(t *testing.T) {
 	}
 }
 
-// Only the last lines of a long output are compared.
+// Only the last whole lines of a long output that fit in fingerprintBytes
+// are compared.
 func TestNormalizeOutputKeepsTheLastLines(t *testing.T) {
 	var b strings.Builder
-	for i := 0; i < fingerprintLines+50; i++ {
-		b.WriteString("line\n")
+	for i := 0; i < 2*fingerprintBytes/len("line 000\n"); i++ {
+		fmt.Fprintf(&b, "line %03d\n", i%1000)
 	}
 	b.WriteString("the end\n")
-	got := strings.Split(normalizeOutput(b.String(), false), "\n")
-	if len(got) != fingerprintLines || got[len(got)-1] != "the end" {
-		t.Fatalf("kept %d lines ending %q", len(got), got[len(got)-1])
+	got := normalizeOutput(b.String(), false)
+	if len(got) > fingerprintBytes || !strings.HasSuffix(got, "\nthe end") || !strings.HasPrefix(got, "line ") || len(got) < fingerprintBytes-len("line 000\n") {
+		t.Fatalf("kept %d bytes: %q…", len(got), got[:20])
+	}
+	long := strings.Repeat("x", 2*fingerprintBytes)
+	if got := normalizeOutput(long, false); len(got) != fingerprintBytes {
+		t.Fatalf("a single long line kept %d bytes", len(got))
+	}
+}
+
+// A job's output is read as its last PipelineOutputTail bytes, which start
+// wherever the length of what came after puts them. The same failure, with
+// a temporary path of another length further up, keeps its fingerprint.
+func TestFingerprintDoesNotMoveWithTheWindow(t *testing.T) {
+	output := func(tmp string) string {
+		var b strings.Builder
+		for i := 0; i < 400; i++ {
+			fmt.Fprintf(&b, "=== RUN   TestSomethingLongNamed_%03d/subtest_with_a_long_descriptive_name_here\n", i)
+			if i == 300 {
+				fmt.Fprintf(&b, "    store_test.go:42: opened %s/db.sqlite on 127.0.0.1:8080\n", tmp)
+			}
+		}
+		b.WriteString("--- FAIL: TestSomethingLongNamed_399 (0.01s)\n    x_test.go:9: got 1, want 2\nFAIL\nexit status 1\n")
+		return b.String()
+	}
+	read := func(out string) PipelineJobResult {
+		j := failedJob("backend", out[max(0, len(out)-PipelineOutputTail):])
+		j.OutputBytes = int64(len(out))
+		return j
+	}
+	fp := func(j PipelineJobResult) string { return roundFingerprint(failure(1, j), []PipelineJobResult{j}) }
+	base := fp(read(output("/tmp/T/001")))
+	for n := 1; n <= 80; n++ {
+		if got := fp(read(output("/tmp/T" + strings.Repeat("7", n) + "/001"))); got != base {
+			t.Fatalf("with a temporary path %d bytes longer, the same failure has another fingerprint", n)
+		}
 	}
 }
 
@@ -175,6 +232,7 @@ func TestCleanOutput(t *testing.T) {
 	tests := []struct{ name, in, want string }{
 		{"colours", "\x1b[1;31mFAIL\x1b[0m ok", "FAIL ok"},
 		{"a link", "\x1b]8;;https://example.com\x07here\x1b]8;;\x07", "here"},
+		{"an unterminated title ends at its line", "building\n\x1b]0;title\nFAIL: TestCart\nexit status 1\n", "building\n\nFAIL: TestCart\nexit status 1\n"},
 		{"a progress bar", "50%\r75%\r100%\ndone", "100%\ndone"},
 		{"windows line ends", "a\r\nb\r\n", "a\nb\n"},
 		{"control characters", "a\x00b\x07c\td", "abc\td"},

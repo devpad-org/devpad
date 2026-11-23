@@ -927,3 +927,58 @@ func TestARestartRetriesWhatCouldNotRunOnce(t *testing.T) {
 		t.Fatalf("after two restarts: %s", e.started())
 	}
 }
+
+// A branch's automatic run that finds its commit and jobs already have a
+// pipeline that ended without a result, such as one the user cancelled,
+// starts none and announces that one again, so a merge request's failure
+// that waited for the run to tell what fails on the branch is decided.
+func TestABranchRunThatStartsNothingAnnouncesThePipelineItFound(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.tick("develop")
+	e.svc.beginAutomatic()
+	release := e.holdEnvironment()
+	e.svc.queueBranch(e.owner, e.project, "develop", TriggerTicked, nil)
+	e.autoIdle()
+	var branch *Pipeline
+	for _, p := range e.pipelines() {
+		if p.Kind == KindBranch {
+			branch = p
+		}
+	}
+	if branch == nil {
+		t.Fatalf("no branch pipeline: %s", e.started())
+	}
+	if _, err := e.svc.Cancel(ctx, e.owner, e.project, branch.ID); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	told := func() bool {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case p := <-e.listener.finished:
+				if p.ID == branch.ID {
+					return true
+				}
+			case <-deadline:
+				return false
+			case <-time.After(300 * time.Millisecond):
+				return false
+			}
+		}
+	}
+	if !told() {
+		t.Fatal("the cancelled pipeline wasn't announced")
+	}
+	before := len(e.pipelines())
+	e.svc.queueBranch(e.owner, e.project, "develop", TriggerTicked, nil)
+	e.autoIdle()
+	if !told() {
+		t.Fatal("the run that found it didn't announce it again")
+	}
+	if got := len(e.pipelines()); got != before {
+		t.Fatalf("the run started a pipeline: %s", e.started())
+	}
+}

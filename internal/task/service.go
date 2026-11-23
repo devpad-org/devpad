@@ -548,9 +548,12 @@ func (s *service) Update(ctx context.Context, userID, projectID, taskID int64, i
 		return nil, invalid("title is required")
 	}
 	// Editing the task is the user stepping in, which starts its automatic
-	// pipeline rounds again.
+	// pipeline rounds again, but for a failure waiting for the user, which
+	// waits on until they send it or the pipeline passes.
 	t.Title, t.Body = title, in.Body
-	t.PipelineRounds = t.PipelineRounds.reset()
+	if !t.holdsPipelineFailure() {
+		t.PipelineRounds = t.PipelineRounds.reset()
+	}
 	if in.BudgetUSD != nil {
 		if err := domain.ValidateBudget(*in.BudgetUSD); err != nil {
 			return nil, invalid("%v", err)
@@ -660,7 +663,7 @@ func (s *service) start(ctx context.Context, t *Task, in StartInput) (*Task, err
 	// agent can be told why it is being restarted. Feedback already waiting
 	// from RequestChanges is kept unless a new message replaces it.
 	if msg := strings.TrimSpace(in.Message); msg != "" {
-		t.PendingMessage = msg
+		t.PendingMessage, t.PendingPipeline = msg, in.PipelineSummary
 	}
 	// Only a task to do can be blocked, and links to it change under its
 	// lock, which the caller holds, so this holds until the task is queued.
@@ -703,19 +706,21 @@ func (s *service) RequestChanges(ctx context.Context, userID, projectID, taskID 
 	// A review's feedback, or the user's, starts the automatic pipeline
 	// rounds again, and replaces a pipeline failure waiting for the user.
 	t.PipelineRounds = t.PipelineRounds.reset()
-	return s.sendBack(ctx, t, feedback, start)
+	return s.sendBack(ctx, t, feedback, "", start)
 }
 
-// sendBack hands feedback to the agent of a task the caller has locked:
-// it starts the agent when start is set and the task has budget left, and
-// otherwise leaves the feedback for the next Start, the task changes
-// requested, as feedback for a task over budget waits for its budget to be
-// raised. The task is saved with its rounds as the caller set them.
-func (s *service) sendBack(ctx context.Context, t *Task, feedback string, start bool) (*Task, error) {
+// sendBack hands feedback to the agent of a task the caller has locked,
+// with devpad's summary of the pipeline failure it quotes, if it quotes
+// one (Task.PendingPipeline): it starts the agent when start is set and
+// the task has budget left, and otherwise leaves the feedback for the next
+// Start, the task changes requested, as feedback for a task over budget
+// waits for its budget to be raised. The task is saved with its rounds as
+// the caller set them.
+func (s *service) sendBack(ctx context.Context, t *Task, feedback, summary string, start bool) (*Task, error) {
 	if start && !t.OverBudget() {
-		return s.start(ctx, t, StartInput{Message: feedback})
+		return s.start(ctx, t, StartInput{Message: feedback, PipelineSummary: summary})
 	}
-	t.Status, t.PendingMessage = StatusChangesRequested, feedback
+	t.Status, t.PendingMessage, t.PendingPipeline = StatusChangesRequested, feedback, summary
 	if err := s.repo.Update(ctx, t); err != nil {
 		return nil, err
 	}
@@ -740,19 +745,39 @@ func (s *service) PipelineEnded(ctx context.Context, userID, projectID, taskID i
 	case roundReset, roundOnTarget:
 		t.PipelineRounds = d.rounds
 		if d.release {
-			t.Status, t.PendingMessage = StatusInReview, ""
+			t.Status, t.PendingMessage, t.PendingPipeline = StatusInReview, "", ""
 		}
 		if err := s.repo.Update(ctx, t); err != nil {
 			return nil, err
 		}
 		return t, nil
 	}
-	feedback := pipelineFeedback{res: res, counted: d.counted, onTarget: d.onTarget, branch: t.Branch}
+	feedback := pipelineFeedback{res: res, counted: d.counted, onTarget: d.onTarget, branch: t.Branch, unchanged: d.unchanged}
+	before := *t
 	t.PipelineRounds = d.rounds
 	if d.action == roundSend {
 		feedback.round = d.rounds.Count
 	}
-	return s.sendBack(ctx, t, feedback.String(), d.action == roundSend)
+	sent, err := s.sendBack(ctx, t, feedback.String(), feedback.summary(), d.action == roundSend)
+	if err == nil || d.action != roundSend {
+		return sent, err
+	}
+	// The agent could not start, such as when the project isn't ready:
+	// the failure waits for the user rather than be lost, since this
+	// pipeline counts as decided once this returns.
+	log.Printf("task %d: sending pipeline #%d's failure back: %v", t.ID, res.PipelineID, err)
+	*t = before
+	t.PipelineRounds = d.rounds
+	t.PipelineRounds.Count, t.PipelineRounds.Fingerprint = before.PipelineRounds.Count, before.PipelineRounds.Fingerprint
+	t.PipelineRounds.Held, t.PipelineRounds.SentHead = HoldNotStarted, ""
+	feedback.round = 0
+	return s.sendBack(ctx, t, feedback.String(), feedback.summary(), false)
+}
+
+// holdsPipelineFailure reports whether a pipeline failure waits for the
+// user as the task's pending message.
+func (t *Task) holdsPipelineFailure() bool {
+	return t.PipelineRounds.Held != HoldNone && t.Status == StatusChangesRequested
 }
 
 func (s *service) Merged(ctx context.Context, userID, projectID, taskID int64) (*Task, error) {
@@ -768,7 +793,7 @@ func (s *service) Merged(ctx context.Context, userID, projectID, taskID int64) (
 	if err := s.teardown(ctx, t); err != nil {
 		return nil, err
 	}
-	t.Status, t.Error, t.PendingMessage = StatusMerged, "", ""
+	t.Status, t.Error, t.PendingMessage, t.PendingPipeline = StatusMerged, "", "", ""
 	if err := s.repo.Update(ctx, t); err != nil {
 		return nil, err
 	}
@@ -1056,7 +1081,7 @@ func (s *service) startRun(ctx context.Context, t *Task, ws *workspace.Workspace
 		s.dropConversation(t, conversationID)
 		return fmt.Errorf("starting agent: %w", err)
 	}
-	t.ConversationID, t.PendingMessage, t.RunID = conversationID, "", run.ID
+	t.ConversationID, t.PendingMessage, t.PendingPipeline, t.RunID = conversationID, "", "", run.ID
 	if err := s.repo.Update(ctx, t); err != nil {
 		return err
 	}
@@ -1512,7 +1537,7 @@ func (s *service) Cancel(ctx context.Context, userID, projectID, taskID int64) (
 	if err := s.teardown(ctx, t); err != nil {
 		return nil, err
 	}
-	t.Status, t.Error, t.PendingMessage = StatusCancelled, "", ""
+	t.Status, t.Error, t.PendingMessage, t.PendingPipeline = StatusCancelled, "", "", ""
 	if err := s.repo.Update(ctx, t); err != nil {
 		return nil, err
 	}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/devpad-org/devpad/internal/ai/domain"
+	"github.com/devpad-org/devpad/internal/project"
 )
 
 // reviewTask is a task whose agent finished a round at head.
@@ -110,7 +111,9 @@ func TestPipelineFailuresGoBackTwiceThenWait(t *testing.T) {
 	}
 }
 
-// Every way the user steps in starts the rounds again.
+// Every way the user steps in starts the rounds again, as does a review
+// requesting changes, and releases a failure waiting for them; editing a
+// task does too, unless a failure waits (TestEditingKeepsAWaitingFailure).
 func TestSteppingInStartsThePipelineRoundsAgain(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
@@ -119,10 +122,6 @@ func TestSteppingInStartsThePipelineRoundsAgain(t *testing.T) {
 	}{
 		{"starting it", func(e *env, id int64) error {
 			_, err := e.svc.Start(ctx, owner, 1, id, StartInput{Message: "Try another way."})
-			return err
-		}},
-		{"editing it", func(e *env, id int64) error {
-			_, err := e.svc.Update(ctx, owner, 1, id, UpdateInput{Title: "Add a cart", Body: "Users need a cart, in EUR."})
 			return err
 		}},
 		{"requesting changes", func(e *env, id int64) error {
@@ -153,6 +152,44 @@ func TestSteppingInStartsThePipelineRoundsAgain(t *testing.T) {
 				t.Fatalf("after %s: %+v", tt.name, got.PipelineRounds)
 			}
 		})
+	}
+	t.Run("editing it, holding nothing", func(t *testing.T) {
+		e := setup(t)
+		tk := e.reviewTask(t, "h1")
+		e.pipelineEnded(t, tk.ID, failure(5, failedJob("backend", "one\n")))
+		e.roundDone(t, tk.ID, "h2")
+		if _, err := e.svc.Update(ctx, owner, 1, tk.ID, UpdateInput{Title: "Add a cart", Body: "In EUR."}); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.stored(t, tk.ID); got.PipelineRounds != (PipelineRounds{DecidedID: 5}) {
+			t.Fatalf("after editing it: %+v", got.PipelineRounds)
+		}
+	})
+}
+
+// Editing a task whose pipeline failure waits for the user, such as to
+// raise its budget, keeps the failure waiting, held, for them to send.
+func TestEditingKeepsAWaitingFailure(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	tk := e.reviewTask(t, "h1")
+	tk.BudgetUSD = 1
+	if err := e.repo.Update(ctx, tk); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.repo.RecordCost(ctx, tk.ID, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.pipelineEnded(t, tk.ID, failure(5, failedJob("backend", "x\n"))); got.PipelineRounds.Held != HoldBudget {
+		t.Fatalf("not held: %+v", got.PipelineRounds)
+	}
+	raised := 5.0
+	got, err := e.svc.Update(ctx, owner, 1, tk.ID, UpdateInput{Title: tk.Title, Body: tk.Body, BudgetUSD: &raised})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusChangesRequested || got.PipelineRounds.Held != HoldBudget || !strings.Contains(got.PendingMessage, "pipeline #5 failed") || got.PendingPipeline == "" {
+		t.Fatalf("after raising the budget by editing: %s %+v pending %q", got.Status, got.PipelineRounds, got.PendingPipeline)
 	}
 }
 
@@ -245,7 +282,6 @@ func TestAPipelineToldTwiceIsDecidedOnce(t *testing.T) {
 	runs := len(e.runs.startedRequests())
 	for name, res := range map[string]PipelineResult{
 		"told again":            first,
-		"an older one":          on("h2", failure(4, failedJob("backend", "zero\n"))),
 		"of an earlier commit":  failure(9, failedJob("backend", "stale\n")),
 		"with no commit":        on("", failure(10, failedJob("backend", "?\n"))),
 		"told again, as passed": {PipelineID: 5, HeadSHA: "h2", Outcome: PipelinePassed},
@@ -284,9 +320,90 @@ func TestARestartNeverSendsAPipelineRoundTwice(t *testing.T) {
 	}
 	again := NewService(Deps{Repo: e.repo, Projects: e.sandboxes, Workspaces: workspaceLifecycle{e.sandboxes}, Runs: e.runs, Conversations: e.convs, Defaults: e.defaults, Budgets: e.budgets})
 	t.Cleanup(func() { again.Shutdown(context.Background()) })
+	// The round brought nothing new, so the failure waits for the user;
+	// it never goes to the agent a second time.
+	runs := len(e.runs.startedRequests())
 	got, err := again.PipelineEnded(ctx, owner, 1, tk.ID, res)
-	if err != nil || got.Status != StatusInReview || got.PipelineRounds.Count != 1 {
+	if err != nil || got.Status != StatusChangesRequested || got.PipelineRounds.Count != 1 || got.PipelineRounds.Held != HoldStuck {
 		t.Fatalf("told again after a restart: %+v %v", got, err)
+	}
+	if got, err = again.PipelineEnded(ctx, owner, 1, tk.ID, res); err != nil || got.Status != StatusChangesRequested || got.PipelineRounds.Held != HoldStuck {
+		t.Fatalf("told a third time: %+v %v", got, err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if len(e.runs.startedRequests()) != runs {
+		t.Fatal("a pipeline told again started the agent")
+	}
+}
+
+// A round that ends with no new commit makes no pipeline of its own: the
+// merge request tells the task its result again, and the failure waits
+// for the user, as stuck, saying the round changed nothing.
+func TestARoundWithNoNewCommitWaitsForTheUser(t *testing.T) {
+	e := setup(t)
+	tk := e.reviewTask(t, "h1")
+	res := failure(5, failedJob("backend", "cart_test.go:12: got 1\n"))
+	if got := e.pipelineEnded(t, tk.ID, res); got.PipelineRounds.Count != 1 || got.PipelineRounds.SentHead != "h1" {
+		t.Fatalf("not sent: %+v", got.PipelineRounds)
+	}
+	e.roundDone(t, tk.ID, "h1")
+	got := e.pipelineEnded(t, tk.ID, res)
+	if got.Status != StatusChangesRequested || got.PipelineRounds.Held != HoldStuck || got.PipelineRounds.SentHead != "" ||
+		!strings.Contains(got.PendingMessage, "already tested") || !strings.Contains(got.PendingPipeline, "`backend` failed (exit code 1)") {
+		t.Fatalf("after a round with no new commit: %s %+v\n%s", got.Status, got.PipelineRounds, got.PendingMessage)
+	}
+}
+
+// A round that goes back to commits already tested is told that commit's
+// result, and waits for the user too.
+func TestARoundBackAtTestedCommitsWaitsForTheUser(t *testing.T) {
+	e := setup(t)
+	tk := e.reviewTask(t, "h1")
+	e.pipelineEnded(t, tk.ID, failure(5, failedJob("backend", "one\n")))
+	e.roundDone(t, tk.ID, "h2")
+	e.pipelineEnded(t, tk.ID, on("h2", failure(6, failedJob("backend", "two\n"))))
+	e.roundDone(t, tk.ID, "h1")
+	if got := e.pipelineEnded(t, tk.ID, failure(5, failedJob("backend", "one\n"))); got.Status != StatusChangesRequested || got.PipelineRounds.Held != HoldStuck {
+		t.Fatalf("back at h1: %s %+v", got.Status, got.PipelineRounds)
+	}
+}
+
+// A failure that can't be sent, because the agent can't start, waits for
+// the user rather than be lost, since the pipeline counts as decided.
+func TestAFailureTheAgentCantBeStartedForWaits(t *testing.T) {
+	e := setup(t)
+	tk := e.reviewTask(t, "h1")
+	e.sandboxes.set(func(f *fakeSandboxes) { f.project.Status = project.StatusError })
+	got, err := e.svc.PipelineEnded(context.Background(), owner, 1, tk.ID, failure(5, failedJob("backend", "x\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := e.stored(t, tk.ID)
+	if got.Status != StatusChangesRequested || stored.Status != StatusChangesRequested || stored.PipelineRounds.Held != HoldNotStarted || stored.PipelineRounds.DecidedID != 5 ||
+		stored.PipelineRounds.Count != 0 || !strings.Contains(stored.PendingMessage, "pipeline #5 failed") || strings.Contains(stored.PendingMessage, "automatic round") {
+		t.Fatalf("after the agent couldn't start: %s %+v", stored.Status, stored.PipelineRounds)
+	}
+}
+
+// The pending message's summary is devpad's: set with pipeline feedback,
+// cleared by other feedback and once the agent has it.
+func TestThePendingPipelineSummary(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	tk := e.reviewTask(t, "h1")
+	got := e.pipelineEnded(t, tk.ID, failure(5, failedJob("backend", "SECRET OUTPUT\n")))
+	if !strings.Contains(got.PendingMessage, "SECRET OUTPUT") || got.PendingPipeline != "Pipeline #5 failed on `task/1` merged onto `main`: `backend` failed (exit code 1)." {
+		t.Fatalf("summary %q", got.PendingPipeline)
+	}
+	e.roundDone(t, tk.ID, "h2")
+	if got := e.stored(t, tk.ID); got.PendingMessage != "" || got.PendingPipeline != "" {
+		t.Fatalf("after the agent had it: %q %q", got.PendingMessage, got.PendingPipeline)
+	}
+	if got, err := e.svc.RequestChanges(ctx, owner, 1, tk.ID, "Use decimals.", false); err != nil || got.PendingPipeline != "" {
+		t.Fatalf("review feedback: %+v %v", got, err)
+	}
+	if got, err := e.svc.Start(ctx, owner, 1, tk.ID, StartInput{Message: "quoted", PipelineSummary: "Pipeline #6 failed."}); err != nil || got.PendingPipeline != "Pipeline #6 failed." {
+		t.Fatalf("a send back quoting a pipeline: %+v %v", got, err)
 	}
 }
 

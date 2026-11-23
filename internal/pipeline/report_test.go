@@ -97,6 +97,14 @@ func TestTargetResultWaitsForThatCommitsPipeline(t *testing.T) {
 		}
 	}
 	check("none", false, nil)
+	// An automatic run of the target still to start one says it may come.
+	e.svc.auto.add(&autoRun{key: autoKey{projectID: e.project, kind: autoBranch, branch: "develop"}, userID: e.owner, trigger: TriggerMerged})
+	check("a run of the target queued", true, nil)
+	if r, ok := e.svc.auto.next(false); ok {
+		check("a run of the target being read", true, nil)
+		e.svc.auto.done(r.key)
+	}
+	check("a run of the target done", false, nil)
 	other := e.branchPipeline("c0ffee0000000011", "develop", sha(9))
 	if err := repo.Create(ctx, other); err != nil {
 		t.Fatal(err)

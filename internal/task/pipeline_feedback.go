@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -28,26 +29,40 @@ const (
 	// for one job: its last ones, each clipped.
 	maxFeedbackNotes     = 10
 	maxFeedbackNoteBytes = 300
-	// maxConflictFiles bounds the conflicting files listed.
-	maxConflictFiles = 50
+	// maxConflictFiles and maxConflictListBytes bound the conflicting files
+	// listed.
+	maxConflictFiles     = 50
+	maxConflictListBytes = 8 << 10
+	// maxFeedbackBytes bounds the whole message: past it, the failed jobs
+	// that don't fit are named but left out.
+	maxFeedbackBytes = 32 << 10
 )
 
 // pipelineFeedback is what a task's agent is told of a failed or conflicting
 // pipeline: res, of which counted are the jobs whose failure is the task's
 // and onTarget the names of those failing on the target too, for the
 // task's branch. round is which automatic round this is, or 0 when the
-// feedback waits for the user to send it.
+// feedback waits for the user to send it; unchanged says the agent's last
+// round left the branch where this failure stands. nested writes its
+// headings a level down, for a message that has its own around it. The
+// whole of it stays within maxFeedbackBytes.
 type pipelineFeedback struct {
-	res      PipelineResult
-	counted  []PipelineJobResult
-	onTarget []string
-	branch   string
-	round    int
+	res       PipelineResult
+	counted   []PipelineJobResult
+	onTarget  []string
+	branch    string
+	round     int
+	unchanged bool
+	nested    bool
 }
 
 func (f pipelineFeedback) String() string {
 	var b strings.Builder
 	res := f.res
+	h := "##"
+	if f.nested {
+		h = "###"
+	}
 	branch, target := "`"+f.branch+"`", "`"+res.TargetBranch+"`"
 	from := ""
 	if res.JobsFrom != "" {
@@ -61,35 +76,104 @@ func (f pipelineFeedback) String() string {
 	}
 	fmt.Fprintf(&b, "Devpad's pipeline #%d failed on your branch %s merged onto %s at `%s`.%s Your work merges only once it passes.\n\n", res.PipelineID, branch, target, short(res.TargetSHA), from)
 	b.WriteString(f.roundLine())
-	b.WriteString("## Failed jobs\n")
+	b.WriteString(h + " Failed jobs\n")
+	var tail strings.Builder
+	if len(f.onTarget) > 0 {
+		fmt.Fprintf(&tail, "\n%s Also failing on %s\n\n%s %s on %s too, with the same jobs, so %s not yours to fix: leave %s alone.\n", h, target, quoteNames(f.onTarget), plural(len(f.onTarget), "fails", "fail"), target, plural(len(f.onTarget), "it is", "they are"), plural(len(f.onTarget), "it", "them"))
+	}
+	fmt.Fprintf(&tail, "\n%s What to do\n\nFix what makes these jobs fail, then run each one's script in /workspace to check: the services a job uses are in your sandbox too, under the same variables. Commit the fix to %s and reply with a short summary. Make the code pass the jobs as they are: don't delete, skip or weaken tests, and don't change build or test scripts or lint and type-check settings to get them through.", h, branch)
 	share := maxJobFeedbackBytes
 	if n := len(f.counted); n > 0 {
 		share = min(share, maxFeedbackOutputBytes/n)
 	}
-	for _, j := range f.counted {
-		b.WriteString("\n")
-		writeFailedJob(&b, j, share)
+	// Each job goes in, in order, while it and a note naming the jobs
+	// after it still fit.
+	for i, j := range f.counted {
+		var job strings.Builder
+		job.WriteString("\n")
+		writeFailedJob(&job, j, share, h+"#")
+		left := leftOutJobs(f.counted[i+1:], res.PipelineID)
+		if b.Len()+job.Len()+len(left)+tail.Len() > maxFeedbackBytes {
+			b.WriteString(leftOutJobs(f.counted[i:], res.PipelineID))
+			break
+		}
+		b.WriteString(job.String())
 	}
-	if len(f.onTarget) > 0 {
-		fmt.Fprintf(&b, "\n## Also failing on %s\n\n%s %s on %s too, with the same jobs, so %s not yours to fix: leave %s alone.\n", target, quoteNames(f.onTarget), plural(len(f.onTarget), "fails", "fail"), target, plural(len(f.onTarget), "it is", "they are"), plural(len(f.onTarget), "it", "them"))
-	}
-	fmt.Fprintf(&b, "\n## What to do\n\nFix what makes these jobs fail, then run each one's script in /workspace to check: the services a job uses are in your sandbox too, under the same variables. Commit the fix to %s and reply with a short summary. Make the code pass the jobs as they are: don't delete, skip or weaken tests, and don't change build or test scripts or lint and type-check settings to get them through.", branch)
+	b.WriteString(tail.String())
 	return b.String()
 }
 
-// roundLine says which automatic round this is, or nothing when the user
-// sends the feedback.
-func (f pipelineFeedback) roundLine() string {
-	if f.round == 0 {
+// leftOutJobs names the failed jobs a message leaves out for its size, or
+// is empty when it leaves none out.
+func leftOutJobs(jobs []PipelineJobResult, pipelineID int64) string {
+	if len(jobs) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("This is automatic round %d of %d: if the pipeline still fails after %d, devpad stops sending it back to you and the user takes over.\n\n", f.round, maxPipelineRounds, maxPipelineRounds)
+	names := make([]string, len(jobs))
+	for i, j := range jobs {
+		names[i] = j.Name
+	}
+	return fmt.Sprintf("\n%s also failed; %s left out here for length. Pipeline #%d's page shows %s.\n", quoteNames(names), plural(len(jobs), "it is", "they are"), pipelineID, plural(len(jobs), "its output", "their output"))
 }
 
-// writeFailedJob writes one failed job: how it ended, its script, devpad's
-// notes and the end of its output, at most share bytes of it.
-func writeFailedJob(b *strings.Builder, j PipelineJobResult, share int) {
-	fmt.Fprintf(b, "### `%s`: %s", j.Name, strings.ReplaceAll(j.Status, "_", " "))
+// roundLine says which automatic round this is, or nothing when the user
+// sends the feedback, and that the agent's last round changed nothing the
+// pipeline could test, when it didn't.
+func (f pipelineFeedback) roundLine() string {
+	line := ""
+	if f.unchanged {
+		line = "Your last round left your branch at commits this pipeline had already tested, so what it found still stands.\n\n"
+	}
+	if f.round == 0 {
+		return line
+	}
+	return line + fmt.Sprintf("This is automatic round %d of %d: if the pipeline still fails after %d, devpad stops sending it back to you and the user takes over.\n\n", f.round, maxPipelineRounds, maxPipelineRounds)
+}
+
+// summary is devpad's own account of the failure, for whatever else reads
+// the task: the pipeline, and its failed jobs' names and how they ended,
+// or how many files conflict, never what a job printed.
+func (f pipelineFeedback) summary() string {
+	res := f.res
+	if res.Outcome == PipelineConflict {
+		return fmt.Sprintf("Pipeline #%d found `%s` doesn't merge onto `%s`: %d %s conflict.", res.PipelineID, f.branch, res.TargetBranch, len(res.ConflictFiles), plural(len(res.ConflictFiles), "file", "files"))
+	}
+	jobs := make([]string, len(f.counted))
+	for i, j := range f.counted {
+		jobs[i] = "`" + j.Name + "` " + strings.ReplaceAll(j.Status, "_", " ")
+		if j.ExitCode != nil {
+			jobs[i] += fmt.Sprintf(" (exit code %d)", *j.ExitCode)
+		}
+	}
+	text := fmt.Sprintf("Pipeline #%d failed on `%s` merged onto `%s`: %s.", res.PipelineID, f.branch, res.TargetBranch, strings.Join(jobs, ", "))
+	if len(f.onTarget) > 0 {
+		text += fmt.Sprintf(" %s %s on `%s` too.", quoteNames(f.onTarget), plural(len(f.onTarget), "fails", "fail"), res.TargetBranch)
+	}
+	return text
+}
+
+// PipelineFeedback is what the task's agent is told of res, a failure or
+// conflict of the pipeline guarding its merge request, when the user sends
+// the task back: its headings a level down, for a message of its own
+// around it, and devpad's summary of it (Task.PendingPipeline). Both are
+// empty when nothing failing is the task's.
+func PipelineFeedback(res PipelineResult, branch string) (feedback, summary string) {
+	counted, onTarget := splitOnTarget(res)
+	switch {
+	case res.Outcome == PipelineConflict:
+	case res.Outcome == PipelineFailed && len(counted) > 0:
+	default:
+		return "", ""
+	}
+	f := pipelineFeedback{res: res, counted: counted, onTarget: onTarget, branch: branch, nested: true}
+	return f.String(), f.summary()
+}
+
+// writeFailedJob writes one failed job under a heading of h: how it ended,
+// its script, devpad's notes and the end of its output, at most share
+// bytes of it.
+func writeFailedJob(b *strings.Builder, j PipelineJobResult, share int, h string) {
+	fmt.Fprintf(b, "%s `%s`: %s", h, j.Name, strings.ReplaceAll(j.Status, "_", " "))
 	if j.ExitCode != nil {
 		fmt.Fprintf(b, ", exit code %d", *j.ExitCode)
 	}
@@ -145,12 +229,15 @@ func ConflictFeedback(branch, target string, files []string) string {
 	fmt.Fprintf(&b, "Your branch `%s` conflicts with `%s`, so it cannot be merged.", branch, target)
 	if len(files) > 0 {
 		b.WriteString(" The conflicting files are:\n")
+		listed := 0
 		for i, f := range files {
-			if i == maxConflictFiles {
+			line := fmt.Sprintf("- %s\n", clip(strings.Map(dropControl, f), maxFeedbackNoteBytes))
+			if i == maxConflictFiles || listed+len(line) > maxConflictListBytes {
 				fmt.Fprintf(&b, "- … and %d more\n", len(files)-i)
 				break
 			}
-			fmt.Fprintf(&b, "- %s\n", f)
+			b.WriteString(line)
+			listed += len(line)
 		}
 	}
 	fmt.Fprintf(&b, "\nMerge `devpad/%s` into `%s`, resolve the conflicts keeping both sides' intent, make sure the project's checks pass, and commit the merge.", target, branch)
@@ -179,6 +266,15 @@ func tailOf(s string, n int) string {
 func fenced(lang, text string) string {
 	fence := strings.Repeat("`", max(3, longestRun(text, '`')+1))
 	return fmt.Sprintf("%s%s\n%s\n%s\n", fence, lang, strings.TrimRight(text, "\n"), fence)
+}
+
+// dropControl drops control characters, such as a newline in a file's
+// name, which would end its line in a list.
+func dropControl(r rune) rune {
+	if unicode.IsControl(r) {
+		return -1
+	}
+	return r
 }
 
 // oneLine joins text's lines with spaces.

@@ -35,6 +35,8 @@ const (
 	HoldStuck PipelineHold = "stuck"
 	// HoldBudget: the task has spent its budget.
 	HoldBudget PipelineHold = "budget"
+	// HoldNotStarted: devpad could not start the agent to send it back.
+	HoldNotStarted PipelineHold = "not_started"
 )
 
 // PipelineRounds is how a task's automatic pipeline rounds stand.
@@ -45,6 +47,12 @@ type PipelineRounds struct {
 	// Fingerprint is roundFingerprint of the failure the last of them was
 	// sent for.
 	Fingerprint string
+	// SentHead is the head of the task's branch the last round was sent
+	// for, while that round is outstanding: no pipeline has been decided
+	// since. A round whose branch then has an already decided failure as
+	// its result, because it made no commit or went back to commits already
+	// tested, brought nothing new and is held (decide).
+	SentHead string
 	// DecidedID is the newest pipeline devpad decided on, so that one told
 	// again, or an older one told late, is never acted on twice. Nothing
 	// resets it.
@@ -59,7 +67,8 @@ type PipelineRounds struct {
 func (r PipelineRounds) Limit() int { return maxPipelineRounds }
 
 // reset starts the count again, as when the user steps in or the pipeline
-// passes, keeping which pipeline was decided on last.
+// passes, keeping which pipeline was decided on last; no round is
+// outstanding after it.
 func (r PipelineRounds) reset() PipelineRounds {
 	return PipelineRounds{DecidedID: r.DecidedID}
 }
@@ -97,6 +106,10 @@ type PipelineResult struct {
 	TargetPending bool
 	// ConflictFiles are the files that conflict, for PipelineConflict.
 	ConflictFiles []string
+	// Reviewing says an agent review of HeadSHA is under way, whose
+	// requested changes go to the task's agent: a failure waits for it to
+	// end, rather than send the agent off before the review can.
+	Reviewing bool
 }
 
 // PipelineJobResult is a job of a pipeline as it ended. Everything but
@@ -132,7 +145,8 @@ const (
 	// told before, or the task is not waiting on its pipeline.
 	roundIgnore roundAction = iota
 	// roundWait: nothing yet, and nothing recorded: the target's own
-	// pipeline of the same commit is still to say whether it fails too.
+	// pipeline of the same commit is still to say whether it fails too, or
+	// an agent review of the same commit is still to say what it asks for.
 	roundWait
 	// roundReset: the pipeline passed, which ends the rounds.
 	roundReset
@@ -159,31 +173,34 @@ type roundDecision struct {
 	// review, its stale feedback dropped: the pipeline passed, or nothing
 	// failing is the task's any more.
 	release bool
+	// unchanged says the hold is of a round that brought nothing new.
+	unchanged bool
 }
 
 // decide is what devpad does with res, a result of the pipeline guarding
 // task t's merge request, given how t's rounds stand.
 func (r PipelineRounds) decide(t *Task, res PipelineResult) roundDecision {
-	if res.PipelineID <= r.DecidedID {
-		return roundDecision{action: roundIgnore, rounds: r}
-	}
 	held := r.Held != HoldNone && t.Status == StatusChangesRequested
+	if res.PipelineID <= r.DecidedID {
+		// Told again, or late; only a round that brought nothing new
+		// is decided again.
+		return r.unanswered(t, res)
+	}
 	if t.Status != StatusInReview && !held {
 		// The agent is at work, or the user has the task: the next round
 		// moves its head, and its own pipeline follows.
 		return roundDecision{action: roundIgnore, rounds: r}
 	}
 	decided := r
-	decided.DecidedID = res.PipelineID
+	decided.DecidedID, decided.SentHead = res.PipelineID, ""
 	switch res.Outcome {
 	case PipelinePassed:
 		after := decided.reset()
 		return roundDecision{action: roundReset, rounds: after, release: held}
-	case PipelineFailed:
-		if res.TargetPending {
+	case PipelineFailed, PipelineConflict:
+		if (res.Outcome == PipelineFailed && res.TargetPending) || res.Reviewing {
 			return roundDecision{action: roundWait, rounds: r}
 		}
-	case PipelineConflict:
 	default:
 		return roundDecision{action: roundIgnore, rounds: r}
 	}
@@ -206,9 +223,42 @@ func (r PipelineRounds) decide(t *Task, res PipelineResult) roundDecision {
 		d.action, d.rounds.Held = roundHold, HoldBudget
 	default:
 		d.action = roundSend
-		d.rounds.Count, d.rounds.Fingerprint, d.rounds.Held = r.Count+1, fingerprint, HoldNone
+		d.rounds.Count, d.rounds.Fingerprint, d.rounds.Held, d.rounds.SentHead = r.Count+1, fingerprint, HoldNone, res.HeadSHA
 	}
 	return d
+}
+
+// unanswered decides on res, a result already decided, when the task is
+// back in review from a round sent for an earlier failure that no pipeline
+// has been decided since: the round left its branch where that result
+// stands, with no new commit or back at commits already tested, so it
+// brought nothing a pipeline could test, and nothing else will tell the
+// task of it. The failure waits for the user as stuck. Any other result
+// told again changes nothing.
+func (r PipelineRounds) unanswered(t *Task, res PipelineResult) roundDecision {
+	ignore := roundDecision{action: roundIgnore, rounds: r}
+	if r.SentHead == "" || r.Held != HoldNone || t.Status != StatusInReview {
+		return ignore
+	}
+	switch res.Outcome {
+	case PipelineFailed:
+		if res.TargetPending || res.Reviewing {
+			return roundDecision{action: roundWait, rounds: r}
+		}
+	case PipelineConflict:
+		if res.Reviewing {
+			return roundDecision{action: roundWait, rounds: r}
+		}
+	default:
+		return ignore
+	}
+	counted, onTarget := splitOnTarget(res)
+	if res.Outcome == PipelineFailed && len(counted) == 0 {
+		return ignore
+	}
+	after := r
+	after.Held, after.SentHead = HoldStuck, ""
+	return roundDecision{action: roundHold, rounds: after, counted: counted, onTarget: onTarget, unchanged: true}
 }
 
 // splitOnTarget parts a failed pipeline's jobs into those whose failure is
@@ -252,9 +302,11 @@ func roundFingerprint(res PipelineResult, counted []PipelineJobResult) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// fingerprintLines is how many of the last lines of a job's output its
-// fingerprint covers.
-const fingerprintLines = 200
+// fingerprintBytes bounds the end of a job's normalised output its
+// fingerprint covers: whole lines, half the output read, so that where the
+// window read began, which moves with the length of everything after it,
+// never changes what is compared.
+const fingerprintBytes = PipelineOutputTail / 2
 
 // What changes from one run of the same failure to the next, replaced by
 // placeholders before two outputs are compared. Paths go first, since they
@@ -278,8 +330,9 @@ var outputNoise = []struct {
 // normalizeOutput is the end of a job's output as fingerprints compare it:
 // cleaned as the agent reads it (cleanOutput), without a first line cut
 // off when the output is only its end (cut), with each line's run-to-run
-// noise replaced and its trailing space trimmed, keeping the last
-// fingerprintLines lines.
+// noise replaced and its trailing space trimmed, keeping the last whole
+// lines that fit in fingerprintBytes (the end of the last line alone, when
+// it is longer).
 func normalizeOutput(output string, cut bool) string {
 	text := cleanOutput(output)
 	if cut {
@@ -296,15 +349,22 @@ func normalizeOutput(output string, cut bool) string {
 	for i, line := range lines {
 		lines[i] = strings.TrimRight(line, " \t")
 	}
-	if len(lines) > fingerprintLines {
-		lines = lines[len(lines)-fingerprintLines:]
+	kept, size := len(lines), 0
+	for kept > 0 && size+len(lines[kept-1])+1 <= fingerprintBytes+1 {
+		size += len(lines[kept-1]) + 1
+		kept--
 	}
-	return strings.Join(lines, "\n")
+	if kept == len(lines) {
+		return tailOf(lines[len(lines)-1], fingerprintBytes)
+	}
+	return strings.Join(lines[kept:], "\n")
 }
 
 // ansiEscape matches terminal escape sequences: CSI (colours, cursor
-// moves), OSC (titles, links) and the two-character ones.
-var ansiEscape = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)?|[@-Z\\-_])`)
+// moves), OSC (titles, links) and the two-character ones. An OSC left
+// unterminated ends at its line, so it never takes the rest of the output
+// with it.
+var ansiEscape = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b\n]*(\x07|\x1b\\)?|[@-Z\\-_])`)
 
 // cleanOutput is a job's output as text to read: valid UTF-8, without
 // terminal escapes, nor control or format characters (such as bidi

@@ -205,7 +205,7 @@ func TestMergeRequestPipelineReportsAreThePipelinesReport(t *testing.T) {
 	if got.PipelineID != 9 || got.Status != "failed" || got.HeadSHA != "head" || got.TargetSHA != "tip" || got.ConfigPath != ".devpad/pipeline.yml" || got.TargetPending {
 		t.Fatalf("report %+v", got)
 	}
-	if len(got.Jobs) != 3 || got.Jobs[0].Duration != 90*time.Second || got.Jobs[0].Output != "" || got.Jobs[2].Status != "passed" || !got.Jobs[1].AlsoFailingOnTarget {
+	if len(got.Jobs) != 3 || got.Jobs[0].Duration != 90*time.Second || got.Jobs[2].Status != "passed" || !got.Jobs[1].AlsoFailingOnTarget {
 		t.Fatalf("jobs %+v", got.Jobs)
 	}
 	b := got.Failed[0]

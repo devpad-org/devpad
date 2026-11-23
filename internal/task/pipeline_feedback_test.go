@@ -82,18 +82,41 @@ func TestPipelineFeedbackCapsOutput(t *testing.T) {
 	if output*len(line) > maxFeedbackOutputBytes {
 		t.Fatalf("quoted %d bytes of output, over %d", output*len(line), maxFeedbackOutputBytes)
 	}
-	if output < 20 {
-		t.Fatalf("quoted only %d lines of output for 20 jobs", output)
-	}
 	if !strings.Contains(msg, "of 1.9 MB") {
 		t.Errorf("feedback doesn't say how much each job printed:\n%.2000s", msg)
 	}
-	if strings.Count(msg, "earlier notes left out") != 20 || strings.Contains(msg, "note 19 ") || !strings.Contains(msg, "note 29 ") {
+	// The whole message stays within maxFeedbackBytes: the jobs go in, in
+	// order, while they fit, and the rest are named.
+	if len(msg) > maxFeedbackBytes {
+		t.Fatalf("feedback is %d bytes, over %d", len(msg), maxFeedbackBytes)
+	}
+	in := 0
+	for in < len(jobs) && strings.Contains(msg, fmt.Sprintf("### `job-%d`: failed", in)) {
+		in++
+	}
+	if in == 0 || in == len(jobs) {
+		t.Fatalf("%d of %d jobs in full", in, len(jobs))
+	}
+	for i := in; i < len(jobs); i++ {
+		if strings.Contains(msg, fmt.Sprintf("### `job-%d`", i)) {
+			t.Fatalf("job-%d is in, after job-%d was left out", i, in)
+		}
+	}
+	if !strings.Contains(msg, fmt.Sprintf("`job-%d`", len(jobs)-1)) || !strings.Contains(msg, "left out here for length. Pipeline #4's page shows their output.") || !strings.HasSuffix(strings.TrimSpace(msg), "to get them through.") {
+		t.Fatalf("the left-out jobs aren't named, or the message lost its end:\n%s", msg[len(msg)-1500:])
+	}
+	if strings.Count(msg, "earlier notes left out") != in || strings.Contains(msg, "note 19 ") || !strings.Contains(msg, "note 29 ") {
 		t.Error("feedback quotes more than the last notes")
 	}
-	// The scripts, notes and the rest stay bounded too.
-	if max := 20*(maxFeedbackRunBytes+maxFeedbackNotes*maxFeedbackNoteBytes+1024) + maxFeedbackOutputBytes + 4096; len(msg) > max {
-		t.Fatalf("feedback is %d bytes, over %d", len(msg), max)
+
+	// Many conflicting files with long names stay bounded too.
+	var files []string
+	for i := 0; i < 40; i++ {
+		files = append(files, fmt.Sprintf("dir/%03d/%s\nforged line", i, strings.Repeat("f", 2000)))
+	}
+	conflict := ConflictFeedback("task/3", "main", files)
+	if len(conflict) > maxConflictListBytes+1024 || strings.Contains(conflict, "\nforged line") || !strings.Contains(conflict, "more\n") {
+		t.Fatalf("conflict feedback of %d bytes:\n%.600s", len(conflict), conflict)
 	}
 
 	// One job alone gets maxJobFeedbackBytes.
@@ -172,5 +195,30 @@ func TestPipelineJobsPrompt(t *testing.T) {
 	big := pipelineJobsPrompt("main", true, &PipelineJobs{Path: ".devpad/pipeline.yml", Jobs: many})
 	if len(big) > maxPromptJobsBytes+512 || !strings.Contains(big, "more jobs are left out here. Read them with `git show devpad/main:.devpad/pipeline.yml`.") {
 		t.Fatalf("a long pipeline is %d bytes:\n%.600s", len(big), big)
+	}
+}
+
+// What the user's send back of a merge request quotes: the failure with its
+// headings a level down, for the message around it, and devpad's summary.
+func TestPipelineFeedbackForASendBack(t *testing.T) {
+	onMain := failedJob("lint", "lint broke\n")
+	onMain.AlsoFailingOnTarget = true
+	res := failure(4, failedJob("backend", "got 1\n"), onMain)
+	text, summary := PipelineFeedback(res, "task/3")
+	if !strings.Contains(text, "\n### Failed jobs\n") || !strings.Contains(text, "\n#### `backend`: failed") || strings.Contains(text, "\n## ") || !strings.Contains(text, "\n### Also failing on `main`") {
+		t.Fatalf("headings:\n%s", text)
+	}
+	if strings.Contains(text, "automatic round") || strings.Contains(text, "#### `lint`") {
+		t.Fatalf("a send back is no round, and lists only the task's failures:\n%s", text)
+	}
+	if summary != "Pipeline #4 failed on `task/3` merged onto `main`: `backend` failed (exit code 1). `lint` fails on `main` too." {
+		t.Fatalf("summary %q", summary)
+	}
+	if text, summary := PipelineFeedback(failure(5, onMain), "task/3"); text != "" || summary != "" {
+		t.Fatalf("every failure the target's: %q %q", text, summary)
+	}
+	conflict := PipelineResult{PipelineID: 6, TargetBranch: "main", Outcome: PipelineConflict, ConflictFiles: []string{"a.go", "b.go"}}
+	if _, summary := PipelineFeedback(conflict, "task/3"); summary != "Pipeline #6 found `task/3` doesn't merge onto `main`: 2 files conflict." {
+		t.Fatalf("conflict summary %q", summary)
 	}
 }
