@@ -18,7 +18,7 @@ The default branch is always protected, and you can protect others with **Manage
 - is the only kind of branch devpad pushes [upstream](/docs/projects#upstream), and the only kind a sync fast-forwards;
 - can't be deleted.
 
-The **Branches** dialog also sets the **Default branch**, which tasks and your workspace start from and merge requests target unless you pick another. Changing it keeps the old default protected. Protection changes take effect when you press **Save**. A project can protect up to 20 branches besides its default. The dialog's **Merge automatically** list picks the protected branches devpad [merges into automatically](#automatic-merges). Its **Run pipelines** list picks the protected branches devpad [runs pipelines on](/docs/pipelines#automatic-runs) by itself, on each new commit and on each merge request into them, whose latest result the Project page shows, and whose merge requests [merge only once their pipeline passes](/docs/pipelines#merge-gate).
+The **Branches** dialog sets the **Default branch**, which tasks and your workspace start from and merge requests target unless you pick another. Changing it keeps the old default protected. Under **Protected branches** it lists the default and every other protected branch, each with **Unprotect** but the default; **Protect** beside a branch under **Other branches** adds it. A project can protect up to 20 branches besides its default. Each protected branch has two ticks: **Merge automatically** for the branches devpad [merges into automatically](#automatic-merges), and **Run pipelines** for those devpad [runs pipelines on](/docs/pipelines#automatic-runs) by itself, on each new commit and on each merge request into them, whose latest result the Project page shows, and whose merge requests [merge only once their pipeline passes](/docs/pipelines#merge-gate). A branch's row says when a pipeline guards it, and warns when it merges on a review agent's approval alone. Changes take effect when you press **Save**; until then the dialog marks each branch whose protection would change as **unsaved**.
 
 If you're on a protected branch in your workspace, Source Control says so and offers **New branch**: start a branch, publish it, and open a merge request.
 
@@ -39,7 +39,7 @@ When a branch with an open merge request is published, the merge request moves t
 
 ## Deleting branches {#deleting-branches}
 
-Only you delete branches, from the **Branches** dialog: **Delete** beside a branch deletes it at once, without Save. A branch can't be deleted while it's:
+Only you delete branches, from the **Branches** dialog: the bin beside a branch under **Other branches**, then **Delete**, deletes it at once, without Save. A branch can't be deleted while it's:
 
 - protected, or the default branch;
 - owned by a sandbox (**used by a sandbox**);

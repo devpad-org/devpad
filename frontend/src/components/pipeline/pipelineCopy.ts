@@ -4,16 +4,16 @@ import type { PipelineRounds } from '@/api/tasks'
 // merge gate and of the pipeline a change proposes, in one place. The docs
 // say the same in docs/09-pipelines.md (the introduction, #automatic-runs,
 // #branches, #merge-requests, #merge-gate, #failures and #proposed),
-// docs/04-branches.md (the Run pipelines list, #reviews,
+// docs/04-branches.md (the Run pipelines ticks, #reviews,
 // #auto-fixing-reviews, #merging and #automatic-merges), docs/05-tasks.md
 // (#how-a-task-runs) and docs/03-projects.md (the Pipelines surface and the
 // pipeline setting).
 export const PIPELINE_COPY = {
   // Beside where pipelines are run.
   automaticRuns: 'Devpad runs ticked branches and the merge requests into them by itself. Run any protected branch here, or a merge request from its page.',
-  // Under the Run pipelines ticks.
+  // Beside the Run pipelines ticks.
   tickedBranches:
-    "Devpad runs a ticked branch's pipeline on each new commit and when you tick it, and a merge request's into it when it opens, when its branch gets new commits and when the ticked branch moves. A merge request into a ticked branch merges only once its pipeline passes, unless you merge it anyway. Merge requests into other protected branches run only when you start them, and their results don't keep them from merging. The Project page shows each ticked branch's latest pipeline.",
+    "Devpad runs a ticked branch's pipeline on each new commit, and each merge request's into it as it opens and moves. A merge request into a ticked branch merges only once its pipeline passes, unless you merge it anyway.",
   // On a merge request into a ticked branch without a pipeline.
   mergeRequestNoneAutomatic: (target: string) =>
     `No pipeline has run on this merge request yet. Devpad runs one by itself when it opens, when its branch gets new commits and when ${target} moves.`,
