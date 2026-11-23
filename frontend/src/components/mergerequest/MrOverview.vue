@@ -3,6 +3,7 @@ import MarkdownMessage from '@/components/ide/MarkdownMessage.vue'
 import { fullTime, timeAgo } from '@/utils/time'
 import MrActivity from './MrActivity.vue'
 import MrMergeCard from './MrMergeCard.vue'
+import MrPipelineCard from './MrPipelineCard.vue'
 import MrSidebar from './MrSidebar.vue'
 import { useMergeRequest } from './useMergeRequest'
 
@@ -26,6 +27,7 @@ const { mr } = useMergeRequest()
       </section>
 
       <MrMergeCard />
+      <MrPipelineCard />
       <MrActivity />
     </div>
 

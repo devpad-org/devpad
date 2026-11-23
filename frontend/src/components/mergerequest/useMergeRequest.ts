@@ -20,7 +20,9 @@ import { taskApi } from '@/api/tasks'
 import { branchActionError } from '@/components/project/branchErrors'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { useAiModelStore } from '@/stores/aiModels'
+import type { Pipeline } from '@/api/pipelines'
 import { STRATEGIES, authorName, autoMergeReason, dirName, errorText, plural, type Author, type Tone } from './format'
+import { createMrPipelines } from './useMrPipelines'
 
 const NOTICE_MS = 6000
 // Comparing the workspace's branch reads both repos, so polling does it at
@@ -43,11 +45,13 @@ export interface PushEvent {
   commits: Commit[]
 }
 
-// An entry in the activity timeline: a review's verdict, a thread, or a push.
+// An entry in the activity timeline: a review's verdict, a thread, a push,
+// or a pipeline.
 export type TimelineItem =
   | { kind: 'review'; at: string; review: Review }
   | { kind: 'thread'; at: string; thread: Thread }
   | { kind: 'push'; at: string; event: PushEvent }
+  | { kind: 'pipeline'; at: string; pipeline: Pipeline }
 
 // What the activity shows: everything, or only the threads still open.
 export type ActivityFilter = 'all' | 'open'
@@ -140,6 +144,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
 
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
 
+  const pipelines = createMrPipelines(projectId, mrId, mr, () => void projectStore.refreshLatestPipelines())
+
   const project = computed(() => projectStore.project)
   const isOpen = computed(() => mr.value?.status === 'open')
   const files = computed(() => diff.value?.files ?? [])
@@ -200,6 +206,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     for (const push of mr.value?.pushes ?? []) {
       items.push({ kind: 'push', at: push.createdAt, event: { push, commits: commitGroups.value.byPush.get(push.id) ?? [] } })
     }
+    for (const pipeline of pipelines.timelinePipelines.value) items.push({ kind: 'pipeline', at: pipeline.createdAt, pipeline })
     return items.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
   })
 
@@ -408,6 +415,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     } else if (task.value?.status === 'failed') {
       list.push({ key: 'task', tone: 'error', icon: 'warning', title: 'The task agent stopped', detail: task.value.error || undefined })
     }
+    const pipeline = pipelines.check.value
+    if (pipeline) list.push(pipeline)
     if (conflicts.value) {
       list.push({
         key: 'branch',
@@ -544,6 +553,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
 
   async function refresh() {
     const gen = generation
+    void pipelines.load()
     try {
       await loadDetail(gen)
       if (gen === generation) loadError.value = ''
@@ -653,6 +663,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
 
   watch([projectId, mrId], () => {
     generation++
+    pipelines.reset()
     mr.value = null
     diff.value = null
     commitLog.value = null
@@ -936,6 +947,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
 
   function dispose() {
     generation++
+    pipelines.reset()
     if (noticeTimer !== null) clearTimeout(noticeTimer)
   }
 
@@ -1010,6 +1022,7 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     markedLines,
     latestReviews,
     checks,
+    pipelines,
     strategyHint,
     strategies,
     statusIcon,
