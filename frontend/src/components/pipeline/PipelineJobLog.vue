@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import type { PipelineJob } from '@/api/pipelines'
 import { useJobOutput } from '@/composables/useJobOutput'
 import { formatBytes } from './pipelineFormat'
+import { MAX_LOG_LINES } from '@/utils/logLines'
 import LogView from './LogView.vue'
 
 // One job's output, live while it runs, with devpad's notes on the job
@@ -20,7 +21,11 @@ const target = computed(() => ({ projectId: props.projectId, pipelineId: props.p
 // A queued job has printed nothing yet; its pipeline's next read says when
 // it starts.
 const reading = computed(() => props.active && props.job.status !== 'queued')
-const { lines, notes, done, loaded, error, startsLate, skipped, droppedLines } = useJobOutput(target, reading)
+const { lines, notes, done, loaded, error, notKeptBytes, skipped, droppedLines } = useJobOutput(target, reading)
+// Line numbers count from the job's first line only when every line from
+// it on is here; past output devpad no longer keeps, or a gap, they
+// would not.
+const numbered = computed(() => notKeptBytes.value === 0 && !skipped.value)
 
 const noteTime = (iso: string) => new Date(iso).toLocaleTimeString()
 const lost = computed(() => !props.job.outputKept)
@@ -43,11 +48,12 @@ const shown = computed(() => props.job.status !== 'queued')
         This job's output is no longer kept: devpad keeps the output of the project's 50 newest pipelines.
       </p>
       <template v-else>
-        <p v-if="startsLate || droppedLines > 0" class="log-state">
-          Showing the end of the output: the job printed {{ formatBytes(job.outputBytes) }}, and devpad keeps the last 1 MB.
+        <p v-if="notKeptBytes > 0" class="log-state">
+          Devpad keeps the last 1 MB of a job's output, so the first {{ formatBytes(notKeptBytes) }} the job printed aren't shown.
         </p>
-        <p v-if="skipped" class="log-state">Output came faster than it could be shown, so some lines in between are missing.</p>
-        <LogView v-if="lines.length" :lines="lines" :first-line="droppedLines + 1" />
+        <p v-if="droppedLines > 0" class="log-state">Showing the last {{ MAX_LOG_LINES.toLocaleString() }} lines: the {{ droppedLines.toLocaleString() }} before them are left out here.</p>
+        <p v-if="skipped" class="log-state">Output came faster than it could be read, so some of it is missing where marked.</p>
+        <LogView v-if="lines.length" :lines="lines" :first-line="droppedLines + 1" :numbered="numbered" />
         <p v-else-if="loaded && done" class="log-state">{{ job.startedAt ? 'The job printed nothing.' : 'The job never ran.' }}</p>
         <p v-else-if="!loaded && !error" class="log-state">Loading output...</p>
       </template>

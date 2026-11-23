@@ -1,7 +1,7 @@
 import { computed, ref, shallowRef, watch, type Ref } from 'vue'
 import { pipelineApi, type JobNote } from '@/api/pipelines'
 import { LogLines, type LogLine } from '@/utils/logLines'
-import { usePolling } from './usePolling'
+import { pollFailure, usePolling, type PollOutcome } from './usePolling'
 
 const POLL_INTERVAL_MS = 1500
 
@@ -22,9 +22,9 @@ export function useJobOutput(target: Ref<JobOutputTarget | null>, active: Ref<bo
   const done = ref(false)
   const loaded = ref(false)
   const error = ref('')
-  // The output starts after the first byte the job printed: only its end
-  // is kept.
-  const startsLate = ref(false)
+  // How much the job printed before the first byte shown, which devpad no
+  // longer keeps: only the last 1 MB of a job's output is.
+  const notKeptBytes = ref(0)
   // Output came faster than it was read, and some in between was lost.
   const skipped = ref(false)
   const droppedLines = ref(0)
@@ -41,13 +41,13 @@ export function useJobOutput(target: Ref<JobOutputTarget | null>, active: Ref<bo
     done.value = false
     loaded.value = false
     error.value = ''
-    startsLate.value = false
+    notKeptBytes.value = 0
     skipped.value = false
     droppedLines.value = 0
     next = 0
   }
 
-  async function read() {
+  async function read(): Promise<PollOutcome> {
     const t = target.value
     if (!t || done.value) return
     const gen = generation
@@ -55,8 +55,15 @@ export function useJobOutput(target: Ref<JobOutputTarget | null>, active: Ref<bo
       const chunk = await pipelineApi.jobOutput(t.projectId, t.pipelineId, t.jobId, next)
       if (gen !== generation) return
       if (chunk.dropped) {
-        if (next === 0) startsLate.value = true
-        else skipped.value = true
+        if (next === 0) {
+          notKeptBytes.value = chunk.offset
+        } else {
+          // What came between was lost: end the line before it, so the
+          // text on either side is never read as one line.
+          skipped.value = true
+          buffer.gap()
+          lines.value = buffer.lines.slice()
+        }
       }
       if (chunk.data) {
         buffer.append(chunk.data)
@@ -70,7 +77,9 @@ export function useJobOutput(target: Ref<JobOutputTarget | null>, active: Ref<bo
       loaded.value = true
       error.value = ''
     } catch (e) {
-      if (gen === generation) error.value = e instanceof Error ? e.message : 'Failed to read the output'
+      if (gen !== generation) return
+      error.value = e instanceof Error ? e.message : 'Failed to read the output'
+      return pollFailure(e)
     }
   }
 
@@ -86,5 +95,5 @@ export function useJobOutput(target: Ref<JobOutputTarget | null>, active: Ref<bo
     },
   )
 
-  return { lines, notes, done, loaded, error, startsLate, skipped, droppedLines, refresh: poll }
+  return { lines, notes, done, loaded, error, notKeptBytes, skipped, droppedLines, refresh: poll }
 }

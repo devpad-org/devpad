@@ -28,8 +28,10 @@ const COLORS: AnsiColor[] = ['black', 'red', 'green', 'yellow', 'blue', 'magenta
 const ESCAPE = /\x1b\[([0-9;:?<=>]*)[ -/]*([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g
 // An escape a chunk of output ends part way through, not yet complete.
 const PARTIAL_ESCAPE = /\x1b(?:\[[0-9;:?<=>]*[ -/]*|\][^\x07\x1b]*)?$/
-// Control characters other than tab, which a line of text never shows.
-const CONTROL = /[\x00-\x08\x0b-\x1f\x7f]/g
+// Control characters other than tab, which a line of text never shows:
+// C0, DEL and C1, and the bidirectional controls, with which output could
+// draw its text in another order than it has.
+const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
 
 function applySgr(style: AnsiStyle, params: string): AnsiStyle {
   const next = { ...style }
@@ -54,6 +56,17 @@ function classOf(style: AnsiStyle): string {
   if (style.fg) parts.push(`ansi-${style.bright ? 'bright-' : ''}${style.fg}`)
   if (style.bold) parts.push('ansi-bold')
   return parts.join(' ')
+}
+
+// advanceStyle is the style text leaves output in, starting in style, for
+// text that is not shown.
+export function advanceStyle(text: string, style: AnsiStyle): AnsiStyle {
+  let current = style
+  ESCAPE.lastIndex = 0
+  for (let m = ESCAPE.exec(text); m !== null; m = ESCAPE.exec(text)) {
+    if (m[2] === 'm') current = applySgr(current, m[1] ?? '')
+  }
+  return current
 }
 
 // parseLine splits one line of output, without its newline, into styled

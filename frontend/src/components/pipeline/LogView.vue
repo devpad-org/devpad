@@ -11,6 +11,9 @@ const props = defineProps<{
   lines: readonly LogLine[]
   // The number of the first line, after lines dropped before it.
   firstLine?: number
+  // Show line numbers: false when they would not count from the first
+  // line of the output.
+  numbered?: boolean
 }>()
 
 // Every line is one row of this height: lines don't wrap, and the log
@@ -66,8 +69,9 @@ onUnmounted(() => resize?.disconnect())
   <div ref="scroller" class="log" :style="{ maxHeight: `${MAX_HEIGHT_PX}px` }" tabindex="0" role="log" aria-label="Output" @scroll.passive="onScroll">
     <div class="log-track" :style="{ height: `${lines.length * LINE_PX}px`, '--num-width': numberWidth }">
       <div class="log-window" :style="{ transform: `translateY(${start * LINE_PX}px)` }">
-        <div v-for="(line, i) in visible" :key="line.id" class="log-line">
-          <span class="log-num" aria-hidden="true">{{ (firstLine ?? 1) + start + i }}</span>
+        <div v-for="(line, i) in visible" :key="line.id" class="log-line" :class="{ 'log-gap': line.gap }">
+          <span v-if="numbered !== false" class="log-num" aria-hidden="true">{{ line.gap ? '' : (firstLine ?? 1) + start + i }}</span>
+          <span v-if="line.gap" class="log-gap-text">output missing here</span>
           <span v-for="(seg, j) in line.segments" :key="j" :class="seg.cls">{{ seg.text }}</span>
           <span v-if="line.cut" class="log-cut" title="The rest of this line is not shown">…</span>
         </div>
@@ -110,6 +114,10 @@ onUnmounted(() => resize?.disconnect())
   white-space: pre;
 }
 
+.log-line:not(:has(.log-num)) {
+  padding-left: var(--space-3);
+}
+
 .log-num {
   display: inline-block;
   width: var(--num-width);
@@ -118,6 +126,18 @@ onUnmounted(() => resize?.disconnect())
   color: var(--term-bright-black);
   text-align: right;
   user-select: none;
+}
+
+.log-gap-text {
+  padding: 0 var(--space-2);
+  font-family: var(--font-sans);
+  font-style: italic;
+  color: var(--term-bright-black);
+}
+
+.log-gap {
+  border-top: 0.5px dashed var(--border-subtle);
+  border-bottom: 0.5px dashed var(--border-subtle);
 }
 
 .log-cut {

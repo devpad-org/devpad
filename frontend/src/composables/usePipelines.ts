@@ -1,6 +1,6 @@
 import { computed, ref, watch, type Ref } from 'vue'
 import { pipelineApi, type Pipeline, type PipelineListFilter, type PipelineSubject } from '@/api/pipelines'
-import { usePolling } from './usePolling'
+import { pollFailure, usePolling, type PollOutcome } from './usePolling'
 
 const DETAIL_POLL_MS = 2500
 const LIST_POLL_MS = 5000
@@ -27,7 +27,7 @@ export function usePipeline(projectId: Ref<number | null>, pipelineId: Ref<numbe
   const busy = ref(false)
   let generation = 0
 
-  async function load() {
+  async function load(): Promise<PollOutcome> {
     const project = projectId.value
     const id = pipelineId.value
     if (project === null || id === null) return
@@ -38,7 +38,9 @@ export function usePipeline(projectId: Ref<number | null>, pipelineId: Ref<numbe
       pipeline.value = res.pipeline
       error.value = ''
     } catch (e) {
-      if (gen === generation) error.value = errorText(e, 'Failed to load the pipeline')
+      if (gen !== generation) return
+      error.value = errorText(e, 'Failed to load the pipeline')
+      return pollFailure(e)
     }
   }
 
@@ -100,7 +102,7 @@ export function usePipelineList(projectId: Ref<number | null>, filter: Ref<Pipel
 
   // Reads the newest again, as many as are shown, and keeps the older
   // pages shown below them.
-  async function load() {
+  async function load(): Promise<PollOutcome> {
     const project = projectId.value
     if (project === null) return
     const gen = generation
@@ -115,7 +117,9 @@ export function usePipelineList(projectId: Ref<number | null>, filter: Ref<Pipel
       loaded.value = true
       error.value = ''
     } catch (e) {
-      if (gen === generation) error.value = errorText(e, 'Failed to load pipelines')
+      if (gen !== generation) return
+      error.value = errorText(e, 'Failed to load pipelines')
+      return pollFailure(e)
     }
   }
 
