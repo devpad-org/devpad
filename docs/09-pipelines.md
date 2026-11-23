@@ -5,7 +5,7 @@ summary: The jobs a project runs on its protected branches and merge requests, w
 
 A pipeline runs a project's jobs, such as its tests and its build, on a commit of a protected branch or on a merge request, each job in a fresh container that no agent can reach. Its result tells you whether the change builds and passes before you read it.
 
-Devpad runs pipelines by itself on the protected branches you tick under **Run pipelines**, on each new commit, and on every merge request into them, when it opens and each time its branch or the ticked branch moves. A merge request into a ticked branch [merges only once its pipeline passes](#merge-gate), unless you merge it anyway. You can run a pipeline on any protected branch, and on any merge request into one, yourself; into a branch you don't tick, its result is there for you to weigh and doesn't stop anything from merging.
+Devpad runs pipelines by itself on the protected branches you tick under **Run pipelines**, on each new commit, and on every merge request into them, when it opens and each time its branch or the ticked branch moves. A merge request into a ticked branch [merges only once its pipeline passes](#merge-gate), unless you merge it anyway. On a task's merge request, a failure [goes back to the task's agent](#failures), and the automatic review waits for a pass. You can run a pipeline on any protected branch, and on any merge request into one, yourself; into a branch you don't tick, its result is there for you to weigh and doesn't stop anything from merging.
 
 ## The pipeline file {#pipeline-file}
 
@@ -109,6 +109,23 @@ Until then the merge card's pipeline row says what keeps it from merging: the pi
 
 An [automatic merge](/docs/branches#automatic-merges) needs the pass too, and never takes a change that adds, changes, renames or deletes the pipeline file itself: the target's jobs would test it, but once merged it would decide what every later merge request has to pass, so you merge it yourself. When the review agent's approval comes before the pipeline has finished, the merge waits for it, and the merge card says **Merging into &lt;target&gt; once the pipeline passes**; devpad merges once it passes, and records why not when it fails, can't run or is cancelled.
 
+## When a pipeline fails {#failures}
+
+When the pipeline guarding a task's merge request fails, devpad sends the task back to its agent with what failed: for each job that failed, ran out of time or ran out of memory, how it ended and its exit code, its script, devpad's notes on it and the end of its output, up to 6 KB a job and 24 KB in all, marked as the job's output. When the pipeline finds the branch doesn't merge onto the target, the agent gets the conflicting files, as **Ask the task's agent to resolve them** sends them. The agent's new commits move the merge request, and its pipeline runs again.
+
+- **Two rounds in a row.** Devpad sends a task back for its pipeline at most twice in a row, and the task and its merge request say **Sent back after the pipeline failed (1 of 2)**. When it fails again after that, the failure waits for you: the task shows it as the feedback for its next run and says **Waiting for you**, and **Send back to agent** on the task, or **Send back** on the merge request, sends it.
+- **Stuck.** A round that fails the same jobs with the same output as the failure it was sent back for, leaving aside what changes from run to run such as times, durations, addresses and temporary paths, ends the rounds early: the agent is stuck, and the task says so.
+- **Starting again.** The count starts again whenever you step in, by sending the task back, editing it or restarting it, and whenever the pipeline passes. A conflict counts as a round too.
+- **Failing on the target too.** A job that also fails in the target branch's own pipeline of the same commit, with the same jobs, isn't the change's doing: devpad doesn't send it back, it doesn't count, and the merge request's **Pipeline** card marks it **also failing on &lt;target&gt;**. Until the target's pipeline of that commit has finished, devpad waits to decide. When every failing job fails on the target too, nothing goes back. The merge gate still holds: fix the target first, or merge anyway knowing why it's red.
+- **Not the agent's to fix.** A pipeline that couldn't run, was cancelled or replaced, or doesn't parse never goes back to the agent; the merge card says why it doesn't count.
+- A task that has spent its budget keeps the failure for you, as it keeps other feedback.
+
+Devpad decides on each pipeline once, even when it restarts. Pipelines you run by hand into a branch you don't tick never send a task back.
+
+A task's agent knows the jobs before it finishes: its first prompt lists the target branch's jobs, each with its script and services, and asks it to run them in its sandbox. The sandbox has the services too, under the same connection variables. Those runs are the agent's own check; devpad's pipeline is the one that counts.
+
+**Reviews wait for a pass.** Where a pipeline guards a merge request, the project's [automatic review](/docs/branches#reviews), and the next round of an [auto-fixing review](/docs/branches#auto-fixing-reviews), start only once its pipeline has passed, so the review agent reads a change that passes its jobs. Until then the **Pipeline** card says **The automatic review starts once the pipeline passes**. A review you start yourself starts at once. The review agent is told how the pipeline went, each job's name, result and time, but never what a job printed: that came from the code under review, which could use it to talk its reviewer round.
+
 ## What pipelines don't stop {#limits}
 
 Reading the jobs from the target branch makes cheating visible, not impossible. A change can still weaken what the jobs check:
@@ -117,4 +134,4 @@ Reading the jobs from the target branch makes cheating visible, not impossible. 
 - change what a command does, such as a `Makefile` target or a script in `package.json`;
 - loosen a type-check or lint configuration.
 
-Review a change's tests and build files as closely as its code.
+The review agent is told to look for exactly these: deleted or skipped tests, changed build or test scripts, and loosened lint or type-check settings, which it treats as blocking unless the task asks for them. Still, review a change's tests and build files as closely as its code.

@@ -47,6 +47,10 @@ type MergeRequestStatus struct {
 	// rather than "no pipeline yet", and what the merge gate names when it
 	// is shut. Nil otherwise.
 	Settled *SettledPipeline
+	// OnTarget is, when Current failed, how the target's own pipeline went
+	// on the commit Current merged onto, which says which of its failures
+	// the change didn't bring. Nil otherwise.
+	OnTarget *TargetResult
 }
 
 // SettledPipeline is a pipeline of the commits and jobs a branch or merge
@@ -180,6 +184,11 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 	}
 	if st.Current, err = s.LatestForMergeRequest(ctx, userID, projectID, st.Key); err != nil {
 		return nil, err
+	}
+	if st.Current != nil && st.Current.Status == StatusFailed {
+		if st.OnTarget, err = s.targetResult(ctx, st.Current); err != nil {
+			return nil, err
+		}
 	}
 	if st.Current == nil {
 		if st.Settled, err = s.settledWithout(ctx, st.Key.probe(projectID), st.Automatic); err != nil {

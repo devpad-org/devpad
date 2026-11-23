@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import DocLink from '@/components/DocLink.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import PipelineView from '@/components/pipeline/PipelineView.vue'
-import { PIPELINE_COPY } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_COPY, pipelineRoundsText } from '@/components/pipeline/pipelineFormat'
 import { shortSha } from './format'
 import { useMergeRequest } from './useMergeRequest'
 
@@ -13,7 +13,14 @@ import { useMergeRequest } from './useMergeRequest'
 // and whether it keeps the merge request from merging. Its jobs come from
 // the target branch, never the change.
 const { mr, projectId, isOpen, pipelines } = useMergeRequest()
-const { latest, settled, status, shownId, shownStale, shownPipeline, pickedId, loaded, starting, startError, gateText } = pipelines
+const { latest, settled, status, current, shownId, shownStale, shownPipeline, pickedId, loaded, starting, startError, gateText, alsoFailing, targetPending } = pipelines
+
+// How the task's automatic pipeline rounds stand: sent back after the
+// pipeline failed, or the failure waiting for you.
+const roundsText = computed(() => (isOpen.value ? pipelineRoundsText(mr.value?.task?.pipelineRounds) : ''))
+const roundsHeld = computed(() => !!mr.value?.task?.pipelineRounds.held)
+// The failing jobs to mark, only on the current pipeline.
+const shownAlsoFailing = computed(() => (shownId.value !== null && shownId.value === current.value?.id ? alsoFailing.value : undefined))
 
 // The card shows the pipeline of the current commits that was cancelled or
 // couldn't run, saying why and whether devpad tries again.
@@ -50,6 +57,7 @@ function started() {
     </div>
     <div class="card-body">
       <p v-if="startError" class="notice notice-error">{{ startError }}</p>
+      <p v-if="roundsText" class="notice" :class="roundsHeld ? 'notice-warning' : 'notice-info'">{{ roundsText }}</p>
       <p v-if="showingSettled && settled" class="notice" :class="settled.pipeline.status === 'cancelled' ? 'notice-warning' : 'notice-error'">{{ settled.reason }}</p>
       <p v-if="shownStale && status" class="notice notice-warning">
         <template v-if="shownPipeline">
@@ -59,13 +67,24 @@ function started() {
         <template v-else>This pipeline isn't of the merge request as it is now.</template>
         Now it is <span class="mono">{{ shortSha(status.headSha) }}</span> onto {{ mr.targetBranch }} at <span class="mono">{{ shortSha(status.targetSha) }}</span><template v-if="shownPipeline && shownPipeline.headSha === status.headSha && shownPipeline.targetSha === status.targetSha">, with other jobs</template>.
       </p>
-      <PipelineView v-if="shownId !== null" :key="shownId" :project-id="projectId" :pipeline-id="shownId" :active="true" compact @started="started" />
+      <PipelineView
+        v-if="shownId !== null"
+        :key="shownId"
+        :project-id="projectId"
+        :pipeline-id="shownId"
+        :active="true"
+        :also-failing="shownAlsoFailing"
+        compact
+        @started="started"
+      />
       <p v-else-if="loaded" class="muted empty">
         {{ status?.automatic ? PIPELINE_COPY.mergeRequestNoneAutomatic(mr.targetBranch) : PIPELINE_COPY.mergeRequestNone(mr.targetBranch) }} Its jobs come from <span class="mono">.devpad/pipeline.yml</span> on
         <span class="mono">{{ mr.targetBranch }}</span>, or the project's pipeline setting, and test this branch merged onto it.
       </p>
       <template v-if="loaded">
+        <p v-if="targetPending && shownId !== null && shownId === current?.id" class="muted empty">{{ PIPELINE_COPY.targetPending(mr.targetBranch) }}</p>
         <p v-if="gateText" class="muted empty">{{ gateText }}</p>
+        <p v-if="isOpen && mr.reviewAwaitsPipeline" class="muted empty">{{ PIPELINE_COPY.reviewAwaitsPipeline }}</p>
       </template>
       <p v-else class="muted empty">Loading pipelines...</p>
     </div>
@@ -95,6 +114,12 @@ function started() {
 
 .card-body .notice {
   margin: 0;
+}
+
+.notice-info {
+  color: var(--text-secondary);
+  background: var(--bg-neutral);
+  border: 0.5px solid var(--border-subtle);
 }
 
 .empty {

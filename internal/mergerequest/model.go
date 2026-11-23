@@ -114,8 +114,12 @@ type MergeRequest struct {
 	// PipelineOverride says the user merged it although its pipeline had
 	// not let it through, nil when nothing was overridden.
 	PipelineOverride *PipelineOverride
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// ReviewAwaitsPipeline says the project's automatic review of the merge
+	// request waits for the pipeline guarding it to pass. Only
+	// SetReviewAwaitsPipeline writes it.
+	ReviewAwaitsPipeline bool
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 	// AgentReviewing says a review agent is at work on the merge request.
 	// Only listing a project's merge requests sets it.
 	AgentReviewing bool

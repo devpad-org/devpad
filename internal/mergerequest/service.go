@@ -96,6 +96,14 @@ type Service interface {
 	// pipeline setting, so that an automatic merge waiting for its pipeline
 	// decides again.
 	PipelineFinished(ctx context.Context, m PipelineEnd)
+	// BranchPipelineFinished is told each time a protected branch's
+	// pipeline finishes, so that a failure of a task's merge request into
+	// it that waits to know whether its jobs fail on the branch too is
+	// decided.
+	BranchPipelineFinished(ctx context.Context, m BranchPipelineEnd)
+	// SetPipelineReports sets what reads what a merge request's pipeline
+	// found, for its task's agent and its reviewer.
+	SetPipelineReports(r PipelineReports)
 	project.SettingsListener
 	// Reconcile settles agent reviews interrupted by a server restart.
 	Reconcile(ctx context.Context) error
@@ -133,6 +141,7 @@ type Tasks interface {
 	Merged(ctx context.Context, userID, projectID, taskID int64) (*task.Task, error)
 	SetBudget(ctx context.Context, userID, projectID, taskID int64, budgetUSD float64) (*task.Task, error)
 	Budget(ctx context.Context, userID, projectID, taskID int64) (*domain.Budget, error)
+	PipelineEnded(ctx context.Context, userID, projectID, taskID int64, res task.PipelineResult) (*task.Task, error)
 }
 
 // Runs is the agent runner surface review agents need.
@@ -193,8 +202,10 @@ type service struct {
 	closed    bool
 	locks     map[string]*sync.Mutex
 	listeners []Listener
-	// gate is the merge gate, set once the pipeline service exists.
-	gate PipelineGate
+	// gate is the merge gate, and reports what reads pipelines' results,
+	// set once the pipeline service exists.
+	gate    PipelineGate
+	reports PipelineReports
 	// reviewBudgets holds the budget of each agent review that has run since
 	// devpad started and could still be continued, so its runs, the
 	// sub-agents a run leaves running, and a continued run share one limit.
@@ -439,32 +450,23 @@ func (s *service) openAtHead(ctx context.Context, mr *MergeRequest) error {
 }
 
 // autoReview starts the review agent on a new merge request when its
-// project reviews them automatically, with the agent's default model. On a
-// task's merge request its requested changes go straight to the task's
-// agent, and the loop of reviews and fixes runs up to maxReviewRounds. A
-// review that cannot start is recorded as failed, so the merge request
-// shows why.
+// project reviews them automatically, with the agent's default model, at
+// once when no pipeline guards the merge request and else once its
+// pipeline passes (resumeReviewLocked). On a task's merge request its
+// requested changes go straight to the task's agent, and the loop of
+// reviews and fixes runs up to maxReviewRounds. A review that cannot
+// start, the gate unread included, is recorded as failed, so the merge
+// request shows why.
 func (s *service) autoReview(ctx context.Context, p *project.Project, mr *MergeRequest) {
 	if !p.AutoReview {
 		return
 	}
-	autoFix := mr.TaskID != 0
-	_, err := s.StartAgentReview(ctx, mr.UserID, mr.ProjectID, mr.ID, AgentReviewInput{AutoFix: autoFix})
-	if err == nil || s.rootCtx.Err() != nil {
-		// A review left pending by a shutdown starts again with the server.
-		return
-	}
-	log.Printf("merge request %d: starting automatic review: %v", mr.ID, err)
-	msg := "The automatic review could not start: " + err.Error()
-	if errors.Is(err, errNoModel) {
-		msg = "The automatic review could not start: the review agent has no default model. Start a review with a model picked, or set a default model for the review agent in Settings."
-	}
-	rv := &Review{
-		MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewFailed, HeadSHA: mr.HeadSHA,
-		AgentID: domain.ReviewAgentID, AutoFix: autoFix, Error: msg,
-	}
-	if err := s.repo.CreateReview(ctx, rv); err != nil {
-		log.Printf("merge request %d: recording automatic review failure: %v", mr.ID, err)
+	unlock := s.lock("mr", mr.ID)
+	defer unlock()
+	s.setReviewAwaits(ctx, mr, true)
+	if err := s.resumeReviewLocked(ctx, mr, nil); err != nil && s.rootCtx.Err() == nil {
+		s.setReviewAwaits(ctx, mr, false)
+		s.reviewNotStarted(ctx, mr, &owedReview{in: AgentReviewInput{AutoFix: mr.TaskID != 0}, round: 1, first: true}, err)
 	}
 }
 
@@ -514,9 +516,11 @@ func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary 
 	if err != nil || !moved {
 		return nil, false, err
 	}
-	// Starting the next round takes the merge request's lock, which
-	// updating it held.
-	s.nextReviewRound(ctx, mr)
+	// The next round of an auto-fixing review reviews the commits the
+	// agent answered it with (reviewOwed), at once when no pipeline guards
+	// the merge request and else once its pipeline passes on them. Starting
+	// it takes the merge request's lock, which updating it held.
+	s.resumeReview(ctx, mr.ID)
 	return mr, false, nil
 }
 
@@ -538,43 +542,6 @@ func (s *service) updateFromTask(ctx context.Context, mr *MergeRequest, t *task.
 // maxReviewRounds is how many times a review agent and a task's agent go
 // back and forth: the last review's requested changes wait for the user.
 const maxReviewRounds = 3
-
-// nextReviewRound reviews the commits the task's agent answered a review
-// agent's requested changes with, when that review sent them to it and was
-// not the last round. The new review runs the same agent and model. Anything
-// since, such as the user's own review, ends the loop, as does a verdict
-// other than request changes. The merge request stays locked from reading
-// the last review to starting the next, so no review can start between.
-func (s *service) nextReviewRound(ctx context.Context, mr *MergeRequest) {
-	unlock := s.lock("mr", mr.ID)
-	defer unlock()
-	reviews, err := s.repo.ListReviews(ctx, mr.ID)
-	if err != nil {
-		log.Printf("merge request %d: reading reviews for the next round: %v", mr.ID, err)
-		return
-	}
-	if len(reviews) == 0 {
-		return
-	}
-	last := reviews[len(reviews)-1]
-	if last.Author != AuthorAgent || last.Status != ReviewSubmitted || last.Verdict != VerdictRequestChanges || !last.AutoFix || last.Round >= maxReviewRounds {
-		return
-	}
-	in := AgentReviewInput{AgentID: last.AgentID, Model: last.Model, Effort: last.Effort, AutoFix: true}
-	_, err = s.startAgentReviewLocked(ctx, mr.UserID, mr.ProjectID, mr.ID, in, last.Round+1, nil)
-	if err == nil || s.rootCtx.Err() != nil {
-		return
-	}
-	log.Printf("merge request %d: starting review round %d: %v", mr.ID, last.Round+1, err)
-	rv := &Review{
-		MergeRequestID: mr.ID, Author: AuthorAgent, Status: ReviewFailed, HeadSHA: mr.HeadSHA,
-		AgentID: last.AgentID, Model: last.Model, Effort: last.Effort, AutoFix: true, Round: last.Round + 1,
-		Error: "The next round of review could not start: " + err.Error(),
-	}
-	if err := s.repo.CreateReview(ctx, rv); err != nil {
-		log.Printf("merge request %d: recording review round failure: %v", mr.ID, err)
-	}
-}
 
 // BranchMoved has the open merge request from a branch that moved follow
 // it. A merge is followed by the merge request that merged (followMerge),
@@ -1477,14 +1444,15 @@ func (s *service) startReviewRun(ctx context.Context, mr *MergeRequest, rv *Revi
 		}
 		rv.ConversationID = conv.ID
 		prompt = reviewPrompt(reviewPromptInput{
-			project: p,
-			mr:      mr,
-			task:    t,
-			review:  rv,
-			branch:  ws.Branch,
-			diff:    diff,
-			sandbox: sandbox,
-			history: history,
+			project:  p,
+			mr:       mr,
+			task:     t,
+			review:   rv,
+			branch:   ws.Branch,
+			diff:     diff,
+			sandbox:  sandbox,
+			history:  history,
+			pipeline: s.reviewPipeline(ctx, mr, rv),
 		})
 	}
 	run, err := s.runs.StartRun(ctx, app.StartAgentRunRequest{
@@ -1625,6 +1593,9 @@ type reviewPromptInput struct {
 	diff    *agent.RepoDiff
 	sandbox project.SandboxState
 	history reviewHistory
+	// pipeline is reviewPipelineSection's account of the change's pipeline,
+	// or empty.
+	pipeline string
 }
 
 func reviewPrompt(in reviewPromptInput) string {
@@ -1656,6 +1627,7 @@ func reviewPrompt(in reviewPromptInput) string {
 		}
 	}
 	fmt.Fprintf(&b, "\nRun `git diff %[1]s HEAD` to read the change and `git log %[1]s..HEAD` for its commits.\n\n", in.diff.MergeBase)
+	b.WriteString(in.pipeline)
 	b.WriteString(in.sandbox.Prompt())
 	if in.history.earlier > 0 {
 		b.WriteString("## Earlier reviews\n\nThis merge request has been reviewed before")
@@ -1679,6 +1651,7 @@ func reviewPrompt(in reviewPromptInput) string {
 	fmt.Fprintf(&b, `## How to review
 
 - Judge the change against what it set out to do, and run the project's tests or checks where they exist.
+- Look specifically for changes that weaken what the tests and checks prove, which no pipeline result shows: deleted tests or assertions, skipped ones (such as `+"`t.Skip`, `it.skip`, `xit` or `@skip`"+`), changed build or test scripts (a `+"`Makefile`"+` target, a script in `+"`package.json`"+`), and loosened lint or type-check settings. Unless the task asks for such a change, it is blocking.
 - Do not change or commit code: you are only reviewing.
 - Leave each problem as a comment of its own, so it can be answered and resolved on its own: %[1]s for a problem in specific code, on the line number in the new version of the file, and %[2]s for one about the change as a whole.
 - Mark each comment blocking or not. A problem is blocking only when merging the change as it is would:
@@ -2038,20 +2011,7 @@ func (s *service) ResolveConflicts(ctx context.Context, userID, projectID, mrID 
 	if t.OverBudget() {
 		return fmt.Errorf("%w: the task has spent $%.2f of its $%.2f budget; raise its budget to send it the conflicts", ErrInvalidState, t.CostUSD, t.BudgetUSD)
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "Your branch `%s` conflicts with `%s`, so it cannot be merged.", mr.SourceBranch, mr.TargetBranch)
-	if len(files) > 0 {
-		b.WriteString(" The conflicting files are:\n")
-		for i, f := range files {
-			if i == 50 {
-				fmt.Fprintf(&b, "- … and %d more\n", len(files)-i)
-				break
-			}
-			fmt.Fprintf(&b, "- %s\n", f)
-		}
-	}
-	fmt.Fprintf(&b, "\nMerge `devpad/%s` into `%s`, resolve the conflicts keeping both sides' intent, make sure the project's checks pass, and commit the merge.", mr.TargetBranch, mr.SourceBranch)
-	_, err = s.tasks.RequestChanges(ctx, userID, projectID, mr.TaskID, b.String(), true)
+	_, err = s.tasks.RequestChanges(ctx, userID, projectID, mr.TaskID, task.ConflictFeedback(mr.SourceBranch, mr.TargetBranch, files), true)
 	return err
 }
 
@@ -2091,7 +2051,12 @@ func (s *service) SendBack(ctx context.Context, userID, projectID, mrID int64, i
 	if err != nil {
 		return nil, err
 	}
-	message, ok := sendBackMessage(mr, reviews, comments, note)
+	// A pipeline failure that waits for the user goes with what they send.
+	waiting := ""
+	if t.Status == task.StatusChangesRequested && t.PipelineRounds.Held != task.HoldNone {
+		waiting = t.PendingMessage
+	}
+	message, ok := sendBackMessage(mr, reviews, comments, note, waiting)
 	if !ok {
 		return nil, invalid("there is no feedback on the current commit to send back; add a note for the agent")
 	}
@@ -2107,10 +2072,12 @@ func (s *service) SendBack(ctx context.Context, userID, projectID, mrID int64, i
 	return t, nil
 }
 
-// sendBackMessage is what SendBack tells the task's agent. It reports false
-// when there is nothing to tell: no note, no feedback on the head and no
-// open thread. Comments in resolved threads are left out.
-func sendBackMessage(mr *MergeRequest, reviews []*Review, comments []*Comment, note string) (string, bool) {
+// sendBackMessage is what SendBack tells the task's agent, with pipeline,
+// the failure of the merge request's pipeline that waits for the user, if
+// any. It reports false when there is nothing to tell: no note, no pipeline
+// failure, no feedback on the head and no open thread. Comments in resolved
+// threads are left out.
+func sendBackMessage(mr *MergeRequest, reviews []*Review, comments []*Comment, note, pipeline string) (string, bool) {
 	resolved := make(map[int64]bool)
 	for _, c := range comments {
 		if c.Resolved() {
@@ -2131,13 +2098,16 @@ func sendBackMessage(mr *MergeRequest, reviews []*Review, comments []*Comment, n
 		parts = append(parts, feedback(rv, own))
 	}
 	open := openThreads(comments)
-	if note == "" && len(parts) == 0 && open == 0 {
+	if note == "" && pipeline == "" && len(parts) == 0 && open == 0 {
 		return "", false
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Your merge request !%d, %q, was sent back to you.\n", mr.ID, mr.Title)
 	if note != "" {
 		b.WriteString("\n## Note from the user\n\n" + note + "\n")
+	}
+	if pipeline != "" {
+		b.WriteString("\n## The pipeline\n\n" + pipeline + "\n")
 	}
 	if len(parts) > 0 {
 		b.WriteString("\n## Reviews of the current version\n")
@@ -2196,6 +2166,9 @@ func (s *service) Reconcile(ctx context.Context) error {
 			s.RunFinished(*run)
 		}
 	}
+	// A review owed when devpad stopped, such as one a settings change
+	// had let in, starts now if its gate lets it.
+	s.spawn(func(ctx context.Context) { s.resumeReviews(ctx, 0) })
 	return nil
 }
 

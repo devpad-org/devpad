@@ -90,8 +90,12 @@ type Task struct {
 	// while tasks it is blocked by were not merged: its agent is queued once
 	// the last of them is.
 	StartWhenUnblocked bool
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// PipelineRounds is how the task's automatic pipeline rounds stand: how
+	// many times in a row devpad sent it back because its merge request's
+	// pipeline failed, and whether the latest failure waits for the user.
+	PipelineRounds PipelineRounds
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // BranchName is the branch a task's sandbox works on.

@@ -58,6 +58,17 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
     const paths = gate.value?.state === 'conflict' ? (current.value?.conflictPaths ?? []) : []
     return paths.length ? paths : null
   })
+  // The current pipeline's failing jobs that fail on the target too, in
+  // its own pipeline of the same commit, which devpad doesn't send back to
+  // the task's agent.
+  const alsoFailing = computed(() => {
+    const t = status.value?.onTarget
+    const target = mr.value?.targetBranch
+    return t && target && t.failing.length ? { target, jobs: t.failing } : undefined
+  })
+  // The target's own pipeline of the same commit is still to say which of
+  // the current pipeline's failures are already there.
+  const targetPending = computed(() => !!status.value?.onTarget?.pending)
   const latest = computed(() => status.value?.latest ?? null)
   // The pipeline of the current commits and jobs that was cancelled or
   // couldn't run, when none of them counts, with why.
@@ -199,6 +210,8 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
     gateText,
     gateNote,
     gateConflicts,
+    alsoFailing,
+    targetPending,
     shownId,
     shownStale,
     shownPipeline,

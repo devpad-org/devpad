@@ -60,6 +60,16 @@ type Service interface {
 	// It is the one answer to whether a merge request's result is current,
 	// for its page and for the merge gate.
 	MergeRequestStatus(ctx context.Context, userID, projectID, mergeRequestID int64) (*MergeRequestStatus, error)
+	// Report reads what a pipeline found, for the agent sent back with its
+	// failures and the reviewer told its results: its jobs, the last
+	// outputTail bytes of each failed job's output with devpad's notes on it,
+	// and, for a merge request's pipeline, how the target's own pipeline went
+	// on the commit it merged onto (TargetResult).
+	Report(ctx context.Context, userID, projectID, pipelineID int64, outputTail int) (*Report, error)
+	// BranchPipeline resolves the pipeline a merge request into a protected
+	// branch would run now, at the branch's tip, for a task's agent to run
+	// its jobs before it finishes.
+	BranchPipeline(ctx context.Context, userID, projectID int64, branch string) (*Resolved, error)
 	// AddListener adds a Listener, told each time a pipeline finishes.
 	// Listeners are to be added before Reconcile, which tells them of the
 	// pipelines that finished without every listener being told, such as

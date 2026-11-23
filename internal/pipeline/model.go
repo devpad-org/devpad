@@ -135,8 +135,9 @@ func (s JobStatus) Finished() bool {
 	return s != JobQueued && s != JobRunning
 }
 
-// failed reports whether a job ended because its own code failed.
-func (s JobStatus) failed() bool {
+// Failed reports whether a job ended because its own code failed: it
+// exited with another status than 0, ran out of time, or ran out of memory.
+func (s JobStatus) Failed() bool {
 	return s == JobFailed || s == JobTimedOut || s == JobOutOfMemory
 }
 

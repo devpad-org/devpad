@@ -164,7 +164,7 @@ func currentGate(p *Pipeline, target string) (GateState, string, bool) {
 func failedJobs(p *Pipeline) []string {
 	var names []string
 	for _, j := range p.Jobs {
-		if j.Status.failed() {
+		if j.Status.Failed() {
 			names = append(names, j.Name)
 		}
 	}

@@ -196,7 +196,27 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 		"automatic":  st.Automatic,
 		"settled":    settledResponse(st.Settled),
 		"gate":       gateResponse(st.Gate()),
+		"onTarget":   targetResponse(st.OnTarget),
 	}})
+}
+
+// targetResponse is how the target's own pipeline went on the commit the
+// merge request's failed pipeline merged onto: which of its failing jobs
+// fail there too, or that it is still to say. Null when the current
+// pipeline didn't fail.
+func targetResponse(t *TargetResult) any {
+	if t == nil {
+		return nil
+	}
+	var pipelineID any
+	if t.Pipeline != nil {
+		pipelineID = t.Pipeline.ID
+	}
+	failing := t.Failing()
+	if failing == nil {
+		failing = []string{}
+	}
+	return map[string]any{"branch": t.Branch, "pipelineId": pipelineID, "failing": failing, "pending": t.Pending}
 }
 
 // gateResponse is how the merge gate stands: what the merge card shows,

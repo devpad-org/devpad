@@ -171,6 +171,19 @@ func TestPipelineRunsInDocker(t *testing.T) {
 	if slow := job(t, got, "slow"); slow.Status != JobTimedOut {
 		t.Errorf("slow: %+v\n%s", slow, output("slow"))
 	}
+	// What a task's agent would be sent: the end of each failed job's
+	// output, read from the database, with devpad's notes, and nothing of
+	// the jobs that passed.
+	report, err := svc.Report(ctx, userID, p.ID, got.ID, 64)
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if fails := report.Logs[job(t, got, "fails").ID]; fails == nil || !strings.Contains(string(fails.Output), "about to fail\n") || len(fails.Output) > 64 || len(fails.Notes) == 0 {
+		t.Errorf("the report of fails: %+v", fails)
+	}
+	if report.Logs[job(t, got, "slow").ID] == nil || report.Logs[check.ID] != nil || report.Target != nil {
+		t.Errorf("the report: %+v", report)
+	}
 
 	// Nothing of the pipeline is left: not its jobs' containers, services
 	// or networks, nor its bundle, nor its ref in the canonical repo.

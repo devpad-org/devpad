@@ -197,6 +197,11 @@ func New(cfg Config) (*Server, error) {
 	// tells it from Reconcile on, and as the project's branches or pipeline
 	// setting change.
 	mrService.SetPipelineGate(mergeRequestGate{pipelines: pipelineService})
+	// A failed pipeline of a task's merge request goes back to its agent
+	// with what failed, and a review waits for a pass where a pipeline
+	// guards the merge request; task agents are told the jobs first.
+	mrService.SetPipelineReports(mergeRequestPipelineReports{pipelines: pipelineService})
+	taskService.SetPipelines(taskPipelines{pipelines: pipelineService})
 	pipelineService.AddListener(mergeRequestPipelineEnds{mrs: mrService})
 	projectService.AddSettingsListener(mrService)
 	pipelineHandler := pipeline.NewHandler(projectService, pipelineService)

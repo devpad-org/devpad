@@ -1,5 +1,5 @@
 import { apiClient, ApiError } from './client'
-import type { AgentSettings, TaskStatus } from './tasks'
+import type { AgentSettings, PipelineRounds, TaskStatus } from './tasks'
 import type { MergeGateState } from './pipelines'
 import type { RepoDiff } from './projects'
 
@@ -29,6 +29,8 @@ export interface MergeRequest {
   // You merged it although its pipeline hadn't let it through: how the
   // merge gate stood then, and the pipeline that stood. Null otherwise.
   pipelineOverride: PipelineOverride | null
+  // The project's automatic review waits for the pipeline to pass.
+  reviewAwaitsPipeline: boolean
   createdAt: string
   updatedAt: string
   // A review agent is at work on it. Only the list sets it.
@@ -141,6 +143,7 @@ export interface MergeRequestTask {
   // all, zero for no limit, and have spent.
   budgetUsd: number
   costUsd: number
+  pipelineRounds: PipelineRounds
 }
 
 export interface MergeRequestDetail extends MergeRequest {

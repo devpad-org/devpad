@@ -23,6 +23,8 @@ const props = defineProps<{
   // Leaves out what the page around it already says, such as the merge
   // request it is of.
   compact?: boolean
+  // Which of its failing jobs fail on the merge request's target too.
+  alsoFailing?: { target: string; jobs: string[] }
 }>()
 
 const emit = defineEmits<{
@@ -145,7 +147,7 @@ async function onRunAgain() {
           <h4 class="pv-label">Jobs</h4>
           <DocLink topic="pipelineJobs" label="How jobs run" />
         </div>
-        <PipelineJobs :pipeline="pipeline" :active="active" />
+        <PipelineJobs :pipeline="pipeline" :active="active" :also-failing="alsoFailing" />
       </div>
     </template>
   </div>

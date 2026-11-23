@@ -11,6 +11,7 @@ import (
 
 	"github.com/devpad-org/devpad/internal/mergerequest"
 	"github.com/devpad-org/devpad/internal/pipeline"
+	"github.com/devpad-org/devpad/internal/task"
 )
 
 // pipelineMergeRequests shows pipelines the merge requests they test. The
@@ -100,21 +101,94 @@ func (a mergeRequestGate) MergeGate(ctx context.Context, userID, projectID, mrID
 	return out, nil
 }
 
-// mergeRequestPipelineEnds tells the merge request service each time one
-// of a merge request's pipelines finishes, so that an automatic merge
-// waiting for it decides again. The pipeline service tells it holding none
-// of its locks; the merge request service takes its own.
+// mergeRequestPipelineReports reads for the merge request service what a
+// merge request's pipeline found, for its task's agent and its reviewer:
+// every job with its status and time, and of each that failed its script,
+// devpad's word on it, the end of its output and whether it fails on the
+// target too.
+type mergeRequestPipelineReports struct {
+	pipelines pipeline.Service
+}
+
+func (a mergeRequestPipelineReports) PipelineReport(ctx context.Context, userID, projectID, pipelineID int64, outputTail int) (*mergerequest.PipelineReport, error) {
+	r, err := a.pipelines.Report(ctx, userID, projectID, pipelineID, outputTail)
+	if err != nil {
+		return nil, err
+	}
+	p := r.Pipeline
+	out := &mergerequest.PipelineReport{
+		PipelineID: p.ID, Status: string(p.Status), HeadSHA: p.HeadSHA, TargetSHA: p.TargetSHA,
+		ConflictPaths: p.ConflictPaths, TargetPending: r.Target != nil && r.Target.Pending,
+	}
+	if p.ConfigSource == pipeline.SourceFile {
+		out.ConfigPath = p.ConfigPath
+	}
+	for _, j := range p.Jobs {
+		res := task.PipelineJobResult{Name: j.Name, Status: string(j.Status), ExitCode: j.ExitCode}
+		if j.StartedAt != nil && j.FinishedAt != nil {
+			res.Duration = j.FinishedAt.Sub(*j.StartedAt)
+		}
+		if j.Status.Failed() {
+			res.AlsoFailingOnTarget = r.Target.Fails(j.Name)
+		}
+		out.Jobs = append(out.Jobs, res)
+		if !j.Status.Failed() {
+			continue
+		}
+		res.Run, res.Error, res.OutputBytes = j.Run, j.Error, j.OutputBytes
+		if told := r.Logs[j.ID]; told != nil {
+			res.Output = string(told.Output)
+			for _, n := range told.Notes {
+				res.Notes = append(res.Notes, n.Text)
+			}
+		}
+		out.Failed = append(out.Failed, res)
+	}
+	return out, nil
+}
+
+// mergeRequestPipelineEnds tells the merge request service each time a
+// pipeline finishes: one of a merge request's, so that its task hears how
+// it went, a review waiting for it starts, and an automatic merge waiting
+// for it decides again; or a protected branch's, so that a failure of a
+// merge request into it waiting on it is decided. The pipeline service
+// tells it holding none of its locks; the merge request service takes its
+// own.
 type mergeRequestPipelineEnds struct {
 	mrs mergerequest.Service
 }
 
 func (a mergeRequestPipelineEnds) PipelineFinished(ctx context.Context, p *pipeline.Pipeline) {
-	if p.Kind != pipeline.KindMergeRequest {
+	if p.Kind == pipeline.KindBranch {
+		a.mrs.BranchPipelineFinished(ctx, mergerequest.BranchPipelineEnd{
+			UserID: p.UserID, ProjectID: p.ProjectID, Branch: p.Branch, PipelineID: p.ID,
+		})
 		return
 	}
 	a.mrs.PipelineFinished(ctx, mergerequest.PipelineEnd{
 		UserID: p.UserID, ProjectID: p.ProjectID, MergeRequestID: p.MergeRequestID, PipelineID: p.ID, Status: string(p.Status),
 	})
+}
+
+// taskPipelines tells a task's agent the jobs its merge request's pipeline
+// will run: those of the pipeline at the tip of the branch it merges into.
+type taskPipelines struct {
+	pipelines pipeline.Service
+}
+
+func (a taskPipelines) PipelineJobs(ctx context.Context, userID, projectID int64, branch string) (*task.PipelineJobs, error) {
+	r, err := a.pipelines.BranchPipeline(ctx, userID, projectID, branch)
+	if err != nil || r.Config == nil {
+		return nil, err
+	}
+	out := &task.PipelineJobs{}
+	if r.Source == pipeline.SourceFile {
+		out.Path = r.Path
+	}
+	for _, j := range r.Config.Jobs {
+		out.Jobs = append(out.Jobs, task.PipelineJob{Name: j.Name, Run: j.Run, Services: j.Services})
+	}
+	return out, nil
 }
 
 // pipelineBundleDir is where this devpad keeps its pipelines' bundles: a

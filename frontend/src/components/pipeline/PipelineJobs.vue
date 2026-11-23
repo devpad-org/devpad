@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import type { Pipeline, PipelineJob } from '@/api/pipelines'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { useNow } from '@/composables/useNow'
-import { JOB_STATUS, formatDuration, jobOutcome, runTime } from './pipelineFormat'
+import { JOB_STATUS, PIPELINE_COPY, formatDuration, jobOutcome, runTime } from './pipelineFormat'
 import PipelineJobLog from './PipelineJobLog.vue'
 import PipelineStatusIcon from './PipelineStatusIcon.vue'
 
@@ -13,7 +13,12 @@ const props = defineProps<{
   pipeline: Pipeline
   // Read open jobs' output: false while the jobs are out of sight.
   active: boolean
+  // The failing jobs that fail on the merge request's target too, in its
+  // own pipeline of the same commit, and the target's name.
+  alsoFailing?: { target: string; jobs: string[] }
 }>()
+
+const failingOnTarget = computed(() => new Set(props.alsoFailing?.jobs ?? []))
 
 const open = ref(new Set<number>())
 
@@ -47,6 +52,11 @@ function toggle(job: PipelineJob) {
         <PipelineStatusIcon :look="JOB_STATUS[job.status]" :size="18" />
         <span class="job-name mono">{{ job.name }}</span>
         <span v-for="svc in job.services" :key="svc" class="job-tag" :title="`Gets a fresh ${svc} of its own`">{{ svc }}</span>
+        <span
+          v-if="alsoFailing && failingOnTarget.has(job.name)"
+          class="job-tag job-tag-target"
+          :title="PIPELINE_COPY.alsoFailingHint(alsoFailing.target)"
+        >{{ PIPELINE_COPY.alsoFailing(alsoFailing.target) }}</span>
         <span class="job-status">{{ JOB_STATUS[job.status].label }}</span>
         <span class="job-time" :title="`Timeout ${formatDuration(job.timeoutMs)}`">{{ runTime(job, now) }}</span>
       </button>
@@ -125,6 +135,13 @@ function toggle(job: PipelineJob) {
   color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-size: 0.66rem;
+}
+
+.job-tag-target {
+  border: 0.5px solid var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-family: var(--font-sans);
 }
 
 .job-status {

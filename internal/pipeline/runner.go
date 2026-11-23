@@ -342,7 +342,7 @@ func jobsOutcome(jobs []*JobRun) Status {
 	outcome := StatusPassed
 	for _, j := range jobs {
 		switch {
-		case j.Status.failed():
+		case j.Status.Failed():
 			return StatusFailed
 		case j.Status != JobPassed:
 			outcome = StatusError

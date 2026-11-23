@@ -234,6 +234,18 @@ export interface MergeRequestPipelineStatus {
   settled: SettledPipeline | null
   // Whether the pipeline lets it merge.
   gate: MergeGate
+  // When current failed, how the target's own pipeline went on the commit
+  // it merged onto, with the same jobs: which of current's failing jobs fail
+  // there too, or that it is still to say. Null otherwise.
+  onTarget: TargetResult | null
+}
+
+export interface TargetResult {
+  branch: string
+  // The target's pipeline with a result, null when none has one.
+  pipelineId: number | null
+  failing: string[]
+  pending: boolean
 }
 
 function base(projectId: number): string {

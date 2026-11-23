@@ -61,6 +61,9 @@ type Repository interface {
 	// JobLog returns a pipeline's job with what is kept of what it told,
 	// or nil when the pipeline has no such job.
 	JobLog(ctx context.Context, pipelineID, jobID int64) (*JobRun, *JobLog, error)
+	// JobTail is JobLog with only the last n bytes of what is kept of the
+	// job's output, read so from the database.
+	JobTail(ctx context.Context, pipelineID, jobID int64, n int) (*JobRun, *JobLog, error)
 	// PruneOutputs clears the output of every job of the project's
 	// finished pipelines but its keep newest that started.
 	PruneOutputs(ctx context.Context, projectID int64, keep int) error
@@ -493,7 +496,21 @@ func encodeLog(told JobLog) ([]byte, string, error) {
 }
 
 func (r *repository) JobLog(ctx context.Context, pipelineID, jobID int64) (*JobRun, *JobLog, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT `+jobColumns(false)+`, output, notes FROM pipeline_jobs WHERE id = ? AND pipeline_id = ?`, jobID, pipelineID)
+	return r.jobLog(ctx, `SELECT `+jobColumns(false)+`, output, notes FROM pipeline_jobs WHERE id = ? AND pipeline_id = ?`, jobID, pipelineID)
+}
+
+// JobTail reads the end of the output with substr, which counts a blob's
+// bytes, so a job's megabyte of output is never read for its last lines.
+func (r *repository) JobTail(ctx context.Context, pipelineID, jobID int64, n int) (*JobRun, *JobLog, error) {
+	if n <= 0 {
+		return nil, nil, fmt.Errorf("reading the end of a job's output: %d bytes", n)
+	}
+	return r.jobLog(ctx, `SELECT `+jobColumns(false)+`, substr(output, ?), notes FROM pipeline_jobs WHERE id = ? AND pipeline_id = ?`, -n, jobID, pipelineID)
+}
+
+// jobLog reads the job, its output and its notes that query selects.
+func (r *repository) jobLog(ctx context.Context, query string, args ...any) (*JobRun, *JobLog, error) {
+	row := r.db.QueryRowContext(ctx, query, args...)
 	var told JobLog
 	var notes string
 	j, err := oneOrNil(scanJob(row, false, &told.Output, &notes))

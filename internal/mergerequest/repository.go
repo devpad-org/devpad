@@ -16,7 +16,13 @@ type Repository interface {
 	// ListOpenByTarget lists a project's open merge requests into a branch,
 	// oldest first.
 	ListOpenByTarget(ctx context.Context, projectID int64, target string) ([]*MergeRequest, error)
+	// ListOpen lists every open merge request, oldest first.
+	ListOpen(ctx context.Context) ([]*MergeRequest, error)
+	// Update saves the merge request's fields but ReviewAwaitsPipeline.
 	Update(ctx context.Context, mr *MergeRequest) error
+	// SetReviewAwaitsPipeline records whether the merge request's automatic
+	// review waits for its pipeline to pass.
+	SetReviewAwaitsPipeline(ctx context.Context, id int64, awaits bool) error
 	// UpdateHead moves mr to head and records the push in the same
 	// transaction. A task's push also moves the threads its agent started
 	// on the old head, replies included, to the new one: the agent writes
@@ -67,7 +73,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const mrColumns = `id, project_id, user_id, task_id, opened_by, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, merged_by, pipeline_override, pipeline_override_id, created_at, updated_at`
+const mrColumns = `id, project_id, user_id, task_id, opened_by, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, merged_by, pipeline_override, pipeline_override_id, review_awaits_pipeline, created_at, updated_at`
 
 func (r *repository) Create(ctx context.Context, mr *MergeRequest) error {
 	now := time.Now()
@@ -124,6 +130,21 @@ func (r *repository) ListOpenByTarget(ctx context.Context, projectID int64, targ
 		return nil, fmt.Errorf("listing open merge requests into %s: %w", target, err)
 	}
 	return collect(rows, func(row rowScanner) (*MergeRequest, error) { return scanMergeRequest(row) })
+}
+
+func (r *repository) ListOpen(ctx context.Context) ([]*MergeRequest, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+mrColumns+` FROM merge_requests WHERE status = 'open' ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing open merge requests: %w", err)
+	}
+	return collect(rows, func(row rowScanner) (*MergeRequest, error) { return scanMergeRequest(row) })
+}
+
+func (r *repository) SetReviewAwaitsPipeline(ctx context.Context, id int64, awaits bool) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE merge_requests SET review_awaits_pipeline = ? WHERE id = ?`, awaits, id); err != nil {
+		return fmt.Errorf("recording whether the review waits for the pipeline: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) Update(ctx context.Context, mr *MergeRequest) error {
@@ -355,7 +376,7 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 	var mergedAt sql.NullTime
 	var override string
 	var overridePipeline sql.NullInt64
-	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.OpenedBy, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.MergedBy, &override, &overridePipeline, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
+	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.OpenedBy, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.MergedBy, &override, &overridePipeline, &mr.ReviewAwaitsPipeline, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}

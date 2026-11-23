@@ -438,6 +438,8 @@ func mergeRequestResponse(mr *MergeRequest) map[string]any {
 		// The pipeline gate's state the user merged over, and the pipeline
 		// that stood then; null when the merge overrode nothing.
 		"pipelineOverride": pipelineOverrideResponse(mr.PipelineOverride),
+		// The project's automatic review waits for the pipeline to pass.
+		"reviewAwaitsPipeline": mr.ReviewAwaitsPipeline,
 	}
 }
 
@@ -514,6 +516,9 @@ func taskSummaryResponse(t *task.Task) map[string]any {
 		"error":       t.Error,
 		"budgetUsd":   t.BudgetUSD,
 		"costUsd":     t.CostUSD,
+		// How many times in a row devpad sent the task back for its
+		// pipeline, and why the latest failure waits for the user, if it does.
+		"pipelineRounds": task.RoundsResponse(t.PipelineRounds),
 	}
 }
 

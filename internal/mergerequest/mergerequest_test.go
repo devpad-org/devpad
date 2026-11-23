@@ -271,6 +271,27 @@ type fakeTasks struct {
 	// Budget fails with.
 	budgets   map[int64]*domain.Budget
 	budgetErr error
+	// pipelines are the pipeline results the task was told, in order.
+	pipelines []task.PipelineResult
+}
+
+func (f *fakeTasks) PipelineEnded(_ context.Context, _, _, taskID int64, res task.PipelineResult) (*task.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[taskID]
+	if !ok {
+		return nil, task.ErrNotFound
+	}
+	f.pipelines = append(f.pipelines, res)
+	clone := *t
+	return &clone, nil
+}
+
+// pipelineResults are the pipeline results the tasks were told.
+func (f *fakeTasks) pipelineResults() []task.PipelineResult {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]task.PipelineResult(nil), f.pipelines...)
 }
 
 func (f *fakeTasks) SetBudget(_ context.Context, _, _, taskID int64, budgetUSD float64) (*task.Task, error) {

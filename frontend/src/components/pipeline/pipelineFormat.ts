@@ -1,4 +1,5 @@
 import type { JobStatus, MergeGateState, Pipeline, PipelineJob, PipelineStatus } from '@/api/pipelines'
+import type { PipelineRounds } from '@/api/tasks'
 import type { MrIconName } from '@/components/project/MrIcon.vue'
 import { shortSha } from '@/components/mergerequest/format'
 
@@ -6,10 +7,11 @@ import { shortSha } from '@/components/mergerequest/format'
 
 // What the app says of when devpad starts pipelines by itself, and of the
 // merge gate, in one place. The docs say the same in docs/09-pipelines.md
-// (the introduction, #automatic-runs, #branches, #merge-requests and
-// #merge-gate), docs/04-branches.md (the Run pipelines list, #merging and
-// #automatic-merges) and docs/03-projects.md (the Pipelines surface and the
-// pipeline setting).
+// (the introduction, #automatic-runs, #branches, #merge-requests,
+// #merge-gate and #failures), docs/04-branches.md (the Run pipelines list,
+// #reviews, #auto-fixing-reviews, #merging and #automatic-merges),
+// docs/05-tasks.md (#how-a-task-runs) and docs/03-projects.md (the
+// Pipelines surface and the pipeline setting).
 export const PIPELINE_COPY = {
   // Beside where pipelines are run.
   automaticRuns: 'Devpad runs ticked branches and the merge requests into them by itself. Run any protected branch here, or a merge request from its page.',
@@ -51,7 +53,29 @@ export const PIPELINE_COPY = {
     `No pipeline guards ${branches}, so nothing but the review agent's judgment decides what merges. A change can carry text that tries to talk the review agent into approving it. Tick a branch under Run pipelines, with a pipeline configured, for its merge requests to pass the pipeline first.`,
   autoMergeGuardedHint: (branches: string) =>
     `A pipeline guards ${branches}: a task's merge request merges only once its pipeline passes too. A pipeline can't tell a weakened test from a sound one, so the review agent's judgment still counts.`,
+  // Beside a failing job that fails on the target too.
+  alsoFailing: (target: string) => `also failing on ${target}`,
+  alsoFailingHint: (target: string) => `This job fails in ${target}'s own pipeline of the same commit too, so it isn't sent back to the task's agent.`,
+  targetPending: (target: string) => `Waiting for ${target}'s own pipeline of the same commit, to tell the failures this change brings from those already there.`,
+  // The project's automatic review of a merge request a pipeline guards.
+  reviewAwaitsPipeline: 'The automatic review starts once the pipeline passes.',
 } as const
+
+// What a task's automatic pipeline rounds say, on the task and on its merge
+// request, or '' when there is nothing to say: the task was sent back
+// because its pipeline failed, or the failure waits for you.
+export function pipelineRoundsText(rounds: PipelineRounds | undefined): string {
+  if (!rounds) return ''
+  switch (rounds.held) {
+    case 'limit':
+      return `Waiting for you: the pipeline still failed after ${rounds.limit} automatic rounds. Send the failure back, or look at the change.`
+    case 'stuck':
+      return "Waiting for you: stuck, the agent's last round failed the same jobs the same way. Send the failure back with a hint, or look at the change."
+    case 'budget':
+      return ''
+  }
+  return rounds.count > 0 ? `Sent back after the pipeline failed (${rounds.count} of ${rounds.limit}).` : ''
+}
 
 // Where a commit keeps its pipeline, as the server's project.PipelineFiles.
 export const PIPELINE_FILES = ['.devpad/pipeline.yml', '.devpad/pipeline.yaml']

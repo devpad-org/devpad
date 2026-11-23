@@ -252,7 +252,8 @@ func runCutShort(run domain.AgentRun) string {
 // PipelineEnd is one of a merge request's pipelines finishing: which, and
 // how it ended, as the pipeline package's status names it. Told at least
 // once, maybe more, in any order, so what acts on it reads how the merge
-// request's pipeline stands now rather than trusting this one is the latest.
+// request's pipeline stands now rather than trusting this one is the latest
+// (PipelineFinished).
 type PipelineEnd struct {
 	UserID         int64
 	ProjectID      int64
@@ -261,31 +262,18 @@ type PipelineEnd struct {
 	Status         string
 }
 
-// PipelineFinished decides again, in the background, on each approval of
-// the merge request waiting for its pipeline: one of its pipelines
-// finished, however it ended. Being told twice, or of an older pipeline,
-// decides nothing twice, since each approval is read again under the merge
-// request's lock and settled once.
-func (s *service) PipelineFinished(_ context.Context, m PipelineEnd) {
-	s.spawn(func(ctx context.Context) {
-		mr, err := s.repo.GetByID(ctx, m.MergeRequestID)
-		if err != nil || mr == nil || mr.UserID != m.UserID || mr.ProjectID != m.ProjectID {
-			return
-		}
-		s.resumeApprovals(ctx, mr)
-	})
-}
-
 // ProjectSettingsChanged decides again, in the background, on every
-// approval of the project waiting for a pipeline: the branches it merges
-// into automatically, or runs pipelines on, or its pipeline setting changed,
-// which can open the gate, shut it, or end the wait altogether. Deciding
-// now, under the rules as they are, keeps an approval from waiting for a
-// pipeline that will never run, and from merging at the next start under
+// approval of the project waiting for a pipeline, and on every review its
+// merge requests owe: the branches it merges into automatically, or runs
+// pipelines on, or its pipeline setting changed, which can open the gate,
+// shut it, or end the wait altogether. Deciding now, under the rules as
+// they are, keeps an approval or a review from waiting for a pipeline that
+// will never run, and an approval from merging at the next start under
 // rules that no longer hold. It only takes note: the project tells it
 // synchronously.
 func (s *service) ProjectSettingsChanged(_ context.Context, _, after *project.Project) {
 	projectID := after.ID
+	s.spawn(func(ctx context.Context) { s.resumeReviews(ctx, projectID) })
 	s.spawn(func(ctx context.Context) {
 		reviews, err := s.repo.ListUnsettledReviews(ctx)
 		if err != nil {
