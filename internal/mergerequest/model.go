@@ -279,6 +279,10 @@ type Detail struct {
 type Change struct {
 	*agent.RepoDiff
 	LookClosely LookClosely `json:"lookClosely"`
+	// PipelineFile is the pipeline file the change adds, changes, renames or
+	// deletes, "" when it touches none (project.ChangedPipelineFile, the
+	// rule by which an automatic merge never takes it).
+	PipelineFile string `json:"pipelineFile"`
 }
 
 // CreateInput opens a merge request for a published branch.

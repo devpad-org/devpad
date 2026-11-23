@@ -78,6 +78,9 @@ export interface LookCloselySummary {
 // What a merge request changes, and the files of it devpad marks.
 export interface MergeRequestChange extends RepoDiff {
   lookClosely: LookClosely
+  // The pipeline file the change adds, changes, renames or deletes, empty
+  // when it touches none: devpad never merges such a change by itself.
+  pipelineFile: string
 }
 
 export interface PipelineOverride {

@@ -2,7 +2,7 @@
 import MrIcon from '@/components/project/MrIcon.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import { pipelineApi } from '@/api/pipelines'
-import { PIPELINE_COPY } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_COPY } from '@/components/pipeline/pipelineCopy'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import ProjectCard from './ProjectCard.vue'
 import type { CardStatus } from './card'

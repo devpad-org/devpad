@@ -4,7 +4,7 @@ import { projectApi, type UpstreamBranch, type UpstreamStatus } from '@/api/proj
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { fullTime, timeAgo } from '@/utils/time'
 import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
-import { PIPELINE_STATUS, shownOf, staleIn, type StatusLook } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_OUT_OF_DATE, PIPELINE_STATUS, noResultLook, shownOf, staleIn } from '@/components/pipeline/pipelineFormat'
 import { shortSha } from '@/components/mergerequest/format'
 import ProjectBranchesModal from './ProjectBranchesModal.vue'
 import ProjectCard from './ProjectCard.vue'
@@ -66,14 +66,11 @@ function pipelineBadge(name: string) {
   const p = shownOf(st)
   if (!st || !p) return null
   const noResult = st.noResult
-  if (noResult && p.id === noResult.pipeline.id) {
-    const look: StatusLook = noResult.pipeline.status === 'cancelled' ? PIPELINE_STATUS.cancelled : { ...PIPELINE_STATUS.error, label: "Couldn't run" }
-    return { look, title: noResult.reason }
-  }
+  if (noResult && p.id === noResult.pipeline.id) return { look: noResultLook(noResult), title: noResult.reason }
   const status = PIPELINE_STATUS[p.status]
   if (st.configured !== null && staleIn(st, p.id)) {
     const why = st.tip !== p.headSha ? 'an older commit' : 'with jobs the branch no longer has'
-    return { look: { label: 'Out of date', tone: 'neutral', icon: 'clock' } as StatusLook, title: `Latest pipeline #${p.id} ${status.label.toLowerCase()} on ${shortSha(p.headSha)}, ${why}` }
+    return { look: PIPELINE_OUT_OF_DATE, title: `Latest pipeline #${p.id} ${status.label.toLowerCase()} on ${shortSha(p.headSha)}, ${why}` }
   }
   return { look: status, title: `Latest pipeline #${p.id}: ${status.label.toLowerCase()} on ${shortSha(p.headSha)}, ${timeAgo(p.createdAt)}` }
 }

@@ -729,10 +729,13 @@ func (s *service) Diff(ctx context.Context, userID, projectID, mrID int64) (*Cha
 	if err != nil {
 		return nil, err
 	}
+	change := &Change{RepoDiff: diff, PipelineFile: project.ChangedPipelineFile(diff.Files)}
 	if mr.Status != StatusOpen {
-		return &Change{RepoDiff: diff, LookClosely: s.lookCloselyOf(ctx, mr, diff)}, nil
+		change.LookClosely = s.lookCloselyOf(ctx, mr, diff)
+	} else {
+		change.LookClosely = s.recordLookClosely(ctx, mr, diff)
 	}
-	return &Change{RepoDiff: diff, LookClosely: s.recordLookClosely(ctx, mr, diff)}, nil
+	return change, nil
 }
 
 // Commits lists the commits the merge request proposes, newest first: those

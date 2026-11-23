@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import DocLink from '@/components/DocLink.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import PipelineView from '@/components/pipeline/PipelineView.vue'
-import { PIPELINE_COPY, pipelineRoundsText } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_COPY, pipelineRoundsText } from '@/components/pipeline/pipelineCopy'
 import { shortSha } from './format'
 import { useMergeRequest } from './useMergeRequest'
 

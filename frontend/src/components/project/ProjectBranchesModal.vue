@@ -4,7 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { pipelineApi, MAX_LATEST_SUBJECTS } from '@/api/pipelines'
 import { projectApi } from '@/api/projects'
 import SelectMenu from '@/components/SelectMenu.vue'
-import { PIPELINE_COPY } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_COPY } from '@/components/pipeline/pipelineCopy'
 import { useActiveProjectStore } from '@/stores/activeProject'
 
 // Picks the project's default branch and the other branches that change

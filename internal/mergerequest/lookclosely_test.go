@@ -297,8 +297,21 @@ func TestTheLookCloselyMarkFollowsTheHead(t *testing.T) {
 	e.projects.files = []agent.RepoDiffFile{{Path: "cart.go", Status: "M"}}
 	e.projects.mu.Unlock()
 	change, err := e.svc.Diff(ctx, e.owner, e.pid(), mr.ID)
-	if err != nil || change.LookClosely.Marked() || len(change.Files) != 1 || change.LookClosely.Files == nil {
+	if err != nil || change.LookClosely.Marked() || len(change.Files) != 1 || change.LookClosely.Files == nil || change.PipelineFile != "" {
 		t.Fatalf("the change: %+v %v", change, err)
+	}
+	// It names the pipeline file it touches, by its new path or its old.
+	e.projects.mu.Lock()
+	e.projects.files = []agent.RepoDiffFile{{Path: "cart.go", Status: "M"}, {Path: "ci.yml", OldPath: ".devpad/pipeline.yml", Status: "R"}}
+	e.projects.mu.Unlock()
+	if change, err := e.svc.Diff(ctx, e.owner, e.pid(), mr.ID); err != nil || change.PipelineFile != ".devpad/pipeline.yml" {
+		t.Fatalf("a change renaming the pipeline file: %+v %v", change, err)
+	}
+	e.projects.mu.Lock()
+	e.projects.files = []agent.RepoDiffFile{{Path: "cart.go", Status: "M"}}
+	e.projects.mu.Unlock()
+	if _, err := e.svc.Diff(ctx, e.owner, e.pid(), mr.ID); err != nil {
+		t.Fatal(err)
 	}
 	if got := listed(); got == nil || got.Marked() {
 		t.Fatalf("after reading the change: %+v", got)

@@ -1,7 +1,8 @@
 import { computed, ref, type Ref } from 'vue'
 import type { MergeRequestDetail } from '@/api/mergeRequests'
 import { pipelineApi, type MergeRequestPipelineStatus, type Pipeline } from '@/api/pipelines'
-import { PIPELINE_COPY, PIPELINE_STATUS, shownOf, sourceLabel, staleIn } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_STATUS, failedJobNames, shownOf, sourceLabel, staleIn } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_COPY } from '@/components/pipeline/pipelineCopy'
 import { errorText, plural, shortSha } from './format'
 import type { Check } from './useMergeRequest'
 
@@ -213,7 +214,7 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
       case 'passed':
         return { ...base, tone: 'success', icon: 'check', title: 'Pipeline passed', detail: `${plural(p.jobs.length, 'job')} passed on this branch merged onto ${p.targetBranch} as it is now. ${from}` }
       case 'failed': {
-        const failed = p.jobs.filter((j) => ['failed', 'timed_out', 'out_of_memory'].includes(j.status)).map((j) => j.name)
+        const failed = failedJobNames(p)
         return { ...base, tone: 'error', icon: 'warning', title: 'Pipeline failed', detail: failed.length ? `Failed: ${failed.join(', ')}.` : undefined }
       }
       case 'conflict':

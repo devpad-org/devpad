@@ -7,7 +7,7 @@ import { fullTime, timeAgo } from '@/utils/time'
 import MrIcon, { type MrIconName } from './MrIcon.vue'
 import NewMergeRequestModal from './NewMergeRequestModal.vue'
 import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
-import { PIPELINE_STATUS, type StatusLook } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_OUT_OF_DATE, PIPELINE_STATUS, type StatusLook } from '@/components/pipeline/pipelineFormat'
 import { lookCloselySummary, shortSha } from '@/components/mergerequest/format'
 import { TASK_STATUS } from './taskStatus'
 
@@ -30,8 +30,6 @@ const STATUS: Record<MergeRequestStatus, { order: number; icon: MrIconName; labe
   merged: { order: 1, icon: 'merged', label: 'Merged' },
   closed: { order: 2, icon: 'closed', label: 'Closed' },
 }
-
-const OUT_OF_DATE: StatusLook = { label: 'Out of date', tone: 'neutral', icon: 'clock' }
 
 const filter = ref<Filter>('open')
 const search = ref('')
@@ -115,7 +113,7 @@ const pipelineLooks = computed(() => {
     if (!p) continue
     const label = PIPELINE_STATUS[p.status].label.toLowerCase()
     if (p.headSha !== mr.headSha) {
-      looks.set(mr.id, { look: OUT_OF_DATE, title: `Pipeline #${p.id} ${label} on an older commit, ${shortSha(p.headSha)}: out of date` })
+      looks.set(mr.id, { look: PIPELINE_OUT_OF_DATE, title: `Pipeline #${p.id} ${label} on an older commit, ${shortSha(p.headSha)}: out of date` })
     } else {
       looks.set(mr.id, { look: PIPELINE_STATUS[p.status], title: `Pipeline #${p.id} ${label} on this head onto ${p.targetBranch} at ${shortSha(p.targetSha)}` })
     }

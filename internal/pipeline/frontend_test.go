@@ -60,3 +60,29 @@ func tsUnion(t *testing.T, file, name string) []string {
 	}
 	return values
 }
+
+// The app's jobFailed names the job statuses JobStatus.Failed does.
+func TestJobFailedMatchesTheFrontend(t *testing.T) {
+	source, err := os.ReadFile("../../frontend/src/components/pipeline/pipelineFormat.ts")
+	if err != nil {
+		t.Fatalf("reading the frontend's pipeline format: %v", err)
+	}
+	body := regexp.MustCompile(`(?s)export function jobFailed\(j: PipelineJob\): boolean \{(.*?)\n\}`).FindSubmatch(source)
+	if body == nil {
+		t.Fatal("cannot find jobFailed in frontend/src/components/pipeline/pipelineFormat.ts")
+	}
+	var frontend, server []string
+	for _, m := range regexp.MustCompile(`'([a-z_]+)'`).FindAllSubmatch(body[1], -1) {
+		frontend = append(frontend, string(m[1]))
+	}
+	for _, s := range JobStatuses() {
+		if s.Failed() {
+			server = append(server, string(s))
+		}
+	}
+	slices.Sort(frontend)
+	slices.Sort(server)
+	if !slices.Equal(frontend, server) {
+		t.Errorf("the server's failed job statuses are %v, the frontend's jobFailed names %v", server, frontend)
+	}
+}

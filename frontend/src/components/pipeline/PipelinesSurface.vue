@@ -6,7 +6,7 @@ import DocLink from '@/components/DocLink.vue'
 import SelectMenu from '@/components/SelectMenu.vue'
 import { usePipelineList } from '@/composables/usePipelines'
 import { useActiveProjectStore } from '@/stores/activeProject'
-import { PIPELINE_COPY } from './pipelineFormat'
+import { PIPELINE_COPY } from './pipelineCopy'
 import PipelineList from './PipelineList.vue'
 import PipelineView from './PipelineView.vue'
 
