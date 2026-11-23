@@ -267,6 +267,9 @@ func (h *Handler) HandleMerge(w http.ResponseWriter, r *http.Request) {
 		Strategy string `json:"strategy"`
 		Message  string `json:"message"`
 		Push     bool   `json:"push"`
+		// OverridePipeline is the pipeline gate's state the user confirmed
+		// merging over, such as "failed"; empty leaves the gate to decide.
+		OverridePipeline string `json:"overridePipeline"`
 	}
 	if r.ContentLength != 0 && !decode(w, r, &req) {
 		return
@@ -368,7 +371,16 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 
 func handleServiceError(w http.ResponseWriter, err error) {
 	var agentErr *agent.AgentError
+	var gateErr *GateError
 	switch {
+	case errors.As(err, &gateErr):
+		// How the gate stands, for the merge card to ask the user again.
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "pipelineGate": map[string]any{
+			"state":       gateErr.Gate.State,
+			"reason":      gateErr.Gate.Reason,
+			"overridable": gateErr.Gate.Overridable,
+			"changed":     gateErr.Changed,
+		}})
 	case errors.Is(err, ErrNotFound), errors.Is(err, project.ErrNotFound), errors.Is(err, task.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, project.ErrForbidden):
@@ -406,7 +418,21 @@ func mergeRequestResponse(mr *MergeRequest) map[string]any {
 		"createdAt":      mr.CreatedAt,
 		"updatedAt":      mr.UpdatedAt,
 		"agentReviewing": mr.AgentReviewing,
+		// The pipeline gate's state the user merged over, and the pipeline
+		// that stood then; null when the merge overrode nothing.
+		"pipelineOverride": pipelineOverrideResponse(mr.PipelineOverride),
 	}
+}
+
+func pipelineOverrideResponse(o *PipelineOverride) any {
+	if o == nil {
+		return nil
+	}
+	var pipelineID any
+	if o.PipelineID != 0 {
+		pipelineID = o.PipelineID
+	}
+	return map[string]any{"state": o.State, "pipelineId": pipelineID}
 }
 
 func reviewResponse(rv *Review) map[string]any {

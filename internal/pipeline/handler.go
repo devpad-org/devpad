@@ -135,14 +135,15 @@ func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 	// pipeline of an older commit; null when the repo could not be read.
 	branches := make(map[string]any, len(latest.Branches))
 	for name, st := range latest.Branches {
-		branches[name] = map[string]any{"automatic": st.Automatic, "settled": settledResponse(st.Settled)}
+		branches[name] = map[string]any{"automatic": st.Automatic, "configured": st.Configured, "settled": settledResponse(st.Settled)}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"pipelines":  items,
 		"branchTips": latest.BranchTips,
-		// Whether each branch asked for runs pipelines by itself, and the
-		// pipeline of its current commit and jobs that ended without a
-		// result when none of them counts.
+		// Whether each branch asked for runs pipelines by itself, whether
+		// a pipeline is configured at its current commit (null when that
+		// could not be read), and the pipeline of its current commit and
+		// jobs that ended without a result when none of them counts.
 		"branches": branches,
 	})
 }
@@ -194,7 +195,26 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 		"latest":     pipelineOrNil(st.Latest),
 		"automatic":  st.Automatic,
 		"settled":    settledResponse(st.Settled),
+		"gate":       gateResponse(st.Gate()),
 	}})
+}
+
+// gateResponse is how the merge gate stands: what the merge card shows,
+// and the state a merge that overrides it names.
+func gateResponse(g *Gate) map[string]any {
+	var pipelineID any
+	if g.Pipeline != nil {
+		pipelineID = g.Pipeline.ID
+	}
+	return map[string]any{
+		"state":       g.State,
+		"guarded":     g.Guarded(),
+		"clear":       g.Clear(),
+		"waits":       g.Waits,
+		"overridable": g.Overridable(),
+		"reason":      g.Reason,
+		"pipelineId":  pipelineID,
+	}
 }
 
 // sourceOf is where the jobs of the merge request's pipeline come from now,

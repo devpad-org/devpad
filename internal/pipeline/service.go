@@ -436,6 +436,11 @@ type LatestPipelines struct {
 type BranchStanding struct {
 	// Automatic says devpad runs its pipelines by itself.
 	Automatic bool
+	// Configured says whether a pipeline is configured at its current
+	// commit, a file there or the project's setting, one that doesn't parse
+	// included: with Automatic, a pipeline guards the merge requests into
+	// it (Gate). Nil when its commit or pipeline could not be read.
+	Configured *bool
 	// Settled is, when no pipeline of its current commit and jobs counts,
 	// the newest that ended without a result on them, or nil.
 	Settled *SettledPipeline
@@ -481,9 +486,9 @@ func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestF
 	return out, nil
 }
 
-// settleBranch fills in the settled pipeline of a branch at tip, unless
-// its pipeline at tip cannot be read, which only leaves the badge without
-// it.
+// settleBranch fills in whether a pipeline is configured for a branch at
+// tip and its settled pipeline, unless its pipeline at tip cannot be read,
+// which only leaves the badge without them.
 func (s *service) settleBranch(ctx context.Context, p *project.Project, branch, tip string, st *BranchStanding) {
 	if !project.IsCommitHash(tip) || !p.IsProtected(branch) {
 		return
@@ -493,6 +498,8 @@ func (s *service) settleBranch(ctx context.Context, p *project.Project, branch, 
 		log.Printf("pipeline: project %d's %s for its badge: %v", p.ID, branch, err)
 		return
 	}
+	configured := resolved.Source != SourceNone
+	st.Configured = &configured
 	probe := &Pipeline{ProjectID: p.ID, Kind: KindBranch, Branch: branch, HeadSHA: tip, ConfigHash: resolved.Hash}
 	if st.Settled, err = s.settledOf(ctx, probe, st.Automatic); err != nil {
 		log.Printf("pipeline: project %d's %s for its badge: %v", p.ID, branch, err)

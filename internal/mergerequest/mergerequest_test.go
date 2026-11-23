@@ -447,6 +447,7 @@ func (f fakeConversations) CreateConversation(_ context.Context, userID, workspa
 type env struct {
 	svc        *service
 	db         *sql.DB
+	gate       *fakeGate
 	projects   *fakeProjects
 	workspaces *fakeWorkspaces
 	tasks      *fakeTasks
@@ -547,6 +548,8 @@ func setup(t *testing.T) *env {
 		Models:        e.models,
 	}).(*service)
 	e.runs.onFinish = e.svc.RunFinished
+	e.gate = &fakeGate{gate: Gate{State: "unguarded", Clear: true}}
+	e.svc.SetPipelineGate(e.gate)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -2819,7 +2822,7 @@ func TestAutoMergeMergesWhatTheReviewApproved(t *testing.T) {
 	ctx := context.Background()
 	mr := e.openTaskMR(t)
 	rv := e.startAgentReview(t, mr, AgentReviewInput{})
-	if !strings.Contains(e.runs.started()[0].Message.Text(), "Approving merges the change into `main` at once") {
+	if !strings.Contains(e.runs.started()[0].Message.Text(), "Approving merges the change into `main`, with no one else reviewing it first") {
 		t.Fatal("expected the review agent told that approving merges")
 	}
 	e.approve(t, rv, domain.AgentRunCompleted, nil)

@@ -24,6 +24,7 @@ export const DOC_LINKS = {
   pipelineJobs: '/docs/pipelines#how-jobs-run',
   pipelineStatuses: '/docs/pipelines#statuses',
   mergeRequestPipelines: '/docs/pipelines#merge-requests',
+  mergeGate: '/docs/pipelines#merge-gate',
   tasks: '/docs/tasks',
   taskLinks: '/docs/tasks#linked-tasks',
   taskComments: '/docs/tasks#comments',

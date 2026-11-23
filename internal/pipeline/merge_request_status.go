@@ -16,6 +16,8 @@ type MergeRequestStatus struct {
 	// Open says the merge request can still merge into a protected branch.
 	// When it can't, there is no Key and no Current: only Latest.
 	Open bool
+	// Target is the branch it merges into.
+	Target string
 	// Key is what a pipeline of the merge request must test to count now:
 	// its current head merged onto its target branch's current tip, with
 	// the jobs the target's pipeline at that tip has now.
@@ -43,7 +45,7 @@ type MergeRequestStatus struct {
 	// ended without a result, cancelled or unable to run, with why and
 	// whether devpad runs Key once more: what the merge request shows
 	// rather than "no pipeline yet", and what the merge gate names when it
-	// refuses. Nil otherwise.
+	// is shut. Nil otherwise.
 	Settled *SettledPipeline
 }
 
@@ -120,21 +122,15 @@ func (st *MergeRequestStatus) Passed() bool {
 	return st.Open && st.Current != nil && st.Current.Status == StatusPassed
 }
 
-// Configured reports whether a pipeline guards the merge request now. A
-// pipeline that doesn't parse (Invalid) guards it too: it can never pass,
-// so a broken pipeline file or setting keeps the merge request from
-// merging rather than letting it through. A merge request that can no
-// longer merge has no Source, and so is never taken for one with none.
+// Configured reports whether a pipeline is configured for the merge
+// request now: its target's commit has a pipeline file, or the project a
+// setting. One that doesn't parse (Invalid) is too: it can never pass, so
+// into a ticked branch a broken pipeline file or setting keeps the merge
+// request from merging (Gate) rather than letting it through. A merge
+// request that can no longer merge has no Source, and so is never taken for
+// one with none.
 func (st *MergeRequestStatus) Configured() bool {
 	return st.Source != SourceNone
-}
-
-// MergeClear reports whether the merge gate lets the merge request merge
-// as its pipelines stand: it is open, and its pipeline passed on its head
-// and target as they are now, or no pipeline is configured. A pipeline that
-// doesn't parse never clears it.
-func (st *MergeRequestStatus) MergeClear() bool {
-	return st.Open && (st.Passed() || !st.Configured())
 }
 
 // MergeRequestStatus reads how a merge request of the user's project stands
@@ -142,9 +138,8 @@ func (st *MergeRequestStatus) MergeClear() bool {
 // its target's tip from the canonical repo, and resolves the pipeline at
 // that tip, so the answer is never about commits or jobs that have moved
 // on. It is the one place that says whether a merge request's pipeline
-// result is current: the merge request page shows it, and the merge gate is
-// to refuse unless MergeClear: Passed, or no pipeline Configured, which an
-// Invalid one always is.
+// result is current: the merge request page shows it, and its Gate is the
+// merge gate.
 func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mergeRequestID int64) (*MergeRequestStatus, error) {
 	p, err := s.projects.Get(ctx, userID, projectID)
 	if err != nil {
@@ -157,7 +152,7 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 	if mr == nil {
 		return nil, ErrMergeRequestNotFound
 	}
-	st := &MergeRequestStatus{}
+	st := &MergeRequestStatus{Target: mr.TargetBranch}
 	latest, err := s.repo.Latest(ctx, projectID, LatestFilter{MergeRequestIDs: []int64{mr.ID}})
 	if err != nil {
 		return nil, err

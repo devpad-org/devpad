@@ -64,7 +64,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const mrColumns = `id, project_id, user_id, task_id, opened_by, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, merged_by, created_at, updated_at`
+const mrColumns = `id, project_id, user_id, task_id, opened_by, title, description, source_branch, target_branch, status, head_sha, base_sha, merge_sha, merged_at, merged_by, pipeline_override, pipeline_override_id, created_at, updated_at`
 
 func (r *repository) Create(ctx context.Context, mr *MergeRequest) error {
 	now := time.Now()
@@ -125,9 +125,14 @@ func (r *repository) ListOpenByTarget(ctx context.Context, projectID int64, targ
 
 func (r *repository) Update(ctx context.Context, mr *MergeRequest) error {
 	now := time.Now()
+	var override string
+	var overridePipeline any
+	if o := mr.PipelineOverride; o != nil {
+		override, overridePipeline = o.State, nullableID(o.PipelineID)
+	}
 	if _, err := r.db.ExecContext(ctx,
-		`UPDATE merge_requests SET title = ?, description = ?, status = ?, head_sha = ?, base_sha = ?, merge_sha = ?, merged_at = ?, merged_by = ?, updated_at = ? WHERE id = ?`,
-		mr.Title, mr.Description, mr.Status, mr.HeadSHA, mr.BaseSHA, mr.MergeSHA, mr.MergedAt, mr.MergedBy, now, mr.ID,
+		`UPDATE merge_requests SET title = ?, description = ?, status = ?, head_sha = ?, base_sha = ?, merge_sha = ?, merged_at = ?, merged_by = ?, pipeline_override = ?, pipeline_override_id = ?, updated_at = ? WHERE id = ?`,
+		mr.Title, mr.Description, mr.Status, mr.HeadSHA, mr.BaseSHA, mr.MergeSHA, mr.MergedAt, mr.MergedBy, override, overridePipeline, now, mr.ID,
 	); err != nil {
 		return fmt.Errorf("updating merge request: %w", err)
 	}
@@ -335,13 +340,18 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 	var mr MergeRequest
 	var taskID sql.NullInt64
 	var mergedAt sql.NullTime
-	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.OpenedBy, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.MergedBy, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
+	var override string
+	var overridePipeline sql.NullInt64
+	dest := append([]any{&mr.ID, &mr.ProjectID, &mr.UserID, &taskID, &mr.OpenedBy, &mr.Title, &mr.Description, &mr.SourceBranch, &mr.TargetBranch, &mr.Status, &mr.HeadSHA, &mr.BaseSHA, &mr.MergeSHA, &mergedAt, &mr.MergedBy, &override, &overridePipeline, &mr.CreatedAt, &mr.UpdatedAt}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
 	mr.TaskID = taskID.Int64
 	if mergedAt.Valid {
 		mr.MergedAt = &mergedAt.Time
+	}
+	if override != "" {
+		mr.PipelineOverride = &PipelineOverride{State: override, PipelineID: overridePipeline.Int64}
 	}
 	return &mr, nil
 }

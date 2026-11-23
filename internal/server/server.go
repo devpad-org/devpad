@@ -189,6 +189,14 @@ func New(cfg Config) (*Server, error) {
 	projectService.AddBranchListener(pipelineService)
 	projectService.AddSettingsListener(pipelineService)
 	mrService.AddListener(mergeRequestPipelines{pipelines: pipelineService})
+	// Every merge asks the pipeline gate first: a merge request into a
+	// ticked branch with a pipeline merges once its pipeline passed on its
+	// head merged onto the branch as it is, or when the user overrides it.
+	// An automatic merge waiting for its pipeline decides again as each of
+	// the merge request's pipelines finishes, which the pipeline service
+	// tells it from Reconcile on.
+	mrService.SetPipelineGate(mergeRequestGate{pipelines: pipelineService})
+	pipelineService.AddListener(mergeRequestPipelineEnds{mrs: mrService})
 	pipelineHandler := pipeline.NewHandler(projectService, pipelineService)
 
 	// What each run's workspace is, which every tool provider is told. It is

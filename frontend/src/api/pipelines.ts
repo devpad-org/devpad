@@ -151,10 +151,50 @@ export interface SettledPipeline {
 }
 
 // How a branch stands for pipelines now: whether devpad runs it by itself,
-// and its settled pipeline.
+// whether a pipeline is configured at its current commit (null when that
+// couldn't be read), and its settled pipeline. Automatic and configured, a
+// pipeline guards the merge requests into it.
 export interface BranchPipelineStanding {
   automatic: boolean
+  configured: boolean | null
   settled: SettledPipeline | null
+}
+
+// How the merge gate stands: unguarded when no pipeline guards the merge
+// request (its target isn't ticked under Run pipelines, or has no
+// pipeline), passed when its pipeline passed on it as it is now, closed
+// when it can no longer merge, and otherwise why its pipeline keeps it from
+// merging.
+export type MergeGateState =
+  | 'unguarded'
+  | 'passed'
+  | 'queued'
+  | 'running'
+  | 'not_run'
+  | 'out_of_date'
+  | 'failed'
+  | 'conflict'
+  | 'invalid'
+  | 'error'
+  | 'cancelled'
+  | 'closed'
+
+// The merge gate, as the server decides it: the one rule for whether a
+// merge request's pipeline lets it merge.
+export interface MergeGate {
+  state: MergeGateState
+  // A pipeline guards the merge request.
+  guarded: boolean
+  // The gate lets it merge.
+  clear: boolean
+  // A result that could clear it is still to come by itself.
+  waits: boolean
+  // You can merge anyway, which the merge request records.
+  overridable: boolean
+  // Why it is shut, as a lowercase clause; empty when it is clear.
+  reason: string
+  // The pipeline the state is about, if any.
+  pipelineId: number | null
 }
 
 // How a merge request stands for pipelines now, as the server works it out:
@@ -187,6 +227,8 @@ export interface MergeRequestPipelineStatus {
   // When nothing current counts, the newest of these commits and jobs that
   // was cancelled or couldn't run, and why.
   settled: SettledPipeline | null
+  // Whether the pipeline lets it merge.
+  gate: MergeGate
 }
 
 function base(projectId: number): string {

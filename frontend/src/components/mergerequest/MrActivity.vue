@@ -6,7 +6,7 @@ import BudgetReached from '@/components/project/BudgetReached.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
 import { fullTime, timeAgo } from '@/utils/time'
 import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
-import { PIPELINE_OUTCOME, PIPELINE_STATUS, sourceLabel, triggerLabel } from '@/components/pipeline/pipelineFormat'
+import { GATE_OVERRIDDEN, PIPELINE_OUTCOME, PIPELINE_STATUS, sourceLabel, triggerLabel } from '@/components/pipeline/pipelineFormat'
 import MrCommits from './MrCommits.vue'
 import MrThread from './MrThread.vue'
 import { authorIcon, authorName, autoMergeReason, errorText, plural, pushSummary, reviewAction, reviewIcon, reviewTone, shortSha } from './format'
@@ -14,8 +14,9 @@ import { useMergeRequest, type TimelineItem } from './useMergeRequest'
 
 // The merge request's timeline: opened with its first commits, each push of
 // more, each review's verdict, every thread, on a line or on the whole
-// change, and how it ended. It can show only the threads still open, and
-// ends with a box for a new comment.
+// change, and how it ended, saying when you merged it over its pipeline.
+// It can show only the threads still open, and ends with a box for a new
+// comment.
 const {
   mr,
   isOpen,
@@ -189,6 +190,11 @@ async function submitComment() {
         <span class="event-line">
           <template v-if="mr.status === 'merged'">
             Merged into <span class="mono">{{ mr.targetBranch }}</span>
+            <template v-if="mr.pipelineOverride">
+              by you although {{ GATE_OVERRIDDEN[mr.pipelineOverride.state] }}<template v-if="mr.pipelineOverride.pipelineId">
+                (<button type="button" class="pipeline-link" :title="`Show pipeline #${mr.pipelineOverride.pipelineId} above`" @click="showPipeline(mr.pipelineOverride.pipelineId)">#{{ mr.pipelineOverride.pipelineId }}</button>)</template
+              >
+            </template>
             <span class="muted" :title="fullTime(mr.mergedAt)"> &middot; {{ timeAgo(mr.mergedAt) }}</span>
           </template>
           <template v-else>
@@ -246,7 +252,7 @@ async function submitComment() {
   bottom: 12px;
   left: 13px;
   width: 1px;
-  background: var(--border-default);
+  background: var(--border-subtle);
 }
 
 .event {
@@ -312,11 +318,11 @@ async function submitComment() {
 }
 
 .edge-review {
-  border-left-color: var(--accent-purple);
+  border-left-color: var(--hue-purple);
 }
 
 .edge-active {
-  border-left-color: var(--accent-blue);
+  border-left-color: var(--hue-blue);
 }
 
 .edge-error {

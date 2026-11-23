@@ -1,7 +1,7 @@
 import { computed, ref, type Ref } from 'vue'
 import type { MergeRequestDetail } from '@/api/mergeRequests'
 import { pipelineApi, type MergeRequestPipelineStatus, type Pipeline } from '@/api/pipelines'
-import { PIPELINE_STATUS, sourceLabel } from '@/components/pipeline/pipelineFormat'
+import { PIPELINE_COPY, PIPELINE_STATUS, sourceLabel } from '@/components/pipeline/pipelineFormat'
 import { errorText, plural, shortSha } from './format'
 import type { Check } from './useMergeRequest'
 
@@ -9,11 +9,11 @@ import type { Check } from './useMergeRequest'
 const LISTED = 50
 
 // A merge request's pipelines: the server's word on how it stands now
-// (whether a pipeline is configured, and the one of its current head,
-// target tip and jobs), the one its Pipeline card shows, the merge card's
-// row, its pipelines for the activity, and starting one by hand. Whether a
-// result is current is never worked out here: the server says. Nothing here
-// keeps the merge request from merging.
+// (whether a pipeline is configured, the one of its current head, target
+// tip and jobs, and the merge gate), the one its Pipeline card shows, the
+// merge card's row, its pipelines for the activity, and starting one by
+// hand. Whether a result is current, and whether it lets the merge request
+// merge, is never worked out here: the server says.
 export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr: Ref<MergeRequestDetail | null>, onStarted: () => void) {
   const pipelines = ref<Pipeline[]>([])
   const status = ref<MergeRequestPipelineStatus | null>(null)
@@ -28,6 +28,17 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
   let seq = 0
 
   const current = computed(() => status.value?.current ?? null)
+  // Whether the pipeline lets the merge request merge.
+  const gate = computed(() => status.value?.gate ?? null)
+  // What the merge card's row adds of the gate: whether the result keeps
+  // the merge request from merging, and when it doesn't, why not.
+  const gateNote = computed(() => {
+    const g = gate.value
+    const target = mr.value?.targetBranch
+    if (!g || !target || g.state === 'closed') return ''
+    if (!g.guarded) return status.value?.configured ? PIPELINE_COPY.gateNotTicked(target) : PIPELINE_COPY.gateNotConfigured(target)
+    return g.clear ? '' : PIPELINE_COPY.gateShut
+  })
   const latest = computed(() => status.value?.latest ?? null)
   // The pipeline of the current commits and jobs that was cancelled or
   // couldn't run, when none of them counts, with why.
@@ -84,7 +95,15 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
     pickedId.value = id === (current.value?.id ?? settled.value?.pipeline.id ?? latest.value?.id) ? null : id
   }
 
+  // The merge card's row: how the pipeline stands, and the gate's note.
   const check = computed<Check | null>(() => {
+    const row = pipelineRow.value
+    if (!row) return null
+    const detail = [row.detail, gateNote.value].filter(Boolean).join(' ')
+    return { ...row, detail: detail || undefined }
+  })
+
+  const pipelineRow = computed<Check | null>(() => {
     const st = status.value
     if (!mr.value || !st || !st.open) return null
     const base = { key: 'pipeline' }
@@ -94,7 +113,7 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
         tone: 'neutral',
         icon: 'minus',
         title: 'No pipeline configured',
-        detail: `${mr.value.targetBranch} has no .devpad/pipeline.yml and the project no pipeline setting, so nothing tests the change.`,
+        detail: 'Nothing tests the change.',
       }
     }
     if (st.invalid) return { ...base, tone: 'error', icon: 'warning', title: "Pipeline doesn't parse", detail: st.invalid }
@@ -157,6 +176,8 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
     current,
     latest,
     settled,
+    gate,
+    gateNote,
     shownId,
     shownStale,
     shownPipeline,

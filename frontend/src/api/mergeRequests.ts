@@ -1,5 +1,6 @@
 import { apiClient, ApiError } from './client'
 import type { AgentSettings, TaskStatus } from './tasks'
+import type { MergeGateState } from './pipelines'
 import type { RepoDiff } from './projects'
 
 export type MergeRequestStatus = 'open' | 'merged' | 'closed'
@@ -25,10 +26,18 @@ export interface MergeRequest {
   // Who merged it: the user, or devpad once a review agent approved it.
   // Empty until it is merged.
   mergedBy: 'user' | 'auto' | ''
+  // You merged it although its pipeline hadn't let it through: how the
+  // merge gate stood then, and the pipeline that stood. Null otherwise.
+  pipelineOverride: PipelineOverride | null
   createdAt: string
   updatedAt: string
   // A review agent is at work on it. Only the list sets it.
   agentReviewing: boolean
+}
+
+export interface PipelineOverride {
+  state: MergeGateState
+  pipelineId: number | null
 }
 
 export interface Review {
@@ -221,7 +230,14 @@ export const mergeRequestApi = {
     return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/agent-reviews/${reviewId}/continue`, input)
   },
 
-  merge(projectId: number, id: number, input: { strategy: MergeStrategy; message?: string; push: boolean }): Promise<MergeResult> {
+  // overridePipeline merges although the pipeline gate is shut: the gate's
+  // state you confirmed merging over. The server refuses it, with the gate
+  // as it stands (pipelineGateFromError), when the gate has moved on.
+  merge(
+    projectId: number,
+    id: number,
+    input: { strategy: MergeStrategy; message?: string; push: boolean; overridePipeline?: MergeGateState },
+  ): Promise<MergeResult> {
     return apiClient.post(`/api/projects/${projectId}/merge-requests/${id}/merge`, input)
   },
 
@@ -246,4 +262,24 @@ export function mergeConflictsFromError(err: unknown): string[] | null {
   if (typeof body !== 'object' || body === null || !('conflicts' in body)) return null
   const conflicts = (body as { conflicts: unknown }).conflicts
   return Array.isArray(conflicts) ? conflicts.filter((c): c is string => typeof c === 'string') : null
+}
+
+// How the pipeline gate stood when it refused a merge: what to ask the user
+// to confirm merging over.
+export interface PipelineGateRefusal {
+  state: MergeGateState
+  reason: string
+  overridable: boolean
+  // You had confirmed merging over another state than this one.
+  changed: boolean
+}
+
+// Returns how the pipeline gate stood when it refused a merge, or null.
+export function pipelineGateFromError(err: unknown): PipelineGateRefusal | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null
+  const body = err.body
+  if (typeof body !== 'object' || body === null || !('pipelineGate' in body)) return null
+  const gate = (body as { pipelineGate: unknown }).pipelineGate
+  if (typeof gate !== 'object' || gate === null || typeof (gate as { state?: unknown }).state !== 'string') return null
+  return gate as PipelineGateRefusal
 }

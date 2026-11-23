@@ -29,7 +29,7 @@ func TestMergeRequestStatusIsOfTheCommitsAndJobsAsTheyAreNow(t *testing.T) {
 	if ran.Status != StatusPassed {
 		t.Fatalf("pipeline: %s %s", ran.Status, ran.Error)
 	}
-	if st := status(); !st.Passed() || !st.MergeClear() || st.Current == nil || st.Current.ID != ran.ID || st.Latest.ID != ran.ID || st.Key.ConfigHash != ran.ConfigHash {
+	if st := status(); !st.Passed() || !st.Gate().Clear() || st.Current == nil || st.Current.ID != ran.ID || st.Latest.ID != ran.ID || st.Key.ConfigHash != ran.ConfigHash {
 		t.Fatalf("after a pass: %+v", st)
 	}
 
@@ -38,7 +38,7 @@ func TestMergeRequestStatusIsOfTheCommitsAndJobsAsTheyAreNow(t *testing.T) {
 	e.projects.branches["develop"] = sha(3)
 	e.projects.mu.Unlock()
 	e.projects.setFile(sha(3), ".devpad/pipeline.yml", jobsYAML)
-	if st := status(); st.Passed() || st.MergeClear() || st.Current != nil || st.Latest == nil || st.Latest.ID != ran.ID || st.Key.TargetSHA != sha(3) {
+	if st := status(); st.Passed() || st.Current != nil || st.Latest == nil || st.Latest.ID != ran.ID || st.Key.TargetSHA != sha(3) {
 		t.Fatalf("after the target moved: %+v", st)
 	}
 
@@ -55,16 +55,17 @@ func TestMergeRequestStatusIsOfTheCommitsAndJobsAsTheyAreNow(t *testing.T) {
 	e.projects.mu.Lock()
 	e.projects.branches["develop"] = sha(5)
 	e.projects.mu.Unlock()
-	if st := status(); st.Configured() || st.Passed() || !st.MergeClear() || st.Source != SourceNone {
+	if st := status(); st.Configured() || st.Passed() || st.Gate().State != GateUnguarded || st.Source != SourceNone {
 		t.Fatalf("with no pipeline: %+v", st)
 	}
-	// One that doesn't parse says why, and guards the merge request: it can
-	// never pass, so the gate stays shut rather than taking it for none.
+	// One that doesn't parse says why, and is configured: it can never
+	// pass, so into a ticked branch the gate stays shut rather than taking
+	// it for none (TestGateStates).
 	e.projects.setFile(sha(6), ".devpad/pipeline.yml", "jobs: {}\n")
 	e.projects.mu.Lock()
 	e.projects.branches["develop"] = sha(6)
 	e.projects.mu.Unlock()
-	if st := status(); st.Invalid == "" || !st.Configured() || st.Passed() || st.MergeClear() {
+	if st := status(); st.Invalid == "" || !st.Configured() || st.Passed() {
 		t.Fatalf("with an invalid pipeline: %+v", st)
 	}
 
@@ -72,7 +73,7 @@ func TestMergeRequestStatusIsOfTheCommitsAndJobsAsTheyAreNow(t *testing.T) {
 	e.mrs.mu.Lock()
 	e.mrs.mrs[e.mr].Open = false
 	e.mrs.mu.Unlock()
-	if st := status(); st.Open || st.Passed() || st.MergeClear() || st.Latest == nil || st.Latest.ID != ran.ID {
+	if st := status(); st.Open || st.Passed() || st.Gate().State != GateClosed || st.Latest == nil || st.Latest.ID != ran.ID {
 		t.Fatalf("closed: %+v", st)
 	}
 

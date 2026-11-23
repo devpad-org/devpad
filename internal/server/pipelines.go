@@ -14,8 +14,9 @@ import (
 )
 
 // pipelineMergeRequests shows pipelines the merge requests they test. The
-// pipeline package never imports the merge request package, which will gate
-// merges on pipelines, so the two meet here.
+// pipeline package never imports the merge request package, which gates
+// merges on pipelines, and the merge request package never imports the
+// pipeline package, so the two meet here.
 type pipelineMergeRequests struct {
 	mrs mergerequest.Service
 }
@@ -73,6 +74,45 @@ func (a mergeRequestPipelines) MergeRequestEnded(ctx context.Context, m mergereq
 	a.pipelines.MergeRequestEnded(ctx, pipeline.MergeRequestEnd{
 		UserID: m.UserID, ProjectID: m.ProjectID, MergeRequestID: m.MergeRequestID, Merged: m.Merged,
 	})
+}
+
+// mergeRequestGate is the merge gate every merge asks first: the pipeline
+// service's MergeRequestStatus.Gate, the one rule for whether a merge
+// request's pipeline lets it merge. It only reads, so the merge request
+// service asks it under the merge request's lock.
+type mergeRequestGate struct {
+	pipelines pipeline.Service
+}
+
+func (a mergeRequestGate) MergeGate(ctx context.Context, userID, projectID, mrID int64) (*mergerequest.Gate, error) {
+	st, err := a.pipelines.MergeRequestStatus(ctx, userID, projectID, mrID)
+	if err != nil {
+		return nil, err
+	}
+	g := st.Gate()
+	out := &mergerequest.Gate{
+		State: string(g.State), Guarded: g.Guarded(), Clear: g.Clear(), Waits: g.Waits, Overridable: g.Overridable(),
+		Reason: g.Reason, HeadSHA: g.HeadSHA, TargetSHA: g.TargetSHA,
+	}
+	if g.Pipeline != nil {
+		out.PipelineID = g.Pipeline.ID
+	}
+	return out, nil
+}
+
+// mergeRequestPipelineEnds tells the merge request service each time one
+// of a merge request's pipelines finishes, so that an automatic merge
+// waiting for it decides again. The pipeline service tells it holding none
+// of its locks; the merge request service takes its own.
+type mergeRequestPipelineEnds struct {
+	mrs mergerequest.Service
+}
+
+func (a mergeRequestPipelineEnds) PipelineFinished(ctx context.Context, p *pipeline.Pipeline) {
+	if p.Kind != pipeline.KindMergeRequest {
+		return
+	}
+	a.mrs.PipelineFinished(ctx, mergerequest.PipelineEnd{UserID: p.UserID, ProjectID: p.ProjectID, MergeRequestID: p.MergeRequestID})
 }
 
 // pipelineBundleDir is where this devpad keeps its pipelines' bundles: a

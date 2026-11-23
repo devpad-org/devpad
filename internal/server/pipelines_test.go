@@ -93,3 +93,60 @@ func TestPipelineMergeRequestsShowsWhatPipelinesNeed(t *testing.T) {
 		t.Fatalf("an error: %v", err)
 	}
 }
+
+// statusPipelines answers MergeRequestStatus with st.
+type statusPipelines struct {
+	pipeline.Service
+	st  *pipeline.MergeRequestStatus
+	err error
+}
+
+func (f statusPipelines) MergeRequestStatus(context.Context, int64, int64, int64) (*pipeline.MergeRequestStatus, error) {
+	return f.st, f.err
+}
+
+// The merge request service gets the pipeline package's gate as it is.
+func TestMergeRequestGateIsThePipelinesGate(t *testing.T) {
+	ctx := context.Background()
+	failed := &pipeline.Pipeline{ID: 9, Kind: pipeline.KindMergeRequest, Status: pipeline.StatusFailed}
+	st := &pipeline.MergeRequestStatus{
+		Open: true, Target: "develop", Automatic: true, Source: pipeline.SourceFile, Current: failed,
+		Key: pipeline.MergeRequestKey{MergeRequestID: 4, HeadSHA: "head", TargetSHA: "tip", ConfigHash: "jobs"},
+	}
+	got, err := mergeRequestGate{statusPipelines{st: st}}.MergeGate(ctx, 1, 2, 4)
+	want := mergerequest.Gate{State: "failed", Guarded: true, Overridable: true, Reason: "pipeline #9 failed", PipelineID: 9, HeadSHA: "head", TargetSHA: "tip"}
+	if err != nil || *got != want {
+		t.Fatalf("failed: %+v %v", got, err)
+	}
+	st.Automatic = false
+	if got, _ := (mergeRequestGate{statusPipelines{st: st}}).MergeGate(ctx, 1, 2, 4); got.Guarded || !got.Clear || got.State != "unguarded" {
+		t.Fatalf("not ticked: %+v", got)
+	}
+	broken := errors.New("the repo is down")
+	if _, err := (mergeRequestGate{statusPipelines{err: broken}}).MergeGate(ctx, 1, 2, 4); !errors.Is(err, broken) {
+		t.Fatalf("an error: %v", err)
+	}
+}
+
+// endedMergeRequests records what the pipelines tell the merge requests.
+type endedMergeRequests struct {
+	mergerequest.Service
+	ends []mergerequest.PipelineEnd
+}
+
+func (f *endedMergeRequests) PipelineFinished(_ context.Context, m mergerequest.PipelineEnd) {
+	f.ends = append(f.ends, m)
+}
+
+// Each merge request pipeline that finishes is told to the merge request
+// service, and no branch's.
+func TestMergeRequestPipelineEndsTellsOfMergeRequestPipelines(t *testing.T) {
+	ctx := context.Background()
+	got := &endedMergeRequests{}
+	a := mergeRequestPipelineEnds{mrs: got}
+	a.PipelineFinished(ctx, &pipeline.Pipeline{ID: 1, UserID: 1, ProjectID: 2, Kind: pipeline.KindBranch, Branch: "develop"})
+	a.PipelineFinished(ctx, &pipeline.Pipeline{ID: 2, UserID: 1, ProjectID: 2, Kind: pipeline.KindMergeRequest, MergeRequestID: 5})
+	if len(got.ends) != 1 || got.ends[0] != (mergerequest.PipelineEnd{UserID: 1, ProjectID: 2, MergeRequestID: 5}) {
+		t.Fatalf("told %+v", got.ends)
+	}
+}

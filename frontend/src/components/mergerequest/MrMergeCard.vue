@@ -1,12 +1,17 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import DocLink from '@/components/DocLink.vue'
 import BudgetReached from '@/components/project/BudgetReached.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
+import { GATE_OVERRIDDEN, PIPELINE_COPY, sentence } from '@/components/pipeline/pipelineFormat'
 import { fullTime, timeAgo } from '@/utils/time'
 import { shortSha } from './format'
 import { useMergeRequest } from './useMergeRequest'
 
 // The merge widget for an open merge request: its checks, any conflicts, the
-// strategy and the merge button. Merged and closed ones show the outcome.
+// strategy and the merge button, which asks before merging over a pipeline
+// that keeps the merge request from merging. Merged and closed ones show
+// the outcome, and whether you merged over the pipeline.
 const {
   mr,
   project,
@@ -19,6 +24,9 @@ const {
   strategyHint,
   pushAfterMerge,
   mergeError,
+  overrideAsk,
+  cancelOverride,
+  pipelines,
   statusIcon,
   merge,
   resolveConflicts,
@@ -26,6 +34,12 @@ const {
   continueTask,
   continueError,
 } = useMergeRequest()
+
+// The pipeline keeps the merge request from merging, so merging asks first.
+const gateShut = computed(() => {
+  const g = pipelines.gate.value
+  return !!g && !g.clear && g.overridable
+})
 </script>
 
 <template>
@@ -88,10 +102,22 @@ const {
             <input v-model="pushAfterMerge" type="checkbox" />
             Push {{ mr.targetBranch }} upstream
           </label>
-          <button class="btn btn-success" :disabled="busy" @click="merge">
+          <button class="btn" :class="gateShut ? 'btn-secondary' : 'btn-success'" :disabled="busy || !!overrideAsk" @click="merge()">
             <MrIcon name="merged" :size="14" />
-            Merge into {{ mr.targetBranch }}
+            Merge into {{ mr.targetBranch }}{{ gateShut ? '…' : '' }}
           </button>
+        </div>
+      </div>
+      <div v-if="overrideAsk" class="override" role="alertdialog" aria-labelledby="mr-override-title" aria-describedby="mr-override-detail">
+        <p id="mr-override-title" class="override-title">
+          <MrIcon name="warning" :size="14" />
+          {{ overrideAsk.changed ? PIPELINE_COPY.overrideChanged : PIPELINE_COPY.overrideTitle }}
+          <DocLink topic="mergeGate" label="The merge gate" />
+        </p>
+        <p id="mr-override-detail" class="override-detail">{{ sentence(overrideAsk.reason) }} {{ PIPELINE_COPY.overrideRecorded }}</p>
+        <div class="override-actions">
+          <button type="button" class="btn btn-secondary btn-sm" :disabled="busy" @click="cancelOverride">Cancel</button>
+          <button type="button" class="btn btn-danger btn-sm" :disabled="busy" @click="merge(overrideAsk.state)">Merge anyway</button>
         </div>
       </div>
       <p v-if="mergeError" class="form-error merge-error">{{ mergeError }}</p>
@@ -105,6 +131,11 @@ const {
           as <span class="mono">{{ shortSha(mr.mergeSha) }}</span>
           <span :title="fullTime(mr.mergedAt)"> &middot; {{ timeAgo(mr.mergedAt) }}</span>
           <template v-if="mr.mergedBy === 'auto'"> &middot; after a review agent approved it</template>
+          <template v-if="mr.pipelineOverride">
+            &middot; by you although {{ GATE_OVERRIDDEN[mr.pipelineOverride.state] }}<template v-if="mr.pipelineOverride.pipelineId">
+              (#{{ mr.pipelineOverride.pipelineId }})</template
+            >
+          </template>
         </p>
       </div>
       <div v-else>
@@ -167,7 +198,7 @@ const {
 
 .check-detail {
   font-size: 0.75rem;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
 }
 
 .conflicts {
@@ -200,7 +231,7 @@ const {
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   background: var(--bg-raised);
-  border-top: 0.5px solid var(--border-default);
+  border-top: 0.5px solid var(--border-subtle);
 }
 
 .merge-options {
@@ -219,6 +250,37 @@ const {
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-3);
+}
+
+.override {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 0.5px solid var(--warning-border);
+  background: var(--warning-bg);
+}
+
+.override-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--warning);
+}
+
+.override-detail {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.override-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 .merge-error {
@@ -252,7 +314,7 @@ const {
 
 .outcome-card.state-merged {
   border-color: var(--success-border);
-  background: color-mix(in srgb, var(--success) 6%, var(--bg-surface));
+  background: color-mix(in srgb, var(--success) 6%, var(--bg-elevated));
 }
 
 .outcome-card.state-merged .outcome-icon {

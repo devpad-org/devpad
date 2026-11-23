@@ -106,7 +106,7 @@ func TestPipelineEndpoints(t *testing.T) {
 	develop, _ := branches["develop"].(map[string]any)
 	settled, _ := develop["settled"].(map[string]any)
 	if develop["automatic"] != false || settled == nil || settled["retrying"] != false || !strings.Contains(fmt.Sprint(settled["reason"]), "was cancelled") ||
-		settled["pipeline"].(map[string]any)["id"] != float64(id) || branches["main"].(map[string]any)["settled"] != nil {
+		settled["pipeline"].(map[string]any)["id"] != float64(id) || branches["main"].(map[string]any)["settled"] != nil || develop["configured"] != true {
 		t.Fatalf("latest branches: %v", branches)
 	}
 
@@ -115,12 +115,16 @@ func TestPipelineEndpoints(t *testing.T) {
 		st["automatic"] != false || st["settled"] != nil {
 		t.Fatalf("merge request status: %d %v", code, out)
 	}
+	// develop isn't ticked, so no pipeline guards the merge request.
+	if gate, _ := out["status"].(map[string]any)["gate"].(map[string]any); gate["state"] != "unguarded" || gate["guarded"] != false || gate["clear"] != true || gate["overridable"] != false || gate["pipelineId"] != nil {
+		t.Fatalf("merge request gate: %v", gate)
+	}
 	// One that can no longer merge has no pipeline to run.
 	e.mrs.mu.Lock()
 	e.mrs.mrs[e.mr].Open = false
 	e.mrs.mu.Unlock()
 	code, out = e.serve(e.owner, http.MethodGet, fmt.Sprintf("/api/projects/%d/merge-requests/%d/pipeline", e.project, e.mr), "")
-	if st, _ := out["status"].(map[string]any); code != http.StatusOK || st["open"] != false || st["source"] != "none" || st["configured"] != false {
+	if st, _ := out["status"].(map[string]any); code != http.StatusOK || st["open"] != false || st["source"] != "none" || st["configured"] != false || st["gate"].(map[string]any)["state"] != "closed" {
 		t.Fatalf("a closed merge request's status: %d %v", code, out)
 	}
 	e.mrs.mu.Lock()

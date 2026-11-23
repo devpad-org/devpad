@@ -8,15 +8,26 @@ import { shortSha } from './format'
 import { useMergeRequest } from './useMergeRequest'
 
 // The merge request's pipeline: its latest, or one picked from the
-// activity, with its jobs, where they came from and their output, and a way
-// to run it by hand, which devpad also does by itself into a ticked branch.
-// Its jobs come from the target branch, never the change.
+// activity, with its jobs, where they came from and their output, a way to
+// run it by hand, which devpad also does by itself into a ticked branch,
+// and whether it keeps the merge request from merging. Its jobs come from
+// the target branch, never the change.
 const { mr, projectId, isOpen, pipelines } = useMergeRequest()
 const { latest, settled, status, shownId, shownStale, shownPipeline, pickedId, loaded, starting, startError } = pipelines
 
 // The card shows the pipeline of the current commits that was cancelled or
 // couldn't run, saying why and whether devpad tries again.
 const showingSettled = computed(() => !!settled.value && shownId.value === settled.value.pipeline.id)
+
+// Whether the pipeline keeps the merge request from merging, and when it
+// doesn't, why not.
+const gateText = computed(() => {
+  const g = status.value?.gate
+  const target = mr.value?.targetBranch
+  if (!g || !target || g.state === 'closed') return ''
+  if (g.guarded) return PIPELINE_COPY.gateGuarded(target)
+  return status.value?.configured ? PIPELINE_COPY.gateNotTicked(target) : PIPELINE_COPY.gateNotConfigured(target)
+})
 
 // Run again shows the pipeline it started, the latest.
 function started() {
@@ -63,7 +74,9 @@ function started() {
         {{ status?.automatic ? PIPELINE_COPY.mergeRequestNoneAutomatic(mr.targetBranch) : PIPELINE_COPY.mergeRequestNone(mr.targetBranch) }} Its jobs come from <span class="mono">.devpad/pipeline.yml</span> on
         <span class="mono">{{ mr.targetBranch }}</span>, or the project's pipeline setting, and test this branch merged onto it.
       </p>
-      <p v-if="loaded" class="muted empty">{{ PIPELINE_COPY.notGating }}</p>
+      <template v-if="loaded">
+        <p v-if="gateText" class="muted empty">{{ gateText }}</p>
+      </template>
       <p v-else class="muted empty">Loading pipelines...</p>
     </div>
   </section>

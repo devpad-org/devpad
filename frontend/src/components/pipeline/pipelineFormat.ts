@@ -1,21 +1,21 @@
-import type { JobStatus, Pipeline, PipelineJob, PipelineStatus } from '@/api/pipelines'
+import type { JobStatus, MergeGateState, Pipeline, PipelineJob, PipelineStatus } from '@/api/pipelines'
 import type { MrIconName } from '@/components/project/MrIcon.vue'
 import { shortSha } from '@/components/mergerequest/format'
 
 // Presentation helpers shared by the pipeline components.
 
-// What the app says of when devpad starts pipelines by itself, and of their
-// gating nothing yet, in one place for when merging waits on them. The docs
-// say the same in docs/09-pipelines.md (the introduction, #automatic-runs,
-// #branches and #merge-requests), docs/04-branches.md (the Run pipelines
-// list) and docs/03-projects.md (the Pipelines surface and the pipeline
-// setting).
+// What the app says of when devpad starts pipelines by itself, and of the
+// merge gate, in one place. The docs say the same in docs/09-pipelines.md
+// (the introduction, #automatic-runs, #branches, #merge-requests and
+// #merge-gate), docs/04-branches.md (the Run pipelines list, #merging and
+// #automatic-merges) and docs/03-projects.md (the Pipelines surface and the
+// pipeline setting).
 export const PIPELINE_COPY = {
   // Beside where pipelines are run.
   automaticRuns: 'Devpad runs ticked branches and the merge requests into them by itself. Run any protected branch here, or a merge request from its page.',
   // Under the Run pipelines ticks.
   tickedBranches:
-    "Devpad runs a ticked branch's pipeline on each new commit and when you tick it, and a merge request's into it when it opens, when its branch gets new commits and when the ticked branch moves. Merge requests into other protected branches run only when you start them. The Project page shows each ticked branch's latest pipeline.",
+    "Devpad runs a ticked branch's pipeline on each new commit and when you tick it, and a merge request's into it when it opens, when its branch gets new commits and when the ticked branch moves. A merge request into a ticked branch merges only once its pipeline passes, unless you merge it anyway. Merge requests into other protected branches run only when you start them, and their results don't keep them from merging. The Project page shows each ticked branch's latest pipeline.",
   // On a merge request into a ticked branch without a pipeline.
   mergeRequestNoneAutomatic: (target: string) =>
     `No pipeline has run on this merge request yet. Devpad runs one by itself when it opens, when its branch gets new commits and when ${target} moves.`,
@@ -27,9 +27,46 @@ export const PIPELINE_COPY = {
     `Devpad runs ${branches} and the merge requests into them by itself, and runs them again when this setting changes the jobs they get. Other protected branches, and merge requests into them, run by hand.`,
   settingUnticked:
     'Pipelines run by hand on any protected branch and on merge requests into one. Tick branches under Run pipelines in Manage branches for devpad to run them, and the merge requests into them, by itself.',
-  // What a merge request's pipeline decides.
-  notGating: "A pipeline's result doesn't block merging yet: it is there for you to weigh.",
+  // What a merge request's pipeline decides: whether the merge gate guards
+  // it, and when it doesn't, why not.
+  gateGuarded: (target: string) =>
+    `${target} is ticked under Run pipelines, so this merges only once its pipeline passes on this branch merged onto ${target} as it is then, unless you merge it anyway.`,
+  gateNotTicked: (target: string) =>
+    `No pipeline guards ${target}: it isn't ticked under Run pipelines, so a result here doesn't keep this from merging.`,
+  gateNotConfigured: (target: string) => `No pipeline guards ${target}: it has no .devpad/pipeline.yml and the project no pipeline setting.`,
+  gateShut: 'Merging waits for it to pass, unless you merge anyway.',
+  // Asking to merge over a shut gate, and what the merge request keeps.
+  overrideTitle: 'Merge without a passing pipeline?',
+  overrideChanged: 'The pipeline changed. Merge anyway?',
+  overrideRecorded: 'The merge request records that you merged it anyway, and how its pipeline stood.',
+  // A task's merge request into a branch that merges automatically.
+  autoMergeGuarded: (reviewer: string, target: string) => `Once ${reviewer} approves it and its pipeline passes on ${target} as it is then.`,
+  autoMergeUnguarded: (reviewer: string, target: string) =>
+    `Once ${reviewer} approves it. No pipeline guards ${target}, so nothing but the review agent's judgment decides what merges.`,
+  autoMergeWaiting: (target: string) => `The review agent approved it; devpad merges it into ${target} once its pipeline passes.`,
+  // In the Branches dialog, under Merge automatically.
+  autoMergeUnguardedWarning: (branches: string) =>
+    `No pipeline guards ${branches}, so nothing but the review agent's judgment decides what merges. A change can carry text that tries to talk the review agent into approving it. Tick a branch under Run pipelines, with a pipeline configured, for its merge requests to pass the pipeline first.`,
+  autoMergeGuardedHint: (branches: string) =>
+    `A pipeline guards ${branches}: a task's merge request merges only once its pipeline passes too. A pipeline can't tell a weakened test from a sound one, so the review agent's judgment still counts.`,
 } as const
+
+// How the merge gate stood when you merged over it, to follow "merged
+// although".
+export const GATE_OVERRIDDEN: Record<MergeGateState, string> = {
+  unguarded: 'no pipeline guarded it',
+  passed: 'its pipeline passed',
+  queued: 'its pipeline was still queued',
+  running: 'its pipeline was still running',
+  not_run: 'no pipeline had run on it',
+  out_of_date: 'its pipeline was out of date',
+  failed: 'its pipeline failed',
+  conflict: "its pipeline found it doesn't merge",
+  invalid: "its pipeline didn't parse",
+  error: "its pipeline couldn't run",
+  cancelled: 'its pipeline was cancelled',
+  closed: 'it could no longer merge',
+}
 
 // success passed; active is under way; error failed or could not run;
 // warning stopped short; neutral says nothing of the commits.
@@ -177,7 +214,7 @@ export function jobOutcome(j: PipelineJob): string {
 }
 
 // A message as a sentence: capitalised, ending in a full stop.
-function sentence(text: string): string {
+export function sentence(text: string): string {
   const t = text.trim()
   if (!t) return ''
   const s = t.charAt(0).toUpperCase() + t.slice(1)
