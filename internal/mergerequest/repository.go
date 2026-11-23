@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -25,7 +26,7 @@ type Repository interface {
 	SetReviewAwaitsPipeline(ctx context.Context, id int64, awaits bool) error
 	// SetLookClosely keeps the look-closely mark of the merge request's
 	// change at head, unless the merge request has moved to another head.
-	SetLookClosely(ctx context.Context, id int64, head string, mark LookClosely) error
+	SetLookClosely(ctx context.Context, id int64, head string, mark LookCloselySummary) error
 	// UpdateHead moves mr to head and records the push in the same
 	// transaction. A task's push also moves the threads its agent started
 	// on the old head, replies included, to the new one: the agent writes
@@ -150,7 +151,7 @@ func (r *repository) SetReviewAwaitsPipeline(ctx context.Context, id int64, awai
 	return nil
 }
 
-func (r *repository) SetLookClosely(ctx context.Context, id int64, head string, mark LookClosely) error {
+func (r *repository) SetLookClosely(ctx context.Context, id int64, head string, mark LookCloselySummary) error {
 	data, err := encodeLookClosely(mark)
 	if err != nil {
 		return err
@@ -397,10 +398,12 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 	}
 	// A mark of another head is out of date, so it isn't the merge
 	// request's.
+	// One that doesn't read is no reason to fail reading the merge
+	// request: it has none, and devpad works it out again.
 	if markHead != "" && markHead == mr.HeadSHA {
 		lc, err := decodeLookClosely(mark)
 		if err != nil {
-			return nil, err
+			log.Printf("merge request %d: %v; it has no look-closely mark until devpad works it out again", mr.ID, err)
 		}
 		mr.LookClosely = lc
 	}

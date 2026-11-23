@@ -21,6 +21,8 @@ type fakeReports struct {
 	report PipelineReport
 	err    error
 	tails  []int
+	// scripts are the target's jobs' scripts.
+	scripts []string
 }
 
 func (f *fakeReports) PipelineReport(_ context.Context, _, _, pipelineID int64, tail int) (*PipelineReport, error) {
@@ -33,6 +35,12 @@ func (f *fakeReports) PipelineReport(_ context.Context, _, _, pipelineID int64, 
 	r := f.report
 	r.PipelineID = pipelineID
 	return &r, nil
+}
+
+func (f *fakeReports) JobScripts(context.Context, int64, int64, string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.scripts, nil
 }
 
 func (f *fakeReports) asked() []int {

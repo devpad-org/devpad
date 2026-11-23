@@ -36,6 +36,10 @@ type PipelineReports interface {
 	// failing job fails in the target branch's own pipeline of the commit it
 	// merged onto too.
 	PipelineReport(ctx context.Context, userID, projectID, pipelineID int64, outputTail int) (*PipelineReport, error)
+	// JobScripts reads the scripts of the jobs a merge request into branch
+	// runs: those of the pipeline at branch's tip, never a change's, for
+	// the look-closely mark. None when branch has no pipeline.
+	JobScripts(ctx context.Context, userID, projectID int64, branch string) ([]string, error)
 }
 
 // PipelineReport is what one of a merge request's pipelines found.

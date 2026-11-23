@@ -129,7 +129,7 @@ const lookTitles = computed(() => {
   const titles = new Map<number, string>()
   for (const mr of store.mergeRequests) {
     const mark = mr.lookClosely
-    if (mark && mark.files.length) titles.set(mr.id, `Look closely: ${lookCloselySummary(mark)}. A passing pipeline can't vouch for these files.`)
+    if (mark && mark.reasons.length) titles.set(mr.id, `Look closely: ${lookCloselySummary(mark)}. A passing pipeline can't vouch for these files.`)
   }
   return titles
 })

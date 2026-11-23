@@ -1,5 +1,5 @@
 import type { RepoDiffFile } from '@/api/projects'
-import type { CommentAuthor, LookClosely, LookCloselyReason, MarkedFile, MergeStrategy, Push, Review, Verdict } from '@/api/mergeRequests'
+import type { CommentAuthor, LookClosely, LookCloselyReason, LookCloselySummary, MarkedFile, MergeStrategy, Push, Review, Verdict } from '@/api/mergeRequests'
 import type { MrIconName } from '@/components/project/MrIcon.vue'
 
 // Presentation helpers shared by the merge request components.
@@ -25,27 +25,26 @@ export const STRATEGIES: { value: MergeStrategy; label: string; hint: string }[]
 export const LOOK_CLOSELY: Record<LookCloselyReason, string> = {
   tests_deleted: 'Deletes tests',
   pipeline: 'Changes the pipeline file',
+  job_file: "Changes files the pipeline's jobs run",
   ci: 'Changes CI configuration',
   checks: 'Changes lint, type-check or test settings',
-  build: 'Changes build scripts or dependencies',
+  build: 'Changes build scripts, dependencies or toolchains',
 }
 
 // Why the mark is there, beside it.
 export const LOOK_CLOSELY_HINT =
   "These files decide what the pipeline's jobs prove, which a passing pipeline can't vouch for: read them as closely as the code. It's a mark, not a gate."
 
-// The files a mark lists, by reason, in the order the mark shows them.
-export function lookCloselyGroups(mark: LookClosely): { reason: LookCloselyReason; files: MarkedFile[] }[] {
-  return (Object.keys(LOOK_CLOSELY) as LookCloselyReason[])
-    .map((reason) => ({ reason, files: mark.files.filter((f) => f.reason === reason) }))
-    .filter((g) => g.files.length > 0)
+// The files a mark lists, by reason, in the order the mark shows them,
+// with how many it counts of each, which may be more than it names.
+export function lookCloselyGroups(mark: LookClosely): { reason: LookCloselyReason; count: number; files: MarkedFile[] }[] {
+  return mark.reasons.map((c) => ({ reason: c.reason, count: c.files, files: mark.files.filter((f) => f.reason === c.reason) }))
 }
 
-// What a mark says, in a line: "Deletes tests; changes build scripts or
-// dependencies".
-export function lookCloselySummary(mark: LookClosely): string {
-  const said = lookCloselyGroups(mark).map((g, i) => (i === 0 ? LOOK_CLOSELY[g.reason] : LOOK_CLOSELY[g.reason].toLowerCase()))
-  return said.join('; ')
+// What a mark says, in a line: "Deletes tests (2); changes build scripts,
+// dependencies or toolchains (3)".
+export function lookCloselySummary(mark: LookCloselySummary): string {
+  return mark.reasons.map((c, i) => `${i === 0 ? LOOK_CLOSELY[c.reason] : LOOK_CLOSELY[c.reason].toLowerCase()} (${c.files})`).join('; ')
 }
 
 export function plural(count: number, noun: string): string {

@@ -186,6 +186,24 @@ func (a mergeRequestPipelineEnds) BranchRunSettled(ctx context.Context, userID, 
 	a.mrs.BranchPipelineFinished(ctx, mergerequest.BranchPipelineEnd{UserID: userID, ProjectID: projectID, Branch: branch})
 }
 
+// JobScripts reads the scripts of the jobs a merge request into branch
+// runs, those of the pipeline at branch's tip, for its look-closely mark.
+func (a mergeRequestPipelineReports) JobScripts(ctx context.Context, userID, projectID int64, branch string) ([]string, error) {
+	r, err := a.pipelines.BranchPipeline(ctx, userID, projectID, branch)
+	if errors.Is(err, pipeline.ErrInvalidInput) {
+		// A branch no longer protected runs no pipeline.
+		return nil, nil
+	}
+	if err != nil || r.Config == nil {
+		return nil, err
+	}
+	var scripts []string
+	for _, j := range r.Config.Jobs {
+		scripts = append(scripts, j.Run)
+	}
+	return scripts, nil
+}
+
 // taskPipelines tells a task's agent the jobs its merge request's pipeline
 // will run: those of the pipeline at the tip of the branch it merges into.
 type taskPipelines struct {

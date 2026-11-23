@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -173,9 +175,10 @@ func TestMergeRequestPipelineEndsTellsOfEveryOfficialPipeline(t *testing.T) {
 // reportPipelines answers Report and BranchPipeline.
 type reportPipelines struct {
 	pipeline.Service
-	report   *pipeline.Report
-	resolved *pipeline.Resolved
-	tails    []int
+	report      *pipeline.Report
+	resolved    *pipeline.Resolved
+	resolvedErr error
+	tails       []int
 }
 
 func (f *reportPipelines) Report(_ context.Context, _, _, _ int64, tail int) (*pipeline.Report, error) {
@@ -184,7 +187,26 @@ func (f *reportPipelines) Report(_ context.Context, _, _, _ int64, tail int) (*p
 }
 
 func (f *reportPipelines) BranchPipeline(context.Context, int64, int64, string) (*pipeline.Resolved, error) {
-	return f.resolved, nil
+	return f.resolved, f.resolvedErr
+}
+
+// The look-closely mark reads the scripts of the target's own jobs, and
+// none of a branch that runs no pipeline.
+func TestMergeRequestJobScriptsAreTheTargetsJobs(t *testing.T) {
+	ctx := context.Background()
+	f := &reportPipelines{resolved: &pipeline.Resolved{Source: pipeline.SourceFile, Config: &pipeline.Config{Jobs: []pipeline.Job{{Name: "a", Run: "./scripts/a.sh"}, {Name: "b", Run: "make b"}}}}}
+	got, err := mergeRequestPipelineReports{f}.JobScripts(ctx, 1, 2, "main")
+	if err != nil || !slices.Equal(got, []string{"./scripts/a.sh", "make b"}) {
+		t.Fatalf("scripts %v %v", got, err)
+	}
+	f.resolved = &pipeline.Resolved{Source: pipeline.SourceFile, Invalid: errors.New("line 2: unknown key")}
+	if got, err := (mergeRequestPipelineReports{f}).JobScripts(ctx, 1, 2, "main"); got != nil || err != nil {
+		t.Fatalf("invalid: %v %v", got, err)
+	}
+	f.resolved, f.resolvedErr = nil, fmt.Errorf("%w: main is not a protected branch", pipeline.ErrInvalidInput)
+	if got, err := (mergeRequestPipelineReports{f}).JobScripts(ctx, 1, 2, "main"); got != nil || err != nil {
+		t.Fatalf("unprotected: %v %v", got, err)
+	}
 }
 
 // The merge request service gets every job's status and time, and of each

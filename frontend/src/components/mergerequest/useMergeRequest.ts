@@ -89,9 +89,9 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
 
   const mr = ref<MergeRequestDetail | null>(null)
   const diff = ref<MergeRequestChange | null>(null)
-  // The files of the change devpad marks for a closer look: those of the
-  // diff on the page, else of the merge request as last listed.
-  const lookClosely = computed<LookClosely | null>(() => diff.value?.lookClosely ?? mr.value?.lookClosely ?? null)
+  // The files of the change devpad marks for a closer look, which come with
+  // its diff.
+  const lookClosely = computed<LookClosely | null>(() => diff.value?.lookClosely ?? null)
   // The commits the merge request proposes, or null until they load or when
   // the repo can't list them.
   const commitLog = ref<CommitLog | null>(null)

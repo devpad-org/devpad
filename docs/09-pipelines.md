@@ -145,13 +145,14 @@ Devpad never merges a change to the pipeline file by itself, so you merge it onc
 
 A passing pipeline says the jobs ran clean, not that they still test what they did. Devpad works out from each merge request's change, the files its branch changed since it left the target, which of them decide what the jobs prove, and marks the merge request when there are any, so you know where to look closely:
 
-- **Deletes tests**: a test file the change deletes, or renames to a name that is no test's, by the common conventions, such as `*_test.go`, `*.test.*` and `*.spec.*`, `test_*.py` and `*_test.py`, `*_spec.rb` and `*Test.java`, and any file in a `test/`, `tests/`, `__tests__/`, `spec/` or `testdata/` directory;
+- **Deletes tests**: a test file the change deletes or turns into something else, such as a symlink, renames to a name that is no test's, or moves where test runners don't look, such as a `testdata/` directory, one whose name starts with `_` or `.`, or `vendor/`. Test files are those of the common conventions, such as `*_test.go`, `*.test.*`, `*.spec.*` and `*.cy.*`, `test_*.py` and `*_test.py`, `*_spec.rb` and `*Test.java`, and any file in a `test/`, `tests/`, `__tests__/`, `spec/` or `testdata/` directory;
 - **Changes the pipeline file**;
-- **Changes CI configuration**, such as `.github/workflows/`, `.gitlab-ci.yml`, CircleCI or a `Jenkinsfile`;
-- **Changes lint, type-check or test settings**, such as `tsconfig*.json`, ESLint, Prettier, golangci-lint, Ruff, mypy, pytest, Vitest, Jest or Vite configuration, `setup.cfg` or `tox.ini`;
-- **Changes build scripts or dependencies**, such as a `Makefile`, `package.json` and its lockfile, `go.mod` and `go.sum`, `Cargo.toml`, `pyproject.toml` or a requirements file.
+- **Changes files the pipeline's jobs run**: a file the target branch's jobs name in their scripts, such as `./scripts/test.sh`. These come from the target's pipeline, never from the change's own;
+- **Changes CI configuration**, such as `.github/workflows/`, Gitea or Forgejo workflows, `.gitlab-ci.yml`, CircleCI or a `Jenkinsfile`;
+- **Changes lint, type-check or test settings**, such as `tsconfig*.json` and `jsconfig*.json`, ESLint, Prettier, golangci-lint, Ruff, mypy, pytest, Vitest, Jest or Vite configuration and their setup files, `setup.cfg`, `tox.ini` or `.pre-commit-config.yaml`;
+- **Changes build scripts, dependencies or toolchains**, such as a `Makefile`, `package.json` and its lockfile, `go.mod` and `go.sum`, `Cargo.toml`, `pyproject.toml`, a requirements file, Bazel's `BUILD` and `MODULE.bazel`, or a version pin such as `.nvmrc`, `.tool-versions` or `rust-toolchain.toml`.
 
-The merge request's Overview lists them on a **Look closely** card, each opening in **Changes**, and the list of merge requests shows an eye beside its status. The review agent is given the same list in devpad's own words. It is a mark, never a gate: nothing waits on it, and a change can weaken its tests in ways no file name shows, such as by skipping a test inside a file it keeps.
+The merge request's Overview lists them on a **Look closely** card, by reason, each opening in **Changes**. It names at most 50 files, those of the reasons first in this list first, so deleted tests always show, and says how many files each reason covers. The list of merge requests shows an eye beside the merge request's status, which says how many files of each reason. The review agent is given the same list in devpad's own words. It is a mark, never a gate: nothing waits on it, and a change can weaken its tests in ways no file name shows, such as by skipping a test inside a file it keeps.
 
 ## What pipelines don't stop {#limits}
 

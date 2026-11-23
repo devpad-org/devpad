@@ -119,10 +119,10 @@ type MergeRequest struct {
 	// request waits for the pipeline guarding it to pass. Only
 	// SetReviewAwaitsPipeline writes it.
 	ReviewAwaitsPipeline bool
-	// LookClosely is the look-closely mark of its change at HeadSHA, nil
-	// while devpad has not worked it out for that head. Only
-	// SetLookClosely writes it.
-	LookClosely *LookClosely
+	// LookClosely is what it keeps of the look-closely mark of its change
+	// at HeadSHA, how many files it lists for each reason, nil while devpad
+	// has not worked it out for that head. Only SetLookClosely writes it.
+	LookClosely *LookCloselySummary
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	// AgentReviewing says a review agent is at work on the merge request.

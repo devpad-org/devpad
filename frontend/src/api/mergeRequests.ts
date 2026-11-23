@@ -31,9 +31,10 @@ export interface MergeRequest {
   pipelineOverride: PipelineOverride | null
   // The project's automatic review waits for the pipeline to pass.
   reviewAwaitsPipeline: boolean
-  // The files of its change devpad marks for a closer look; null while it
-  // hasn't worked them out for the head.
-  lookClosely: LookClosely | null
+  // How many files of its change devpad marks for a closer look, for each
+  // reason; null while it hasn't worked them out for the head. The files
+  // come with the change.
+  lookClosely: LookCloselySummary | null
   createdAt: string
   updatedAt: string
   // A review agent is at work on it. Only the list sets it.
@@ -41,10 +42,17 @@ export interface MergeRequest {
 }
 
 // Why devpad marks a file of a change for a closer look: it deletes a test,
-// or changes the pipeline file, another CI system's configuration, a lint,
-// type-check or test setting, or a build script, dependency list or
-// lockfile. In the order the mark shows them, as the server's MarkReasons.
-export type LookCloselyReason = 'tests_deleted' | 'pipeline' | 'ci' | 'checks' | 'build'
+// or changes the pipeline file, a file the target's jobs run, another CI
+// system's configuration, a lint, type-check or test setting, or a build
+// script, dependency list, lockfile or toolchain pin. In the order the mark
+// shows them, as the server's MarkReasons.
+export type LookCloselyReason = 'tests_deleted' | 'pipeline' | 'job_file' | 'ci' | 'checks' | 'build'
+
+// How many files the mark lists for a reason.
+export interface ReasonCount {
+  reason: LookCloselyReason
+  files: number
+}
 
 // A file the mark lists. Its paths are the change's, which its author chose.
 export interface MarkedFile {
@@ -54,11 +62,17 @@ export interface MarkedFile {
 }
 
 // The look-closely mark: files a passing pipeline can't vouch for, at most
-// 50 of them, and how many more there are. It never keeps a merge request
-// from merging.
+// 50 of them, those of the first reasons first, and how many there are of
+// each reason, every reason present. It never keeps a merge request from
+// merging.
 export interface LookClosely {
   files: MarkedFile[]
-  more: number
+  reasons: ReasonCount[]
+}
+
+// What a merge request keeps of its mark, for the list.
+export interface LookCloselySummary {
+  reasons: ReasonCount[]
 }
 
 // What a merge request changes, and the files of it devpad marks.

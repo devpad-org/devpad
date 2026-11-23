@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import DocLink from '@/components/DocLink.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
-import { LOOK_CLOSELY, LOOK_CLOSELY_HINT, lookCloselyGroups } from './format'
+import { LOOK_CLOSELY, LOOK_CLOSELY_HINT, lookCloselyGroups, plural } from './format'
 import { useMergeRequest } from './useMergeRequest'
 
 // The look-closely mark: the files of the change devpad marks because a
@@ -32,20 +32,22 @@ function open(path: string) {
       <p class="explain">{{ LOOK_CLOSELY_HINT }}</p>
       <dl class="groups">
         <div v-for="group in groups" :key="group.reason" class="group">
-          <dt>{{ LOOK_CLOSELY[group.reason] }}</dt>
+          <dt>
+            {{ LOOK_CLOSELY[group.reason] }} <span class="count">{{ plural(group.count, 'file') }}</span>
+          </dt>
           <dd>
             <ul class="files">
-              <li v-for="f in group.files" :key="f.path + (f.oldPath ?? '')">
+              <li v-for="f in group.files" :key="f.path">
                 <button type="button" class="file mono" :title="`Open ${f.path} in Changes`" @click="open(f.path)">{{ f.path }}</button>
                 <span v-if="f.oldPath && f.oldPath !== f.path" class="was">
                   was <span class="mono">{{ f.oldPath }}</span>
                 </span>
               </li>
+              <li v-if="group.count > group.files.length" class="more">and {{ group.count - group.files.length }} more</li>
             </ul>
           </dd>
         </div>
       </dl>
-      <p v-if="lookClosely.more" class="more">and {{ lookClosely.more }} more</p>
     </div>
   </section>
 </template>
@@ -69,15 +71,16 @@ function open(path: string) {
   gap: var(--space-3);
 }
 
-.explain,
-.more {
+.explain {
   margin: 0;
   color: var(--text-secondary);
   font-size: 0.8rem;
 }
 
+.count,
 .more {
   color: var(--text-tertiary);
+  font-weight: 400;
 }
 
 .groups {
