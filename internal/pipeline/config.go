@@ -1,13 +1,3 @@
-// Package pipeline is a project's CI pipeline: the jobs its
-// .devpad/pipeline.yml names, which run on each new commit of the protected
-// branches the user picks and on each merge request into them.
-//
-// Which copy of the file counts decides what an agent can get away with. A
-// merge request's pipeline comes from its target branch, never from the
-// change, so an agent cannot rewrite the jobs that grade it. A commit
-// without a file falls back to the project's own copy, which only the user
-// edits. A file that does not parse fails the pipeline, and never falls
-// back, which would quietly run other jobs.
 package pipeline
 
 import (
@@ -23,6 +13,11 @@ import (
 
 	"go.yaml.in/yaml/v3"
 )
+
+// A pipeline file names its jobs, each a bash script with an optional
+// timeout and the project services it gets fresh copies of. Parse refuses
+// anything it doesn't know, saying on which line, so a typo never quietly
+// skips a job.
 
 const (
 	// MaxConfigBytes caps a pipeline's YAML.
