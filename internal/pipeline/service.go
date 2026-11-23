@@ -25,10 +25,12 @@ type Service interface {
 	// the same jobs is returned instead, with created false, as, for a
 	// restart's or devpad's own start, is one with a result
 	// (startPolicyOf). Any pipeline of the same branch or merge request and
-	// purpose still queued that tests something else is superseded. It reads the merge request and the
-	// canonical repo, so it is never to be called inside a database
-	// transaction, and the merge request lookup it makes (MergeRequests)
-	// takes no lock a caller of Start may hold.
+	// purpose still queued that tests something else is superseded. It
+	// reads the merge request and the canonical repo under the project's
+	// start lock, so it is never to be called inside a database transaction
+	// nor under a merge request's or task's lock (see the package doc's lock
+	// order), and the merge request lookup it makes (MergeRequests) takes no
+	// lock of the merge request service.
 	Start(ctx context.Context, in StartInput) (p *Pipeline, created bool, err error)
 	// Cancel stops a queued or running pipeline, and waits a while for its
 	// jobs to be stopped and removed. It refuses while devpad stops, which
