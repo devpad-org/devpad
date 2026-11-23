@@ -23,6 +23,9 @@ const protectedSet = ref(new Set<string>())
 // The protected branches a task's merge request merges into once a review
 // agent approves it.
 const autoMergeSet = ref(new Set<string>())
+// The protected branches that run the project's pipeline, and whose merge
+// requests do.
+const pipelineSet = ref(new Set<string>())
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -69,6 +72,7 @@ watch(
     defaultBranch.value = store.project.defaultBranch
     protectedSet.value = new Set(store.protectedBranches.filter((b) => b !== store.project?.defaultBranch))
     autoMergeSet.value = new Set(store.project.autoMergeBranches ?? [])
+    pipelineSet.value = new Set(store.project.pipelineBranches ?? [])
     error.value = ''
     confirming.value = ''
     loading.value = true
@@ -100,11 +104,19 @@ function toggle(branch: string, on: boolean) {
   protectedSet.value = set
 }
 
+function withBranch(set: Set<string>, branch: string, on: boolean): Set<string> {
+  const next = new Set(set)
+  if (on) next.add(branch)
+  else next.delete(branch)
+  return next
+}
+
 function toggleAutoMerge(branch: string, on: boolean) {
-  const set = new Set(autoMergeSet.value)
-  if (on) set.add(branch)
-  else set.delete(branch)
-  autoMergeSet.value = set
+  autoMergeSet.value = withBranch(autoMergeSet.value, branch, on)
+}
+
+function togglePipelines(branch: string, on: boolean) {
+  pipelineSet.value = withBranch(pipelineSet.value, branch, on)
 }
 
 // The branch is deleted only while it is where the list shows it, so
@@ -140,6 +152,8 @@ async function save() {
       protectedBranches: choices.value.filter((b) => protectedSet.value.has(b)),
       // Only a protected branch can be merged into automatically.
       autoMergeBranches: protectedChoices.value.filter((b) => autoMergeSet.value.has(b)),
+      // Only a protected branch runs pipelines.
+      pipelineBranches: protectedChoices.value.filter((b) => pipelineSet.value.has(b)),
     })
     store.setProject(res.project)
     emit('close')
@@ -233,6 +247,21 @@ async function save() {
             </p>
             <p v-if="protectedChoices.some((b) => autoMergeSet.has(b))" class="notice notice-warning auto-merge-warning" role="note">
               This project has no checks, so nothing but the review agent's judgment decides what merges. A change can carry text that tries to talk the review agent into approving it.
+            </p>
+          </div>
+          <div class="form-group">
+            <span class="form-label">Run pipelines<DocLink topic="pipelineBranches" label="Which branches run pipelines" /></span>
+            <div class="branch-list" role="group" aria-label="Run pipelines">
+              <div v-for="b in protectedChoices" :key="b" class="branch-row">
+                <label class="form-check branch-check">
+                  <input type="checkbox" :checked="pipelineSet.has(b)" @change="togglePipelines(b, ($event.target as HTMLInputElement).checked)" />
+                  <span class="mono">{{ b }}</span>
+                </label>
+              </div>
+            </div>
+            <p class="form-hint">
+              The branches whose pipelines you follow: the Project page shows each ticked branch's latest result. Only protected branches can run pipelines, since anyone
+              who can push to a branch can change its pipeline file. Devpad doesn't start pipelines on its own yet: run them from the Pipelines tab or a merge request.
             </p>
           </div>
           <p v-if="error" class="form-error">{{ error }}</p>

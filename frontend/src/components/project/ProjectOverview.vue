@@ -11,6 +11,7 @@ import ProjectBranchesCard from './ProjectBranchesCard.vue'
 import ProjectEmblem from './ProjectEmblem.vue'
 import ProjectEnvironment from './ProjectEnvironment.vue'
 import ProjectModal from './ProjectModal.vue'
+import ProjectPipelineCard from './ProjectPipelineCard.vue'
 import ProjectServices from './ProjectServices.vue'
 import ProjectSetup from './ProjectSetup.vue'
 import StatusBadge from './StatusBadge.vue'
@@ -28,7 +29,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   // Opens another of the project's surfaces.
-  navigate: [tab: 'tasks' | 'merge-requests' | 'agents']
+  navigate: [tab: 'tasks' | 'merge-requests' | 'pipelines' | 'agents']
 }>()
 
 const router = useRouter()
@@ -199,6 +200,12 @@ async function dismissConversion() {
           <ProjectServices :step="2" :workspace-status="workspaceStatus" :workspace-id="workspaceId ?? null" />
           <ProjectSetup :step="3" :workspace-status="workspaceStatus" @edit="openEdit" />
         </div>
+
+        <div class="section-head">
+          <h2 class="section-heading">How changes are tested <DocLink topic="pipelines" label="Pipelines" /></h2>
+          <p class="section-sub">Each job of a pipeline runs in a fresh container of the project's environment, apart from every workspace. Their runs are on the <button type="button" class="section-link" @click="emit('navigate', 'pipelines')">Pipelines</button> tab.</p>
+        </div>
+        <ProjectPipelineCard />
 
         <div class="danger">
           <div class="danger-text">
@@ -478,6 +485,9 @@ async function dismissConversion() {
 }
 
 .section-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   font-size: 0.95rem;
   font-weight: 600;
   color: var(--text-primary);
@@ -486,6 +496,16 @@ async function dismissConversion() {
 .section-sub {
   font-size: 0.8rem;
   color: var(--text-tertiary);
+}
+
+.section-link {
+  color: var(--text-secondary);
+  text-decoration: underline dotted var(--text-decoration-muted);
+  text-underline-offset: 3px;
+}
+
+.section-link:hover {
+  color: var(--text-primary);
 }
 
 .steps {

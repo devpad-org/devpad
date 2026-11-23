@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { projectApi, type UpstreamBranch, type UpstreamStatus } from '@/api/projects'
 import { useActiveProjectStore } from '@/stores/activeProject'
 import { fullTime, timeAgo } from '@/utils/time'
+import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
+import { PIPELINE_STATUS } from '@/components/pipeline/pipelineFormat'
 import ProjectBranchesModal from './ProjectBranchesModal.vue'
 import ProjectCard from './ProjectCard.vue'
 import type { CardStatus } from './card'
@@ -49,7 +51,8 @@ const rows = computed(() => {
   const byName = new Map((status.value?.branches ?? []).map((b) => [b.branch, b]))
   return store.protectedBranches.map((name, i) => {
     const upstream = byName.get(name)
-    return { name, isDefault: i === 0, upstream, state: upstream ? branchState(upstream) : null }
+    const runsPipelines = store.project?.pipelineBranches?.includes(name) ?? false
+    return { name, isDefault: i === 0, upstream, state: upstream ? branchState(upstream) : null, runsPipelines, pipeline: store.branchPipelines.get(name) }
   })
 })
 
@@ -185,6 +188,14 @@ onUnmounted(() => {
           </svg>
           <span class="mono branch-name" :title="row.name">{{ row.name }}</span>
           <span v-if="row.isDefault" class="branch-tag">default</span>
+          <span
+            v-if="row.runsPipelines"
+            class="branch-pipeline"
+            :title="row.pipeline ? `Latest pipeline #${row.pipeline.id}: ${PIPELINE_STATUS[row.pipeline.status].label}, ${timeAgo(row.pipeline.createdAt)}` : 'No pipeline has run on this branch yet'"
+          >
+            <PipelineStatusIcon v-if="row.pipeline" :look="PIPELINE_STATUS[row.pipeline.status]" :size="16" />
+            <span class="branch-pipeline-text">{{ row.pipeline ? PIPELINE_STATUS[row.pipeline.status].label : 'no pipeline yet' }}</span>
+          </span>
           <span v-if="row.state" class="branch-state" :class="`state-${row.state.tone}`">{{ row.state.text }}</span>
           <button
             v-if="row.state?.push"
@@ -279,6 +290,15 @@ onUnmounted(() => {
   color: var(--accent);
   font-size: 0.68rem;
   font-weight: 500;
+}
+
+.branch-pipeline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
 }
 
 .branch-state {

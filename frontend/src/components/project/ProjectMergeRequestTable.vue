@@ -6,6 +6,8 @@ import { useActiveProjectStore } from '@/stores/activeProject'
 import { fullTime, timeAgo } from '@/utils/time'
 import MrIcon, { type MrIconName } from './MrIcon.vue'
 import NewMergeRequestModal from './NewMergeRequestModal.vue'
+import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
+import { PIPELINE_STATUS } from '@/components/pipeline/pipelineFormat'
 import { TASK_STATUS } from './taskStatus'
 
 // The project's merge requests as a table, one row each, on a surface of its
@@ -96,6 +98,17 @@ function sortBy(key: SortKey) {
 function ariaSort(key: SortKey): 'ascending' | 'descending' | 'none' {
   if (sortKey.value !== key) return 'none'
   return sortDesc.value ? 'descending' : 'ascending'
+}
+
+// An open merge request's latest pipeline, and whether it tested the head
+// the merge request is at now.
+function pipelineOf(mr: MergeRequest) {
+  if (mr.status !== 'open') return null
+  const p = store.mergeRequestPipelines.get(mr.id)
+  if (!p) return null
+  const current = p.headSha === mr.headSha
+  const label = PIPELINE_STATUS[p.status].label
+  return { look: PIPELINE_STATUS[p.status], current, title: `Pipeline #${p.id}: ${label}${current ? '' : ', on an older commit'}` }
 }
 
 function select(mr: MergeRequest) {
@@ -221,9 +234,18 @@ function select(mr: MergeRequest) {
                 <span v-else class="none">&mdash;</span>
               </td>
               <td class="col-status">
-                <span class="state-pill" :class="`state-${mr.status}`">
-                  <MrIcon :name="STATUS[mr.status].icon" :size="12" />
-                  {{ STATUS[mr.status].label }}
+                <span class="status-cell">
+                  <span class="state-pill" :class="`state-${mr.status}`">
+                    <MrIcon :name="STATUS[mr.status].icon" :size="12" />
+                    {{ STATUS[mr.status].label }}
+                  </span>
+                  <PipelineStatusIcon
+                    v-if="pipelineOf(mr)"
+                    :look="pipelineOf(mr)!.look"
+                    :title="pipelineOf(mr)!.title"
+                    :size="18"
+                    :class="{ 'pipeline-stale': !pipelineOf(mr)!.current }"
+                  />
                 </span>
               </td>
               <td class="col-updated">
@@ -264,7 +286,18 @@ function select(mr: MergeRequest) {
 }
 
 .col-status {
-  width: 110px;
+  width: 130px;
+}
+
+.status-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* A pipeline of an older commit says less of the merge request now. */
+.pipeline-stale {
+  opacity: 0.55;
 }
 
 .branches {
