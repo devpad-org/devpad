@@ -59,7 +59,7 @@ A merge request asks to merge one branch into a protected branch. Open one:
 
 A branch has at most one open merge request. The source can itself be protected, as when releasing `develop` into `main`.
 
-The merge request's **Overview** has its description, the merge card, its [pipeline](/docs/pipelines#merge-requests) and, when the change touches the pipeline file, the [pipeline it proposes](/docs/pipelines#proposed), and its **Activity**: reviews, comment threads, and each push to the branch. When the change deletes tests or changes the files its jobs depend on, a **Look closely** card lists them, and the list of merge requests marks it with an eye: see [The look-closely mark](/docs/pipelines#look-closely). **Changes** shows the diff file by file; click a line number to comment on that line.
+The merge request's **Overview** has its description, the merge card, its [pipeline](/docs/pipelines#merge-requests) and, when the change touches the pipeline file, the [pipeline it proposes](/docs/pipelines#proposed), and its **Activity**: reviews, comment threads, and each push to the branch. When the change deletes tests or changes the files its jobs depend on, a **Look closely** card lists them, and the list of merge requests marks it with an eye: see [The look-closely mark](/docs/pipelines#look-closely). **Changes** shows the diff file by file; click a line number to comment on that line. When the branch and its target have more than one merge base, as when the branch brought in work that later merged into the target too, a diff from any one of them can miss work of the target that merging the branch would undo, so **Changes** shows what merging the branch changes on the target instead, and says so.
 
 ## Threads {#threads}
 
@@ -109,7 +109,8 @@ Devpad merges only what the review saw, so the approval doesn't merge the change
 - another review, yours or an agent's, has started since;
 - a blocking thread is open;
 - the task isn't **In review**, for instance because it was sent back to its agent;
-- it adds, changes, renames or deletes the pipeline file, `.devpad/pipeline.yml` or `.devpad/pipeline.yaml`: a change to the jobs that grade merge requests, or to whether any do, is yours to merge, and the merge card says **Won't merge automatically** from the start;
+- it adds, changes, renames or deletes the pipeline file, `.devpad/pipeline.yml` or `.devpad/pipeline.yaml`: a change to the jobs that grade merge requests, or to whether any do, is yours to merge, and the merge card says **Won't merge automatically** from the start. Devpad checks this again on the very files the merge would land, so no history can change the pipeline file unseen;
+- it has more than one merge base with the target: **Changes** shows what merging it does, but the review agent can't read that in its sandbox, so it may have missed work of the target the merge undoes, and the merge card says **Won't merge automatically** from the start;
 - the review agent failed or was stopped after approving, or devpad restarted before it finished;
 - the pipeline that guards the branch failed, found the change doesn't merge, couldn't run or was cancelled;
 - the merge fails, for instance on conflicts.

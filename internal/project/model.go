@@ -230,6 +230,10 @@ type MergeInput struct {
 	// ExpectedTree, when set, refuses the merge unless it lands this tree:
 	// the one the pipeline that let it through tested.
 	ExpectedTree string
+	// KeepPipelineFiles refuses the merge if the tree it lands has any of
+	// PipelineFiles otherwise than Target has it, which the repo checks on
+	// that very tree: an automatic merge never changes the pipeline.
+	KeepPipelineFiles bool
 }
 
 // WorkspaceBranchStatus says how a branch of the project workspace compares

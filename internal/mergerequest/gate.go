@@ -160,6 +160,10 @@ type admission struct {
 	// pipeline tested, or "" when no pipeline's pass let it through, as on
 	// an override, which has no tested tree to land.
 	expectedTree string
+	// keepPipelineFiles has the repo refuse a merge whose tree has the
+	// pipeline file otherwise than the target has it, as an automatic
+	// merge's must.
+	keepPipelineFiles bool
 	// override is the user merging over the pipeline gate, nil otherwise.
 	override *PipelineOverride
 }

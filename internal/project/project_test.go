@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1283,7 +1284,7 @@ func TestMergeCommitsAsUserIntoDefaultBranch(t *testing.T) {
 		t.Fatalf("merge: %+v %v", result, err)
 	}
 	want := agent.RepoMergeRequest{Source: "task/1", Target: "main", Strategy: "squash", ExpectedSourceSHA: "abc", ExpectedTargetSHA: "def", Name: "owner", Email: "owner@example.com"}
-	if got := e.repoAgent.merges; len(got) != 1 || got[0] != want {
+	if got := e.repoAgent.merges; len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("merge request = %+v", got)
 	}
 	// A chosen git identity replaces the account's, one field at a time.
@@ -1293,8 +1294,16 @@ func TestMergeCommitsAsUserIntoDefaultBranch(t *testing.T) {
 	if _, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: "task/1"}); err != nil {
 		t.Fatalf("merge with a git identity: %v", err)
 	}
-	if got := e.repoAgent.merges[1]; got.Name != "Owner Name" || got.Email != "owner@example.com" {
-		t.Fatalf("merge identity = %q <%s>", got.Name, got.Email)
+	if got := e.repoAgent.merges[1]; got.Name != "Owner Name" || got.Email != "owner@example.com" || got.UnchangedPaths != nil {
+		t.Fatalf("merge identity = %q <%s>, unchanged paths %v", got.Name, got.Email, got.UnchangedPaths)
+	}
+	// Keeping the pipeline files has the repo check each of them on the
+	// tree the merge lands.
+	if _, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: "task/1", KeepPipelineFiles: true}); err != nil {
+		t.Fatalf("merge keeping the pipeline files: %v", err)
+	}
+	if got := e.repoAgent.merges[2].UnchangedPaths; !slices.Equal(got, PipelineFiles()) {
+		t.Fatalf("unchanged paths = %v, want %v", got, PipelineFiles())
 	}
 	for _, source := range []string{"main", "", "-x"} {
 		if _, err := e.svc.Merge(ctx, e.userID, p.ID, MergeInput{Source: source}); !errors.Is(err, ErrInvalidInput) {

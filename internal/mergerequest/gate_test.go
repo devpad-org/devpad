@@ -183,7 +183,8 @@ func TestUserMergeAsksThePipelineGate(t *testing.T) {
 			if tt.gate.State == "passed" {
 				wantTree = "tree-" + tt.target
 			}
-			if in := e.projects.merges[0]; in.ExpectedTargetSHA != tt.target || in.ExpectedSourceSHA != "head1" || in.ExpectedTree != wantTree {
+			// The user may merge a change to the pipeline file.
+			if in := e.projects.merges[0]; in.ExpectedTargetSHA != tt.target || in.ExpectedSourceSHA != "head1" || in.ExpectedTree != wantTree || in.KeepPipelineFiles {
 				t.Fatalf("merge input = %+v", in)
 			}
 		})
@@ -482,7 +483,9 @@ func TestAutoMergeAsksThePipelineGate(t *testing.T) {
 				if tt.gate.Guarded {
 					wantTree = "tree-" + tt.target
 				}
-				if in.ExpectedTargetSHA != tt.target || in.ExpectedTree != wantTree || got.MergedBy != MergedByAuto {
+				// Guarded or not, the repo checks the tree an automatic merge
+				// lands leaves the pipeline file as it was.
+				if in.ExpectedTargetSHA != tt.target || in.ExpectedTree != wantTree || !in.KeepPipelineFiles || got.MergedBy != MergedByAuto {
 					t.Fatalf("merge input = %+v", in)
 				}
 			}
@@ -739,6 +742,30 @@ func TestAutoMergeNeverTakesAChangeToThePipelineFile(t *testing.T) {
 				t.Fatalf("the user's merge: %v", err)
 			}
 		})
+	}
+}
+
+// A change with more than one merge base with its target never merges
+// automatically: its diff lists what the merge changes, but no git diff in
+// the review's sandbox shows that, so the review may have missed work of the
+// target the merge undoes, such as removing the pipeline file. The user
+// merges it.
+func TestAutoMergeNeverTakesAChangeWithSeveralMergeBases(t *testing.T) {
+	e := autoMergeEnv(t)
+	ctx := context.Background()
+	e.projects.mergeBases = 2
+	mr := e.openTaskMR(t)
+	rv := e.startAgentReview(t, mr, AgentReviewInput{})
+	e.gate.set(passedOn(3, "head1", mainTip))
+	e.approve(t, rv, domain.AgentRunCompleted, nil)
+	note := e.settled(t, rv)
+	got, _ := e.svc.repo.GetByID(ctx, mr.ID)
+	want := "it has more than one merge base with main, so its review couldn't read just what merging it does"
+	if got.Status != StatusOpen || e.mergeCount() != 0 || note.AutoMergeError != want {
+		t.Fatalf("expected it left for the user, saying %q; got %+v, %q", want, got, note.AutoMergeError)
+	}
+	if _, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{}); err != nil {
+		t.Fatalf("the user's merge: %v", err)
 	}
 }
 

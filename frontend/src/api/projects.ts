@@ -188,10 +188,17 @@ export interface RepoDiffFile {
   binary: boolean
 }
 
+// What merging a head into a base changes. Files compare from and to: the
+// merge base and the head, or, when the two have more than one merge base
+// and merge cleanly, the base and the trial merge, since no diff from one
+// merge base is sure to show what the merge does.
 export interface RepoDiff {
   baseSha: string
   headSha: string
   mergeBase: string
+  mergeBases: number
+  from: string
+  to: string
   files: RepoDiffFile[]
 }
 

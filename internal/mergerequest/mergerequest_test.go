@@ -30,16 +30,19 @@ import (
 // fakeProjects stands in for the project service. Sandboxes it creates are
 // real workspace rows, so review rows can reference them.
 type fakeProjects struct {
-	mu        sync.Mutex
-	db        *sql.DB
-	project   project.Project
-	branches  []agent.RepoRef
-	files     []agent.RepoDiffFile
-	sandboxes []project.SandboxInput
-	diffs     [][2]string
-	logs      [][2]string
-	merges    []project.MergeInput
-	mergeErr  error
+	mu       sync.Mutex
+	db       *sql.DB
+	project  project.Project
+	branches []agent.RepoRef
+	files    []agent.RepoDiffFile
+	// mergeBases is how many merge bases each diff says its head has with
+	// its base; 0 reads as one.
+	mergeBases int
+	sandboxes  []project.SandboxInput
+	diffs      [][2]string
+	logs       [][2]string
+	merges     []project.MergeInput
+	mergeErr   error
 	// onMerge, when set, runs as a merge begins, before the repo looks at
 	// the target.
 	onMerge func()
@@ -140,7 +143,8 @@ func (f *fakeProjects) Diff(_ context.Context, _, _ int64, base, head string) (*
 	if base == "main" {
 		baseSHA = mainTip
 	}
-	return &agent.RepoDiff{BaseSHA: baseSHA, HeadSHA: head, MergeBase: "mergebase", Files: f.files}, nil
+	bases := max(f.mergeBases, 1)
+	return &agent.RepoDiff{BaseSHA: baseSHA, HeadSHA: head, MergeBase: "mergebase", MergeBases: bases, From: "mergebase", To: head, Files: f.files}, nil
 }
 
 // mainTip is the commit main resolves to.
@@ -1561,6 +1565,60 @@ func TestCloseWhileReviewSetupRunsDoesNotWaitForIt(t *testing.T) {
 	}
 }
 
+// With more than one merge base, the change's diff lists what the merge
+// changes, which no git diff in the review's sandbox shows, and the review
+// agent is told so rather than pointed at a diff that can hide what the
+// merge undoes.
+func TestReviewPromptSaysWhatTheListIsWithSeveralMergeBases(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	files := []agent.RepoDiffFile{{Path: ".devpad/pipeline.yml", Status: "D", Deletions: 3}}
+	for _, tt := range []struct {
+		name       string
+		diff       agent.RepoDiff
+		want, gone []string
+	}{
+		{
+			name: "one merge base",
+			diff: agent.RepoDiff{BaseSHA: mainTip, HeadSHA: head, MergeBase: "base1", MergeBases: 1, From: "base1", To: head},
+			want: []string{"Since it branched from `main` it changes 1 files", "Run `git diff base1 HEAD` to read the change"},
+			gone: []string{"more than one merge base"},
+		},
+		{
+			name: "several, merging cleanly",
+			diff: agent.RepoDiff{BaseSHA: mainTip, HeadSHA: head, MergeBase: "base1", MergeBases: 2, From: mainTip, To: strings.Repeat("c", 40)},
+			want: []string{"Merged into `main` at `" + short(mainTip) + "`, it changes 1 files", "more than one merge base", "no `git diff` in /workspace shows just what merging it does", "The list above is what the merge changes"},
+			gone: []string{"Since it branched", "Run `git diff"},
+		},
+		{
+			name: "several, conflicting",
+			diff: agent.RepoDiff{BaseSHA: mainTip, HeadSHA: head, MergeBase: "base1", MergeBases: 2, From: "base1", To: head},
+			want: []string{"Since it branched from `main`", "more than one merge base and don't merge cleanly", "may miss work of `main` the change undoes"},
+			gone: []string{"The list above is what the merge changes"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.diff.Files = files
+			prompt := reviewPrompt(reviewPromptInput{
+				project: &project.Project{Name: "shop"},
+				mr:      &MergeRequest{ID: 1, Title: "Add a cart", SourceBranch: "task/1", TargetBranch: "main"},
+				review:  &Review{HeadSHA: head},
+				branch:  "review/1",
+				diff:    &tt.diff,
+			})
+			for _, want := range tt.want {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("prompt missing %q:\n%s", want, prompt)
+				}
+			}
+			for _, gone := range tt.gone {
+				if strings.Contains(prompt, gone) {
+					t.Errorf("prompt has %q:\n%s", gone, prompt)
+				}
+			}
+		})
+	}
+}
+
 func TestReviewPromptSaysTheEnvironmentWasStillBuilding(t *testing.T) {
 	e := setup(t)
 	mr := e.openTaskMR(t)
@@ -2861,7 +2919,8 @@ func TestAutoMergeMergesWhatTheReviewApproved(t *testing.T) {
 
 	want := project.MergeInput{
 		Source: "task/1", Target: "main", ExpectedSourceSHA: "head1", ExpectedTargetSHA: mainTip,
-		Message: "Merge !1: Add a cart\n\nMerged automatically by devpad after a review agent approved it.",
+		Message:           "Merge !1: Add a cart\n\nMerged automatically by devpad after a review agent approved it.",
+		KeepPipelineFiles: true,
 	}
 	if e.projects.merges[0] != want {
 		t.Fatalf("merge input = %+v", e.projects.merges[0])

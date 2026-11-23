@@ -1372,6 +1372,10 @@ func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeIn
 		return nil, fmt.Errorf("looking up user: %w", err)
 	}
 	name, email := user.GitIdentity()
+	var unchanged []string
+	if in.KeepPipelineFiles {
+		unchanged = PipelineFiles()
+	}
 	c, err := s.repoAgent(ctx, p)
 	if err != nil {
 		return nil, err
@@ -1384,6 +1388,7 @@ func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeIn
 		ExpectedSourceSHA: in.ExpectedSourceSHA,
 		ExpectedTargetSHA: in.ExpectedTargetSHA,
 		ExpectedTree:      in.ExpectedTree,
+		UnchangedPaths:    unchanged,
 		Name:              name,
 		Email:             email,
 	})

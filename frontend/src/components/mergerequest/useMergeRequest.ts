@@ -490,6 +490,15 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     if (pipelineFile) {
       return { key: 'auto-merge', tone: 'warning', icon: 'warning', title: "Won't merge automatically", detail: PIPELINE_COPY.autoMergePipelineFile(pipelineFile) }
     }
+    if ((diff.value?.mergeBases ?? 1) > 1) {
+      return {
+        key: 'auto-merge',
+        tone: 'warning',
+        icon: 'warning',
+        title: "Won't merge automatically",
+        detail: `It has more than one merge base with ${m.targetBranch}, so its review couldn't read just what merging it does: merge it yourself once you've looked at its changes.`,
+      }
+    }
     const gate = pipelines.gate.value
     if (latest?.author === 'agent' && latest.status === 'submitted' && latest.verdict === 'approve') {
       if (latest.finishing) {
@@ -635,8 +644,8 @@ export function createMergeRequestState(projectId: Ref<number>, mrId: Ref<number
     fileLoading.value = true
     try {
       const [before, after] = await Promise.all([
-        file.status === 'A' ? Promise.resolve('') : fileAt(d.mergeBase, file.oldPath || file.path),
-        file.status === 'D' ? Promise.resolve('') : fileAt(d.headSha, file.path),
+        file.status === 'A' ? Promise.resolve('') : fileAt(d.from, file.oldPath || file.path),
+        file.status === 'D' ? Promise.resolve('') : fileAt(d.to, file.path),
       ])
       if (request !== fileRequest) return
       oldContent.value = before ?? ''

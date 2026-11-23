@@ -168,16 +168,28 @@ type RepoDiffFile struct {
 	Binary    bool   `json:"binary"`
 }
 
-// RepoDiff lists the files head changed since its merge base with base.
+// RepoDiff lists the files merging head into base changes: those head
+// changed since its merge base with base, or, when the two have more than
+// one merge base and head merges cleanly, those the trial merge changes on
+// base, since no diff from one merge base is sure to show what the merge
+// does.
 type RepoDiff struct {
-	BaseSHA   string         `json:"baseSha"`
-	HeadSHA   string         `json:"headSha"`
-	MergeBase string         `json:"mergeBase"`
-	Files     []RepoDiffFile `json:"files"`
+	BaseSHA string `json:"baseSha"`
+	HeadSHA string `json:"headSha"`
+	// MergeBase is head's merge base with base, the first of them when
+	// there are more.
+	MergeBase string `json:"mergeBase"`
+	// MergeBases counts head's merge bases with base.
+	MergeBases int `json:"mergeBases"`
+	// From and To are the commits Files compare: MergeBase and HeadSHA, or
+	// BaseSHA and the trial merge of head onto it.
+	From  string         `json:"from"`
+	To    string         `json:"to"`
+	Files []RepoDiffFile `json:"files"`
 }
 
-// RepoDiff lists the files head changed since it diverged from base. Both
-// are branch names or full commit hashes.
+// RepoDiff lists the files merging head into base changes. Both are branch
+// names or full commit hashes.
 func (c *Client) RepoDiff(ctx context.Context, base, head string) (*RepoDiff, error) {
 	q := url.Values{"base": {base}, "head": {head}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/repo/diff?"+q.Encode(), nil)
@@ -341,8 +353,11 @@ type RepoMergeRequest struct {
 	ExpectedSourceSHA string `json:"expectedSourceSha"`
 	ExpectedTargetSHA string `json:"expectedTargetSha"`
 	ExpectedTree      string `json:"expectedTree,omitempty"`
-	Name              string `json:"name"`
-	Email             string `json:"email"`
+	// UnchangedPaths, when set, refuses the merge if it would land any of
+	// these paths otherwise than Target has them.
+	UnchangedPaths []string `json:"unchangedPaths,omitempty"`
+	Name           string   `json:"name"`
+	Email          string   `json:"email"`
 }
 
 // RepoMergeResult is where the target branch moved to.

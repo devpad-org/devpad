@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -457,4 +459,173 @@ func TestRepoFetchBaseRefreshesSandboxCopy(t *testing.T) {
 	if rec := repoRequest(t, empty, handleRepoFetchBase, http.MethodPost, "/api/repo/fetch-base?branch=main", bytes.NewReader(nil)); rec.Code != http.StatusConflict {
 		t.Fatalf("fetch-base without a repo: expected 409, got %d %s", rec.Code, rec.Body)
 	}
+}
+
+// gitAt runs git in dir with its commits dated at unix seconds, so which
+// of two merge bases git names first is the same on every run.
+func gitAt(t *testing.T, dir string, unix int64, args ...string) string {
+	t.Helper()
+	date := fmt.Sprintf("%d +0000", unix)
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+		"GIT_AUTHOR_DATE="+date, "GIT_COMMITTER_DATE="+date,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// crissCross publishes, as task/2, a change whose merge bases with main
+// hide that merging it removes main's pipeline file. A task cut before the
+// file was added merges into main, and the change merges that task's commit
+// with main's commit from before that merge: both are in main's history, so
+// both are merge bases, and the newer, the task's, has no pipeline file,
+// nor has the change. Merging starts from both, and so deletes the file.
+// It returns main and the change's head.
+func crissCross(t *testing.T, canonical string) (main, head string) {
+	t.Helper()
+	clone := t.TempDir()
+	runGit(t, clone, "clone", "--quiet", canonical, ".")
+	cut := runGit(t, clone, "rev-parse", "HEAD")
+	when := int64(1_700_000_000)
+	commit := func(name, content string) string {
+		when += 100
+		if err := os.MkdirAll(filepath.Join(clone, filepath.Dir(name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(clone, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitAt(t, clone, when, "add", name)
+		gitAt(t, clone, when, "commit", "-qm", "add "+name)
+		return runGit(t, clone, "rev-parse", "HEAD")
+	}
+	commit(".devpad/pipeline.yml", "jobs: {}\n")
+	before := commit("work.txt", "main work\n")
+	gitAt(t, clone, when, "checkout", "-q", "-b", "task", cut)
+	task := commit("helper.txt", "help\n")
+	gitAt(t, clone, when, "checkout", "-q", "main")
+	when += 100
+	gitAt(t, clone, when, "merge", "-q", "--no-ff", "-m", "Merge task", "task")
+	main = runGit(t, clone, "rev-parse", "HEAD")
+
+	// The change: main's work and the task's, and a file of its own, but
+	// not the pipeline file.
+	gitAt(t, clone, when, "checkout", "-q", task)
+	gitAt(t, clone, when, "checkout", before, "--", "work.txt")
+	if err := os.WriteFile(filepath.Join(clone, "change.txt"), []byte("change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitAt(t, clone, when, "add", "change.txt")
+	tree := gitAt(t, clone, when, "write-tree")
+	when += 100
+	head = gitAt(t, clone, when, "commit-tree", tree, "-p", task, "-p", before, "-m", "Bring in main's work")
+	runGit(t, clone, "push", "--quiet", "origin", "main:main", head+":refs/heads/task/2")
+
+	bases := strings.Fields(runGit(t, canonical, "merge-base", "--all", main, head))
+	if len(bases) != 2 || bases[0] != task {
+		t.Fatalf("merge bases = %v, want the task's commit then main's earlier one", bases)
+	}
+	if hidden := runGit(t, canonical, "diff", "--name-only", task, head); strings.Contains(hidden, "pipeline") {
+		t.Fatalf("the diff from the first merge base shows the pipeline file: %q", hidden)
+	}
+	return main, head
+}
+
+// With more than one merge base, a diff from any one of them can hide what
+// merging the change does, so the diff is of what the trial merge changes on
+// the base, with the contents of both sides at hand.
+func TestRepoDiffWithSeveralMergeBasesListsWhatTheMergeChanges(t *testing.T) {
+	canonical := initCanonical(t)
+	main, head := crissCross(t, canonical)
+
+	rec := repoRequest(t, canonical, handleRepoDiff, http.MethodGet, "/api/repo/diff?base=main&head=task/2", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("diff status %d: %s", rec.Code, rec.Body)
+	}
+	var diff repoDiff
+	if err := json.Unmarshal(rec.Body.Bytes(), &diff); err != nil {
+		t.Fatalf("decoding diff: %v", err)
+	}
+	body, _ := json.Marshal(repoTrialMerge{Source: head, Target: main})
+	trial := repoRequest(t, canonical, handleRepoTrialMerge, http.MethodPost, "/api/repo/pipeline/trial-merge", bytes.NewReader(body))
+	var merged repoTrialMergeResult
+	json.Unmarshal(trial.Body.Bytes(), &merged)
+	if diff.MergeBases != 2 || diff.From != main || diff.To != merged.SHA || merged.SHA == "" || diff.HeadSHA != head {
+		t.Fatalf("diff = %+v, trial merge %+v", diff, merged)
+	}
+	want := []repoDiffFile{
+		{Path: ".devpad/pipeline.yml", Status: "D", Deletions: 1},
+		{Path: "change.txt", Status: "A", Additions: 1},
+	}
+	if !slices.Equal(diff.Files, want) {
+		t.Fatalf("files = %+v, want %+v", diff.Files, want)
+	}
+	rec = repoRequest(t, canonical, handleRepoFile, http.MethodGet, "/api/repo/file?rev="+diff.To+"&path=change.txt", nil)
+	if rec.Code != http.StatusOK || rec.Body.String() != "change\n" {
+		t.Fatalf("file at the trial merge: %d %q", rec.Code, rec.Body)
+	}
+}
+
+// A merge told to leave paths unchanged compares the target with the very
+// tree it would land, so a change that removes the pipeline file through
+// its history is refused, as one that changes it directly is.
+func TestRepoMergeLeavesUnchangedPathsAsTheTargetHasThem(t *testing.T) {
+	pipeline := []string{".devpad/pipeline.yml", ".devpad/pipeline.yaml"}
+	t.Run("through several merge bases", func(t *testing.T) {
+		canonical := initCanonical(t)
+		main, _ := crissCross(t, canonical)
+		for _, strategy := range []string{"merge", "squash"} {
+			rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/2", Strategy: strategy, UnchangedPaths: pipeline})
+			if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "would change .devpad/pipeline.yml") || runGit(t, canonical, "rev-parse", "main") != main {
+				t.Fatalf("%s: expected 409 leaving main alone, got %d %s", strategy, rec.Code, rec.Body)
+			}
+		}
+		// The user may merge it.
+		if rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/2"}); rec.Code != http.StatusOK {
+			t.Fatalf("merge without unchanged paths: %d %s", rec.Code, rec.Body)
+		}
+		if files := runGit(t, canonical, "ls-tree", "-r", "--name-only", "main"); strings.Contains(files, "pipeline") {
+			t.Fatalf("expected the merge to remove the pipeline file, main has %q", files)
+		}
+	})
+
+	t.Run("directly", func(t *testing.T) {
+		canonical := initCanonical(t)
+		sandbox := seedSandbox(t, canonical, "task/1")
+		if err := os.Mkdir(filepath.Join(sandbox, ".devpad"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		commitFile(t, sandbox, ".devpad/pipeline.yaml", "jobs: {}\n")
+		publish(t, canonical, sandbox, "task/1")
+		other := seedSandbox(t, canonical, "task/2")
+		commitFile(t, other, "work.txt", "work")
+		publish(t, canonical, other, "task/2")
+		main := runGit(t, canonical, "rev-parse", "main")
+
+		for _, strategy := range []string{"fast-forward", "merge", "squash"} {
+			rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/1", Strategy: strategy, UnchangedPaths: pipeline})
+			if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "would change .devpad/pipeline.yaml") || runGit(t, canonical, "rev-parse", "main") != main {
+				t.Fatalf("%s: expected 409 leaving main alone, got %d %s", strategy, rec.Code, rec.Body)
+			}
+		}
+		// A change that leaves them alone merges.
+		if rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/2", UnchangedPaths: pipeline}); rec.Code != http.StatusOK {
+			t.Fatalf("merge leaving the paths alone: %d %s", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("paths that aren't clean", func(t *testing.T) {
+		canonical := initCanonical(t)
+		for _, paths := range [][]string{{"../x"}, {"/etc/passwd"}, {"-x"}, {""}, slices.Repeat([]string{"a"}, maxUnchangedPaths+1)} {
+			if rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/1", UnchangedPaths: paths}); rec.Code != http.StatusBadRequest {
+				t.Errorf("%q: expected 400, got %d %s", paths, rec.Code, rec.Body)
+			}
+		}
+	})
 }

@@ -1651,6 +1651,14 @@ type reviewPromptInput struct {
 	lookClosely string
 }
 
+// mergedList reports whether diff lists what merging its head changes on
+// its base, the trial merge's changes, rather than what the head changed
+// since its merge base, as it does when the two have more than one merge
+// base and the head merges cleanly.
+func mergedList(diff *agent.RepoDiff) bool {
+	return diff.MergeBases > 1 && diff.To != diff.HeadSHA
+}
+
 func reviewPrompt(in reviewPromptInput) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are reviewing merge request !%d in the project %q: %s\n\n", in.mr.ID, in.project.Name, in.mr.Title)
@@ -1665,8 +1673,14 @@ func reviewPrompt(in reviewPromptInput) string {
 	}
 	// The branch names and paths are the change's own, which could
 	// otherwise end a line early and start a heading of their own.
-	fmt.Fprintf(&b, "## The change\n\n/workspace is a checkout of the change at commit `%s`, on the branch %s made from %s. Since it branched from %s it changes %d files:\n\n",
-		short(in.review.HeadSHA), promptname.Quote(in.branch), promptname.Quote(in.mr.SourceBranch), promptname.Quote(in.mr.TargetBranch), len(in.diff.Files))
+	target := promptname.Quote(in.mr.TargetBranch)
+	fmt.Fprintf(&b, "## The change\n\n/workspace is a checkout of the change at commit `%s`, on the branch %s made from %s. ",
+		short(in.review.HeadSHA), promptname.Quote(in.branch), promptname.Quote(in.mr.SourceBranch))
+	if mergedList(in.diff) {
+		fmt.Fprintf(&b, "Merged into %s at `%s`, it changes %d files:\n\n", target, short(in.diff.BaseSHA), len(in.diff.Files))
+	} else {
+		fmt.Fprintf(&b, "Since it branched from %s it changes %d files:\n\n", target, len(in.diff.Files))
+	}
 	for i, f := range in.diff.Files {
 		if i == 200 {
 			fmt.Fprintf(&b, "- … and %d more\n", len(in.diff.Files)-i)
@@ -1681,7 +1695,14 @@ func reviewPrompt(in reviewPromptInput) string {
 			fmt.Fprintf(&b, "- %s (%s, +%d −%d)\n", promptname.Quote(f.Path), f.Status, f.Additions, f.Deletions)
 		}
 	}
-	fmt.Fprintf(&b, "\nRun `git diff %[1]s HEAD` to read the change and `git log %[1]s..HEAD` for its commits.\n\n", in.diff.MergeBase)
+	switch {
+	case mergedList(in.diff):
+		fmt.Fprintf(&b, "\nThe change and %[2]s have more than one merge base, as when each has merged work the other merged too, so no `git diff` in /workspace shows just what merging it does: `git diff %[1]s HEAD` reads it against one of them, and can miss work of %[2]s that merging the change undoes. The list above is what the merge changes, so read each of those files at HEAD, and `git log %[1]s..HEAD` for its commits.\n\n", in.diff.MergeBase, target)
+	case in.diff.MergeBases > 1:
+		fmt.Fprintf(&b, "\nThe change and %[2]s have more than one merge base and don't merge cleanly, so this list and `git diff %[1]s HEAD`, read against one of them, may miss work of %[2]s the change undoes. Run `git log %[1]s..HEAD` for its commits.\n\n", in.diff.MergeBase, target)
+	default:
+		fmt.Fprintf(&b, "\nRun `git diff %[1]s HEAD` to read the change and `git log %[1]s..HEAD` for its commits.\n\n", in.diff.MergeBase)
+	}
 	b.WriteString(in.pipeline)
 	b.WriteString(in.lookClosely)
 	b.WriteString(in.sandbox.Prompt())
@@ -2004,7 +2025,7 @@ func (s *service) mergeLocked(ctx context.Context, userID, projectID, mrID int64
 	}
 	result, err := s.projects.Merge(ctx, userID, projectID, project.MergeInput{
 		Source: mr.SourceBranch, Target: mr.TargetBranch, Strategy: in.Strategy, Message: mergeMessage(mr, opts), ExpectedSourceSHA: mr.HeadSHA,
-		ExpectedTargetSHA: adm.targetSHA, ExpectedTree: adm.expectedTree,
+		ExpectedTargetSHA: adm.targetSHA, ExpectedTree: adm.expectedTree, KeepPipelineFiles: adm.keepPipelineFiles,
 	})
 	if err != nil {
 		return nil, s.mergeRefused(ctx, mr, adm, err)
