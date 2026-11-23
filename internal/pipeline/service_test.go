@@ -577,3 +577,56 @@ func TestABranchStandsForItsCommitAndJobs(t *testing.T) {
 		t.Fatalf("with other jobs: %+v", st)
 	}
 }
+
+// What the merge request service reads under a merge request's lock, the
+// gate (MergeRequestStatus), what a pipeline found (Report), the proposed
+// pipeline and the target's jobs (BranchPipeline), never waits for the
+// project's start lock, which a start holds while it reads the repo: the
+// lock order puts Start outside every merge request and task lock, so a
+// read under one that waited for a start could wait for ever.
+func TestReadsUnderAMergeRequestsLockNeverWaitForTheStartLock(t *testing.T) {
+	e := setup(t)
+	e.tick("develop")
+	e.propose(sha(30), proposedYAML)
+	ran := e.wait(e.start(StartInput{MergeRequestID: e.mr}).ID)
+	unlock, err := e.svc.lockStarts(context.Background(), e.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		st, err := e.svc.MergeRequestStatus(ctx, e.owner, e.project, e.mr)
+		if err != nil {
+			done <- fmt.Errorf("merge request status: %w", err)
+			return
+		}
+		if g := st.Gate(); g.State != GatePassed {
+			done <- fmt.Errorf("gate %s", g.State)
+			return
+		}
+		if proposed, err := e.svc.ProposedStatus(ctx, e.owner, e.project, st); err != nil || proposed == nil {
+			done <- fmt.Errorf("proposed status: %+v %w", proposed, err)
+			return
+		}
+		if _, err := e.svc.Report(ctx, e.owner, e.project, ran.ID, 4096); err != nil {
+			done <- fmt.Errorf("report: %w", err)
+			return
+		}
+		if _, err := e.svc.BranchPipeline(ctx, e.owner, e.project, "develop"); err != nil {
+			done <- fmt.Errorf("branch pipeline: %w", err)
+			return
+		}
+		done <- nil
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a read waited for the project's start lock")
+	}
+}
