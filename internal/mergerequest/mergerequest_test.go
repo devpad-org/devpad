@@ -1138,14 +1138,14 @@ func TestBranchPublishedMovesTheOpenMergeRequest(t *testing.T) {
 	mr := e.openTaskMR(t)
 
 	// The user adds a commit to the branch from the project workspace.
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head2"))
 	got, _ := e.svc.repo.GetByID(ctx, mr.ID)
 	if got.HeadSHA != "head2" {
 		t.Fatalf("expected the merge request to follow the published head, got %q", got.HeadSHA)
 	}
 	// Other users' branches and branches without an open request are left be.
-	e.svc.BranchPublished(ctx, e.stranger, e.pid(), "task/1", "evil")
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "feature", "f2")
+	e.svc.BranchMoved(ctx, published(e.stranger, e.pid(), "task/1", "evil"))
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "feature", "f2"))
 	if got, _ := e.svc.repo.GetByID(ctx, mr.ID); got.HeadSHA != "head2" {
 		t.Fatalf("unexpected head after unrelated publishes: %q", got.HeadSHA)
 	}
@@ -1157,7 +1157,7 @@ func TestBranchPublishedMovesTheOpenMergeRequest(t *testing.T) {
 		t.Fatalf("expected the merge pinned to the published head, got %+v", e.projects.merges)
 	}
 	// A merged request no longer follows the branch.
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head3")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head3"))
 	if got, _ := e.svc.repo.GetByID(ctx, mr.ID); got.HeadSHA != "head2" || got.Status != StatusMerged {
 		t.Fatalf("a merged request moved: %+v", got)
 	}
@@ -1171,7 +1171,7 @@ func TestBranchFastForwardedFromUpstreamMovesTheOpenMergeRequest(t *testing.T) {
 	// The head is read from the canonical repo, not taken from the caller,
 	// so a merge that moved the branch since wins.
 	e.projects.branches = []agent.RepoRef{{Name: "main", SHA: "m"}, {Name: "task/1", SHA: "upstream2"}}
-	e.svc.BranchFastForwarded(ctx, e.owner, e.pid(), "task/1", "upstream1")
+	e.svc.BranchMoved(ctx, fastForwarded(e.owner, e.pid(), "task/1", "upstream1"))
 	d, err := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -1195,9 +1195,9 @@ func TestEachMoveOfTheHeadIsRecordedAsAPush(t *testing.T) {
 	// A round that changes nothing, and a publish of the same commit, move
 	// nothing.
 	e.svc.TaskReadyForReview(ctx, tk, "Still a cart.")
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head3")
-	e.svc.BranchPublished(ctx, e.stranger, e.pid(), "task/1", "evil")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head2"))
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head3"))
+	e.svc.BranchMoved(ctx, published(e.stranger, e.pid(), "task/1", "evil"))
 
 	d, err := e.svc.Get(ctx, e.owner, e.pid(), mr.ID)
 	if err != nil {
@@ -1930,7 +1930,7 @@ func TestSendBackStartsTheTaskAgentWithTheFeedback(t *testing.T) {
 	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{Verdict: VerdictComment, Body: "Old round."}); err != nil {
 		t.Fatalf("review: %v", err)
 	}
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head2"))
 	if _, err := e.svc.Review(ctx, e.owner, e.pid(), mr.ID, ReviewInput{
 		Verdict: VerdictComment, Body: "Rename the cart.",
 		Comments: []CommentInput{{Path: "cart.go", Line: 4, Body: "Call it basket."}},
@@ -2162,7 +2162,7 @@ func TestTaskPushKeepsItsAgentsCommentsCurrent(t *testing.T) {
 	}
 
 	// Any other push leaves them behind.
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head3")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head3"))
 	if got := heads(); got[agentThread.ID] != "head2" {
 		t.Fatalf("a publish moved the agent's thread: %v", got)
 	}
@@ -2197,7 +2197,7 @@ func TestReReviewIsToldAboutEarlierReviews(t *testing.T) {
 	waitFor(t, "the second review sandbox to stop", func() bool { stopped, _ := e.workspaces.calls(); return len(stopped) == 2 })
 
 	// After a push, the next review looks at what changed since.
-	e.svc.BranchPublished(context.Background(), e.owner, e.pid(), "task/1", "head2")
+	e.svc.BranchMoved(context.Background(), published(e.owner, e.pid(), "task/1", "head2"))
 	e.startAgentReview(t, mr, AgentReviewInput{})
 	if prompt := e.runs.started()[2].Message.Text(); !strings.Contains(prompt, "`git diff head1 HEAD`") || !strings.Contains(prompt, "only if it is blocking") {
 		t.Fatalf("a re-review should be scoped to what changed since the last one:\n%s", prompt)
@@ -2286,7 +2286,7 @@ func TestUserCommentsAndResolvesThreads(t *testing.T) {
 		t.Fatalf("assistant reply: %v", err)
 	}
 	// A reply to a reply joins the thread, where the thread sits.
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head2"))
 	reply, err := e.svc.Comment(ctx, e.owner, e.pid(), mr.ID, UserCommentInput{ReplyTo: answer.ID, Path: "other.go", Line: 1, Body: "Thanks."})
 	if err != nil || reply.ReplyTo != line.ID || reply.Path != "cart.go" || reply.Line != 7 || reply.HeadSHA != "head1" {
 		t.Fatalf("reply: %+v %v", reply, err)
@@ -2476,7 +2476,7 @@ func TestSendBackWithOnlyAnOpenThreadFromAnEarlierRound(t *testing.T) {
 	if _, err := e.svc.Comment(ctx, e.owner, e.pid(), mr.ID, UserCommentInput{Path: "cart.go", Line: 4, Body: "Call it basket."}); err != nil {
 		t.Fatalf("comment: %v", err)
 	}
-	e.svc.BranchPublished(ctx, e.owner, e.pid(), "task/1", "head2")
+	e.svc.BranchMoved(ctx, published(e.owner, e.pid(), "task/1", "head2"))
 	if _, err := e.svc.SendBack(ctx, e.owner, e.pid(), mr.ID, SendBackInput{}); err != nil {
 		t.Fatalf("an open thread is feedback to send back: %v", err)
 	}
@@ -3128,4 +3128,14 @@ func TestLookupIsTheOwnersMergeRequestAlone(t *testing.T) {
 	if _, err := e.svc.Lookup(ctx, e.owner, e.pid()+1, mr.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another project's lookup: %v", err)
 	}
+}
+
+// published is the project workspace publishing branch at sha.
+func published(userID, projectID int64, branch, sha string) project.BranchMove {
+	return project.BranchMove{UserID: userID, ProjectID: projectID, Branch: branch, SHA: sha, Cause: project.MovePublished}
+}
+
+// fastForwarded is a sync fast-forwarding branch from the upstream to sha.
+func fastForwarded(userID, projectID int64, branch, sha string) project.BranchMove {
+	return project.BranchMove{UserID: userID, ProjectID: projectID, Branch: branch, SHA: sha, Cause: project.MoveFastForwarded}
 }

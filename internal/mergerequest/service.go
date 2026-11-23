@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,9 @@ type Service interface {
 	// Lookup returns the merge request alone, without what Get adds to it,
 	// for other services that only need its branches and head.
 	Lookup(ctx context.Context, userID, projectID, mrID int64) (*MergeRequest, error)
+	// ListOpenInto lists the project's open merge requests into a branch,
+	// alone as Lookup returns them.
+	ListOpenInto(ctx context.Context, userID, projectID int64, target string) ([]*MergeRequest, error)
 	Diff(ctx context.Context, userID, projectID, mrID int64) (*agent.RepoDiff, error)
 	// Commits lists the commits the merge request proposes, newest first.
 	Commits(ctx context.Context, userID, projectID, mrID int64) (*agent.RepoLog, error)
@@ -60,11 +64,13 @@ type Service interface {
 
 	// TaskReadyForReview opens or updates the task's merge request.
 	TaskReadyForReview(ctx context.Context, t *task.Task, summary string)
-	// BranchPublished moves the open merge request for a branch published
-	// from the project workspace to the new commit, and BranchFastForwarded
-	// for a protected branch fast-forwarded from the upstream.
-	BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string)
-	BranchFastForwarded(ctx context.Context, userID, projectID int64, branch, sha string)
+	// BranchMoved moves the open merge request for a branch published from
+	// the project workspace to the new commit, as it does for a protected
+	// branch fast-forwarded from the upstream.
+	project.BranchListener
+	// AddHeadListener adds one of those told each time a merge request
+	// opens or its head moves.
+	AddHeadListener(l HeadListener)
 	// GuardDeleteBranch refuses deleting a branch an open merge request
 	// comes from.
 	GuardDeleteBranch(ctx context.Context, userID, projectID int64, branch string, del func() error) error
@@ -170,14 +176,36 @@ type service struct {
 	rootCancel context.CancelFunc
 	wg         sync.WaitGroup
 
-	mu     sync.Mutex
-	closed bool
-	locks  map[string]*sync.Mutex
+	mu            sync.Mutex
+	closed        bool
+	locks         map[string]*sync.Mutex
+	headListeners []HeadListener
 	// reviewBudgets holds the budget of each agent review that has run since
 	// devpad started and could still be continued, so its runs, the
 	// sub-agents a run leaves running, and a continued run share one limit.
 	// See forgetReviewBudgets.
 	reviewBudgets map[int64]*domain.Budget
+}
+
+// HeadListener is told each time a merge request opens, or its head moves to
+// new commits: a task's agent finishing a round, a publish from the project
+// workspace, or a merge or fast-forward into its branch. It is told once
+// the change is recorded, on the goroutine that made it, when the merge
+// request service holds no lock, but it is to return at once all the same,
+// handing anything slow to a goroutine of its own: the round, publish or
+// merge that moved the head waits for it.
+type HeadListener interface {
+	MergeRequestHeadMoved(ctx context.Context, m HeadMove)
+}
+
+// HeadMove is a merge request opening at its head, or its head moving.
+type HeadMove struct {
+	UserID         int64
+	ProjectID      int64
+	MergeRequestID int64
+	// Opened says the merge request has just opened; otherwise its head
+	// moved.
+	Opened bool
 }
 
 // Deps are what a merge request Service is made from.
@@ -211,6 +239,24 @@ func NewService(d Deps) Service {
 		rootCancel:    cancel,
 		locks:         make(map[string]*sync.Mutex),
 		reviewBudgets: make(map[int64]*domain.Budget),
+	}
+}
+
+func (s *service) AddHeadListener(l HeadListener) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.headListeners = append(s.headListeners, l)
+}
+
+// headMoved tells the head listeners a merge request opened or its head
+// moved. The caller holds none of the service's locks.
+func (s *service) headMoved(ctx context.Context, mr *MergeRequest, opened bool) {
+	s.mu.Lock()
+	listeners := slices.Clone(s.headListeners)
+	s.mu.Unlock()
+	m := HeadMove{UserID: mr.UserID, ProjectID: mr.ProjectID, MergeRequestID: mr.ID, Opened: opened}
+	for _, l := range listeners {
+		l.MergeRequestHeadMoved(ctx, m)
 	}
 }
 
@@ -319,6 +365,7 @@ func (s *service) create(ctx context.Context, userID, projectID int64, in Create
 	if err := s.openAtHead(ctx, mr); err != nil {
 		return nil, err
 	}
+	s.headMoved(ctx, mr, true)
 	s.autoReview(ctx, p, mr)
 	return mr, nil
 }
@@ -380,24 +427,33 @@ func (s *service) autoReview(ctx context.Context, p *project.Project, mr *MergeR
 	}
 }
 
+// TaskReadyForReview opens the task's merge request, or brings it up to
+// date with the round, then tells the head listeners when it opened or its
+// head moved, once the task's lock is released.
 func (s *service) TaskReadyForReview(ctx context.Context, t *task.Task, summary string) {
-	if err := s.taskReadyForReview(ctx, t, summary); err != nil {
+	mr, opened, err := s.taskReadyForReview(ctx, t, summary)
+	if err != nil {
 		log.Printf("task %d: opening merge request: %v", t.ID, err)
+	}
+	if mr != nil {
+		s.headMoved(ctx, mr, opened)
 	}
 }
 
-func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary string) error {
+// taskReadyForReview returns the merge request it opened, or whose head it
+// moved, with opened saying which, or nil when neither happened.
+func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary string) (mr *MergeRequest, opened bool, err error) {
 	p, err := s.projects.Get(ctx, t.UserID, t.ProjectID)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 	// Merge requests are created under the task's lock, so one task cannot
 	// race itself into two.
 	unlock := s.lock("task", t.ID)
 	defer unlock()
-	mr, err := s.repo.GetOpenBySource(ctx, t.ProjectID, t.Branch)
+	mr, err = s.repo.GetOpenBySource(ctx, t.ProjectID, t.Branch)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 	if mr == nil {
 		// A task's merge request targets the default branch. Tasks are
@@ -408,19 +464,19 @@ func (s *service) taskReadyForReview(ctx context.Context, t *task.Task, summary 
 			SourceBranch: t.Branch, TargetBranch: p.DefaultBranch, Status: StatusOpen, HeadSHA: t.HeadSHA,
 		}
 		if err := s.repo.Create(ctx, mr); err != nil {
-			return err
+			return nil, false, err
 		}
 		s.autoReview(ctx, p, mr)
-		return nil
+		return mr, true, nil
 	}
 	moved, err := s.updateFromTask(ctx, mr, t, summary)
 	if err != nil || !moved {
-		return err
+		return nil, false, err
 	}
 	// Starting the next round takes the merge request's lock, which
 	// updating it held.
 	s.nextReviewRound(ctx, mr)
-	return nil
+	return mr, false, nil
 }
 
 // updateFromTask brings a task's open merge request up to date with the
@@ -479,16 +535,24 @@ func (s *service) nextReviewRound(ctx context.Context, mr *MergeRequest) {
 	}
 }
 
-func (s *service) BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string) {
-	if err := s.branchPublished(ctx, userID, projectID, branch, sha); err != nil {
-		log.Printf("project %d: updating merge request for published branch %s: %v", projectID, branch, err)
+// BranchMoved has the open merge request from a branch that moved follow
+// it. A merge is followed by the merge request that merged (followMerge),
+// once it has released its lock, which it holds while the move is told.
+func (s *service) BranchMoved(ctx context.Context, m project.BranchMove) {
+	switch m.Cause {
+	case project.MovePublished:
+		if err := s.branchPublished(ctx, m.UserID, m.ProjectID, m.Branch, m.SHA); err != nil {
+			log.Printf("project %d: updating merge request for published branch %s: %v", m.ProjectID, m.Branch, err)
+		}
+	case project.MoveFastForwarded:
+		s.branchFastForwarded(ctx, m.UserID, m.ProjectID, m.Branch, m.SHA)
 	}
 }
 
-// BranchFastForwarded reads the branch from the canonical repo under the
+// branchFastForwarded reads the branch from the canonical repo under the
 // merge request's lock, as a merge into it does, so a merge racing the
 // fast-forward cannot leave the merge request on the older commit.
-func (s *service) BranchFastForwarded(ctx context.Context, userID, projectID int64, branch, sha string) {
+func (s *service) branchFastForwarded(ctx context.Context, userID, projectID int64, branch, sha string) {
 	if sha == "" {
 		return
 	}
@@ -529,24 +593,38 @@ func (s *service) branchPublished(ctx context.Context, userID, projectID int64, 
 // returns, which is read under the merge request's lock, and records the
 // push as source's. A merge into the branch reads it from the canonical repo
 // there, so merges racing into the same branch cannot leave the merge
-// request on an older commit.
+// request on an older commit. The head listeners are told once the lock is
+// released.
 func (s *service) followBranch(ctx context.Context, userID, projectID int64, branch string, source PushSource, head func() (string, error)) error {
+	mr, err := s.moveToBranch(ctx, userID, projectID, branch, source, head)
+	if mr != nil {
+		s.headMoved(ctx, mr, false)
+	}
+	return err
+}
+
+// moveToBranch is followBranch's work under the merge request's lock. It
+// returns the merge request when it moved it.
+func (s *service) moveToBranch(ctx context.Context, userID, projectID int64, branch string, source PushSource, head func() (string, error)) (*MergeRequest, error) {
 	open, err := s.repo.GetOpenBySource(ctx, projectID, branch)
 	if err != nil || open == nil || open.UserID != userID {
-		return err
+		return nil, err
 	}
 	unlock := s.lock("mr", open.ID)
 	defer unlock()
 	// Reload under the lock, so a merge or close that just finished wins.
 	mr, err := s.repo.GetByID(ctx, open.ID)
 	if err != nil || mr == nil || mr.Status != StatusOpen {
-		return err
+		return nil, err
 	}
 	sha, err := head()
 	if err != nil || sha == "" || mr.HeadSHA == sha {
-		return err
+		return nil, err
 	}
-	return s.repo.UpdateHead(ctx, mr, sha, source)
+	if err := s.repo.UpdateHead(ctx, mr, sha, source); err != nil {
+		return nil, err
+	}
+	return mr, nil
 }
 
 func (s *service) Get(ctx context.Context, userID, projectID, mrID int64) (*Detail, error) {
@@ -581,6 +659,13 @@ func (s *service) Get(ctx context.Context, userID, projectID, mrID int64) (*Deta
 
 func (s *service) Lookup(ctx context.Context, userID, projectID, mrID int64) (*MergeRequest, error) {
 	return s.get(ctx, userID, projectID, mrID)
+}
+
+func (s *service) ListOpenInto(ctx context.Context, userID, projectID int64, target string) ([]*MergeRequest, error) {
+	if _, err := s.projects.Get(ctx, userID, projectID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListOpenByTarget(ctx, projectID, target)
 }
 
 // Diff lists the files the merge request changes. A merged request diffs

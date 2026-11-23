@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -333,29 +334,43 @@ func TestOpenWorkspaceReplacesUnseededWorkspace(t *testing.T) {
 	}
 }
 
-type recordingPublishHook struct {
+// recordingBranchListener records each branch move it is told of, as
+// "<cause>:<branch>@<sha>", with "<-<source>" for a merge. When svc is set,
+// it also takes the project's branch lock as it is told, which deadlocks
+// if a move is told under it.
+type recordingBranchListener struct {
 	mu    sync.Mutex
 	calls []string
+	svc   *service
 }
 
-func (h *recordingPublishHook) BranchPublished(_ context.Context, userID, projectID int64, branch, sha string) {
+func (h *recordingBranchListener) BranchMoved(_ context.Context, m BranchMove) {
+	if h.svc != nil {
+		h.svc.lockBranches(m.ProjectID)()
+	}
+	call := string(m.Cause) + ":" + m.Branch + "@" + m.SHA
+	if m.Source != "" {
+		call += "<-" + m.Source
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.calls = append(h.calls, strings.Join([]string{branch, sha}, "@"))
+	h.calls = append(h.calls, call)
 }
 
-func (h *recordingPublishHook) BranchFastForwarded(_ context.Context, userID, projectID int64, branch, sha string) {
+func (h *recordingBranchListener) told() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.calls = append(h.calls, "upstream:"+strings.Join([]string{branch, sha}, "@"))
+	return slices.Clone(h.calls)
 }
 
-func TestPublishWorkspaceBranchNotifiesHook(t *testing.T) {
+func TestPublishWorkspaceBranchTellsBranchListeners(t *testing.T) {
 	e := setupTest(t)
 	ctx := context.Background()
 	p := e.createProject(t, CreateInput{Name: "proj"})
-	hook := &recordingPublishHook{}
-	e.svc.SetPublishHook(hook)
+	hook := &recordingBranchListener{svc: e.svc}
+	e.svc.AddBranchListener(hook)
+	second := &recordingBranchListener{}
+	e.svc.AddBranchListener(second)
 	if _, _, err := e.svc.OpenWorkspace(ctx, e.userID, p.ID); err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -363,8 +378,11 @@ func TestPublishWorkspaceBranchNotifiesHook(t *testing.T) {
 	if _, err := e.svc.PublishWorkspaceBranch(ctx, e.userID, p.ID, "feature"); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if len(hook.calls) != 1 || hook.calls[0] != "feature@abc123" {
-		t.Fatalf("expected the hook told of the new head, got %v", hook.calls)
+	if got := hook.told(); len(got) != 1 || got[0] != "published:feature@abc123" {
+		t.Fatalf("expected the listener told of the new head, got %v", got)
+	}
+	if got := second.told(); len(got) != 1 {
+		t.Fatalf("expected every listener told, got %v", got)
 	}
 
 	// A refused publish moves nothing, so nobody is told.
@@ -372,8 +390,8 @@ func TestPublishWorkspaceBranchNotifiesHook(t *testing.T) {
 	if _, err := e.svc.PublishWorkspaceBranch(ctx, e.userID, p.ID, "feature"); err == nil {
 		t.Fatal("expected the non-fast-forward publish refused")
 	}
-	if len(hook.calls) != 1 {
-		t.Fatalf("a refused publish reached the hook: %v", hook.calls)
+	if got := hook.told(); len(got) != 1 {
+		t.Fatalf("a refused publish reached the listener: %v", got)
 	}
 }
 

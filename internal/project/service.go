@@ -121,9 +121,16 @@ type Service interface {
 	ConvertedInPlace(ctx context.Context, userID, projectID, workspaceID int64) (bool, error)
 	// Reconcile finishes conversions devpad stopped part way through.
 	Reconcile(ctx context.Context) error
-	// SetPublishHook registers who is told when a branch is published from
-	// the project workspace or fast-forwarded from the upstream.
-	SetPublishHook(h PublishHook)
+	// AddBranchListener adds one of those told each time a branch of a
+	// project's canonical repo moves.
+	AddBranchListener(l BranchListener)
+	// AddSettingsListener adds one of those told each time the user changes
+	// a project's branches or pipeline setting.
+	AddSettingsListener(l SettingsListener)
+	// ListPipelineProjects lists every project that ticks a branch to run
+	// pipelines, whoever's it is, for devpad to catch up on as it starts.
+	// It is never for a request.
+	ListPipelineProjects(ctx context.Context) ([]*Project, error)
 	// SetUpstreamHook registers who is told when a project's upstream
 	// changes.
 	SetUpstreamHook(h UpstreamHook)
@@ -153,13 +160,58 @@ type SidecarServices interface {
 	AwaitReady(ctx context.Context, workspaceID int64) error
 }
 
-// PublishHook is told each time a branch is published from the project
-// workspace, or a protected branch fast-forwarded from the upstream, with
-// the commit it now points at, so an open merge request for the branch can
-// follow it.
-type PublishHook interface {
-	BranchPublished(ctx context.Context, userID, projectID int64, branch, sha string)
-	BranchFastForwarded(ctx context.Context, userID, projectID int64, branch, sha string)
+// MoveCause is what moved a branch of a project's canonical repo.
+type MoveCause string
+
+const (
+	// MovePublished is the project workspace publishing an unprotected
+	// branch, by the Publish button or git push devpad.
+	MovePublished MoveCause = "published"
+	// MoveFastForwarded is a sync from the upstream fast-forwarding a
+	// protected branch.
+	MoveFastForwarded MoveCause = "fast_forwarded"
+	// MoveMerged is a merge request merging into a protected branch.
+	MoveMerged MoveCause = "merged"
+)
+
+// BranchMove is a branch of a project's canonical repo moving to a new
+// commit.
+type BranchMove struct {
+	UserID    int64
+	ProjectID int64
+	Branch    string
+	// SHA is the commit the branch now points at.
+	SHA   string
+	Cause MoveCause
+	// Source is the branch merged into Branch, for MoveMerged.
+	Source string
+}
+
+// BranchListener is told each time devpad moves a branch of a project's
+// canonical repo: a publish from the project workspace, a fast-forward from
+// the upstream, or a merge. These are the only ways a protected branch
+// moves. A sandbox publishing its task's branch is not told: the task
+// reports its round, and its merge request follows.
+//
+// Listeners are told in the order they were added, on the goroutine that
+// moved the branch, once the project's own locks are released. A
+// branch's publishes are told one at a time, in order. A merge is told
+// before Merge returns, while its caller, the merge request service, holds
+// that merge request's lock, so a listener only takes note of a move, and
+// hands any work that could wait on another merge request to a goroutine
+// of its own.
+type BranchListener interface {
+	BranchMoved(ctx context.Context, m BranchMove)
+}
+
+// SettingsListener is told each time the user changes which of a project's
+// branches it protects, merges into automatically or runs pipelines on
+// (SetBranches), or its pipeline setting (SetPipelineConfig), with the
+// project as it was and as it now is, once the change is recorded and the
+// project's locks are released. A listener only takes note, as a
+// BranchListener does.
+type SettingsListener interface {
+	ProjectSettingsChanged(ctx context.Context, before, after *Project)
 }
 
 // UpstreamHook is told each time a project's upstream URL changes, so the
@@ -244,13 +296,14 @@ type service struct {
 	// builds holds, per project, the environment build running in this
 	// process. buildMu orders starting builds, so the recorded build is
 	// always the one that runs.
-	builds       map[int64]*environmentBuild
-	buildMu      sync.Mutex
-	publishHook  PublishHook
-	upstreamHook UpstreamHook
-	branchGuards []BranchGuard
-	deleteHooks  []DeleteHook
-	sidecars     SidecarServices
+	builds            map[int64]*environmentBuild
+	buildMu           sync.Mutex
+	branchListeners   []BranchListener
+	settingsListeners []SettingsListener
+	upstreamHook      UpstreamHook
+	branchGuards      []BranchGuard
+	deleteHooks       []DeleteHook
+	sidecars          SidecarServices
 	// preparations holds the sandboxes being readied for their agent:
 	// waiting for their services, then starting their setup script.
 	preparations map[int64]*preparation
@@ -294,10 +347,38 @@ func NewService(repo Repository, cm container.Manager, workspaces Workspaces, us
 	}
 }
 
-func (s *service) SetPublishHook(h PublishHook) {
+func (s *service) AddBranchListener(l BranchListener) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.publishHook = h
+	s.branchListeners = append(s.branchListeners, l)
+}
+
+func (s *service) AddSettingsListener(l SettingsListener) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settingsListeners = append(s.settingsListeners, l)
+}
+
+// branchMoved tells the branch listeners a branch moved. The caller holds
+// none of the project's locks.
+func (s *service) branchMoved(ctx context.Context, m BranchMove) {
+	s.mu.Lock()
+	listeners := slices.Clone(s.branchListeners)
+	s.mu.Unlock()
+	for _, l := range listeners {
+		l.BranchMoved(ctx, m)
+	}
+}
+
+// settingsChanged tells the settings listeners the user changed a
+// project's settings. The caller holds none of the project's locks.
+func (s *service) settingsChanged(ctx context.Context, before, after *Project) {
+	s.mu.Lock()
+	listeners := slices.Clone(s.settingsListeners)
+	s.mu.Unlock()
+	for _, l := range listeners {
+		l.ProjectSettingsChanged(ctx, before, after)
+	}
 }
 
 func (s *service) SetUpstreamHook(h UpstreamHook) {
@@ -533,20 +614,32 @@ func (s *service) Update(ctx context.Context, userID, projectID int64, in Update
 // and from then on no sandbox can claim it and the project workspace cannot
 // publish it. Open merge requests keep their targets; one whose target is no
 // longer protected cannot be merged. A branch that stops being protected
-// stops being merged into automatically and running the pipeline.
+// stops being merged into automatically and running the pipeline. The
+// settings listeners are told once the branch lock is released.
 func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in BranchesInput) (*Project, error) {
+	before, after, err := s.setBranches(ctx, userID, projectID, in)
+	if err != nil {
+		return nil, err
+	}
+	s.settingsChanged(ctx, before, after)
+	return after, nil
+}
+
+// setBranches does SetBranches' work under the project's branch lock,
+// returning the project as it was and as it now is.
+func (s *service) setBranches(ctx context.Context, userID, projectID int64, in BranchesInput) (before, after *Project, err error) {
 	unlock := s.lockBranches(projectID)
 	defer unlock()
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defaultBranch := strings.TrimSpace(in.DefaultBranch)
 	if defaultBranch == "" {
 		defaultBranch = p.DefaultBranch
 	}
 	if !validBranchName(defaultBranch) {
-		return nil, invalid("defaultBranch is not a valid branch name")
+		return nil, nil, invalid("defaultBranch is not a valid branch name")
 	}
 	protected := []string{}
 	seen := map[string]bool{defaultBranch: true}
@@ -556,22 +649,22 @@ func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in B
 			continue
 		}
 		if !validBranchName(b) {
-			return nil, invalid("%q is not a valid branch name", b)
+			return nil, nil, invalid("%q is not a valid branch name", b)
 		}
 		seen[b] = true
 		protected = append(protected, b)
 	}
 	if len(protected) > MaxProtectedBranches {
-		return nil, invalid("a project can protect at most %d branches besides its default branch", MaxProtectedBranches)
+		return nil, nil, invalid("a project can protect at most %d branches besides its default branch", MaxProtectedBranches)
 	}
 
 	c, err := s.repoAgent(ctx, p)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	refs, err := c.RepoRefs(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	exists := make(map[string]bool, len(refs.Branches))
 	for _, ref := range refs.Branches {
@@ -580,14 +673,14 @@ func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in B
 	next := &Project{DefaultBranch: defaultBranch, ProtectedBranches: protected}
 	for _, b := range next.Protected() {
 		if !exists[b] {
-			return nil, invalid("branch %q does not exist in the project", b)
+			return nil, nil, invalid("branch %q does not exist in the project", b)
 		}
 	}
 	if next.AutoMergeBranches, err = protectedSubset(p.AutoMergeBranches, next, in.AutoMergeBranches, "merge requests cannot merge into it automatically"); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if next.PipelineBranches, err = protectedSubset(p.PipelineBranches, next, in.PipelineBranches, "it cannot run the pipeline"); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// HEAD moves first: until the new branches are recorded, the repo
@@ -595,7 +688,7 @@ func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in B
 	moveHead := defaultBranch != p.DefaultBranch
 	if moveHead {
 		if err := c.RepoSetHead(ctx, defaultBranch); err != nil {
-			return nil, fmt.Errorf("setting the repo's default branch: %w", err)
+			return nil, nil, fmt.Errorf("setting the repo's default branch: %w", err)
 		}
 	}
 	if err := s.protectBranches(ctx, p, next); err != nil {
@@ -604,11 +697,12 @@ func (s *service) SetBranches(ctx context.Context, userID, projectID int64, in B
 				log.Printf("project %d: restoring the repo's default branch: %v", p.ID, headErr)
 			}
 		}
-		return nil, err
+		return nil, nil, err
 	}
+	was := *p
 	p.DefaultBranch, p.ProtectedBranches = next.DefaultBranch, next.ProtectedBranches
 	p.AutoMergeBranches, p.PipelineBranches = next.AutoMergeBranches, next.PipelineBranches
-	return p, nil
+	return &was, p, nil
 }
 
 // protectedSubset works out a list of next's protected branches, such as
@@ -742,15 +836,26 @@ func (s *service) protectBranches(ctx context.Context, p *Project, next *Project
 	})
 }
 
+// SetPipelineConfig records the project's pipeline setting, then tells the
+// settings listeners.
 func (s *service) SetPipelineConfig(ctx context.Context, userID, projectID int64, config string) (*Project, error) {
-	p, err := s.Get(ctx, userID, projectID)
+	before, err := s.Get(ctx, userID, projectID)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.SetPipelineConfig(ctx, p.ID, config); err != nil {
+	if err := s.repo.SetPipelineConfig(ctx, before.ID, config); err != nil {
 		return nil, err
 	}
-	return s.Get(ctx, userID, projectID)
+	after, err := s.Get(ctx, userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	s.settingsChanged(ctx, before, after)
+	return after, nil
+}
+
+func (s *service) ListPipelineProjects(ctx context.Context) ([]*Project, error) {
+	return s.repo.ListWithPipelineBranches(ctx)
 }
 
 // Delete tells its delete hooks, then removes every sandbox and the project
@@ -1240,7 +1345,8 @@ func (s *service) ReadAt(ctx context.Context, userID, projectID int64, in agent.
 // Merge merges a branch into a protected branch, committing as the user.
 // The source can itself be protected, as when develop is released into
 // main, but then it is never squashed: its commits would be left out of the
-// target's history, and every later merge of the two would conflict.
+// target's history, and every later merge of the two would conflict. The
+// branch listeners are told of the target's move before it returns.
 func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeInput) (*agent.RepoMergeResult, error) {
 	p, err := s.getReady(ctx, userID, projectID)
 	if err != nil {
@@ -1268,7 +1374,7 @@ func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeIn
 	if err != nil {
 		return nil, err
 	}
-	return c.RepoMerge(ctx, agent.RepoMergeRequest{
+	merged, err := c.RepoMerge(ctx, agent.RepoMergeRequest{
 		Source:            in.Source,
 		Target:            target,
 		Strategy:          in.Strategy,
@@ -1278,6 +1384,11 @@ func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeIn
 		Name:              name,
 		Email:             email,
 	})
+	if err != nil {
+		return nil, err
+	}
+	s.branchMoved(ctx, BranchMove{UserID: userID, ProjectID: p.ID, Branch: target, SHA: merged.SHA, Cause: MoveMerged, Source: in.Source})
+	return merged, nil
 }
 
 // Push pushes a protected branch, the default branch unless given, to the

@@ -13,6 +13,9 @@ type Repository interface {
 	GetByID(ctx context.Context, id int64) (*MergeRequest, error)
 	GetOpenBySource(ctx context.Context, projectID int64, sourceBranch string) (*MergeRequest, error)
 	ListByProjectID(ctx context.Context, projectID int64) ([]*MergeRequest, error)
+	// ListOpenByTarget lists a project's open merge requests into a branch,
+	// oldest first.
+	ListOpenByTarget(ctx context.Context, projectID int64, target string) ([]*MergeRequest, error)
 	Update(ctx context.Context, mr *MergeRequest) error
 	// UpdateHead moves mr to head and records the push in the same
 	// transaction. A task's push also moves the threads its agent started
@@ -107,6 +110,17 @@ func (r *repository) ListByProjectID(ctx context.Context, projectID int64) ([]*M
 		mr.AgentReviewing = reviewing
 		return mr, nil
 	})
+}
+
+func (r *repository) ListOpenByTarget(ctx context.Context, projectID int64, target string) ([]*MergeRequest, error) {
+	// The partial index of open merge requests by source holds every open
+	// one of the project.
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+mrColumns+` FROM merge_requests WHERE project_id = ? AND status = 'open' AND target_branch = ? ORDER BY id`, projectID, target)
+	if err != nil {
+		return nil, fmt.Errorf("listing open merge requests into %s: %w", target, err)
+	}
+	return collect(rows, func(row rowScanner) (*MergeRequest, error) { return scanMergeRequest(row) })
 }
 
 func (r *repository) Update(ctx context.Context, mr *MergeRequest) error {

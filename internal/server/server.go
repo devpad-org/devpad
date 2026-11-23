@@ -163,7 +163,7 @@ func New(cfg Config) (*Server, error) {
 		Models:        aiModule.CatalogService,
 	})
 	taskService.SetReviewHook(mrService)
-	projectService.SetPublishHook(mrService)
+	projectService.AddBranchListener(mrService)
 	projectService.AddBranchGuard(mrService)
 	projectService.AddBranchGuard(taskService)
 	aiModule.OnAgentRunFinished(mrService.RunFinished)

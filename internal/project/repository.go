@@ -57,6 +57,9 @@ type Repository interface {
 	SetUpstreamURL(ctx context.Context, projectID int64, upstreamURL string) error
 	// ListWithEnvironment lists the projects that have an environment.
 	ListWithEnvironment(ctx context.Context) ([]*Project, error)
+	// ListWithPipelineBranches lists the ready projects that tick a branch
+	// to run pipelines.
+	ListWithPipelineBranches(ctx context.Context) ([]*Project, error)
 	// GetBuild returns the latest build of a project's environment, or nil.
 	GetBuild(ctx context.Context, projectID int64) (*Build, error)
 	// PutBuild records a new build, replacing the last.
@@ -486,9 +489,20 @@ func (r *repository) SetEnvironmentImage(ctx context.Context, projectID int64, i
 }
 
 func (r *repository) ListWithEnvironment(ctx context.Context) ([]*Project, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT `+projectColumns+` FROM projects WHERE TRIM(environment) != '' ORDER BY id`)
+	return r.listWhere(ctx, "with an environment", `TRIM(environment) != ''`)
+}
+
+func (r *repository) ListWithPipelineBranches(ctx context.Context) ([]*Project, error) {
+	// branchList always writes a JSON array, so no branch is '[]'.
+	return r.listWhere(ctx, "running pipelines", `status = ? AND pipeline_branches != '[]'`, StatusReady)
+}
+
+// listWhere lists every user's projects that where picks, by id; what says
+// which in an error.
+func (r *repository) listWhere(ctx context.Context, what, where string, args ...any) ([]*Project, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+projectColumns+` FROM projects WHERE `+where+` ORDER BY id`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("listing projects with an environment: %w", err)
+		return nil, fmt.Errorf("listing projects %s: %w", what, err)
 	}
 	defer rows.Close()
 	var projects []*Project

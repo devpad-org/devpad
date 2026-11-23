@@ -27,8 +27,8 @@ func TestSyncUpstreamFastForwardsAndMovesMergeRequests(t *testing.T) {
 	if _, err := e.svc.SetBranches(ctx, e.userID, p.ID, BranchesInput{ProtectedBranches: []string{"develop"}}); err != nil {
 		t.Fatalf("set branches: %v", err)
 	}
-	hook := &recordingPublishHook{}
-	e.svc.SetPublishHook(hook)
+	hook := &recordingBranchListener{svc: e.svc}
+	e.svc.AddBranchListener(hook)
 	fetched := time.Now().UTC().Truncate(time.Second)
 	e.repoAgent.upstreamStatus = agent.UpstreamStatus{FetchedAt: &fetched, Branches: []agent.UpstreamBranch{
 		{Branch: "main", SHA: "m2", UpstreamSHA: "m2", FastForwarded: true},
@@ -47,8 +47,8 @@ func TestSyncUpstreamFastForwardsAndMovesMergeRequests(t *testing.T) {
 		t.Fatalf("%d fetches, fast-forwards named %v", e.upstreamFetchCount(), got)
 	}
 	// Only the branch that moved has its merge request follow it.
-	if strings.Join(hook.calls, " ") != "upstream:main@m2" {
-		t.Fatalf("hook calls %v", hook.calls)
+	if got := strings.Join(hook.told(), " "); got != "fast_forwarded:main@m2" {
+		t.Fatalf("listener told %v", got)
 	}
 
 	got, err := e.svc.UpstreamStatus(ctx, e.userID, p.ID)
