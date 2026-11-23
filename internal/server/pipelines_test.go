@@ -117,7 +117,7 @@ func TestMergeRequestGateIsThePipelinesGate(t *testing.T) {
 		Key: pipeline.MergeRequestKey{MergeRequestID: 4, HeadSHA: "head", TargetSHA: "tip", ConfigHash: "jobs"},
 	}
 	got, err := mergeRequestGate{statusPipelines{st: st}}.MergeGate(ctx, 1, 2, 4)
-	want := mergerequest.Gate{State: "failed", Guarded: true, Overridable: true, Reason: "pipeline #9 failed", PipelineID: 9, HeadSHA: "head", TargetSHA: "tip"}
+	want := mergerequest.Gate{State: mergerequest.GateFailed, Guarded: true, Overridable: true, Reason: "pipeline #9 failed", PipelineID: 9, HeadSHA: "head", TargetSHA: "tip"}
 	if err != nil || *got != want {
 		t.Fatalf("failed: %+v %v", got, err)
 	}
@@ -127,12 +127,80 @@ func TestMergeRequestGateIsThePipelinesGate(t *testing.T) {
 		t.Fatalf("passed: %+v", got)
 	}
 	st.Automatic = false
-	if got, _ := (mergeRequestGate{statusPipelines{st: st}}).MergeGate(ctx, 1, 2, 4); got.Guarded || !got.Clear || got.State != "unguarded" || got.TestedTree != "" {
+	if got, _ := (mergeRequestGate{statusPipelines{st: st}}).MergeGate(ctx, 1, 2, 4); got.Guarded || !got.Clear || got.State != mergerequest.GateUnguarded || got.TestedTree != "" {
 		t.Fatalf("not ticked: %+v", got)
 	}
 	broken := errors.New("the repo is down")
 	if _, err := (mergeRequestGate{statusPipelines{err: broken}}).MergeGate(ctx, 1, 2, 4); !errors.Is(err, broken) {
 		t.Fatalf("an error: %v", err)
+	}
+}
+
+// Every pipeline gate state reaches the merge request service as its own
+// state of the same name, which a merge over the gate records and the app
+// confirms, with the pipeline's word on whether it guards, clears, waits
+// and can be overridden. A state the mapping doesn't know shuts the gate
+// for good, so a state added to one package and not the other can never
+// let a merge through.
+func TestEveryGateStateReachesTheMergeRequestService(t *testing.T) {
+	var mapped []mergerequest.GateState
+	for _, s := range pipeline.GateStates() {
+		in := &pipeline.Gate{State: s, Reason: "why", HeadSHA: "head", TargetSHA: "tip", TestedTree: "tree", Waits: true, Pipeline: &pipeline.Pipeline{ID: 7}}
+		got := mergeRequestGateOf(in)
+		want := mergerequest.Gate{
+			State: mergerequest.GateState(s), Guarded: in.Guarded(), Clear: in.Clear(), Waits: true, Overridable: in.Overridable(),
+			Reason: "why", PipelineID: 7, HeadSHA: "head", TargetSHA: "tip", TestedTree: "tree",
+		}
+		if *got != want {
+			t.Errorf("%s: %+v, want %+v", s, got, want)
+		}
+		mapped = append(mapped, got.State)
+	}
+	if !slices.Equal(mapped, mergerequest.GateStates()) {
+		t.Errorf("the pipeline's gate states map to %v, the merge request service has %v", mapped, mergerequest.GateStates())
+	}
+	got := mergeRequestGateOf(&pipeline.Gate{State: "new_state", Waits: true, TestedTree: "tree"})
+	if got.Clear || got.Overridable || !got.Guarded || got.Waits || got.TestedTree != "" || got.State != mergerequest.GateErrored {
+		t.Errorf("an unknown state: %+v", got)
+	}
+}
+
+// Every pipeline status reaches the merge request service's report as the
+// gate state it stands for as a merge request's current pipeline, so the
+// report and the gate compare directly; one replaced, interrupted or
+// unknown stands for none, which nothing acts on.
+func TestEveryPipelineStatusReachesTheReportAsAGateState(t *testing.T) {
+	want := map[pipeline.Status]mergerequest.GateState{
+		pipeline.StatusQueued: mergerequest.GateQueued, pipeline.StatusRunning: mergerequest.GateRunning,
+		pipeline.StatusPassed: mergerequest.GatePassed, pipeline.StatusFailed: mergerequest.GateFailed,
+		pipeline.StatusConflict: mergerequest.GateConflict, pipeline.StatusInvalid: mergerequest.GateInvalid,
+		pipeline.StatusError: mergerequest.GateErrored, pipeline.StatusCancelled: mergerequest.GateCancelled,
+		pipeline.StatusNotConfigured: mergerequest.GateUnguarded,
+		pipeline.StatusSuperseded: "", pipeline.StatusInterrupted: "",
+	}
+	for _, s := range pipeline.Statuses() {
+		w, ok := want[s]
+		if !ok {
+			t.Errorf("status %s: say which gate state it stands for", s)
+			continue
+		}
+		if got := reportGateState(s); got != w {
+			t.Errorf("status %s reports %q, want %q", s, got, w)
+		}
+	}
+	if len(want) != len(pipeline.Statuses()) {
+		t.Errorf("want lists %d statuses, the pipeline package has %d", len(want), len(pipeline.Statuses()))
+	}
+	if got := reportGateState("new_status"); got != "" {
+		t.Errorf("an unknown status reports %q", got)
+	}
+	// Each status a current pipeline can have gives the gate the very state
+	// the report says.
+	for _, s := range []pipeline.Status{pipeline.StatusQueued, pipeline.StatusRunning, pipeline.StatusPassed, pipeline.StatusFailed, pipeline.StatusConflict} {
+		st := &pipeline.MergeRequestStatus{Open: true, Automatic: true, Source: pipeline.SourceFile, Standing: pipeline.Standing{Current: &pipeline.Pipeline{ID: 1, Status: s}}}
+		if g := mergeRequestGateOf(st.Gate()); g.State != reportGateState(s) {
+			t.Errorf("a current pipeline %s: the gate is %s, the report %s", s, g.State, reportGateState(s))
+		}
 	}
 }
 
@@ -229,7 +297,7 @@ func TestMergeRequestPipelineReportsAreThePipelinesReport(t *testing.T) {
 	if err != nil || len(f.tails) != 1 || f.tails[0] != 4096 {
 		t.Fatalf("report: %v, tails %v", err, f.tails)
 	}
-	if got.PipelineID != 9 || got.Status != "failed" || got.HeadSHA != "head" || got.TargetSHA != "tip" || got.ConfigPath != ".devpad/pipeline.yml" || got.TargetPending {
+	if got.PipelineID != 9 || got.State != mergerequest.GateFailed || got.HeadSHA != "head" || got.TargetSHA != "tip" || got.ConfigPath != ".devpad/pipeline.yml" || got.TargetPending {
 		t.Fatalf("report %+v", got)
 	}
 	if len(got.Jobs) != 3 || got.Jobs[0].Duration != 90*time.Second || got.Jobs[2].Status != "passed" || !got.Jobs[1].AlsoFailingOnTarget {

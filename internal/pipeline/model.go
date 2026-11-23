@@ -80,6 +80,14 @@ const (
 	StatusInterrupted Status = "interrupted"
 )
 
+// Statuses lists every pipeline status, the app's PipelineStatus too.
+func Statuses() []Status {
+	return []Status{
+		StatusQueued, StatusRunning, StatusPassed, StatusFailed, StatusError, StatusInvalid,
+		StatusConflict, StatusNotConfigured, StatusCancelled, StatusSuperseded, StatusInterrupted,
+	}
+}
+
 // Finished reports whether a pipeline in status s is done for good.
 func (s Status) Finished() bool {
 	return s != StatusQueued && s != StatusRunning
@@ -142,6 +150,14 @@ const (
 	// JobInterrupted was running when devpad stopped.
 	JobInterrupted JobStatus = "interrupted"
 )
+
+// JobStatuses lists every job status, the app's JobStatus too.
+func JobStatuses() []JobStatus {
+	return []JobStatus{
+		JobQueued, JobRunning, JobPassed, JobFailed, JobTimedOut, JobOutOfMemory,
+		JobError, JobCancelled, JobSkipped, JobInterrupted,
+	}
+}
 
 // Finished reports whether a job in status s is done for good.
 func (s JobStatus) Finished() bool {

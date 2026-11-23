@@ -15,11 +15,49 @@ type PipelineGate interface {
 	MergeGate(ctx context.Context, userID, projectID, mrID int64) (*Gate, error)
 }
 
+// GateState is how the merge gate stands for a merge request. The pipeline
+// package decides it, with the same states under the same names, which
+// merges over the gate record and the app confirms; server.go maps each of
+// its states to one of these, and a state it doesn't know to a shut gate
+// nothing merges over.
+type GateState string
+
+const (
+	// GateUnguarded is no pipeline guarding the merge request; the gate is
+	// open.
+	GateUnguarded GateState = "unguarded"
+	// GatePassed is its pipeline passing on its commits and jobs as they
+	// are now; the gate is open.
+	GatePassed GateState = "passed"
+	// The rest shut the gate: its pipeline is still to finish, none has
+	// run, the latest is out of date, it failed, found the branch doesn't
+	// merge, doesn't parse, couldn't run (GateErrored, the pipeline
+	// package's GateError) or was cancelled, or the merge request can no
+	// longer merge.
+	GateQueued    GateState = "queued"
+	GateRunning   GateState = "running"
+	GateNotRun    GateState = "not_run"
+	GateOutOfDate GateState = "out_of_date"
+	GateFailed    GateState = "failed"
+	GateConflict  GateState = "conflict"
+	GateInvalid   GateState = "invalid"
+	GateErrored   GateState = "error"
+	GateCancelled GateState = "cancelled"
+	GateClosed    GateState = "closed"
+)
+
+// GateStates lists every gate state.
+func GateStates() []GateState {
+	return []GateState{
+		GateUnguarded, GatePassed, GateQueued, GateRunning, GateNotRun, GateOutOfDate,
+		GateFailed, GateConflict, GateInvalid, GateErrored, GateCancelled, GateClosed,
+	}
+}
+
 // Gate is how the merge gate stands for a merge request now.
 type Gate struct {
-	// State names it, such as "passed", "running" or "failed", or
-	// "unguarded" when no pipeline guards the merge request.
-	State string
+	// State names it.
+	State GateState
 	// Guarded says a pipeline guards the merge request: its target is ticked
 	// to run pipelines and has one configured.
 	Guarded bool
@@ -46,10 +84,6 @@ type Gate struct {
 	TestedTree string
 }
 
-// gateConflict is the gate's state for a branch whose pipeline found it
-// doesn't merge onto the target.
-const gateConflict = "conflict"
-
 // confirmation is what the user confirms merging over when the gate is g.
 func (g Gate) confirmation() GateConfirmation {
 	return GateConfirmation{State: g.State, PipelineID: g.PipelineID, HeadSHA: g.HeadSHA, TargetSHA: g.TargetSHA}
@@ -70,7 +104,7 @@ type GateError struct {
 
 func (e *GateError) Error() string {
 	switch {
-	case e.Gate.State == gateConflict:
+	case e.Gate.State == GateConflict:
 		return fmt.Sprintf("%s: resolve the conflicts, and its pipeline runs again", e.Gate.Reason)
 	case !e.Gate.Overridable:
 		return fmt.Sprintf("this merge request can't merge: %s", e.Gate.Reason)

@@ -62,7 +62,7 @@ func passedOn(id int64, head, target string) Gate {
 }
 
 // shut is a gate a pipeline keeps shut.
-func shut(state, reason string, waits bool, id int64) Gate {
+func shut(state GateState, reason string, waits bool, id int64) Gate {
 	return Gate{State: state, Guarded: true, Waits: waits, Overridable: true, Reason: reason, PipelineID: id, HeadSHA: "head1", TargetSHA: mainTip}
 }
 
@@ -268,7 +268,7 @@ func TestOverrideOnlyWhereTheGateIsShutByItsPipeline(t *testing.T) {
 		// The merge would refuse just as the pipeline's trial merge did.
 		{State: "conflict", Guarded: true, Reason: "pipeline #3 found the branch doesn't merge onto main", PipelineID: 3, HeadSHA: "head1", TargetSHA: mainTip},
 	} {
-		t.Run(g.State, func(t *testing.T) {
+		t.Run(string(g.State), func(t *testing.T) {
 			e := autoMergeEnv(t)
 			mr := e.openTaskMR(t)
 			e.gate.set(g)
@@ -300,7 +300,7 @@ func TestOnlyTheUsersMergeRecordsAnOverride(t *testing.T) {
 		t.Fatal("expected an automatic merge refused an override")
 	}
 	mr.MergedBy = MergedByUser
-	for _, state := range []string{"passed", "unguarded", "conflict", "closed", "nonsense"} {
+	for _, state := range []GateState{GatePassed, GateUnguarded, GateConflict, GateClosed, "nonsense"} {
 		mr.PipelineOverride = &PipelineOverride{State: state}
 		if err := e.svc.repo.Update(ctx, mr); err == nil {
 			t.Fatalf("expected an override of %q refused", state)

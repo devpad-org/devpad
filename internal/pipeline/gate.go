@@ -54,6 +54,15 @@ const (
 	GateClosed GateState = "closed"
 )
 
+// GateStates lists every gate state, the app's MergeGateState and the
+// merge request service's GateState too.
+func GateStates() []GateState {
+	return []GateState{
+		GateUnguarded, GatePassed, GateQueued, GateRunning, GateNotRun, GateOutOfDate,
+		GateFailed, GateConflict, GateInvalid, GateError, GateCancelled, GateClosed,
+	}
+}
+
 // Gate is how the merge gate stands for a merge request now.
 type Gate struct {
 	State GateState

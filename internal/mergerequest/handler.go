@@ -271,10 +271,10 @@ func (h *Handler) HandleMerge(w http.ResponseWriter, r *http.Request) {
 		// OverridePipeline is the pipeline gate as the user saw it when
 		// they confirmed merging over it; absent leaves the gate to decide.
 		OverridePipeline *struct {
-			State      string `json:"state"`
-			PipelineID int64  `json:"pipelineId"`
-			HeadSHA    string `json:"headSha"`
-			TargetSHA  string `json:"targetSha"`
+			State      GateState `json:"state"`
+			PipelineID int64     `json:"pipelineId"`
+			HeadSHA    string    `json:"headSha"`
+			TargetSHA  string    `json:"targetSha"`
 		} `json:"overridePipeline"`
 	}
 	if r.ContentLength != 0 && !decode(w, r, &req) {

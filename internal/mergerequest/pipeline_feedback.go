@@ -45,8 +45,13 @@ type PipelineReports interface {
 // PipelineReport is what one of a merge request's pipelines found.
 type PipelineReport struct {
 	PipelineID int64
-	// Status is how it stands, as the pipeline package names it.
-	Status    string
+	// State is the gate's state the pipeline stands for as its merge
+	// request's current one, as server.go maps its status: GateQueued,
+	// GateRunning, GatePassed, GateFailed, GateConflict, GateInvalid,
+	// GateErrored, GateCancelled or GateUnguarded (no pipeline configured), or
+	// empty for one replaced or interrupted, or in a status the mapping
+	// doesn't know, which tells neither a task nor a reviewer anything.
+	State     GateState
 	HeadSHA   string
 	TargetSHA string
 	// ConfigPath is the pipeline file its jobs came from, "" for the
@@ -223,24 +228,23 @@ func (s *service) pipelineResult(ctx context.Context, mr *MergeRequest, g *Gate)
 		return nil, nil
 	}
 	res := &task.PipelineResult{PipelineID: g.PipelineID, HeadSHA: g.HeadSHA, TargetBranch: mr.TargetBranch, TargetSHA: g.TargetSHA}
+	tail := 0
 	switch g.State {
-	case "passed":
+	case GatePassed:
 		res.Outcome = task.PipelinePassed
 		return res, nil
-	case "failed", gateConflict:
+	case GateFailed:
+		tail, res.Outcome = task.PipelineOutputTail, task.PipelineFailed
+	case GateConflict:
+		res.Outcome = task.PipelineConflict
 	default:
 		return nil, nil
-	}
-	tail := 0
-	res.Outcome = task.PipelineConflict
-	if g.State == "failed" {
-		tail, res.Outcome = task.PipelineOutputTail, task.PipelineFailed
 	}
 	rep, err := s.readReport(ctx, mr, g.PipelineID, tail)
 	if err != nil {
 		return nil, err
 	}
-	if rep.HeadSHA != g.HeadSHA || rep.Status != g.State {
+	if rep.HeadSHA != g.HeadSHA || rep.State != g.State {
 		return nil, nil
 	}
 	res.JobsFrom = jobsFrom(rep.ConfigPath, mr.TargetBranch)
@@ -487,16 +491,16 @@ func reviewPipelineSection(rep *PipelineReport, target string) string {
 	var b strings.Builder
 	onto := fmt.Sprintf("this change merged onto `%s` at `%s`", target, short(rep.TargetSHA))
 	b.WriteString("## The pipeline\n\n")
-	switch rep.Status {
-	case "queued", "running":
-		fmt.Fprintf(&b, "Devpad's pipeline #%d is still %s on %s, so its result isn't known yet.\n\n", rep.PipelineID, rep.Status, onto)
+	switch rep.State {
+	case GateQueued, GateRunning:
+		fmt.Fprintf(&b, "Devpad's pipeline #%d is still %s on %s, so its result isn't known yet.\n\n", rep.PipelineID, rep.State, onto)
 		return b.String()
-	case "conflict":
+	case GateConflict:
 		fmt.Fprintf(&b, "Devpad's pipeline #%d found this change doesn't merge onto `%s` at `%s`, so no job ran.\n\n", rep.PipelineID, target, short(rep.TargetSHA))
 		return b.String()
-	case "passed":
+	case GatePassed:
 		fmt.Fprintf(&b, "Devpad's pipeline #%d passed on %s.", rep.PipelineID, onto)
-	case "failed":
+	case GateFailed:
 		fmt.Fprintf(&b, "Devpad's pipeline #%d failed on %s.", rep.PipelineID, onto)
 	default:
 		return ""
@@ -530,7 +534,7 @@ func (s *service) reviewPipeline(ctx context.Context, mr *MergeRequest, rv *Revi
 		return ""
 	}
 	switch g.State {
-	case "passed", "failed", gateConflict, "queued", "running":
+	case GatePassed, GateFailed, GateConflict, GateQueued, GateRunning:
 	default:
 		return ""
 	}

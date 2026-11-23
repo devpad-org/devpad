@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -90,15 +91,90 @@ func (a mergeRequestGate) MergeGate(ctx context.Context, userID, projectID, mrID
 	if err != nil {
 		return nil, err
 	}
-	g := st.Gate()
-	out := &mergerequest.Gate{
-		State: string(g.State), Guarded: g.Guarded(), Clear: g.Clear(), Waits: g.Waits, Overridable: g.Overridable(),
-		Reason: g.Reason, HeadSHA: g.HeadSHA, TargetSHA: g.TargetSHA, TestedTree: g.TestedTree,
-	}
+	return mergeRequestGateOf(st.Gate()), nil
+}
+
+// mergeRequestGateOf is pipeline gate g as the merge request service reads
+// it. A state mergeRequestGateState doesn't know, one the pipeline package
+// gained without this mapping, stands as a shut gate nothing merges over,
+// so the gap fails closed: no merge, no override, no review let in and no
+// task told.
+func mergeRequestGateOf(g *pipeline.Gate) *mergerequest.Gate {
+	out := &mergerequest.Gate{Reason: g.Reason, HeadSHA: g.HeadSHA, TargetSHA: g.TargetSHA}
 	if g.Pipeline != nil {
 		out.PipelineID = g.Pipeline.ID
 	}
-	return out, nil
+	state, known := mergeRequestGateState(g.State)
+	if !known {
+		out.State, out.Guarded = mergerequest.GateErrored, true
+		out.Reason = fmt.Sprintf("devpad doesn't know the pipeline gate's state %q", g.State)
+		return out
+	}
+	out.State, out.Guarded, out.Clear, out.Waits, out.Overridable = state, g.Guarded(), g.Clear(), g.Waits, g.Overridable()
+	out.TestedTree = g.TestedTree
+	return out
+}
+
+// mergeRequestGateState is the merge request service's name for pipeline
+// gate state s, the same word, and false for one it has none for.
+func mergeRequestGateState(s pipeline.GateState) (mergerequest.GateState, bool) {
+	switch s {
+	case pipeline.GateUnguarded:
+		return mergerequest.GateUnguarded, true
+	case pipeline.GatePassed:
+		return mergerequest.GatePassed, true
+	case pipeline.GateQueued:
+		return mergerequest.GateQueued, true
+	case pipeline.GateRunning:
+		return mergerequest.GateRunning, true
+	case pipeline.GateNotRun:
+		return mergerequest.GateNotRun, true
+	case pipeline.GateOutOfDate:
+		return mergerequest.GateOutOfDate, true
+	case pipeline.GateFailed:
+		return mergerequest.GateFailed, true
+	case pipeline.GateConflict:
+		return mergerequest.GateConflict, true
+	case pipeline.GateInvalid:
+		return mergerequest.GateInvalid, true
+	case pipeline.GateError:
+		return mergerequest.GateErrored, true
+	case pipeline.GateCancelled:
+		return mergerequest.GateCancelled, true
+	case pipeline.GateClosed:
+		return mergerequest.GateClosed, true
+	}
+	return "", false
+}
+
+// reportGateState is the gate state a pipeline in status s stands for as
+// its merge request's current one (pipeline.MergeRequestStatus.Gate), which
+// the merge request service compares with the gate it read. A pipeline
+// replaced or interrupted never stands for one, and neither does a status
+// this mapping doesn't know: both are empty, which tells neither a task
+// nor a reviewer anything.
+func reportGateState(s pipeline.Status) mergerequest.GateState {
+	switch s {
+	case pipeline.StatusQueued:
+		return mergerequest.GateQueued
+	case pipeline.StatusRunning:
+		return mergerequest.GateRunning
+	case pipeline.StatusPassed:
+		return mergerequest.GatePassed
+	case pipeline.StatusFailed:
+		return mergerequest.GateFailed
+	case pipeline.StatusConflict:
+		return mergerequest.GateConflict
+	case pipeline.StatusInvalid:
+		return mergerequest.GateInvalid
+	case pipeline.StatusError:
+		return mergerequest.GateErrored
+	case pipeline.StatusCancelled:
+		return mergerequest.GateCancelled
+	case pipeline.StatusNotConfigured:
+		return mergerequest.GateUnguarded
+	}
+	return ""
 }
 
 // mergeRequestPipelineReports reads for the merge request service what a
@@ -117,7 +193,7 @@ func (a mergeRequestPipelineReports) PipelineReport(ctx context.Context, userID,
 	}
 	p := r.Pipeline
 	out := &mergerequest.PipelineReport{
-		PipelineID: p.ID, Status: string(p.Status), HeadSHA: p.HeadSHA, TargetSHA: p.TargetSHA,
+		PipelineID: p.ID, State: reportGateState(p.Status), HeadSHA: p.HeadSHA, TargetSHA: p.TargetSHA,
 		ConflictPaths: p.ConflictPaths, ConflictMore: p.ConflictMore, TargetPending: r.Target != nil && r.Target.Pending,
 	}
 	if p.ConfigSource == pipeline.SourceFile {

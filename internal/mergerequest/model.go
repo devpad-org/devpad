@@ -134,9 +134,9 @@ type MergeRequest struct {
 // pipeline gate was shut. Only the user overrides the gate: agents and
 // automatic merges never do.
 type PipelineOverride struct {
-	// State is the gate's state the user merged over, such as "failed" or
-	// "running".
-	State string
+	// State is the gate's state the user merged over, such as GateFailed
+	// or GateRunning.
+	State GateState
 	// PipelineID is the pipeline that stood then, 0 when none had run.
 	PipelineID int64
 }
@@ -367,7 +367,7 @@ type MergeInput struct {
 // confirmed merging over it: its state, the pipeline it was about (0 for
 // none), and the head and target commits that pipeline was of.
 type GateConfirmation struct {
-	State      string
+	State      GateState
 	PipelineID int64
 	HeadSHA    string
 	TargetSHA  string

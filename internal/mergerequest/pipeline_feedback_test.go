@@ -57,7 +57,7 @@ func failedReport() PipelineReport {
 	lint := task.PipelineJobResult{Name: "lint", Status: "failed", ExitCode: &code, Duration: 3 * time.Second, AlsoFailingOnTarget: true}
 	frontend := task.PipelineJobResult{Name: "frontend", Status: "passed", Duration: 45 * time.Second}
 	return PipelineReport{
-		Status: "failed", HeadSHA: "head1", TargetSHA: mainTip, ConfigPath: ".devpad/pipeline.yml",
+		State: GateFailed, HeadSHA: "head1", TargetSHA: mainTip, ConfigPath: ".devpad/pipeline.yml",
 		Jobs:   []PipelineJobStanding{{Name: "backend", Status: "failed", Duration: backend.Duration}, {Name: "frontend", Status: "passed", Duration: frontend.Duration}, {Name: "lint", Status: "failed", Duration: lint.Duration, AlsoFailingOnTarget: true}},
 		Failed: []task.PipelineJobResult{backend, lint},
 	}
@@ -113,8 +113,8 @@ func TestOnlyTheCurrentPipelineGoesToTheTask(t *testing.T) {
 		conflict []string
 	}{
 		{name: "it passed", gate: passedOn(7, "head1", mainTip), told: 7, outcome: task.PipelinePassed},
-		{name: "it found a conflict", gate: shut(gateConflict, "pipeline #7 found the branch doesn't merge onto main", false, 7), told: 7, outcome: task.PipelineConflict,
-			report: func(r *PipelineReport) { r.Status, r.ConflictPaths, r.Failed = gateConflict, []string{"cart.go"}, nil }, conflict: []string{"cart.go"}},
+		{name: "it found a conflict", gate: shut(GateConflict, "pipeline #7 found the branch doesn't merge onto main", false, 7), told: 7, outcome: task.PipelineConflict,
+			report: func(r *PipelineReport) { r.State, r.ConflictPaths, r.Failed = GateConflict, []string{"cart.go"}, nil }, conflict: []string{"cart.go"}},
 		{name: "an older pipeline", gate: shut("failed", "pipeline #8 failed", false, 8), told: 7},
 		{name: "still running", gate: shut("running", "pipeline #7 is still running", true, 7), told: 7},
 		{name: "couldn't run", gate: shut("error", "pipeline #7 couldn't run", true, 7), told: 7},
@@ -122,7 +122,7 @@ func TestOnlyTheCurrentPipelineGoesToTheTask(t *testing.T) {
 		{name: "doesn't parse", gate: shut("invalid", "main's pipeline doesn't parse", false, 0), told: 7},
 		{name: "out of date", gate: shut("out_of_date", "the latest pipeline, #7, is out of date", true, 7), told: 7},
 		{name: "unguarded", gate: Gate{State: "unguarded", Clear: true, HeadSHA: "head1", TargetSHA: mainTip}, told: 7},
-		{name: "the report moved on", gate: shut("failed", "pipeline #7 failed", false, 7), told: 7, report: func(r *PipelineReport) { r.Status = "passed" }},
+		{name: "the report moved on", gate: shut("failed", "pipeline #7 failed", false, 7), told: 7, report: func(r *PipelineReport) { r.State = GatePassed }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -368,11 +368,11 @@ func TestReviewPromptHasThePipelinesResultsButNoOutput(t *testing.T) {
 
 func TestReviewPipelineSection(t *testing.T) {
 	passed := failedReport()
-	passed.Status, passed.ConfigPath = "passed", ""
+	passed.State, passed.ConfigPath = GatePassed, ""
 	running := failedReport()
-	running.Status = "running"
+	running.State = GateRunning
 	conflict := failedReport()
-	conflict.Status = gateConflict
+	conflict.State = GateConflict
 	tests := []struct {
 		name string
 		rep  *PipelineReport

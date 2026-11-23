@@ -168,7 +168,7 @@ func (r *repository) Update(ctx context.Context, mr *MergeRequest) error {
 	var override string
 	var overridePipeline any
 	if o := mr.PipelineOverride; o != nil {
-		override, overridePipeline = o.State, nullableID(o.PipelineID)
+		override, overridePipeline = string(o.State), nullableID(o.PipelineID)
 	}
 	if _, err := r.db.ExecContext(ctx,
 		`UPDATE merge_requests SET title = ?, description = ?, status = ?, head_sha = ?, base_sha = ?, merge_sha = ?, merged_at = ?, merged_by = ?, pipeline_override = ?, pipeline_override_id = ?, updated_at = ? WHERE id = ?`,
@@ -447,7 +447,7 @@ func scanMergeRequest(row rowScanner, extra ...any) (*MergeRequest, error) {
 		mr.MergedAt = &mergedAt.Time
 	}
 	if override != "" {
-		mr.PipelineOverride = &PipelineOverride{State: override, PipelineID: overridePipeline.Int64}
+		mr.PipelineOverride = &PipelineOverride{State: GateState(override), PipelineID: overridePipeline.Int64}
 	}
 	return &mr, nil
 }
