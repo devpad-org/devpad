@@ -79,16 +79,22 @@ func (e *GateError) Error() string {
 
 func (e *GateError) Unwrap() error { return ErrPipelineGate }
 
-// targetMovedError is a merge guarded by a pipeline that the repo refused
-// because the target moved past the commit the pipeline tested, so that
-// the pipeline has the target's new commit to test first. A move into a
-// ticked branch runs the pipelines of the merge requests into it again.
+// targetMovedError is a merge the repo refused because the target moved
+// past the commit the gate read. When a pipeline guards it, the pipeline
+// has the target's new commit to test first: a move into a ticked branch
+// runs the pipelines of the merge requests into it again. Unguarded, the
+// target may have gained a pipeline meanwhile, so the merge is asked for
+// again rather than landing on a commit the gate never read.
 type targetMovedError struct {
-	target string
-	cause  error
+	target  string
+	guarded bool
+	cause   error
 }
 
 func (e *targetMovedError) Error() string {
+	if !e.guarded {
+		return fmt.Sprintf("%s moved as this was merging: merge again onto %s as it is now", e.target, e.target)
+	}
 	return fmt.Sprintf("%s moved as this was merging, so its pipeline must pass on %s as it is now first", e.target, e.target)
 }
 
@@ -133,18 +139,18 @@ func (s *service) readGate(ctx context.Context, mr *MergeRequest) (*Gate, error)
 // admitUser lets the user merge mr once its pipeline gate is clear, or over
 // the gate when the user confirmed merging anyway with it standing exactly
 // as it does now (override: the same state, pipeline, head and target),
-// which the merge records. A merge a pipeline guards lands on the target's
-// commit the gate read, so that the tree that passed is the tree that
-// lands, whichever strategy merges it.
+// which the merge records. The merge lands on the target's commit the gate
+// read, so that for a merge a pipeline guards, the tree that passed is the
+// tree that lands, whichever strategy merges it.
 func (s *service) admitUser(ctx context.Context, mr *MergeRequest, override *GateConfirmation) (*admission, error) {
 	g, err := s.readGate(ctx, mr)
 	if err != nil {
 		return nil, err
 	}
-	adm := &admission{guarded: g.Guarded}
-	if g.Guarded {
-		adm.targetSHA = g.TargetSHA
-	}
+	// Whether or not a pipeline guards it, it lands on the target's commit
+	// the gate read, so a target that moved meanwhile, perhaps to one that
+	// a pipeline now guards, is never merged onto unread.
+	adm := &admission{guarded: g.Guarded, targetSHA: g.TargetSHA}
 	switch {
 	case g.Clear:
 		return adm, nil
@@ -157,16 +163,16 @@ func (s *service) admitUser(ctx context.Context, mr *MergeRequest, override *Gat
 	return adm, nil
 }
 
-// mergeRefused is why the repo refused mr's merge: err, or, when a pipeline
-// guards it and the target has moved past the commit it tested, a
+// mergeRefused is why the repo refused mr's merge: err, or, when the
+// target has moved past the commit the merge was to land on, a
 // targetMovedError.
 func (s *service) mergeRefused(ctx context.Context, mr *MergeRequest, adm *admission, err error) error {
-	if !adm.guarded || adm.targetSHA == "" {
+	if adm.targetSHA == "" {
 		return err
 	}
 	now, readErr := s.canonicalSHA(ctx, mr.UserID, mr.ProjectID, mr.TargetBranch)
 	if readErr != nil || now == adm.targetSHA {
 		return err
 	}
-	return &targetMovedError{target: mr.TargetBranch, cause: err}
+	return &targetMovedError{target: mr.TargetBranch, guarded: adm.guarded, cause: err}
 }

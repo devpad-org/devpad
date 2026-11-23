@@ -1885,6 +1885,9 @@ func (s *service) mergeLocked(ctx context.Context, userID, projectID, mrID int64
 	if mr.HeadSHA == "" {
 		return nil, fmt.Errorf("%w: nothing has been published to merge", ErrInvalidState)
 	}
+	if opts.admit == nil {
+		return nil, errors.New("a merge must ask the pipeline gate first")
+	}
 	adm, err := opts.admit(mr)
 	if err != nil {
 		return nil, err

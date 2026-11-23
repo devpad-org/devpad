@@ -102,9 +102,13 @@ func (s *service) decideApproval(ctx context.Context, mr *MergeRequest, reviewID
 	var reason string
 	switch {
 	case err == nil:
-	case errors.Is(err, errAwaitingPipeline), errors.As(err, &moved):
+	case errors.Is(err, errAwaitingPipeline), errors.As(err, &moved) && moved.guarded:
 		log.Printf("merge request %d: review %d's approval waits for the pipeline: %v", mr.ID, reviewID, err)
 		return nil
+	case moved != nil:
+		// Unguarded, the target was to stay where the review read it.
+		log.Printf("merge request %d: not merged automatically: %v", mr.ID, err)
+		reason = autoMergeReason(moved.cause)
 	// A merge request merged or closed meanwhile has nothing to say.
 	case errors.Is(err, errNotAutoMerged), errors.Is(err, ErrNotFound), errors.Is(err, ErrInvalidState):
 	default:

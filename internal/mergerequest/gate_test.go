@@ -105,7 +105,8 @@ func TestUserMergeAsksThePipelineGate(t *testing.T) {
 		// target is where the merge must find the target, "" for anywhere.
 		target string
 	}{
-		{name: "no pipeline guards it", gate: Gate{State: "unguarded", Clear: true}, merges: true},
+		// Unguarded, it still lands only on the target commit the gate read.
+		{name: "no pipeline guards it", gate: Gate{State: "unguarded", Clear: true, HeadSHA: "head1", TargetSHA: mainTip}, merges: true, target: mainTip},
 		{name: "its pipeline passed", gate: passedOn(3, "head1", mainTip), merges: true, target: mainTip},
 		{name: "queued", gate: shut("queued", "pipeline #3 is still queued", true, 3)},
 		{name: "running", gate: shut("running", "pipeline #3 is still running", true, 3)},
@@ -336,8 +337,24 @@ func TestHandlerMergesOverTheGate(t *testing.T) {
 
 // The tree that passed is the tree that lands: a target that moves between
 // the gate and the repo's merge refuses the merge, saying the pipeline must
-// pass on the target as it is now.
+// pass on the target as it is now. Unguarded, the target may have gained a
+// pipeline meanwhile, so the move is refused too.
 func TestUserMergeRefusedWhenTheTargetMovesAsItMerges(t *testing.T) {
+	t.Run("unguarded", func(t *testing.T) {
+		e := autoMergeEnv(t)
+		mr := e.openTaskMR(t)
+		e.gate.set(Gate{State: "unguarded", Clear: true, HeadSHA: "head1", TargetSHA: mainTip})
+		e.projects.onMerge = func() {
+			e.projects.mu.Lock()
+			e.projects.branches[0].SHA = "addspipeline"
+			e.projects.mu.Unlock()
+		}
+		_, err := e.svc.Merge(context.Background(), e.owner, e.pid(), mr.ID, MergeInput{})
+		var moved *targetMovedError
+		if !errors.As(err, &moved) || moved.guarded || !strings.Contains(err.Error(), "merge again onto main as it is now") {
+			t.Fatalf("expected the target's move refused, got %v", err)
+		}
+	})
 	e := autoMergeEnv(t)
 	ctx := context.Background()
 	mr := e.openTaskMR(t)
@@ -349,7 +366,7 @@ func TestUserMergeRefusedWhenTheTargetMovesAsItMerges(t *testing.T) {
 	}
 	_, err := e.svc.Merge(ctx, e.owner, e.pid(), mr.ID, MergeInput{})
 	var moved *targetMovedError
-	if !errors.As(err, &moved) || !errors.Is(err, ErrInvalidState) || !strings.Contains(err.Error(), "must pass on main as it is now") {
+	if !errors.As(err, &moved) || !moved.guarded || !errors.Is(err, ErrInvalidState) || !strings.Contains(err.Error(), "must pass on main as it is now") {
 		t.Fatalf("expected the target's move refused, got %v", err)
 	}
 	if got, _ := e.svc.repo.GetByID(ctx, mr.ID); got.Status != StatusOpen {
@@ -666,5 +683,14 @@ func TestAutoMergeNeverTakesAChangeToThePipelineFile(t *testing.T) {
 				t.Fatalf("the user's merge: %v", err)
 			}
 		})
+	}
+}
+
+// A merge that skips the gate is refused rather than made.
+func TestAMergeWithoutAnAdmissionIsRefused(t *testing.T) {
+	e := autoMergeEnv(t)
+	mr := e.openTaskMR(t)
+	if _, err := e.svc.merge(context.Background(), e.owner, e.pid(), mr.ID, mergeOptions{by: MergedByUser}); err == nil || e.mergeCount() != 0 {
+		t.Fatalf("expected no merge, got %v", err)
 	}
 }
