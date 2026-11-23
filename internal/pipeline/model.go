@@ -242,6 +242,9 @@ type Pipeline struct {
 	// already has the other. Empty until it is pinned, and when the source
 	// does not merge.
 	TestedSHA string
+	// TestedTree is TestedSHA's tree, which a merge the pipeline lets
+	// through must land. Empty when the repo's agent did not say.
+	TestedTree string
 	// ConfigSource and ConfigPath say where the jobs came from, and
 	// ConfigHash which they were (Resolved.Hash).
 	ConfigSource Source

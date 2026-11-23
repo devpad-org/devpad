@@ -204,6 +204,9 @@ type MergeInput struct {
 	// at it when the repo merges, so nothing merged into Target meanwhile is
 	// merged with the change unseen.
 	ExpectedTargetSHA string
+	// ExpectedTree, when set, refuses the merge unless it lands this tree:
+	// the one the pipeline that let it through tested.
+	ExpectedTree string
 }
 
 // WorkspaceBranchStatus says how a branch of the project workspace compares

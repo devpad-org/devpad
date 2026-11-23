@@ -64,6 +64,9 @@ type PipelinePinResult struct {
 	// already has the source, the source when the target can fast-forward
 	// to it, and otherwise a merge commit of the two that no branch has.
 	SHA string `json:"sha,omitempty"`
+	// Tree is SHA's tree, what the jobs get and what a merge the pipeline
+	// lets through must land; empty from an agent too old to say.
+	Tree string `json:"tree,omitempty"`
 	// Conflict is set instead, with nothing pinned, when the source does
 	// not merge onto the target.
 	Conflict *MergeConflict `json:"conflict,omitempty"`

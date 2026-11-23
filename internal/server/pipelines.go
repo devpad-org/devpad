@@ -92,7 +92,7 @@ func (a mergeRequestGate) MergeGate(ctx context.Context, userID, projectID, mrID
 	g := st.Gate()
 	out := &mergerequest.Gate{
 		State: string(g.State), Guarded: g.Guarded(), Clear: g.Clear(), Waits: g.Waits, Overridable: g.Overridable(),
-		Reason: g.Reason, HeadSHA: g.HeadSHA, TargetSHA: g.TargetSHA,
+		Reason: g.Reason, HeadSHA: g.HeadSHA, TargetSHA: g.TargetSHA, TestedTree: g.TestedTree,
 	}
 	if g.Pipeline != nil {
 		out.PipelineID = g.Pipeline.ID

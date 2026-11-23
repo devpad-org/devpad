@@ -136,7 +136,12 @@ func (f *fakeProjects) PinPipeline(_ context.Context, _, _ int64, pin agent.Pipe
 		tested = mergeOf(pin.Source, pin.Target)
 	}
 	f.refs[pin.ID] = tested
-	return &agent.PipelinePinResult{Ref: pipelineid.Ref(pin.ID), SHA: tested}, nil
+	return &agent.PipelinePinResult{Ref: pipelineid.Ref(pin.ID), SHA: tested, Tree: treeOf(tested)}, nil
+}
+
+// treeOf is the tree the fake repo says a pinned commit has.
+func treeOf(commit string) string {
+	return "tree-" + commit[:12]
 }
 
 // mergeOf is the trial merge the fake repo makes of source onto target.

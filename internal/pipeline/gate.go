@@ -66,6 +66,9 @@ type Gate struct {
 	// so that the tree that passed is the tree that lands.
 	HeadSHA   string
 	TargetSHA string
+	// TestedTree is, when the gate is open because the pipeline passed, the
+	// tree it tested, which the merge must land; empty otherwise.
+	TestedTree string
 	// Reason says why the gate is shut, as a clause for the user without a
 	// capital or a full stop, such as "pipeline #12 failed (backend)";
 	// empty when it is open.
@@ -106,6 +109,9 @@ func (st *MergeRequestStatus) Gate() *Gate {
 	case st.Current != nil:
 		g.Pipeline = st.Current
 		g.State, g.Reason, g.Waits = currentGate(st.Current, st.Target)
+		if g.State == GatePassed {
+			g.TestedTree = st.Current.TestedTree
+		}
 	case st.Settled != nil:
 		p := st.Settled.Pipeline
 		g.Pipeline = p

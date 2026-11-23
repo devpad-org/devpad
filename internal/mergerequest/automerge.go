@@ -195,7 +195,7 @@ func (s *service) autoMergeable(ctx context.Context, mr *MergeRequest, reviewID 
 	}
 	switch {
 	case gate.Guarded && gate.Clear:
-		return &admission{targetSHA: gate.TargetSHA, guarded: true}, nil
+		return &admission{targetSHA: gate.TargetSHA, guarded: true, expectedTree: gate.TestedTree}, nil
 	case gate.Waits:
 		return nil, errAwaitingPipeline
 	case !gate.Clear:

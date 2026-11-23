@@ -38,8 +38,8 @@ type Repository interface {
 	// SetRefPinned records whether the canonical repo may hold the
 	// pipeline's ref.
 	SetRefPinned(ctx context.Context, id int64, pinned bool) error
-	// SetTested records the commit the pipeline's jobs got.
-	SetTested(ctx context.Context, id int64, sha string) error
+	// SetTested records the commit the pipeline's jobs got, and its tree.
+	SetTested(ctx context.Context, id int64, sha, tree string) error
 	// Finish records how an unfinished pipeline ended: its status, error,
 	// conflicting paths and finish time. Every job still queued is skipped,
 	// and every one still running ends with it: cancelled when the pipeline
@@ -132,7 +132,7 @@ func NewRepository(db *sql.DB) Repository {
 	return &repository{db: db}
 }
 
-const pipelineColumns = `id, project_id, user_id, uid, kind, branch, merge_request_id, source_branch, target_branch, head_sha, target_sha, tested_sha, config_source, config_path, config_hash, image, status, error, conflict_paths, trigger, rerun_of, ref_pinned, created_at, started_at, finished_at, announced_at`
+const pipelineColumns = `id, project_id, user_id, uid, kind, branch, merge_request_id, source_branch, target_branch, head_sha, target_sha, tested_sha, tested_tree, config_source, config_path, config_hash, image, status, error, conflict_paths, trigger, rerun_of, ref_pinned, created_at, started_at, finished_at, announced_at`
 
 func (r *repository) Create(ctx context.Context, p *Pipeline) error {
 	paths, err := jsonList(p.ConflictPaths)
@@ -391,8 +391,8 @@ func (r *repository) SetRefPinned(ctx context.Context, id int64, pinned bool) er
 	return nil
 }
 
-func (r *repository) SetTested(ctx context.Context, id int64, sha string) error {
-	if _, err := r.db.ExecContext(ctx, `UPDATE pipelines SET tested_sha = ? WHERE id = ?`, sha, id); err != nil {
+func (r *repository) SetTested(ctx context.Context, id int64, sha, tree string) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE pipelines SET tested_sha = ?, tested_tree = ? WHERE id = ?`, sha, tree, id); err != nil {
 		return fmt.Errorf("recording the tested commit: %w", err)
 	}
 	return nil
@@ -718,7 +718,7 @@ func scanPipeline(row rowScanner) (*Pipeline, error) {
 	var mergeRequestID, rerunOf sql.NullInt64
 	var paths string
 	var started, finished, announced sql.NullTime
-	if err := row.Scan(&p.ID, &p.ProjectID, &p.UserID, &p.UID, &p.Kind, &p.Branch, &mergeRequestID, &p.SourceBranch, &p.TargetBranch, &p.HeadSHA, &p.TargetSHA, &p.TestedSHA, &p.ConfigSource, &p.ConfigPath, &p.ConfigHash, &p.Image, &p.Status, &p.Error, &paths, &p.Trigger, &rerunOf, &p.RefPinned, &p.CreatedAt, &started, &finished, &announced); err != nil {
+	if err := row.Scan(&p.ID, &p.ProjectID, &p.UserID, &p.UID, &p.Kind, &p.Branch, &mergeRequestID, &p.SourceBranch, &p.TargetBranch, &p.HeadSHA, &p.TargetSHA, &p.TestedSHA, &p.TestedTree, &p.ConfigSource, &p.ConfigPath, &p.ConfigHash, &p.Image, &p.Status, &p.Error, &paths, &p.Trigger, &rerunOf, &p.RefPinned, &p.CreatedAt, &started, &finished, &announced); err != nil {
 		return nil, err
 	}
 	p.MergeRequestID, p.RerunOf = mergeRequestID.Int64, rerunOf.Int64

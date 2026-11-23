@@ -1381,6 +1381,7 @@ func (s *service) Merge(ctx context.Context, userID, projectID int64, in MergeIn
 		Message:           in.Message,
 		ExpectedSourceSHA: in.ExpectedSourceSHA,
 		ExpectedTargetSHA: in.ExpectedTargetSHA,
+		ExpectedTree:      in.ExpectedTree,
 		Name:              name,
 		Email:             email,
 	})

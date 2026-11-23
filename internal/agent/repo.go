@@ -332,7 +332,7 @@ func (c *Client) RepoRead(ctx context.Context, in RepoReadRequest) (*RepoRead, e
 
 // RepoMergeRequest merges Source into Target. ExpectedSourceSHA and
 // ExpectedTargetSHA, when set, refuse the merge if Source or Target has
-// moved.
+// moved, and ExpectedTree if it would land another tree.
 type RepoMergeRequest struct {
 	Source            string `json:"source"`
 	Target            string `json:"target"`
@@ -340,6 +340,7 @@ type RepoMergeRequest struct {
 	Message           string `json:"message"`
 	ExpectedSourceSHA string `json:"expectedSourceSha"`
 	ExpectedTargetSHA string `json:"expectedTargetSha"`
+	ExpectedTree      string `json:"expectedTree,omitempty"`
 	Name              string `json:"name"`
 	Email             string `json:"email"`
 }

@@ -58,7 +58,7 @@ func (f *fakeGate) questions() int {
 // passedOn is the gate of a merge request whose pipeline, number id,
 // passed on head merged onto target.
 func passedOn(id int64, head, target string) Gate {
-	return Gate{State: "passed", Guarded: true, Clear: true, PipelineID: id, HeadSHA: head, TargetSHA: target}
+	return Gate{State: "passed", Guarded: true, Clear: true, PipelineID: id, HeadSHA: head, TargetSHA: target, TestedTree: "tree-" + target}
 }
 
 // shut is a gate a pipeline keeps shut.
@@ -147,7 +147,12 @@ func TestUserMergeAsksThePipelineGate(t *testing.T) {
 			if err != nil || got.Status != StatusMerged || got.PipelineOverride != nil {
 				t.Fatalf("expected a merge with nothing overridden: %v, %+v", err, got)
 			}
-			if in := e.projects.merges[0]; in.ExpectedTargetSHA != tt.target || in.ExpectedSourceSHA != "head1" {
+			// Only a pass has a tree the merge must land.
+			wantTree := ""
+			if tt.gate.State == "passed" {
+				wantTree = "tree-" + tt.target
+			}
+			if in := e.projects.merges[0]; in.ExpectedTargetSHA != tt.target || in.ExpectedSourceSHA != "head1" || in.ExpectedTree != wantTree {
 				t.Fatalf("merge input = %+v", in)
 			}
 		})
@@ -197,8 +202,9 @@ func TestUserOverridesThePipelineGate(t *testing.T) {
 	if o := got.PipelineOverride; o == nil || *o != *want || got.MergedBy != MergedByUser {
 		t.Fatalf("expected the override stored, got %+v", got)
 	}
-	// It merges onto the target commit the gate read, as a pass would.
-	if in := e.projects.merges[0]; in.ExpectedTargetSHA != mainTip {
+	// It merges onto the target commit the gate read, as a pass would, but
+	// with no tree to land: nothing passed to have tested one.
+	if in := e.projects.merges[0]; in.ExpectedTargetSHA != mainTip || in.ExpectedTree != "" {
 		t.Fatalf("merge input = %+v", in)
 	}
 }
@@ -427,8 +433,15 @@ func TestAutoMergeAsksThePipelineGate(t *testing.T) {
 			if got.PipelineOverride != nil {
 				t.Fatalf("an automatic merge must never override the gate: %+v", got.PipelineOverride)
 			}
-			if tt.merges && (e.projects.merges[0].ExpectedTargetSHA != tt.target || got.MergedBy != MergedByAuto) {
-				t.Fatalf("merge input = %+v", e.projects.merges[0])
+			if tt.merges {
+				in := e.projects.merges[0]
+				wantTree := ""
+				if tt.gate.Guarded {
+					wantTree = "tree-" + tt.target
+				}
+				if in.ExpectedTargetSHA != tt.target || in.ExpectedTree != wantTree || got.MergedBy != MergedByAuto {
+					t.Fatalf("merge input = %+v", in)
+				}
 			}
 			if !tt.merges && e.mergeCount() != 0 {
 				t.Fatalf("expected no merge, got %+v", e.projects.merges)

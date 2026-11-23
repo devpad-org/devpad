@@ -346,8 +346,11 @@ type repoMergeRequest struct {
 	Message           string `json:"message"`
 	ExpectedSourceSHA string `json:"expectedSourceSha"`
 	ExpectedTargetSHA string `json:"expectedTargetSha"`
-	Name              string `json:"name"`
-	Email             string `json:"email"`
+	// ExpectedTree, when set, is the tree the merge must land: the one the
+	// pipeline that let it through tested.
+	ExpectedTree string `json:"expectedTree"`
+	Name         string `json:"name"`
+	Email        string `json:"email"`
 }
 
 type repoMergeResult struct {
@@ -420,6 +423,14 @@ func handleRepoMerge(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, fmt.Sprintf("%s cannot be fast-forwarded to %s", req.Target, req.Source))
 			return
 		}
+		tree, err := commitTree(ctx, sourceSHA)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !landsExpectedTree(w, req, tree) {
+			return
+		}
 		newSHA = sourceSHA
 	} else {
 		tree, conflicts, err := mergeTree(ctx, targetSHA, sourceSHA)
@@ -432,6 +443,9 @@ func handleRepoMerge(w http.ResponseWriter, r *http.Request) {
 				"error":     fmt.Sprintf("%s conflicts with %s", req.Source, req.Target),
 				"conflicts": conflicts,
 			})
+			return
+		}
+		if !landsExpectedTree(w, req, tree) {
 			return
 		}
 		message := strings.TrimSpace(req.Message)
@@ -456,6 +470,18 @@ func handleRepoMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, repoMergeResult{Target: req.Target, SHA: newSHA, Strategy: req.Strategy, MergeBase: strings.TrimSpace(mergeBase)})
+}
+
+// landsExpectedTree refuses, answering w, a merge that would land another
+// tree than the one req expects, which the pipeline that let it through
+// tested. Merges and pipelines' trial merges compute the tree the same way,
+// so it holds unless git itself changed between the two.
+func landsExpectedTree(w http.ResponseWriter, req repoMergeRequest, tree string) bool {
+	if req.ExpectedTree == "" || tree == req.ExpectedTree {
+		return true
+	}
+	writeErr(w, http.StatusConflict, fmt.Sprintf("merging %s would land another tree than the one its pipeline tested", req.Source))
+	return false
 }
 
 // mergeTree computes the merged tree of two commits without a working tree.

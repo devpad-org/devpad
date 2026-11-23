@@ -102,7 +102,8 @@ func TestGateStates(t *testing.T) {
 }
 
 // The gate the service reads follows the merge request's commits and jobs
-// as they are now, into a ticked branch.
+// as they are now, into a ticked branch, and carries the tree a pass
+// tested.
 func TestGateFollowsTheMergeRequest(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
@@ -124,11 +125,21 @@ func TestGateFollowsTheMergeRequest(t *testing.T) {
 		t.Fatalf("ticked, before any pipeline: %+v", g)
 	}
 	ran := e.wait(e.start(StartInput{MergeRequestID: e.mr}).ID)
-	if g := gate(); g.State != GatePassed || !g.Clear() || g.Pipeline.ID != ran.ID || g.TargetSHA != sha(2) {
-		t.Fatalf("after a pass: %+v", g)
+	if g := gate(); g.State != GatePassed || !g.Clear() || g.Pipeline.ID != ran.ID || g.TargetSHA != sha(2) || ran.TestedTree == "" || g.TestedTree != ran.TestedTree {
+		t.Fatalf("after a pass: %+v (pipeline tested tree %q)", g, ran.TestedTree)
 	}
-	// A setting that changes no file's jobs leaves it passed; the target
-	// moving makes it out of date.
+	// A pipeline setting leaves it passed while the target's file wins over
+	// it, so the jobs are the same.
+	e.projects.mu.Lock()
+	e.projects.project.PipelineConfig = "jobs:\n  lint:\n    run: pass\n"
+	e.projects.mu.Unlock()
+	if g := gate(); g.State != GatePassed || g.Pipeline.ID != ran.ID {
+		t.Fatalf("after a setting the file overrides: %+v", g)
+	}
+	e.projects.mu.Lock()
+	e.projects.project.PipelineConfig = ""
+	e.projects.mu.Unlock()
+	// The target moving makes it out of date.
 	e.projects.mu.Lock()
 	e.projects.branches["develop"] = sha(3)
 	e.projects.mu.Unlock()

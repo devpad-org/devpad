@@ -1897,7 +1897,7 @@ func (s *service) mergeLocked(ctx context.Context, userID, projectID, mrID int64
 	}
 	result, err := s.projects.Merge(ctx, userID, projectID, project.MergeInput{
 		Source: mr.SourceBranch, Target: mr.TargetBranch, Strategy: in.Strategy, Message: mergeMessage(mr, opts), ExpectedSourceSHA: mr.HeadSHA,
-		ExpectedTargetSHA: adm.targetSHA,
+		ExpectedTargetSHA: adm.targetSHA, ExpectedTree: adm.expectedTree,
 	})
 	if err != nil {
 		return nil, s.mergeRefused(ctx, mr, adm, err)

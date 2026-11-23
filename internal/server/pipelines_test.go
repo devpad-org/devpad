@@ -118,8 +118,13 @@ func TestMergeRequestGateIsThePipelinesGate(t *testing.T) {
 	if err != nil || *got != want {
 		t.Fatalf("failed: %+v %v", got, err)
 	}
+	// A pass carries the tree it tested.
+	failed.Status, failed.TestedTree = pipeline.StatusPassed, "tree"
+	if got, _ := (mergeRequestGate{statusPipelines{st: st}}).MergeGate(ctx, 1, 2, 4); !got.Clear || got.TestedTree != "tree" {
+		t.Fatalf("passed: %+v", got)
+	}
 	st.Automatic = false
-	if got, _ := (mergeRequestGate{statusPipelines{st: st}}).MergeGate(ctx, 1, 2, 4); got.Guarded || !got.Clear || got.State != "unguarded" {
+	if got, _ := (mergeRequestGate{statusPipelines{st: st}}).MergeGate(ctx, 1, 2, 4); got.Guarded || !got.Clear || got.State != "unguarded" || got.TestedTree != "" {
 		t.Fatalf("not ticked: %+v", got)
 	}
 	broken := errors.New("the repo is down")

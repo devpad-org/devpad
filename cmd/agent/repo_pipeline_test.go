@@ -131,6 +131,9 @@ func TestPinPipelineMergeTestsWhatAMergeLands(t *testing.T) {
 		t.Fatalf("pinning moved branches:\n%s\nwant\n%s", after, before)
 	}
 	tested := runGit(t, canonical, "rev-parse", got.SHA+"^{tree}")
+	if got.Tree != tested {
+		t.Fatalf("pin says tree %q, the commit's is %s", got.Tree, tested)
+	}
 
 	// The same pair always makes the same commit.
 	if again := mustPin(t, canonical, repoPipelinePin{ID: "8", Source: source, Target: target}); again.SHA != got.SHA {
@@ -145,10 +148,20 @@ func TestPinPipelineMergeTestsWhatAMergeLands(t *testing.T) {
 		}
 	}
 
+	// A merge expecting another tree than the one it lands is refused, and
+	// moves nothing.
+	other := runGit(t, canonical, "rev-parse", target+"^{tree}")
+	for _, strategy := range []string{"merge", "squash"} {
+		rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/1", Strategy: strategy, ExpectedTree: other})
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "another tree") || runGit(t, canonical, "rev-parse", "main") != target {
+			t.Fatalf("%s expecting another tree: %d %s", strategy, rec.Code, rec.Body)
+		}
+	}
+
 	// A merge and a squash land the tree that was tested.
 	for _, strategy := range []string{"merge", "squash"} {
 		runGit(t, canonical, "update-ref", "refs/heads/main", target)
-		rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/1", Strategy: strategy})
+		rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/1", Strategy: strategy, ExpectedTree: got.Tree})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: status %d: %s", strategy, rec.Code, rec.Body)
 		}
@@ -171,9 +184,17 @@ func TestPinPipelineMergeOfAFastForwardPinsTheSource(t *testing.T) {
 		t.Fatalf("expected the source itself, got %s", got.SHA)
 	}
 	tested := runGit(t, canonical, "rev-parse", got.SHA+"^{tree}")
+	if got.Tree != tested {
+		t.Fatalf("pin says tree %q, the commit's is %s", got.Tree, tested)
+	}
+	// A fast-forward expecting another tree is refused, and moves nothing.
+	other := runGit(t, canonical, "rev-parse", target+"^{tree}")
+	if rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/1", Strategy: "fast-forward", ExpectedTree: other}); rec.Code != http.StatusConflict || runGit(t, canonical, "rev-parse", "main") != target {
+		t.Fatalf("fast-forward expecting another tree: %d %s", rec.Code, rec.Body)
+	}
 	for _, strategy := range []string{"fast-forward", "merge", "squash"} {
 		runGit(t, canonical, "update-ref", "refs/heads/main", target)
-		if rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/1", Strategy: strategy}); rec.Code != http.StatusOK {
+		if rec := mergeRequest(t, canonical, repoMergeRequest{Source: "task/1", Strategy: strategy, ExpectedTree: got.Tree}); rec.Code != http.StatusOK {
 			t.Fatalf("%s: status %d: %s", strategy, rec.Code, rec.Body)
 		}
 		if landed := runGit(t, canonical, "rev-parse", "main^{tree}"); landed != tested {

@@ -40,8 +40,11 @@ type repoPipelineConflict struct {
 }
 
 type repoPipelinePinResult struct {
-	Ref      string                `json:"ref,omitempty"`
-	SHA      string                `json:"sha,omitempty"`
+	Ref string `json:"ref,omitempty"`
+	SHA string `json:"sha,omitempty"`
+	// Tree is SHA's tree: what the pipeline's jobs get, and what a merge
+	// the pipeline lets through must land.
+	Tree     string                `json:"tree,omitempty"`
 	Conflict *repoPipelineConflict `json:"conflict,omitempty"`
 }
 
@@ -89,11 +92,25 @@ func handleRepoPinPipeline(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, repoPipelinePinResult{Conflict: conflict})
 		return
 	}
+	tree, err := commitTree(ctx, sha)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if out, err := gitOutput(ctx, noHooks("update-ref", ref, sha)...); err != nil {
 		writeErr(w, http.StatusInternalServerError, "pinning "+ref+": "+strings.TrimSpace(out))
 		return
 	}
-	writeJSON(w, http.StatusOK, repoPipelinePinResult{Ref: ref, SHA: sha})
+	writeJSON(w, http.StatusOK, repoPipelinePinResult{Ref: ref, SHA: sha, Tree: tree})
+}
+
+// commitTree returns the tree of commit, a full commit hash.
+func commitTree(ctx context.Context, commit string) (string, error) {
+	out, err := gitOutput(ctx, "rev-parse", "--verify", commit+"^{tree}")
+	if err != nil {
+		return "", fmt.Errorf("reading the tree of %s: %s", commit, strings.TrimSpace(out))
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // pipelineCommit checks that hash is the full hash of a commit in the repo.

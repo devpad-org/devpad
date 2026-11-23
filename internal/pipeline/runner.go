@@ -168,16 +168,16 @@ func (s *service) runStarted(ctx context.Context, p *Pipeline, release func()) {
 // prepare pins what the pipeline tests and bundles it. When it cannot, it
 // returns how the pipeline ends and why.
 func (s *service) prepare(ctx context.Context, p *Pipeline) (jobrun.Bundle, Status, string) {
-	tested, conflict, err := s.pin(ctx, p)
+	pinned, err := s.pin(ctx, p)
 	switch {
 	case err != nil:
 		return jobrun.Bundle{}, StatusError, fmt.Sprintf("pinning what the pipeline tests: %v", err)
-	case conflict != nil:
-		p.ConflictPaths = conflict.Paths
-		return jobrun.Bundle{}, StatusConflict, conflict.Message
+	case pinned.Conflict != nil:
+		p.ConflictPaths = pinned.Conflict.Paths
+		return jobrun.Bundle{}, StatusConflict, pinned.Conflict.Message
 	}
-	p.TestedSHA = tested
-	if err := s.repo.SetTested(ctx, p.ID, tested); err != nil {
+	p.TestedSHA, p.TestedTree = pinned.SHA, pinned.Tree
+	if err := s.repo.SetTested(ctx, p.ID, pinned.SHA, pinned.Tree); err != nil {
 		return jobrun.Bundle{}, StatusError, err.Error()
 	}
 	bundle, err := s.bundle(ctx, p)
@@ -193,9 +193,9 @@ func (s *service) prepare(ctx context.Context, p *Pipeline) (jobrun.Bundle, Stat
 // pin has the repo container pin what the pipeline tests, recording first
 // that its ref may exist, so that the ref is found and deleted whatever
 // happens next. A source that does not merge comes back as the conflict.
-func (s *service) pin(ctx context.Context, p *Pipeline) (string, *agent.MergeConflict, error) {
+func (s *service) pin(ctx context.Context, p *Pipeline) (*agent.PipelinePinResult, error) {
 	if err := s.repo.SetRefPinned(ctx, p.ID, true); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	p.RefPinned = true
 	pin := agent.PipelinePin{ID: p.UID}
@@ -204,11 +204,7 @@ func (s *service) pin(ctx context.Context, p *Pipeline) (string, *agent.MergeCon
 	} else {
 		pin.Commit = p.HeadSHA
 	}
-	res, err := s.projects.PinPipeline(ctx, p.UserID, p.ProjectID, pin)
-	if err != nil {
-		return "", nil, err
-	}
-	return res.SHA, res.Conflict, nil
+	return s.projects.PinPipeline(ctx, p.UserID, p.ProjectID, pin)
 }
 
 // bundle writes a bundle of what the pipeline tests to a file of its own,

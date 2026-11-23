@@ -41,6 +41,9 @@ type Gate struct {
 	// gate read it, where a merge it clears must land.
 	HeadSHA   string
 	TargetSHA string
+	// TestedTree is, when the gate is open because the pipeline passed, the
+	// tree it tested, which the merge must land; empty otherwise.
+	TestedTree string
 }
 
 // gateConflict is the gate's state for a branch whose pipeline found it
@@ -107,6 +110,10 @@ type admission struct {
 	targetSHA string
 	// guarded says a pipeline guards the merge, tested on targetSHA.
 	guarded bool
+	// expectedTree is the tree the merge must land, the one its passing
+	// pipeline tested, or "" when no pipeline's pass let it through, as on
+	// an override, which has no tested tree to land.
+	expectedTree string
 	// override is the user merging over the pipeline gate, nil otherwise.
 	override *PipelineOverride
 }
@@ -153,6 +160,9 @@ func (s *service) admitUser(ctx context.Context, mr *MergeRequest, override *Gat
 	adm := &admission{guarded: g.Guarded, targetSHA: g.TargetSHA}
 	switch {
 	case g.Clear:
+		if g.Guarded {
+			adm.expectedTree = g.TestedTree
+		}
 		return adm, nil
 	case !g.Overridable || override == nil:
 		return nil, &GateError{Target: mr.TargetBranch, Gate: g}
