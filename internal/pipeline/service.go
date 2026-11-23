@@ -38,10 +38,11 @@ type Service interface {
 	List(ctx context.Context, userID, projectID int64, f ListFilter) ([]*Pipeline, error)
 	// Latest returns the newest official pipeline that counts
 	// (Status.Counts) of each branch and merge request of the project f
-	// names that has one, whatever f's Purpose, with their jobs but not
-	// their scripts, and the commit each branch named is at now: what a
-	// branch's or a merge request's pipeline badge shows, and whether a
-	// branch's is of its current commit.
+	// names that has one, with their jobs but not their scripts, and the
+	// commit each branch named is at now: what a branch's or a merge
+	// request's pipeline badge shows, and whether a branch's is of its
+	// current commit. f's Purpose is PurposeOfficial or empty, which means
+	// the same; a badge never shows what a change proposes.
 	Latest(ctx context.Context, userID, projectID int64, f LatestFilter) (*LatestPipelines, error)
 	// Get returns a pipeline of the project with its jobs and their scripts.
 	Get(ctx context.Context, userID, projectID, pipelineID int64) (*Pipeline, error)
@@ -499,6 +500,9 @@ func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestF
 	}
 	// Badges show the branches' and merge requests' own results, never
 	// what a change proposes.
+	if f.Purpose != "" && f.Purpose != PurposeOfficial {
+		return nil, fmt.Errorf("%w: badges show only official pipelines, not %s ones", ErrInvalidInput, f.Purpose)
+	}
 	f.Purpose = PurposeOfficial
 	found, err := s.repo.Latest(ctx, projectID, f)
 	if err != nil {

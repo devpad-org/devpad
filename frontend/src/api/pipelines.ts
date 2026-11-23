@@ -101,6 +101,10 @@ export interface Pipeline {
   configSource: PipelineSource
   configPath: string
   configHash: string
+  // The commit the jobs were read from: the branch's, the target's, or a
+  // proposed pipeline's trial merge, which is what it tests. Empty for
+  // pipelines from before devpad kept it.
+  configSha: string
   // The image the jobs ran on, set when the pipeline starts.
   image: string
   status: PipelineStatus
@@ -269,10 +273,11 @@ export interface ProposedPipelineStatus {
   // Devpad runs it by itself, with the merge request's own pipeline.
   automatic: boolean
   // The change doesn't merge onto the target, so the file it proposes
-  // can't be read; or it removes the pipeline file. Nothing runs for
-  // either.
+  // can't be read; it removes the pipeline file; or it proposes the very
+  // jobs the merge request's own pipeline runs. Nothing runs for any.
   conflict: boolean
   removed: boolean
+  sameJobs: boolean
   // Why the proposed file doesn't parse, or empty.
   invalid: string
   current: Pipeline | null

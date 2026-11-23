@@ -15,9 +15,10 @@ import { useMergeRequest } from './useMergeRequest'
 const { mr, projectId, isOpen, pipelines } = useMergeRequest()
 const { proposed, proposedShown, proposedStale, proposedStarting, proposedStartError } = pipelines
 
-// Nothing runs for a change that removes the pipeline file, or that
-// doesn't merge onto its target.
-const runnable = computed(() => !!proposed.value && !proposed.value.removed && !proposed.value.conflict)
+// Nothing runs for a change that removes the pipeline file, that doesn't
+// merge onto its target, or that proposes the jobs the merge request's own
+// pipeline runs.
+const runnable = computed(() => !!proposed.value && !proposed.value.removed && !proposed.value.conflict && !proposed.value.sameJobs)
 const showingSettled = computed(() => {
   const p = proposed.value
   return !!p?.settled && proposedShown.value?.id === p.settled.pipeline.id
@@ -55,8 +56,10 @@ function started() {
       <p v-if="proposedStartError" class="notice notice-error">{{ proposedStartError }}</p>
       <p v-if="proposed.removed" class="notice notice-info">{{ PIPELINE_COPY.proposedRemoved(mr.targetBranch) }}</p>
       <p v-else-if="proposed.conflict" class="notice notice-warning">{{ PIPELINE_COPY.proposedConflict(mr.targetBranch) }}</p>
+      <p v-else-if="proposed.sameJobs" class="notice notice-info">{{ PIPELINE_COPY.proposedSameJobs(mr.targetBranch) }}</p>
       <template v-else>
-        <p v-if="proposed.invalid && !proposedShown" class="notice notice-error">{{ proposed.invalid }}</p>
+        <!-- The pipeline shown may be of older commits, which parsed. -->
+        <p v-if="proposed.invalid && !proposed.current" class="notice notice-error">{{ proposed.invalid }}</p>
         <p v-if="showingSettled && proposed.settled" class="notice" :class="proposed.settled.pipeline.status === 'cancelled' ? 'notice-warning' : 'notice-error'">
           {{ proposed.settled.reason }}
         </p>

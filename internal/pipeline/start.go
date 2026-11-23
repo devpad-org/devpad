@@ -55,7 +55,7 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 	if err != nil {
 		return nil, false, err
 	}
-	resolved, err := s.resolveJobs(ctx, p, next)
+	resolved, configSHA, err := s.resolveJobs(ctx, p, next)
 	if err != nil {
 		var none *NoProposal
 		if in.StopStale && errors.As(err, &none) {
@@ -69,7 +69,7 @@ func (s *service) start(ctx context.Context, in StartInput, rerunOf int64) (*Pip
 		return nil, false, err
 	}
 	next.UID, next.Trigger, next.RerunOf = uid, in.Trigger, rerunOf
-	next.ConfigSource, next.ConfigPath, next.ConfigHash = resolved.Source, resolved.Path, resolved.Hash
+	next.ConfigSource, next.ConfigPath, next.ConfigHash, next.ConfigSHA = resolved.Source, resolved.Path, resolved.Hash, configSHA
 	next.CreatedAt = s.now()
 	setJobs(next, resolved)
 

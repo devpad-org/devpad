@@ -57,6 +57,10 @@ type fakeProjects struct {
 	changes     map[string][]agent.RepoDiffFile
 	diffs       int
 	trialMerges int
+	// diffErr, when set, is what reading a change fails with; pinShift,
+	// when set, is the commit pinning a trial merge says it tested.
+	diffErr  error
+	pinShift string
 }
 
 func (f *fakeProjects) Get(_ context.Context, userID, projectID int64) (*project.Project, error) {
@@ -140,6 +144,9 @@ func (f *fakeProjects) PinPipeline(_ context.Context, _, _ int64, pin agent.Pipe
 	tested := pin.Commit
 	if tested == "" {
 		tested = mergeOf(pin.Source, pin.Target)
+		if f.pinShift != "" {
+			tested = f.pinShift
+		}
 	}
 	f.refs[pin.ID] = tested
 	return &agent.PipelinePinResult{Ref: pipelineid.Ref(pin.ID), SHA: tested, Tree: treeOf(tested)}, nil
@@ -149,6 +156,9 @@ func (f *fakeProjects) Diff(_ context.Context, _, _ int64, base, head string) (*
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.diffs++
+	if f.diffErr != nil {
+		return nil, f.diffErr
+	}
 	return &agent.RepoDiff{BaseSHA: base, HeadSHA: head, MergeBase: base, Files: slices.Clone(f.changes[head])}, nil
 }
 

@@ -317,10 +317,12 @@ func (s *service) makeAutoRun(ctx context.Context, r *autoRun) (coming bool) {
 		if !mergeRequestRunsAutomatically(p, mr) {
 			return false
 		}
-		// Its official pipeline, then the one its change proposes, which
-		// Start refuses when it proposes none; each replaces only those of
-		// its own purpose.
-		for _, purpose := range Purposes() {
+		// Its official pipeline first, then the one its change proposes,
+		// which Start refuses when it proposes none; each replaces only
+		// those of its own purpose. Job slots put official jobs first
+		// whatever the order, but the official pipeline is the one to
+		// start even when the proposed one fails to.
+		for _, purpose := range []Purpose{PurposeOfficial, PurposeProposed} {
 			s.startAutomatic(ctx, r, StartInput{UserID: p.UserID, ProjectID: p.ID, MergeRequestID: mr.ID, Purpose: purpose, Trigger: r.trigger, Automatic: true, StopStale: true})
 		}
 	case autoInto:

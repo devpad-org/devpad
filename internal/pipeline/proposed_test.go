@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/project"
@@ -334,7 +336,10 @@ func TestProposedPipelinesNeverCountForTheMergeRequest(t *testing.T) {
 		if got, err := e.svc.LatestForMergeRequest(ctx, e.owner, e.project, key); err != nil || (got != nil && got.Purpose != PurposeOfficial) {
 			t.Fatalf("%s: latest for the merge request %+v %v", when, got, err)
 		}
-		latest, err := e.svc.Latest(ctx, e.owner, e.project, LatestFilter{MergeRequestIDs: []int64{e.mr}, Purpose: PurposeProposed})
+		if _, err := e.svc.Latest(ctx, e.owner, e.project, LatestFilter{MergeRequestIDs: []int64{e.mr}, Purpose: PurposeProposed}); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("%s: badges of proposed pipelines: %v", when, err)
+		}
+		latest, err := e.svc.Latest(ctx, e.owner, e.project, LatestFilter{MergeRequestIDs: []int64{e.mr}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -429,5 +434,251 @@ func TestPurposesMatchTheFrontend(t *testing.T) {
 	sort.Strings(server)
 	if !slices.Equal(frontend, server) {
 		t.Errorf("the server's purposes are %v, the frontend's PipelinePurpose %v", server, frontend)
+	}
+}
+
+// A proposed pipeline can have the very key of the merge request's
+// official one, in all but its purpose: a change that edits only a comment
+// of the pipeline file, or renames .yml to .yaml, proposes the same jobs,
+// so the same jobs hash. Devpad refuses to run such a pipeline (see
+// TestAChangeThatProposesTheSameJobsRunsNothingTwice), so these rows are
+// put in as an older devpad, or a bug, might have left them; still not one
+// of them opens or shuts the gate, stands for the merge request's result,
+// is reused for it, settles it, or counts towards running it again. Only
+// the purpose tells them apart.
+func TestAProposedPipelineOfTheOfficialKeyNeverStandsForIt(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.tick("develop")
+	e.propose(sha(30), jobsYAML+"# only a comment\n")
+	status := func() *MergeRequestStatus {
+		t.Helper()
+		st, err := e.svc.MergeRequestStatus(ctx, e.owner, e.project, e.mr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	key := status().Key
+	now := e.svc.now()
+	for i, s := range []Status{StatusPassed, StatusFailed, StatusError, StatusError, StatusCancelled} {
+		p := &Pipeline{
+			ProjectID: e.project, UserID: e.owner, UID: fmt.Sprintf("ffffffffffffff%02d", 10+i), Kind: KindMergeRequest, Purpose: PurposeProposed,
+			MergeRequestID: e.mr, SourceBranch: "feature", TargetBranch: "develop", HeadSHA: key.HeadSHA, TargetSHA: key.TargetSHA,
+			ConfigSource: SourceFile, ConfigPath: ".devpad/pipeline.yml", ConfigHash: key.ConfigHash, Status: s, Trigger: TriggerUser,
+			CreatedAt: now, StartedAt: &now, FinishedAt: &now,
+		}
+		if err := e.svc.repo.Create(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	probe := key.probe(e.project, PurposeOfficial)
+
+	st := status()
+	if g := st.Gate(); g.State != GateNotRun || st.Current != nil || st.Latest != nil || st.Settled != nil {
+		t.Fatalf("a proposed pipeline of the official key counted: gate %s, %+v", g.State, st)
+	}
+	if got, err := e.svc.LatestForMergeRequest(ctx, e.owner, e.project, key); err != nil || got != nil {
+		t.Fatalf("latest for the merge request: %+v %v", got, err)
+	}
+	if latest, err := e.svc.Latest(ctx, e.owner, e.project, LatestFilter{MergeRequestIDs: []int64{e.mr}}); err != nil || len(latest.Pipelines) != 0 {
+		t.Fatalf("badges: %+v %v", latest, err)
+	}
+	for _, statuses := range [][]Status{countingStatuses, endedStatuses, resultStatuses} {
+		if same, err := e.svc.repo.FindSame(ctx, probe, statuses); err != nil || same != nil {
+			t.Fatalf("found %+v %v", same, err)
+		}
+	}
+	if ended, _, err := e.svc.settled(ctx, probe); err != nil || ended != nil {
+		t.Fatalf("settled by %+v %v", ended, err)
+	}
+	for _, s := range []Status{StatusPassed, StatusError, StatusCancelled} {
+		if n, err := e.svc.repo.CountSame(ctx, probe, []Status{s}); err != nil || n != 0 {
+			t.Fatalf("counted %d %s %v", n, s, err)
+		}
+	}
+	// A restart's start, which would take a result of its key, and
+	// devpad's own, which would take a cancelled pipeline or two errors of
+	// it as settled, each run or reuse only an official pipeline.
+	for i, in := range []StartInput{
+		{Trigger: TriggerRestart, ReuseResult: true},
+		{Trigger: TriggerSourceMoved, Automatic: true, StopStale: true},
+	} {
+		in.UserID, in.ProjectID, in.MergeRequestID = e.owner, e.project, e.mr
+		ran, created, err := e.svc.Start(ctx, in)
+		if err != nil || (i == 0 && !created) || ran.Purpose != PurposeOfficial {
+			t.Fatalf("%s: %+v created %v %v", in.Trigger, ran, created, err)
+		}
+		e.wait(ran.ID)
+	}
+	if g := status().Gate(); g.State != GatePassed || g.Pipeline.Purpose != PurposeOfficial {
+		t.Fatalf("after the official pipeline: %+v", g)
+	}
+}
+
+// A change that edits only a comment of the pipeline file, or renames it
+// to .yaml, proposes the very jobs the merge request's own pipeline runs:
+// nothing runs twice, and the status says why.
+func TestAChangeThatProposesTheSameJobsRunsNothingTwice(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	for i, change := range []struct {
+		file agent.RepoDiffFile
+		yaml string
+	}{
+		{agent.RepoDiffFile{Path: ".devpad/pipeline.yml", Status: "M"}, jobsYAML + "# only a comment\n"},
+		{agent.RepoDiffFile{Path: ".devpad/pipeline.yaml", OldPath: ".devpad/pipeline.yml", Status: "R"}, jobsYAML},
+	} {
+		head, target := sha(40+i), sha(80+i)
+		e.projects.setFile(target, ".devpad/pipeline.yml", jobsYAML)
+		e.projects.setBranch("develop", target)
+		e.mrs.setHead(e.mr, head)
+		e.projects.setChange(head, change.file)
+		e.projects.setFile(mergeOf(head, target), change.file.Path, change.yaml)
+		if _, _, err := e.svc.Start(ctx, StartInput{UserID: e.owner, ProjectID: e.project, MergeRequestID: e.mr, Purpose: PurposeProposed, Trigger: TriggerUser}); !errors.Is(err, ErrSameJobs) {
+			t.Fatalf("%s: started %v", change.file.Path, err)
+		}
+		if st := e.proposedStatus(); st == nil || !st.SameJobs || st.Current != nil || st.Key.ConfigHash != "" {
+			t.Fatalf("%s: status %+v", change.file.Path, st)
+		}
+	}
+	if n := len(e.pipelines()); n != 0 {
+		t.Fatalf("%d pipelines ran", n)
+	}
+}
+
+// A proposed job runs at most as long as the target's longest job, or the
+// default timeout when the target has no pipeline: a change can't make its
+// own jobs hold a job slot longer than the jobs that count. Limited so, a
+// job the target already runs is the target's own.
+func TestProposedJobsRunNoLongerThanTheTargetsLongest(t *testing.T) {
+	e := setup(t)
+	timeouts := func(p *Pipeline) map[string]time.Duration {
+		out := map[string]time.Duration{}
+		for _, j := range p.Jobs {
+			out[j.Name] = j.Timeout
+		}
+		return out
+	}
+	long := "jobs:\n  lint:\n    run: echo linted\n    timeout: 1h\n  quick:\n    run: echo quick\n    timeout: 2m\n"
+	steps := []struct {
+		target string // develop's pipeline file, "" for none
+		want   map[string]time.Duration
+	}{
+		{jobsYAML, map[string]time.Duration{"lint": DefaultTimeout, "quick": 2 * time.Minute}},
+		{"jobs:\n  build:\n    run: echo built\n    timeout: 20m\n", map[string]time.Duration{"lint": 20 * time.Minute, "quick": 2 * time.Minute}},
+		{"", map[string]time.Duration{"lint": DefaultTimeout, "quick": 2 * time.Minute}},
+	}
+	for i, step := range steps {
+		target, head := sha(50+i), sha(60+i)
+		if step.target != "" {
+			e.projects.setFile(target, ".devpad/pipeline.yml", step.target)
+		}
+		e.projects.setBranch("develop", target)
+		e.mrs.setHead(e.mr, head)
+		e.propose(head, long)
+		p := e.wait(e.start(StartInput{MergeRequestID: e.mr, Purpose: PurposeProposed}).ID)
+		if got := timeouts(p); !maps.Equal(got, step.want) || p.Status != StatusPassed {
+			t.Fatalf("step %d: %v %s", i, got, p.Status)
+		}
+		if st := e.proposedStatus(); st.Current == nil || st.Current.ID != p.ID || st.Key.ConfigHash != p.ConfigHash {
+			t.Fatalf("step %d: status %+v, pipeline hash %s", i, st, p.ConfigHash)
+		}
+	}
+	// Asking an hour of the target's own job asks for nothing new.
+	e.projects.setBranch("develop", sha(2))
+	e.mrs.setHead(e.mr, sha(70))
+	e.propose(sha(70), "jobs:\n  build:\n    run: echo built\n    timeout: 1h\n  test:\n    run: pass\n")
+	if _, _, err := e.svc.Start(context.Background(), StartInput{UserID: e.owner, ProjectID: e.project, MergeRequestID: e.mr, Purpose: PurposeProposed, Trigger: TriggerUser}); !errors.Is(err, ErrSameJobs) {
+		t.Fatalf("the target's own jobs, longer: %v", err)
+	}
+}
+
+// A proposed pipeline runs only on the trial merge its jobs were read
+// from: a pin that tests another commit ends it in error.
+func TestAProposedPipelineRunsOnlyOnTheCommitItsJobsCameFrom(t *testing.T) {
+	e := setup(t)
+	e.mrs.setHead(e.mr, sha(31))
+	e.propose(sha(31), proposedYAML)
+	e.projects.mu.Lock()
+	e.projects.pinShift = sha(99)
+	e.projects.mu.Unlock()
+	p := e.wait(e.start(StartInput{MergeRequestID: e.mr, Purpose: PurposeProposed}).ID)
+	if p.ConfigSHA != mergeOf(sha(31), sha(2)) || p.Status != StatusError || !strings.Contains(p.Error, "not "+p.ConfigSHA) {
+		t.Fatalf("proposed: %s %q, read from %s", p.Status, p.Error, p.ConfigSHA)
+	}
+	if len(p.Jobs) == 0 || p.Jobs[0].Status == JobPassed {
+		t.Fatalf("its jobs ran: %+v", p.Jobs)
+	}
+	// The official pipeline reads its jobs from the target, and tests the
+	// trial merge.
+	official := e.wait(e.start(StartInput{MergeRequestID: e.mr}).ID)
+	if official.ConfigSHA != sha(2) || official.Status != StatusPassed || official.TestedSHA != sha(99) {
+		t.Fatalf("official: %+v", official)
+	}
+}
+
+// A change devpad can't diff, such as one that shares no history with its
+// target, is read as the trial merge says: one that conflicts proposes
+// nothing, for good. Any other failure stands for proposalRetry, so a
+// merge request polled for its status asks the repo again only after it.
+func TestAChangeThatCantBeReadIsAskedAgainOnlyLater(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.mrs.setHead(e.mr, sha(31))
+	e.propose(sha(31), proposedYAML)
+	e.projects.mu.Lock()
+	e.projects.diffErr = errors.New("the repo is busy")
+	e.projects.mu.Unlock()
+	official, err := e.svc.MergeRequestStatus(ctx, e.owner, e.project, e.mr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads := func() (int, int) {
+		e.projects.mu.Lock()
+		defer e.projects.mu.Unlock()
+		return e.projects.diffs, e.projects.trialMerges
+	}
+	if _, err := e.svc.ProposedStatus(ctx, e.owner, e.project, official); err == nil || isRecentFailure(err) {
+		t.Fatalf("first: %v", err)
+	}
+	diffs, merges := reads()
+	for range 3 {
+		if _, err := e.svc.ProposedStatus(ctx, e.owner, e.project, official); !isRecentFailure(err) || !strings.Contains(err.Error(), "the repo is busy") {
+			t.Fatalf("again: %v", err)
+		}
+	}
+	if d, m := reads(); d != diffs || m != merges {
+		t.Fatalf("asked the repo again: %d diffs, %d trial merges", d-diffs, m-merges)
+	}
+	// Once it has stood long enough, and the repo answers, it is read.
+	key := proposalKey{projectID: e.project, head: sha(31), target: sha(2)}
+	e.svc.proposals.mu.Lock()
+	f := e.svc.proposals.failed[key]
+	f.until = e.svc.now().Add(-time.Second)
+	e.svc.proposals.failed[key] = f
+	e.svc.proposals.mu.Unlock()
+	e.projects.mu.Lock()
+	e.projects.diffErr = nil
+	e.projects.mu.Unlock()
+	if st, err := e.svc.ProposedStatus(ctx, e.owner, e.project, official); err != nil || st == nil || st.Key.ConfigHash == "" {
+		t.Fatalf("read again: %+v %v", st, err)
+	}
+
+	// No history in common: the diff fails, and the trial merge conflicts.
+	e.mrs.setHead(e.mr, sha(32))
+	e.projects.mu.Lock()
+	e.projects.diffErr = errors.New("no merge base")
+	e.projects.conflict = &agent.MergeConflict{Message: "refusing to merge unrelated histories"}
+	e.projects.mu.Unlock()
+	if _, _, err := e.svc.Start(ctx, StartInput{UserID: e.owner, ProjectID: e.project, MergeRequestID: e.mr, Purpose: PurposeProposed, Trigger: TriggerUser}); err == nil || !strings.Contains(err.Error(), "doesn't merge onto develop") {
+		t.Fatalf("unrelated histories: %v", err)
+	}
+	diffs, merges = reads()
+	if _, _, err := e.svc.Start(ctx, StartInput{UserID: e.owner, ProjectID: e.project, MergeRequestID: e.mr, Purpose: PurposeProposed, Trigger: TriggerUser}); err == nil || isRecentFailure(err) {
+		t.Fatalf("again: %v", err)
+	}
+	if d, m := reads(); d != diffs || m != merges {
+		t.Fatalf("read the unrelated change again: %d diffs, %d trial merges", d-diffs, m-merges)
 	}
 }

@@ -36,7 +36,7 @@ func (s *service) run(ctx context.Context, a *activePipeline, p *Pipeline) {
 	if !s.awaitEnvironment(ctx, p) {
 		return
 	}
-	release, err := s.slots.acquire(ctx, p.ProjectID, p.ID, 0)
+	release, err := s.slots.acquire(ctx, claimOf(p, 0))
 	if err != nil {
 		s.stopped(ctx, p)
 		return
@@ -180,6 +180,11 @@ func (s *service) prepare(ctx context.Context, p *Pipeline) (jobrun.Bundle, Stat
 	if err := s.repo.SetTested(ctx, p.ID, pinned.SHA, pinned.Tree); err != nil {
 		return jobrun.Bundle{}, StatusError, err.Error()
 	}
+	// A proposed pipeline's jobs were read from the trial merge, and run
+	// only on it.
+	if p.Purpose == PurposeProposed && pinned.SHA != p.ConfigSHA {
+		return jobrun.Bundle{}, StatusError, fmt.Sprintf("the trial merge pinned, %s, is not %s, the one the proposed jobs were read from", pinned.SHA, p.ConfigSHA)
+	}
 	bundle, err := s.bundle(ctx, p)
 	if err != nil {
 		if errors.Is(err, agent.ErrBundleTooLarge) {
@@ -247,7 +252,7 @@ func (s *service) runJobs(ctx context.Context, p *Pipeline, bundle jobrun.Bundle
 			release := first
 			if i > 0 {
 				var err error
-				if release, err = s.slots.acquire(ctx, p.ProjectID, p.ID, j.Position); err != nil {
+				if release, err = s.slots.acquire(ctx, claimOf(p, j.Position)); err != nil {
 					// Its pipeline ended first: it stays queued, and is
 					// skipped when the pipeline finishes.
 					return

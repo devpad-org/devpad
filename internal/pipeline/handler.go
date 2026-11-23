@@ -184,7 +184,10 @@ func (h *Handler) HandleMergeRequestStatus(w http.ResponseWriter, r *http.Reques
 	// one that can't be read leaves the rest to show.
 	proposed, err := h.pipelines.ProposedStatus(r.Context(), user.ID, projectID, st)
 	if err != nil {
-		log.Printf("pipeline handler: merge request %d's proposed pipeline: %v", mrID, err)
+		// A failure is told once, not on every poll that repeats it.
+		if !isRecentFailure(err) {
+			log.Printf("pipeline handler: merge request %d's proposed pipeline: %v", mrID, err)
+		}
 		proposed = nil
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": map[string]any{
@@ -231,6 +234,7 @@ func proposedResponse(st *ProposedStatus) any {
 		"automatic":  st.Automatic,
 		"conflict":   st.Conflict,
 		"removed":    st.Removed,
+		"sameJobs":   st.SameJobs,
 		"invalid":    st.Invalid,
 		"current":    pipelineOrNil(st.Current),
 		"latest":     pipelineOrNil(st.Latest),
@@ -471,6 +475,7 @@ func pipelineResponse(p *Pipeline, withScripts bool) map[string]any {
 		"configSource":  p.ConfigSource,
 		"configPath":    p.ConfigPath,
 		"configHash":    p.ConfigHash,
+		"configSha":     p.ConfigSHA,
 		"image":         p.Image,
 		"status":        p.Status,
 		"error":         p.Error,

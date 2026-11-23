@@ -63,10 +63,12 @@ export const PIPELINE_COPY = {
   // The pipeline a merge request's change proposes, on its own card.
   proposedNote: "from this change — doesn't gate merging",
   proposedExplain: (file: string, target: string) =>
-    `This change touches ${file}, so devpad also runs the jobs it proposes on this branch merged onto ${target}, for you to see they work before they take effect. The result never keeps this from merging, never goes back to the task's agent and never holds a review: until it merges, ${target}'s own jobs are the ones that count.`,
+    `This change touches ${file}, so devpad also runs the jobs it proposes on this branch merged onto ${target}, for you to see they work before they take effect. The result never keeps this from merging, never goes back to the task's agent and never holds a review: until it merges, ${target}'s own jobs are the ones that count. Its jobs run one at a time, after any job of the pipelines that count, each for at most as long as ${target}'s longest.`,
   proposedRemoved: (target: string) =>
     `This change removes the pipeline, so it proposes no jobs and nothing runs here. Once it merges, ${target}'s commits run the project's pipeline setting, or no pipeline when it has none.`,
   proposedConflict: (target: string) => `This branch doesn't merge onto ${target}, so the pipeline it proposes can't be read.`,
+  proposedSameJobs: (target: string) =>
+    `This change proposes the very jobs ${target}'s pipeline already runs, such as by changing only a comment, so they run once, on the Pipeline card above.`,
   proposedNoneAutomatic: "No proposed pipeline has run yet. Devpad runs it by itself whenever it runs this merge request's own.",
   proposedNone: (target: string) => `No proposed pipeline has run yet. ${target} isn't ticked under Run pipelines, so run it here.`,
 } as const
