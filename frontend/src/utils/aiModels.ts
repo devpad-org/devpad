@@ -40,6 +40,8 @@ export function thinkingEffortLabel(effort: string): string {
       return 'High'
     case 'xhigh':
       return 'Extra high'
+    case 'max':
+      return 'Max'
     default:
       return effort
   }
