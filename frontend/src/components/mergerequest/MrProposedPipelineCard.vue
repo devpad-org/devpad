@@ -11,9 +11,13 @@ import { useMergeRequest } from './useMergeRequest'
 // pipeline file, devpad runs the jobs of the file as the change leaves it,
 // on the branch merged onto the target, apart from the merge request's own
 // pipeline. Nothing here keeps the merge request from merging; the server
-// counts none of it.
-const { mr, projectId, isOpen, pipelines } = useMergeRequest()
-const { proposed, proposedShown, proposedStale, proposedStarting, proposedStartError } = pipelines
+// counts none of it. Once the merge request can no longer merge, merged
+// or closed, the card keeps the latest proposed pipeline it ran, as the
+// Pipeline card keeps its own.
+const { mr, projectId, pipelines } = useMergeRequest()
+const { status, proposed, proposedShown, proposedStale, proposedStarting, proposedStartError } = pipelines
+// Whether the server still reads the change against its target.
+const open = computed(() => !!status.value?.open)
 
 // Nothing runs for a change that removes the pipeline file, that doesn't
 // merge onto its target, or that proposes the jobs the merge request's own
@@ -30,7 +34,7 @@ function started() {
 </script>
 
 <template>
-  <section v-if="mr && isOpen && proposed" class="card proposed-card" aria-label="Proposed pipeline">
+  <section v-if="mr && proposed && (open || proposedShown)" class="card proposed-card" aria-label="Proposed pipeline">
     <div class="card-header">
       <span class="card-header-text">
         <strong>Proposed pipeline</strong>
@@ -39,7 +43,7 @@ function started() {
       </span>
       <span class="card-header-end">
         <button
-          v-if="runnable"
+          v-if="open && runnable"
           type="button"
           class="btn btn-secondary btn-sm"
           :disabled="proposedStarting"
@@ -52,7 +56,9 @@ function started() {
       </span>
     </div>
     <div class="card-body">
-      <p class="explain">{{ PIPELINE_COPY.proposedExplain(proposed.file, mr.targetBranch) }}</p>
+      <p class="explain">
+        {{ open ? PIPELINE_COPY.proposedExplain(proposed.file, mr.targetBranch) : PIPELINE_COPY.proposedEnded(proposed.file, mr.targetBranch) }}
+      </p>
       <p v-if="proposedStartError" class="notice notice-error">{{ proposedStartError }}</p>
       <p v-if="proposed.removed" class="notice notice-info">{{ PIPELINE_COPY.proposedRemoved(mr.targetBranch) }}</p>
       <p v-else-if="proposed.conflict" class="notice notice-warning">{{ PIPELINE_COPY.proposedConflict(mr.targetBranch) }}</p>

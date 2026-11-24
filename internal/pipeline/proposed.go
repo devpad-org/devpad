@@ -286,11 +286,16 @@ func (s *service) resolveJobs(ctx context.Context, p *project.Project, next *Pip
 // ProposedStatus says how the pipeline an open merge request's change
 // proposes stands, at the commits official, the merge request's
 // MergeRequestStatus, found, so the two always speak of the same commits.
-// It is nil when the merge request can no longer merge or its change
-// leaves the pipeline file alone.
+// It is nil when its change leaves the pipeline file alone. A merge
+// request that can no longer merge proposes nothing now, but keeps its
+// latest proposed pipeline to show, as official keeps its Latest: then
+// there is no Key and no Current, and it is nil when none ran.
 func (s *service) ProposedStatus(ctx context.Context, userID, projectID int64, official *MergeRequestStatus) (*ProposedStatus, error) {
-	if official == nil || !official.Open {
+	if official == nil {
 		return nil, nil
+	}
+	if !official.Open {
+		return s.endedProposedStatus(ctx, projectID, official.MergeRequestID)
 	}
 	p, err := s.projects.Get(ctx, userID, projectID)
 	if err != nil {
@@ -303,7 +308,7 @@ func (s *service) ProposedStatus(ctx context.Context, userID, projectID int64, o
 		// file or not: its official pipeline says it doesn't merge.
 		return nil, err
 	}
-	mrID := official.Key.MergeRequestID
+	mrID := official.MergeRequestID
 	st := &ProposedStatus{
 		File:      pr.file,
 		Key:       MergeRequestKey{MergeRequestID: mrID, HeadSHA: head, TargetSHA: target},
@@ -344,4 +349,18 @@ func (s *service) ProposedStatus(ctx context.Context, userID, projectID int64, o
 		return nil, err
 	}
 	return st, nil
+}
+
+// endedProposedStatus is what is left of the pipeline a merge request that
+// can no longer merge proposed: its latest proposed pipeline, or nil when
+// none ran. The change can't be read against its target any more (once
+// merged it is part of it), so the file is the one that pipeline's jobs
+// came from.
+func (s *service) endedProposedStatus(ctx context.Context, projectID, mrID int64) (*ProposedStatus, error) {
+	latest, err := s.repo.Latest(ctx, projectID, LatestFilter{MergeRequestIDs: []int64{mrID}, Purpose: PurposeProposed})
+	if err != nil || len(latest) == 0 {
+		return nil, err
+	}
+	p := latest[0]
+	return &ProposedStatus{File: p.ConfigPath, ConfigPath: p.ConfigPath, Standing: Standing{Latest: p}}, nil
 }

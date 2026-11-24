@@ -205,6 +205,41 @@ func TestAnEndedMergeRequestStopsItsProposedPipelineToo(t *testing.T) {
 	}
 }
 
+// A merge request that can no longer merge, merged or closed, keeps its
+// latest proposed pipeline to show, as it keeps its own, without reading
+// the change again; one that ran none shows none.
+func TestAnEndedMergeRequestKeepsItsLatestProposedPipeline(t *testing.T) {
+	e := setup(t)
+	end := func(open bool) {
+		e.mrs.mu.Lock()
+		e.mrs.mrs[e.mr].Open = open
+		e.mrs.mu.Unlock()
+	}
+	e.propose(sha(30), proposedYAML)
+	end(false)
+	if st := e.proposedStatus(); st != nil {
+		t.Fatalf("ended before any proposed pipeline ran: %+v", st)
+	}
+	end(true)
+	e.wait(e.start(StartInput{MergeRequestID: e.mr}).ID)
+	proposed := e.wait(e.start(StartInput{MergeRequestID: e.mr, Purpose: PurposeProposed}).ID)
+	e.projects.mu.Lock()
+	diffs, merges := e.projects.diffs, e.projects.trialMerges
+	e.projects.mu.Unlock()
+
+	end(false)
+	st := e.proposedStatus()
+	if st == nil || st.Latest == nil || st.Latest.ID != proposed.ID || st.Latest.Purpose != PurposeProposed || st.Current != nil || st.NoResult != nil ||
+		st.File != ".devpad/pipeline.yml" || st.Key != (MergeRequestKey{}) || st.Automatic || st.Removed || st.Conflict || st.SameJobs || st.Invalid != "" {
+		t.Fatalf("ended: %+v", st)
+	}
+	e.projects.mu.Lock()
+	defer e.projects.mu.Unlock()
+	if e.projects.diffs != diffs || e.projects.trialMerges != merges {
+		t.Fatalf("read the ended change again: %d diffs, %d merges, want %d, %d", e.projects.diffs, e.projects.trialMerges, diffs, merges)
+	}
+}
+
 // Into a ticked branch, the merge request's run starts the pipeline its
 // change proposes after its official one, under the same run.
 func TestAnAutomaticRunStartsTheProposedPipelineToo(t *testing.T) {

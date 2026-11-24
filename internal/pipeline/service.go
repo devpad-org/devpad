@@ -61,9 +61,10 @@ type Service interface {
 	MergeRequestStatus(ctx context.Context, userID, projectID, mergeRequestID int64) (*MergeRequestStatus, error)
 	// ProposedStatus says how the pipeline an open merge request's change
 	// proposes stands (proposed.go), at the commits its MergeRequestStatus
-	// found, or nil when its change leaves the pipeline file alone. It reads
-	// the change, so it is never part of MergeRequestStatus, which the merge
-	// gate reads on every merge.
+	// found, or nil when its change leaves the pipeline file alone; of one
+	// that can no longer merge, only its latest proposed pipeline, or nil.
+	// It reads the change, so it is never part of MergeRequestStatus, which
+	// the merge gate reads on every merge.
 	ProposedStatus(ctx context.Context, userID, projectID int64, official *MergeRequestStatus) (*ProposedStatus, error)
 	// Report reads what a pipeline found, for the agent sent back with its
 	// failures and the reviewer told its results: its jobs, the last
