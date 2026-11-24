@@ -9,7 +9,6 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	aitools "github.com/devpad-org/devpad/internal/ai/tools"
 	"github.com/devpad-org/devpad/internal/auth"
-	"github.com/devpad-org/devpad/internal/workspace"
 )
 
 const readDocsTool = "read_devpad_docs"
@@ -28,9 +27,10 @@ type Users interface {
 	GetByID(ctx context.Context, id int64) (*auth.User, error)
 }
 
-// Provider gives the IDE assistant devpad's documentation. Task and review
-// agents do not get it: they work on the project, not on questions about
-// devpad, and the page list would only lengthen their prompts.
+// Provider gives every agent devpad's documentation: the IDE assistant, to
+// answer the user's questions about devpad, and task and review agents, to
+// know how devpad treats their work (why a push was refused, how a pipeline
+// gates their merge request).
 type Provider struct {
 	users Users
 }
@@ -40,10 +40,10 @@ var _ aitools.ToolProvider = (*Provider)(nil)
 // NewProvider creates the documentation provider.
 func NewProvider(users Users) *Provider { return &Provider{users: users} }
 
-// offered reports whether a run gets the documentation: the assistant in a
-// user's own workspace, with or without a project.
+// offered reports whether a run gets the documentation: any run in a
+// workspace, whether the assistant's, a task's or a review's.
 func offered(scope aitools.Scope) bool {
-	return scope.WorkspaceID != 0 && scope.Kind == workspace.KindInteractive
+	return scope.WorkspaceID != 0
 }
 
 // admin reports whether the run's user is an admin. Failing to find out
@@ -59,7 +59,7 @@ func (p *Provider) Contribute(ctx context.Context, scope aitools.Scope) aitools.
 		return aitools.Contribution{}
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "## Devpad documentation\n\nYou are running inside devpad, a self-hosted IDE whose projects, branches, merge requests, tasks, agents, services and budgets work in ways of their own. When the user asks how devpad works, or why it did something (refused a push, held a task, stopped an agent), read the page that covers it with %s and answer from it rather than guessing. The user can read the same pages under Docs in devpad's header, at /docs/<page>.\n\n<devpad_docs>\n", readDocsTool)
+	fmt.Fprintf(&b, "## Devpad documentation\n\nYou are running inside devpad, a self-hosted IDE whose projects, branches, merge requests, tasks, agents, services, pipelines and budgets work in ways of their own. When you need to know how devpad works, or why it did something (refused a push, held a task, stopped an agent), read the page that covers it with %s and go by it rather than guessing. The user can read the same pages under Docs in devpad's header, at /docs/<page>.\n\n<devpad_docs>\n", readDocsTool)
 	for _, page := range Pages(p.admin(ctx, scope.UserID)) {
 		fmt.Fprintf(&b, "<page>\n<slug>%s</slug>\n<title>%s</title>\n<summary>%s</summary>\n</page>\n", page.Slug, escapeXML.Replace(page.Title), escapeXML.Replace(page.Summary))
 	}
@@ -75,7 +75,7 @@ func (p *Provider) ExecuteTool(ctx context.Context, req aitools.ExecutionRequest
 		return domain.ToolResultPart{}, false
 	}
 	if !offered(req.Scope) {
-		return toolError("devpad's documentation is only offered to the assistant in the user's own workspace"), true
+		return toolError("devpad's documentation is only offered to agents running in a workspace"), true
 	}
 	var args struct {
 		Page string `json:"page"`
