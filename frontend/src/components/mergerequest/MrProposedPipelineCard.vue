@@ -74,7 +74,16 @@ function started() {
           <span class="mono">{{ shortSha(proposedShown.targetSha) }}</span>; now it is <span class="mono">{{ shortSha(proposed.headSha) }}</span> onto
           {{ mr.targetBranch }} at <span class="mono">{{ shortSha(proposed.targetSha) }}</span>.
         </p>
-        <PipelineView v-if="proposedShown" :key="proposedShown.id" :project-id="projectId" :pipeline-id="proposedShown.id" :active="true" compact @started="started" />
+        <PipelineView
+          v-if="proposedShown"
+          :key="proposedShown.id"
+          :project-id="projectId"
+          :pipeline-id="proposedShown.id"
+          :active="true"
+          :offer-run-again="open && runnable"
+          compact
+          @started="started"
+        />
         <p v-else class="muted empty">{{ proposed.automatic ? PIPELINE_COPY.proposedNoneAutomatic : PIPELINE_COPY.proposedNone(mr.targetBranch) }}</p>
       </template>
     </div>

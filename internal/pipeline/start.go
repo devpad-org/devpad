@@ -168,6 +168,42 @@ func (s *service) lastEnded(ctx context.Context, k key) (ended *Pipeline, retry 
 	return ended, failed <= errorRetries, nil
 }
 
+// runAgainInput is the user's Run again of p: a start of its branch or
+// merge request, with its purpose, at the commits they are at now.
+func runAgainInput(userID int64, p *Pipeline) StartInput {
+	in := StartInput{UserID: userID, ProjectID: p.ProjectID, Purpose: p.Purpose, Trigger: TriggerUser}
+	if p.Kind == KindMergeRequest {
+		in.MergeRequestID = p.MergeRequestID
+	} else {
+		in.Branch = p.Branch
+	}
+	return in
+}
+
+// CanRunAgain checks what Start of runAgainInput refuses on: the subject
+// (subjectOf), and for a proposed pipeline whether the change proposes
+// jobs to run now (resolveJobs). An official pipeline's jobs are never
+// refused, only recorded as not configured or invalid. A project that isn't
+// ready refuses a start only until it is, so that doesn't count.
+func (s *service) CanRunAgain(ctx context.Context, userID int64, pl *Pipeline) (bool, error) {
+	in := runAgainInput(userID, pl)
+	p, err := s.projects.Get(ctx, userID, in.ProjectID)
+	if err != nil {
+		return false, err
+	}
+	next, err := s.subjectOf(ctx, p, in)
+	if err == nil && next.Purpose == PurposeProposed {
+		_, _, err = s.resolveJobs(ctx, p, next)
+	}
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, ErrInvalidState), errors.Is(err, ErrInvalidInput), errors.Is(err, ErrMergeRequestNotFound):
+		return false, nil
+	}
+	return false, err
+}
+
 // subjectOf reads what in asks to test: the pipeline it would be, with its
 // subject, purpose and commits filled in.
 func (s *service) subjectOf(ctx context.Context, p *project.Project, in StartInput) (*Pipeline, error) {

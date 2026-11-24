@@ -122,6 +122,11 @@ export interface Pipeline {
   startedAt: string | null
   finishedAt: string | null
   jobs: PipelineJob[]
+  // Whether Run again would start now: its branch is still protected, its
+  // merge request can still merge, and a proposed one's change still
+  // proposes jobs. Only a single pipeline's read carries it, false while
+  // it runs.
+  canRunAgain?: boolean
 }
 
 // One of devpad's own notes on a job: a setup step, or how it ended. Notes

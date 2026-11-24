@@ -15,6 +15,9 @@ import { useMergeRequest } from './useMergeRequest'
 const { mr, projectId, isOpen, pipelines } = useMergeRequest()
 const { latest, noResult, status, current, shownId, shownStale, shownPipeline, pickedId, loaded, starting, startError, gateText, alsoFailing, targetPending } = pipelines
 
+// Whether the merge request can still run a pipeline, as the server says:
+// it is open, into a branch still protected.
+const open = computed(() => !!status.value?.open)
 // How the task's automatic pipeline rounds stand: sent back after the
 // pipeline failed, or the failure waiting for you.
 const roundsText = computed(() => (isOpen.value ? pipelineRoundsText(mr.value?.task?.pipelineRounds) : ''))
@@ -43,7 +46,7 @@ function started() {
       <span class="card-header-end">
         <button v-if="pickedId !== null" type="button" class="btn btn-secondary btn-sm" @click="pipelines.show(null)">Show the current one</button>
         <button
-          v-if="isOpen"
+          v-if="open"
           type="button"
           class="btn btn-secondary btn-sm"
           :disabled="starting"
@@ -74,6 +77,7 @@ function started() {
         :pipeline-id="shownId"
         :active="true"
         :also-failing="shownAlsoFailing"
+        :offer-run-again="open"
         compact
         @started="started"
       />

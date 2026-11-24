@@ -335,7 +335,7 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pipeline": pipelineResponse(p, true)})
+	writeJSON(w, http.StatusOK, map[string]any{"pipeline": h.withRunAgain(r.Context(), user.ID, p)})
 }
 
 // HandleCancel stops a queued or running pipeline.
@@ -349,7 +349,28 @@ func (h *Handler) HandleCancel(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pipeline": pipelineResponse(p, true)})
+	writeJSON(w, http.StatusOK, map[string]any{"pipeline": h.withRunAgain(r.Context(), user.ID, p)})
+}
+
+// withRunAgain is p as a single pipeline's read shows it, saying, once it
+// has finished, whether Run again would start now (CanRunAgain), which
+// the app offers only then. When devpad can't read whether it would, Run
+// again is offered, and pressing it says what went wrong.
+func (h *Handler) withRunAgain(ctx context.Context, userID int64, p *Pipeline) map[string]any {
+	resp := pipelineResponse(p, true)
+	if !p.Status.Finished() {
+		resp["canRunAgain"] = false
+		return resp
+	}
+	can, err := h.pipelines.CanRunAgain(ctx, userID, p)
+	if err != nil {
+		if !isRecentFailure(err) {
+			log.Printf("pipeline handler: whether pipeline %d can run again: %v", p.ID, err)
+		}
+		can = true
+	}
+	resp["canRunAgain"] = can
+	return resp
 }
 
 // HandleJobOutput returns a job's output from the offset asked for, with

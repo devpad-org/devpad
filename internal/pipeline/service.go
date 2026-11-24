@@ -49,6 +49,12 @@ type Service interface {
 	Latest(ctx context.Context, userID, projectID int64, f LatestFilter) (*LatestPipelines, error)
 	// Get returns a pipeline of the project with its jobs and their scripts.
 	Get(ctx context.Context, userID, projectID, pipelineID int64) (*Pipeline, error)
+	// CanRunAgain says whether the user's Run again of p would start now
+	// (runAgainInput): its branch is still protected, its merge request can
+	// still merge, and a proposed one's change still proposes jobs to run.
+	// It reads what Start would, without starting anything; an error is a
+	// failure to read that, not a refusal.
+	CanRunAgain(ctx context.Context, userID int64, p *Pipeline) (bool, error)
 	// JobOutput reads a job's output from an offset on, with devpad's notes
 	// on the job: live while the job runs, and what is kept of them after.
 	JobOutput(ctx context.Context, userID, projectID, pipelineID int64, req OutputRequest) (*Output, error)

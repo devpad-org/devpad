@@ -14,18 +14,25 @@ import PipelineJobs from './PipelineJobs.vue'
 // One pipeline: what it tested, where its jobs came from, how it went, and
 // its jobs with their output, read again while it runs. Run again and
 // Cancel act on it.
-const props = defineProps<{
-  projectId: number
-  pipelineId: number
-  // Read it, and its jobs' output, again while it runs: false while it is
-  // out of sight.
-  active: boolean
-  // Leaves out what the page around it already says, such as the merge
-  // request it is of.
-  compact?: boolean
-  // Which of its failing jobs fail on the merge request's target too.
-  alsoFailing?: { target: string; jobs: string[] }
-}>()
+const props = withDefaults(
+  defineProps<{
+    projectId: number
+    pipelineId: number
+    // Read it, and its jobs' output, again while it runs: false while it
+    // is out of sight.
+    active: boolean
+    // Leaves out what the page around it already says, such as the merge
+    // request it is of.
+    compact?: boolean
+    // Which of its failing jobs fail on the merge request's target too.
+    alsoFailing?: { target: string; jobs: string[] }
+    // False where the page around it knows Run again would be refused, as
+    // when its merge request has since merged, which the pipeline as last
+    // read doesn't say: a finished one isn't read again.
+    offerRunAgain?: boolean
+  }>(),
+  { offerRunAgain: true },
+)
 
 const emit = defineEmits<{
   // A pipeline Run again started, or one already running the same.
@@ -88,7 +95,15 @@ async function onRunAgain() {
             <MrIcon name="stop" :size="12" />
             {{ busy ? 'Cancelling…' : 'Cancel' }}
           </button>
-          <button v-else type="button" class="btn btn-secondary btn-sm" :disabled="busy" :title="`Run ${subjectLabel(pipeline)} again at its current commits`" @click="onRunAgain">
+          <!-- Shown only when the server says a run again would start. -->
+          <button
+            v-else-if="pipeline.canRunAgain && offerRunAgain"
+            type="button"
+            class="btn btn-secondary btn-sm"
+            :disabled="busy"
+            :title="`Run ${subjectLabel(pipeline)} again at its current commits`"
+            @click="onRunAgain"
+          >
             <MrIcon name="retry" :size="12" />
             Run again
           </button>
