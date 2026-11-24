@@ -165,15 +165,22 @@ function findNode(nodes: FileNode[], path: string): FileNode | null {
   return null
 }
 
+// Ignores case but not accents; names equal under it keep the agent's order.
+const nameCollator = new Intl.Collator(undefined, { sensitivity: 'accent' })
+
+// Directories come first, then files, each sorted by name ignoring case.
 function mapEntries(entries: { name: string; path: string; type: string }[]): FileNode[] {
-  return entries.map(e => ({
-    name: e.name,
-    path: e.path,
-    type: e.type as 'file' | 'directory',
-    children: e.type === 'directory' ? [] : undefined,
-    expanded: false,
-    loading: false,
-  }))
+  const isDir = (e: { type: string }) => (e.type === 'directory' ? 0 : 1)
+  return [...entries]
+    .sort((a, b) => isDir(a) - isDir(b) || nameCollator.compare(a.name, b.name))
+    .map(e => ({
+      name: e.name,
+      path: e.path,
+      type: e.type as 'file' | 'directory',
+      children: e.type === 'directory' ? [] : undefined,
+      expanded: false,
+      loading: false,
+    }))
 }
 
 async function toggleDir(node: FileNode) {
