@@ -147,6 +147,21 @@ const tableSurfaceVisible = computed(
 const editorSurfaceVisible = computed(
   () => activeActivity.value === 'explorer' || (isProjectActivity.value && !tableSurfaceVisible.value),
 )
+// The workspace's own pages need its container: until it runs, each of them
+// is the gate alone, without its side panel. The project's pages work
+// without it, but the editor behind them shows the gate too.
+const workspaceGated = computed(() => !workspaceLive.value && !isProjectActivity.value)
+const surfaceGated = computed(() => workspaceGated.value || (!workspaceLive.value && editorSurfaceVisible.value))
+// What each page needs the workspace for, finishing the gate's "Start it to …".
+const GATE_PURPOSES: Partial<Record<ActivityTab, string>> = {
+  ai: 'chat with your assistant',
+  explorer: 'browse and edit its files',
+  git: 'see its changes, commit and publish',
+  info: 'see its processes and resource usage',
+  services: 'use its database services',
+  agents: "check out an agent's branch",
+}
+const gatePurpose = computed(() => GATE_PURPOSES[activeActivity.value] ?? 'work on the code')
 const mobileMoreOpen = ref(false)
 // The bottom tabs; everything else lives under More.
 const MOBILE_TABS: ActivityTab[] = ['inbox', 'tasks', 'merge-requests', 'agents', 'ai']
@@ -167,8 +182,11 @@ const MOBILE_LIST_NAMES: Partial<Record<ActivityTab, string>> = {
   services: 'services',
   info: 'workspace info',
 }
+// A gated page has no list to go back to.
 const mobileBackList = computed(() =>
-  mobileProject.value && !mobileSidebarOpen.value ? MOBILE_LIST_NAMES[activeActivity.value] ?? null : null,
+  mobileProject.value && !mobileSidebarOpen.value && !workspaceGated.value
+    ? MOBILE_LIST_NAMES[activeActivity.value] ?? null
+    : null,
 )
 
 watch(isMobile, (mobile) => {
@@ -1003,7 +1021,9 @@ function handleBack() {
   else router.push({ name: 'home' })
 }
 
-const mobileAgentList = computed(() => mobileProject.value && mobileSidebarOpen.value && activeActivity.value === 'ai')
+const mobileAgentList = computed(
+  () => mobileProject.value && mobileSidebarOpen.value && activeActivity.value === 'ai' && !workspaceGated.value,
+)
 
 const backLabel = computed(() => {
   if (mobileBackList.value) return `Back to ${mobileBackList.value}`
@@ -1043,9 +1063,10 @@ const backLabel = computed(() => {
         </svg>
       </button>
       <!-- On a phone's project, only the IDE's own surfaces have a side list
-           to toggle; the project's lists are full screen already. -->
+           to toggle; the project's lists are full screen already. A gated
+           page has none. -->
       <button
-        v-if="isMobile && (!mobileProject || !isProjectActivity)"
+        v-if="isMobile && !workspaceGated && (!mobileProject || !isProjectActivity)"
         class="titlebar-toggle"
         :class="{ active: mobileSidebarOpen }"
         @click="toggleMobileSidebar"
@@ -1505,7 +1526,7 @@ const backLabel = computed(() => {
       <aside
         id="ide-left-panel"
         class="ide-sidebar"
-        :class="{ open: mobileSidebarOpen, collapsed: tableSurfaceVisible }"
+        :class="{ open: mobileSidebarOpen, collapsed: tableSurfaceVisible || workspaceGated }"
         aria-label="Left side panel"
         :style="isMobile ? undefined : { width: sidebar.size.value + 'px' }"
       >
@@ -1553,15 +1574,6 @@ const backLabel = computed(() => {
             :workspace-id="workspace?.id ?? 0"
           />
         </template>
-        <WorkspaceGate
-          v-else-if="!isProjectActivity"
-          compact
-          :state="gateState"
-          :error="gateError"
-          :default-branch="projectStore.project?.defaultBranch"
-          @create="createWorkspace"
-          @start="startWorkspace"
-        />
         <template v-if="isProjectMode">
           <ProjectInboxPanel
             v-if="mobileProject"
@@ -1589,7 +1601,7 @@ const backLabel = computed(() => {
         </template>
       </aside>
       <div
-        v-show="!tableSurfaceVisible"
+        v-show="!tableSurfaceVisible && !workspaceGated"
         class="resize-handle resize-handle--horizontal"
         :class="{ active: sidebar.isDragging.value }"
         @pointerdown="sidebar.onPointerDown"
@@ -1598,9 +1610,19 @@ const backLabel = computed(() => {
       <!-- Center + Bottom -->
       <div class="ide-center">
         <section id="ide-primary-surface" class="ide-editor-area" aria-label="Primary IDE surface">
-          <div v-show="activeActivity === 'ai'" class="ide-surface-pane ide-ai-surface">
+          <div v-if="surfaceGated" class="ide-surface-pane">
+            <WorkspaceGate
+              :state="gateState"
+              :purpose="gatePurpose"
+              :full-page="workspaceGated"
+              :error="gateError"
+              :default-branch="projectStore.project?.defaultBranch"
+              @create="createWorkspace"
+              @start="startWorkspace"
+            />
+          </div>
+          <div v-if="workspaceLive" v-show="activeActivity === 'ai'" class="ide-surface-pane ide-ai-surface">
             <AiAgentPanel
-              v-if="workspaceLive"
               :workspace-id="workspace?.id ?? 0"
               :project-id="isProjectMode ? projectId : null"
               @branch-changed="branchChanged"
@@ -1608,14 +1630,6 @@ const backLabel = computed(() => {
               :focused-run-id="focusedAgentRunId"
               @clear-focused-run="focusedAgentRunId = null"
               @select-agent="handleAgentSelect"
-            />
-            <WorkspaceGate
-              v-else
-              :state="gateState"
-              :error="gateError"
-              :default-branch="projectStore.project?.defaultBranch"
-              @create="createWorkspace"
-              @start="startWorkspace"
             />
           </div>
           <div v-if="isProjectMode && !mobileProject" v-show="taskSurfaceVisible" class="ide-surface-pane">
@@ -1634,7 +1648,9 @@ const backLabel = computed(() => {
               @navigate="selectActivity"
             />
           </div>
-          <div v-show="editorSurfaceVisible" class="ide-surface-pane">
+          <!-- Kept while the workspace is down, so open files and unsaved
+               changes are still there when it's back. -->
+          <div v-show="editorSurfaceVisible && workspaceLive" class="ide-surface-pane">
             <EditorPanel
               ref="editorPanel"
               :workspace-id="workspace?.id ?? 0"
@@ -1664,18 +1680,6 @@ const backLabel = computed(() => {
               <WorkspaceServicesPanel :workspace-id="workspace?.id ?? 0" :project-id="isProjectMode ? projectId : null" />
             </div>
           </template>
-          <div
-            v-else-if="activeActivity === 'info' || activeActivity === 'git' || activeActivity === 'services'"
-            class="ide-surface-pane"
-          >
-            <WorkspaceGate
-              :state="gateState"
-              :error="gateError"
-              :default-branch="projectStore.project?.defaultBranch"
-              @create="createWorkspace"
-              @start="startWorkspace"
-            />
-          </div>
         </section>
         <template v-if="workspaceLive">
         <div
