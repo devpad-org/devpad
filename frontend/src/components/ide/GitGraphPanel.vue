@@ -188,8 +188,21 @@ const graphLayout = computed(() => buildCommitGraph(commits.value))
 const commitHashes = computed(() => commits.value.map((commit) => commit.hash))
 const { byCommit: commitPipelines } = useCommitPipelines(toRef(props, 'projectId'), commitHashes, toRef(props, 'active'))
 
+// Room beside the hash for the most statuses any commit shows, given to
+// every row so that each row's message starts in line; none when no commit
+// shows one.
+const pipelineIconSize = 16
+// As .commit-pipelines' gap between statuses and .commit-id's before them.
+const pipelineIconGap = 3
+const commitIdGap = 5
+const commitPipelinesWidth = computed(() => {
+  const most = Math.max(0, ...commits.value.map((commit) => commitPipelines.value[commit.hash]?.length ?? 0))
+  return most === 0 ? 0 : commitIdGap + most * pipelineIconSize + (most - 1) * pipelineIconGap
+})
+
 const graphTimelineStyle = computed(() => ({
   '--graph-column-width': `${graphLayout.value.width}px`,
+  '--commit-pipelines-width': `${commitPipelinesWidth.value}px`,
 }))
 
 function branchNamesForCommit(commit: GitCommit): string[] {
@@ -722,7 +735,18 @@ onUnmounted(() => {
 
           <span class="commit-card">
             <span class="commit-topline">
-              <code>{{ row.commit.shortHash }}</code>
+              <span class="commit-id">
+                <code>{{ row.commit.shortHash }}</code>
+                <span v-if="commitPipelines[row.commit.hash]" class="commit-pipelines">
+                  <PipelineStatusIcon
+                    v-for="pipeline in commitPipelines[row.commit.hash]"
+                    :key="pipeline.id"
+                    :look="PIPELINE_STATUS[pipeline.status]"
+                    :size="pipelineIconSize"
+                    :title="commitPipelineLabel(pipeline)"
+                  />
+                </span>
+              </span>
               <span :title="fullTime(unixSecondsToIso(row.commit.timestamp))">{{ timeAgo(unixSecondsToIso(row.commit.timestamp)) }}</span>
             </span>
             <strong>{{ row.commit.message }}</strong>
@@ -730,15 +754,6 @@ onUnmounted(() => {
               <span>{{ row.commit.author }}</span>
               <span v-for="branch in row.branchNames" :key="branch" class="branch-pill">
                 {{ branch }}
-              </span>
-              <span v-if="commitPipelines[row.commit.hash]" class="commit-pipelines">
-                <PipelineStatusIcon
-                  v-for="pipeline in commitPipelines[row.commit.hash]"
-                  :key="pipeline.id"
-                  :look="PIPELINE_STATUS[pipeline.status]"
-                  :size="16"
-                  :title="commitPipelineLabel(pipeline)"
-                />
               </span>
             </span>
           </span>
