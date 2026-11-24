@@ -61,7 +61,8 @@ var (
 // stands now. Nothing reads it as a result of the merge request.
 type ProposedStatus struct {
 	// File is the pipeline file the change adds, changes, renames or
-	// deletes.
+	// deletes; empty once the merge request can no longer merge, when the
+	// change isn't read again.
 	File string
 	// Key is what a proposed pipeline must test to count now: the merge
 	// request's head merged onto its target's tip, with the jobs of that
@@ -77,6 +78,11 @@ type ProposedStatus struct {
 	Conflict bool
 	Removed  bool
 	SameJobs bool
+	// Runnable says a start of it now would run the jobs the change
+	// proposes: the merge request can still merge, and none of the above
+	// is so. The app offers Run proposed pipeline, and Run again on a
+	// proposed pipeline of the merge request, only then.
+	Runnable bool
 	// ConfigPath is the file the proposed jobs come from, and Invalid why
 	// it doesn't parse, or empty.
 	ConfigPath string
@@ -286,11 +292,16 @@ func (s *service) resolveJobs(ctx context.Context, p *project.Project, next *Pip
 // ProposedStatus says how the pipeline an open merge request's change
 // proposes stands, at the commits official, the merge request's
 // MergeRequestStatus, found, so the two always speak of the same commits.
-// It is nil when the merge request can no longer merge or its change
-// leaves the pipeline file alone.
+// It is nil when its change leaves the pipeline file alone. A merge
+// request that can no longer merge proposes nothing now, but keeps its
+// latest proposed pipeline to show, as official keeps its Latest
+// (endedProposedStatus).
 func (s *service) ProposedStatus(ctx context.Context, userID, projectID int64, official *MergeRequestStatus) (*ProposedStatus, error) {
-	if official == nil || !official.Open {
+	if official == nil {
 		return nil, nil
+	}
+	if !official.Open {
+		return s.endedProposedStatus(ctx, userID, projectID, official.MergeRequestID)
 	}
 	p, err := s.projects.Get(ctx, userID, projectID)
 	if err != nil {
@@ -303,7 +314,7 @@ func (s *service) ProposedStatus(ctx context.Context, userID, projectID int64, o
 		// file or not: its official pipeline says it doesn't merge.
 		return nil, err
 	}
-	mrID := official.Key.MergeRequestID
+	mrID := official.MergeRequestID
 	st := &ProposedStatus{
 		File:      pr.file,
 		Key:       MergeRequestKey{MergeRequestID: mrID, HeadSHA: head, TargetSHA: target},
@@ -340,8 +351,34 @@ func (s *service) ProposedStatus(ctx context.Context, userID, projectID int64, o
 	if jobs.Invalid != nil {
 		st.Invalid = jobs.Invalid.Error()
 	}
+	st.Runnable = true
 	if err := s.stand(ctx, &st.Standing, st.Key.of(projectID, PurposeProposed), st.Automatic); err != nil {
 		return nil, err
 	}
 	return st, nil
+}
+
+// endedProposedStatus is what is left to show of the pipeline a merge
+// request that can no longer merge proposed: its latest proposed pipeline,
+// when that tested the merge request's last head, else nil. One of an
+// earlier head may be of a change it no longer makes, such as an edit to
+// the pipeline file since undone, and its last head ran none when it
+// removed the file or proposed the official pipeline's own jobs. The
+// change isn't read against its target again (once merged it is part of
+// it), so there is no File, Key or Current, and ConfigPath is the file
+// that pipeline's jobs came from.
+func (s *service) endedProposedStatus(ctx context.Context, userID, projectID, mrID int64) (*ProposedStatus, error) {
+	if _, err := s.projects.Get(ctx, userID, projectID); err != nil {
+		return nil, err
+	}
+	mr, err := s.mrs.PipelineMergeRequest(ctx, userID, projectID, mrID)
+	if err != nil || mr == nil {
+		return nil, err
+	}
+	latest, err := s.repo.Latest(ctx, projectID, LatestFilter{MergeRequestIDs: []int64{mr.ID}, Purpose: PurposeProposed})
+	if err != nil || len(latest) == 0 || latest[0].HeadSHA != mr.HeadSHA {
+		return nil, err
+	}
+	p := latest[0]
+	return &ProposedStatus{ConfigPath: p.ConfigPath, Standing: Standing{Latest: p}}, nil
 }

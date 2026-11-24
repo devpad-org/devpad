@@ -15,6 +15,8 @@ import (
 // its official pipelines count: one its change proposes (ProposedStatus)
 // never does.
 type MergeRequestStatus struct {
+	// MergeRequestID is the merge request it is of, open or not.
+	MergeRequestID int64
 	// Open says the merge request can still merge into a protected branch.
 	// When it can't, there is no Key and no Current: only Latest.
 	Open bool
@@ -159,7 +161,7 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 	if mr == nil {
 		return nil, ErrMergeRequestNotFound
 	}
-	st := &MergeRequestStatus{Target: mr.TargetBranch}
+	st := &MergeRequestStatus{MergeRequestID: mr.ID, Target: mr.TargetBranch}
 	latest, err := s.repo.Latest(ctx, projectID, LatestFilter{MergeRequestIDs: []int64{mr.ID}, Purpose: PurposeOfficial})
 	if err != nil {
 		return nil, err
@@ -168,7 +170,7 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 		st.Latest = latest[0]
 	}
 	st.Automatic = mergeRequestRunsAutomatically(p, mr)
-	if !mr.Open || !p.IsProtected(mr.TargetBranch) || !project.IsCommitHash(mr.HeadSHA) {
+	if mergeRequestRefusal(p, mr) != nil {
 		return st, nil
 	}
 	target, err := s.branchCommit(ctx, p, mr.TargetBranch)

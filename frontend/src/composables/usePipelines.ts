@@ -54,6 +54,18 @@ export function usePipeline(projectId: Ref<number | null>, pipelineId: Ref<numbe
     void poll()
   })
 
+  // Reads it again now, finished or not: a finished one isn't read on a
+  // schedule, though what is around it may have changed, such as whether
+  // Run again would start.
+  function reread() {
+    if (polling.value) void poll()
+    else void load()
+  }
+  // A finished one is read again as it comes back into sight.
+  watch(active, (on) => {
+    if (on && pipeline.value && pipelineFinished(pipeline.value)) reread()
+  })
+
   async function act(fn: (project: number, p: Pipeline) => Promise<Pipeline | null>): Promise<Pipeline | null> {
     const project = projectId.value
     const p = pipeline.value
@@ -85,7 +97,7 @@ export function usePipeline(projectId: Ref<number | null>, pipelineId: Ref<numbe
     return act(async (project, p) => (await pipelineApi.start(project, subjectOf(p))).pipeline)
   }
 
-  return { pipeline, error, busy, refresh: poll, cancel, runAgain }
+  return { pipeline, error, busy, refresh: poll, reread, cancel, runAgain }
 }
 
 // usePipelineList lists a project's pipelines newest first, as filter

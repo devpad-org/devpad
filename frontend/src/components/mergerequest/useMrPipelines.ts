@@ -94,13 +94,14 @@ export function createMrPipelines(projectId: Ref<number>, mrId: Ref<number>, mr:
   const timelinePipelines = computed(() => pipelines.value.filter((p) => p.status !== 'superseded'))
 
   // The pipeline the change proposes, and the one of them its card shows,
-  // as the merge request's own card does.
+  // as the merge request's own card does: once it can no longer merge,
+  // only its latest, which nothing is newer than.
   const proposed = computed(() => status.value?.proposed ?? null)
   const proposedShown = computed(() => shownOf(proposed.value))
   const proposedStale = computed(() => {
     const p = proposed.value
     const shown = proposedShown.value
-    return !!p && !!shown && staleIn(p, shown.id)
+    return !!status.value?.open && !!p && !!shown && staleIn(p, shown.id)
   })
 
   async function load() {

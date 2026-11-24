@@ -168,16 +168,62 @@ func (s *service) lastEnded(ctx context.Context, k key) (ended *Pipeline, retry 
 	return ended, failed <= errorRetries, nil
 }
 
-// subjectOf reads what in asks to test: the pipeline it would be, with its
-// subject, purpose and commits filled in.
-func (s *service) subjectOf(ctx context.Context, p *project.Project, in StartInput) (*Pipeline, error) {
+// runAgainInput is the user's Run again of p: a start of its branch or
+// merge request, with its purpose, at the commits they are at now.
+func runAgainInput(userID int64, p *Pipeline) StartInput {
+	in := StartInput{UserID: userID, ProjectID: p.ProjectID, Purpose: p.Purpose, Trigger: TriggerUser}
+	if p.Kind == KindMergeRequest {
+		in.MergeRequestID = p.MergeRequestID
+	} else {
+		in.Branch = p.Branch
+	}
+	return in
+}
+
+// CanRunAgain checks what Start of runAgainInput refuses on before it
+// reads a commit (checkSubject): that it names a protected branch, or a
+// merge request that can still merge into one. It reads only the
+// database, so a pipeline's read never waits on the repo. A start it lets
+// through can still be refused by what the commits say: a branch since
+// deleted, or a proposed pipeline's change that no longer proposes jobs,
+// which the merge request's status says (ProposedStatus.Runnable). A
+// project that isn't ready refuses a start only until it is, so that
+// doesn't count.
+func (s *service) CanRunAgain(ctx context.Context, userID int64, pl *Pipeline) (bool, error) {
+	in := runAgainInput(userID, pl)
+	p, err := s.projects.Get(ctx, userID, in.ProjectID)
+	if err != nil {
+		return false, err
+	}
+	_, err = s.checkSubject(ctx, p, in)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, ErrInvalidState), errors.Is(err, ErrInvalidInput), errors.Is(err, ErrMergeRequestNotFound):
+		return false, nil
+	}
+	return false, err
+}
+
+// checkedSubject is what a start asks to test, once checkSubject found
+// nothing that refuses it: a protected branch, or a merge request that can
+// still merge.
+type checkedSubject struct {
+	purpose Purpose
+	branch  string
+	mr      *MergeRequest
+}
+
+// checkSubject checks what in asks to test against everything that
+// refuses it but its commits: its purpose, and that it names a protected
+// branch or a merge request that can still merge (mergeRequestRefusal).
+// It reads no commit, so CanRunAgain asks it too.
+func (s *service) checkSubject(ctx context.Context, p *project.Project, in StartInput) (*checkedSubject, error) {
 	purpose := in.Purpose
 	if purpose == "" {
 		purpose = PurposeOfficial
 	}
 	branch := strings.TrimSpace(in.Branch)
-	var next *Pipeline
-	var err error
 	switch {
 	case !slices.Contains(Purposes(), purpose):
 		return nil, fmt.Errorf("%w: unknown pipeline purpose %q", ErrInvalidInput, purpose)
@@ -186,24 +232,64 @@ func (s *service) subjectOf(ctx context.Context, p *project.Project, in StartInp
 	case branch != "" && purpose == PurposeProposed:
 		return nil, fmt.Errorf("%w: only a merge request's change proposes a pipeline", ErrInvalidInput)
 	case branch != "":
-		next, err = s.branchSubject(ctx, p, branch)
-	default:
-		next, err = s.mergeRequestSubject(ctx, p, in.UserID, in.MergeRequestID)
+		// An unprotected branch is its author's to change, an agent's as
+		// often as not, so its pipeline file proves nothing.
+		if !p.IsProtected(branch) {
+			return nil, fmt.Errorf("%w: only protected branches run pipelines; %s is not protected", ErrInvalidInput, branch)
+		}
+		return &checkedSubject{purpose: purpose, branch: branch}, nil
+	}
+	mr, err := s.mrs.PipelineMergeRequest(ctx, in.UserID, p.ID, in.MergeRequestID)
+	if err != nil {
+		return nil, err
+	}
+	if mr == nil {
+		return nil, ErrMergeRequestNotFound
+	}
+	if err := mergeRequestRefusal(p, mr); err != nil {
+		return nil, err
+	}
+	return &checkedSubject{purpose: purpose, mr: mr}, nil
+}
+
+// mergeRequestRefusal is why mr can run no pipeline now, or nil: it has
+// merged or closed, its target is no longer protected, or it has no head
+// commit yet. Its MergeRequestStatus is Open only when this is nil.
+func mergeRequestRefusal(p *project.Project, mr *MergeRequest) error {
+	switch {
+	case !mr.Open:
+		return fmt.Errorf("%w: the merge request is no longer open", ErrInvalidState)
+	case !p.IsProtected(mr.TargetBranch):
+		return fmt.Errorf("%w: the merge request's target %s is no longer protected", ErrInvalidState, mr.TargetBranch)
+	case !project.IsCommitHash(mr.HeadSHA):
+		return fmt.Errorf("%w: the merge request has no head commit yet", ErrInvalidState)
+	}
+	return nil
+}
+
+// subjectOf reads what in asks to test: the pipeline it would be, with its
+// subject, purpose and commits filled in.
+func (s *service) subjectOf(ctx context.Context, p *project.Project, in StartInput) (*Pipeline, error) {
+	a, err := s.checkSubject(ctx, p, in)
+	if err != nil {
+		return nil, err
+	}
+	var next *Pipeline
+	if a.mr != nil {
+		next, err = s.mergeRequestSubject(ctx, p, a.mr)
+	} else {
+		next, err = s.branchSubject(ctx, p, a.branch)
 	}
 	if err != nil {
 		return nil, err
 	}
-	next.Purpose = purpose
+	next.Purpose = a.purpose
 	return next, nil
 }
 
 // branchSubject is a pipeline of a protected branch's current commit, read
-// with that commit's pipeline. An unprotected branch is its author's to
-// change, an agent's as often as not, so its pipeline file proves nothing.
+// with that commit's pipeline.
 func (s *service) branchSubject(ctx context.Context, p *project.Project, branch string) (*Pipeline, error) {
-	if !p.IsProtected(branch) {
-		return nil, fmt.Errorf("%w: only protected branches run pipelines; %s is not protected", ErrInvalidInput, branch)
-	}
 	sha, err := s.branchCommit(ctx, p, branch)
 	if err != nil {
 		return nil, err
@@ -215,23 +301,7 @@ func (s *service) branchSubject(ctx context.Context, p *project.Project, branch 
 // onto its target's current commit, read with the target commit's pipeline:
 // the source is the change an agent wrote, so it never decides the jobs that
 // grade it.
-func (s *service) mergeRequestSubject(ctx context.Context, p *project.Project, userID, mrID int64) (*Pipeline, error) {
-	mr, err := s.mrs.PipelineMergeRequest(ctx, userID, p.ID, mrID)
-	if err != nil {
-		return nil, err
-	}
-	if mr == nil {
-		return nil, ErrMergeRequestNotFound
-	}
-	if !mr.Open {
-		return nil, fmt.Errorf("%w: the merge request is no longer open", ErrInvalidState)
-	}
-	if !p.IsProtected(mr.TargetBranch) {
-		return nil, fmt.Errorf("%w: the merge request's target %s is no longer protected", ErrInvalidState, mr.TargetBranch)
-	}
-	if !project.IsCommitHash(mr.HeadSHA) {
-		return nil, fmt.Errorf("%w: the merge request has no head commit yet", ErrInvalidState)
-	}
+func (s *service) mergeRequestSubject(ctx context.Context, p *project.Project, mr *MergeRequest) (*Pipeline, error) {
 	target, err := s.branchCommit(ctx, p, mr.TargetBranch)
 	if err != nil {
 		return nil, err

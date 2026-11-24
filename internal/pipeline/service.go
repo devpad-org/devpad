@@ -49,6 +49,13 @@ type Service interface {
 	Latest(ctx context.Context, userID, projectID int64, f LatestFilter) (*LatestPipelines, error)
 	// Get returns a pipeline of the project with its jobs and their scripts.
 	Get(ctx context.Context, userID, projectID, pipelineID int64) (*Pipeline, error)
+	// CanRunAgain says whether the user's Run again of p would start now
+	// (runAgainInput), as far as the database says: its branch is still
+	// protected, or its merge request can still merge. It never reads the
+	// repo, so what only the commits say, such as whether a proposed one's
+	// change still proposes jobs, is left to Start; an error is a failure
+	// to read, not a refusal.
+	CanRunAgain(ctx context.Context, userID int64, p *Pipeline) (bool, error)
 	// JobOutput reads a job's output from an offset on, with devpad's notes
 	// on the job: live while the job runs, and what is kept of them after.
 	JobOutput(ctx context.Context, userID, projectID, pipelineID int64, req OutputRequest) (*Output, error)
@@ -61,9 +68,10 @@ type Service interface {
 	MergeRequestStatus(ctx context.Context, userID, projectID, mergeRequestID int64) (*MergeRequestStatus, error)
 	// ProposedStatus says how the pipeline an open merge request's change
 	// proposes stands (proposed.go), at the commits its MergeRequestStatus
-	// found, or nil when its change leaves the pipeline file alone. It reads
-	// the change, so it is never part of MergeRequestStatus, which the merge
-	// gate reads on every merge.
+	// found, or nil when its change leaves the pipeline file alone; of one
+	// that can no longer merge, only its latest proposed pipeline, or nil.
+	// It reads the change, so it is never part of MergeRequestStatus, which
+	// the merge gate reads on every merge.
 	ProposedStatus(ctx context.Context, userID, projectID int64, official *MergeRequestStatus) (*ProposedStatus, error)
 	// Report reads what a pipeline found, for the agent sent back with its
 	// failures and the reviewer told its results: its jobs, the last

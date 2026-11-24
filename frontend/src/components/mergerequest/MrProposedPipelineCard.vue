@@ -11,14 +11,29 @@ import { useMergeRequest } from './useMergeRequest'
 // pipeline file, devpad runs the jobs of the file as the change leaves it,
 // on the branch merged onto the target, apart from the merge request's own
 // pipeline. Nothing here keeps the merge request from merging; the server
-// counts none of it.
+// counts none of it. Once the merge request can no longer merge, merged
+// or closed or into a branch no longer protected, the card keeps the
+// latest proposed pipeline of its last head, as the Pipeline card keeps
+// its own, which the server sends only when one ran.
 const { mr, projectId, isOpen, pipelines } = useMergeRequest()
-const { proposed, proposedShown, proposedStale, proposedStarting, proposedStartError } = pipelines
-
-// Nothing runs for a change that removes the pipeline file, that doesn't
-// merge onto its target, or that proposes the jobs the merge request's own
-// pipeline runs.
-const runnable = computed(() => !!proposed.value && !proposed.value.removed && !proposed.value.conflict && !proposed.value.sameJobs)
+const { status, proposed, proposedShown, proposedStale, proposedStarting, proposedStartError } = pipelines
+// Whether the server still reads the change against its target.
+const open = computed(() => !!status.value?.open)
+// Whether a start would run the jobs the change proposes, as the server
+// says: nothing runs once it can't merge, nor for a change that removes
+// the pipeline file, that doesn't merge onto its target, or that proposes
+// the jobs the merge request's own pipeline runs.
+const runnable = computed(() => !!proposed.value?.runnable)
+// What the card says the pipeline is: run as the change proposes it now,
+// or, once nothing runs here, the latest that ran, of the merge request
+// merged or closed, or open into a branch no longer protected.
+const explain = computed(() => {
+  const p = proposed.value
+  const target = mr.value?.targetBranch ?? ''
+  if (!p) return ''
+  if (open.value) return PIPELINE_COPY.proposedExplain(p.file, target)
+  return isOpen.value ? PIPELINE_COPY.proposedUnprotected(p.configPath, target) : PIPELINE_COPY.proposedEnded(p.configPath, target)
+})
 const showingNoResult = computed(() => {
   const p = proposed.value
   return !!p?.noResult && proposedShown.value?.id === p.noResult.pipeline.id
@@ -30,7 +45,7 @@ function started() {
 </script>
 
 <template>
-  <section v-if="mr && isOpen && proposed" class="card proposed-card" aria-label="Proposed pipeline">
+  <section v-if="mr && proposed" class="card proposed-card" aria-label="Proposed pipeline">
     <div class="card-header">
       <span class="card-header-text">
         <strong>Proposed pipeline</strong>
@@ -52,7 +67,7 @@ function started() {
       </span>
     </div>
     <div class="card-body">
-      <p class="explain">{{ PIPELINE_COPY.proposedExplain(proposed.file, mr.targetBranch) }}</p>
+      <p class="explain">{{ explain }}</p>
       <p v-if="proposedStartError" class="notice notice-error">{{ proposedStartError }}</p>
       <p v-if="proposed.removed" class="notice notice-info">{{ PIPELINE_COPY.proposedRemoved(mr.targetBranch) }}</p>
       <p v-else-if="proposed.conflict" class="notice notice-warning">{{ PIPELINE_COPY.proposedConflict(mr.targetBranch) }}</p>
@@ -68,7 +83,16 @@ function started() {
           <span class="mono">{{ shortSha(proposedShown.targetSha) }}</span>; now it is <span class="mono">{{ shortSha(proposed.headSha) }}</span> onto
           {{ mr.targetBranch }} at <span class="mono">{{ shortSha(proposed.targetSha) }}</span>.
         </p>
-        <PipelineView v-if="proposedShown" :key="proposedShown.id" :project-id="projectId" :pipeline-id="proposedShown.id" :active="true" compact @started="started" />
+        <PipelineView
+          v-if="proposedShown"
+          :key="proposedShown.id"
+          :project-id="projectId"
+          :pipeline-id="proposedShown.id"
+          :active="true"
+          :offer-run-again="runnable"
+          compact
+          @started="started"
+        />
         <p v-else class="muted empty">{{ proposed.automatic ? PIPELINE_COPY.proposedNoneAutomatic : PIPELINE_COPY.proposedNone(mr.targetBranch) }}</p>
       </template>
     </div>

@@ -59,6 +59,13 @@ export const PIPELINE_COPY = {
   proposedNote: "from this change — doesn't gate merging",
   proposedExplain: (file: string, target: string) =>
     `This change touches ${file}, so devpad also runs the jobs it proposes on this branch merged onto ${target}, for you to see they work before they take effect. The result never keeps this from merging, never goes back to the task's agent and never holds a review: until it merges, ${target}'s own jobs are the ones that count. Its jobs run one at a time, after any job of the pipelines that count, each for at most as long as ${target}'s longest.`,
+  // On the card of a merge request that was merged or closed, naming the
+  // file the jobs shown came from.
+  proposedEnded: (path: string, target: string) =>
+    `This change proposed the jobs of ${path}, which devpad also ran on this branch merged onto ${target}. This is the latest of them, as it ran then; it never counted for this merge request.`,
+  // On the card of an open merge request into a branch no longer protected.
+  proposedUnprotected: (path: string, target: string) =>
+    `This change proposes the jobs of ${path}, which devpad also ran on this branch merged onto ${target}. ${target} is no longer protected, so nothing runs here now: this is the latest of them, as it ran then, and it never counted.`,
   proposedRemoved: (target: string) =>
     `This change removes the pipeline, so it proposes no jobs and nothing runs here. Once it merges, ${target}'s commits run the project's pipeline setting, or no pipeline when it has none.`,
   proposedConflict: (target: string) => `This branch doesn't merge onto ${target}, so the pipeline it proposes can't be read.`,

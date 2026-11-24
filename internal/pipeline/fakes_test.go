@@ -48,9 +48,11 @@ type fakeProjects struct {
 	refs    map[string]string
 	deleted []string
 	// branchesErr, when set, is what reading the branches fails with;
-	// branchesGate, when set, holds each read until it is closed.
+	// branchesGate, when set, holds each read until it is closed;
+	// branchReads counts the reads.
 	branchesErr  error
 	branchesGate chan struct{}
+	branchReads  int
 	// changes are the files each head changes since it left its target,
 	// by head; diffs and trialMerges count the reads of changes and of
 	// trial merges.
@@ -78,6 +80,7 @@ func (f *fakeProjects) Get(_ context.Context, userID, projectID int64) (*project
 
 func (f *fakeProjects) Branches(ctx context.Context, _, _ int64) (*agent.RepoRefs, error) {
 	f.mu.Lock()
+	f.branchReads++
 	gate := f.branchesGate
 	f.mu.Unlock()
 	if gate != nil {
