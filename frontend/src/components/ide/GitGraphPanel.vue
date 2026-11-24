@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, toRef, watch } from 'vue'
 import {
   gitApi,
   type GitBranch,
@@ -8,15 +8,21 @@ import {
   type GitFileDiff,
   type GitStatus,
 } from '@/api/git'
+import { useCommitPipelines } from '@/composables/useCommitPipelines'
 import { useFileWatcher } from '@/composables/useFileWatcher'
 import { useGitSshHostKey } from '@/composables/useGitSshHostKey'
 import { useUserPreferences } from '@/composables/useUserPreferences'
 import { fullTime, timeAgo, unixSecondsToIso } from '@/utils/time'
+import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
+import { PIPELINE_STATUS, commitPipelineLabel } from '@/components/pipeline/pipelineFormat'
 import MonacoDiffViewer from './MonacoDiffViewer.vue'
 import GitSshHostKeyModal from './GitSshHostKeyModal.vue'
 
 const props = defineProps<{
   workspaceId: number
+  // The project the workspace belongs to, whose branch pipelines show
+  // beside the commits they tested; null for a workspace without one.
+  projectId: number | null
   active: boolean
   selectedCommitHash: string | null
   diffRequest: GitDiffRequest | null
@@ -178,6 +184,9 @@ async function doAction(action: string) {
 
 
 const graphLayout = computed(() => buildCommitGraph(commits.value))
+
+const commitHashes = computed(() => commits.value.map((commit) => commit.hash))
+const { byCommit: commitPipelines } = useCommitPipelines(toRef(props, 'projectId'), commitHashes, toRef(props, 'active'))
 
 const graphTimelineStyle = computed(() => ({
   '--graph-column-width': `${graphLayout.value.width}px`,
@@ -721,6 +730,15 @@ onUnmounted(() => {
               <span>{{ row.commit.author }}</span>
               <span v-for="branch in row.branchNames" :key="branch" class="branch-pill">
                 {{ branch }}
+              </span>
+              <span v-if="commitPipelines[row.commit.hash]" class="commit-pipelines">
+                <PipelineStatusIcon
+                  v-for="pipeline in commitPipelines[row.commit.hash]"
+                  :key="pipeline.id"
+                  :look="PIPELINE_STATUS[pipeline.status]"
+                  :size="16"
+                  :title="commitPipelineLabel(pipeline)"
+                />
               </span>
             </span>
           </span>

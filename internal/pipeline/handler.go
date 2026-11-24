@@ -152,6 +152,27 @@ func (h *Handler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"mergeRequests": mrs, "branches": branches})
 }
 
+// HandleCommits returns, by commit, the newest official pipeline of each
+// branch each commit (sha=, as often as needed) was tested on, for the Git
+// graph. A commit no branch pipeline tested is left out.
+func (h *Handler) HandleCommits(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	projectID, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	pipelines, err := h.pipelines.OfCommits(r.Context(), user.ID, projectID, r.URL.Query()["sha"])
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	commits := make(map[string][]map[string]any)
+	for _, p := range pipelines {
+		commits[p.HeadSHA] = append(commits[p.HeadSHA], pipelineResponse(p, false))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"commits": commits})
+}
+
 // withStanding adds to resp how a subject's pipelines stand, as the app's
 // PipelineStanding reads it: current, latest and noResult.
 func withStanding(resp map[string]any, st Standing) map[string]any {

@@ -9,11 +9,14 @@ import {
   type GitCommit,
   type GitCommitFile,
 } from '@/api/git'
+import { useCommitPipelines } from '@/composables/useCommitPipelines'
 import { useFileWatcher } from '@/composables/useFileWatcher'
 import { useGitSshHostKey } from '@/composables/useGitSshHostKey'
 import { fullTime, timeAgo, unixSecondsToIso } from '@/utils/time'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import ProjectBranchActions from '@/components/project/ProjectBranchActions.vue'
+import PipelineStatusIcon from '@/components/pipeline/PipelineStatusIcon.vue'
+import { PIPELINE_STATUS, commitPipelineLabel } from '@/components/pipeline/pipelineFormat'
 import GitBranchPicker from './GitBranchPicker.vue'
 import GitConfigModal from './GitConfigModal.vue'
 import GitSshHostKeyModal from './GitSshHostKeyModal.vue'
@@ -29,6 +32,9 @@ const props = withDefaults(defineProps<{
   // The diff open in the Git Graph, so its file shows as selected.
   activeDiff?: { kind: 'working'; path: string; staged: boolean } | { kind: 'commit'; path: string } | null
   projectMode?: boolean
+  // The project the workspace belongs to, whose branch pipelines of the
+  // picked commit show on its card; null for a workspace without one.
+  projectId?: number | null
   // The panel is showing.
   active?: boolean
   // Bumped by the shell whenever the workspace's branch may have moved.
@@ -36,6 +42,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   activeDiff: null,
   projectMode: false,
+  projectId: null,
   active: true,
   revision: 0,
 })
@@ -45,6 +52,8 @@ const emit = defineEmits<{
   (e: 'workingFileSelect', payload: { path: string; staged: boolean }): void
   (e: 'clearCommit'): void
   (e: 'changed', kind: BranchChange): void
+  // Show a pipeline of the picked commit on the Pipelines surface.
+  (e: 'openPipeline', pipelineId: number): void
 }>()
 
 const NOTICE_MS = 5000
@@ -105,6 +114,12 @@ const stagedFiles = computed(() => (status.value?.files ?? []).filter((f) => f.s
 const unstagedFiles = computed(() => (status.value?.files ?? []).filter((f) => !f.staged))
 const selectedCommitHash = computed(() => props.selectedCommit?.hash ?? null)
 const viewingCommit = computed(() => props.selectedCommit !== null)
+const { byCommit: commitPipelines } = useCommitPipelines(
+  computed(() => props.projectId),
+  computed(() => (props.selectedCommit ? [props.selectedCommit.hash] : [])),
+  computed(() => props.active && viewingCommit.value),
+)
+const selectedCommitPipelines = computed(() => (props.selectedCommit ? commitPipelines.value[props.selectedCommit.hash] ?? [] : []))
 const selectedCommitDate = computed(() => unixSecondsToIso(props.selectedCommit?.timestamp))
 const branch = computed(() => status.value?.branch ?? '')
 
@@ -500,6 +515,24 @@ onUnmounted(() => {
             <p class="git-commit-card-meta">
               {{ selectedCommit.author }} · <span :title="fullTime(selectedCommitDate)">{{ timeAgo(selectedCommitDate) }}</span>
             </p>
+            <ul v-if="selectedCommitPipelines.length" class="git-commit-pipelines" aria-label="Pipelines of this commit">
+              <li v-for="pipeline in selectedCommitPipelines" :key="pipeline.id">
+                <button
+                  v-if="projectMode"
+                  type="button"
+                  class="git-commit-pipeline git-commit-pipeline--link"
+                  :title="`Show pipeline #${pipeline.id}`"
+                  @click="emit('openPipeline', pipeline.id)"
+                >
+                  <PipelineStatusIcon :look="PIPELINE_STATUS[pipeline.status]" :size="14" />
+                  <span>{{ commitPipelineLabel(pipeline) }}</span>
+                </button>
+                <span v-else class="git-commit-pipeline">
+                  <PipelineStatusIcon :look="PIPELINE_STATUS[pipeline.status]" :size="14" />
+                  <span>{{ commitPipelineLabel(pipeline) }}</span>
+                </span>
+              </li>
+            </ul>
           </div>
 
           <div v-if="commitFilesLoading" class="git-placeholder">Loading files…</div>
@@ -1222,6 +1255,34 @@ onUnmounted(() => {
   margin-top: 2px;
   font-size: 0.68rem;
   color: var(--text-tertiary);
+}
+
+.git-commit-pipelines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  list-style: none;
+}
+
+.git-commit-pipeline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.git-commit-pipeline--link {
+  padding: 1px 4px 1px 0;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast);
+}
+
+.git-commit-pipeline--link:hover {
+  color: var(--text-primary);
 }
 
 /* Empty and clean states */

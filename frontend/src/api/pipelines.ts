@@ -166,6 +166,10 @@ export type PipelineSubject = { branch: string } | { mergeRequestId: number; pur
 // server's MaxLatestSubjects.
 export const MAX_LATEST_SUBJECTS = 100
 
+// How many commits one commits() names at most, as the server's
+// MaxCommitLookups.
+export const MAX_COMMIT_LOOKUPS = 200
+
 // A pipeline of the commits and jobs a branch or merge request has now that
 // ended without a result, cancelled or unable to run, when none of them
 // counts: reason says why, and whether devpad runs them again (retrying).
@@ -341,6 +345,16 @@ export const pipelineApi = {
     for (const b of subjects.branches) query.append('branch', b)
     for (const id of subjects.mergeRequestIds) query.append('mergeRequestId', String(id))
     return apiClient.get(`${base(projectId)}/latest?${query.toString()}`)
+  },
+
+  // By commit, the newest pipeline that counts of each branch each commit
+  // named (full hashes) was tested on, for the Git graph; a commit no
+  // branch pipeline tested is left out. A merge request's pipelines are
+  // never among them: they test a trial merge, not the commit.
+  commits(projectId: number, shas: string[]): Promise<{ commits: Record<string, Pipeline[]> }> {
+    const query = new URLSearchParams()
+    for (const sha of shas) query.append('sha', sha)
+    return apiClient.get(`${base(projectId)}/commits?${query.toString()}`)
   },
 
   mergeRequestStatus(projectId: number, mergeRequestId: number): Promise<{ status: MergeRequestPipelineStatus }> {

@@ -22,6 +22,7 @@ func (e *env) serve(user int64, method, target, body string) (int, map[string]an
 	mux.HandleFunc("GET /api/projects/{id}/pipelines", h.HandleList)
 	mux.HandleFunc("POST /api/projects/{id}/pipelines", h.HandleStart)
 	mux.HandleFunc("GET /api/projects/{id}/pipelines/latest", h.HandleLatest)
+	mux.HandleFunc("GET /api/projects/{id}/pipelines/commits", h.HandleCommits)
 	mux.HandleFunc("GET /api/projects/{id}/merge-requests/{mrId}/pipeline", h.HandleMergeRequestStatus)
 	mux.HandleFunc("GET /api/projects/{id}/pipelines/{pipelineId}", h.HandleGet)
 	mux.HandleFunc("POST /api/projects/{id}/pipelines/{pipelineId}/cancel", h.HandleCancel)
@@ -295,5 +296,60 @@ func TestAPipelineSaysWhetherItCanRunAgain(t *testing.T) {
 	running := e.start(StartInput{Branch: "develop"})
 	if got := canRunAgain(running.ID); got != false {
 		t.Fatalf("a queued pipeline: %v", got)
+	}
+}
+
+// The Git graph reads each commit's branch pipelines by commit.
+func TestCommitPipelinesEndpoint(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		uid, branch, head string
+		status            Status
+	}{
+		{"d000000000000001", "develop", sha(2), StatusFailed},
+		{"d000000000000002", "main", sha(2), StatusPassed},
+		{"d000000000000003", "develop", sha(3), StatusCancelled},
+	} {
+		p := e.branchPipeline(tc.uid, tc.branch, tc.head)
+		p.Status = tc.status
+		if err := e.svc.repo.Create(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := fmt.Sprintf("/api/projects/%d/pipelines/commits", e.project)
+
+	code, out := e.serve(e.owner, http.MethodGet, fmt.Sprintf("%s?sha=%s&sha=%s&sha=%s", base, sha(2), sha(3), sha(2)), "")
+	commits, _ := out["commits"].(map[string]any)
+	two, _ := commits[sha(2)].([]any)
+	if code != http.StatusOK || len(commits) != 1 || len(two) != 2 {
+		t.Fatalf("commits: %d %v", code, out)
+	}
+	first, second := two[0].(map[string]any), two[1].(map[string]any)
+	if first["branch"] != "develop" || first["status"] != "failed" || second["branch"] != "main" || second["status"] != "passed" {
+		t.Fatalf("sha(2)'s pipelines: %v", two)
+	}
+	if _, has := first["jobs"].([]any)[0].(map[string]any)["run"]; has {
+		t.Fatalf("the commits' pipelines carry scripts: %v", first)
+	}
+	if code, out := e.serve(e.owner, http.MethodGet, base, ""); code != http.StatusOK || len(out["commits"].(map[string]any)) != 0 {
+		t.Fatalf("no commits: %d %v", code, out)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		user   int64
+		target string
+		want   int
+	}{
+		{"a stranger's", e.stranger, base + "?sha=" + sha(2), http.StatusForbidden},
+		{"a short hash", e.owner, base + "?sha=abc1234", http.StatusBadRequest},
+		{"a branch name", e.owner, base + "?sha=develop", http.StatusBadRequest},
+		{"too many at once", e.owner, base + "?" + strings.Repeat("sha="+sha(2)+"&", MaxCommitLookups+1), http.StatusBadRequest},
+		{"a missing project", e.owner, "/api/projects/999/pipelines/commits?sha=" + sha(2), http.StatusNotFound},
+	} {
+		if code, out := e.serve(tc.user, http.MethodGet, tc.target, ""); code != tc.want {
+			t.Errorf("%s: %d %v, want %d", tc.name, code, out, tc.want)
+		}
 	}
 }

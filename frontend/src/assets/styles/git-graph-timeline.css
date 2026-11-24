@@ -97,6 +97,12 @@
   white-space: nowrap;
 }
 
+.commit-pipelines {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
 .branch-pill {
   max-width: 150px;
   overflow: hidden;

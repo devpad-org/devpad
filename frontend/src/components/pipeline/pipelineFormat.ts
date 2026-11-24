@@ -86,6 +86,12 @@ export const PIPELINE_OUTCOME: Record<PipelineStatus, string> = {
   interrupted: 'was interrupted',
 }
 
+// What a branch's pipeline found of the commit it tested, as the Git graph
+// says beside the commit.
+export function commitPipelineLabel(p: Pipeline): string {
+  return `Pipeline #${p.id} of ${p.branch} ${PIPELINE_OUTCOME[p.status]}`
+}
+
 // The pipeline a card or badge shows of how a subject's pipelines stand:
 // the one of its commits and jobs as they are now, else the newest of them
 // that ended without a result, else its latest, which is then out of date.

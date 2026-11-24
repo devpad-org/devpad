@@ -219,6 +219,15 @@ const projectAttention = computed(() => {
   return attention.items.filter((item) => ids.has(item.run.workspaceId))
 })
 
+// A pipeline to show on the Pipelines surface, asked for from elsewhere in
+// the IDE, such as beside a commit; seq tells one ask from the next.
+const pipelineFocus = ref<{ id: number; seq: number } | null>(null)
+
+function openPipeline(id: number) {
+  pipelineFocus.value = { id, seq: (pipelineFocus.value?.seq ?? 0) + 1 }
+  selectActivity('pipelines')
+}
+
 function selectActivity(tab: ActivityTab) {
   if (!isMobile.value) {
     activeActivity.value = tab
@@ -1553,8 +1562,10 @@ const backLabel = computed(() => {
             :selected-commit="selectedGitCommit"
             :active-diff="activeGitDiff"
             :project-mode="isProjectMode"
+            :project-id="workspace?.projectId ?? null"
             :active="activeActivity === 'git'"
             :revision="gitRevision"
+            @open-pipeline="openPipeline"
             @commit-file-select="handleGitCommitFileSelect"
             @working-file-select="handleGitWorkingFileSelect"
             @clear-commit="clearSelectedGitCommit"
@@ -1584,7 +1595,7 @@ const backLabel = computed(() => {
           />
           <ProjectTaskTable v-if="mobileProject" v-show="activeActivity === 'tasks'" />
           <ProjectMergeRequestTable v-if="mobileProject" v-show="activeActivity === 'merge-requests'" />
-          <PipelinesSurface v-if="mobileProject" v-show="activeActivity === 'pipelines'" :active="activeActivity === 'pipelines'" />
+          <PipelinesSurface v-if="mobileProject" v-show="activeActivity === 'pipelines'" :active="activeActivity === 'pipelines'" :focus="pipelineFocus" />
           <ProjectAgentsPanel
             v-show="activeActivity === 'agents'"
             :workspace-live="workspaceLive"
@@ -1639,7 +1650,7 @@ const backLabel = computed(() => {
             <ProjectMergeRequestTable />
           </div>
           <div v-if="isProjectMode && !mobileProject" v-show="pipelineSurfaceVisible" class="ide-surface-pane">
-            <PipelinesSurface :active="pipelineSurfaceVisible" />
+            <PipelinesSurface :active="pipelineSurfaceVisible" :focus="pipelineFocus" />
           </div>
           <div v-if="isProjectMode && !mobileProject" v-show="projectSurfaceVisible" class="ide-surface-pane">
             <ProjectOverview
@@ -1669,6 +1680,7 @@ const backLabel = computed(() => {
               <GitGraphPanel
                 :key="`graph-${gitRevision}`"
                 :workspace-id="workspace?.id ?? 0"
+                :project-id="workspace?.projectId ?? null"
                 :active="activeActivity === 'git'"
                 :selected-commit-hash="selectedGitCommit?.hash ?? null"
                 :diff-request="gitDiffRequest"

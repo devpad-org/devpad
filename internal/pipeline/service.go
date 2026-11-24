@@ -47,6 +47,15 @@ type Service interface {
 	// current commit. f's Purpose is PurposeOfficial or empty, which means
 	// the same; a badge never shows what a change proposes.
 	Latest(ctx context.Context, userID, projectID int64, f LatestFilter) (*LatestPipelines, error)
+	// OfCommits returns, for each branch each of the project's commits shas
+	// names was tested on, the newest official pipeline that counts
+	// (countingStatuses) of that branch and commit, with their jobs but not
+	// their scripts, in shas' order, then by branch: what the Git graph
+	// shows beside each commit. A merge request's pipelines are never among
+	// them, since they test a trial merge rather than the commit, and a
+	// commit's are what they found with the jobs they ran then. shas are
+	// full commit hashes, at most MaxCommitLookups.
+	OfCommits(ctx context.Context, userID, projectID int64, shas []string) ([]*Pipeline, error)
 	// Get returns a pipeline of the project with its jobs and their scripts.
 	Get(ctx context.Context, userID, projectID, pipelineID int64) (*Pipeline, error)
 	// CanRunAgain says whether the user's Run again of p would start now
@@ -531,6 +540,31 @@ func (s *service) Latest(ctx context.Context, userID, projectID int64, f LatestF
 		}
 	}
 	return out, nil
+}
+
+// MaxCommitLookups caps the commits one OfCommits names, as many as the Git
+// graph shows.
+const MaxCommitLookups = 200
+
+func (s *service) OfCommits(ctx context.Context, userID, projectID int64, shas []string) ([]*Pipeline, error) {
+	if _, err := s.projects.Get(ctx, userID, projectID); err != nil {
+		return nil, err
+	}
+	if len(shas) > MaxCommitLookups {
+		return nil, fmt.Errorf("%w: at most %d commits at once", ErrInvalidInput, MaxCommitLookups)
+	}
+	seen := make(map[string]bool, len(shas))
+	unique := make([]string, 0, len(shas))
+	for _, sha := range shas {
+		if !project.IsCommitHash(sha) {
+			return nil, fmt.Errorf("%w: %q is not a full commit hash", ErrInvalidInput, sha)
+		}
+		if !seen[sha] {
+			seen[sha] = true
+			unique = append(unique, sha)
+		}
+	}
+	return s.repo.OfCommits(ctx, projectID, unique, PurposeOfficial)
 }
 
 // standBranch fills in whether a pipeline is configured for a branch at its
