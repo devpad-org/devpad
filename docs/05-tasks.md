@@ -77,6 +77,17 @@ The **AI** panel is the assistant: an agent working in your project workspace, b
 
 Each reply spends from your **Per assistant reply** budget, if you set one.
 
+## Agent runs {#agent-runs}
+
+**Agent Runs**, on the right of the IDE, lists the workspace's runs as one card per conversation with the assistant, the most recently active first. A card's header shows how many messages you sent and how many sub-agents worked on them, what the whole conversation cost, and **Running**, **Needs you** or **Failed** while one of its runs is.
+
+- **You** marks each message you sent, with how the assistant's reply went (**Replied**, **Running**, **Needs approval**, **Needs input**, **Failed** or **Cancelled**), how long it took, its model and its cost, which includes its sub-agents'.
+- Below a message, **Assistant started 2 sub-agents** leads to the sub-agents the assistant handed parts of that work to. Each shows its agent, the job it was given, how it went (**Done** rather than **Replied**) and what it cost. A sub-agent's own sub-agents sit below it the same way.
+- The latest conversation opens by itself, and so does any that's running, waiting for you or holding the run you're looking at. Press a card's header to open or close it.
+- Press a message or a sub-agent to read its run in the **AI** panel, and its stop button to stop it while it runs.
+
+In a task's or review's sandbox, the messages are the rounds devpad sends the agent, marked **Task** or **Review**.
+
 ## Approvals {#approvals}
 
 Some of an agent's tool calls wait for you before they run:

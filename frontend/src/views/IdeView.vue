@@ -1731,6 +1731,7 @@ const backLabel = computed(() => {
           <AiAgentRunsPanel
             :workspace-id="workspace?.id ?? 0"
             :selected-run-id="focusedAgentRunId"
+            :workspace-kind="workspace?.kind"
             @focus="handleAgentRunFocus"
           />
         </aside>

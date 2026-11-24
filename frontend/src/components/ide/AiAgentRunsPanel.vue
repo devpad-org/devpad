@@ -1,48 +1,41 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { type AgentRun, useAgentRunStore, isAgentRunActiveStatus } from '@/stores/agentRuns'
-import type { Usage } from '@/api/ai'
 import { useAiModelStore } from '@/stores/aiModels'
-import { formatUsd } from '@/utils/cost'
-
-const treeStepPx = 18
-const treeNodeSizePx = 14
+import type { Workspace } from '@/api/workspaces'
+import MrIcon from '@/components/project/MrIcon.vue'
+import DocLink from '@/components/DocLink.vue'
+import AiAgentRunTree from './AiAgentRunTree.vue'
+import {
+  type RunThread,
+  buildRunThreads,
+  formatAbsoluteTime,
+  formatRelativeTime,
+  formatUsage,
+  formatUsageTitle,
+  isAgentRunWaitingStatus,
+  plural,
+  usageTokenCount,
+} from './agentRuns'
 
 const props = defineProps<{
   workspaceId: number
   selectedRunId: number | null
+  workspaceKind?: Workspace['kind']
 }>()
 
 const emit = defineEmits<{
   (e: 'focus', run: AgentRun): void
 }>()
 
-interface RunListItem {
-  run: AgentRun
-  depth: number
-  isLastChild: boolean
-  hasChildren: boolean
-  ancestorContinuations: boolean[]
-  usage: UsageTotals
-}
-
-// UsageTotals adds up a run's usage and its sub-agents'. priced is set when
-// any of them has a cost and unpriced when any used tokens without one.
-interface UsageTotals {
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens: number
-  cacheWriteTokens: number
-  costUsd: number
-  ownCostUsd: number
-  subRuns: number
-  priced: boolean
-  unpriced: boolean
-}
-
 const runStore = useAgentRunStore()
 const modelStore = useAiModelStore()
 let refreshTimer: number | null = null
+let clockTimer: number | null = null
+
+// Relative times and durations are read against this, ticked so that "just
+// now" grows old even while no run changes.
+const now = ref(Date.now())
 
 const workspaceRuns = computed(() =>
   runStore.runs.filter((run) => run.workspaceId === props.workspaceId),
@@ -56,155 +49,67 @@ const waitingCount = computed(() =>
   workspaceRuns.value.filter((run) => isAgentRunWaitingStatus(run.status)).length,
 )
 
-const runListItems = computed<RunListItem[]>(() => {
-  const byId = new Map(workspaceRuns.value.map((run) => [run.id, run]))
-  const children = new Map<number, AgentRun[]>()
-  const roots: AgentRun[] = []
+const threads = computed<RunThread[]>(() => buildRunThreads(workspaceRuns.value))
 
-  // Sub-agent runs sit under the run that spawned them. Later runs in a
-  // conversation sit under the conversation's first run.
-  const firstRunByConversation = new Map<number, AgentRun>()
-  for (const run of workspaceRuns.value) {
-    if (run.parentRunId || !run.conversationId) continue
-    const first = firstRunByConversation.get(run.conversationId)
-    if (!first || run.id < first.id) firstRunByConversation.set(run.conversationId, run)
-  }
-  const parentIdFor = (run: AgentRun): number | undefined => {
-    if (run.parentRunId) return run.parentRunId
-    if (!run.conversationId) return undefined
-    const first = firstRunByConversation.get(run.conversationId)
-    return first && first.id !== run.id ? first.id : undefined
-  }
-
-  for (const run of workspaceRuns.value) {
-    const parentId = parentIdFor(run)
-    if (parentId && byId.has(parentId)) {
-      const siblings = children.get(parentId) ?? []
-      siblings.push(run)
-      children.set(parentId, siblings)
-    } else {
-      roots.push(run)
-    }
-  }
-
-  const runActivityTime = (run: AgentRun): number => {
-    let latest = runTime(run.updatedAt, run.createdAt)
-    for (const child of children.get(run.id) ?? []) {
-      latest = Math.max(latest, runActivityTime(child))
-    }
-    return latest
-  }
-
-  // The most recently active conversation comes first, but within one its
-  // follow-ups and sub-agents read top to bottom in the order they started.
-  roots.sort((a, b) => runActivityTime(b) - runActivityTime(a) || b.id - a.id)
-  for (const siblings of children.values()) {
-    siblings.sort((a, b) => runStartTime(a) - runStartTime(b) || a.id - b.id)
-  }
-
-  const usageTotals = (run: AgentRun): UsageTotals => {
-    const totals = addUsage(emptyUsageTotals(), run.usage)
-    totals.ownCostUsd = totals.costUsd
-    for (const child of children.get(run.id) ?? []) {
-      const childTotals = usageTotals(child)
-      totals.inputTokens += childTotals.inputTokens
-      totals.outputTokens += childTotals.outputTokens
-      totals.cacheReadTokens += childTotals.cacheReadTokens
-      totals.cacheWriteTokens += childTotals.cacheWriteTokens
-      totals.costUsd += childTotals.costUsd
-      totals.subRuns += 1 + childTotals.subRuns
-      totals.priced ||= childTotals.priced
-      totals.unpriced ||= childTotals.unpriced
-    }
-    return totals
-  }
-
-  const items: RunListItem[] = []
-  const appendRun = (run: AgentRun, depth: number, isLastChild: boolean, ancestorContinuations: boolean[]) => {
-    const runChildren = children.get(run.id) ?? []
-    items.push({ run, depth, isLastChild, hasChildren: runChildren.length > 0, ancestorContinuations, usage: usageTotals(run) })
-    runChildren.forEach((child, index) => {
-      const childIsLast = index === runChildren.length - 1
-      appendRun(child, depth + 1, childIsLast, [...ancestorContinuations, !childIsLast])
-    })
-  }
-
-  roots.forEach((run, index) => {
-    appendRun(run, 0, index === roots.length - 1, [])
-  })
-  return items
+// In an agent's sandbox, a conversation's messages come from its task or
+// review rather than from you typing them.
+const sandbox = computed(() => props.workspaceKind === 'task' || props.workspaceKind === 'review')
+const sender = computed(() => {
+  if (props.workspaceKind === 'task') return { label: 'Task', icon: 'task' as const }
+  if (props.workspaceKind === 'review') return { label: 'Review', icon: 'eye' as const }
+  return { label: 'You', icon: 'user' as const }
 })
+const responder = computed(() => (sandbox.value ? 'Agent' : 'Assistant'))
 
-function emptyUsageTotals(): UsageTotals {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    costUsd: 0,
-    ownCostUsd: 0,
-    subRuns: 0,
-    priced: false,
-    unpriced: false,
-  }
+// A conversation opens by itself while it is the latest, is working or holds
+// the run on screen; the chevron overrides that either way.
+const expandedOverrides = ref(new Map<string, boolean>())
+
+function isExpanded(thread: RunThread, index: number): boolean {
+  const override = expandedOverrides.value.get(thread.key)
+  if (override !== undefined) return override
+  return index === 0
+    || thread.status === 'running'
+    || thread.status === 'waiting'
+    || (props.selectedRunId !== null && thread.runIds.has(props.selectedRunId))
 }
 
-function addUsage(totals: UsageTotals, usage: Usage | undefined): UsageTotals {
-  if (!usage) return totals
-  totals.inputTokens += usage.inputTokens
-  totals.outputTokens += usage.outputTokens
-  totals.cacheReadTokens += usage.cacheReadTokens ?? 0
-  totals.cacheWriteTokens += usage.cacheWriteTokens ?? 0
-  if (usage.costUsd !== undefined) {
-    totals.costUsd += usage.costUsd
-    totals.priced = true
-  } else if (usage.inputTokens + usage.outputTokens > 0) {
-    totals.unpriced = true
-  }
-  return totals
+function toggleThread(thread: RunThread, index: number): void {
+  const next = new Map(expandedOverrides.value)
+  next.set(thread.key, !isExpanded(thread, index))
+  expandedOverrides.value = next
 }
 
-function usageTokenCount(usage: UsageTotals): number {
-  return usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens
+const threadStatusLabels: Record<RunThread['status'], string> = {
+  waiting: 'Needs you',
+  running: 'Running',
+  failed: 'Failed',
+  idle: '',
 }
 
-const compactNumber = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
-
-function formatUsage(usage: UsageTotals): string {
-  if (usage.priced) return usage.unpriced ? `${formatUsd(usage.costUsd)}+` : formatUsd(usage.costUsd)
-  return `${compactNumber.format(usageTokenCount(usage))} tokens`
+function messageCount(thread: RunThread): string {
+  return sandbox.value
+    ? plural(thread.messages, 'round', 'rounds')
+    : plural(thread.messages, 'message', 'messages')
 }
 
-function formatUsageTitle(usage: UsageTotals): string {
-  const lines: string[] = []
-  if (usage.priced) {
-    lines.push(`Cost: $${usage.costUsd.toFixed(4)}`)
-  }
-  if (usage.subRuns > 0) {
-    const plural = usage.subRuns === 1 ? 'run' : 'runs'
-    lines.push(usage.priced
-      ? `Includes ${usage.subRuns} sub-agent ${plural} ($${(usage.costUsd - usage.ownCostUsd).toFixed(4)})`
-      : `Includes ${usage.subRuns} sub-agent ${plural}`)
-  }
-  if (usage.unpriced) {
-    lines.push(usage.priced ? 'Some tokens are from models without known prices and are not in the cost.' : 'This model has no known prices.')
-  }
-  const tokens = [
-    `Input ${usage.inputTokens.toLocaleString()}`,
-    `Output ${usage.outputTokens.toLocaleString()}`,
-  ]
-  if (usage.cacheReadTokens > 0) tokens.push(`Cache read ${usage.cacheReadTokens.toLocaleString()}`)
-  if (usage.cacheWriteTokens > 0) tokens.push(`Cache write ${usage.cacheWriteTokens.toLocaleString()}`)
-  lines.push(tokens.join(' · '))
-  return lines.join('\n')
+function threadCounts(thread: RunThread): string {
+  const parts: string[] = []
+  if (thread.messages > 0) parts.push(messageCount(thread))
+  if (thread.subAgents > 0) parts.push(plural(thread.subAgents, 'sub-agent', 'sub-agents'))
+  return parts.join(', ')
 }
 
-function isAgentRunWaitingStatus(status: AgentRun['status']): boolean {
-  return status === 'waiting_approval' || status === 'waiting_user'
+function threadLabel(thread: RunThread, index: number): string {
+  const state = threadStatusLabels[thread.status]
+  const expanded = isExpanded(thread, index)
+  return [thread.title, threadCounts(thread), state].filter(Boolean).join(', ')
+    + (expanded ? '' : '. Collapsed')
 }
 
 async function refreshRuns(): Promise<void> {
   await runStore.fetchRuns(props.workspaceId)
+  now.value = Date.now()
 }
 
 function startRefreshTimer(): void {
@@ -227,82 +132,10 @@ function focusRun(run: AgentRun): void {
   emit('focus', run)
 }
 
-async function cancelRun(run: AgentRun): Promise<void> {
-  if (!isAgentRunActiveStatus(run.status)) return
-
-  await runStore.cancelRun(run.id)
-}
-
-const statusLabels: Record<AgentRun['status'], string> = {
-  queued: 'Queued',
-  running: 'Running',
-  waiting_approval: 'Needs approval',
-  waiting_user: 'Needs input',
-  completed: 'Completed',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
-}
-
-function formatStatus(status: AgentRun['status']): string {
-  return statusLabels[status] ?? status
-}
-
-function formatModel(modelId: string): string {
-  return modelStore.models.find((model) => model.id === modelId)?.name ?? modelId
-}
-
-function formatRunTitle(run: AgentRun): string {
-  const promptPreview = run.promptPreview?.trim()
-  if (promptPreview) return promptPreview
-  return `Run #${run.id}`
-}
-
-function formatAbsoluteTime(dateStr: string): string {
-  const date = new Date(dateStr)
-  return Number.isFinite(date.getTime()) ? date.toLocaleString() : ''
-}
-
-function formatRelativeTime(dateStr: string): string {
-  const date = new Date(dateStr)
-  const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffMin = Math.floor(diffMs / 60000)
-  if (diffMin < 1) return 'just now'
-  if (diffMin < 60) return `${diffMin}m ago`
-  const diffHr = Math.floor(diffMin / 60)
-  if (diffHr < 24) return `${diffHr}h ago`
-  const diffDay = Math.floor(diffHr / 24)
-  if (diffDay < 7) return `${diffDay}d ago`
-  return date.toLocaleDateString()
-}
-
-function runItemStyle(item: RunListItem): Record<string, string> {
-  return {
-    '--run-depth': String(item.depth),
-    '--run-tree-width': `${treeNodeSizePx + item.depth * treeStepPx}px`,
-    '--run-node-offset': `${item.depth * treeStepPx}px`,
-  }
-}
-
-function treeLaneStyle(lane: number): Record<string, string> {
-  return {
-    '--lane-offset': `${lane * treeStepPx}px`,
-  }
-}
-
-function runTime(updatedAt: string, createdAt: string): number {
-  const updated = new Date(updatedAt).getTime()
-  if (Number.isFinite(updated)) return updated
-  const created = new Date(createdAt).getTime()
-  return Number.isFinite(created) ? created : 0
-}
-
-function runStartTime(run: AgentRun): number {
-  const created = new Date(run.createdAt).getTime()
-  return Number.isFinite(created) ? created : 0
-}
-
-watch(() => props.workspaceId, startRefreshTimer)
+watch(() => props.workspaceId, () => {
+  expandedOverrides.value = new Map()
+  startRefreshTimer()
+})
 
 watch(activeCount, (count, prevCount) => {
   if (count === 0) {
@@ -315,8 +148,15 @@ watch(activeCount, (count, prevCount) => {
 onMounted(() => {
   if (!modelStore.loaded) void modelStore.fetchModels()
   startRefreshTimer()
+  clockTimer = window.setInterval(() => {
+    now.value = Date.now()
+  }, 30000)
 })
-onUnmounted(stopRefreshTimer)
+
+onUnmounted(() => {
+  stopRefreshTimer()
+  if (clockTimer !== null) window.clearInterval(clockTimer)
+})
 </script>
 
 <template>
@@ -329,6 +169,7 @@ onUnmounted(stopRefreshTimer)
           <path d="M12 22V12" />
         </svg>
         Agent Runs
+        <DocLink topic="agentRuns" label="Agent runs" />
       </span>
       <span class="agent-runs-summary">
         <span v-if="waitingCount > 0" class="summary-pill summary-pill--waiting">
@@ -340,19 +181,16 @@ onUnmounted(stopRefreshTimer)
           {{ activeCount - waitingCount }} running
         </span>
         <span
-          v-if="activeCount === 0 && workspaceRuns.length > 0"
+          v-if="activeCount === 0 && threads.length > 0"
           class="summary-count"
-          :aria-label="`${workspaceRuns.length} agent runs`"
-        >{{ workspaceRuns.length }}</span>
+          :title="`${plural(threads.length, 'conversation', 'conversations')}, ${plural(workspaceRuns.length, 'run', 'runs')}`"
+          :aria-label="plural(threads.length, 'conversation', 'conversations')"
+        >{{ threads.length }}</span>
       </span>
     </header>
 
     <div v-if="runStore.error" class="agent-runs-error" role="alert">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <circle cx="12" cy="12" r="10" />
-        <path d="M12 8v4" />
-        <path d="M12 16h.01" />
-      </svg>
+      <MrIcon name="alert" :size="14" />
       <span>{{ runStore.error }}</span>
     </div>
 
@@ -361,95 +199,81 @@ onUnmounted(stopRefreshTimer)
       Loading runs…
     </div>
     <div v-else-if="workspaceRuns.length === 0 && !runStore.error" class="agent-runs-state">
-      <span class="state-icon" aria-hidden="true">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
-          <path d="m3.3 7 8.7 5 8.7-5" />
-          <path d="M12 22V12" />
-        </svg>
+      <span class="state-art" aria-hidden="true">
+        <span class="state-art-avatar"><MrIcon name="user" :size="13" /></span>
+        <span class="state-art-rail" />
+        <span class="state-art-glyph"><MrIcon name="bot" :size="12" /></span>
       </span>
       <span class="state-title">No agent runs yet</span>
-      <span class="state-hint">Runs you start from the agent chat, and the sub-agents they spawn, show up here.</span>
+      <span class="state-hint">
+        <template v-if="sandbox">Each round of this sandbox's agent, and the sub-agents it starts, show up here.</template>
+        <template v-else>Each message you send the assistant shows up here, with the sub-agents it starts to help.</template>
+      </span>
     </div>
     <div v-else class="agent-runs-list">
-      <div
-        v-for="item in runListItems"
-        :key="item.run.id"
-        class="agent-run-item"
-        :class="[
-          `agent-run-item--${item.run.status}`,
-          {
-            selected: item.run.id === selectedRunId,
-            active: isAgentRunActiveStatus(item.run.status),
-            waiting: isAgentRunWaitingStatus(item.run.status),
-            child: item.depth > 0,
-            parent: item.hasChildren,
-            'last-child': item.isLastChild,
-          },
-        ]"
-        :style="runItemStyle(item)"
-        role="button"
-        tabindex="0"
-        :aria-current="item.run.id === selectedRunId ? 'true' : undefined"
-        @click="focusRun(item.run)"
-        @keydown.enter.prevent="focusRun(item.run)"
-        @keydown.space.prevent="focusRun(item.run)"
+      <section
+        v-for="(thread, index) in threads"
+        :key="thread.key"
+        class="run-thread"
+        :class="[`run-thread--${thread.status}`, { expanded: isExpanded(thread, index) }]"
       >
-        <span class="run-tree" aria-hidden="true">
-          <span
-            v-for="(continues, lane) in item.ancestorContinuations"
-            :key="lane"
-            class="tree-lane"
-            :class="{
-              continues,
-              branch: lane === item.depth - 1,
-              'last-branch': lane === item.depth - 1 && item.isLastChild,
-            }"
-            :style="treeLaneStyle(lane)"
-          />
-          <span class="run-node">
-            <span class="run-status-dot" />
-          </span>
-        </span>
-        <span class="run-main">
-          <span class="run-title" :title="formatRunTitle(item.run)">{{ formatRunTitle(item.run) }}</span>
-          <span class="run-meta">
-            <span class="run-status">{{ formatStatus(item.run.status) }}</span>
-            <span class="run-meta-sep" aria-hidden="true">&middot;</span>
-            <span class="run-model" :title="item.run.model">{{ formatModel(item.run.model) }}</span>
-            <span
-              v-if="!modelStore.isModelAvailable(item.run.model)"
-              class="model-unavailable"
-              title="This model is no longer available."
-            >unavailable</span>
-            <template v-if="usageTokenCount(item.usage) > 0">
-              <span class="run-meta-sep" aria-hidden="true">&middot;</span>
-              <span class="run-cost" :title="formatUsageTitle(item.usage)">{{ formatUsage(item.usage) }}</span>
-            </template>
-            <span class="run-meta-sep" aria-hidden="true">&middot;</span>
-            <time class="run-time" :datetime="item.run.updatedAt" :title="formatAbsoluteTime(item.run.updatedAt)">
-              {{ formatRelativeTime(item.run.updatedAt) }}
-            </time>
-          </span>
-          <span v-if="item.run.error" class="run-error" :title="item.run.error">{{ item.run.error }}</span>
-        </span>
-        <span v-if="isAgentRunActiveStatus(item.run.status)" class="run-actions">
-          <button
-            type="button"
-            class="run-stop-button"
-            :disabled="runStore.isRunCancelling(item.run.id)"
-            :aria-label="`Cancel ${formatRunTitle(item.run)}`"
-            title="Cancel run"
-            @click.stop="cancelRun(item.run)"
-            @keydown.stop
-          >
-            <span v-if="runStore.isRunCancelling(item.run.id)" class="agent-runs-spinner" aria-hidden="true" />
-            <svg v-else aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-              <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" />
+        <button
+          type="button"
+          class="thread-header"
+          :aria-expanded="isExpanded(thread, index)"
+          :aria-label="threadLabel(thread, index)"
+          @click="toggleThread(thread, index)"
+        >
+          <span class="thread-icon" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
             </svg>
-          </button>
-        </span>
-      </div>
+          </span>
+          <span class="thread-main">
+            <span class="thread-title" :title="thread.title">{{ thread.title }}</span>
+            <span class="thread-meta">
+              <span v-if="thread.status !== 'idle'" class="thread-status">
+                <span class="thread-status-dot" aria-hidden="true" />
+                {{ threadStatusLabels[thread.status] }}
+              </span>
+              <span v-if="thread.messages > 0" class="thread-count" :title="messageCount(thread)">
+                <MrIcon :name="sender.icon" :size="10" :stroke-width="2.25" />{{ thread.messages }}
+              </span>
+              <span v-if="thread.subAgents > 0" class="thread-count thread-count--sub" :title="plural(thread.subAgents, 'sub-agent', 'sub-agents')">
+                <MrIcon name="bot" :size="11" :stroke-width="2.25" />{{ thread.subAgents }}
+              </span>
+              <template v-if="thread.status !== 'running' && thread.status !== 'waiting'">
+                <span class="thread-sep" aria-hidden="true">&middot;</span>
+                <time
+                  class="thread-time"
+                  :datetime="new Date(thread.latestActivity).toISOString()"
+                  :title="formatAbsoluteTime(thread.latestActivity)"
+                >{{ formatRelativeTime(thread.latestActivity, now) }}</time>
+              </template>
+            </span>
+          </span>
+          <span class="thread-side">
+            <span
+              v-if="usageTokenCount(thread.usage) > 0"
+              class="thread-cost"
+              :title="formatUsageTitle(thread.usage)"
+            >{{ formatUsage(thread.usage) }}</span>
+            <MrIcon name="chevron-down" :size="14" class="thread-chevron" />
+          </span>
+        </button>
+
+        <div v-if="isExpanded(thread, index)" class="thread-body">
+          <AiAgentRunTree
+            :nodes="thread.roots"
+            :depth="0"
+            :selected-run-id="selectedRunId"
+            :sender="sender"
+            :responder="responder"
+            :now="now"
+            @focus="focusRun"
+          />
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -457,18 +281,12 @@ onUnmounted(stopRefreshTimer)
 <style scoped>
 .agent-runs-panel {
   --ide-header-icon: var(--accent);
-  --tree-step: 18px;
-  --tree-node-size: 14px;
-  --tree-node-center: calc(var(--tree-node-size) / 2);
-  /* Opaque so lane segments from adjacent rows can overlap without visible seams. */
-  --tree-line: color-mix(in srgb, var(--accent-purple) 30%, var(--bg-raised));
-  --row-pad-y: 9px;
-  --row-gap: 2px;
-  --title-size: 0.82rem;
-  --title-line: 17px;
-  /* Vertical center of the status node, measured from the top of the row content. */
-  --run-node-y: calc(var(--title-line) / 2);
-  --stop-size: 24px;
+  --card-bg: var(--bg-elevated);
+  /* Opaque, so rail segments meeting at a branch don't darken. */
+  --rail-color: color-mix(in srgb, var(--hue-purple) 38%, var(--card-bg));
+  --avatar-size: 22px;
+  --glyph-size: 20px;
+  --stop-size: 22px;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -482,7 +300,7 @@ onUnmounted(stopRefreshTimer)
   justify-content: space-between;
   gap: var(--space-2);
   padding: 0 var(--space-3);
-  border-bottom: 0.5px solid var(--border-default);
+  border-bottom: 0.5px solid var(--border-subtle);
   background: var(--ide-header-bg);
   height: 38px;
   flex-shrink: 0;
@@ -499,6 +317,10 @@ onUnmounted(stopRefreshTimer)
   white-space: nowrap;
 }
 
+.agent-runs-title .doc-link {
+  margin-left: 0;
+}
+
 .panel-icon {
   color: var(--ide-header-icon);
   flex-shrink: 0;
@@ -512,7 +334,7 @@ onUnmounted(stopRefreshTimer)
 }
 
 .summary-pill {
-  --pill-color: var(--accent-green);
+  --pill-color: var(--success);
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -554,7 +376,7 @@ onUnmounted(stopRefreshTimer)
   border: 0.5px solid var(--border-subtle);
   border-radius: 999px;
   background: var(--bg-raised);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-size: 0.68rem;
   line-height: 19px;
@@ -570,14 +392,13 @@ onUnmounted(stopRefreshTimer)
   border: 0.5px solid var(--error-border);
   border-radius: var(--radius-md);
   background: var(--error-bg);
-  color: var(--accent-rose);
+  color: var(--error);
   font-size: 0.75rem;
   line-height: 1.4;
   flex-shrink: 0;
 }
 
-.agent-runs-error svg {
-  flex-shrink: 0;
+.agent-runs-error .mr-icon {
   margin-top: 1px;
 }
 
@@ -588,22 +409,59 @@ onUnmounted(stopRefreshTimer)
   justify-content: center;
   gap: var(--space-2);
   padding: var(--space-8) var(--space-6);
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 0.78rem;
   text-align: center;
 }
 
-.state-icon {
+/* A message and a sub-agent it started, as the list draws them. */
+.state-art {
+  display: grid;
+  grid-template-columns: 26px 22px;
+  grid-template-rows: 26px 14px 22px;
+  margin-bottom: var(--space-2);
+}
+
+.state-art-avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
-  margin-bottom: var(--space-1);
+  grid-column: 1;
+  grid-row: 1;
+  width: 26px;
+  height: 26px;
   border: 0.5px solid var(--border-subtle);
-  border-radius: var(--radius-xl);
+  border-radius: 50%;
   background: var(--bg-raised);
-  color: var(--text-muted);
+  color: var(--text-secondary);
+}
+
+.state-art-rail {
+  grid-column: 1 / 3;
+  grid-row: 2 / 4;
+  width: 22px;
+  height: 25px;
+  margin-left: 12.25px;
+  border-left: 1.5px solid var(--rail-color);
+  border-bottom: 1.5px solid var(--rail-color);
+  border-bottom-left-radius: 8px;
+  transform: translateY(1px);
+}
+
+.state-art-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  grid-column: 2;
+  grid-row: 3;
+  justify-self: end;
+  width: 22px;
+  height: 22px;
+  margin-right: -14px;
+  border: 0.5px solid color-mix(in srgb, var(--hue-purple) 40%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--hue-purple) 14%, var(--ide-panel-bg));
+  color: var(--hue-purple);
 }
 
 .state-title {
@@ -614,7 +472,7 @@ onUnmounted(stopRefreshTimer)
 
 .state-hint {
   max-width: 240px;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   line-height: 1.5;
 }
 
@@ -630,311 +488,188 @@ onUnmounted(stopRefreshTimer)
 .agent-runs-list {
   display: flex;
   flex-direction: column;
+  gap: var(--space-2);
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: var(--space-2) var(--space-2) var(--space-3);
 }
 
-/* Each status sets one color that the node, ring, and label all share. */
-.agent-run-item {
-  --status-color: var(--text-muted);
-  display: grid;
-  grid-template-columns: var(--run-tree-width) minmax(0, 1fr) auto;
-  align-items: start;
-  column-gap: 10px;
-  position: relative;
-  width: 100%;
-  padding: var(--row-pad-y) var(--space-2);
-  border: 0.5px solid transparent;
+/* ── Conversation ────────────────────────────────────────────────────── */
+
+.run-thread {
+  flex-shrink: 0;
+  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  color: var(--text-secondary);
-  cursor: pointer;
-  text-align: left;
-  -webkit-tap-highlight-color: transparent;
-  transition:
-    border-color var(--transition-fast),
-    background var(--transition-fast);
+  background: var(--card-bg);
 }
 
-.agent-run-item + .agent-run-item { margin-top: var(--row-gap); }
+.run-thread--running { --thread-status: var(--success); }
+.run-thread--waiting {
+  --thread-status: var(--attention);
+  border-color: var(--attention-border);
+}
+.run-thread--failed { --thread-status: var(--error); }
 
-.agent-run-item--queued { --status-color: var(--text-secondary); }
-.agent-run-item--running { --status-color: var(--accent-green); }
-.agent-run-item--waiting_approval,
-.agent-run-item--waiting_user { --status-color: var(--attention); }
-.agent-run-item--completed { --status-color: var(--accent-blue); }
-.agent-run-item--failed { --status-color: var(--accent-rose); }
-.agent-run-item--cancelled { --status-color: var(--text-dim); }
+.thread-header {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  width: 100%;
+  padding: 9px 8px 9px 9px;
+  border: none;
+  border-radius: calc(var(--radius-lg) - 0.5px);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
 
-.agent-run-item:hover {
+.run-thread.expanded .thread-header {
+  border-bottom-right-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.thread-header:hover {
   background: var(--bg-hover);
 }
 
-.agent-run-item:focus-visible {
-  border-color: var(--accent-border);
-  box-shadow: 0 0 0 3px var(--accent-glow);
+.thread-header:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-glow), inset 0 0 0 0.5px var(--accent-border);
 }
 
-.agent-run-item.selected {
-  border-color: var(--accent-border);
-  background: var(--bg-selected);
-}
-
-.agent-run-item.selected::before {
-  content: '';
-  position: absolute;
-  left: -0.5px;
-  top: 10px;
-  bottom: 10px;
-  width: 2px;
-  border-radius: 0 2px 2px 0;
-  background: var(--accent);
-}
-
-/* Tree connectors. Lanes overhang the row by its padding and gap so lines run unbroken between rows. */
-.run-tree {
-  position: relative;
-  align-self: stretch;
-  width: var(--run-tree-width);
-  min-height: var(--title-line);
-}
-
-.tree-lane {
-  position: absolute;
-  top: calc(-1 * (var(--row-pad-y) + var(--row-gap) + 1px));
-  bottom: calc(-1 * (var(--row-pad-y) + 1px));
-  left: calc(var(--lane-offset) + var(--tree-node-center) - 0.75px);
-  width: var(--tree-step);
-  pointer-events: none;
-}
-
-.tree-lane.continues::before,
-.tree-lane.branch::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 1.5px;
-  background: var(--tree-line);
-}
-
-.tree-lane.branch::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: calc(var(--row-pad-y) + var(--row-gap) + 1px + var(--run-node-y) - 0.75px);
-  width: calc(var(--tree-step) - var(--tree-node-center));
-  height: 1.5px;
-  background: var(--tree-line);
-}
-
-/* Last child: the vertical line stops short of the node and curves into it. */
-.tree-lane.branch.last-branch::after {
-  top: calc(var(--row-pad-y) + var(--row-gap) + 1px + var(--run-node-y) - 6px);
-  height: 6px;
-  border-bottom: 1.5px solid var(--tree-line);
-  border-left: 1.5px solid var(--tree-line);
-  border-bottom-left-radius: 6px;
-  background: none;
-}
-
-.tree-lane.branch.last-branch::before {
-  bottom: auto;
-  height: calc(var(--row-pad-y) + var(--row-gap) + 1px + var(--run-node-y) - 5px);
-}
-
-.agent-run-item.parent .run-tree::after {
-  content: '';
-  position: absolute;
-  left: calc(var(--run-node-offset) + var(--tree-node-center) - 0.75px);
-  top: var(--run-node-y);
-  bottom: calc(-1 * (var(--row-pad-y) + 1px));
-  width: 1.5px;
-  background: var(--tree-line);
-  pointer-events: none;
-}
-
-.run-node {
-  position: absolute;
-  left: var(--run-node-offset);
-  top: var(--run-node-y);
+.thread-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: var(--tree-node-size);
-  height: var(--tree-node-size);
-  border: 0.5px solid color-mix(in srgb, var(--status-color) 40%, var(--border-subtle));
-  border-radius: 50%;
-  background: var(--bg-base);
-  z-index: 1;
-  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  border: 0.5px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 14%, var(--card-bg));
+  color: var(--accent);
 }
 
-.agent-run-item.selected .run-node { background: color-mix(in srgb, var(--bg-base) 88%, var(--accent)); }
-
-.run-status-dot {
-  position: relative;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--status-color);
-}
-
-.agent-run-item--queued .run-status-dot {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px var(--status-color);
-}
-
-.agent-run-item--running .run-status-dot::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: var(--status-color);
-  animation: run-pulse 1.8s ease-out infinite;
-}
-
-.agent-run-item.waiting .run-node {
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-color) 18%, transparent);
-}
-
-.run-main {
+.thread-main {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
 }
 
-.run-title {
-  display: -webkit-box;
+.thread-title {
   overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  color: var(--text-secondary);
-  font-size: var(--title-size);
-  font-weight: 500;
-  line-height: var(--title-line);
-  overflow-wrap: anywhere;
-}
-
-.agent-run-item.active .run-title,
-.agent-run-item.selected .run-title,
-.agent-run-item:hover .run-title {
   color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.agent-run-item--cancelled .run-title { color: var(--text-muted); }
-
-.run-meta {
+.thread-meta {
   display: flex;
   align-items: center;
   gap: 5px;
   min-width: 0;
-  color: var(--text-muted);
-  font-size: 0.7rem;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 0.68rem;
   line-height: 1.3;
   white-space: nowrap;
 }
 
-.run-status {
+.thread-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   flex-shrink: 0;
-  color: var(--status-color);
+  padding: 0 6px 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--thread-status) 13%, transparent);
+  color: var(--thread-status);
   font-weight: 500;
+  line-height: 16px;
 }
 
-.agent-run-item--cancelled .run-status { color: var(--text-muted); }
-
-.run-model {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.thread-status-dot {
+  position: relative;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
-.run-time,
-.run-cost {
+.run-thread--running .thread-status-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  animation: run-pulse 1.8s ease-out infinite;
+}
+
+.thread-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
 
-.run-meta-sep {
+.thread-count + .thread-count {
+  margin-left: 2px;
+}
+
+.thread-count--sub .mr-icon {
+  color: var(--hue-purple);
+}
+
+.thread-sep {
   flex-shrink: 0;
   color: var(--text-dim);
 }
 
-.model-unavailable {
+.thread-time {
   flex-shrink: 0;
-  padding: 0 5px;
-  border: 0.5px solid var(--warning-border);
-  border-radius: 999px;
-  background: var(--warning-bg);
-  color: var(--accent-amber);
-  font-size: 0.62rem;
-  line-height: 14px;
+  font-variant-numeric: tabular-nums;
 }
 
-.run-error {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  margin-top: 2px;
-  padding: 4px 8px;
-  border-left: 2px solid var(--error-border);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  background: color-mix(in srgb, var(--error-bg) 60%, transparent);
-  color: color-mix(in srgb, var(--accent-rose) 80%, var(--text-primary));
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.run-actions {
+.thread-side {
   display: flex;
   align-items: center;
-  height: var(--title-line);
+  gap: 6px;
+  align-self: start;
+  height: 17px;
 }
 
-.run-stop-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--stop-size);
-  height: var(--stop-size);
-  border: 0.5px solid transparent;
-  border-radius: var(--radius-md);
-  color: var(--text-muted);
-  transition:
-    background var(--transition-fast),
-    border-color var(--transition-fast),
-    color var(--transition-fast);
+.thread-cost {
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
 }
 
-.agent-run-item:hover .run-stop-button,
-.agent-run-item:focus-within .run-stop-button {
-  color: var(--accent-rose);
+.thread-chevron {
+  color: var(--text-dim);
+  transform: rotate(-90deg);
+  transition: transform var(--transition-fast), color var(--transition-fast);
 }
 
-.run-stop-button:hover:not(:disabled),
-.run-stop-button:focus-visible {
-  border-color: var(--error-border);
-  background: var(--error-bg);
-  color: var(--accent-rose);
+.run-thread.expanded .thread-chevron {
+  transform: none;
 }
 
-.run-stop-button:disabled {
-  cursor: wait;
+.thread-header:hover .thread-chevron {
+  color: var(--text-secondary);
 }
 
-.run-stop-button .agent-runs-spinner {
-  width: 11px;
-  height: 11px;
-  border-width: 1.5px;
-  border-top-color: var(--accent-rose);
+.thread-body {
+  padding: 4px 4px 5px;
+  border-top: 0.5px solid var(--border-hairline);
 }
 
 @keyframes run-pulse {
@@ -945,10 +680,9 @@ onUnmounted(stopRefreshTimer)
 /* Mobile drawer: larger type and comfortable touch targets. */
 @media (max-width: 768px), (pointer: coarse) and (max-height: 500px) {
   .agent-runs-panel {
-    --row-pad-y: 11px;
-    --title-size: 0.9rem;
-    --title-line: 19px;
-    --stop-size: 34px;
+    --avatar-size: 24px;
+    --glyph-size: 22px;
+    --stop-size: 28px;
   }
 
   .agent-runs-header {
@@ -960,23 +694,18 @@ onUnmounted(stopRefreshTimer)
     font-size: 0.85rem;
   }
 
-  .run-meta { font-size: 0.76rem; }
-
-  .run-actions {
-    align-self: center;
-    height: auto;
-    margin-right: -4px;
+  .thread-header {
+    padding: 11px 10px;
   }
 
-  .run-stop-button {
-    border-color: var(--border-subtle);
-    color: var(--accent-rose);
-  }
+  .thread-title { font-size: 0.9rem; }
+  .thread-meta,
+  .thread-cost { font-size: 0.76rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .summary-pill--active .summary-dot::after,
-  .agent-run-item--running .run-status-dot::after {
+  .run-thread--running .thread-status-dot::after {
     animation: none;
   }
 }
