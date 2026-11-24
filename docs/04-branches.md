@@ -48,6 +48,8 @@ Only you delete branches, from the **Branches** dialog: the bin beside a branch 
 
 Devpad also refuses if the branch has moved since the dialog showed it, so you never delete commits you haven't seen.
 
+The bin beside a **Local** branch in Source Control's branch picker deletes only your workspace's copy, never the project's. If the branch has commits that aren't merged into the branch it tracks (or, when it tracks none, the branch you're on), git refuses, and the dialog asks again: **Delete anyway** deletes it and those commits with it.
+
 ## Merge requests {#merge-requests}
 
 A merge request asks to merge one branch into a protected branch. Open one:

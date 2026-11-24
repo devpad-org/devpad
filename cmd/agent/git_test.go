@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -622,5 +625,44 @@ func TestParseGitCommitFilesOutput(t *testing.T) {
 		if got[i].Status != want.Status {
 			t.Errorf("[%d] Status: got %q, want %q", i, got[i].Status, want.Status)
 		}
+	}
+}
+
+func TestDeleteBranchAsksBeforeLosingUnmergedCommits(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-q", "-b", "main")
+	commitFile(t, repo, "a.txt", "a")
+	runGit(t, repo, "checkout", "-q", "-b", "feature")
+	commitFile(t, repo, "b.txt", "b")
+	runGit(t, repo, "checkout", "-q", "main")
+	withWorkspaceRoot(t, repo)
+
+	action := func(body string) (int, map[string]any) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handleGitAction(rec, httptest.NewRequest(http.MethodPost, "/api/git/action", strings.NewReader(body)))
+		var res map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatalf("decoding %s: %v", rec.Body, err)
+		}
+		return rec.Code, res
+	}
+
+	// The IDE recognises this output and offers to delete the branch anyway.
+	if code, res := action(`{"action":"delete-branch","branch":"feature"}`); code != http.StatusOK || res["success"] != false ||
+		!strings.Contains(res["output"].(string), "not fully merged") {
+		t.Fatalf("delete-branch of an unmerged branch: %d %v", code, res)
+	}
+	runGit(t, repo, "rev-parse", "--verify", "refs/heads/feature")
+
+	if code, res := action(`{"action":"force-delete-branch","branch":"feature","remote":"origin"}`); code != http.StatusBadRequest {
+		t.Fatalf("force-delete-branch of a remote branch: %d %v", code, res)
+	}
+
+	if code, res := action(`{"action":"force-delete-branch","branch":"feature"}`); code != http.StatusOK || res["success"] != true {
+		t.Fatalf("force-delete-branch: %d %v", code, res)
+	}
+	if got := runGit(t, repo, "branch", "--list", "feature"); got != "" {
+		t.Fatalf("feature still exists: %q", got)
 	}
 }

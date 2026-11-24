@@ -59,6 +59,9 @@ const loading = ref(false)
 const busyKey = ref<string | null>(null)
 const deleteTarget = ref<GitBranch | null>(null)
 const deleting = ref(false)
+// Git refused to delete deleteTarget because it isn't merged, and the dialog
+// now asks whether to delete it anyway.
+const deleteUnmerged = ref(false)
 
 const detached = computed(() => props.current === '' || props.current === 'HEAD')
 const label = computed(() => (detached.value ? 'Detached HEAD' : props.current))
@@ -129,9 +132,19 @@ const activeKey = computed(() => items.value[activeIndex.value]?.key ?? null)
 const deleteMessage = computed(() => {
   const b = deleteTarget.value
   if (!b) return ''
-  return b.remote
-    ? `Delete '${remoteBranchName(b)}' from the '${b.remoteName || 'remote'}' remote? This cannot be undone.`
-    : `Delete the local branch '${b.name}'? Git refuses if it has commits that aren't merged anywhere.`
+  if (b.remote) {
+    return `Delete '${remoteBranchName(b)}' from the '${b.remoteName || 'remote'}' remote? This cannot be undone.`
+  }
+  if (deleteUnmerged.value) {
+    // Git compares a branch with its upstream, or with HEAD when it has none.
+    const into = b.upstream || (detached.value ? 'the current commit' : props.current)
+    return `'${b.name}' has commits that aren't merged into ${into}. Delete it anyway? Those commits are lost unless another branch has them.`
+  }
+  return `Delete the local branch '${b.name}'? If it has commits that aren't merged, you'll be asked again before they're lost.`
+})
+
+watch(deleteTarget, () => {
+  deleteUnmerged.value = false
 })
 
 watch(query, () => {
@@ -339,14 +352,21 @@ async function mergeBranch(b: GitBranch, key: string) {
   })
 }
 
-async function deleteBranch(b: GitBranch): Promise<boolean> {
+// What git branch -d says when the branch has commits it would lose.
+const UNMERGED_BRANCH = /not fully merged/i
+
+async function deleteBranch(b: GitBranch, force = false): Promise<boolean> {
   try {
-    const result = await gitApi.action(props.workspaceId, 'delete-branch', actionPayload(b))
+    const result = await gitApi.action(props.workspaceId, force ? 'force-delete-branch' : 'delete-branch', actionPayload(b))
     const retry = async () => {
       if (await deleteBranch(b)) deleteTarget.value = null
     }
     if (promptFromActionResult(result, retry)) return false
     if (!result.success) {
+      if (!force && !b.remote && UNMERGED_BRANCH.test(result.output)) {
+        deleteUnmerged.value = true
+        return false
+      }
       emit('notify', gitFailure(result, `Couldn't delete ${b.name}`))
       return false
     }
@@ -366,10 +386,13 @@ async function confirmDelete() {
   const b = deleteTarget.value
   if (!b || deleting.value) return
   deleting.value = true
-  const ok = await deleteBranch(b)
+  const force = deleteUnmerged.value
+  const ok = await deleteBranch(b, force)
   deleting.value = false
-  // A failure is reported as a notice, so the dialog closes either way.
-  if (ok || !sshHostKey.value) deleteTarget.value = null
+  // A failure is reported as a notice, so the dialog closes, unless it now
+  // asks whether to delete an unmerged branch anyway.
+  const askingAnyway = deleteUnmerged.value && !force
+  if (ok || (!sshHostKey.value && !askingAnyway)) deleteTarget.value = null
 }
 
 function cancelDelete() {
@@ -538,9 +561,9 @@ defineExpose({ show })
 
     <ConfirmModal
       :show="deleteTarget !== null"
-      title="Delete branch"
+      :title="deleteUnmerged ? 'Delete unmerged branch' : 'Delete branch'"
       :message="deleteMessage"
-      confirm-label="Delete"
+      :confirm-label="deleteUnmerged ? 'Delete anyway' : 'Delete'"
       variant="danger"
       :loading="deleting"
       @confirm="confirmDelete"
