@@ -95,6 +95,12 @@ A pipeline is:
 
 A job is queued, running, passed, failed, timed out, out of memory, error, cancelled, interrupted, or skipped when its pipeline ended before it ran.
 
+## On the Git graph {#git-graph}
+
+In the IDE's **Git Graph**, a commit that a protected branch's pipeline tested shows that pipeline's status beside it, once for each branch that tested it, such as `develop` and later `main`. It is the branch's newest pipeline of that commit that is under way or has a result, so one cancelled or replaced never hides the result before it, and it is the result of the jobs the pipeline ran then: a ticked branch's badge on the Project page says whether the branch's current commit has a result with the jobs it has now. Hover over a status to see which pipeline it is and what it found. Pick the commit, and its card in **Source Control** lists the same pipelines; in your project workspace, pressing one opens it on the **Pipelines** surface.
+
+A merge request's pipelines never show on the graph: they test its branch merged onto its target, a commit the graph doesn't have, so their result isn't the branch's commit's own. See them on the merge request. Commits you haven't published have no pipelines, and a workspace without a project shows none.
+
 ## Merge requests {#merge-requests}
 
 A merge request's result counts only for what it tested: its branch at its current commit, merged onto the target branch's current commit, with the jobs the target's pipeline has now. A pipeline of an older commit of either, or of jobs that have changed since, is out of date, and devpad works out which on its side. Into a ticked branch, devpad [runs the pipeline again](#automatic-runs) whenever that happens; into another protected branch, run it from the merge request.

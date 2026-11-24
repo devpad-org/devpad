@@ -50,8 +50,9 @@
 // countingStatuses is the one predicate for which pipeline stands for a
 // subject's commits and jobs: one queued or running, or one finished with a
 // result; one cancelled, superseded, interrupted or unable to run never
-// hides an older result. Service.current, reuse and the badges all go by
-// it. Every lookup is by key (subject, purpose included, commits and jobs
+// hides an older result. Service.current, reuse, the badges and the Git
+// graph's statuses (OfCommits: each branch's newest of a commit, never a
+// merge request's, which tests a trial merge) all go by it. Every lookup is by key (subject, purpose included, commits and jobs
 // hash): a key without a purpose matches nothing, so a lookup that forgets
 // it finds no pass rather than a proposed pipeline's.
 //

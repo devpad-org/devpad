@@ -16,6 +16,9 @@ import PipelineView from './PipelineView.vue'
 const props = defineProps<{
   // The surface is in view: lists and output are read again only then.
   active: boolean
+  // A pipeline the IDE asks to show, such as one picked beside a commit;
+  // seq tells one ask from the next for the same pipeline.
+  focus?: { id: number; seq: number } | null
 }>()
 
 const store = useActiveProjectStore()
@@ -65,6 +68,14 @@ watch(() => store.projectId, () => {
 watch(pipelines, (list) => {
   if (selectedId.value === null && list.length > 0) selectedId.value = list[0].id
 })
+
+watch(
+  () => props.focus,
+  (focus) => {
+    if (focus) select(focus.id)
+  },
+  { immediate: true },
+)
 
 const running = computed(() => pipelines.value.filter((p) => p.status === 'running' || p.status === 'queued').length)
 

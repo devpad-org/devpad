@@ -235,6 +235,7 @@ func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 		{"the same proposed pipeline", "", "idx_pipelines_merge_request_commits", nil},
 		{"the latest proposed pipelines", "", "idx_pipelines_merge_request", nil},
 		{"a merge request's official pipelines", "", "idx_pipelines_merge_request", nil},
+		{"the commits' pipelines", "", "idx_pipelines_commit", nil},
 	}
 	tests[0].query, tests[0].args = findSameQuery(branch, countingStatuses)
 	tests[1].query, tests[1].args = findSameQuery(mr, countingStatuses)
@@ -250,6 +251,7 @@ func TestRepositoryQueriesUseTheirIndexes(t *testing.T) {
 	tests[15].query, tests[15].args = findSameQuery(proposed, countingStatuses)
 	tests[16].query, tests[16].args = query(latestQuery(e.project, LatestFilter{MergeRequestIDs: []int64{e.mr, e.mr + 1}, Purpose: PurposeProposed}))
 	tests[17].query, tests[17].args = query(listQuery(e.project, ListFilter{MergeRequestID: e.mr, Purpose: PurposeOfficial}))
+	tests[18].query, tests[18].args = query(ofCommitsQuery(e.project, []string{sha(2), sha(3)}, PurposeOfficial))
 	for _, tc := range tests {
 		rows, err := e.db.Query("EXPLAIN QUERY PLAN "+tc.query, tc.args...)
 		if err != nil {
@@ -408,5 +410,68 @@ func TestRepositoryLatestIsEachSubjectsNewestOfTheProject(t *testing.T) {
 	// One that names no purpose finds nothing, rather than either kind.
 	if got, err := repo.Latest(ctx, e.project, LatestFilter{Branches: []string{"develop"}, MergeRequestIDs: []int64{e.mr}}); err != nil || len(got) != 0 {
 		t.Fatalf("latest of no purpose: %+v %v", got, err)
+	}
+}
+
+func TestRepositoryOfCommitsIsEachBranchsNewestOfEachCommit(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	repo := e.svc.repo
+	create := func(uid, branch, head string, st Status) *Pipeline {
+		t.Helper()
+		p := e.branchPipeline(uid, branch, head)
+		p.Status = st
+		if err := repo.Create(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	create("c000000000000001", "develop", sha(2), StatusPassed)
+	develop := create("c000000000000002", "develop", sha(2), StatusFailed)
+	// A newer one that said nothing never hides it.
+	create("c000000000000003", "develop", sha(2), StatusCancelled)
+	main := create("c000000000000004", "main", sha(2), StatusPassed)
+	running := create("c000000000000005", "develop", sha(3), StatusRunning)
+	create("c000000000000006", "develop", sha(4), StatusSuperseded)
+
+	// A merge request's pipeline of the same head tested a trial merge, not
+	// the commit.
+	mr := e.branchPipeline("c000000000000007", "", sha(2))
+	mr.Kind, mr.MergeRequestID, mr.SourceBranch, mr.TargetBranch, mr.TargetSHA, mr.Status = KindMergeRequest, e.mr, "feature", "develop", sha(1), StatusPassed
+	if err := repo.Create(ctx, mr); err != nil {
+		t.Fatal(err)
+	}
+	// Another project's pipeline of the same commit is never this one's.
+	res, err := e.db.Exec(`INSERT INTO projects (user_id, name, status) VALUES (?, 'other', 'ready')`, e.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := e.branchPipeline("c000000000000008", "develop", sha(2))
+	other.ProjectID, _ = res.LastInsertId()
+	other.Status = StatusPassed
+	if err := repo.Create(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := repo.OfCommits(ctx, e.project, []string{sha(3), sha(2), sha(4), sha(9)}, PurposeOfficial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]int64, 0, len(got))
+	for _, p := range got {
+		ids = append(ids, p.ID)
+	}
+	if want := []int64{running.ID, develop.ID, main.ID}; !slices.Equal(ids, want) {
+		t.Fatalf("of commits: %v, want %v", ids, want)
+	}
+	if len(got[0].Jobs) != 2 || got[0].Jobs[0].Run != "" {
+		t.Fatalf("expected jobs without their scripts: %+v", got[0].Jobs)
+	}
+	if none, err := repo.OfCommits(ctx, e.project, nil, PurposeOfficial); err != nil || len(none) != 0 {
+		t.Fatalf("no commits: %v %v", none, err)
+	}
+	// One that names no purpose finds nothing.
+	if none, err := repo.OfCommits(ctx, e.project, []string{sha(2)}, ""); err != nil || len(none) != 0 {
+		t.Fatalf("of no purpose: %v %v", none, err)
 	}
 }

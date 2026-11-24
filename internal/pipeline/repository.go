@@ -1,10 +1,13 @@
 package pipeline
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 )
@@ -23,6 +26,12 @@ type Repository interface {
 	// names that has one, with their jobs but not their scripts: a branch's
 	// first, in f's order, then a merge request's.
 	Latest(ctx context.Context, projectID int64, f LatestFilter) ([]*Pipeline, error)
+	// OfCommits returns, for each branch each commit of shas was tested on,
+	// the newest branch pipeline of purpose that counts (countingStatuses)
+	// of that branch and commit, with their jobs but not their scripts:
+	// in shas' order, then by branch. A commit no such pipeline tested has
+	// none.
+	OfCommits(ctx context.Context, projectID int64, shas []string, purpose Purpose) ([]*Pipeline, error)
 	// FindSame returns the newest pipeline of k, the same subject and
 	// purpose, commits and jobs, that stands at one of statuses, with its
 	// jobs and their scripts, or nil.
@@ -313,6 +322,59 @@ func latestQuery(projectID int64, f LatestFilter) (string, []any) {
 		return "", nil
 	}
 	return `SELECT ` + pipelineColumns + ` FROM pipelines WHERE project_id = ? AND id IN (` + strings.Join(parts, ` UNION ALL `) + `)`, args
+}
+
+func (r *repository) OfCommits(ctx context.Context, projectID int64, shas []string, purpose Purpose) ([]*Pipeline, error) {
+	if len(shas) == 0 {
+		return nil, nil
+	}
+	query, args := ofCommitsQuery(projectID, shas, purpose)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading the commits' pipelines: %w", err)
+	}
+	found, err := collect(rows, scanPipeline)
+	if err != nil {
+		return nil, err
+	}
+	type subject struct{ sha, branch string }
+	newest := make(map[subject]*Pipeline, len(found))
+	for _, p := range found {
+		s := subject{p.HeadSHA, p.Branch}
+		if cur := newest[s]; cur == nil || p.ID > cur.ID {
+			newest[s] = p
+		}
+	}
+	order := make(map[string]int, len(shas))
+	for i, sha := range shas {
+		if _, seen := order[sha]; !seen {
+			order[sha] = i
+		}
+	}
+	out := slices.Collect(maps.Values(newest))
+	slices.SortFunc(out, func(a, b *Pipeline) int {
+		return cmp.Or(cmp.Compare(order[a.HeadSHA], order[b.HeadSHA]), strings.Compare(a.Branch, b.Branch))
+	})
+	if err := r.loadJobs(ctx, out, false); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ofCommitsQuery selects the project's branch pipelines of purpose that
+// count of the commits shas names, through the index of branch pipelines
+// by commit, whichever branch they tested. A commit's pipelines are few, so
+// OfCommits picks each branch's newest itself.
+func ofCommitsQuery(projectID int64, shas []string, purpose Purpose) (string, []any) {
+	args := []any{projectID}
+	for _, sha := range shas {
+		args = append(args, sha)
+	}
+	args = append(args, purpose)
+	for _, st := range countingStatuses {
+		args = append(args, st)
+	}
+	return `SELECT ` + pipelineColumns + ` FROM pipelines WHERE project_id = ? AND kind = 'branch' AND head_sha IN (` + placeholders(len(shas)) + `) AND purpose = ? AND status IN (` + placeholders(len(countingStatuses)) + `)`, args
 }
 
 // valueRows is n one-column rows of placeholders for a VALUES list.
