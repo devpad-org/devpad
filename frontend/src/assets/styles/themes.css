@@ -949,6 +949,322 @@
   --term-bright-white: #2e3440;
 }
 
+/* ── Peony Dark ─────────────────────────────────────────────────────────── */
+/* Devpad's own. Plum surfaces lit by a peony-pink accent, with orchid
+   beside it and pink's classic partners around them: sage and teal to cool
+   it, champagne gold and apricot to warm it. Every colour is chosen in
+   OKLCH, so the hues share a lightness and the surfaces keep one plum
+   undertone from the void to the raised chip. */
+[data-theme='peony-dark'] {
+  color-scheme: dark;
+
+  --bg-void: #160c14;
+  --bg-base: #1e111b;
+  --bg-elevated: #271823;
+  --bg-raised: #362331;
+  --bg-hover: rgba(244, 231, 237, 0.06);
+  --bg-selected: rgba(253, 143, 186, 0.14);
+  --bg-overlay: rgba(8, 3, 6, 0.74);
+  --bg-neutral: rgba(190, 165, 181, 0.14);
+
+  --border-hairline: rgba(244, 231, 237, 0.07);
+  --border-subtle: rgba(244, 231, 237, 0.11);
+  --border-strong: rgba(244, 231, 237, 0.2);
+
+  /* Petal-white text, cooling through mauve towards the dim. */
+  --text-primary: #f4e7ed;
+  --text-secondary: #dac3cf;
+  --text-tertiary: #bea5b5;
+  --text-dim: #90788a;
+  --text-on-accent: #250b1b;
+  --text-decoration-muted: rgba(244, 231, 237, 0.2);
+
+  /* Pink's companions: coral, sage, champagne, periwinkle, orchid, teal
+     and apricot, all at one lightness so none shouts over the rose. */
+  --hue-red: #f97f7a;
+  --hue-green: #8bdcb1;
+  --hue-yellow: #f0cc83;
+  --hue-blue: #9bb6f5;
+  --hue-purple: #cea6f8;
+  --hue-aqua: #79d7d3;
+  --hue-orange: #f7a974;
+
+  /* The peony itself. */
+  --accent: #fd8fba;
+  --accent-dim: #e771a1;
+  --accent-glow: rgba(253, 143, 186, 0.18);
+  --accent-border: rgba(253, 143, 186, 0.45);
+
+  --success: var(--hue-green);
+  --warning: var(--hue-yellow);
+  --error: var(--hue-red);
+  --attention: var(--hue-orange);
+  --error-bg: rgba(249, 127, 122, 0.12);
+  --error-border: rgba(249, 127, 122, 0.32);
+  --success-bg: rgba(139, 220, 177, 0.1);
+  --success-border: rgba(139, 220, 177, 0.3);
+  --warning-bg: rgba(240, 204, 131, 0.1);
+  --warning-border: rgba(240, 204, 131, 0.3);
+  --attention-bg: rgba(247, 169, 116, 0.11);
+  --attention-border: rgba(247, 169, 116, 0.32);
+
+  --fill-hover-mix: #fff8fb;
+
+  --emblem-red: #f17070;
+  --emblem-green: #64c897;
+  --emblem-yellow: #f2c35e;
+  --emblem-blue: #7b9ce9;
+  --emblem-purple: #b781ec;
+  --emblem-aqua: #48c7c3;
+  --emblem-orange: #f49752;
+  --emblem-red-muted: #b94548;
+  --emblem-green-muted: #3c8c66;
+  --emblem-yellow-muted: #bf8f34;
+  --emblem-blue-muted: #4564b3;
+  --emblem-purple-muted: #7a44aa;
+  --emblem-aqua-muted: #1f8885;
+  --emblem-orange-muted: #bf6420;
+  --emblem-light: #f6e6ed;
+  --emblem-dark: #362331;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #0ca30c;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --series-other: #826d7d;
+
+  --shadow-strong: 0 16px 48px rgba(5, 1, 4, 0.62);
+  --shadow-popover: 0 4px 16px rgba(5, 1, 4, 0.5);
+  --spinner-track: rgba(244, 231, 237, 0.25);
+  --qr-bg: #ffffff;
+
+  /* The editor and terminal sit on the deepest plum. */
+  --editor-bg: #160c14;
+  --editor-fg: #f4e7ed;
+  --editor-line-highlight: #20121c;
+  --editor-selection: #54263d;
+  --editor-selection-inactive: #362331;
+  --editor-selection-highlight: #fd8fba26;
+  --editor-line-number: #6c5567;
+  --editor-line-number-active: #dac3cf;
+  --editor-cursor: #fd8fba;
+  --editor-indent-guide: #2e1e2a;
+  --editor-indent-guide-active: #52394c;
+  --editor-bracket-match-bg: #fd8fba1f;
+  --editor-bracket-match-border: #fd8fba66;
+  --editor-find-match: #f0cc835c;
+  --editor-find-match-highlight: #f0cc8329;
+  --editor-diff-inserted: #8bdcb121;
+  --editor-diff-removed: #f97f7a26;
+  --editor-scrollbar: #90788a40;
+  --editor-scrollbar-hover: #90788a70;
+  --editor-scrollbar-active: #bea5b580;
+
+  /* Rose keywords and orchid types carry the code; champagne functions,
+     sage strings and apricot numbers sit between them, and the cool teal
+     and periwinkle are kept for escapes and the language's own words.
+     Nested brackets go mauve, blush, orchid. */
+  --syntax-comment: #9c8399;
+  --syntax-comment-doc: #b59bb2;
+  --syntax-keyword: #fc8ab5;
+  --syntax-operator: #c4a5c8;
+  --syntax-storage: #fc8ab5;
+  --syntax-type: #d1a9fb;
+  --syntax-string: #8bdcb1;
+  --syntax-escape: #73d8d4;
+  --syntax-number: #fba773;
+  --syntax-function: #f2cb83;
+  --syntax-variable: #f4e7ed;
+  --syntax-parameter: #e6ccd9;
+  --syntax-language: #9eb9f8;
+  --syntax-tag: #fc8ab5;
+  --syntax-tag-class: #73d8d4;
+  --syntax-delimiter: #ac97a9;
+  --syntax-bracket: #c4a5c8;
+  --syntax-curly: #f9b9d1;
+  --syntax-invalid: #f97f7a;
+
+  /* ANSI magenta is the peony's pink. */
+  --terminal-bg: #160c14;
+  --term-fg: #f4e7ed;
+  --term-cursor: #fd8fba;
+  --term-selection: rgba(253, 143, 186, 0.28);
+  --term-black: #271823;
+  --term-red: #ea6a6a;
+  --term-green: #6dc799;
+  --term-yellow: #e1b767;
+  --term-blue: #7e9ce3;
+  --term-magenta: #ed72a5;
+  --term-cyan: #54c2be;
+  --term-white: #dac3cf;
+  --term-bright-black: #90788a;
+  --term-bright-red: #f97f7a;
+  --term-bright-green: #8bdcb1;
+  --term-bright-yellow: #f0cc83;
+  --term-bright-blue: #9bb6f5;
+  --term-bright-magenta: #fd8fba;
+  --term-bright-cyan: #79d7d3;
+  --term-bright-white: #fbf2f6;
+}
+
+/* ── Peony Light ────────────────────────────────────────────────────────── */
+/* Peony on blush paper: plum ink, a raspberry accent and deep orchid,
+   with the dark theme's companions taken down to shades that read as
+   text. Emblems keep Peony Dark's brights, since they are only ever fills. */
+[data-theme='peony-light'] {
+  color-scheme: light;
+
+  --bg-void: #fffbfd;
+  --bg-base: #fcf5f8;
+  --bg-elevated: #f9eef2;
+  --bg-raised: #f2e2ea;
+  --bg-hover: rgba(51, 30, 49, 0.055);
+  --bg-selected: rgba(185, 32, 108, 0.1);
+  --bg-overlay: rgba(51, 30, 49, 0.42);
+  --bg-neutral: rgba(109, 82, 106, 0.12);
+
+  --border-hairline: rgba(51, 30, 49, 0.09);
+  --border-subtle: rgba(51, 30, 49, 0.15);
+  --border-strong: rgba(51, 30, 49, 0.27);
+
+  /* Plum ink. */
+  --text-primary: #331e31;
+  --text-secondary: #52394f;
+  --text-tertiary: #6d526a;
+  --text-dim: #91778c;
+  --text-on-accent: #ffffff;
+  --text-decoration-muted: rgba(51, 30, 49, 0.25);
+
+  --hue-red: #ba2b2b;
+  --hue-green: #1e7049;
+  --hue-yellow: #875806;
+  --hue-blue: #3a5cb8;
+  --hue-purple: #7c36b3;
+  --hue-aqua: #097576;
+  --hue-orange: #a44607;
+
+  /* Raspberry rose: the peony a shade deeper, so it reads on paper. */
+  --accent: #b9206c;
+  --accent-dim: #a0115b;
+  --accent-glow: rgba(185, 32, 108, 0.16);
+  --accent-border: rgba(185, 32, 108, 0.48);
+
+  --success: var(--hue-green);
+  --warning: var(--hue-yellow);
+  --error: var(--hue-red);
+  --attention: var(--hue-orange);
+  --error-bg: rgba(186, 43, 43, 0.08);
+  --error-border: rgba(186, 43, 43, 0.3);
+  --success-bg: rgba(30, 112, 73, 0.09);
+  --success-border: rgba(30, 112, 73, 0.32);
+  --warning-bg: rgba(135, 88, 6, 0.1);
+  --warning-border: rgba(135, 88, 6, 0.36);
+  --attention-bg: rgba(164, 70, 7, 0.09);
+  --attention-border: rgba(164, 70, 7, 0.32);
+
+  --fill-hover-mix: #1b0a1a;
+
+  --emblem-red: #f17070;
+  --emblem-green: #64c897;
+  --emblem-yellow: #f2c35e;
+  --emblem-blue: #7b9ce9;
+  --emblem-purple: #b781ec;
+  --emblem-aqua: #48c7c3;
+  --emblem-orange: #f49752;
+  --emblem-red-muted: #b94548;
+  --emblem-green-muted: #3c8c66;
+  --emblem-yellow-muted: #bf8f34;
+  --emblem-blue-muted: #4564b3;
+  --emblem-purple-muted: #7a44aa;
+  --emblem-aqua-muted: #1f8885;
+  --emblem-orange-muted: #bf6420;
+  --emblem-light: #fcf5f8;
+  --emblem-dark: #362331;
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --series-other: #b19eac;
+
+  --shadow-strong: 0 16px 48px rgba(51, 30, 49, 0.2);
+  --shadow-popover: 0 4px 16px rgba(51, 30, 49, 0.14);
+  --spinner-track: rgba(51, 30, 49, 0.18);
+  --qr-bg: #ffffff;
+
+  --editor-bg: #fffbfd;
+  --editor-fg: #331e31;
+  --editor-line-highlight: #fbf2f6;
+  --editor-selection: #f7d2e1;
+  --editor-selection-inactive: #f2e2ea;
+  --editor-selection-highlight: #b9206c1f;
+  --editor-line-number: #a08b9c;
+  --editor-line-number-active: #52394f;
+  --editor-cursor: #b9206c;
+  --editor-indent-guide: #f1e4ea;
+  --editor-indent-guide-active: #d9c3d1;
+  --editor-bracket-match-bg: #b9206c1a;
+  --editor-bracket-match-border: #b9206c66;
+  --editor-find-match: #f2c35e88;
+  --editor-find-match-highlight: #f2c35e40;
+  --editor-diff-inserted: #57bc8a30;
+  --editor-diff-removed: #e45c5e26;
+  --editor-scrollbar: #91778c40;
+  --editor-scrollbar-hover: #91778c70;
+  --editor-scrollbar-active: #6d526a80;
+
+  /* The same roles as Peony Dark, each a deeper shade. */
+  --syntax-comment: #826c80;
+  --syntax-comment-doc: #6d556a;
+  --syntax-keyword: #b9206c;
+  --syntax-operator: #705075;
+  --syntax-storage: #b9206c;
+  --syntax-type: #7c36b3;
+  --syntax-string: #1f744f;
+  --syntax-escape: #017273;
+  --syntax-number: #ae4f17;
+  --syntax-function: #8f5d14;
+  --syntax-variable: #331e31;
+  --syntax-parameter: #52394f;
+  --syntax-language: #3a5cb8;
+  --syntax-tag: #b9206c;
+  --syntax-tag-class: #017273;
+  --syntax-delimiter: #6d526a;
+  --syntax-bracket: #705075;
+  --syntax-curly: #ac497a;
+  --syntax-invalid: #ba2b2b;
+
+  /* Black is the ink. */
+  --terminal-bg: #fffbfd;
+  --term-fg: #331e31;
+  --term-cursor: #b9206c;
+  --term-selection: rgba(185, 32, 108, 0.2);
+  --term-black: #331e31;
+  --term-red: #ba2b2b;
+  --term-green: #1e7049;
+  --term-yellow: #875806;
+  --term-blue: #3a5cb8;
+  --term-magenta: #b9206c;
+  --term-cyan: #097576;
+  --term-white: #6d526a;
+  --term-bright-black: #91778c;
+  --term-bright-red: #d74748;
+  --term-bright-green: #358e61;
+  --term-bright-yellow: #a97421;
+  --term-bright-blue: #5074d2;
+  --term-bright-magenta: #d24082;
+  --term-bright-cyan: #278e8f;
+  --term-bright-white: #52394f;
+}
+
 /* ── Derived tokens ─────────────────────────────────────────────────────── */
 /* A var() is resolved where it is declared, so these are declared again on
    every themed element rather than once on :root. */
