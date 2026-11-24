@@ -955,6 +955,7 @@ var gitActions = map[string]gitActionFunc{
 	"checkout-new":        actionCheckoutNew,
 	"merge":               actionMerge,
 	"delete-branch":       actionDeleteBranch,
+	"force-delete-branch": actionForceDeleteBranch,
 	"discard":             actionDiscard,
 	"init":                actionInit,
 	"clone":               actionClone,
@@ -1205,6 +1206,18 @@ func actionDeleteBranch(ctx context.Context, req gitActionRequest) (string, erro
 		return gitOutput(ctx, "push", req.Remote, "--delete", req.Branch)
 	}
 	return gitOutput(ctx, "branch", "-d", req.Branch)
+}
+
+// actionForceDeleteBranch deletes a local branch that git branch -d refuses
+// because it isn't merged, once the user has confirmed losing its commits.
+func actionForceDeleteBranch(ctx context.Context, req gitActionRequest) (string, error) {
+	if req.Branch == "" {
+		return "", &gitActionError{"branch is required"}
+	}
+	if req.Remote != "" {
+		return "", &gitActionError{"only a local branch can be force-deleted"}
+	}
+	return gitOutput(ctx, "branch", "-D", req.Branch)
 }
 
 func actionDiscard(ctx context.Context, req gitActionRequest) (string, error) {
