@@ -37,7 +37,7 @@ Opening a project opens its IDE. The activity bar on the left switches between:
 
 The terminal is at the bottom. On a phone, the same panels are in the tab bar and its **More** menu.
 
-If the project has no workspace yet, or it's stopped, the IDE offers to create or start it.
+**AI**, **Explorer**, **Source Control**, **Workspace Info** and **Database Services** need your workspace running. If the project has no workspace yet, or it's stopped, each of them is a single page offering to create or start it, with **Create workspace** or **Start workspace**. Tasks, merge requests, pipelines, agents and the **Project** page work without it.
 
 ## Your project workspace {#project-workspace}
 
