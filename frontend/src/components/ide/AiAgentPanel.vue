@@ -1344,6 +1344,12 @@ const canHandOff = computed(() =>
   Boolean(props.projectId) && activeConversationId.value !== null && messages.value.length > 0 && !streaming.value,
 )
 
+const handOffHint = computed(() => {
+  if (streaming.value) return 'Wait for this reply to finish, so the task gets all of it'
+  if (!canHandOff.value) return 'Send a message first: there is nothing to hand off yet'
+  return 'Turn this conversation into a task: an agent finishes the work in its own sandbox and opens a merge request. This chat stays here.'
+})
+
 const handoffTitle = computed(() => {
   const first = messages.value.find((m) => m.role === 'user')?.content ?? ''
   const line = first.split('\n').find((l) => l.trim()) ?? ''
@@ -1565,10 +1571,10 @@ function scrollToBottom(options: { force?: boolean } = {}) {
           class="continue-run-btn"
           type="button"
           :disabled="!canHandOff"
-          :title="canHandOff ? 'Hand this conversation to a background agent as a task' : 'Available once the conversation has messages and no run is active'"
+          :title="handOffHint"
           @click="showHandoff = true"
         >
-          Continue in background
+          Hand off as task
         </button>
         <button class="new-chat-btn" title="New Chat" @click="newChat">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

@@ -257,12 +257,12 @@ async function handoff() {
     <div v-if="show" class="modal-overlay" @click.self="!busy && emit('close')">
       <div class="modal">
         <div class="modal-header">
-          <h2 class="modal-title">Continue in background</h2>
+          <h2 class="modal-title">Hand off as a task</h2>
           <button class="modal-close" aria-label="Close" :disabled="busy" @click="emit('close')">&times;</button>
         </div>
         <form class="modal-body" @submit.prevent="handoff">
           <p class="form-hint intro">
-            A background agent picks this conversation up as a new task, in its own sandbox. It opens a merge request when it's done.
+            A new task's agent picks this conversation up and finishes the work in its own sandbox, on a branch of its own, then opens a merge request for you to review. This chat stays here, and you can keep using it.
           </p>
           <div class="form-group">
             <label class="form-label" for="handoff-title">Task title</label>

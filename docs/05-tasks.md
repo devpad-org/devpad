@@ -73,7 +73,7 @@ The **AI** panel is the assistant: an agent working in your project workspace, b
 - It can publish a branch with `git push devpad`, with no more power than the Publish button.
 - It can answer questions about devpad itself from these docs.
 - Its replies, like all text in devpad, show only images devpad itself serves. An image from anywhere else shows as a link, **Image:** and its description, so that nothing an agent writes can make your browser send what's on the page to another site.
-- **Continue in background** hands the conversation to a background agent as a new task, in its own sandbox. It starts from your work on the current branch, or from the project's latest default branch, and gets the conversation so far.
+- **Hand off as task** turns the conversation into a new task, whose agent finishes the work in its own sandbox and opens a merge request. It starts from your work on the current branch, or from the project's latest default branch, and gets the conversation so far. The chat stays in the panel, and you can keep using it.
 
 Each reply spends from your **Per assistant reply** budget, if you set one.
 
