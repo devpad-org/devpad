@@ -283,13 +283,21 @@ func TestProvider(t *testing.T) {
 	for _, kind := range []workspace.Kind{workspace.KindTask, workspace.KindReview} {
 		scope := assistant
 		scope.Kind = kind
-		if c := p.Contribute(ctx, scope); len(c.Tools) != 0 || c.Prompt != "" {
-			t.Errorf("a %s sandbox got the docs", kind)
+		if c := p.Contribute(ctx, scope); len(c.Tools) != 1 || !strings.Contains(c.Prompt, "<slug>"+pages[0].Slug+"</slug>") {
+			t.Errorf("a %s sandbox did not get the docs", kind)
 		}
 		res, ok := p.ExecuteTool(ctx, aitools.ExecutionRequest{ToolName: readDocsTool, Scope: scope, Arguments: json.RawMessage(`{"page":"projects"}`)})
-		if !ok || !res.IsError {
-			t.Errorf("a %s sandbox read a page: %+v", kind, res)
+		if !ok || res.IsError {
+			t.Errorf("a %s sandbox could not read a page: %+v", kind, res)
 		}
+	}
+
+	noWorkspace := aitools.Scope{UserID: 1}
+	if c := p.Contribute(ctx, noWorkspace); len(c.Tools) != 0 || c.Prompt != "" {
+		t.Error("a run outside any workspace got the docs")
+	}
+	if res, ok := p.ExecuteTool(ctx, aitools.ExecutionRequest{ToolName: readDocsTool, Scope: noWorkspace, Arguments: json.RawMessage(`{"page":"projects"}`)}); !ok || !res.IsError {
+		t.Errorf("a run outside any workspace read a page: %+v", res)
 	}
 
 	call := func(scope aitools.Scope, page string) (string, bool) {

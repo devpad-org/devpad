@@ -57,6 +57,8 @@ The sandbox stops after each round, freeing its slot, and keeps the branch and t
 
 The agent has no remote and no credentials: it can't push, merge or touch a protected branch. Devpad collects its branch when it finishes.
 
+Like the [assistant](#the-assistant), the task's agent and every review agent can read these docs, so they can find out how devpad treats their work, such as why it refused a push or what a merge request needs before it merges.
+
 ## Task budgets {#task-budgets}
 
 A task's budget covers every run of its agent, across retries and rounds of feedback, and every review of its merge request. When it's spent, the agent stops after its current request and the task shows **Budget reached**. **Raise and continue** raises it and starts the agent again. See [Budgets](/docs/ai#budgets).
