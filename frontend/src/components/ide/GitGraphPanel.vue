@@ -11,6 +11,7 @@ import {
 import { useFileWatcher } from '@/composables/useFileWatcher'
 import { useGitSshHostKey } from '@/composables/useGitSshHostKey'
 import { useUserPreferences } from '@/composables/useUserPreferences'
+import { fullTime, timeAgo, unixSecondsToIso } from '@/utils/time'
 import MonacoDiffViewer from './MonacoDiffViewer.vue'
 import GitSshHostKeyModal from './GitSshHostKeyModal.vue'
 
@@ -421,18 +422,6 @@ async function loadDiff(request: GitDiffRequest) {
   }
 }
 
-function formatTime(timestamp: string): string {
-  const date = new Date(Number.parseInt(timestamp, 10) * 1000)
-  if (Number.isNaN(date.getTime())) return 'unknown'
-
-  const diff = Date.now() - date.getTime()
-  if (diff < 60_000) return 'just now'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
-  if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d ago`
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-}
-
 onEvent(() => {
   debouncedRefresh()
 })
@@ -725,7 +714,7 @@ onUnmounted(() => {
           <span class="commit-card">
             <span class="commit-topline">
               <code>{{ row.commit.shortHash }}</code>
-              <span>{{ formatTime(row.commit.timestamp) }}</span>
+              <span :title="fullTime(unixSecondsToIso(row.commit.timestamp))">{{ timeAgo(unixSecondsToIso(row.commit.timestamp)) }}</span>
             </span>
             <strong>{{ row.commit.message }}</strong>
             <span class="commit-meta">

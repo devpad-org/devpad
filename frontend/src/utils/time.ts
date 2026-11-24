@@ -16,3 +16,11 @@ export function timeAgo(iso: string | null | undefined): string {
 export function fullTime(iso: string | null | undefined): string {
   return iso ? new Date(iso).toLocaleString() : ''
 }
+
+// A Unix timestamp in seconds (as git's %at gives a commit's date) as ISO,
+// for timeAgo and fullTime; null when it isn't a valid date.
+export function unixSecondsToIso(seconds: string | number | null | undefined): string | null {
+  if (seconds === null || seconds === undefined || seconds === '') return null
+  const date = new Date(Number(seconds) * 1000)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
