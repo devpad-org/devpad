@@ -17,6 +17,8 @@ export const THEMES = [
   { id: 'modern-light', label: 'Modern Light', description: 'Clean and bright, with a blue accent.' },
   { id: 'nord-dark', label: 'Nord Dark', description: 'Arctic Polar Night blues with a frosty accent.' },
   { id: 'nord-light', label: 'Nord Light', description: 'Crisp Snow Storm whites with deep frost blues.' },
+  { id: 'peony-dark', label: 'Peony Dark', description: "Devpad's own: deep plum with peony pinks and orchid." },
+  { id: 'peony-light', label: 'Peony Light', description: 'Blush paper with raspberry, orchid and plum ink.' },
 ] as const satisfies readonly { id: string; label: string; description: string }[]
 
 export type ThemeId = (typeof THEMES)[number]['id']
