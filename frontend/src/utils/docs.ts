@@ -32,6 +32,7 @@ export const DOC_LINKS = {
   taskLinks: '/docs/tasks#linked-tasks',
   taskComments: '/docs/tasks#comments',
   assistant: '/docs/tasks#the-assistant',
+  agentRuns: '/docs/tasks#agent-runs',
   services: '/docs/services',
   projectServices: '/docs/services#project-services',
   aiKeys: '/docs/ai#provider-keys',
