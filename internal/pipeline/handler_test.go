@@ -233,9 +233,11 @@ func TestProposedPipelineEndpoints(t *testing.T) {
 }
 
 // A single pipeline's read says whether Run again would start now, as
-// Start decides it: never while it runs, nor once its branch is no longer
-// protected, its merge request can no longer merge, or a proposed one's
-// change no longer proposes jobs to run.
+// Start decides it before reading a commit: never while it runs, nor once
+// its branch is no longer protected or its merge request can no longer
+// merge, merged or closed or into a branch no longer protected. It reads
+// only the database: what only the commits say, such as a proposed one's
+// change no longer proposing jobs, is left to the start.
 func TestAPipelineSaysWhetherItCanRunAgain(t *testing.T) {
 	e := setup(t)
 	base := fmt.Sprintf("/api/projects/%d/pipelines", e.project)
@@ -247,22 +249,35 @@ func TestAPipelineSaysWhetherItCanRunAgain(t *testing.T) {
 		}
 		return out["pipeline"].(map[string]any)["canRunAgain"]
 	}
+	repoReads := func() int {
+		e.projects.mu.Lock()
+		defer e.projects.mu.Unlock()
+		return e.projects.branchReads + e.projects.diffs + e.projects.trialMerges
+	}
 	e.propose(sha(30), proposedYAML)
 	branch := e.wait(e.start(StartInput{Branch: "develop"}).ID)
 	official := e.wait(e.start(StartInput{MergeRequestID: e.mr}).ID)
 	proposed := e.wait(e.start(StartInput{MergeRequestID: e.mr, Purpose: PurposeProposed}).ID)
+	reads := repoReads()
 	for _, p := range []*Pipeline{branch, official, proposed} {
 		if got := canRunAgain(p.ID); got != true {
 			t.Fatalf("pipeline %d (%s %s): canRunAgain %v", p.ID, p.Kind, p.Purpose, got)
 		}
 	}
 
-	// A head that no longer touches the pipeline file proposes nothing.
+	// A head that no longer touches the pipeline file proposes nothing,
+	// which only the repo says: the start refuses it.
 	e.mrs.setHead(e.mr, sha(31))
-	if canRunAgain(official.ID) != true || canRunAgain(proposed.ID) != false {
+	if canRunAgain(official.ID) != true || canRunAgain(proposed.ID) != true {
 		t.Fatalf("a change that proposes nothing: %v %v", canRunAgain(official.ID), canRunAgain(proposed.ID))
 	}
 	e.mrs.setHead(e.mr, sha(30))
+
+	e.projects.setProject(func(p *project.Project) { p.ProtectedBranches = nil })
+	if canRunAgain(official.ID) != false || canRunAgain(proposed.ID) != false || canRunAgain(branch.ID) != false {
+		t.Fatalf("into a branch no longer protected: %v %v %v", canRunAgain(official.ID), canRunAgain(proposed.ID), canRunAgain(branch.ID))
+	}
+	e.projects.setProject(func(p *project.Project) { p.ProtectedBranches = []string{"develop"} })
 
 	e.mrs.mu.Lock()
 	e.mrs.mrs[e.mr].Open = false
@@ -270,14 +285,11 @@ func TestAPipelineSaysWhetherItCanRunAgain(t *testing.T) {
 	if canRunAgain(official.ID) != false || canRunAgain(proposed.ID) != false || canRunAgain(branch.ID) != true {
 		t.Fatalf("a closed merge request: %v %v %v", canRunAgain(official.ID), canRunAgain(proposed.ID), canRunAgain(branch.ID))
 	}
-
-	e.projects.setProject(func(p *project.Project) { p.ProtectedBranches = nil })
-	if got := canRunAgain(branch.ID); got != false {
-		t.Fatalf("an unprotected branch: %v", got)
+	if got := repoReads(); got != reads {
+		t.Fatalf("a pipeline's read read the repo %d times", got-reads)
 	}
 
 	// One still running offers Cancel instead.
-	e.projects.setProject(func(p *project.Project) { p.ProtectedBranches = []string{"develop"} })
 	release := e.holdEnvironment()
 	defer release()
 	running := e.start(StartInput{Branch: "develop"})

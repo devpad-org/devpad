@@ -239,6 +239,7 @@ func proposedResponse(st *ProposedStatus) any {
 		"conflict":   st.Conflict,
 		"removed":    st.Removed,
 		"sameJobs":   st.SameJobs,
+		"runnable":   st.Runnable,
 		"invalid":    st.Invalid,
 	}, st.Standing)
 }
@@ -353,9 +354,10 @@ func (h *Handler) HandleCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 // withRunAgain is p as a single pipeline's read shows it, saying, once it
-// has finished, whether Run again would start now (CanRunAgain), which
-// the app offers only then. When devpad can't read whether it would, Run
-// again is offered, and pressing it says what went wrong.
+// has finished, whether Run again would start now (CanRunAgain, which
+// reads only the database), which the app offers only then. When devpad
+// can't read whether it would, Run again is offered, and pressing it says
+// what went wrong.
 func (h *Handler) withRunAgain(ctx context.Context, userID int64, p *Pipeline) map[string]any {
 	resp := pipelineResponse(p, true)
 	if !p.Status.Finished() {
@@ -364,7 +366,9 @@ func (h *Handler) withRunAgain(ctx context.Context, userID int64, p *Pipeline) m
 	}
 	can, err := h.pipelines.CanRunAgain(ctx, userID, p)
 	if err != nil {
-		if !isRecentFailure(err) {
+		// A request given up on, such as by navigating away, failed
+		// nothing.
+		if ctx.Err() == nil {
 			log.Printf("pipeline handler: whether pipeline %d can run again: %v", p.ID, err)
 		}
 		can = true

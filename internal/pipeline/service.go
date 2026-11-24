@@ -50,10 +50,11 @@ type Service interface {
 	// Get returns a pipeline of the project with its jobs and their scripts.
 	Get(ctx context.Context, userID, projectID, pipelineID int64) (*Pipeline, error)
 	// CanRunAgain says whether the user's Run again of p would start now
-	// (runAgainInput): its branch is still protected, its merge request can
-	// still merge, and a proposed one's change still proposes jobs to run.
-	// It reads what Start would, without starting anything; an error is a
-	// failure to read that, not a refusal.
+	// (runAgainInput), as far as the database says: its branch is still
+	// protected, or its merge request can still merge. It never reads the
+	// repo, so what only the commits say, such as whether a proposed one's
+	// change still proposes jobs, is left to Start; an error is a failure
+	// to read, not a refusal.
 	CanRunAgain(ctx context.Context, userID int64, p *Pipeline) (bool, error)
 	// JobOutput reads a job's output from an offset on, with devpad's notes
 	// on the job: live while the job runs, and what is kept of them after.

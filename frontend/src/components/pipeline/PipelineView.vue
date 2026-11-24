@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, toRef } from 'vue'
+import { computed, toRef, watch } from 'vue'
 import type { Pipeline } from '@/api/pipelines'
 import DocLink from '@/components/DocLink.vue'
 import MrIcon from '@/components/project/MrIcon.vue'
@@ -28,7 +28,8 @@ const props = withDefaults(
     alsoFailing?: { target: string; jobs: string[] }
     // False where the page around it knows Run again would be refused, as
     // when its merge request has since merged, which the pipeline as last
-    // read doesn't say: a finished one isn't read again.
+    // read doesn't say: a finished one isn't read on a schedule. When it
+    // changes, the pipeline is read again for the server's word too.
     offerRunAgain?: boolean
   }>(),
   { offerRunAgain: true },
@@ -39,7 +40,13 @@ const emit = defineEmits<{
   started: [pipeline: Pipeline]
 }>()
 
-const { pipeline, error, busy, cancel, runAgain } = usePipeline(toRef(props, 'projectId'), toRef(props, 'pipelineId'), toRef(props, 'active'))
+const { pipeline, error, busy, reread, cancel, runAgain } = usePipeline(toRef(props, 'projectId'), toRef(props, 'pipelineId'), toRef(props, 'active'))
+// What changed around it may change whether Run again would start either
+// way, such as its merge request's target protected again.
+watch(
+  () => props.offerRunAgain,
+  () => reread(),
+)
 
 const look = computed(() => (pipeline.value ? PIPELINE_STATUS[pipeline.value.status] : null))
 const unfinished = computed(() => !!pipeline.value && !pipelineFinished(pipeline.value))

@@ -77,7 +77,7 @@ func TestAProposedPipelineRunsTheChangesJobsOnTheTrialMerge(t *testing.T) {
 		t.Fatalf("lint printed %q", out)
 	}
 	st := e.proposedStatus()
-	if st == nil || st.File != ".devpad/pipeline.yml" || st.Current == nil || st.Current.ID != proposed.ID || st.Latest.ID != proposed.ID || st.Key.ConfigHash != proposed.ConfigHash || st.Removed || st.Conflict || st.Invalid != "" {
+	if st == nil || st.File != ".devpad/pipeline.yml" || st.Current == nil || st.Current.ID != proposed.ID || st.Latest.ID != proposed.ID || st.Key.ConfigHash != proposed.ConfigHash || st.Removed || st.Conflict || st.Invalid != "" || !st.Runnable {
 		t.Fatalf("proposed status: %+v", st)
 	}
 	// Starting either again finds its own.
@@ -125,7 +125,7 @@ func TestAProposedPipelineRunsOnlyWhatTheChangeProposes(t *testing.T) {
 	if err := start(StartInput{MergeRequestID: e.mr, Purpose: PurposeProposed}); !errors.Is(err, ErrPipelineRemoved) {
 		t.Fatalf("removing the file: %v", err)
 	}
-	if st := e.proposedStatus(); st == nil || !st.Removed || st.Current != nil {
+	if st := e.proposedStatus(); st == nil || !st.Removed || st.Current != nil || st.Runnable {
 		t.Fatalf("removed: %+v", st)
 	}
 
@@ -147,7 +147,7 @@ func TestAProposedPipelineRunsOnlyWhatTheChangeProposes(t *testing.T) {
 	if err := start(StartInput{MergeRequestID: e.mr, Purpose: PurposeProposed}); !errors.Is(err, ErrInvalidState) || !strings.Contains(err.Error(), "doesn't merge onto develop") {
 		t.Fatalf("a conflict: %v", err)
 	}
-	if st := e.proposedStatus(); st == nil || !st.Conflict {
+	if st := e.proposedStatus(); st == nil || !st.Conflict || st.Runnable {
 		t.Fatalf("conflict status: %+v", st)
 	}
 	for _, p := range e.pipelines() {
@@ -205,9 +205,11 @@ func TestAnEndedMergeRequestStopsItsProposedPipelineToo(t *testing.T) {
 	}
 }
 
-// A merge request that can no longer merge, merged or closed, keeps its
-// latest proposed pipeline to show, as it keeps its own, without reading
-// the change again; one that ran none shows none.
+// A merge request that can no longer merge, merged or closed or into a
+// branch no longer protected, keeps its latest proposed pipeline to show,
+// as it keeps its own, without reading the change again; one that ran
+// none shows none, and so does one whose last head ran none, such as by
+// undoing the change to the pipeline file.
 func TestAnEndedMergeRequestKeepsItsLatestProposedPipeline(t *testing.T) {
 	e := setup(t)
 	end := func(open bool) {
@@ -227,16 +229,35 @@ func TestAnEndedMergeRequestKeepsItsLatestProposedPipeline(t *testing.T) {
 	diffs, merges := e.projects.diffs, e.projects.trialMerges
 	e.projects.mu.Unlock()
 
-	end(false)
-	st := e.proposedStatus()
-	if st == nil || st.Latest == nil || st.Latest.ID != proposed.ID || st.Latest.Purpose != PurposeProposed || st.Current != nil || st.NoResult != nil ||
-		st.File != ".devpad/pipeline.yml" || st.Key != (MergeRequestKey{}) || st.Automatic || st.Removed || st.Conflict || st.SameJobs || st.Invalid != "" {
-		t.Fatalf("ended: %+v", st)
+	kept := func(what string) {
+		t.Helper()
+		st := e.proposedStatus()
+		if st == nil || st.Latest == nil || st.Latest.ID != proposed.ID || st.Latest.Purpose != PurposeProposed || st.Current != nil || st.NoResult != nil ||
+			st.File != "" || st.ConfigPath != ".devpad/pipeline.yml" || st.Key != (MergeRequestKey{}) ||
+			st.Automatic || st.Removed || st.Conflict || st.SameJobs || st.Runnable || st.Invalid != "" {
+			t.Fatalf("%s: %+v", what, st)
+		}
+		e.projects.mu.Lock()
+		defer e.projects.mu.Unlock()
+		if e.projects.diffs != diffs || e.projects.trialMerges != merges {
+			t.Fatalf("%s: read the change again: %d diffs, %d merges, want %d, %d", what, e.projects.diffs, e.projects.trialMerges, diffs, merges)
+		}
 	}
-	e.projects.mu.Lock()
-	defer e.projects.mu.Unlock()
-	if e.projects.diffs != diffs || e.projects.trialMerges != merges {
-		t.Fatalf("read the ended change again: %d diffs, %d merges, want %d, %d", e.projects.diffs, e.projects.trialMerges, diffs, merges)
+	end(false)
+	kept("ended")
+	end(true)
+	e.projects.setProject(func(p *project.Project) { p.ProtectedBranches = nil })
+	kept("into a branch no longer protected")
+	e.projects.setProject(func(p *project.Project) { p.ProtectedBranches = []string{"develop"} })
+
+	// Its last head leaves the pipeline file alone, so it proposed nothing.
+	e.mrs.setHead(e.mr, sha(31))
+	if st := e.proposedStatus(); st != nil {
+		t.Fatalf("a head that leaves the file alone: %+v", st)
+	}
+	end(false)
+	if st := e.proposedStatus(); st != nil {
+		t.Fatalf("ended at a head that proposed nothing: %+v", st)
 	}
 }
 
@@ -548,7 +569,7 @@ func TestAChangeThatProposesTheSameJobsRunsNothingTwice(t *testing.T) {
 		if _, _, err := e.svc.Start(ctx, StartInput{UserID: e.owner, ProjectID: e.project, MergeRequestID: e.mr, Purpose: PurposeProposed, Trigger: TriggerUser}); !errors.Is(err, ErrSameJobs) {
 			t.Fatalf("%s: started %v", change.file.Path, err)
 		}
-		if st := e.proposedStatus(); st == nil || !st.SameJobs || st.Current != nil || st.Key.ConfigHash != "" {
+		if st := e.proposedStatus(); st == nil || !st.SameJobs || st.Current != nil || st.Key.ConfigHash != "" || st.Runnable {
 			t.Fatalf("%s: status %+v", change.file.Path, st)
 		}
 	}

@@ -122,9 +122,9 @@ export interface Pipeline {
   startedAt: string | null
   finishedAt: string | null
   jobs: PipelineJob[]
-  // Whether Run again would start now: its branch is still protected, its
-  // merge request can still merge, and a proposed one's change still
-  // proposes jobs. Only a single pipeline's read carries it, false while
+  // Whether Run again would start now, as far as devpad can tell without
+  // reading the repo: its branch is still protected, or its merge request
+  // can still merge. Only a single pipeline's read carries it, false while
   // it runs.
   canRunAgain?: boolean
 }
@@ -277,7 +277,9 @@ export interface MergeRequestPipelineStatus extends PipelineStanding {
 // How the pipeline a merge request's change proposes stands now. It never
 // gates merging, goes back to a task's agent or holds a review.
 export interface ProposedPipelineStatus extends PipelineStanding {
-  // The pipeline file the change adds, changes, renames or deletes.
+  // The pipeline file the change adds, changes, renames or deletes; empty
+  // once the merge request can no longer merge, when only latest is set,
+  // of its last head.
   file: string
   headSha: string
   targetSha: string
@@ -292,6 +294,10 @@ export interface ProposedPipelineStatus extends PipelineStanding {
   conflict: boolean
   removed: boolean
   sameJobs: boolean
+  // A start of it now would run the jobs the change proposes: the merge
+  // request can still merge and none of the above is so. Run proposed
+  // pipeline and Run again on its card show only then.
+  runnable: boolean
   // Why the proposed file doesn't parse, or empty.
   invalid: string
 }

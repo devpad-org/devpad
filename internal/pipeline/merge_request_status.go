@@ -170,7 +170,7 @@ func (s *service) MergeRequestStatus(ctx context.Context, userID, projectID, mer
 		st.Latest = latest[0]
 	}
 	st.Automatic = mergeRequestRunsAutomatically(p, mr)
-	if !mr.Open || !p.IsProtected(mr.TargetBranch) || !project.IsCommitHash(mr.HeadSHA) {
+	if mergeRequestRefusal(p, mr) != nil {
 		return st, nil
 	}
 	target, err := s.branchCommit(ctx, p, mr.TargetBranch)
