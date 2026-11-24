@@ -11,7 +11,7 @@ import {
 } from '@/api/git'
 import { useFileWatcher } from '@/composables/useFileWatcher'
 import { useGitSshHostKey } from '@/composables/useGitSshHostKey'
-import { timeAgo } from '@/utils/time'
+import { fullTime, timeAgo, unixSecondsToIso } from '@/utils/time'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import ProjectBranchActions from '@/components/project/ProjectBranchActions.vue'
 import GitBranchPicker from './GitBranchPicker.vue'
@@ -105,6 +105,7 @@ const stagedFiles = computed(() => (status.value?.files ?? []).filter((f) => f.s
 const unstagedFiles = computed(() => (status.value?.files ?? []).filter((f) => !f.staged))
 const selectedCommitHash = computed(() => props.selectedCommit?.hash ?? null)
 const viewingCommit = computed(() => props.selectedCommit !== null)
+const selectedCommitDate = computed(() => unixSecondsToIso(props.selectedCommit?.timestamp))
 const branch = computed(() => status.value?.branch ?? '')
 
 const hasChanges = computed(() => (status.value?.files?.length ?? 0) > 0)
@@ -496,7 +497,9 @@ onUnmounted(() => {
               </button>
             </div>
             <p class="git-commit-card-message">{{ selectedCommit.message }}</p>
-            <p class="git-commit-card-meta">{{ selectedCommit.author }} · {{ timeAgo(selectedCommit.timestamp) }}</p>
+            <p class="git-commit-card-meta">
+              {{ selectedCommit.author }} · <span :title="fullTime(selectedCommitDate)">{{ timeAgo(selectedCommitDate) }}</span>
+            </p>
           </div>
 
           <div v-if="commitFilesLoading" class="git-placeholder">Loading files…</div>
