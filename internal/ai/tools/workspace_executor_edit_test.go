@@ -101,7 +101,7 @@ func TestEditFileKeepsWindowsLineEndings(t *testing.T) {
 func TestEditFileExplainsAMiss(t *testing.T) {
 	file := "func a() {\n\treturn 1\n}\n\nx := 1\ny := 2\n"
 	for _, tc := range []struct{ name, args, want string }{
-		{"line numbers", `{"path":"f.go","old_text":"5: x := 1\n6: y := 2","new_text":"z"}`, "line numbers read_file_lines shows"},
+		{"line numbers", `{"path":"f.go","old_text":"5: x := 1\n6: y := 2","new_text":"z"}`, "line numbers read_file shows"},
 		{"whitespace", `{"path":"f.go","old_text":"func a() {\n    return 1\n}","new_text":"z"}`, "lines 1–3 match it except for whitespace, such as indentation, tabs or trailing spaces. They are, exactly:\nfunc a() {\n\treturn 1\n}"},
 		{"first line", `{"path":"f.go","old_text":"x := 1\ny := 3","new_text":"z"}`, "Its first line is in the file, at line 5, but what follows it differs"},
 		{"nothing", `{"path":"f.go","old_text":"nowhere","new_text":"z"}`, "old_text was not found in the file. Read it again"},

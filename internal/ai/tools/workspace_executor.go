@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/devpad-org/devpad/internal/agent"
-	"github.com/devpad-org/devpad/internal/ai/attachment"
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
@@ -21,7 +20,7 @@ const (
 	// Keep recursive listings below the raw agent API caps to protect model context.
 	maxListFilesDepth      = 6
 	maxListFilesEntries    = 1000
-	truncationNoticeFormat = "\n\n[Output truncated to %d bytes. Use read_file_lines with a narrower range or search_files for more targeted context.]"
+	truncationNoticeFormat = "\n\n[Output truncated to %d bytes. Use read_file with start_line and end_line, or search_files, for more targeted context.]"
 	summaryInputNotice     = "\n\n[File content truncated to %d bytes before summarization.]"
 )
 
@@ -90,12 +89,20 @@ func (e *WorkspaceExecutor) SetScopeResolver(r ScopeResolver) {
 	e.scopes = r
 }
 
+// retiredTools are tools no longer offered that the executor still runs,
+// for conversations whose models called them before: read_file takes a
+// range of lines, and read_command_output gives a command's status.
+var retiredTools = []string{"read_file_lines", "command_status"}
+
 // builtinTools names the tools the executor runs itself, which no provider
 // sees.
 var builtinTools = sync.OnceValue(func() map[string]bool {
 	names := map[string]bool{}
 	for _, d := range AgentTools() {
 		names[d.Function.Name] = true
+	}
+	for _, name := range retiredTools {
+		names[name] = true
 	}
 	return names
 })
@@ -181,7 +188,7 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 	case "edit_file":
 		return e.editFile(ctx, req)
 	case "read_file_lines":
-		return e.readFileLines(ctx, req.UserID, req.WorkspaceID, params)
+		return e.readFile(ctx, req, params)
 	case "update_plan":
 		return toolSuccess(req.ToolName, "Plan updated.")
 	case "list_available_agents":
@@ -202,36 +209,6 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 		}
 		return toolFailure(req.ToolName, "unknown tool: %s", req.ToolName)
 	}
-}
-
-func (e *WorkspaceExecutor) readFile(ctx context.Context, req ExecutionRequest, params map[string]any) domain.ToolResultPart {
-	path, _ := params["path"].(string)
-	if path == "" {
-		return toolFailure("read_file", "Error: path is required")
-	}
-	data, err := e.ws.ReadFile(ctx, req.UserID, req.WorkspaceID, path)
-	if err != nil {
-		return toolFailure("read_file", "Error: %v", err)
-	}
-	if width, height, ok := attachment.Probe(data); ok && e.images != nil {
-		if !req.Vision {
-			return toolSuccess("read_file", fmt.Sprintf("%s is a %d×%d image. This model can't view images, so it isn't shown.", path, width, height))
-		}
-		return e.readImage(ctx, req, path, data)
-	}
-
-	return toolSuccess("read_file", truncateToolText(string(data), maxToolTextBytes, truncationNoticeFormat))
-}
-
-// readImage returns an image file as an image the model can look at.
-func (e *WorkspaceExecutor) readImage(ctx context.Context, req ExecutionRequest, path string, data []byte) domain.ToolResultPart {
-	image, err := e.images.StoreToolImage(ctx, req.UserID, req.ConversationID, req.CurrentRunID, data)
-	if err != nil {
-		return toolFailure("read_file", "Error: %s is an image that can't be shown: %v", path, err)
-	}
-	result := toolSuccess("read_file", fmt.Sprintf("Image %s (%d×%d) is attached.", path, image.Width, image.Height))
-	result.Images = []domain.ImagePart{image}
-	return result
 }
 
 func (e *WorkspaceExecutor) writeFile(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
@@ -288,55 +265,6 @@ func (e *WorkspaceExecutor) deleteFile(ctx context.Context, userID, workspaceID 
 	}
 
 	return toolSuccess("delete_file", "Deleted successfully.")
-}
-
-func (e *WorkspaceExecutor) readFileLines(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
-	path, _ := params["path"].(string)
-	if path == "" {
-		return toolFailure("read_file_lines", "Error: path is required")
-	}
-	startLine := 1
-	endLine := -1
-	if value, ok := params["start_line"].(float64); ok {
-		startLine = int(value)
-	}
-	if value, ok := params["end_line"].(float64); ok {
-		endLine = int(value)
-	}
-
-	data, err := e.ws.ReadFile(ctx, userID, workspaceID, path)
-	if err != nil {
-		return toolFailure("read_file_lines", "Error: %v", err)
-	}
-
-	lines := strings.Split(string(data), "\n")
-	if startLine < 1 {
-		startLine = 1
-	}
-	if endLine < 0 || endLine > len(lines) {
-		endLine = len(lines)
-	}
-	if startLine > len(lines) {
-		return toolFailure("read_file_lines", "Error: start_line is beyond end of file")
-	}
-	if endLine < startLine {
-		return toolFailure("read_file_lines", "Error: end_line must be greater than or equal to start_line")
-	}
-	maxEndLine := startLine + maxReadFileLines - 1
-	if endLine > maxEndLine {
-		endLine = maxEndLine
-	}
-
-	selected := lines[startLine-1 : endLine]
-	var result strings.Builder
-	for i, line := range selected {
-		fmt.Fprintf(&result, "%d: %s", startLine+i, line)
-		if i < len(selected)-1 {
-			result.WriteString("\n")
-		}
-	}
-
-	return toolSuccess("read_file_lines", truncateToolText(result.String(), maxToolTextBytes, truncationNoticeFormat))
 }
 
 func marshalToolResponse(toolName string, response any) domain.ToolResultPart {

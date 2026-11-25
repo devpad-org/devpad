@@ -292,26 +292,6 @@ func TestWorkspaceExecutor_ReadFileSuccessReturnsStructuredResult(t *testing.T) 
 	}
 }
 
-func TestWorkspaceExecutor_ReadFileTruncatesLargeResults(t *testing.T) {
-	executor := NewWorkspaceExecutor(&stubWorkspaceOps{readFileFn: func(context.Context, int64, int64, string) ([]byte, error) {
-		return []byte(strings.Repeat("a", maxToolTextBytes+1024)), nil
-	}})
-
-	result := executor.ExecuteTool(context.Background(), toolReq(7, 9, "read_file", []byte(`{"path":"large.txt"}`)))
-	if result.IsError {
-		t.Fatalf("expected success result, got %+v", result)
-	}
-	if len(result.Content) <= maxToolTextBytes {
-		t.Fatalf("expected truncation notice beyond capped content, got length %d", len(result.Content))
-	}
-	if !strings.Contains(result.Content, "Output truncated") {
-		t.Fatalf("expected truncation notice, got %q", result.Content[len(result.Content)-120:])
-	}
-	if !strings.HasPrefix(result.Content, strings.Repeat("a", maxToolTextBytes)) {
-		t.Fatalf("expected exactly %d content bytes before notice", maxToolTextBytes)
-	}
-}
-
 func TestWorkspaceExecutor_SummarizeFileRequiresPath(t *testing.T) {
 	executor := NewWorkspaceExecutor(&stubWorkspaceOps{})
 	executor.SetFileSummarizer(stubFileSummarizer{})

@@ -103,8 +103,8 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "read_file",
-				Description: "Read the contents of a file in the project. Results are truncated for large files; use read_file_lines for targeted sections. Reading a PNG, JPEG, GIF or WebP image returns the image itself, so you can look at screenshots and other pictures.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative path from the project root, e.g. src/main.ts"}},"required":["path"]}`),
+				Description: "Read a file in the project. A file too long to return whole is cut after a whole line, with a note of the lines shown and the start_line to read on from. Pass start_line, end_line or both to read only those lines, at most 400 at a time; each is then shown after its line number, as \"12: \", which is not part of the file. Reading a PNG, JPEG, GIF or WebP image returns the image itself, so you can look at screenshots and other pictures.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative path from the project root, e.g. src/main.ts"},"start_line":{"type":"integer","description":"Optional first line to read (1-indexed). Defaults to 1."},"end_line":{"type":"integer","description":"Optional last line to read (inclusive). Defaults to the end of the file; at most 400 lines are shown at once."}},"required":["path"]}`),
 			},
 		},
 		{
@@ -166,14 +166,6 @@ func AgentTools() []domain.ToolDefinition {
 		{
 			Type: "function",
 			Function: domain.ToolFunction{
-				Name:        "command_status",
-				Description: "Get status metadata for a command started by start_command, including running/exited/stopped status and exit code when available.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"command_id":{"type":"string","description":"The command_id returned by start_command"}},"required":["command_id"]}`),
-			},
-		},
-		{
-			Type: "function",
-			Function: domain.ToolFunction{
 				Name:        "stop_command",
 				Description: "Stop a command started by start_command. This terminates the command process group, allowing dev servers and watchers to be cleaned up.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"command_id":{"type":"string","description":"The command_id returned by start_command"}},"required":["command_id"]}`),
@@ -192,15 +184,7 @@ func AgentTools() []domain.ToolDefinition {
 			Function: domain.ToolFunction{
 				Name:        "edit_file",
 				Description: "Apply targeted edits to an existing file by replacing specific text. The old_text must appear exactly once in the file unless replace_all is set; include enough surrounding lines for uniqueness. To make several changes to one file, pass them together as edits rather than calling this once for each: they apply in order, and if one fails none is made. Returns the lines the new text is on, so you need not read the file again to find it. Use this instead of write_file when modifying existing files — it's faster and safer.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative path from the project root"},"old_text":{"type":"string","description":"The exact text to find and replace, without the line numbers read_file_lines shows (must appear exactly once in the file unless replace_all is set)"},"new_text":{"type":"string","description":"The text to replace old_text with"},"replace_all":{"type":"boolean","description":"Replace every occurrence of old_text instead of exactly one, such as to rename something throughout the file. Defaults to false."},"edits":{"type":"array","description":"Several edits to make to the file at once, instead of old_text and new_text. Each applies to the file as the edits before it left it.","items":{"type":"object","properties":{"old_text":{"type":"string","description":"The exact text to find and replace"},"new_text":{"type":"string","description":"The text to replace it with"},"replace_all":{"type":"boolean","description":"Replace every occurrence instead of exactly one"}},"required":["old_text","new_text"]}}},"required":["path"]}`),
-			},
-		},
-		{
-			Type: "function",
-			Function: domain.ToolFunction{
-				Name:        "read_file_lines",
-				Description: "Read a specific range of lines from a file. Lines are 1-indexed and capped per call. Use this instead of read_file for large files when you only need a specific section.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative path from the project root"},"start_line":{"type":"integer","description":"First line to read (1-indexed)"},"end_line":{"type":"integer","description":"Last line to read (inclusive)"}},"required":["path","start_line","end_line"]}`),
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative path from the project root"},"old_text":{"type":"string","description":"The exact text to find and replace, without the line numbers read_file shows (must appear exactly once in the file unless replace_all is set)"},"new_text":{"type":"string","description":"The text to replace old_text with"},"replace_all":{"type":"boolean","description":"Replace every occurrence of old_text instead of exactly one, such as to rename something throughout the file. Defaults to false."},"edits":{"type":"array","description":"Several edits to make to the file at once, instead of old_text and new_text. Each applies to the file as the edits before it left it.","items":{"type":"object","properties":{"old_text":{"type":"string","description":"The exact text to find and replace"},"new_text":{"type":"string","description":"The text to replace it with"},"replace_all":{"type":"boolean","description":"Replace every occurrence instead of exactly one"}},"required":["old_text","new_text"]}}},"required":["path"]}`),
 			},
 		},
 		{
@@ -252,7 +236,7 @@ const AgentSystemPrompt = `You are an expert AI coding assistant integrated into
 
 When helping the user:
 1. Read files before modifying them to understand context.
-2. Use summarize_file to understand large or unfamiliar files before deciding which sections to inspect with read_file_lines.
+2. Use summarize_file to understand large or unfamiliar files before deciding which sections to read with read_file's start_line and end_line.
 3. Use edit_file for targeted changes instead of write_file for existing files, and pass several changes to one file together as its edits.
 4. Use search_files to find relevant code across the codebase, with context_lines to see the code around each match without reading the file, and with files_only and a path_filter such as **/*.vue to find files by name.
 5. Use list_files to understand project structure.

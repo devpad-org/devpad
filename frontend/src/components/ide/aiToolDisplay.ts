@@ -151,16 +151,17 @@ export function toolFriendlyName(name: string): string {
 
 export function toolTargetLabel(seg: ToolDisplaySegment): string {
   switch (seg.name) {
-    case 'read_file':
     case 'write_file':
     case 'edit_file':
     case 'delete_file':
       return truncateMiddle(stringArg(seg.args, 'path') || formatToolArgs(seg.name, seg.args))
+    case 'read_file':
     case 'read_file_lines': {
       const path = stringArg(seg.args, 'path')
       const startLine = numberArg(seg.args, 'start_line')
       const endLine = numberArg(seg.args, 'end_line')
-      const range = startLine !== null && endLine !== null ? `:${startLine}-${endLine}` : ''
+      let range = ''
+      if (startLine !== null || endLine !== null) range = `:${startLine ?? 1}-${endLine ?? ''}`
       return truncateMiddle(`${path || formatToolArgs(seg.name, seg.args)}${range}`)
     }
     case 'list_files': {
@@ -264,7 +265,9 @@ export function toolResultMeta(seg: ToolDisplaySegment): string {
   switch (seg.name) {
     case 'read_file':
     case 'read_file_lines': {
-      const lines = seg.result === '' ? 0 : seg.result.split('\n').length
+      // A read cut short ends with a note of the lines it shows.
+      const text = seg.result.replace(/(^|\n\n)\[(Showing|Line \d+ is|The file is empty)[^\n]*\]$/, '')
+      const lines = text === '' ? 0 : text.split('\n').length
       return `${lines} ${pluralize(lines, 'line')}`
     }
     case 'search_files': {

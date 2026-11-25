@@ -238,14 +238,14 @@ func lineList(content string, offsets []int) string {
 	return "lines " + strings.Join(lines[:len(lines)-1], ", ") + " and " + lines[len(lines)-1]
 }
 
-// readLinePrefix is what read_file_lines puts before each line it shows.
+// readLinePrefix is what read_file puts before each line of a range it shows.
 var readLinePrefix = regexp.MustCompile(`^\d+: ?`)
 
 // missedEdit explains why old_text is not in content, saying what in the
 // file it nearly matches when something does.
 func missedEdit(content, oldText string) error {
 	if stripped, ok := withoutLinePrefixes(oldText); ok && strings.Contains(content, stripped) {
-		return errors.New(`old_text was not found: its lines start with the line numbers read_file_lines shows, such as "12: ", which are not part of the file. Leave them out`)
+		return errors.New(`old_text was not found: its lines start with the line numbers read_file shows, such as "12: ", which are not part of the file. Leave them out`)
 	}
 	lines := strings.Split(content, "\n")
 	if first, last, ok := whitespaceMatch(lines, oldText); ok {
@@ -280,7 +280,7 @@ func lineSpan(first, last int) string {
 	return fmt.Sprintf("lines %d–%d", first, last)
 }
 
-// withoutLinePrefixes strips the line numbers read_file_lines shows from
+// withoutLinePrefixes strips the line numbers read_file shows from
 // every line of text, reporting false when a line lacks one.
 func withoutLinePrefixes(text string) (string, bool) {
 	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
