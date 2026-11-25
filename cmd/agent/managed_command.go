@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"slices"
 	"sync"
 	"time"
 )
@@ -16,11 +18,18 @@ const (
 	maxManagedCommandSessions   = 8
 	managedCommandCleanupAfter  = 30 * time.Minute
 	managedCommandStopGraceTime = 2 * time.Second
+	// maxFinishedCommandSessions bounds the finished commands whose output
+	// is kept, each up to maxManagedCommandOutput; the oldest go first.
+	maxFinishedCommandSessions = 32
+	// maxCommandWait bounds one wait for a command to finish, below the
+	// host client's request timeout. The host waits longer in several.
+	maxCommandWait = 5 * time.Minute
 )
 
 var (
 	errCommandSessionNotFound = errors.New("command session not found")
 	errTooManyCommandSessions = errors.New("too many running command sessions")
+	errNoWorkingDirectory     = errors.New("the working directory does not exist")
 	commandSessions           = newCommandSessionManager(maxManagedCommandOutput, maxManagedCommandSessions, managedCommandCleanupAfter)
 )
 
@@ -98,6 +107,9 @@ func (m *commandSessionManager) Start(command, cwd string) (*commandSessionResul
 	if cwd == "" {
 		cwd = workspaceRoot
 	}
+	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("%w: %s", errNoWorkingDirectory, cwd)
+	}
 
 	id, err := newCommandSessionID()
 	if err != nil {
@@ -147,10 +159,22 @@ func (m *commandSessionManager) Start(command, cwd string) (*commandSessionResul
 	return &result, nil
 }
 
-func (m *commandSessionManager) Status(commandID string) (*commandSessionResult, error) {
+// Wait returns a command's status once it has finished, or once wait
+// (at most maxCommandWait) has passed while it is still running.
+func (m *commandSessionManager) Wait(ctx context.Context, commandID string, wait time.Duration) (*commandSessionResult, error) {
 	session, err := m.get(commandID)
 	if err != nil {
 		return nil, err
+	}
+	if wait > 0 {
+		timer := time.NewTimer(min(wait, maxCommandWait))
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("waiting for command: %w", ctx.Err())
+		case <-session.done:
+		case <-timer.C:
+		}
 	}
 	result := session.snapshot()
 	return &result, nil
@@ -234,10 +258,26 @@ func (m *commandSessionManager) runningSessionsLocked() int {
 }
 
 func (m *commandSessionManager) pruneLocked(now time.Time) {
+	type finished struct {
+		id string
+		at time.Time
+	}
+	var kept []finished
 	for id, session := range m.sessions {
 		finishedAt := session.finishedAtTime()
-		if finishedAt != nil && now.Sub(*finishedAt) > m.cleanupAfter {
+		switch {
+		case finishedAt == nil:
+		case now.Sub(*finishedAt) > m.cleanupAfter:
 			delete(m.sessions, id)
+		default:
+			kept = append(kept, finished{id, *finishedAt})
 		}
+	}
+	if len(kept) <= maxFinishedCommandSessions {
+		return
+	}
+	slices.SortFunc(kept, func(a, b finished) int { return a.at.Compare(b.at) })
+	for _, f := range kept[:len(kept)-maxFinishedCommandSessions] {
+		delete(m.sessions, f.id)
 	}
 }

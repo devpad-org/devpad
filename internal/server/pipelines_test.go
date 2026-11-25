@@ -314,9 +314,9 @@ func TestMergeRequestPipelineReportsAreThePipelinesReport(t *testing.T) {
 // merge request merges into, and none when it has none or it doesn't parse.
 func TestTaskPipelinesAreTheTargetsJobs(t *testing.T) {
 	ctx := context.Background()
-	f := &readPipelines{resolved: &pipeline.Resolved{Source: pipeline.SourceFile, Path: ".devpad/pipeline.yml", Config: &pipeline.Config{Jobs: []pipeline.Job{{Name: "backend", Run: "go test ./...", Services: []string{"postgres"}}}}}}
+	f := &readPipelines{resolved: &pipeline.Resolved{Source: pipeline.SourceFile, Path: ".devpad/pipeline.yml", Config: &pipeline.Config{Jobs: []pipeline.Job{{Name: "backend", Run: "go test ./...", Services: []string{"postgres"}, Timeout: 15 * time.Minute}}}}}
 	got, err := taskPipelines{f}.PipelineJobs(ctx, 1, 2, "main")
-	if err != nil || got.Path != ".devpad/pipeline.yml" || len(got.Jobs) != 1 || got.Jobs[0].Name != "backend" || got.Jobs[0].Services[0] != "postgres" {
+	if err != nil || got.Path != ".devpad/pipeline.yml" || len(got.Jobs) != 1 || got.Jobs[0].Name != "backend" || got.Jobs[0].Services[0] != "postgres" || got.Jobs[0].Timeout != 15*time.Minute {
 		t.Fatalf("jobs %+v %v", got, err)
 	}
 	f.resolved = &pipeline.Resolved{Source: pipeline.SourceFile, Invalid: errors.New("line 2: unknown key")}

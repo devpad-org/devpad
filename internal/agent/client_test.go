@@ -186,6 +186,27 @@ func TestReadCommandOutputRefusesOversizedResponses(t *testing.T) {
 	}
 }
 
+func TestWaitCommandAsksTheAgentToWait(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		json.NewEncoder(w).Encode(ManagedCommand{CommandID: "cmd_1", Status: "exited"})
+	}))
+	defer srv.Close()
+	c := &Client{baseURL: srv.URL, http: srv.Client()}
+
+	if got, err := c.WaitCommand(context.Background(), "cmd_1", 90*time.Second); err != nil || got.Status != "exited" {
+		t.Fatalf("wait: %+v %v", got, err)
+	}
+	if _, err := c.CommandStatus(context.Background(), "cmd_1"); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	want := []string{"GET /api/commands/cmd_1?wait_ms=90000", "GET /api/commands/cmd_1?"}
+	if strings.Join(asked, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("asked %q, want %q", asked, want)
+	}
+}
+
 func TestRepoReadRefusesAnAnswerToAnotherRequest(t *testing.T) {
 	var answer string
 	var asked atomic.Int32

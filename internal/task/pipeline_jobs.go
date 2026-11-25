@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 )
 
 // Pipelines tells a task's agent the jobs its merge request's pipeline will
@@ -25,12 +26,14 @@ type PipelineJobs struct {
 	Jobs []PipelineJob
 }
 
-// PipelineJob is one job of a pipeline: its name, its bash script, and the
-// types of the project's services it gets fresh copies of.
+// PipelineJob is one job of a pipeline: its name, its bash script, the
+// types of the project's services it gets fresh copies of, and how long it
+// may run before it fails, zero when that is not known.
 type PipelineJob struct {
 	Name     string
 	Run      string
 	Services []string
+	Timeout  time.Duration
 }
 
 const (
@@ -85,13 +88,19 @@ func pipelineJobsPrompt(target string, automatic bool, jobs *PipelineJobs) strin
 	} else {
 		fmt.Fprintf(&b, "These are the jobs of the pipeline for `%s`, which the user can run on your branch merged onto it. ", target)
 	}
-	fmt.Fprintf(&b, "They come from %s, not from your branch, so changing the pipeline file on your branch doesn't change them. Run each job's script in /workspace before you finish and fix what fails; a job's services are in your sandbox too, under the same variables.\n\n", from)
+	fmt.Fprintf(&b, "They come from %s, not from your branch, so changing the pipeline file on your branch doesn't change them. Run each job's script in /workspace before you finish and fix what fails; a job's services are in your sandbox too, under the same variables. A job that runs longer than its timeout fails, so give the script as long to run: run_command's timeout_seconds goes up to 10 minutes, and a longer job runs with start_command and read_command_output's wait_for_exit.\n\n", from)
 	used := b.Len()
 	for i, j := range jobs.Jobs {
 		var job strings.Builder
 		fmt.Fprintf(&job, "### `%s`\n\n", j.Name)
 		if len(j.Services) > 0 {
-			fmt.Fprintf(&job, "Services: %s\n\n", strings.Join(j.Services, ", "))
+			fmt.Fprintf(&job, "Services: %s\n", strings.Join(j.Services, ", "))
+		}
+		if j.Timeout > 0 {
+			fmt.Fprintf(&job, "Timeout: %s\n", jobTimeout(j.Timeout))
+		}
+		if len(j.Services) > 0 || j.Timeout > 0 {
+			job.WriteString("\n")
 		}
 		job.WriteString(fenced("bash", clip(strings.TrimSpace(j.Run), maxPromptJobRunBytes)))
 		job.WriteString("\n")
@@ -107,4 +116,17 @@ func pipelineJobsPrompt(target string, automatic bool, jobs *PipelineJobs) strin
 		b.WriteString(job.String())
 	}
 	return b.String()
+}
+
+// jobTimeout writes a job's timeout as a pipeline file would, such as
+// "90s", "15m" or "1h".
+func jobTimeout(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
 }

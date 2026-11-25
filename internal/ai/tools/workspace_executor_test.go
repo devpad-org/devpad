@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -20,9 +21,9 @@ type stubWorkspaceOps struct {
 	readFileFn          func(ctx context.Context, userID, workspaceID int64, path string) ([]byte, error)
 	listFilesFn         func(ctx context.Context, userID, workspaceID int64, path string, opts agent.ListFilesOptions) (*agent.FileList, error)
 	searchFilesFn       func(ctx context.Context, userID, workspaceID int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error)
-	runCommandFn        func(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error)
 	startCommandFn      func(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
 	commandStatusFn     func(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
+	waitCommandFn       func(ctx context.Context, userID, workspaceID int64, commandID string, wait time.Duration) (*agent.ManagedCommand, error)
 	readCommandOutputFn func(ctx context.Context, userID, workspaceID int64, commandID string, opts agent.CommandOutputOptions) (*agent.CommandOutput, error)
 	stopCommandFn       func(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
 }
@@ -105,13 +106,6 @@ func (s *stubWorkspaceOps) SearchFiles(ctx context.Context, userID, workspaceID 
 	return nil, nil
 }
 
-func (s *stubWorkspaceOps) RunCommand(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error) {
-	if s.runCommandFn != nil {
-		return s.runCommandFn(ctx, userID, workspaceID, command)
-	}
-	return nil, nil
-}
-
 func (s *stubWorkspaceOps) StartCommand(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error) {
 	if s.startCommandFn != nil {
 		return s.startCommandFn(ctx, userID, workspaceID, command, cwd)
@@ -122,6 +116,13 @@ func (s *stubWorkspaceOps) StartCommand(ctx context.Context, userID, workspaceID
 func (s *stubWorkspaceOps) CommandStatus(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error) {
 	if s.commandStatusFn != nil {
 		return s.commandStatusFn(ctx, userID, workspaceID, commandID)
+	}
+	return nil, nil
+}
+
+func (s *stubWorkspaceOps) WaitCommand(ctx context.Context, userID, workspaceID int64, commandID string, wait time.Duration) (*agent.ManagedCommand, error) {
+	if s.waitCommandFn != nil {
+		return s.waitCommandFn(ctx, userID, workspaceID, commandID, wait)
 	}
 	return nil, nil
 }
@@ -208,26 +209,6 @@ func TestWorkspaceExecutor_ListFilesPassesRecursiveOptions(t *testing.T) {
 	}
 	if payload.Entries[1].Path != "src/main.go" {
 		t.Fatalf("expected workspace-relative path, got %+v", payload.Entries[1])
-	}
-}
-
-func TestWorkspaceExecutor_RunCommandFailureSetsIsError(t *testing.T) {
-	executor := NewWorkspaceExecutor(&stubWorkspaceOps{runCommandFn: func(context.Context, int64, int64, string) (*agent.CommandResult, error) {
-		return &agent.CommandResult{Output: "apt output", ExitCode: 1, Error: "permission denied"}, nil
-	}})
-
-	result := executor.ExecuteTool(context.Background(), toolReq(1, 2, "run_command", []byte(`{"command":"apt update"}`)))
-	if !result.IsError {
-		t.Fatalf("expected command failure to set IsError, got %+v", result)
-	}
-	if result.Name != "run_command" {
-		t.Fatalf("expected run_command name, got %+v", result)
-	}
-	if !strings.Contains(result.Content, "exit code 1") {
-		t.Fatalf("expected exit code in content, got %q", result.Content)
-	}
-	if !strings.Contains(result.Content, "permission denied") {
-		t.Fatalf("expected stderr in content, got %q", result.Content)
 	}
 }
 

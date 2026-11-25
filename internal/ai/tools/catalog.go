@@ -143,15 +143,15 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "run_command",
-				Description: "Execute a finite shell command in the project's workspace container and wait for it to finish. The working directory is /workspace (project root). Has a 30-second timeout. Use for installing packages, running tests, building, etc. Do not use for long-running dev servers or watchers; use start_command instead. You have sudo access — use it when commands require elevated privileges (e.g. apt install, systemctl). Commands using sudo require user approval before execution.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"The shell command to run, e.g. npm install express"}},"required":["command"]}`),
+				Description: "Execute a finite shell command in the project's workspace container and wait for it to finish, for up to timeout_seconds: a command still running then is stopped. The working directory is /workspace (project root) unless cwd says otherwise. Use for installing packages, running tests, building, etc., and give a slow build or test suite a timeout_seconds it fits in. Do not use for dev servers, watchers, or commands that take longer than 10 minutes; use start_command instead. Output too long to return whole shows its start and end, and says how to read the part left out with read_command_output. You have sudo access — use it when commands require elevated privileges (e.g. apt install, systemctl). Commands using sudo require user approval before execution.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"The shell command to run, e.g. npm install express"},"cwd":{"type":"string","description":"Optional relative working directory from /workspace. Defaults to /workspace."},"timeout_seconds":{"type":"integer","description":"Optional seconds to wait for the command to finish before stopping it. Defaults to 120; at most 600."}},"required":["command"]}`),
 			},
 		},
 		{
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "start_command",
-				Description: "Start a long-running shell command in the workspace container and return immediately with a command_id. Use for dev servers, file watchers, or commands like npm start that keep running. Read logs with read_command_output and stop it with stop_command when finished. Commands using sudo require user approval before execution.",
+				Description: "Start a long-running shell command in the workspace container and return immediately with a command_id. Use for dev servers, file watchers, commands like npm start that keep running, and commands that take longer than the 10 minutes run_command waits. Read logs with read_command_output, wait for it to finish with read_command_output's wait_for_exit, and stop it with stop_command when finished. Commands using sudo require user approval before execution.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"The shell command to start, e.g. npm start"},"cwd":{"type":"string","description":"Optional relative working directory from /workspace. Defaults to /workspace."}},"required":["command"]}`),
 			},
 		},
@@ -159,8 +159,8 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "read_command_output",
-				Description: "Read buffered stdout/stderr from a command started by start_command. Pass the previous next_cursor to read only new output. Use wait_ms for short polling when waiting for logs.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"command_id":{"type":"string","description":"The command_id returned by start_command"},"cursor":{"type":"integer","description":"Cursor to read from. Use 0 for the first read or the prior next_cursor for subsequent reads."},"max_bytes":{"type":"integer","description":"Maximum output bytes to return. Defaults to 12288 and is capped server-side."},"wait_ms":{"type":"integer","description":"Optional milliseconds to wait for new output when none is available. Defaults to 0 and is capped server-side."}},"required":["command_id"]}`),
+				Description: "Read buffered stdout/stderr from a command started by start_command, or the rest of a long run_command output. Pass the previous next_cursor to read only new output. Use wait_ms for short polling when waiting for logs. To wait for a command to finish, set wait_for_exit rather than polling: the call returns once the command exits, or wait_ms passes, with its status, exit code and output since cursor, whose start and end it shows when it is too long to return whole.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"command_id":{"type":"string","description":"The command_id returned by start_command, or named in run_command's output"},"cursor":{"type":"integer","description":"Cursor to read from. Use 0 for the first read or the prior next_cursor for subsequent reads."},"max_bytes":{"type":"integer","description":"Maximum output bytes to return. Defaults to 12288; at most 16384."},"wait_ms":{"type":"integer","description":"Optional milliseconds to wait for new output when none is available. Defaults to 0 and is capped at 5000. With wait_for_exit, how long to wait for the command to exit instead: defaults to 600000 (10 minutes), which is also the most."},"wait_for_exit":{"type":"boolean","description":"When true, wait until the command exits rather than only until new output arrives. Defaults to false."}},"required":["command_id"]}`),
 			},
 		},
 		{
@@ -256,7 +256,7 @@ When helping the user:
 3. Use edit_file for targeted changes instead of write_file for existing files.
 4. Use search_files to find relevant code across the codebase.
 5. Use list_files to understand project structure.
-6. Use run_command for finite commands such as installing packages, running tests, or building. Use start_command for long-running dev servers or watchers such as npm start, then inspect logs with read_command_output and stop the process with stop_command when it is no longer needed. You have sudo access for elevated privileges (e.g. sudo apt install, sudo systemctl). Use sudo when a command requires root permissions. The environment is a Debian 13 container.
+6. Use run_command for finite commands such as installing packages, running tests, or building. It waits 2 minutes unless you give it a longer timeout_seconds, at most 10 minutes, so give a slow build or test suite the time it needs rather than running it again. Use start_command for long-running dev servers or watchers such as npm start, and for commands that take longer than 10 minutes, then inspect logs with read_command_output, wait for a command to finish with read_command_output's wait_for_exit rather than polling, and stop the process with stop_command when it is no longer needed. You have sudo access for elevated privileges (e.g. sudo apt install, sudo systemctl). Use sudo when a command requires root permissions. The environment is a Debian 13 container.
 
 Plan management:
 - Only use update_plan for complex tasks that involve 3 or more distinct steps (e.g. implementing a feature across multiple files, multi-stage refactors, or tasks requiring research then implementation).

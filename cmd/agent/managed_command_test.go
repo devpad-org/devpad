@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -101,7 +103,7 @@ func waitForCommandStatus(t *testing.T, manager *commandSessionManager, commandI
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		status, err := manager.Status(commandID)
+		status, err := manager.Wait(context.Background(), commandID, 0)
 		if err != nil {
 			t.Fatalf("command status: %v", err)
 		}
@@ -114,7 +116,7 @@ func waitForCommandStatus(t *testing.T, manager *commandSessionManager, commandI
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	status, err := manager.Status(commandID)
+	status, err := manager.Wait(context.Background(), commandID, 0)
 	if err != nil {
 		t.Fatalf("command status: %v", err)
 	}
@@ -159,5 +161,83 @@ func TestCommandSessionManagerRejectsTooManyRunningCommands(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), errTooManyCommandSessions.Error()) {
 		t.Fatalf("expected too many sessions error, got %v", err)
+	}
+}
+
+func TestCommandSessionManagerWaitReturnsOnceTheCommandFinishes(t *testing.T) {
+	requireCommandShell(t)
+	manager := newCommandSessionManager(64*1024, 4, time.Minute)
+
+	session, err := manager.Start(`sleep 0.1; exit 3`, t.TempDir())
+	if err != nil {
+		t.Fatalf("start command: %v", err)
+	}
+
+	began := time.Now()
+	status, err := manager.Wait(context.Background(), session.CommandID, 10*time.Second)
+	if err != nil {
+		t.Fatalf("wait for command: %v", err)
+	}
+	if status.Status != "exited" || status.ExitCode == nil || *status.ExitCode != 3 {
+		t.Fatalf("expected exit code 3, got %+v", status)
+	}
+	if waited := time.Since(began); waited > 5*time.Second {
+		t.Fatalf("wait went on for %s after the command finished", waited)
+	}
+}
+
+func TestCommandSessionManagerWaitReturnsAtItsDeadline(t *testing.T) {
+	requireCommandShell(t)
+	manager := newCommandSessionManager(64*1024, 4, time.Minute)
+
+	session, err := manager.Start(`while true; do sleep 1; done`, t.TempDir())
+	if err != nil {
+		t.Fatalf("start command: %v", err)
+	}
+	defer manager.Stop(context.Background(), session.CommandID)
+
+	status, err := manager.Wait(context.Background(), session.CommandID, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("wait for command: %v", err)
+	}
+	if status.Status != "running" {
+		t.Fatalf("expected the command still running, got %+v", status)
+	}
+}
+
+func TestCommandSessionManagerKeepsTheNewestFinishedCommands(t *testing.T) {
+	requireCommandShell(t)
+	manager := newCommandSessionManager(64*1024, 4, time.Minute)
+
+	var ids []string
+	for range maxFinishedCommandSessions + 2 {
+		session, err := manager.Start(`true`, t.TempDir())
+		if err != nil {
+			t.Fatalf("start command: %v", err)
+		}
+		if _, err := manager.Wait(context.Background(), session.CommandID, 10*time.Second); err != nil {
+			t.Fatalf("wait for command: %v", err)
+		}
+		ids = append(ids, session.CommandID)
+	}
+	// The last start pruned the commands before it down to the most kept.
+	if _, err := manager.Start(`true`, t.TempDir()); err != nil {
+		t.Fatalf("start command: %v", err)
+	}
+
+	for i, id := range ids {
+		_, err := manager.Wait(context.Background(), id, 0)
+		if gone := errors.Is(err, errCommandSessionNotFound); gone != (i < 2) {
+			t.Fatalf("command %d: gone=%t (err %v), want gone only for the two oldest", i, gone, err)
+		}
+	}
+}
+
+func TestCommandSessionManagerRefusesAMissingWorkingDirectory(t *testing.T) {
+	manager := newCommandSessionManager(64*1024, 4, time.Minute)
+
+	_, err := manager.Start(`true`, filepath.Join(t.TempDir(), "missing"))
+	if !errors.Is(err, errNoWorkingDirectory) {
+		t.Fatalf("expected a missing working directory refused, got %v", err)
 	}
 }

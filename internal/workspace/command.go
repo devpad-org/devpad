@@ -2,17 +2,10 @@ package workspace
 
 import (
 	"context"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 )
-
-func (s *service) RunCommand(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error) {
-	c, err := s.getAgent(ctx, userID, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	return c.RunCommand(ctx, command)
-}
 
 func (s *service) StartCommand(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error) {
 	c, err := s.getAgent(ctx, userID, workspaceID)
@@ -28,6 +21,14 @@ func (s *service) CommandStatus(ctx context.Context, userID, workspaceID int64, 
 		return nil, err
 	}
 	return c.CommandStatus(ctx, commandID)
+}
+
+func (s *service) WaitCommand(ctx context.Context, userID, workspaceID int64, commandID string, wait time.Duration) (*agent.ManagedCommand, error) {
+	c, err := s.getAgent(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.WaitCommand(ctx, commandID, wait)
 }
 
 func (s *service) ReadCommandOutput(ctx context.Context, userID, workspaceID int64, commandID string, opts agent.CommandOutputOptions) (*agent.CommandOutput, error) {

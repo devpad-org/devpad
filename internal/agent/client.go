@@ -463,7 +463,18 @@ func (c *Client) StartCommand(ctx context.Context, command, cwd string) (*Manage
 
 // CommandStatus returns metadata for a managed command session.
 func (c *Client) CommandStatus(ctx context.Context, commandID string) (*ManagedCommand, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/commands/"+url.PathEscape(commandID), nil)
+	return c.WaitCommand(ctx, commandID, 0)
+}
+
+// WaitCommand returns a managed command's status once it has finished, or
+// once wait has passed while it still runs. The agent waits at most five
+// minutes per request; an agent from before it could wait answers at once.
+func (c *Client) WaitCommand(ctx context.Context, commandID string, wait time.Duration) (*ManagedCommand, error) {
+	u := c.baseURL + "/api/commands/" + url.PathEscape(commandID)
+	if wait > 0 {
+		u += fmt.Sprintf("?wait_ms=%d", wait.Milliseconds())
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}

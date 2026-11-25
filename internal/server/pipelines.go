@@ -311,7 +311,7 @@ func (a taskPipelines) PipelineJobs(ctx context.Context, userID, projectID int64
 		out.Path = r.Path
 	}
 	for _, j := range r.Config.Jobs {
-		out.Jobs = append(out.Jobs, task.PipelineJob{Name: j.Name, Run: j.Run, Services: j.Services})
+		out.Jobs = append(out.Jobs, task.PipelineJob{Name: j.Name, Run: j.Run, Services: j.Services, Timeout: j.Timeout})
 	}
 	return out, nil
 }

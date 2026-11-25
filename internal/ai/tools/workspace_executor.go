@@ -438,6 +438,15 @@ func cloneThinking(thinking *domain.ThinkingConfig) *domain.ThinkingConfig {
 	return clone
 }
 
+// plural writes a count with the noun that goes with it, such as "1 match"
+// or "3 matches".
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
 func clamp(value, minValue, maxValue int) int {
 	if value < minValue {
 		return minValue

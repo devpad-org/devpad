@@ -131,7 +131,7 @@ When the pipeline guarding a task's merge request fails, devpad sends the task b
 
 Devpad decides on each pipeline once, even when it restarts. Pipelines you run by hand into a branch you don't tick never send a task back. What a job printed goes only to the task's own agent and to you: the project's assistant, asked about the task, is told which jobs failed and how, never their output.
 
-A task's agent knows the jobs before it finishes: its first prompt lists the target branch's jobs, each with its script and services, and asks it to run them in its sandbox. The sandbox has the services too, under the same connection variables. Those runs are the agent's own check; devpad's pipeline is the one that counts.
+A task's agent knows the jobs before it finishes: its first prompt lists the target branch's jobs, each with its script, services and timeout, and asks it to run them in its sandbox, giving each as long as its timeout. The sandbox has the services too, under the same connection variables. Those runs are the agent's own check; devpad's pipeline is the one that counts.
 
 **Reviews wait for a pass.** Where a pipeline guards a merge request, the project's [automatic review](/docs/branches#reviews), and the next round of an [auto-fixing review](/docs/branches#auto-fixing-reviews), start only once its pipeline has passed, so the review agent reads a change that passes its jobs. Until then the **Pipeline** card says **The automatic review starts once the pipeline passes**. A review you start yourself starts at once. The review agent is told how the pipeline went, each job's name, result and time, but never what a job printed: that came from the code under review, which could use it to talk its reviewer round.
 

@@ -187,8 +187,9 @@ func TestConflictFeedbackListsAtMostFiftyFiles(t *testing.T) {
 
 func TestPipelineJobsPrompt(t *testing.T) {
 	jobs := &PipelineJobs{Path: ".devpad/pipeline.yml", Jobs: []PipelineJob{
-		{Name: "backend", Run: "go test ./...", Services: []string{"postgres"}},
-		{Name: "frontend", Run: "cd frontend\nnpm ci\nnpm run type-check"},
+		{Name: "backend", Run: "go test ./...", Services: []string{"postgres"}, Timeout: 15 * time.Minute},
+		{Name: "frontend", Run: "cd frontend\nnpm ci\nnpm run type-check", Timeout: 90 * time.Second},
+		{Name: "lint", Run: "make lint"},
 	}}
 	got := pipelineJobsPrompt("main", true, jobs)
 	for _, want := range []string{
@@ -197,8 +198,10 @@ func TestPipelineJobsPrompt(t *testing.T) {
 		"merges only once they all pass",
 		"`.devpad/pipeline.yml` on `main`, not from your branch",
 		"under the same variables",
-		"### `backend`\n\nServices: postgres\n\n```bash\ngo test ./...\n```",
-		"### `frontend`\n\n```bash\ncd frontend\nnpm ci\nnpm run type-check\n```",
+		"A job that runs longer than its timeout fails, so give the script as long to run",
+		"### `backend`\n\nServices: postgres\nTimeout: 15m\n\n```bash\ngo test ./...\n```",
+		"### `frontend`\n\nTimeout: 1m30s\n\n```bash\ncd frontend\nnpm ci\nnpm run type-check\n```",
+		"### `lint`\n\n```bash\nmake lint\n```",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, got)

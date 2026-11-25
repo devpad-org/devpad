@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 )
@@ -69,9 +70,11 @@ type FileService interface {
 
 // CommandService defines workspace command execution.
 type CommandService interface {
-	RunCommand(ctx context.Context, userID, workspaceID int64, command string) (*agent.CommandResult, error)
 	StartCommand(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
 	CommandStatus(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
+	// WaitCommand returns a command's status once it has finished, or once
+	// wait has passed while it still runs.
+	WaitCommand(ctx context.Context, userID, workspaceID int64, commandID string, wait time.Duration) (*agent.ManagedCommand, error)
 	ReadCommandOutput(ctx context.Context, userID, workspaceID int64, commandID string, opts agent.CommandOutputOptions) (*agent.CommandOutput, error)
 	StopCommand(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
 }

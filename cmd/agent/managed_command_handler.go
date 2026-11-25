@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 func handleStartCommand(w http.ResponseWriter, r *http.Request) {
@@ -32,8 +33,11 @@ func handleStartCommand(w http.ResponseWriter, r *http.Request) {
 	result, err := commandSessions.Start(req.Command, cwd)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, errTooManyCommandSessions) {
+		switch {
+		case errors.Is(err, errTooManyCommandSessions):
 			status = http.StatusTooManyRequests
+		case errors.Is(err, errNoWorkingDirectory):
+			status = http.StatusBadRequest
 		}
 		writeErr(w, status, err.Error())
 		return
@@ -42,8 +46,15 @@ func handleStartCommand(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// handleCommandStatus returns a command's status, first waiting up to
+// wait_ms for it to finish when that is given.
 func handleCommandStatus(w http.ResponseWriter, r *http.Request) {
-	result, err := commandSessions.Status(r.PathValue("id"))
+	waitMS, err := parseIntQuery(r.URL.Query(), "wait_ms", 0)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := commandSessions.Wait(r.Context(), r.PathValue("id"), time.Duration(waitMS)*time.Millisecond)
 	if err != nil {
 		writeCommandSessionErr(w, err)
 		return
