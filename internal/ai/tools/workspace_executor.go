@@ -179,7 +179,7 @@ func (e *WorkspaceExecutor) ExecuteTool(ctx context.Context, req ExecutionReques
 	case "stop_command":
 		return e.stopCommand(ctx, req.UserID, req.WorkspaceID, params)
 	case "edit_file":
-		return e.editFile(ctx, req.UserID, req.WorkspaceID, params)
+		return e.editFile(ctx, req)
 	case "read_file_lines":
 		return e.readFileLines(ctx, req.UserID, req.WorkspaceID, params)
 	case "update_plan":
@@ -288,36 +288,6 @@ func (e *WorkspaceExecutor) deleteFile(ctx context.Context, userID, workspaceID 
 	}
 
 	return toolSuccess("delete_file", "Deleted successfully.")
-}
-
-func (e *WorkspaceExecutor) editFile(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
-	path, _ := params["path"].(string)
-	oldText, _ := params["old_text"].(string)
-	newText, _ := params["new_text"].(string)
-	if path == "" || oldText == "" {
-		return toolFailure("edit_file", "Error: path and old_text are required")
-	}
-
-	data, err := e.ws.ReadFile(ctx, userID, workspaceID, path)
-	if err != nil {
-		return toolFailure("edit_file", "Error reading file: %v", err)
-	}
-
-	content := string(data)
-	count := strings.Count(content, oldText)
-	if count == 0 {
-		return toolFailure("edit_file", "Error: old_text not found in file")
-	}
-	if count > 1 {
-		return toolFailure("edit_file", "Error: old_text found %d times, must appear exactly once", count)
-	}
-
-	newContent := strings.Replace(content, oldText, newText, 1)
-	if err := e.ws.WriteFile(ctx, userID, workspaceID, path, []byte(newContent)); err != nil {
-		return toolFailure("edit_file", "Error writing file: %v", err)
-	}
-
-	return toolSuccess("edit_file", "File edited successfully.")
 }
 
 func (e *WorkspaceExecutor) readFileLines(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {

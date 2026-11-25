@@ -19,6 +19,7 @@ import (
 
 type stubWorkspaceOps struct {
 	readFileFn          func(ctx context.Context, userID, workspaceID int64, path string) ([]byte, error)
+	writeFileFn         func(ctx context.Context, userID, workspaceID int64, path string, data []byte) error
 	listFilesFn         func(ctx context.Context, userID, workspaceID int64, path string, opts agent.ListFilesOptions) (*agent.FileList, error)
 	searchFilesFn       func(ctx context.Context, userID, workspaceID int64, opts agent.SearchOptions) (*agent.SearchResponse, error)
 	startCommandFn      func(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
@@ -84,7 +85,10 @@ func (s *stubWorkspaceOps) ReadFile(ctx context.Context, userID, workspaceID int
 	return nil, nil
 }
 
-func (s *stubWorkspaceOps) WriteFile(context.Context, int64, int64, string, []byte) error {
+func (s *stubWorkspaceOps) WriteFile(ctx context.Context, userID, workspaceID int64, path string, data []byte) error {
+	if s.writeFileFn != nil {
+		return s.writeFileFn(ctx, userID, workspaceID, path, data)
+	}
 	return nil
 }
 
