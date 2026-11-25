@@ -127,6 +127,41 @@ func TestRunCommandWaitsForTheTimeoutItIsGiven(t *testing.T) {
 	}
 }
 
+func TestRunCommandHandsOverACommandThatOutlastsACall(t *testing.T) {
+	shortenCommandSecond(t)
+	saved := maxToolWait
+	maxToolWait = 20 * time.Millisecond
+	t.Cleanup(func() { maxToolWait = saved })
+
+	f := &fakeCommand{output: "running tests\n", running: -1}
+	ops := f.ops()
+	stopped := make(chan time.Time, 1)
+	ops.stopCommandFn = func(context.Context, int64, int64, string) (*agent.ManagedCommand, error) {
+		stopped <- time.Now()
+		return &agent.ManagedCommand{CommandID: "cmd_1", Status: "stopped"}, nil
+	}
+	began := time.Now()
+	result := NewWorkspaceExecutor(ops).ExecuteTool(context.Background(), toolReq(1, 2, "run_command", []byte(`{"command":"go test ./...","timeout_seconds":300}`)))
+
+	if result.IsError || !strings.Contains(result.Content, "still running") || !strings.Contains(result.Content, `command_id "cmd_1", wait_for_exit true, cursor 14`) || !strings.HasSuffix(result.Content, "\nrunning tests\n") {
+		t.Fatalf("expected the command handed over, got %+v", result)
+	}
+	select {
+	case <-stopped:
+		t.Fatal("stopped a command handed over before its timeout")
+	default:
+	}
+	// Its timeout of 300 shortened seconds is up 300ms after it started.
+	select {
+	case at := <-stopped:
+		if at.Sub(began) < 250*time.Millisecond {
+			t.Fatalf("stopped after %s, before its timeout", at.Sub(began))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("never stopped the command at its timeout")
+	}
+}
+
 func TestRunCommandReportsTheExitCode(t *testing.T) {
 	f := &fakeCommand{output: "FAIL ./internal/auth\n", exitCode: 2}
 	result := NewWorkspaceExecutor(f.ops()).ExecuteTool(context.Background(), toolReq(1, 2, "run_command", []byte(`{"command":"go test ./..."}`)))
@@ -263,8 +298,8 @@ func TestReadCommandOutputAtExitKeepsTheStartAndEndFromItsCursor(t *testing.T) {
 	if payload.Cursor != 100 || payload.NextCursor != 3000 {
 		t.Fatalf("expected cursors 100 to 3000, got %+v", payload)
 	}
-	if len(f.waits) != 1 || f.waits[0] <= 4*time.Minute || f.waits[0] > commandWaitChunk {
-		t.Fatalf("expected one wait of as long as the agent waits, got %v", f.waits)
+	if len(f.waits) != 1 || f.waits[0] <= 3*time.Minute || f.waits[0] > maxToolWait {
+		t.Fatalf("expected one wait of as long as a tool call waits, got %v", f.waits)
 	}
 }
 

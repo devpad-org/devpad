@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -23,6 +24,14 @@ const (
 	truncationNoticeFormat = "\n\n[Output truncated to %d bytes. Use read_file with start_line and end_line, or search_files, for more targeted context.]"
 	summaryInputNotice     = "\n\n[File content truncated to %d bytes before summarization.]"
 )
+
+// maxToolWait is the longest a tool call waits, for a command or for
+// sub-agents, before it returns for the agent to wait again. A provider's
+// prompt cache keeps a conversation for five minutes from the request that
+// last read it, a time that also covers the model's answer to it, so a
+// wait of four minutes leaves the next request reading the conversation
+// from the cache rather than writing all of it again. Tests shorten it.
+var maxToolWait = 4 * time.Minute
 
 // WorkspaceOps is the reduced workspace surface the AI tooling needs in Phase 1.
 type WorkspaceOps interface {

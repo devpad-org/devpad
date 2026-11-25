@@ -1027,9 +1027,9 @@ func TestChildAgentWaitSeconds(t *testing.T) {
 		params map[string]any
 		want   int
 	}{
-		{name: "defaults to the maximum", params: map[string]any{}, want: 600},
+		{name: "defaults to the maximum", params: map[string]any{}, want: 240},
 		{name: "keeps a shorter wait", params: map[string]any{"timeout_seconds": float64(30)}, want: 30},
-		{name: "caps a longer wait", params: map[string]any{"timeout_seconds": float64(3600)}, want: 600},
+		{name: "caps a longer wait", params: map[string]any{"timeout_seconds": float64(3600)}, want: 240},
 		{name: "raises a zero wait", params: map[string]any{"timeout_seconds": float64(0)}, want: 1},
 	}
 	for _, tt := range tests {

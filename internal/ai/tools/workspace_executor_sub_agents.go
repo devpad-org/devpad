@@ -11,11 +11,7 @@ import (
 	"github.com/devpad-org/devpad/internal/ai/domain"
 )
 
-const (
-	childAgentDefaultWaitSeconds = 600
-	childAgentMaxWaitSeconds     = 600
-	childAgentMaxWaitRunCount    = 20
-)
+const childAgentMaxWaitRunCount = 20
 
 type subAgentWaitResult struct {
 	RunID    int64  `json:"runId"`
@@ -476,10 +472,13 @@ func summarizeSubAgentWaitResults(results []subAgentWaitResult) (completed, fail
 	return completed, failed, timedOut
 }
 
+// childAgentWaitSeconds is how long a call waits for sub-agents: what it
+// asks for, by default and at most maxToolWait.
 func childAgentWaitSeconds(params map[string]any) int {
-	timeoutSeconds := childAgentDefaultWaitSeconds
+	most := int(maxToolWait / time.Second)
+	timeoutSeconds := most
 	if value, ok := params["timeout_seconds"].(float64); ok {
 		timeoutSeconds = int(value)
 	}
-	return clamp(timeoutSeconds, 1, childAgentMaxWaitSeconds)
+	return clamp(timeoutSeconds, 1, most)
 }

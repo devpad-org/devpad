@@ -1730,6 +1730,7 @@ func reviewPrompt(in reviewPromptInput) string {
 - Judge the change against what it set out to do, and run the project's tests or checks where they exist.
 - Look specifically for changes that weaken what the tests and checks prove, which no pipeline result shows: deleted tests or assertions, skipped ones (such as `+"`t.Skip`, `it.skip`, `xit` or `@skip`"+`), changed build or test scripts (a `+"`Makefile`"+` target, a script in `+"`package.json`"+`), and loosened lint or type-check settings. Unless the task asks for such a change, it is blocking.
 - Do not change or commit code: you are only reviewing.
+- Commands using sudo wait for the user's approval and hold up the review until they answer, so avoid sudo. If a check cannot run without a tool the sandbox lacks, say so in your review.
 - Leave each problem as a comment of its own, so it can be answered and resolved on its own: %[1]s for a problem in specific code, on the line number in the new version of the file, and %[2]s for one about the change as a whole.
 - Mark each comment blocking or not. A problem is blocking only when merging the change as it is would:
   - behave incorrectly: a bug, an unhandled edge case or error path, data loss, a race;

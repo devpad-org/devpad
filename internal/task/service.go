@@ -1310,6 +1310,7 @@ func implementPrompt(in implementInput) string {
 - /workspace is a git checkout of the project on the branch %[1]s, which started from %[2]s. If %[1]s already has commits that %[3]s lacks, they are earlier work on this task: build on them.
 - The latest %[3]s is available as %[4]s, refreshed each time you start. If your branch conflicts with it, merge %[4]s into %[1]s and resolve the conflicts.
 - Make the change, and run the project's tests or checks where they exist.
+- Commands using sudo wait for the user's approval, and you work in the background where nobody may be watching, so avoid sudo. If the sandbox lacks a tool you need, install it without root where you can, such as with a language's own package manager; otherwise say in your summary what is missing, as it belongs in the project's environment.
 - Commit your work to %[1]s with clear commit messages. Do not switch branches: only commits on %[1]s are collected.
 - The checkout has no remote and no credentials. Do not try to push; devpad collects the branch when you finish.
 - Leave nothing uncommitted when you finish.

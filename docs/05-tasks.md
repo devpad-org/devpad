@@ -98,6 +98,8 @@ Some of an agent's tool calls wait for you before they run:
 
 The call shows as a card with **Approve** and **Deny**, in the chat and in the inbox. An agent can also stop to ask you a question. Both appear in the **inbox** in the header, from every workspace and sandbox, so you can answer an agent without finding it first.
 
+Task and review agents work in the background, so they're asked to avoid `sudo` and to say when their sandbox lacks a tool, which belongs in the project's [environment](/docs/projects#environment).
+
 ## Skills {#skills}
 
 Skills are instructions a project keeps for particular kinds of work, in the [Agent Skills](https://agentskills.io) format: a directory per skill under `.devpad/skills/` or `.claude/skills/`, each with a `SKILL.md` whose front matter gives its `name` and `description`. A skill in `.devpad/skills/` wins over one of the same name in `.claude/skills/`.

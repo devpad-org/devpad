@@ -18,9 +18,6 @@ const (
 	// command still running then is stopped.
 	defaultRunCommandSeconds = 120
 	maxRunCommandSeconds     = 600
-	// maxExitWait is the longest read_command_output waits for a command to
-	// exit.
-	maxExitWait = 10 * time.Minute
 	// commandWaitChunk is the longest one request to the agent waits, which
 	// the agent holds to five minutes, below its client's request timeout.
 	commandWaitChunk = 5 * time.Minute
@@ -39,7 +36,9 @@ const (
 var commandSecond = time.Second
 
 // runCommand runs a command as a managed command and waits for it to
-// finish, so that output too long to return stays readable by cursor.
+// finish, so that output too long to return stays readable by cursor. A
+// command that runs past maxToolWait runs on until its timeout, when devpad
+// stops it, and the call returns for the agent to wait on it again.
 func (e *WorkspaceExecutor) runCommand(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
 	command, _ := params["command"].(string)
 	if command == "" {
@@ -58,12 +57,26 @@ func (e *WorkspaceExecutor) runCommand(ctx context.Context, userID, workspaceID 
 	if started == nil {
 		return toolFailure("run_command", "Error: empty command start response")
 	}
-	status, err := e.waitForExit(ctx, userID, workspaceID, started.CommandID, time.Duration(seconds)*commandSecond)
+	timeout := time.Duration(seconds) * commandSecond
+	wait := min(timeout, maxToolWait)
+	status, err := e.waitForExit(ctx, userID, workspaceID, started.CommandID, wait)
 	if err != nil {
 		// The command must not outlive the call that ran it, such as one
 		// whose run was cancelled.
 		e.stopCommandQuietly(ctx, userID, workspaceID, started.CommandID)
 		return toolFailure("run_command", "Error: %v", err)
+	}
+	if commandActive(status.Status) && timeout > wait {
+		e.stopCommandAfter(userID, workspaceID, started.CommandID, timeout-wait)
+		output, err := e.commandOutput(ctx, userID, workspaceID, started.CommandID, 0, status.Cursor, maxToolTextBytes)
+		if err != nil {
+			return toolFailure("run_command", "Error reading the command's output: %v", err)
+		}
+		message := fmt.Sprintf("The command is still running after %s. It runs on until it ends, or until its timeout_seconds of %d are up, when it is stopped. Wait for it with read_command_output: command_id %q, wait_for_exit true, cursor %d for only the output after what is here.", waitText(wait), seconds, started.CommandID, status.Cursor)
+		if output != "" {
+			message += "\n" + output
+		}
+		return toolSuccess("run_command", message)
 	}
 	timedOut := commandActive(status.Status)
 	var stopErr error
@@ -102,6 +115,24 @@ func (e *WorkspaceExecutor) runCommand(ctx context.Context, userID, workspaceID 
 		message += "\n" + output
 	}
 	return toolFailure("run_command", "%s", message)
+}
+
+// stopCommandAfter stops a command once after has passed, on a best-effort
+// basis: by then it may have ended, or been stopped already.
+func (e *WorkspaceExecutor) stopCommandAfter(userID, workspaceID int64, commandID string, after time.Duration) {
+	time.AfterFunc(after, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), commandStopTimeout)
+		defer cancel()
+		_, _ = e.ws.StopCommand(ctx, userID, workspaceID, commandID)
+	})
+}
+
+// waitText writes a wait in whole minutes when it is one, else in seconds.
+func waitText(d time.Duration) string {
+	if d >= time.Minute && d%time.Minute == 0 {
+		return plural(int(d/time.Minute), "minute", "minutes")
+	}
+	return plural(int(d/time.Second), "second", "seconds")
 }
 
 // commandStartFailure reports a command that could not start, saying what
@@ -281,9 +312,9 @@ func (e *WorkspaceExecutor) readCommandOutput(ctx context.Context, userID, works
 // wait_ms, and returns its output since the call's cursor as run_command
 // would: its start and end when it is too long.
 func (e *WorkspaceExecutor) readCommandOutputAtExit(ctx context.Context, userID, workspaceID int64, commandID string, opts agent.CommandOutputOptions) domain.ToolResultPart {
-	wait := maxExitWait
+	wait := maxToolWait
 	if opts.WaitMS > 0 {
-		wait = min(time.Duration(opts.WaitMS)*time.Millisecond, maxExitWait)
+		wait = min(time.Duration(opts.WaitMS)*time.Millisecond, maxToolWait)
 	}
 	status, err := e.waitForExit(ctx, userID, workspaceID, commandID, wait)
 	if err != nil {
