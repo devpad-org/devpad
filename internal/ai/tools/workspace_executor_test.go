@@ -196,23 +196,9 @@ func TestWorkspaceExecutor_ListFilesPassesRecursiveOptions(t *testing.T) {
 		t.Fatalf("expected success result, got %+v", result)
 	}
 
-	var payload struct {
-		Entries []struct {
-			Name string `json:"name"`
-			Path string `json:"path"`
-			Type string `json:"type"`
-			Size int64  `json:"size"`
-		} `json:"entries"`
-		Truncated bool `json:"truncated"`
-	}
-	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
-		t.Fatalf("decoding list result: %v", err)
-	}
-	if !payload.Truncated || len(payload.Entries) != 2 {
-		t.Fatalf("unexpected list payload: %+v", payload)
-	}
-	if payload.Entries[1].Path != "src/main.go" {
-		t.Fatalf("expected workspace-relative path, got %+v", payload.Entries[1])
+	want := "./\n  src/\nsrc/\n  main.go  12 B\n[Stopped at 2 entries, and there are more. " + listNarrowHint + "]"
+	if result.Content != want {
+		t.Fatalf("listed %q, want %q", result.Content, want)
 	}
 }
 

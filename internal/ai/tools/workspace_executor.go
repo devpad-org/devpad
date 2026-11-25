@@ -4,23 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/devpad-org/devpad/internal/agent"
 	"github.com/devpad-org/devpad/internal/ai/domain"
 	"github.com/devpad-org/devpad/internal/workspace"
 )
 
 const (
-	maxToolTextBytes      = 16 * 1024
-	maxSummaryInputBytes  = 128 * 1024
-	maxSummaryOutputBytes = 4 * 1024
-	maxReadFileLines      = 400
-	// Keep recursive listings below the raw agent API caps to protect model context.
-	maxListFilesDepth      = 6
-	maxListFilesEntries    = 1000
+	maxToolTextBytes       = 16 * 1024
+	maxSummaryInputBytes   = 128 * 1024
+	maxSummaryOutputBytes  = 4 * 1024
+	maxReadFileLines       = 400
 	truncationNoticeFormat = "\n\n[Output truncated to %d bytes. Use read_file with start_line and end_line, or search_files, for more targeted context.]"
 	summaryInputNotice     = "\n\n[File content truncated to %d bytes before summarization.]"
 )
@@ -233,37 +228,6 @@ func (e *WorkspaceExecutor) writeFile(ctx context.Context, userID, workspaceID i
 	return toolSuccess("write_file", "File written successfully.")
 }
 
-func (e *WorkspaceExecutor) listFiles(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
-	path, _ := params["path"].(string)
-	opts := agent.ListFilesOptions{}
-	if value, ok := params["recursive"].(bool); ok {
-		opts.Recursive = value
-	}
-	if value, ok := params["max_depth"].(float64); ok {
-		opts.MaxDepth = clamp(int(value), 1, maxListFilesDepth)
-	}
-	if value, ok := params["max_entries"].(float64); ok {
-		opts.MaxEntries = clamp(int(value), 1, maxListFilesEntries)
-	}
-
-	list, err := e.ws.ListFiles(ctx, userID, workspaceID, path, opts)
-	if err != nil {
-		return toolFailure("list_files", "Error: %v", err)
-	}
-	if list == nil {
-		return toolFailure("list_files", "Error: empty file list response")
-	}
-	data, err := json.Marshal(map[string]any{
-		"entries":   formatFileEntries(list.Entries),
-		"truncated": list.Truncated,
-	})
-	if err != nil {
-		return toolFailure("list_files", "Error: %v", err)
-	}
-
-	return toolSuccess("list_files", string(data))
-}
-
 func (e *WorkspaceExecutor) deleteFile(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
 	path, _ := params["path"].(string)
 	if path == "" {
@@ -338,25 +302,4 @@ func clamp(value, minValue, maxValue int) int {
 		return maxValue
 	}
 	return value
-}
-
-func formatFileEntries(entries []agent.FileEntry) []map[string]any {
-	result := make([]map[string]any, 0, len(entries))
-	for _, entry := range entries {
-		result = append(result, map[string]any{
-			"name": entry.Name,
-			"path": trimWorkspacePath(entry.Path),
-			"type": entry.Type,
-			"size": entry.Size,
-		})
-	}
-
-	return result
-}
-
-func trimWorkspacePath(path string) string {
-	if path == "/workspace" {
-		return ""
-	}
-	return strings.TrimPrefix(path, "/workspace/")
 }

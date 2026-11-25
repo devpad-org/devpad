@@ -279,15 +279,10 @@ export function toolResultMeta(seg: ToolDisplaySegment): string {
       return `${matches} ${pluralize(matches, 'match', 'matches')}`
     }
     case 'list_files': {
-      try {
-        const parsed = JSON.parse(seg.result)
-        if (Array.isArray(parsed)) {
-          return `${parsed.length} ${pluralize(parsed.length, 'item')}`
-        }
-      } catch {
-        return 'Completed'
-      }
-      return 'Completed'
+      // Each directory's path comes on a line of its own, then its entries
+      // indented below it, and notes in brackets.
+      const items = seg.result.split('\n').filter((line) => line.startsWith('  ')).length
+      return `${items} ${pluralize(items, 'item')}`
     }
     case 'run_command': {
       const lines = seg.result.trim() === '' ? 0 : seg.result.trim().split('\n').length

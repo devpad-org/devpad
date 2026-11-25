@@ -127,8 +127,8 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "list_files",
-				Description: "List files and directories at a given path in the project. Recursive listing is opt-in and bounded; common large directories are not expanded.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative directory path from the project root. Use empty string or / for root."},"recursive":{"type":"boolean","description":"When true, list descendants recursively. Defaults to false."},"max_depth":{"type":"integer","description":"Maximum recursive depth from the requested path. Defaults server-side and is capped."},"max_entries":{"type":"integer","description":"Maximum entries to return. Defaults server-side and is capped."}},"required":["path"]}`),
+				Description: "List files and directories at a given path in the project: each directory's path, then its entries indented below it, a directory with a trailing / and a file with its size. Recursive listing is opt-in and bounded; dependency and build directories such as .git, node_modules, vendor and dist are listed but not expanded. To find files by name, use search_files with files_only and a path_filter instead.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative directory path from the project root. Use empty string or / for root."},"recursive":{"type":"boolean","description":"When true, list descendants recursively. Defaults to false."},"max_depth":{"type":"integer","description":"Maximum recursive depth from the requested path. Defaults to 3, at most 6."},"max_entries":{"type":"integer","description":"Maximum entries to return, at most 1000. A recursive listing defaults to 500."}},"required":["path"]}`),
 			},
 		},
 		{
