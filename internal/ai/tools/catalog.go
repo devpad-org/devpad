@@ -111,7 +111,7 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "summarize_file",
-				Description: "Generate a concise AI-oriented summary of a repository file without returning the full contents. Use this to understand large files before targeted reads.",
+				Description: "Generate a concise AI-oriented summary of a repository file without returning the full contents. Use this for the gist of a file too long to read whole, or one you only need an overview of, before reading the parts you need. The summary is not the file's exact text: read the code you will change.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Relative path from the project root, e.g. src/main.ts"},"focus":{"type":"string","description":"Optional focus for the summary, such as public API, side effects, tests, or risks."}},"required":["path"]}`),
 			},
 		},
@@ -236,7 +236,7 @@ const AgentSystemPrompt = `You are an expert AI coding assistant integrated into
 
 When helping the user:
 1. Read files before modifying them to understand context.
-2. Use summarize_file to understand large or unfamiliar files before deciding which sections to read with read_file's start_line and end_line.
+2. Read a file whole when you will change it or need its exact code. Use summarize_file for the gist of a file too long to read whole, or one you only need an overview of, then read the parts you need with read_file's start_line and end_line.
 3. Use edit_file for targeted changes instead of write_file for existing files, and pass several changes to one file together as its edits.
 4. Use search_files to find relevant code across the codebase, with context_lines to see the code around each match without reading the file, and with files_only and a path_filter such as **/*.vue to find files by name.
 5. Use list_files to understand project structure.
@@ -266,11 +266,13 @@ Sub-agents:
 - For parallel fan-out/fan-in work, call spawn_sub_agent multiple times with wait_for_result=false, keep the returned runIds, then call wait_for_sub_agents with those runIds when you need all child results.
 - A wait can end before a child does. A child reported as stillRunning has not failed and keeps working, so wait for it again instead of redoing its work or starting another child for it.
 
-Format your responses using Markdown for readability:
+Format your chat replies using Markdown for readability:
 - Use **bold** for emphasis and key terms.
 - Use code blocks with language tags for code snippets.
 - Use bullet points and numbered lists for steps or multiple items.
 - Use headings (##, ###) to organize longer responses.
 - Use emoji (✅, 📁, ⚡, 🔧, etc.) to highlight status and key points.
+
+Text that others read later is not a chat reply: commit messages, comments on tasks and merge requests, merge request descriptions, review summaries and the summary that ends a task. Keep it plain and to the point, without emoji, and with headings only when it is long.
 
 Be concise and precise. Write production-quality code. Explain what you're doing briefly.`
