@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1139,5 +1141,105 @@ func TestAgentChatOrchestrator_MetersARequestCutShort(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the request cut short was never spent from the budget")
+	}
+}
+
+// toolCallRun runs an orchestrator whose model makes calls in its first
+// response, with exec as the executor, and returns the turns its second
+// request was sent.
+func toolCallRun(t *testing.T, calls []domain.ToolCall, exec func(ctx context.Context, req aitools.ExecutionRequest) domain.ToolResultPart) []domain.Turn {
+	t.Helper()
+	var second []domain.Turn
+	requests := 0
+	orch := &agentChatOrchestrator{
+		service: &mockChatService{chatStreamFn: func(_ context.Context, req domain.ChatRequest) (<-chan domain.ProviderEvent, error) {
+			ch := make(chan domain.ProviderEvent, 2)
+			requests++
+			if requests == 1 {
+				ch <- domain.ProviderEvent{ToolCalls: calls}
+			} else {
+				second = req.Turns
+				ch <- domain.ProviderEvent{TextDelta: "done"}
+			}
+			ch <- domain.ProviderEvent{Done: true}
+			close(ch)
+			return ch, nil
+		}},
+		toolCatalog:       fakeToolCatalog{},
+		toolExecutor:      &mockToolExecutor{executeToolFn: exec},
+		approvals:         &mockApprovalBroker{},
+		questions:         &mockQuestionBroker{},
+		maxToolIterations: defaultMaxToolIterations,
+	}
+	stream, err := orch.Stream(context.Background(), AgentChatRequest{UserID: 1, WorkspaceID: 1, Model: "test-model", Turns: []domain.Turn{domain.NewTextTurn(domain.RoleUser, "go")}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	collectEvents(t, stream)
+	return second
+}
+
+func call(id, name string) domain.ToolCall {
+	return domain.ToolCall{ID: id, Type: "function", Function: domain.ToolCallFunction{Name: name, Arguments: `{"path":"` + id + `"}`}}
+}
+
+// toolResultIDs lists the calls the tool results in turns answer, in order.
+func toolResultIDs(turns []domain.Turn) []string {
+	var ids []string
+	for _, turn := range turns {
+		for _, part := range turn.Parts {
+			if part.Kind == domain.PartToolResult {
+				ids = append(ids, part.ToolResult.ToolCallID+"="+part.ToolResult.Content)
+			}
+		}
+	}
+	return ids
+}
+
+func TestAgentChatOrchestrator_RunsReadOnlyCallsTogether(t *testing.T) {
+	// Each read waits until all three have started, which only calls run
+	// at the same time can do.
+	var started sync.WaitGroup
+	started.Add(3)
+	allStarted := make(chan struct{})
+	go func() { started.Wait(); close(allStarted) }()
+	calls := []domain.ToolCall{call("a", "read_file"), call("b", "search_files"), call("c", "summarize_file")}
+	turns := toolCallRun(t, calls, func(_ context.Context, req aitools.ExecutionRequest) domain.ToolResultPart {
+		started.Done()
+		select {
+		case <-allStarted:
+		case <-time.After(5 * time.Second):
+			return domain.ToolResultPart{Content: "ran alone", IsError: true}
+		}
+		return domain.ToolResultPart{Name: req.ToolName, Content: req.ToolName}
+	})
+	got := toolResultIDs(turns)
+	want := []string{"a=read_file", "b=search_files", "c=summarize_file"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("results %q, want %q", got, want)
+	}
+}
+
+func TestAgentChatOrchestrator_RunsACallThatWritesOnItsOwn(t *testing.T) {
+	var mu sync.Mutex
+	var log []string
+	calls := []domain.ToolCall{call("a", "read_file"), call("b", "edit_file"), call("c", "read_file"), call("d", "read_file")}
+	turns := toolCallRun(t, calls, func(_ context.Context, req aitools.ExecutionRequest) domain.ToolResultPart {
+		mu.Lock()
+		log = append(log, "start "+req.ToolName)
+		mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+		mu.Lock()
+		log = append(log, "end "+req.ToolName)
+		mu.Unlock()
+		return domain.ToolResultPart{Name: req.ToolName, Content: req.ToolName}
+	})
+	// The edit starts only once the read before it ended, and ends before
+	// the reads after it start.
+	if len(log) != 8 || log[0] != "start read_file" || log[1] != "end read_file" || log[2] != "start edit_file" || log[3] != "end edit_file" {
+		t.Fatalf("ran %q", log)
+	}
+	if got := toolResultIDs(turns); !slices.Equal(got, []string{"a=read_file", "b=edit_file", "c=read_file", "d=read_file"}) {
+		t.Fatalf("results %q", got)
 	}
 }

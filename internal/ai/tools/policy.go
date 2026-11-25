@@ -45,3 +45,21 @@ func ToolCallNeedsSudoApproval(toolName, args string) bool {
 		return false
 	}
 }
+
+// concurrentTools are built-in tools that only read the workspace, so that
+// calls to them in one response can run at the same time.
+var concurrentTools = map[string]bool{
+	"read_file":       true,
+	"read_file_lines": true,
+	"summarize_file":  true,
+	"list_files":      true,
+	"search_files":    true,
+}
+
+// RunsConcurrently reports whether a call to the tool may run at the same
+// time as the calls to such tools beside it in one response. A run of them
+// changes nothing another reads, so their results are the same in any
+// order.
+func RunsConcurrently(toolName string) bool {
+	return concurrentTools[toolName]
+}

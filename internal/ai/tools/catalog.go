@@ -241,6 +241,7 @@ When helping the user:
 4. Use search_files to find relevant code across the codebase, with context_lines to see the code around each match without reading the file, and with files_only and a path_filter such as **/*.vue to find files by name.
 5. Use list_files to understand project structure.
 6. Use run_command for finite commands such as installing packages, running tests, or building. It waits 2 minutes unless you give it a longer timeout_seconds, at most 10 minutes, so give a slow build or test suite the time it needs rather than running it again. Use start_command for long-running dev servers or watchers such as npm start, and for commands that take longer than 10 minutes, then inspect logs with read_command_output, wait for a command to finish with read_command_output's wait_for_exit rather than polling, and stop the process with stop_command when it is no longer needed. You have sudo access for elevated privileges (e.g. sudo apt install, sudo systemctl). Use sudo when a command requires root permissions. The environment is a Debian 13 container.
+7. When tool calls do not depend on each other's results, such as reading several files or running several searches, make them all in one response rather than one at a time: calls that only read run at the same time, and each response you wait for is another request.
 
 Plan management:
 - Only use update_plan for complex tasks that involve 3 or more distinct steps (e.g. implementing a feature across multiple files, multi-stage refactors, or tasks requiring research then implementation).

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/devpad-org/devpad/internal/ai/approval"
 	"github.com/devpad-org/devpad/internal/ai/domain"
@@ -17,6 +18,10 @@ import (
 // budget is what normally stops it; this catches runs a budget cannot, such
 // as those on models without known prices.
 const defaultMaxToolIterations = 500
+
+// maxConcurrentToolCalls bounds the read-only calls of one response that
+// run at the same time.
+const maxConcurrentToolCalls = 4
 
 type agentChatOrchestrator struct {
 	service           ChatService
@@ -223,10 +228,20 @@ func (o *agentChatOrchestrator) run(ctx context.Context, req AgentChatRequest, m
 			return
 		}
 
-		for _, toolCall := range toolCalls {
-			if !o.handleToolCall(ctx, req, model, toolCall, &turns, out) {
+		for i := 0; i < len(toolCalls); {
+			// Calls next to each other that only read run together.
+			j := i + 1
+			for aitools.RunsConcurrently(toolCalls[i].Function.Name) && j < len(toolCalls) && aitools.RunsConcurrently(toolCalls[j].Function.Name) {
+				j++
+			}
+			if j-i > 1 {
+				if !o.handleConcurrentToolCalls(ctx, req, model, toolCalls[i:j], &turns, out) {
+					return
+				}
+			} else if !o.handleToolCall(ctx, req, model, toolCalls[i], &turns, out) {
 				return
 			}
+			i = j
 		}
 	}
 
@@ -249,17 +264,7 @@ func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentCha
 		return o.handleUserQuestion(ctx, req, toolCall, turns, out)
 	}
 
-	execReq := aitools.ExecutionRequest{
-		UserID:         req.UserID,
-		WorkspaceID:    req.WorkspaceID,
-		CurrentRunID:   req.CurrentRunID,
-		ConversationID: req.ConversationID,
-		Model:          req.Model,
-		Vision:         model.Vision,
-		Thinking:       req.Thinking,
-		ToolName:       toolCall.Function.Name,
-		Arguments:      json.RawMessage(toolCall.Function.Arguments),
-	}
+	execReq := executionRequest(req, model, toolCall)
 	gate, needed, err := o.approvalFor(ctx, execReq)
 	if err != nil {
 		// Without knowing whether the call needs approval it must not run.
@@ -296,6 +301,65 @@ func (o *agentChatOrchestrator) handleToolCall(ctx context.Context, req AgentCha
 	}
 
 	return o.emitToolResult(ctx, result, turns, out)
+}
+
+// handleConcurrentToolCalls runs calls that only read at the same time,
+// at most maxConcurrentToolCalls at once, and adds their results in the
+// order the model made the calls. Should any of them need approval, or its
+// need be unknown, they run one by one instead, which asks or fails closed.
+func (o *agentChatOrchestrator) handleConcurrentToolCalls(ctx context.Context, req AgentChatRequest, model domain.Model, toolCalls []domain.ToolCall, turns *[]domain.Turn, out chan<- domain.ClientEvent) bool {
+	for _, toolCall := range toolCalls {
+		if _, needed, err := o.approvalFor(ctx, executionRequest(req, model, toolCall)); err != nil || needed {
+			for _, toolCall := range toolCalls {
+				if !o.handleToolCall(ctx, req, model, toolCall, turns, out) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+
+	results := make([]domain.ToolResultPart, len(toolCalls))
+	slots := make(chan struct{}, maxConcurrentToolCalls)
+	var wg sync.WaitGroup
+	for i, toolCall := range toolCalls {
+		wg.Add(1)
+		slots <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-slots }()
+			results[i] = o.toolExecutor.ExecuteTool(ctx, executionRequest(req, model, toolCall))
+		}()
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return false
+	}
+	for i, result := range results {
+		result.ToolCallID = toolCalls[i].ID
+		if result.Name == "" {
+			result.Name = toolCalls[i].Function.Name
+		}
+		if !o.emitToolResult(ctx, result, turns, out) {
+			return false
+		}
+	}
+	return true
+}
+
+// executionRequest is the executor's request for one of a run's tool calls.
+func executionRequest(req AgentChatRequest, model domain.Model, toolCall domain.ToolCall) aitools.ExecutionRequest {
+	return aitools.ExecutionRequest{
+		UserID:         req.UserID,
+		WorkspaceID:    req.WorkspaceID,
+		CurrentRunID:   req.CurrentRunID,
+		ConversationID: req.ConversationID,
+		Model:          req.Model,
+		Vision:         model.Vision,
+		Thinking:       req.Thinking,
+		ToolName:       toolCall.Function.Name,
+		Arguments:      json.RawMessage(toolCall.Function.Arguments),
+	}
 }
 
 func (o *agentChatOrchestrator) handleUserQuestion(ctx context.Context, req AgentChatRequest, toolCall domain.ToolCall, turns *[]domain.Turn, out chan<- domain.ClientEvent) bool {
