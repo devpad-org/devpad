@@ -18,7 +18,6 @@ const (
 	maxSummaryInputBytes  = 128 * 1024
 	maxSummaryOutputBytes = 4 * 1024
 	maxReadFileLines      = 400
-	maxSearchFileResults  = 100
 	// Keep recursive listings below the raw agent API caps to protect model context.
 	maxListFilesDepth      = 6
 	maxListFilesEntries    = 1000
@@ -289,29 +288,6 @@ func (e *WorkspaceExecutor) deleteFile(ctx context.Context, userID, workspaceID 
 	}
 
 	return toolSuccess("delete_file", "Deleted successfully.")
-}
-
-func (e *WorkspaceExecutor) searchFiles(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {
-	pattern, _ := params["pattern"].(string)
-	if pattern == "" {
-		return toolFailure("search_files", "Error: pattern is required")
-	}
-	pathFilter, _ := params["path_filter"].(string)
-	maxResults := 100
-	if value, ok := params["max_results"].(float64); ok {
-		maxResults = int(value)
-	}
-	maxResults = clamp(maxResults, 1, maxSearchFileResults)
-	results, err := e.ws.SearchFiles(ctx, userID, workspaceID, pattern, pathFilter, maxResults)
-	if err != nil {
-		return toolFailure("search_files", "Error: %v", err)
-	}
-	data, err := json.Marshal(results)
-	if err != nil {
-		return toolFailure("search_files", "Error: %v", err)
-	}
-
-	return toolSuccess("search_files", string(data))
 }
 
 func (e *WorkspaceExecutor) editFile(ctx context.Context, userID, workspaceID int64, params map[string]any) domain.ToolResultPart {

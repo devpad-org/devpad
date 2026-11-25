@@ -183,8 +183,8 @@ func AgentTools() []domain.ToolDefinition {
 			Type: "function",
 			Function: domain.ToolFunction{
 				Name:        "search_files",
-				Description: "Search for a regex pattern across all files in the project. Returns matching lines with file paths and line numbers. Use this to find function definitions, usages, imports, or any text across the codebase.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string","description":"Regex pattern to search for (Go regex syntax)"},"path_filter":{"type":"string","description":"Optional: filter by file name/path pattern, e.g. *.ts or src/"},"max_results":{"type":"integer","description":"Maximum number of results to return (default 100, max 100)"}},"required":["pattern"]}`),
+				Description: "Search the project's files for a regex pattern. Use this to find function definitions, usages, imports, or any text across the codebase. Returns matching lines as path:line:content, and the context_lines around them as path-line-content with -- between groups, as grep -n does. In a git checkout it searches the files git tracks and new ones it does not ignore, so build output is left out and dotfiles such as .devpad/ and .github/ are in; node_modules, vendor and __pycache__ are left out unless path_filter names them. Binary files are skipped. With files_only it returns only the paths of matching files, and without a pattern it lists the files path_filter matches, which finds files by name.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string","description":"Regex pattern to search for (Go regex syntax); start it with (?i) to ignore case. Required unless files_only is set."},"path_filter":{"type":"string","description":"Optional: search only files whose path matches a glob, where * stays within a directory, ** spans directories and {a,b} is either, such as *.ts, internal/**/*.go or src/*.{ts,vue}; or whose path contains a text without glob characters, such as src/."},"context_lines":{"type":"integer","description":"Optional lines to show before and after each match. Defaults to 0; at most 5."},"files_only":{"type":"boolean","description":"When true, return the paths of matching files instead of their lines. Defaults to false."},"max_results":{"type":"integer","description":"Maximum number of matches, or of files with files_only, to return (default 100, max 100)"}}}`),
 			},
 		},
 		{
@@ -254,7 +254,7 @@ When helping the user:
 1. Read files before modifying them to understand context.
 2. Use summarize_file to understand large or unfamiliar files before deciding which sections to inspect with read_file_lines.
 3. Use edit_file for targeted changes instead of write_file for existing files.
-4. Use search_files to find relevant code across the codebase.
+4. Use search_files to find relevant code across the codebase, with context_lines to see the code around each match without reading the file, and with files_only and a path_filter such as **/*.vue to find files by name.
 5. Use list_files to understand project structure.
 6. Use run_command for finite commands such as installing packages, running tests, or building. It waits 2 minutes unless you give it a longer timeout_seconds, at most 10 minutes, so give a slow build or test suite the time it needs rather than running it again. Use start_command for long-running dev servers or watchers such as npm start, and for commands that take longer than 10 minutes, then inspect logs with read_command_output, wait for a command to finish with read_command_output's wait_for_exit rather than polling, and stop the process with stop_command when it is no longer needed. You have sudo access for elevated privileges (e.g. sudo apt install, sudo systemctl). Use sudo when a command requires root permissions. The environment is a Debian 13 container.
 

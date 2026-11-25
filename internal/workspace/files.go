@@ -60,10 +60,10 @@ func (s *service) RenameFile(ctx context.Context, userID, workspaceID int64, old
 	return c.RenameFile(ctx, oldPath, newPath)
 }
 
-func (s *service) SearchFiles(ctx context.Context, userID, workspaceID int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error) {
+func (s *service) SearchFiles(ctx context.Context, userID, workspaceID int64, opts agent.SearchOptions) (*agent.SearchResponse, error) {
 	c, err := s.getAgent(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	return c.SearchFiles(ctx, pattern, pathFilter, maxResults)
+	return c.SearchFiles(ctx, opts)
 }

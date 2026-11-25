@@ -57,7 +57,7 @@ type FileTreeService interface {
 
 // FileSearchService defines workspace file search operations.
 type FileSearchService interface {
-	SearchFiles(ctx context.Context, userID, workspaceID int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error)
+	SearchFiles(ctx context.Context, userID, workspaceID int64, opts agent.SearchOptions) (*agent.SearchResponse, error)
 }
 
 // FileService defines all workspace file operations and search.

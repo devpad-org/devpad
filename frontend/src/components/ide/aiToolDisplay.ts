@@ -170,7 +170,7 @@ export function toolTargetLabel(seg: ToolDisplaySegment): string {
     case 'search_files': {
       const pattern = stringArg(seg.args, 'pattern')
       const pathFilter = stringArg(seg.args, 'path_filter')
-      const target = pathFilter ? `${pattern} in ${pathFilter}` : pattern
+      const target = pattern && pathFilter ? `${pattern} in ${pathFilter}` : pattern || pathFilter
       return truncateEnd(target || formatToolArgs(seg.name, seg.args))
     }
     case 'run_command':
@@ -267,12 +267,19 @@ export function toolResultMeta(seg: ToolDisplaySegment): string {
       const lines = seg.result === '' ? 0 : seg.result.split('\n').length
       return `${lines} ${pluralize(lines, 'line')}`
     }
-    case 'search_files':
+    case 'search_files': {
+      // Matches come one a line as path:line:content, context lines as
+      // path-line-content, groups apart with --, and notes in brackets.
+      const lines = seg.result.split('\n').filter((line) => line !== '' && line !== '--' && !line.startsWith('['))
+      if (parseToolArgs(seg.args)?.files_only === true) return `${lines.length} ${pluralize(lines.length, 'file')}`
+      const matches = lines.filter(isSearchMatchLine).length
+      return `${matches} ${pluralize(matches, 'match', 'matches')}`
+    }
     case 'list_files': {
       try {
         const parsed = JSON.parse(seg.result)
         if (Array.isArray(parsed)) {
-          return `${parsed.length} ${seg.name === 'search_files' ? pluralize(parsed.length, 'match', 'matches') : pluralize(parsed.length, 'item')}`
+          return `${parsed.length} ${pluralize(parsed.length, 'item')}`
         }
       } catch {
         return 'Completed'
@@ -392,6 +399,14 @@ function truncateMiddle(value: string, maxLength = 82): string {
 function truncateEnd(value: string, maxLength = 96): string {
   if (value.length <= maxLength) return value
   return `${value.slice(0, maxLength - 1)}…`
+}
+
+// isSearchMatchLine tells a search_files match (path:line:content) from a
+// line of context around one (path-line-content) by which comes first.
+function isSearchMatchLine(line: string): boolean {
+  const match = /:\d+:/.exec(line)
+  const context = /-\d+-/.exec(line)
+  return match !== null && (context === null || match.index < context.index)
 }
 
 function pluralize(count: number, singular: string, plural = `${singular}s`): string {

@@ -20,7 +20,7 @@ import (
 type stubWorkspaceOps struct {
 	readFileFn          func(ctx context.Context, userID, workspaceID int64, path string) ([]byte, error)
 	listFilesFn         func(ctx context.Context, userID, workspaceID int64, path string, opts agent.ListFilesOptions) (*agent.FileList, error)
-	searchFilesFn       func(ctx context.Context, userID, workspaceID int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error)
+	searchFilesFn       func(ctx context.Context, userID, workspaceID int64, opts agent.SearchOptions) (*agent.SearchResponse, error)
 	startCommandFn      func(ctx context.Context, userID, workspaceID int64, command, cwd string) (*agent.ManagedCommand, error)
 	commandStatusFn     func(ctx context.Context, userID, workspaceID int64, commandID string) (*agent.ManagedCommand, error)
 	waitCommandFn       func(ctx context.Context, userID, workspaceID int64, commandID string, wait time.Duration) (*agent.ManagedCommand, error)
@@ -99,9 +99,9 @@ func (s *stubWorkspaceOps) DeleteFile(context.Context, int64, int64, string) err
 	return nil
 }
 
-func (s *stubWorkspaceOps) SearchFiles(ctx context.Context, userID, workspaceID int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error) {
+func (s *stubWorkspaceOps) SearchFiles(ctx context.Context, userID, workspaceID int64, opts agent.SearchOptions) (*agent.SearchResponse, error) {
 	if s.searchFilesFn != nil {
-		return s.searchFilesFn(ctx, userID, workspaceID, pattern, pathFilter, maxResults)
+		return s.searchFilesFn(ctx, userID, workspaceID, opts)
 	}
 	return nil, nil
 }
@@ -487,20 +487,6 @@ func TestAgentToolsIncludesSummarizeFile(t *testing.T) {
 		t.Fatalf("expected path to be required, got %+v", schema.Required)
 	}
 	t.Fatal("summarize_file tool definition not found")
-}
-
-func TestWorkspaceExecutor_SearchFilesCapsMaxResults(t *testing.T) {
-	executor := NewWorkspaceExecutor(&stubWorkspaceOps{searchFilesFn: func(_ context.Context, _, _ int64, pattern, pathFilter string, maxResults int) ([]agent.SearchResult, error) {
-		if maxResults != maxSearchFileResults {
-			t.Fatalf("expected max_results to be capped to %d, got %d", maxSearchFileResults, maxResults)
-		}
-		return []agent.SearchResult{{File: "main.go", Line: 1, Content: "package main"}}, nil
-	}})
-
-	result := executor.ExecuteTool(context.Background(), toolReq(7, 9, "search_files", []byte(`{"pattern":"main","max_results":500}`)))
-	if result.IsError {
-		t.Fatalf("expected success result, got %+v", result)
-	}
 }
 
 func TestWorkspaceExecutor_SpawnSubAgentStartsChildRun(t *testing.T) {

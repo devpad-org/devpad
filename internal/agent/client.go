@@ -320,19 +320,52 @@ func (c *Client) TerminalURL() string {
 	return strings.Replace(c.baseURL, "http://", "ws://", 1) + "/ws/terminal"
 }
 
-// SearchResult represents a single matching line from a search.
+// SearchResult represents a single matching line from a search, with the
+// lines around it that the search asked for.
 type SearchResult struct {
-	File    string `json:"file"`
-	Line    int    `json:"line"`
-	Content string `json:"content"`
+	File    string   `json:"file"`
+	Line    int      `json:"line"`
+	Content string   `json:"content"`
+	Before  []string `json:"before,omitempty"`
+	After   []string `json:"after,omitempty"`
 }
 
+// SearchOptions is what a search looks for.
+type SearchOptions struct {
+	// Pattern is a Go regular expression lines must match. It may be empty
+	// only with FilesOnly, which then lists the files PathFilter picks.
+	Pattern string
+	// PathFilter limits the search to the paths it picks: a glob, or text
+	// they contain.
+	PathFilter string
+	MaxResults int
+	// ContextLines asks for this many lines before and after each match.
+	ContextLines int
+	// FilesOnly asks for the paths of matching files instead of lines.
+	FilesOnly bool
+}
+
+// SearchResponse is what a search found: matching lines, or with FilesOnly
+// the files. Truncated says it stopped at its most results with more to
+// find.
+type SearchResponse struct {
+	Results   []SearchResult `json:"results"`
+	Files     []string       `json:"files"`
+	Truncated bool           `json:"truncated"`
+}
+
+// maxSearchResponse bounds a search response read from the workspace,
+// which may not keep to the results and context asked for.
+const maxSearchResponse = 4 << 20
+
 // SearchFiles searches for a regex pattern across files in the workspace.
-func (c *Client) SearchFiles(ctx context.Context, pattern, pathFilter string, maxResults int) ([]SearchResult, error) {
+func (c *Client) SearchFiles(ctx context.Context, opts SearchOptions) (*SearchResponse, error) {
 	payload, err := json.Marshal(map[string]any{
-		"pattern":     pattern,
-		"path_filter": pathFilter,
-		"max_results": maxResults,
+		"pattern":       opts.Pattern,
+		"path_filter":   opts.PathFilter,
+		"max_results":   opts.MaxResults,
+		"context_lines": opts.ContextLines,
+		"files_only":    opts.FilesOnly,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)
@@ -354,13 +387,11 @@ func (c *Client) SearchFiles(ctx context.Context, pattern, pathFilter string, ma
 		return nil, parseError(resp)
 	}
 
-	var result struct {
-		Results []SearchResult `json:"results"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var result SearchResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSearchResponse)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
-	return result.Results, nil
+	return &result, nil
 }
 
 // CommandResult holds the output of a command execution.
